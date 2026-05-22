@@ -2041,6 +2041,23 @@ def nuke(
       wip-deploy nuke --purge-all --dry-run
     """
     if purge_all:
+        # CASE-362: --purge-all is compose-scoped. Refuse on hosts that
+        # have any k8s install; the right path is `kubectl delete namespace`
+        # (or `wip-deploy nuke --name <k8s-install>` on a specific one).
+        from wip_deploy.nuke import has_k8s_install
+        if has_k8s_install(Path.home() / ".wip-deploy"):
+            typer.echo(
+                typer.style(
+                    "✗ --purge-all is compose-scoped; this host has at least "
+                    "one k8s install in ~/.wip-deploy/. Tear k8s installs "
+                    "down explicitly via `wip-deploy nuke --name <name>` "
+                    "(per-install) or `kubectl delete namespace <ns>` "
+                    "(cluster-side).",
+                    fg=typer.colors.RED,
+                ),
+                err=True,
+            )
+            raise typer.Exit(1)
         _nuke_purge_all(
             remove_data=remove_data,
             remove_images=remove_images,
@@ -2055,11 +2072,44 @@ def nuke(
         _default_install_dir(name) / "secrets" if remove_secrets else None
     )
 
+    # CASE-362: detect target from the persisted deployment state. k8s
+    # installs go through a different teardown path (kubectl, not compose).
+    # Best-effort read; falls through to compose semantics if absent or
+    # unreadable, which matches the historical default.
+    saved_target, saved_namespace = _read_saved_target_and_namespace(target_dir)
+
     typer.echo(f"Install dir:   {target_dir}")
-    if remove_data:
-        typer.echo(typer.style("  + data volumes will be removed", fg=typer.colors.YELLOW))
-    if remove_images:
-        typer.echo(typer.style("  + images will be removed (next install re-pulls/builds)", fg=typer.colors.YELLOW))
+    if saved_target == "k8s":
+        typer.echo(
+            typer.style(
+                f"  target: k8s — namespace `{saved_namespace}` will be "
+                f"deleted via kubectl (cascading delete of all namespaced "
+                f"resources including PVCs)",
+                fg=typer.colors.YELLOW,
+            )
+        )
+        if remove_data:
+            typer.echo(
+                typer.style(
+                    "  + --remove-data: any cluster-scoped PVs bound to "
+                    "this namespace will also be deleted (Retain-policy "
+                    "PVs would otherwise survive)",
+                    fg=typer.colors.YELLOW,
+                )
+            )
+        if remove_images:
+            typer.echo(
+                typer.style(
+                    "  + --remove-images: no-op for k8s installs (images "
+                    "live in the registry, not on the operator's host)",
+                    fg=typer.colors.YELLOW,
+                )
+            )
+    else:
+        if remove_data:
+            typer.echo(typer.style("  + data volumes will be removed", fg=typer.colors.YELLOW))
+        if remove_images:
+            typer.echo(typer.style("  + images will be removed (next install re-pulls/builds)", fg=typer.colors.YELLOW))
     if remove_secrets:
         typer.echo(
             typer.style(
@@ -2071,18 +2121,53 @@ def nuke(
         raise typer.Exit(0)
 
     try:
-        report = nuke_install_dir(
-            target_dir,
-            remove_data=remove_data,
-            secrets_location=target_secrets,
-            remove_secrets=remove_secrets,
-            remove_images=remove_images,
-        )
+        if saved_target == "k8s":
+            from wip_deploy.nuke import nuke_k8s_install_dir
+            report = nuke_k8s_install_dir(
+                target_dir,
+                namespace=saved_namespace or "wip",
+                remove_data=remove_data,
+                secrets_location=target_secrets,
+                remove_secrets=remove_secrets,
+            )
+        else:
+            report = nuke_install_dir(
+                target_dir,
+                remove_data=remove_data,
+                secrets_location=target_secrets,
+                remove_secrets=remove_secrets,
+                remove_images=remove_images,
+            )
     except NukeError as e:
         typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
         raise typer.Exit(1) from e
 
     typer.echo(typer.style(f"✓ {report.summary()}", fg=typer.colors.GREEN))
+
+
+def _read_saved_target_and_namespace(
+    install_dir: Path,
+) -> tuple[str | None, str | None]:
+    """Best-effort: return (target, k8s_namespace) from the persisted
+    deployment state in `install_dir`. Returns (None, None) on any
+    error — caller falls through to the historical compose-default
+    behaviour. (CASE-362)
+    """
+    state = install_dir / "deployment.deployer-state"
+    if not state.is_file():
+        return (None, None)
+    try:
+        import json
+        payload = json.loads(state.read_text())
+        spec = payload["deployment"]["spec"]
+        target = spec.get("target")
+        ns: str | None = None
+        if target == "k8s":
+            k8s = (spec.get("platform") or {}).get("k8s") or {}
+            ns = k8s.get("namespace")
+        return (target, ns)
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return (None, None)
 
 
 def _nuke_purge_all(

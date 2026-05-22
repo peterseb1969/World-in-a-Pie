@@ -38,11 +38,18 @@ class NukeReport:
     networks_removed: list[str] = field(default_factory=list)
     secrets_dir_removed: Path | None = None
     compose_down_ran: bool = False
+    # CASE-362 k8s teardown.
+    k8s_namespace_removed: str | None = None
+    k8s_pvs_removed: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         parts = []
         if self.compose_down_ran:
             parts.append("compose down completed")
+        if self.k8s_namespace_removed:
+            parts.append(f"k8s namespace removed: {self.k8s_namespace_removed}")
+        if self.k8s_pvs_removed:
+            parts.append(f"{len(self.k8s_pvs_removed)} PV(s) removed")
         if self.containers_removed:
             parts.append(f"{len(self.containers_removed)} container(s) removed")
         if self.pods_removed:
@@ -130,6 +137,173 @@ def nuke_install_dir(
             report.secrets_dir_removed = secrets_location
 
     return report
+
+
+# ────────────────────────────────────────────────────────────────────
+# k8s teardown (CASE-362)
+# ────────────────────────────────────────────────────────────────────
+
+
+def nuke_k8s_install_dir(
+    install_dir: Path,
+    *,
+    namespace: str,
+    remove_data: bool = False,
+    secrets_location: Path | None = None,
+    remove_secrets: bool = False,
+) -> NukeReport:
+    """Tear down a k8s install: delete the namespace (cascades to every
+    namespaced resource — Deployments, StatefulSets, Services, ConfigMaps,
+    Secrets, Ingresses, PVCs, NetworkPolicies).
+
+    `remove_data=True` additionally deletes any cluster-scoped PVs that
+    were bound to PVCs in this namespace. With the cluster's reclaim
+    policy set to `Retain` (common for production storage classes like
+    rook-ceph-block), PVs survive the PVC's deletion and keep their data
+    accessible at the storage layer — `--remove-data` is the explicit
+    "yes, throw the data away too" path.
+
+    `remove_secrets=True` removes the local file-backend secrets
+    directory at `secrets_location` (k8s-namespaced secrets are already
+    gone with the namespace).
+
+    The renderer doesn't enumerate `--remove-images` for k8s today:
+    images live in the registry, not on the operator's host. Skip with
+    a no-op rather than error — keeps the CLI surface uniform with
+    compose.
+    """
+    if not install_dir.exists():
+        raise NukeError(f"install dir does not exist: {install_dir}")
+
+    if not shutil.which("kubectl"):
+        raise NukeError(
+            "kubectl is not available on PATH. Install kubectl and "
+            "configure access to the target cluster, or tear down "
+            "manually via the cluster's UI."
+        )
+
+    report = NukeReport()
+
+    # Capture PVs bound to PVCs in this namespace BEFORE deleting it —
+    # once the PVCs are gone, the PV's `claimRef` still points at the
+    # (now-deleted) PVC, but we'd have to scan all PVs. Doing it now
+    # is cheaper and gives a clean list for `--remove-data`.
+    bound_pvs: list[str] = []
+    if remove_data:
+        bound_pvs = _list_pvs_in_namespace(namespace)
+
+    # Cascading delete. --ignore-not-found makes the call idempotent;
+    # --wait=true blocks until the namespace is fully reclaimed (so a
+    # subsequent re-install doesn't race the finalizers).
+    try:
+        subprocess.run(
+            [
+                "kubectl",
+                "delete",
+                "namespace",
+                namespace,
+                "--ignore-not-found=true",
+                "--wait=true",
+            ],
+            check=True,
+        )
+        report.k8s_namespace_removed = namespace
+    except subprocess.CalledProcessError as e:
+        raise NukeError(
+            f"kubectl delete namespace {namespace} failed (exit {e.returncode})"
+        ) from e
+
+    if remove_data and bound_pvs:
+        # The namespace delete cascaded the PVC; PVs with Retain
+        # reclaim policy are now in 'Released' state and still hold
+        # data. Delete them explicitly.
+        report.k8s_pvs_removed = _delete_pvs(bound_pvs)
+
+    if remove_secrets and secrets_location is not None:
+        secrets_location = Path(secrets_location)
+        if secrets_location.exists():
+            _remove_tree(secrets_location)
+            report.secrets_dir_removed = secrets_location
+
+    return report
+
+
+def _list_pvs_in_namespace(namespace: str) -> list[str]:
+    """Return the names of cluster-scoped PVs bound to PVCs in
+    `namespace`. Empty list on any error (the worst case is we miss a
+    Retain-policy PV; the namespace-delete itself still succeeds)."""
+    if not shutil.which("kubectl"):
+        return []
+    try:
+        result = subprocess.run(
+            [
+                "kubectl",
+                "get",
+                "pv",
+                "-o",
+                "jsonpath={range .items[*]}"
+                "{.spec.claimRef.namespace}{\"\\t\"}{.metadata.name}"
+                "{\"\\n\"}{end}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        return []
+    out: list[str] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[0] == namespace:
+            out.append(parts[1])
+    return out
+
+
+def _delete_pvs(pv_names: list[str]) -> list[str]:
+    """Best-effort `kubectl delete pv` for each name. Returns the names
+    that the cluster accepted the delete for. We don't fail the whole
+    teardown if a single PV refuses to delete (rare but possible —
+    e.g., a finalizer still pending)."""
+    if not shutil.which("kubectl") or not pv_names:
+        return []
+    removed: list[str] = []
+    for pv in pv_names:
+        try:
+            subprocess.run(
+                ["kubectl", "delete", "pv", pv, "--ignore-not-found=true"],
+                check=True,
+            )
+            removed.append(pv)
+        except subprocess.CalledProcessError:
+            # Don't abort the whole nuke for one stuck PV; the operator
+            # can clean it up manually after.
+            continue
+    return removed
+
+
+def has_k8s_install(install_root: Path) -> bool:
+    """Return True if any `~/.wip-deploy/<name>/deployment.deployer-state`
+    under `install_root` declares target=k8s. Used by --purge-all to
+    refuse on hosts with k8s installs (CASE-362)."""
+    if not install_root.exists():
+        return False
+    import json
+    for child in install_root.iterdir():
+        state = child / "deployment.deployer-state"
+        if not state.is_file():
+            continue
+        try:
+            payload = json.loads(state.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        try:
+            if payload["deployment"]["spec"]["target"] == "k8s":
+                return True
+        except (KeyError, TypeError):
+            continue
+    return False
 
 
 # ────────────────────────────────────────────────────────────────────
