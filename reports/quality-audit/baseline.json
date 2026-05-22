@@ -1,12 +1,12 @@
 {
-  "generated": "2026-03-20T13:01:29.676687+00:00",
-  "commit": "2f24669",
+  "generated": "2026-05-22T09:45:17.795688+00:00",
+  "commit": "6fc2595",
   "dimensions": {
     "ruff": {
-      "count": 171
+      "count": 64
     },
     "mypy": {
-      "count": 276
+      "count": 0
     },
     "vulture": {
       "count": 1
@@ -15,7 +15,7 @@
       "count": 0
     },
     "shellcheck": {
-      "count": 120
+      "count": 76
     },
     "vue-tsc": {
       "count": 0
