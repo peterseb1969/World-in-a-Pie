@@ -18,7 +18,7 @@ import socket
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from wip_toolkit.archive import ArchiveReader, ArchiveWriter
@@ -316,10 +316,10 @@ class DirectRestoreEngine:
         self._registry_url = registry_base_url or os.getenv(
             "REGISTRY_URL", "http://localhost:8001"
         )
-        self._registry_api_key = registry_api_key or os.getenv(
+        self._registry_api_key = cast(str, registry_api_key or os.getenv(
             "REGISTRY_API_KEY",
             os.getenv("API_KEY", "dev_master_key_for_testing"),
-        )
+        ))
 
     async def run_restore(
         self,

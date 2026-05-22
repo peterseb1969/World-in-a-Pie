@@ -2,6 +2,7 @@
 
 import math
 from datetime import UTC, datetime
+from typing import cast
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -338,10 +339,10 @@ async def register_keys(
     for item in items:
         if item.identity_values:
             # Compute identity_hash from raw values
-            id_hash = HashService.compute_composite_key_hash(item.identity_values)
-            identity_hashes.append(id_hash)
+            computed_hash = HashService.compute_composite_key_hash(item.identity_values)
+            identity_hashes.append(computed_hash)
             # Inject identity_hash into composite_key for dedup
-            item.composite_key["identity_hash"] = id_hash
+            item.composite_key["identity_hash"] = computed_hash
             hashes.append(HashService.compute_composite_key_hash(item.composite_key))
         elif item.composite_key:
             identity_hashes.append(None)
@@ -379,7 +380,7 @@ async def register_keys(
     # Phase 3: Build entries to insert
     entries_to_insert: list[RegistryEntry] = []
     insert_indices: list[int] = []
-    seen_in_batch: dict[str, tuple[int, str]] = {}  # key_hash → (first_index, entry_id)
+    seen_in_batch: dict[str, str] = {}  # key_hash → entry_id
 
     for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes, strict=False)):
         try:
@@ -404,6 +405,7 @@ async def register_keys(
                 continue
 
             # Check if provided entry_id already exists (collision detection)
+            existing: RegistryEntry | None
             if item.entry_id and item.entry_id in existing_by_entry_id:
                 existing = existing_by_entry_id[item.entry_id]
                 results[i] = RegisterKeyResponse(
@@ -520,7 +522,7 @@ async def register_keys(
                     error_count += 1
 
     return RegisterBulkResponse(
-        results=results,
+        results=cast(list[RegisterKeyResponse], results),
         total=len(items),
         created=created_count,
         already_exists=exists_count,
@@ -603,7 +605,7 @@ async def reserve_ids(
 
     Validates each ID against the namespace's configured format.
     """
-    results = []
+    results: list[ReserveItemResponse | None] = []
     reserved_count = 0
     error_count = 0
     entries_to_insert = []

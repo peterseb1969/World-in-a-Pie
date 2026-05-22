@@ -2,7 +2,7 @@
 
 import os
 from contextlib import asynccontextmanager
-from typing import cast
+from typing import Any, cast
 
 from aiobotocore.session import get_session
 from botocore.exceptions import ClientError
@@ -99,7 +99,7 @@ class FileStorageClient:
         """
         try:
             async with self._get_client() as client:
-                extra_args = {
+                extra_args: dict[str, Any] = {
                     "ContentType": content_type,
                 }
                 if metadata:

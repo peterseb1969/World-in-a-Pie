@@ -155,6 +155,7 @@ class TemplateStoreClient:
 
                 # Populate cache
                 if use_cache and result is not None:
+                    assert template_id is not None  # use_cache is True only when template_id is set
                     if version is not None:
                         self._template_cache[f"{template_id}:v{version}"] = result
                     else:

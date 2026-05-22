@@ -40,7 +40,7 @@ class ReplayService:
 
         # Count documents matching filter
         from ..models.document import Document
-        query = {"status": replay_filter.status, "namespace": replay_filter.namespace}
+        query: dict[str, Any] = {"status": replay_filter.status, "namespace": replay_filter.namespace}
         if replay_filter.template_id:
             query["template_id"] = replay_filter.template_id
         if replay_filter.template_value:

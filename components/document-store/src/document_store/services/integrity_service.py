@@ -261,6 +261,7 @@ async def check_all_documents(
         filters.append(Document.template_id == template_id_filter)
 
     # Combine filters
+    query: Any
     if filters:
         query = filters[0]
         for f in filters[1:]:

@@ -62,7 +62,7 @@ class ImportService:
         else:  # csv
             text = file_content.decode('utf-8-sig')  # Handle BOM
             reader = csv.DictReader(io.StringIO(text))
-            headers = reader.fieldnames or []
+            headers: list[str] = list(reader.fieldnames or [])
             if not headers:
                 raise ValueError("CSV file has no headers")
 

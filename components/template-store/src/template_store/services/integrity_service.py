@@ -7,6 +7,7 @@ Checks for orphaned references:
 """
 
 from datetime import UTC, datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -228,7 +229,7 @@ async def check_all_templates(
         IntegrityCheckResult with summary and issues
     """
     # Build query
-    query = {}
+    query: Any = {}
     if status_filter:
         query = Template.status == status_filter
 

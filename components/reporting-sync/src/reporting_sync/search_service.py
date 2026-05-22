@@ -8,7 +8,7 @@ import asyncio
 import logging
 import math
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import asyncpg
 import httpx
@@ -388,7 +388,7 @@ class SearchService:
         results: dict[str, SearchTypeResults] = {}
         cross_total = 0
         for (entity_type, _), result in zip(tasks, gathered, strict=False):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.error(f"Search failed for {entity_type}: {result}")
                 results[entity_type] = SearchTypeResults(
                     items=[], total=0, page=page, page_size=page_size, pages=0,
@@ -456,7 +456,7 @@ class SearchService:
                         query_lower in item.get("terminology_id", "").lower()):
                         results.append(SearchResult(
                             type="terminology",
-                            id=item.get("terminology_id"),
+                            id=cast(str, item.get("terminology_id")),
                             value=item.get("value"),
                             label=item.get("label"),
                             status=item.get("status"),
@@ -501,7 +501,7 @@ class SearchService:
                 # on returned results uses MAX_RESULTS_PER_TYPE.
                 for terminology in terminologies[:20]:
                     term_id = terminology.get("terminology_id")
-                    params = {"page_size": 100}
+                    params: dict[str, Any] = {"page_size": 100}
                     if status:
                         params["status"] = status
 
@@ -581,7 +581,7 @@ class SearchService:
                         query_lower in item.get("template_id", "").lower()):
                         results.append(SearchResult(
                             type="template",
-                            id=item.get("template_id"),
+                            id=cast(str, item.get("template_id")),
                             value=item.get("value"),
                             label=item.get("label"),
                             status=item.get("status"),
@@ -932,7 +932,7 @@ class SearchService:
         results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
 
         for (entity_type, _), result in zip(tasks, results, strict=False):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.error(f"Activity fetch failed for {entity_type}: {result}")
             else:
                 activities.extend(result)

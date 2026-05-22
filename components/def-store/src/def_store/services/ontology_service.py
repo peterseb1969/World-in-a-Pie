@@ -3,6 +3,7 @@
 import logging
 from collections import deque
 from datetime import UTC, datetime
+from typing import Any
 
 from pymongo.errors import DuplicateKeyError
 
@@ -285,7 +286,7 @@ class OntologyService:
                     ))
                     continue
 
-                event_data = {
+                event_data: dict[str, Any] = {
                     "namespace": namespace,
                     "source_term_id": item.source_term_id,
                     "target_term_id": item.target_term_id,

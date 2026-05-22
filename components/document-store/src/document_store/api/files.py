@@ -105,18 +105,18 @@ async def upload_file(
     # Read file content with size limit to prevent OOM on resource-constrained devices
     from ..main import settings as app_settings
     max_size = app_settings.MAX_UPLOAD_SIZE
-    content = bytearray()
+    buffer = bytearray()
     while True:
         chunk = await file.read(65536)  # 64KB chunks
         if not chunk:
             break
-        content.extend(chunk)
-        if len(content) > max_size:
+        buffer.extend(chunk)
+        if len(buffer) > max_size:
             raise HTTPException(
                 status_code=413,
                 detail=f"File too large. Maximum upload size is {max_size // (1024 * 1024)}MB"
             )
-    content = bytes(content)
+    content: bytes = bytes(buffer)
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
 

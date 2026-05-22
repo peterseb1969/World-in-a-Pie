@@ -6,7 +6,7 @@ Each namespace has configurable ID algorithms per entity type.
 
 import os
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
@@ -434,7 +434,7 @@ async def download_export(
 async def import_namespace(
     file: UploadFile = File(..., description="Export ZIP file to import"),
     target_prefix: str = Query(None, description="Optional new prefix"),
-    mode: str = Query("create", description="Import mode: create, merge, replace"),
+    mode: Literal["create", "merge", "replace"] = Query("create", description="Import mode: create, merge, replace"),
     imported_by: str = Query(None, description="User performing import"),
     api_key: str = Depends(require_admin_key)
 ) -> ImportResponse:

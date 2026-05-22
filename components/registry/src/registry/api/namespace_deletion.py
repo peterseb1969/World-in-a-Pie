@@ -5,6 +5,7 @@ crash-safe namespace deletion with persistent journals.
 """
 
 from datetime import UTC, datetime
+from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -172,7 +173,7 @@ async def update_deletion_mode(
             "Changing from 'retain' to 'full' requires confirm_enable_deletion=true"
         )
 
-    ns.deletion_mode = deletion_mode
+    ns.deletion_mode = cast(Literal["retain", "full"], deletion_mode)
     ns.updated_at = datetime.now(UTC)
     ns.updated_by = updated_by
     await ns.save()
