@@ -44,10 +44,10 @@ class RegistryClient:
             "REGISTRY_URL",
             "http://localhost:8001"
         )
-        self.api_key = api_key or os.getenv(
+        self.api_key = cast(str, api_key or os.getenv(
             "REGISTRY_API_KEY",
             "dev_master_key_for_testing"
-        )
+        ))
         self.timeout = timeout
         self._transport = transport
 

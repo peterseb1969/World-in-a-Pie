@@ -88,10 +88,10 @@ class DefStoreClient:
             "DEF_STORE_URL",
             "http://localhost:8002"
         )
-        self.api_key = api_key or os.getenv(
+        self.api_key = cast(str, api_key or os.getenv(
             "DEF_STORE_API_KEY",
             "dev_master_key_for_testing"
-        )
+        ))
         self.timeout = timeout
 
         # Cache for complete terminologies (refreshed every TTL seconds)

@@ -2,6 +2,7 @@
 
 import asyncio
 import math
+from beanie.odm.enums import SortDirection
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -421,7 +422,7 @@ async def get_file_documents(
     total = await DocumentModel.find(query).count()
     skip = (page - 1) * page_size
     docs = await DocumentModel.find(query).skip(skip).limit(page_size).sort(
-        [("created_at", -1)]
+        [("created_at", SortDirection.DESCENDING)]
     ).to_list()
 
     items = []

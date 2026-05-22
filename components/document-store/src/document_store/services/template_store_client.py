@@ -42,10 +42,10 @@ class TemplateStoreClient:
             "TEMPLATE_STORE_URL",
             "http://localhost:8003"
         )
-        self.api_key = api_key or os.getenv(
+        self.api_key = cast(str, api_key or os.getenv(
             "TEMPLATE_STORE_API_KEY",
             "dev_master_key_for_testing"
-        )
+        ))
         self.timeout = timeout
 
         # Permanent cache: keyed by "template_id:v{version}" — immutable

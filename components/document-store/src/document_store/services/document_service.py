@@ -6,6 +6,7 @@ import math
 import time
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast
+from beanie.odm.enums import SortDirection
 
 # Import identity helper from wip-auth
 # This returns the authenticated identity, not the client-provided value
@@ -684,7 +685,7 @@ class DocumentService:
                 )
                 latest = await Document.find(
                     {"namespace": namespace, "document_id": document_id}
-                ).sort([("version", -1)]).limit(1).to_list()
+                ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 if latest:
                     # Deactivate the current active version if it's not ours
                     if latest[0].status == DocumentStatus.ACTIVE:
@@ -995,7 +996,7 @@ class DocumentService:
             # Return latest version
             results = await Document.find(
                 {"document_id": document_id}
-            ).sort([("version", -1)]).limit(1).to_list()
+            ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             document = results[0] if results else None
 
         if not document:
@@ -1122,7 +1123,7 @@ class DocumentService:
         total = await Document.find(query).count()
         skip = (page - 1) * page_size
         documents = await Document.find(query).sort(
-            [("created_at", -1)]
+            [("created_at", SortDirection.DESCENDING)]
         ).skip(skip).limit(page_size).to_list()
         edge_items = await self._batch_to_responses(documents)
 
@@ -1558,7 +1559,7 @@ class DocumentService:
             total = -1
 
             documents = await Document.find(query).sort(
-                [("_id", 1)]
+                [("_id", SortDirection.ASCENDING)]
             ).limit(page_size).to_list()
         else:
             sort_clauses = build_sort_clauses(sort_by, sort_order)
@@ -1598,7 +1599,7 @@ class DocumentService:
         # document_id is stable — query directly
         versions = await Document.find(
             {"document_id": document_id}
-        ).sort([("version", -1)]).to_list()
+        ).sort([("version", SortDirection.DESCENDING)]).to_list()
 
         if not versions:
             return None
@@ -1652,7 +1653,7 @@ class DocumentService:
         """
         latest = await Document.find(
             {"document_id": document_id}
-        ).sort([("version", -1)]).limit(1).to_list()
+        ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
 
         if not latest:
             return None
@@ -1747,7 +1748,7 @@ class DocumentService:
         # SOFT DELETE path (existing behavior)
         results = await Document.find(
             {"document_id": document_id, "status": DocumentStatus.ACTIVE.value}
-        ).sort([("version", -1)]).limit(1).to_list()
+        ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         document = results[0] if results else None
         if not document:
             return False
@@ -1805,7 +1806,7 @@ class DocumentService:
         """Archive a document (latest version)."""
         results = await Document.find(
             {"document_id": document_id}
-        ).sort([("version", -1)]).limit(1).to_list()
+        ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         document = results[0] if results else None
         if not document:
             return False
@@ -2419,7 +2420,7 @@ class DocumentService:
         # Find the latest version for this document_id (stable)
         latest = await Document.find(
             {"document_id": document.document_id}
-        ).sort([("version", -1)]).limit(1).to_list()
+        ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
 
         if latest:
             is_latest = document.version == latest[0].version
@@ -2554,7 +2555,7 @@ class DocumentService:
             #    detect ARCHIVED/INACTIVE and return the right error code).
             latest = await Document.find(
                 {"document_id": item.document_id}
-            ).sort([("version", -1)]).limit(1).to_list()
+            ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
 
             if not latest:
                 raise PatchError("not_found", "Document not found")

@@ -11,6 +11,7 @@ Uses batched cursor iteration to avoid loading all documents into memory.
 import asyncio
 from datetime import UTC, datetime
 from typing import Any
+from beanie.odm.enums import SortDirection
 
 from pydantic import BaseModel, Field
 
@@ -283,7 +284,7 @@ async def check_all_documents(
         batch_size = min(BATCH_SIZE, effective_limit - documents_checked)
         find_q = Document.find(query).skip(skip).limit(batch_size)
         if recent_first:
-            find_q = find_q.sort([("created_at", -1)])
+            find_q = find_q.sort([("created_at", SortDirection.DESCENDING)])
         batch = await find_q.to_list()
 
         if not batch:

@@ -4,6 +4,7 @@
 from ..models.field import FieldDefinition
 from ..models.rule import ValidationRule
 from ..models.template import Template
+from beanie.odm.enums import SortDirection
 
 MAX_INHERITANCE_DEPTH = 10
 
@@ -115,7 +116,7 @@ class InheritanceService:
                 results = await Template.find({
                     "template_id": current.extends,
                     "status": "active"
-                }).sort([("version", -1)]).limit(1).to_list()
+                }).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 parent = results[0] if results else None
 
             if not parent:
@@ -254,7 +255,7 @@ class InheritanceService:
             seen_ids.add(current_id)
 
             # Get latest version of the parent
-            results = await Template.find({"template_id": current_id}).sort([("version", -1)]).limit(1).to_list()
+            results = await Template.find({"template_id": current_id}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             if not results:
                 break
 

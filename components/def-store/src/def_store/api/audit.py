@@ -2,6 +2,7 @@
 
 
 from fastapi import APIRouter, Depends, Query
+from beanie.odm.enums import SortDirection
 
 from wip_auth import (
     check_namespace_permission,
@@ -63,7 +64,7 @@ async def get_term_audit_log(
     skip = (page - 1) * page_size
 
     logs = await TermAuditLog.find(query)\
-        .sort([("changed_at", -1)])\
+        .sort([("changed_at", SortDirection.DESCENDING)])\
         .skip(skip)\
         .limit(page_size)\
         .to_list()
@@ -108,7 +109,7 @@ async def get_terminology_audit_log(
     skip = (page - 1) * page_size
 
     logs = await TermAuditLog.find(query)\
-        .sort([("changed_at", -1)])\
+        .sort([("changed_at", SortDirection.DESCENDING)])\
         .skip(skip)\
         .limit(page_size)\
         .to_list()
@@ -150,7 +151,7 @@ async def get_recent_audit_log(
     skip = (page - 1) * page_size
 
     logs = await TermAuditLog.find(query)\
-        .sort([("changed_at", -1)])\
+        .sort([("changed_at", SortDirection.DESCENDING)])\
         .skip(skip)\
         .limit(page_size)\
         .to_list()

@@ -63,6 +63,7 @@ async def list_namespaces(
     api_key: str = Depends(require_api_key)
 ) -> list[NamespaceResponse]:
     """List namespaces the caller can access."""
+    query: dict[str, Any]
     if include_archived:
         query = {"status": {"$ne": "deleted"}}
     else:

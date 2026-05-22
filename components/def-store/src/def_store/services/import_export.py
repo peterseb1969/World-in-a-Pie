@@ -867,7 +867,7 @@ class ImportExportService:
         # Build value→term_id mapping
         value_to_id: dict[str, str] = {}
         for r in term_results:
-            if r.id:
+            if r.id and r.value:
                 value_to_id[r.value] = r.id
 
         # Resolve IDs for skipped terms

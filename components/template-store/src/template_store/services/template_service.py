@@ -3,6 +3,7 @@
 import contextlib
 import logging
 from datetime import UTC, datetime
+from beanie.odm.enums import SortDirection
 
 from wip_auth.resolve import (
     EntityNotFoundError,
@@ -272,11 +273,11 @@ class TemplateService:
         parent_namespace: str | None = None
         if request.extends:
             # Find latest version of parent (template_id is stable across versions)
-            parent_results = await Template.find({"template_id": request.extends}).sort([("version", -1)]).limit(1).to_list()
+            parent_results = await Template.find({"template_id": request.extends}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             parent = parent_results[0] if parent_results else None
             if not parent:
                 # Try by value within same namespace
-                parent_results = await Template.find({"namespace": namespace, "value": request.extends}).sort([("version", -1)]).limit(1).to_list()
+                parent_results = await Template.find({"namespace": namespace, "value": request.extends}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 parent = parent_results[0] if parent_results else None
                 if parent:
                     request.extends = parent.template_id
@@ -416,7 +417,7 @@ class TemplateService:
                 template = await Template.find_one(query)
             else:
                 # Return latest version (highest version number)
-                results = await Template.find(query).sort([("version", -1)]).limit(1).to_list()
+                results = await Template.find(query).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 template = results[0] if results else None
         elif value:
             # Value lookups require namespace — no silent fallback to "wip"
@@ -427,7 +428,7 @@ class TemplateService:
                 query["version"] = version
                 template = await Template.find_one(query)
             else:
-                results = await Template.find(query).sort([("version", -1)]).limit(1).to_list()
+                results = await Template.find(query).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 template = results[0] if results else None
         else:
             return None
@@ -531,7 +532,7 @@ class TemplateService:
             skip = (page - 1) * page_size
 
             templates = await Template.find(query) \
-                .sort([("value", 1), ("version", -1)]) \
+                .sort([("value", SortDirection.ASCENDING), ("version", SortDirection.DESCENDING)]) \
                 .skip(skip) \
                 .limit(page_size) \
                 .to_list()
@@ -560,7 +561,7 @@ class TemplateService:
         if namespace is not None:
             query["namespace"] = namespace
         templates = await Template.find(query) \
-            .sort([("version", -1)]) \
+            .sort([("version", SortDirection.DESCENDING)]) \
             .to_list()
 
         return [TemplateService._to_template_response(t) for t in templates]
@@ -790,7 +791,7 @@ class TemplateService:
             Update response indicating if a new version was created, or None if not found
         """
         # Find the latest version of this template
-        originals = await Template.find({"template_id": template_id}).sort([("version", -1)]).limit(1).to_list()
+        originals = await Template.find({"template_id": template_id}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         original = originals[0] if originals else None
         if not original:
             return None
@@ -809,7 +810,7 @@ class TemplateService:
         # Calculate new version number (max version for this value + 1)
         max_version_template = await Template.find(
             {"value": original.value}
-        ).sort([("version", -1)]).limit(1).to_list()
+        ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         new_version = max_version_template[0].version + 1 if max_version_template else 1
 
         # Determine the value for the new version
@@ -827,10 +828,10 @@ class TemplateService:
         # Validate extends if changing
         extends_value = request.extends if request.extends is not None else original.extends
         if extends_value and extends_value != original.extends:
-            parent_results = await Template.find({"template_id": extends_value}).sort([("version", -1)]).limit(1).to_list()
+            parent_results = await Template.find({"template_id": extends_value}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             parent = parent_results[0] if parent_results else None
             if not parent:
-                parent_results = await Template.find({"value": extends_value}).sort([("version", -1)]).limit(1).to_list()
+                parent_results = await Template.find({"value": extends_value}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 parent = parent_results[0] if parent_results else None
                 if parent:
                     extends_value = parent.template_id
@@ -1009,7 +1010,7 @@ class TemplateService:
         if version is not None:
             template = await Template.find_one({"template_id": template_id, "version": version})
         else:
-            results = await Template.find({"template_id": template_id}).sort([("version", -1)]).limit(1).to_list()
+            results = await Template.find({"template_id": template_id}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             template = results[0] if results else None
         if not template:
             return False
@@ -1093,7 +1094,7 @@ class TemplateService:
                 # on_conflict == "validate"
                 existing_list = await Template.find(
                     {"namespace": item.namespace, "value": item.value}
-                ).sort([("version", -1)]).limit(1).to_list()
+                ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 existing = existing_list[0] if existing_list else None
 
                 if existing is None:
@@ -1366,7 +1367,7 @@ class TemplateService:
         Returns:
             Validation response with errors and warnings
         """
-        results = await Template.find({"template_id": template_id}).sort([("version", -1)]).limit(1).to_list()
+        results = await Template.find({"template_id": template_id}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         template = results[0] if results else None
         if not template:
             return ValidateTemplateResponse(
@@ -1572,7 +1573,7 @@ class TemplateService:
             ValueError: If template not found
         """
         # Find the target parent template (latest version)
-        parent_results = await Template.find({"template_id": template_id}).sort([("version", -1)]).limit(1).to_list()
+        parent_results = await Template.find({"template_id": template_id}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         parent = parent_results[0] if parent_results else None
         if not parent:
             raise ValueError(f"Template '{template_id}' not found")
@@ -1631,7 +1632,7 @@ class TemplateService:
                 # Calculate new version for this child
                 max_ver = await Template.find(
                     {"value": child.value}
-                ).sort([("version", -1)]).limit(1).to_list()
+                ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 new_version = max_ver[0].version + 1 if max_ver else 1
 
                 # Stable ID: reuse child's template_id (no Registry call)
@@ -2000,7 +2001,7 @@ class TemplateService:
         query: dict = {"template_id": template_id}
         if namespace:
             query["namespace"] = namespace
-        results = await Template.find(query).sort([("version", -1)]).limit(1).to_list()
+        results = await Template.find(query).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         template = results[0] if results else None
         if not template:
             raise ValueError(f"Template '{template_id}' not found")
@@ -2175,15 +2176,15 @@ class TemplateService:
             namespace: Namespace for value lookups
         """
         # Try by template_id within namespace first (return latest version)
-        results = await Template.find({"template_id": ref, "namespace": namespace}).sort([("version", -1)]).limit(1).to_list()
+        results = await Template.find({"template_id": ref, "namespace": namespace}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         if results:
             return results[0]
         # Fallback: try by template_id cross-namespace (for external refs)
-        results = await Template.find({"template_id": ref}).sort([("version", -1)]).limit(1).to_list()
+        results = await Template.find({"template_id": ref}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         if results:
             return results[0]
         # Try by value within namespace (return latest version)
-        results = await Template.find({"namespace": namespace, "value": ref}).sort([("version", -1)]).limit(1).to_list()
+        results = await Template.find({"namespace": namespace, "value": ref}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         return results[0] if results else None
 
     @staticmethod

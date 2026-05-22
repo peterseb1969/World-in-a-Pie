@@ -162,6 +162,7 @@ class ReplayService:
         from ..models.document import Document
         from ..models.replay import ReplayStatus
         from .nats_client import _jetstream
+        assert _jetstream is not None  # start() enforces NATS enabled before launching this task
 
         session = self._sessions[session_id]
         session.status = ReplayStatus.RUNNING
