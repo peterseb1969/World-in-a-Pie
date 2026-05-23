@@ -264,6 +264,11 @@ export async function runBootstrap(
       if (data.target_templates) template.target_templates = data.target_templates
       if (data.versioned === false) template.versioned = false
 
+      // header_fields drives peer-projection rendering (CASE-343). Forwarded
+      // here so seed JSON that declares header_fields (e.g. CASE_RECORD,
+      // DOCUMENT, SESSION) propagates through bootstrap intact.
+      if (data.header_fields) template.header_fields = data.header_fields
+
       if (data.reporting) template.reporting = data.reporting
 
       const tplResult = await wipPost(
