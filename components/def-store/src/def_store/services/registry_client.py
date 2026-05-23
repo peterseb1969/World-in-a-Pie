@@ -69,7 +69,7 @@ class RegistryClient(RegistryClientBase):
             raise RegistryError(
                 f"Registry returned status={result.status} without registry_id"
             )
-        return cast(str, result.registry_id)
+        return result.registry_id
 
     async def register_term(
         self,
@@ -98,7 +98,7 @@ class RegistryClient(RegistryClientBase):
             raise RegistryError(
                 f"Registry returned status={result.status} without registry_id"
             )
-        return cast(str, result.registry_id)
+        return result.registry_id
 
     async def register_terms_bulk(
         self,
@@ -166,12 +166,12 @@ class RegistryClient(RegistryClientBase):
         composite_key: dict[str, Any] = {"ns": namespace, "value": new_value}
         if additional_fields:
             composite_key.update(additional_fields)
-        return cast(bool, await self._add_synonym(
+        return await self._add_synonym(
             target_id=target_id,
             synonym_namespace=namespace,
             synonym_entity_type=entity_type,
             synonym_composite_key=composite_key,
-        ))
+        )
 
     async def register_auto_synonym(
         self,

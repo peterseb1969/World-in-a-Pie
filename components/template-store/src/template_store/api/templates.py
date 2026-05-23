@@ -6,7 +6,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
     check_namespace_permission,
-    get_current_identity,
+    require_current_identity,
     resolve_bulk_ids,
     resolve_namespace_filter,
     resolve_or_404,
@@ -65,7 +65,7 @@ async def create_templates(
             detail=f"Invalid on_conflict value: {on_conflict!r}. Must be 'error' or 'validate'.",
         )
 
-    identity = get_current_identity()
+    identity = require_current_identity()
     namespaces = {item.namespace for item in items}
     for ns in namespaces:
         await check_namespace_permission(identity, ns, "write")
@@ -119,7 +119,7 @@ async def list_templates(
     Supports filtering by status, parent template, and value.
     Use latest_only=true to only show the most recent version of each template.
     """
-    identity = get_current_identity()
+    identity = require_current_identity()
     ns_filter = await resolve_namespace_filter(identity, namespace)
 
     # Resolve extends synonym if provided
@@ -209,7 +209,7 @@ async def get_template_by_value(
     To get a specific version, use /by-value/{value}/versions/{version}.
     """
     if namespace:
-        identity = get_current_identity()
+        identity = require_current_identity()
         await check_namespace_permission(identity, namespace, "read")
 
     versions = await TemplateService.get_template_versions(value, namespace=namespace)
@@ -245,7 +245,7 @@ async def get_template_versions(
     This allows viewing the full version history of a template.
     """
     if namespace:
-        identity = get_current_identity()
+        identity = require_current_identity()
         await check_namespace_permission(identity, namespace, "read")
 
     versions = await TemplateService.get_template_versions(value, namespace=namespace)
@@ -423,7 +423,7 @@ async def activate_template(
 
     Use dry_run=true to preview what would be activated without making changes.
     """
-    identity = get_current_identity()
+    identity = require_current_identity()
     await check_namespace_permission(identity, namespace, "write")
 
     template_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")

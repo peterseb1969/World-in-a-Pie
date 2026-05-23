@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from wip_auth import (
     APIKeyProvider,
     APIKeyRecord,
+    UserIdentity,
     get_auth_config,
     get_identity_string,
     hash_api_key,
@@ -213,7 +214,7 @@ async def list_api_keys(
     summary="Sync endpoint for service key polling",
 )
 async def sync_api_keys(
-    _key: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> list[APIKeySyncRecord]:
     """Return enabled runtime keys with hashes for service polling.
 

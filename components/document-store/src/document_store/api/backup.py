@@ -52,7 +52,7 @@ from beanie.odm.enums import SortDirection
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
-from wip_auth import check_namespace_permission, get_current_identity, require_api_key
+from wip_auth import UserIdentity, check_namespace_permission, get_current_identity, require_api_key
 
 from ..models.backup_job import (
     BackupJob,
@@ -100,10 +100,9 @@ def _archive_path_for(job_id: str) -> Path:
 async def start_backup(
     namespace: str,
     request: BackupRequest,
-    _auth: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> BackupJobSnapshot:
     """Kick off a namespace backup. Returns the initial job snapshot (202)."""
-    identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "admin")
 
     job_id = f"bkp-{uuid.uuid4().hex[:16]}"
@@ -155,7 +154,7 @@ async def start_restore(
     batch_size: int = Form(50),
     continue_on_error: bool = Form(False),
     dry_run: bool = Form(False),
-    _auth: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> BackupJobSnapshot:
     """Upload an archive and restore it into ``namespace``.
 
@@ -163,7 +162,6 @@ async def start_restore(
     multi-GB uploads don't buffer in RAM.
     """
     effective_target = target_namespace or namespace
-    identity = get_current_identity()
     await check_namespace_permission(identity, effective_target, "admin")
 
     if mode not in ("restore", "fresh"):
@@ -256,12 +254,11 @@ async def start_restore(
 )
 async def get_job(
     job_id: str,
-    _auth: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> BackupJobSnapshot:
     job = await BackupJob.find_one(BackupJob.job_id == job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Backup job {job_id} not found")
-    identity = get_current_identity()
     await check_namespace_permission(identity, job.namespace, "read")
     return BackupJobSnapshot.from_job(job)
 
@@ -280,7 +277,7 @@ async def list_jobs(
     namespace: str | None = Query(None, description="Filter by namespace"),
     status: BackupJobStatus | None = Query(None, description="Filter by status"),
     limit: int = Query(50, ge=1, le=500),
-    _auth: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> list[BackupJobSnapshot]:
     query: dict = {}
     if namespace is not None:
@@ -290,7 +287,6 @@ async def list_jobs(
     cursor = BackupJob.find(query).sort([("created_at", SortDirection.DESCENDING)]).limit(limit)
     jobs = await cursor.to_list()
     # Filter to namespaces the caller can read (cheap for small limits).
-    identity = get_current_identity()
     allowed: list[BackupJob] = []
     for job in jobs:
         try:
@@ -359,7 +355,7 @@ async def _sse_stream(job_id: str) -> AsyncIterator[bytes]:
 )
 async def stream_job_events(
     job_id: str,
-    _auth: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> StreamingResponse:
     """SSE stream of :class:`BackupProgressMessage` envelopes for a job.
 
@@ -374,7 +370,6 @@ async def stream_job_events(
     job = await BackupJob.find_one(BackupJob.job_id == job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Backup job {job_id} not found")
-    identity = get_current_identity()
     await check_namespace_permission(identity, job.namespace, "read")
 
     return StreamingResponse(
@@ -409,13 +404,12 @@ async def _file_chunks(path: Path, chunk_size: int = 1024 * 1024) -> AsyncIterat
 )
 async def download_archive(
     job_id: str,
-    _auth: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> StreamingResponse:
     job = await BackupJob.find_one(BackupJob.job_id == job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Backup job {job_id} not found")
 
-    identity = get_current_identity()
     await check_namespace_permission(identity, job.namespace, "read")
 
     if job.kind != BackupJobKind.BACKUP:
@@ -460,13 +454,12 @@ async def download_archive(
 )
 async def delete_job(
     job_id: str,
-    _auth: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> None:
     job = await BackupJob.find_one(BackupJob.job_id == job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Backup job {job_id} not found")
 
-    identity = get_current_identity()
     await check_namespace_permission(identity, job.namespace, "admin")
 
     if job.status == BackupJobStatus.RUNNING:

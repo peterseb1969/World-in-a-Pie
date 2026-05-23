@@ -5,8 +5,8 @@ import math
 from fastapi import APIRouter, Body, Depends, Query
 
 from wip_auth import (
+    UserIdentity,
     check_namespace_permission,
-    get_current_identity,
     resolve_bulk_ids,
     resolve_namespace_filter,
     resolve_or_404,
@@ -38,7 +38,7 @@ router = APIRouter(prefix="/ontology", tags=["Ontology"])
 async def create_term_relations(
     items: list[CreateTermRelationRequest] = Body(...),
     namespace: str = Query(..., description="Namespace"),
-    api_key: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> BulkResponse:
     """
     Create one or more typed relations between terms.
@@ -46,7 +46,6 @@ async def create_term_relations(
     Relation types include: is_a, part_of, has_part, maps_to, related_to,
     finding_site, causative_agent, or any custom type.
     """
-    identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "write")
 
     # Resolve term synonyms in bulk
@@ -75,10 +74,9 @@ async def list_term_relations(
     namespace: str | None = Query(default=None, description="Namespace (omit for all accessible)"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Page size (max 1000)"),
-    api_key: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> TermRelationListResponse:
     """List relations for a term, with optional direction and type filtering."""
-    identity = get_current_identity()
     ns_filter = await resolve_namespace_filter(identity, namespace)
 
     # Resolve term_id synonym
@@ -109,12 +107,11 @@ async def list_term_relations(
 async def delete_term_relations(
     items: list[DeleteTermRelationRequest] = Body(...),
     namespace: str = Query(..., description="Namespace"),
-    api_key: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> BulkResponse:
     """
     Soft-delete one or more relations (set status to inactive).
     """
-    identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "write")
 
     # Resolve term IDs in delete items
@@ -143,7 +140,7 @@ async def list_all_term_relations(
     status: str = Query("active", description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Page size (max 1000)"),
-    api_key: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> TermRelationListResponse:
     """
     List all relations (paginated).
@@ -152,7 +149,6 @@ async def list_all_term_relations(
     useful for batch sync and export operations. Use source_terminology_id
     to filter to a specific terminology. Omit namespace for cross-namespace results.
     """
-    identity = get_current_identity()
     ns_filter = await resolve_namespace_filter(identity, namespace)
 
     # Resolve source_terminology_id synonym if provided
@@ -192,7 +188,7 @@ async def get_ancestors(
     relation_type: str = Query("is_a", description="Relation type to traverse"),
     namespace: str = Query(..., description="Namespace"),
     max_depth: int = Query(10, ge=1, le=50, description="Maximum traversal depth"),
-    api_key: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> TraversalResponse:
     """
     Traverse upward from a term, following outgoing relations of the given type.
@@ -200,7 +196,6 @@ async def get_ancestors(
     For is_a relations, also follows parent_term_id links for backward
     compatibility with simple hierarchical terminologies.
     """
-    identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "read")
 
     term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
@@ -223,14 +218,13 @@ async def get_descendants(
     relation_type: str = Query("is_a", description="Relation type to traverse"),
     namespace: str = Query(..., description="Namespace"),
     max_depth: int = Query(10, ge=1, le=50, description="Maximum traversal depth"),
-    api_key: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> TraversalResponse:
     """
     Traverse downward from a term, following incoming relations of the given type.
 
     For is_a relations, also includes children via parent_term_id.
     """
-    identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "read")
 
     term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
@@ -251,14 +245,13 @@ async def get_descendants(
 async def get_parents(
     term_id: str,
     namespace: str = Query(..., description="Namespace"),
-    api_key: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> list[TermRelationResponse]:
     """
     Get immediate parents of a term (non-transitive).
 
     Combines is_a relations and parent_term_id.
     """
-    identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "read")
 
     term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
@@ -274,14 +267,13 @@ async def get_parents(
 async def get_children(
     term_id: str,
     namespace: str = Query(..., description="Namespace"),
-    api_key: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> list[TermRelationResponse]:
     """
     Get immediate children of a term (non-transitive).
 
     Combines incoming is_a relations and children via parent_term_id.
     """
-    identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "read")
 
     term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")

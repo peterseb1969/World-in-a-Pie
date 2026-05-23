@@ -1202,7 +1202,7 @@ class DocumentService:
                 return True  # service called without identity context — trust caller
             if ns not in ns_permission_cache:
                 ns_permission_cache[ns] = await resolve_permission(identity, ns)
-            return cast(bool, permission_sufficient(ns_permission_cache[ns], "read"))
+            return permission_sufficient(ns_permission_cache[ns], "read")
 
         # Template-aware header_fields lookup (CASE-343, refined by
         # CASE-354). Three-tier resolution per peer template:
@@ -2546,8 +2546,8 @@ class DocumentService:
 
         # Lazy imports to avoid module-level coupling with FastAPI/wip-auth
         from wip_auth import (
-            get_current_identity,
             permission_sufficient,
+            require_current_identity,
             resolve_permission,
         )
 
@@ -2577,7 +2577,7 @@ class DocumentService:
             # 2. Permission check on the document's namespace.
             #    Use resolve_permission directly so we can produce a per-item
             #    'forbidden' error instead of an HTTP 403 from check_namespace_permission.
-            identity = get_current_identity()
+            identity = require_current_identity()
             permission = await resolve_permission(identity, current.namespace)
             if not permission_sufficient(permission, "write"):
                 raise PatchError(

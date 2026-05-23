@@ -5,8 +5,8 @@ import asyncio
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
+    UserIdentity,
     check_namespace_permission,
-    get_current_identity,
     resolve_bulk_ids,
     resolve_namespace_filter,
     resolve_or_404,
@@ -50,14 +50,13 @@ batch operations with cache warmup.
 async def create_documents(
     items: list[DocumentCreateRequest] = Body(...),
     continue_on_error: bool = Query(True, description="Continue processing if an item fails"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Create or update documents. Namespace is read from each item (default: "wip").
 
     Template IDs accept both canonical UUIDs and human-readable values
     (e.g., "PATIENT" instead of "019..."). Values are resolved via Registry synonyms.
     """
-    identity = get_current_identity()
     namespaces = {item.namespace for item in items}
     for ns in namespaces:
         await check_namespace_permission(identity, ns, "write")
@@ -131,7 +130,7 @@ DOCUMENT_UPDATED event as POST-driven version bumps.
 async def patch_documents(
     items: list[PatchDocumentItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    _: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Apply JSON Merge Patches to documents (bulk-first)."""
     # Resolve document_id synonyms in place. Resolution failures are silently
@@ -144,7 +143,6 @@ async def patch_documents(
     # document_ids in the bulk, then per-id permission check (cache
     # amortises repeated namespaces). Aborts on first failure to match
     # the bulk-create convention.
-    identity = get_current_identity()
     from ..models.document import Document as _Doc
     doc_ids = [item.document_id for item in items if item.document_id]
     if doc_ids:
@@ -178,7 +176,7 @@ async def list_documents(
     cursor: str | None = Query(None, description="Cursor for cursor-based pagination (MongoDB _id of last item)"),
     sort_by: str | None = Query(None, description="Sort field: created_at (default), updated_at, version, or data.<path>. Incompatible with cursor."),
     sort_order: str | None = Query(None, description="Sort order: asc | desc (default desc)"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """List documents with pagination.
 
@@ -187,7 +185,6 @@ async def list_documents(
     When cursor is provided, page parameter is ignored and total is -1, and
     sort_by/sort_order must be omitted (cursor mode is _id-ordered).
     """
-    identity = get_current_identity()
     ns_filter = await resolve_namespace_filter(identity, namespace)
 
     # Resolve template_id synonym if provided (e.g., "PATIENT" → UUID)
@@ -224,7 +221,7 @@ async def get_document(
     document_id: str,
     version: int | None = Query(None, description="Specific version (default: latest)"),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Get a document by stable ID. Returns latest version by default."""
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
@@ -235,7 +232,6 @@ async def get_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    identity = get_current_identity()
     await check_namespace_permission(identity, document.namespace, "read")
 
     return document
@@ -250,7 +246,7 @@ async def get_document(
 async def get_document_versions(
     document_id: str,
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Get all versions of a document."""
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
@@ -264,7 +260,6 @@ async def get_document_versions(
     # Check namespace — fetch the document to get its namespace
     doc = await service.get_document(document_id)
     if doc:
-        identity = get_current_identity()
         await check_namespace_permission(identity, doc.namespace, "read")
 
     return versions
@@ -280,7 +275,7 @@ async def get_document_version(
     document_id: str,
     version: int,
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Get a specific version of a document."""
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
@@ -291,7 +286,6 @@ async def get_document_version(
     if not document:
         raise HTTPException(status_code=404, detail="Document version not found")
 
-    identity = get_current_identity()
     await check_namespace_permission(identity, document.namespace, "read")
 
     return document
@@ -311,7 +305,7 @@ the current data. The response includes the latest document ID and version.
 async def get_latest_document(
     document_id: str,
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Get the latest version of a document."""
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
@@ -322,7 +316,6 @@ async def get_latest_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    identity = get_current_identity()
     await check_namespace_permission(identity, document.namespace, "read")
 
     return document
@@ -359,7 +352,7 @@ async def get_document_relationships(
         None,
         description="Comma-separated optional inclusions. Currently supports: 'peers' (embed a compact peer projection on each item, CASE-303).",
     ),
-    _: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """List relationships incident to a document."""
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
@@ -369,7 +362,6 @@ async def get_document_relationships(
     if not seed:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    identity = get_current_identity()
     await check_namespace_permission(identity, seed.namespace, "read")
 
     template_filter = [t.strip() for t in template.split(",")] if template else None
@@ -413,7 +405,7 @@ async def traverse_document_relationships(
         None, description="Comma-separated relationship template values to traverse (default: all)"),
     direction: str = Query("outgoing", description="outgoing | incoming | both"),
     namespace: str | None = Query(None, description="Namespace; default = the seed document's namespace"),
-    _: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Traverse relationship graph from a document."""
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
@@ -423,7 +415,6 @@ async def traverse_document_relationships(
     if not seed:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    identity = get_current_identity()
     await check_namespace_permission(identity, seed.namespace, "read")
 
     types_filter = [t.strip() for t in types.split(",")] if types else None
@@ -448,12 +439,11 @@ async def traverse_document_relationships(
 async def delete_documents(
     items: list[DeleteItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Delete one or more documents."""
     await resolve_bulk_ids(items, "id", "document", namespace=namespace)
 
-    identity = get_current_identity()
     service = get_document_service()
     results = []
     for i, item in enumerate(items):
@@ -491,12 +481,11 @@ async def delete_documents(
 async def archive_documents(
     items: list[ArchiveItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Archive one or more documents."""
     await resolve_bulk_ids(items, "id", "document", namespace=namespace)
 
-    identity = get_current_identity()
     service = get_document_service()
     results = []
     for i, item in enumerate(items):
@@ -535,7 +524,7 @@ Example filters:
 async def query_documents(
     request: DocumentQueryRequest,
     namespace: str | None = Query(None, description="Namespace for synonym resolution and filtering"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Query documents with filters."""
     if request.template_id:
@@ -543,7 +532,6 @@ async def query_documents(
             request.template_id, "template", namespace=namespace, param_name="template_id"
         )
 
-    identity = get_current_identity()
     ns_filter = await resolve_namespace_filter(identity, namespace=namespace)
 
     service = get_document_service()
@@ -564,7 +552,7 @@ async def get_document_by_identity(
     namespace: str | None = Query(None, description="Filter by namespace (recommended to avoid cross-template ambiguity)"),
     template_id: str | None = Query(None, description="Filter by template_id (recommended to avoid cross-template ambiguity)"),
     include_inactive: bool = Query(False, description="Include inactive documents"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Get a document by identity hash."""
     service = get_document_service()
@@ -576,7 +564,6 @@ async def get_document_by_identity(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    identity = get_current_identity()
     await check_namespace_permission(identity, document.namespace, "read")
 
     return document

@@ -7,6 +7,8 @@ This allows middleware to set the identity and dependencies to access it.
 from contextvars import ContextVar, Token
 from typing import TYPE_CHECKING
 
+from fastapi import HTTPException
+
 if TYPE_CHECKING:
     from .models import UserIdentity
 
@@ -23,6 +25,28 @@ def get_current_identity() -> "UserIdentity | None":
         The UserIdentity if authenticated, None otherwise
     """
     return _current_identity.get()
+
+
+def require_current_identity() -> "UserIdentity":
+    """Return the current identity, raising 401 if not set.
+
+    Use in code paths that have already verified authentication (e.g. handlers
+    behind `Depends(require_api_key)` or `dependencies=[Depends(require_api_key)]`
+    on the router) but cannot bind the dependency result directly — typically
+    service-layer functions called from those handlers, or routes that declare
+    auth at the router level.
+
+    The 401 here is a programming-error fallback: if the upstream Depends
+    fired, identity is already set and this raise never triggers. CASE-399.
+    """
+    identity = _current_identity.get()
+    if identity is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer, ApiKey"},
+        )
+    return identity
 
 
 def set_current_identity(identity: "UserIdentity | None") -> "Token[UserIdentity | None]":

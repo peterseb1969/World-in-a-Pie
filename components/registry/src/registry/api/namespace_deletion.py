@@ -9,6 +9,8 @@ from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from wip_auth import UserIdentity
+
 from ..models.namespace import Namespace
 from ..services.auth import require_admin_key, require_api_key
 from ..services.namespace_deletion import NamespaceDeletionService
@@ -94,7 +96,7 @@ async def delete_namespace(
 )
 async def deletion_status(
     prefix: str,
-    api_key: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Get the current journal state for an in-progress or completed deletion."""
     journal = await _deletion_service.get_deletion_status(prefix)

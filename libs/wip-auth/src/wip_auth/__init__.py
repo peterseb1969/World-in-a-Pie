@@ -47,6 +47,7 @@ from .identity import (
     get_current_identity,
     get_identity_owner,
     get_identity_string,
+    require_current_identity,
     reset_current_identity,
     set_current_identity,
 )
@@ -131,6 +132,7 @@ __all__ = [
     "reset_current_identity",
     "resolve_accessible_namespaces",
     "resolve_namespace_filter",
+    "require_current_identity",
     # Synonym resolution
     "resolve_bulk_ids",
     "resolve_entity_id",

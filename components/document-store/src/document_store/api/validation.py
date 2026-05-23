@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends
 
-from wip_auth import check_namespace_permission, get_current_identity, resolve_or_404
+from wip_auth import UserIdentity, check_namespace_permission, resolve_or_404
 
 from ..models.api_models import ValidationRequest, ValidationResponse
 from ..services.document_service import get_document_service
@@ -33,14 +33,13 @@ Returns validation result with:
 )
 async def validate_document(
     request: ValidationRequest,
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Validate document data without saving."""
     # CASE-384 follow-up — validation reveals template structure +
     # term-reference resolution against a namespace's term corpus. Gate
     # by read on the target namespace.
     if request.namespace:
-        identity = get_current_identity()
         await check_namespace_permission(identity, request.namespace, "read")
 
     request.template_id = await resolve_or_404(

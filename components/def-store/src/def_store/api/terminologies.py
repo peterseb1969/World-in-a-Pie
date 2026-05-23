@@ -5,8 +5,8 @@ import math
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
+    UserIdentity,
     check_namespace_permission,
-    get_current_identity,
     resolve_bulk_ids,
     resolve_namespace_filter,
     resolve_or_404,
@@ -32,7 +32,7 @@ router = APIRouter(prefix="/terminologies", tags=["Terminologies"])
 @router.post("", response_model=BulkResponse, summary="Create terminologies")
 async def create_terminologies(
     items: list[CreateTerminologyRequest] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """
     Create one or more terminologies (controlled vocabularies).
@@ -40,7 +40,6 @@ async def create_terminologies(
     Each terminology will be registered with the Registry service to get
     a unique ID. Namespace is specified per item (default: "wip").
     """
-    identity = get_current_identity()
     namespaces = {item.namespace for item in items}
     for ns in namespaces:
         await check_namespace_permission(identity, ns, "write")
@@ -68,10 +67,9 @@ async def list_terminologies(
     value: str | None = Query(None, description="Filter by exact value match"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> TerminologyListResponse:
     """List all terminologies with pagination and optional filters."""
-    identity = get_current_identity()
     ns_filter = await resolve_namespace_filter(identity, namespace)
 
     terminologies, total = await TerminologyService.list_terminologies(
@@ -94,11 +92,10 @@ async def list_terminologies(
 async def get_terminology_by_value(
     value: str,
     namespace: str | None = Query(default=None, description="Namespace to search in (omit for all)"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> TerminologyResponse:
     """Get a terminology by its value (e.g., DOC_STATUS)."""
     if namespace:
-        identity = get_current_identity()
         await check_namespace_permission(identity, namespace, "read")
 
     result = await TerminologyService.get_terminology(value=value, namespace=namespace)
@@ -111,7 +108,7 @@ async def get_terminology_by_value(
 async def get_terminology(
     terminology_id: str,
     namespace: str | None = Query(default=None, description="Namespace for value fallback lookup"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> TerminologyResponse:
     """
     Get a terminology by ID.
@@ -135,7 +132,6 @@ async def get_terminology(
     # CASE-384 — enforce read permission on the entity's actual namespace.
     # Returns 404 ("Namespace not found") on permission failure, which
     # also prevents leaking which IDs exist in which namespaces.
-    identity = get_current_identity()
     await check_namespace_permission(identity, result.namespace, "read")
 
     return result
@@ -145,7 +141,7 @@ async def get_terminology(
 async def update_terminologies(
     items: list[UpdateTerminologyItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """
     Update one or more terminologies.
@@ -160,7 +156,6 @@ async def update_terminologies(
     # per-id permission check. Saves N-1 round-trips on cross-namespace
     # bulks vs. the original per-item find_one. Aborts on first failure
     # to match the bulk-create convention.
-    identity = get_current_identity()
     from ..models.terminology import Terminology as _T
     ids = [item.terminology_id for item in items if item.terminology_id]
     if ids:
@@ -197,7 +192,7 @@ async def update_terminologies(
 )
 async def get_terminology_dependencies(
     terminology_id: str,
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> TerminologyDependencies:
     """
     Get dependencies of a terminology.
@@ -217,7 +212,6 @@ async def get_terminology_dependencies(
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
     if existing:
-        identity = get_current_identity()
         await check_namespace_permission(identity, existing.namespace, "read")
 
     try:
@@ -230,7 +224,7 @@ async def get_terminology_dependencies(
 async def restore_terminology(
     terminology_id: str,
     restore_terms: bool = Query(True, description="Also reactivate inactive terms"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> TerminologyResponse:
     """
     Restore a soft-deleted (inactive) terminology back to active status.
@@ -248,7 +242,6 @@ async def restore_terminology(
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
     if existing:
-        identity = get_current_identity()
         await check_namespace_permission(identity, existing.namespace, "write")
 
     result = await TerminologyService.restore_terminology(
@@ -264,7 +257,7 @@ async def restore_terminology(
 async def delete_terminologies(
     items: list[DeleteItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """
     Soft-delete one or more terminologies (set status to inactive).
@@ -276,7 +269,6 @@ async def delete_terminologies(
 
     # CASE-384 — batched namespace lookup + permission check, same shape
     # as update_terminologies above.
-    identity = get_current_identity()
     from ..models.terminology import Terminology as _T
     ids = [item.id for item in items if item.id]
     if ids:
