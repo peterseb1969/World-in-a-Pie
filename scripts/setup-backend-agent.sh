@@ -4,6 +4,7 @@
 #
 # Usage:
 #   ./scripts/setup-backend-agent.sh [--target local|ssh|http] [--host HOST] [--cert CERT_PATH]
+#   ./scripts/setup-backend-agent.sh --refresh [--target local|ssh|http] [--host HOST] [--cert CERT_PATH]
 #
 # This script:
 #   1. Sets up Python venv with a compatible Python (3.11-3.13)
@@ -15,6 +16,18 @@
 #       (CASE-169) if the file does not already exist; preserved if present
 #   5. Verifies MCP connectivity (local target only)
 #
+# --refresh mode (for existing BE-YAC clones):
+#   Re-syncs the propagatable surfaces from the gene pool: slash commands
+#   in .claude/commands/, regenerates CLAUDE.md from the current heredoc,
+#   regenerates .mcp.json with current arguments, and re-runs the idempotent
+#   wip_mcp install so dependency changes pick up. Preserves: venv (recreates
+#   only if missing), .claude/settings.local.json (preserved if present).
+#   Use after a `git pull` brings new docs/slash-commands/backend/*.md or
+#   heredoc changes — those don't propagate to .claude/commands/* automatically
+#   because that directory is generated, not git-tracked.
+#   A running BE-YAC session picks up new slash commands only on /clear or
+#   next session start.
+#
 
 set -euo pipefail
 
@@ -25,6 +38,7 @@ WIP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="local"
 HOST=""
 CERT_PATH=""
+REFRESH_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -40,8 +54,13 @@ while [[ $# -gt 0 ]]; do
             CERT_PATH="$2"
             shift 2
             ;;
+        --refresh)
+            REFRESH_MODE=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [--target local|ssh|http] [--host HOST] [--cert CERT_PATH]"
+            echo "       $0 --refresh [--target local|ssh|http] [--host HOST] [--cert CERT_PATH]"
             echo ""
             echo "Set up a WIP repo for a backend coding agent."
             echo ""
@@ -53,6 +72,8 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --host HOST       Remote hostname (required for ssh/http)"
             echo "  --cert CERT_PATH  TLS cert for self-signed HTTPS (auto-detects from data/secrets/)"
+            echo "  --refresh         Re-sync gene-pool surfaces (slash commands, CLAUDE.md, .mcp.json)"
+            echo "                    in an existing BE-YAC clone. Preserves venv + settings.local.json."
             echo "  -h, --help        Show this help"
             exit 0
             ;;
@@ -70,7 +91,11 @@ if [[ "$TARGET" == "ssh" || "$TARGET" == "http" ]] && [[ -z "$HOST" ]]; then
     exit 1
 fi
 
-echo "Setting up backend agent:"
+if $REFRESH_MODE; then
+    echo "Refreshing backend agent environment:"
+else
+    echo "Setting up backend agent:"
+fi
 echo "  WIP root:  $WIP_ROOT"
 echo "  Target:    $TARGET"
 [[ -n "$HOST" ]] && echo "  Host:      $HOST"
@@ -876,9 +901,17 @@ fi
 # --- Done ---
 
 echo ""
-echo "Done! Backend agent is configured."
-echo ""
-echo "Next steps:"
-echo "  claude"
-echo "  /setup         # first-run environment checks"
+if $REFRESH_MODE; then
+    echo "Done! Backend agent environment refreshed."
+    echo ""
+    echo "A running Claude session picks up new slash commands only on /clear or"
+    echo "next session start; CLAUDE.md and .mcp.json changes take effect on next"
+    echo "session start. Restart Claude if you want the changes live now."
+else
+    echo "Done! Backend agent is configured."
+    echo ""
+    echo "Next steps:"
+    echo "  claude"
+    echo "  /setup         # first-run environment checks"
+fi
 echo ""
