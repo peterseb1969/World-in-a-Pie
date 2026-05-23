@@ -20,7 +20,10 @@ spec:
     # follow-ups (Dockerfile.dev, port harmonisation, vite host binding).
     # 2026-05-22 bump: picks up 3fe40a2 "ui: relationship-graph peer
     # enrichment — status borders, italic terminal, more-neighbors badge".
-    tag: wipkb-20260522
+    # 2026-05-23 bump: picks up febae69 (CASE-404 Path B seed extension),
+    # 9de1b45 (CASE-408 peer projection carries data.status), and
+    # dea9ea8 (SearchPage Severity facet using CASE-404 data.severity).
+    tag: wipkb-20260523
 
   ports:
     - {name: http, container_port: 3012}
