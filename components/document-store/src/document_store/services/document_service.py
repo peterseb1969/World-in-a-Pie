@@ -5,7 +5,8 @@ import logging
 import math
 import time
 from datetime import UTC, datetime
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, NamedTuple, cast
+
 from beanie.odm.enums import SortDirection
 
 # Import identity helper from wip-auth
@@ -42,6 +43,19 @@ from .template_store_client import get_template_store_client
 from .validation_service import ValidationService
 
 logger = logging.getLogger(__name__)
+
+
+class _ItemOutcome(NamedTuple):
+    """Result of applying one validated item in bulk_create's Stage 4.
+
+    counter is one of "created" | "updated" | "unchanged" | "failed" — tells
+    the coordinator which tally to bump. pending_event is the deferred NATS
+    event (published after the loop) or None.
+    """
+
+    result: "BulkResultItem"
+    pending_event: tuple | None
+    counter: str
 
 
 class PatchError(Exception):
@@ -2040,6 +2054,140 @@ class DocumentService:
         timing["1_validation"] = (time.perf_counter() - start) * 1000
         return validation_results, results, failed, aborted
 
+    async def _apply_validated_item(
+        self,
+        i: int,
+        item: DocumentCreateRequest,
+        validation_result,
+        registry_result: dict,
+        existing_by_doc_id: dict,
+        namespace: str,
+        actor: str,
+        now: datetime,
+    ) -> "_ItemOutcome":
+        """Stage 4 per-item: persist one validated item given its Registry result.
+
+        Returns an _ItemOutcome (result row + optional pending NATS event +
+        which counter to bump). Mutates existing_by_doc_id in place so later
+        items in the same batch targeting the same document_id observe the
+        version this call wrote. Exceptions propagate to the caller, which
+        turns them into a per-item error (and stop-on-first when
+        continue_on_error=False) — matching the previous inline behaviour.
+        """
+        if registry_result.get("status") == "error":
+            return _ItemOutcome(
+                BulkResultItem(
+                    index=i, status="error",
+                    error=registry_result.get("error", "Failed to generate ID"),
+                ),
+                None,
+                "failed",
+            )
+
+        document_id = cast(str, registry_result["registry_id"])
+        identity_hash = validation_result.identity_hash
+        is_new_from_registry = registry_result.get("status") == "created"
+
+        # For existing identity (Registry returned already_exists), look up by
+        # document_id — NOT identity_hash (CASE-36).
+        existing = existing_by_doc_id.get(document_id) if not is_new_from_registry else None
+
+        # Version override for restore/migration: if the request supplies both
+        # document_id and version, use them as-is.
+        version_override = (
+            item.version if item.document_id and item.version is not None else None
+        )
+
+        if existing and version_override is None:
+            if not self._data_has_changed(
+                existing,
+                item.data,
+                validation_result.term_references,
+                validation_result.references,
+                validation_result.file_references,
+            ):
+                # No change — report existing without creating a new version.
+                return _ItemOutcome(
+                    BulkResultItem(
+                        index=i,
+                        status="unchanged",
+                        document_id=existing.document_id,
+                        identity_hash=identity_hash,
+                        version=existing.version,
+                        is_new=False,
+                        warnings=validation_result.warnings,
+                    ),
+                    None,
+                    "unchanged",
+                )
+
+            # Deactivate old version
+            existing.status = DocumentStatus.INACTIVE
+            existing.updated_at = now
+            existing.updated_by = actor
+            await existing.save()
+            new_version = existing.version + 1
+            is_new = False
+        elif version_override is not None:
+            new_version = version_override
+            is_new = version_override == 1
+        else:
+            new_version = 1
+            is_new = True
+
+        # Create document with retry on duplicate key (handles concurrent
+        # requests racing on the same identity hash).
+        metadata = DocumentMetadata(
+            warnings=validation_result.warnings,
+            custom=item.metadata or {},
+        )
+        document = await self._insert_with_retry(
+            namespace=namespace,
+            document_id=document_id,
+            template_id=item.template_id,
+            template_version=validation_result.template_version,
+            template_value=validation_result.template_value,
+            identity_hash=identity_hash,
+            version=new_version,
+            data=item.data,
+            term_references=validation_result.term_references,
+            references=validation_result.references,
+            file_references=validation_result.file_references,
+            metadata=metadata,
+            actor=actor,
+            now=now,
+        )
+        new_version = document.version
+        is_new = new_version == 1
+
+        # Update existing_by_doc_id so subsequent items in this batch with the
+        # same document_id see the correct latest version.
+        if document_id:
+            existing_by_doc_id[document_id] = document
+
+        # Defer NATS event — published concurrently after the loop.
+        event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
+        pending_event = (event_type, await self._document_to_event_payload(document))
+
+        # Update file reference counts
+        if not is_new and existing:
+            await self._update_file_reference_counts(existing.file_references, delta=-1)
+        await self._update_file_reference_counts(validation_result.file_references, delta=1)
+
+        return _ItemOutcome(
+            BulkResultItem(
+                index=i,
+                status="created" if is_new else "updated",
+                document_id=document_id,
+                identity_hash=identity_hash,
+                version=new_version,
+                is_new=is_new,
+                warnings=validation_result.warnings,
+            ),
+            pending_event,
+            "created" if is_new else "updated",
+        )
+
     async def bulk_create(
         self,
         items: list[DocumentCreateRequest],
@@ -2186,131 +2334,10 @@ class DocumentService:
             zip(validation_results, registry_results, strict=False)
         ):
             try:
-                if registry_result.get("status") == "error":
-                    failed += 1
-                    results.append(BulkResultItem(
-                        index=i, status="error",
-                        error=registry_result.get("error", "Failed to generate ID")
-                    ))
-                    continue
-
-                document_id = cast(str, registry_result["registry_id"])
-                identity_hash = validation_result.identity_hash
-                is_new_from_registry = registry_result.get("status") == "created"
-
-                # For existing identity (Registry returned already_exists), look
-                # up by document_id — NOT identity_hash (CASE-36).
-                existing = existing_by_doc_id.get(document_id) if not is_new_from_registry else None
-
-                # Version override for restore/migration: if the request
-                # supplies both document_id and version, use them as-is.
-                version_override = (
-                    item.version
-                    if item.document_id and item.version is not None
-                    else None
+                outcome = await self._apply_validated_item(
+                    i, item, validation_result, registry_result,
+                    existing_by_doc_id, namespace, actor, now,
                 )
-
-                if existing and version_override is None:
-                    # Check if data has actually changed
-                    if not self._data_has_changed(
-                        existing,
-                        item.data,
-                        validation_result.term_references,
-                        validation_result.references,
-                        validation_result.file_references
-                    ):
-                        # No change - return existing document info without creating new version
-                        unchanged += 1
-                        results.append(BulkResultItem(
-                            index=i,
-                            status="unchanged",
-                            document_id=existing.document_id,
-                            identity_hash=identity_hash,
-                            version=existing.version,
-                            is_new=False,
-                            warnings=validation_result.warnings
-                        ))
-                        continue
-
-                    # Deactivate old version
-                    existing.status = DocumentStatus.INACTIVE
-                    existing.updated_at = now
-                    existing.updated_by = actor
-                    await existing.save()
-                    new_version = existing.version + 1
-                    is_new = False
-                elif version_override is not None:
-                    new_version = version_override
-                    is_new = version_override == 1
-                else:
-                    new_version = 1
-                    is_new = True
-
-                # Create document with retry on duplicate key (handles
-                # concurrent requests racing on the same identity hash)
-                metadata = DocumentMetadata(
-                    warnings=validation_result.warnings,
-                    custom=item.metadata or {}
-                )
-                document = await self._insert_with_retry(
-                    namespace=namespace,
-                    document_id=document_id,
-                    template_id=item.template_id,
-                    template_version=validation_result.template_version,
-                    template_value=validation_result.template_value,
-                    identity_hash=identity_hash,
-                    version=new_version,
-                    data=item.data,
-                    term_references=validation_result.term_references,
-                    references=validation_result.references,
-                    file_references=validation_result.file_references,
-                    metadata=metadata,
-                    actor=actor,
-                    now=now,
-                )
-                new_version = document.version
-                is_new = new_version == 1
-
-                # Update existing_by_doc_id so subsequent items in this batch
-                # with the same document_id see the correct latest version.
-                if document_id:
-                    existing_by_doc_id[document_id] = document
-
-                # Defer NATS event — published concurrently after the loop
-                event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
-                pending_events.append((
-                    event_type,
-                    await self._document_to_event_payload(document),
-                ))
-
-                # Update file reference counts
-                if not is_new and existing:
-                    # Decrement for old version
-                    await self._update_file_reference_counts(
-                        existing.file_references, delta=-1
-                    )
-                # Increment for new version
-                await self._update_file_reference_counts(
-                    validation_result.file_references, delta=1
-                )
-
-                if is_new:
-                    created += 1
-                    status = "created"
-                else:
-                    updated += 1
-                    status = "updated"
-
-                results.append(BulkResultItem(
-                    index=i,
-                    status=status,
-                    document_id=document_id,
-                    identity_hash=identity_hash,
-                    version=new_version,
-                    is_new=is_new,
-                    warnings=validation_result.warnings
-                ))
-
             except Exception as e:
                 failed += 1
                 results.append(BulkResultItem(
@@ -2325,6 +2352,19 @@ class DocumentService:
                             error="Stopped due to previous error"
                         ))
                     break
+                continue
+
+            results.append(outcome.result)
+            if outcome.pending_event:
+                pending_events.append(outcome.pending_event)
+            if outcome.counter == "created":
+                created += 1
+            elif outcome.counter == "updated":
+                updated += 1
+            elif outcome.counter == "unchanged":
+                unchanged += 1
+            else:  # "failed" — registry-error row, no exception raised
+                failed += 1
 
         timing["4_create_documents"] = (time.perf_counter() - start) * 1000
 
