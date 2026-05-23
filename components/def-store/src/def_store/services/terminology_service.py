@@ -658,6 +658,102 @@ class TerminologyService:
         return TerminologyService._to_term_response(term)
 
     @staticmethod
+    def _partition_term_batch(
+        batch_terms: list[CreateTermRequest],
+        batch_start: int,
+        batch_registry_results: list[dict],
+        existing_by_id: dict[str, Term],
+        existing_by_value: dict[str, Term],
+        results: list[BulkResultItem | None],
+        namespace: str,
+        terminology_id: str,
+        terminology_value: str,
+        actor: str,
+        skip_duplicates: bool,
+        update_existing: bool,
+    ) -> tuple[list[Term], list[int]]:
+        """Partition a batch of term requests into inserts + result rows.
+
+        Walks `batch_terms` paired with their Registry results and decides
+        per item:
+        - Registry returned status='error' → write 'error' result row.
+        - Existing term matched by term_id (from existing_by_id) or by value
+          (from existing_by_value) → write 'skipped' / 'updated' / 'error'
+          row depending on skip_duplicates / update_existing flags. The
+          current behaviour pinned by the CASE-336 test bed: the
+          /terms endpoint hardcodes skip_duplicates=True; the alternative
+          flag combinations are reachable only via the import-export path.
+        - Otherwise → build a Term document and queue it for insert_many.
+
+        Mutates `results` in place (the coordinator owns the list, the
+        helper just fills in slots). Returns (terms_to_insert,
+        insert_indices) where insert_indices maps each insert position
+        back to its global result index for Phase E bookkeeping.
+        """
+        terms_to_insert: list[Term] = []
+        insert_indices: list[int] = []
+
+        for i, (term_req, reg_result) in enumerate(
+            zip(batch_terms, batch_registry_results, strict=False)
+        ):
+            global_idx = batch_start + i
+
+            if reg_result.get("status") == "error":
+                results[global_idx] = BulkResultItem(
+                    index=global_idx,
+                    status="error",
+                    value=term_req.value,
+                    error=reg_result.get("error"),
+                )
+                continue
+
+            term_id = reg_result["registry_id"]
+
+            # Check duplicates by term_id or by value within terminology
+            existing = existing_by_id.get(term_id) or existing_by_value.get(term_req.value)
+            if existing:
+                if skip_duplicates or update_existing:
+                    results[global_idx] = BulkResultItem(
+                        index=global_idx,
+                        status="skipped" if skip_duplicates else "updated",
+                        id=existing.term_id,
+                        value=term_req.value,
+                        error="Already exists" if skip_duplicates else None,
+                    )
+                else:
+                    results[global_idx] = BulkResultItem(
+                        index=global_idx,
+                        status="error",
+                        value=term_req.value,
+                        error=f"Term with value '{term_req.value}' already exists",
+                    )
+                continue
+
+            # Default label to value if not provided
+            label = term_req.label or term_req.value
+
+            # Build Term document for batch insert
+            term = Term(
+                namespace=namespace,
+                term_id=term_id,
+                terminology_id=terminology_id,
+                terminology_value=terminology_value,
+                value=term_req.value,
+                aliases=term_req.aliases,
+                label=label,
+                description=term_req.description,
+                sort_order=term_req.sort_order,
+                parent_term_id=term_req.parent_term_id,
+                translations=term_req.translations,
+                metadata=term_req.metadata,
+                created_by=actor,
+            )
+            terms_to_insert.append(term)
+            insert_indices.append(global_idx)
+
+        return terms_to_insert, insert_indices
+
+    @staticmethod
     async def create_terms_bulk(
         terminology_id: str,
         terms: list[CreateTermRequest],
@@ -760,64 +856,20 @@ class TerminologyService:
                 existing_by_value = {t.value: t for t in value_matches}
 
             # Phase D: Partition this batch into create/skip/error
-            terms_to_insert: list[Term] = []
-            insert_indices: list[int] = []  # maps insert position -> global index
-
-            for i, (term_req, reg_result) in enumerate(zip(batch_terms, batch_registry_results, strict=False)):
-                global_idx = batch_start + i
-
-                if reg_result.get("status") == "error":
-                    results[global_idx] = BulkResultItem(
-                        index=global_idx,
-                        status="error",
-                        value=term_req.value,
-                        error=reg_result.get("error")
-                    )
-                    continue
-
-                term_id = reg_result["registry_id"]
-
-                # Check duplicates by term_id or by value within terminology
-                existing = existing_by_id.get(term_id) or existing_by_value.get(term_req.value)
-                if existing:
-                    if skip_duplicates or update_existing:
-                        results[global_idx] = BulkResultItem(
-                            index=global_idx,
-                            status="skipped" if skip_duplicates else "updated",
-                            id=existing.term_id,
-                            value=term_req.value,
-                            error="Already exists" if skip_duplicates else None
-                        )
-                    else:
-                        results[global_idx] = BulkResultItem(
-                            index=global_idx,
-                            status="error",
-                            value=term_req.value,
-                            error=f"Term with value '{term_req.value}' already exists"
-                        )
-                    continue
-
-                # Default label to value if not provided
-                label = term_req.label or term_req.value
-
-                # Build Term document for batch insert
-                term = Term(
-                    namespace=namespace,
-                    term_id=term_id,
-                    terminology_id=terminology_id,
-                    terminology_value=terminology.value,
-                    value=term_req.value,
-                    aliases=term_req.aliases,
-                    label=label,
-                    description=term_req.description,
-                    sort_order=term_req.sort_order,
-                    parent_term_id=term_req.parent_term_id,
-                    translations=term_req.translations,
-                    metadata=term_req.metadata,
-                    created_by=actor,
-                )
-                terms_to_insert.append(term)
-                insert_indices.append(global_idx)
+            terms_to_insert, insert_indices = TerminologyService._partition_term_batch(
+                batch_terms=batch_terms,
+                batch_start=batch_start,
+                batch_registry_results=batch_registry_results,
+                existing_by_id=existing_by_id,
+                existing_by_value=existing_by_value,
+                results=results,
+                namespace=namespace,
+                terminology_id=terminology_id,
+                terminology_value=terminology.value,
+                actor=actor,
+                skip_duplicates=skip_duplicates,
+                update_existing=update_existing,
+            )
 
             # Phase E: Batch insert terms for this batch
             batch_created = 0
