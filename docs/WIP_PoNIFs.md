@@ -129,6 +129,8 @@ An entity can have multiple WIP IDs. This is not a bug or an edge case — it's 
 
 **Sensible default:** `@wip/client` should surface the resolution path in reference errors: *"Reference 'CUS-001' for field 'customer' could not be resolved. Attempted: direct ID (not a UUID), Registry synonym (not found), business key on CUSTOMER template (no match)."* The developer needs to know *why* resolution failed, not just *that* it failed.
 
+**Corollary — synonyms work identically to canonical IDs at every comparison site, not just at lookup.** The Registry resolves a value-form, a UUID-form, and any registered synonym to the same canonical ID. That equivalence must hold at every place the platform compares references — not only when a write resolves an input, but also when a comparator checks "did this reference change?" The template compatibility checker (`POST /templates?on_conflict=validate`) resolves each reference-typed property on both sides before diffing; a stored canonical UUID vs a freshly-submitted value-form for the same entity is *not* a modification. CASE-406 closed the comparator gap that previously flagged these as phantom `modified_existing`. The principle generalizes: any new comparison site that handles references must canonicalize before comparing (`docs/Vision.md` §"References Must Resolve", `docs/design/synonym-resolution-gaps.md`).
+
 ### 6. Template Field Resolution Timing
 
 **The feature:** Template metadata (like `file_config.allowed_types`) is resolved at document validation time, not at template creation time. The document store caches the resolved template and uses it for all subsequent validations until the cache expires or the service restarts.

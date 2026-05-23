@@ -675,10 +675,167 @@ class TemplateService:
 
         return False
 
+    # CASE-406 — Field-level reference properties: prop_name -> entity_type.
+    # When comparing two FieldDefinitions, these properties must resolve
+    # through the Registry before comparison so that value-form and UUID-form
+    # references to the same entity compare equal. The principle: synonyms
+    # MUST work identically to canonical IDs at every comparison site
+    # (Vision.md §"References Must Resolve", docs/design/synonym-resolution-gaps.md).
+    _FIELD_REF_SCALAR_PROPS = {
+        "terminology_ref": "terminology",
+        "template_ref": "template",
+        "array_terminology_ref": "terminology",
+        "array_template_ref": "template",
+    }
+    _FIELD_REF_LIST_PROPS = {
+        "target_templates": "template",
+        "target_terminologies": "terminology",
+    }
+    # Populated during resolution (inheritance walking), never stored.
+    # Excluding them from comparison is a precondition for "stored ==
+    # round-tripped" equality.
+    _FIELD_INHERITANCE_PROPS = frozenset({"inherited", "inherited_from"})
+
     @staticmethod
-    def compute_template_compatibility(
+    async def _refs_equivalent(
+        a: str | None,
+        b: str | None,
+        entity_type: str,
+        namespace: str,
+    ) -> bool:
+        """Two reference strings are equivalent iff they resolve to the same
+        canonical entity. None == None; None != any non-None.
+
+        Trivial byte-equality short-circuits the Registry call. If both
+        sides are non-None and not byte-equal, both are resolved; if either
+        resolve fails, the references are treated as different (conservative
+        — prefer a noisy false positive over a silent false negative).
+        """
+        if a == b:
+            return True  # Covers None==None and identical-string cases.
+        if a is None or b is None:
+            return False  # One side has a ref, the other doesn't.
+        try:
+            a_canonical = await resolve_entity_id(a, entity_type, namespace)
+            b_canonical = await resolve_entity_id(b, entity_type, namespace)
+        except EntityNotFoundError:
+            return False
+        return a_canonical == b_canonical
+
+    @staticmethod
+    async def _ref_lists_equivalent(
+        a: list[str] | None,
+        b: list[str] | None,
+        entity_type: str,
+        namespace: str,
+    ) -> bool:
+        """Two reference-list properties are equivalent iff their element-wise
+        canonical IDs form the same set. Order-insensitive (these lists are
+        treated as sets semantically — target_templates ['A','B'] means
+        "allowed: A or B", same as ['B','A']).
+
+        None and empty list compare equal — both mean "no constraint."
+        """
+        a_list = list(a or [])
+        b_list = list(b or [])
+        if set(a_list) == set(b_list):
+            return True  # Trivial set-equal (incl. both empty).
+        try:
+            all_refs = list({*a_list, *b_list})
+            resolved = await resolve_entity_ids(all_refs, entity_type, namespace) if all_refs else {}
+        except EntityNotFoundError:
+            return False
+        a_canonical = {resolved[r] for r in a_list}
+        b_canonical = {resolved[r] for r in b_list}
+        return a_canonical == b_canonical
+
+    @staticmethod
+    async def _compare_field_definitions(
+        old: FieldDefinition,
+        new: FieldDefinition,
+        namespace: str,
+    ) -> bool:
+        """True if two FieldDefinitions are semantically equivalent.
+
+        Reference-typed properties (terminology_ref / template_ref /
+        target_templates / target_terminologies / array_*) are resolved
+        through Registry before comparison — value-form ≡ UUID-form ≡ any
+        synonym for the same referent. Inheritance-populated properties
+        (inherited, inherited_from) are excluded; they are not part of the
+        stored shape.
+
+        All other properties compare via structural (Pydantic dict) equality.
+        Replaces the previous JSON-byte equality which silently flagged
+        value↔UUID asymmetry as `modified_existing` (CASE-406).
+        """
+        for prop, entity_type in TemplateService._FIELD_REF_SCALAR_PROPS.items():
+            if not await TemplateService._refs_equivalent(
+                getattr(old, prop), getattr(new, prop), entity_type, namespace,
+            ):
+                return False
+        for prop, entity_type in TemplateService._FIELD_REF_LIST_PROPS.items():
+            if not await TemplateService._ref_lists_equivalent(
+                getattr(old, prop), getattr(new, prop), entity_type, namespace,
+            ):
+                return False
+        # Everything else: structural equality, excluding reference props
+        # (already compared above) and inheritance props (resolution-time
+        # only, never stored).
+        exclude = (
+            set(TemplateService._FIELD_REF_SCALAR_PROPS)
+            | set(TemplateService._FIELD_REF_LIST_PROPS)
+            | TemplateService._FIELD_INHERITANCE_PROPS
+        )
+        return old.model_dump(exclude=exclude) == new.model_dump(exclude=exclude)
+
+    @staticmethod
+    async def _compare_template_relationship_refs(
         existing: Template,
         proposed: CreateTemplateRequest,
+        namespace: str,
+    ) -> dict | None:
+        """Template-level reference comparison for relationship templates.
+
+        Edge types carry `source_templates` and `target_templates` at the
+        template level (independent of any field). Both arrays follow the
+        same value↔UUID-equivalence principle as field-level reference
+        properties.
+
+        Returns a diff dict with raw before/after lists when the resolved
+        sets differ, or None when equivalent. Empty/None on both sides
+        compares equal — a non-relationship template legitimately has both
+        empty.
+        """
+        diff: dict[str, dict] = {}
+
+        if not await TemplateService._ref_lists_equivalent(
+            existing.source_templates,
+            proposed.source_templates,
+            "template",
+            namespace,
+        ):
+            diff["source_templates"] = {
+                "old": list(existing.source_templates or []),
+                "new": list(proposed.source_templates or []),
+            }
+        if not await TemplateService._ref_lists_equivalent(
+            existing.target_templates,
+            proposed.target_templates,
+            "template",
+            namespace,
+        ):
+            diff["target_templates"] = {
+                "old": list(existing.target_templates or []),
+                "new": list(proposed.target_templates or []),
+            }
+
+        return diff or None
+
+    @staticmethod
+    async def compute_template_compatibility(
+        existing: Template,
+        proposed: CreateTemplateRequest,
+        namespace: str,
     ) -> tuple[str, dict]:
         """
         Compare a proposed CreateTemplateRequest against an existing Template.
@@ -687,15 +844,19 @@ class TemplateService:
         - "identical": no schema differences — proposed matches existing exactly
         - "compatible": only differences are added optional fields (mandatory=false)
         - "incompatible": any other change (removed field, type change, made-required,
-          identity_fields change, modified existing field, added required field)
+          identity_fields change, modified existing field, added required field,
+          changed source/target_templates on a relationship template)
 
-        The diff dict captures the structured changes for caller-facing error messages.
-        Used by POST /templates?on_conflict=validate to decide whether to silently
-        adopt the existing template, bump the version, or reject with a structured
-        diff.
+        Reference-typed properties are resolved through Registry before
+        comparison — synonyms and canonical IDs compare equal at every
+        site. The async signature (CASE-406) replaces the prior synchronous
+        byte-equality implementation which produced phantom `modified_existing`
+        on stored-canonical ↔ submitted-value-form pairs.
+
+        Used by POST /templates?on_conflict=validate to decide whether to
+        silently adopt the existing template, bump the version, or reject
+        with a structured diff.
         """
-        import json
-
         existing_fields = {f.name: f for f in existing.fields}
         proposed_fields = {f.name: f for f in proposed.fields}
 
@@ -731,10 +892,8 @@ class TemplateService:
             if (not old.mandatory) and new.mandatory:
                 made_required.append(name)
                 continue
-            # Compare full field definitions for any other change
-            old_json = json.dumps(old.model_dump(), sort_keys=True, default=str)
-            new_json = json.dumps(new.model_dump(), sort_keys=True, default=str)
-            if old_json != new_json:
+            # CASE-406: semantic field equality, not JSON byte equality.
+            if not await TemplateService._compare_field_definitions(old, new, namespace):
                 modified_existing.append(name)
 
         identity_changed: dict | None = None
@@ -744,7 +903,12 @@ class TemplateService:
                 "new": list(proposed.identity_fields or []),
             }
 
-        diff = {
+        # CASE-406: template-level relationship-ref comparison (source/target_templates).
+        relationship_refs_changed = await TemplateService._compare_template_relationship_refs(
+            existing, proposed, namespace,
+        )
+
+        diff: dict = {
             "added_optional": added_optional,
             "added_required": added_required,
             "removed": sorted(removed_names),
@@ -752,6 +916,7 @@ class TemplateService:
             "made_required": made_required,
             "modified_existing": modified_existing,
             "identity_changed": identity_changed,
+            "relationship_refs_changed": relationship_refs_changed,
         }
 
         is_incompatible = bool(
@@ -761,6 +926,7 @@ class TemplateService:
             or made_required
             or modified_existing
             or identity_changed
+            or relationship_refs_changed
         )
         if is_incompatible:
             return "incompatible", diff
@@ -1110,8 +1276,8 @@ class TemplateService:
                     ))
                     continue
 
-                verdict, diff = TemplateService.compute_template_compatibility(
-                    existing, item
+                verdict, diff = await TemplateService.compute_template_compatibility(
+                    existing, item, namespace=item.namespace,
                 )
 
                 if verdict == "identical":
