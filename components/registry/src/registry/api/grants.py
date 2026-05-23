@@ -8,11 +8,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from wip_auth import UserIdentity, get_current_identity
-
-# The wire-level set of auth_method values UserIdentity accepts. Mirrors
-# the Literal in libs/wip-auth/src/wip_auth/models.py::UserIdentity.
-AuthMethod = Literal["jwt", "api_key", "gateway_oidc", "none"]
+from wip_auth import UserIdentity
 
 from ..models.grant import (
     GrantCreate,
@@ -23,6 +19,10 @@ from ..models.grant import (
 )
 from ..models.namespace import Namespace
 from ..services.auth import require_api_key
+
+# The wire-level set of auth_method values UserIdentity accepts. Mirrors
+# the Literal in libs/wip-auth/src/wip_auth/models.py::UserIdentity.
+AuthMethod = Literal["jwt", "api_key", "gateway_oidc", "none"]
 
 router = APIRouter()        # /{prefix}/grants — mounted at /namespaces
 my_router = APIRouter()     # /my/namespaces — mounted at /my
