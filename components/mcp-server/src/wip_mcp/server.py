@@ -141,6 +141,16 @@ The narrow compatibility rule is intentional: silent guardrails are worse than
 loud ones. If the bootstrap script wants to evolve the template in a way the
 platform considers incompatible, it must explicitly bump the version itself.
 
+Reference comparison: terminology_ref, template_ref, target_templates,
+target_terminologies, array_terminology_ref, array_template_ref (and the
+template-level source_templates / target_templates on relationship templates)
+resolve through Registry before being compared. Value-form, UUID-form, and
+any other registered synonym for the same entity are equivalent at this
+comparison site — the diff checker will not flag a value↔UUID mismatch as
+`modified_existing`. This is the universal rule (CASE-406, Vision.md
+§"References Must Resolve"): synonyms work identically to canonical IDs
+everywhere the platform compares references.
+
 ## Querying Documents
 Two primary query tools:
 - query_by_template(template_value, field_filters) — the most common way to
