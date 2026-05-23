@@ -754,6 +754,127 @@ class TerminologyService:
         return terms_to_insert, insert_indices
 
     @staticmethod
+    async def _write_term_batch(
+        terms_to_insert: list[Term],
+        insert_indices: list[int],
+        results: list[BulkResultItem | None],
+        namespace: str,
+        terminology_id: str,
+        terminology_value: str,
+        actor: str,
+        now: datetime,
+        client: Any,
+    ) -> int:
+        """Insert this batch's queued Terms and fire all per-create side effects.
+
+        Phase E (insert_many + BulkWriteError partial-fail handling), Phase F
+        (audit logs), Phase F2 (NATS events), Phase F3 (auto-synonyms). All
+        side-effect phases filter on `results[idx].status == "created"` so
+        partial failures on insert flow through to audit/events/synonyms
+        correctly.
+
+        Mutates `results` in place. Returns the number of terms successfully
+        created in this batch (caller uses it to maintain a running total
+        across batches).
+        """
+        batch_created = 0
+        if terms_to_insert:
+            try:
+                await Term.insert_many(terms_to_insert, ordered=False)
+                # All succeeded
+                for pos, idx in enumerate(insert_indices):
+                    term = terms_to_insert[pos]
+                    results[idx] = BulkResultItem(
+                        index=idx,
+                        status="created",
+                        id=term.term_id,
+                        value=term.value,
+                    )
+                    batch_created += 1
+            except BulkWriteError as bwe:
+                # Some inserts may have failed (e.g. race condition duplicates)
+                failed_indices = {
+                    err["index"] for err in bwe.details.get("writeErrors", [])
+                }
+                error_messages = {
+                    err["index"]: err.get("errmsg", "Insert failed")
+                    for err in bwe.details.get("writeErrors", [])
+                }
+                for pos, idx in enumerate(insert_indices):
+                    term = terms_to_insert[pos]
+                    if pos in failed_indices:
+                        results[idx] = BulkResultItem(
+                            index=idx,
+                            status="error",
+                            value=term.value,
+                            error=error_messages.get(pos, "Insert failed"),
+                        )
+                    else:
+                        results[idx] = BulkResultItem(
+                            index=idx,
+                            status="created",
+                            id=term.term_id,
+                            value=term.value,
+                        )
+                        batch_created += 1
+
+        # Phase F: Batch insert audit logs for this batch
+        audit_entries = [
+            TermAuditLog(
+                namespace=namespace,
+                term_id=terms_to_insert[pos].term_id,
+                terminology_id=terminology_id,
+                action="created",
+                changed_by=actor,
+                changed_at=now,
+                new_values={
+                    "value": terms_to_insert[pos].value,
+                    "aliases": terms_to_insert[pos].aliases,
+                    "label": terms_to_insert[pos].label,
+                },
+            )
+            for pos, idx in enumerate(insert_indices)
+            if (r := results[idx]) is not None and r.status == "created"
+        ]
+        if audit_entries:
+            await TermAuditLog.insert_many(audit_entries)
+
+        # Phase F2: Publish NATS events for created terms
+        created_term_dicts = [
+            TerminologyService._term_to_event_dict(terms_to_insert[pos])
+            for pos, idx in enumerate(insert_indices)
+            if (r := results[idx]) is not None and r.status == "created"
+        ]
+        if created_term_dicts:
+            await publish_term_events_bulk(
+                NatsEventType.TERM_CREATED,
+                created_term_dicts,
+                changed_by=actor,
+            )
+
+        # Phase F3: Register auto-synonyms for created terms
+        synonym_items = [
+            {
+                "target_id": terms_to_insert[pos].term_id,
+                "namespace": namespace,
+                "entity_type": "terms",
+                "composite_key": {
+                    "ns": namespace,
+                    "type": "term",
+                    "terminology": terminology_value,
+                    "value": terms_to_insert[pos].value,
+                },
+                "created_by": actor,
+            }
+            for pos, idx in enumerate(insert_indices)
+            if (r := results[idx]) is not None and r.status == "created"
+        ]
+        if synonym_items:
+            await client.register_auto_synonyms_bulk(synonym_items)
+
+        return batch_created
+
+    @staticmethod
     async def create_terms_bulk(
         terminology_id: str,
         terms: list[CreateTermRequest],
@@ -871,102 +992,19 @@ class TerminologyService:
                 update_existing=update_existing,
             )
 
-            # Phase E: Batch insert terms for this batch
-            batch_created = 0
-            if terms_to_insert:
-                try:
-                    await Term.insert_many(terms_to_insert, ordered=False)
-                    # All succeeded
-                    for pos, idx in enumerate(insert_indices):
-                        term = terms_to_insert[pos]
-                        results[idx] = BulkResultItem(
-                            index=idx,
-                            status="created",
-                            id=term.term_id,
-                            value=term.value,
-                        )
-                        batch_created += 1
-                except BulkWriteError as bwe:
-                    # Some inserts may have failed (e.g. race condition duplicates)
-                    failed_indices = {
-                        err["index"] for err in bwe.details.get("writeErrors", [])
-                    }
-                    error_messages = {
-                        err["index"]: err.get("errmsg", "Insert failed")
-                        for err in bwe.details.get("writeErrors", [])
-                    }
-                    for pos, idx in enumerate(insert_indices):
-                        term = terms_to_insert[pos]
-                        if pos in failed_indices:
-                            results[idx] = BulkResultItem(
-                                index=idx,
-                                status="error",
-                                value=term.value,
-                                error=error_messages.get(pos, "Insert failed"),
-                            )
-                        else:
-                            results[idx] = BulkResultItem(
-                                index=idx,
-                                status="created",
-                                id=term.term_id,
-                                value=term.value,
-                            )
-                            batch_created += 1
-
-            # Phase F: Batch insert audit logs for this batch
-            audit_entries = [
-                TermAuditLog(
-                    namespace=namespace,
-                    term_id=terms_to_insert[pos].term_id,
-                    terminology_id=terminology_id,
-                    action="created",
-                    changed_by=actor,
-                    changed_at=now,
-                    new_values={
-                        "value": terms_to_insert[pos].value,
-                        "aliases": terms_to_insert[pos].aliases,
-                        "label": terms_to_insert[pos].label,
-                    },
-                )
-                for pos, idx in enumerate(insert_indices)
-                if (r := results[idx]) is not None and r.status == "created"
-            ]
-            if audit_entries:
-                await TermAuditLog.insert_many(audit_entries)
-
-            # Phase F2: Publish NATS events for created terms
-            created_term_dicts = [
-                TerminologyService._term_to_event_dict(terms_to_insert[pos])
-                for pos, idx in enumerate(insert_indices)
-                if (r := results[idx]) is not None and r.status == "created"
-            ]
-            if created_term_dicts:
-                await publish_term_events_bulk(
-                    NatsEventType.TERM_CREATED,
-                    created_term_dicts,
-                    changed_by=actor,
-                )
-
-            # Phase F3: Register auto-synonyms for created terms
-            synonym_items = [
-                {
-                    "target_id": terms_to_insert[pos].term_id,
-                    "namespace": namespace,
-                    "entity_type": "terms",
-                    "composite_key": {
-                        "ns": namespace,
-                        "type": "term",
-                        "terminology": terminology.value,
-                        "value": terms_to_insert[pos].value,
-                    },
-                    "created_by": actor,
-                }
-                for pos, idx in enumerate(insert_indices)
-                if (r := results[idx]) is not None and r.status == "created"
-            ]
-            if synonym_items:
-                await client.register_auto_synonyms_bulk(synonym_items)
-
+            # Phases E-F3: Insert this batch and publish all per-create
+            # side effects (audit logs, NATS events, auto-synonyms).
+            batch_created = await TerminologyService._write_term_batch(
+                terms_to_insert=terms_to_insert,
+                insert_indices=insert_indices,
+                results=results,
+                namespace=namespace,
+                terminology_id=terminology_id,
+                terminology_value=terminology.value,
+                actor=actor,
+                now=now,
+                client=client,
+            )
             total_created += batch_created
             logger.info(
                 f"Batch {batch_num}/{num_batches} complete: "
