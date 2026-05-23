@@ -502,6 +502,24 @@ Rule: After updating, deactivate the old version with deactivate_template()
       unless you specifically need multi-version operation. Always pass
       template_version when creating documents.
 
+Corollary: Existing documents survive template updates unchanged. The
+      identity_hash scopes to template_id (PoNIF #3), and template_id is
+      canonical — stable across versions. This is the exception to WIP's
+      "new version → new ID" pattern: templates carry ONE id across all
+      their versions, so existing docs remain matchable through future
+      template updates. Add a non-identity field to a template, re-mirror
+      an existing doc with the same identity values, and you get an UPDATE
+      (new doc version, populated new field) rather than a CREATE — no
+      data migration step needed, just a backfill pass.
+
+v2 caveat: v2's template-ID redesign (Day 29 fireside on template ID
+      management, FR-YAC reports / docs/design/v2-index.md) is planning to
+      make template_id version-specific and route logical identity through
+      (namespace, template_value). The corollary HOLDS in both v1 and v2
+      — identity stays stable across schema updates by design — but the
+      mechanism changes. Code that names template_id as the canonical
+      handle will need a rename pass when v2 lands.
+
 ## 3. Document Identity — The Hash Decides
 Templates define identity_fields. WIP hashes them to decide: same hash = new
 version (update), different hash = new document (create). The same
@@ -513,6 +531,21 @@ Trap: Adding a timestamp to document data makes every hash unique — you get
       every submission creates a new document (no update path).
 Rule: Identity fields answer "is this the same real-world thing?" — no more,
       no less. Never include timestamps, run IDs, or per-execution data.
+
+What's NOT in the identity hash:
+- `template_version` — see PoNIF #2's corollary; existing docs carry forward
+  across template versions cleanly.
+- `namespace` — scoped externally via the platform's composite key
+  (namespace, identity_hash, template_id); the same identity_hash in two
+  different namespaces is two different entities.
+
+Adding a field to `identity_fields` IS breaking: every existing doc would
+hash differently on next write, creating parallel orphan docs (CASE-316 /
+317 / 318 family — same shape: an external loader computed identity from
+fields the template didn't declare, hashes collided to empty, 213 of 214
+records silently dropped). Adding a field to `data.*` that is NOT in
+identity_fields is non-breaking — see PoNIF #2's corollary; existing docs
+just receive the new field's value on next backfill.
 
 ## 4. Bulk-First — 200 OK Always
 All WIP write APIs return HTTP 200 even when individual items fail. Per-item
