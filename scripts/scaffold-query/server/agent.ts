@@ -41,13 +41,13 @@ const ALLOWED_TOOLS = new Set([
   'search',
   'search_registry',
   'list_namespaces',
-  'get_namespace',
+  'get_namespace_stats',
   'list_terminologies',
   'get_terminology',
   'get_terminology_by_value',
   'list_terms',
   'get_term',
-  'validate_term',
+  'validate_term_value',
   'get_term_hierarchy',
   'list_templates',
   'get_template',
@@ -57,8 +57,8 @@ const ALLOWED_TOOLS = new Set([
   'get_document',
   'query_documents',
   'query_by_template',
-  'get_document_version_history',
-  'get_file',
+  'get_document_versions',
+  'get_file_metadata',
   'list_report_tables',
   'run_report_query',
 ])
@@ -149,7 +149,24 @@ export async function initAgent() {
       description: t.description || '',
       input_schema: t.inputSchema as Anthropic.Tool['input_schema'],
     }))
-  console.log(`✓ ${mcpTools.length} tools available (filtered from ${toolsResult.tools.length})`)
+
+  // CASE-352: surface ALLOWED_TOOLS drift loudly. Each MCP-server tool
+  // rename invalidates whatever names this scaffold's whitelist pinned;
+  // before this warning, scaffolds silently dropped renamed entries and
+  // ran with degraded capabilities. The warning makes the next drift
+  // discoverable at startup instead of via reduced functionality.
+  const requested = ALLOWED_TOOLS.size
+  const matched = mcpTools.length
+  if (matched < requested) {
+    const live = new Set(toolsResult.tools.map(t => t.name))
+    const missing = [...ALLOWED_TOOLS].filter(n => !live.has(n))
+    console.warn(
+      `⚠ ALLOWED_TOOLS drift: ${matched}/${requested} resolved. ` +
+      `Dead-letter entries (renamed or removed in MCP server): ${missing.join(', ')}. ` +
+      `Update the whitelist or remove these names.`
+    )
+  }
+  console.log(`✓ ${matched} tools available (filtered from ${toolsResult.tools.length})`)
 
   // Read the query assistant prompt resource for system prompt
   try {
