@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, Query
 from beanie.odm.enums import SortDirection
 
 from wip_auth import (
+    UserIdentity,
     check_namespace_permission,
-    get_current_identity,
     resolve_accessible_namespaces,
     resolve_or_404,
 )
@@ -44,7 +44,7 @@ async def get_term_audit_log(
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> AuditLogResponse:
     """Get audit log entries for a specific term."""
     term_id = await resolve_or_404(term_id, "term", namespace=namespace, param_name="term_id")
@@ -55,7 +55,6 @@ async def get_term_audit_log(
     from ..models.term import Term as _Term
     existing = await _Term.find_one({"term_id": term_id})
     if existing:
-        identity = get_current_identity()
         await check_namespace_permission(identity, existing.namespace, "read")
 
     query = {"term_id": term_id}
@@ -89,7 +88,7 @@ async def get_terminology_audit_log(
     action: str | None = Query(None, description="Filter by action: created, updated, deprecated, deleted"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> AuditLogResponse:
     """Get audit log entries for all terms in a terminology."""
     terminology_id = await resolve_or_404(terminology_id, "terminology", namespace=namespace, param_name="terminology_id")
@@ -98,7 +97,6 @@ async def get_terminology_audit_log(
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
     if existing:
-        identity = get_current_identity()
         await check_namespace_permission(identity, existing.namespace, "read")
 
     query = {"terminology_id": terminology_id}
@@ -132,13 +130,12 @@ async def get_recent_audit_log(
     action: str | None = Query(None, description="Filter by action: created, updated, deprecated, deleted"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> AuditLogResponse:
     """Get recent audit log entries across all terminologies."""
     # CASE-384 follow-up — restrict to namespaces the caller can read.
     # Superadmin gets None (no filter). Audit logs join to TermAuditLog
     # which stores namespace on each row.
-    identity = get_current_identity()
     accessible = await resolve_accessible_namespaces(identity)
 
     query: dict = {}

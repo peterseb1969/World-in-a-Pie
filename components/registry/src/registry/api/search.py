@@ -11,6 +11,8 @@ from ..models.api_models import (
     SearchResult,
 )
 from ..models.entry import RegistryEntry
+from wip_auth import UserIdentity
+
 from ..services.auth import require_api_key
 from ..services.search import SearchService
 
@@ -24,7 +26,7 @@ router = APIRouter()
 )
 async def search_by_fields(
     items: list[SearchItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> SearchBulkResponse:
     """Search for registry entries by field values in composite keys."""
     results = []
@@ -77,7 +79,7 @@ async def search_by_fields(
 )
 async def search_by_term(
     items: list[SearchByTermItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> SearchBulkResponse:
     """Search for a term across any field in any composite key."""
     results = []
@@ -159,7 +161,7 @@ async def search_by_term(
 )
 async def search_across_namespaces(
     items: list[SearchItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> SearchBulkResponse:
     """Search for entries across ALL namespaces."""
     modified_items = []
@@ -171,4 +173,4 @@ async def search_across_namespaces(
             include_inactive=item.include_inactive,
         ))
 
-    return await search_by_fields(modified_items, api_key)
+    return await search_by_fields(modified_items, identity)

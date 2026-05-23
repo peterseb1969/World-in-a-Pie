@@ -4,7 +4,6 @@ Provides grant CRUD (bulk-first) and user-facing permission queries.
 """
 
 from datetime import UTC, datetime
-from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -29,7 +28,7 @@ _PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2, "admin": 3}
 
 def _is_superadmin(identity: UserIdentity) -> bool:
     """Check if identity has superadmin access (wip-admins group)."""
-    return cast(bool, identity.has_any_group(["wip-admins"]))
+    return identity.has_any_group(["wip-admins"])
 
 
 # Groups whose API keys are allowed to have namespaces=None (all-namespace access).
@@ -181,9 +180,8 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
 )
 async def list_grants(
     prefix: str,
-    _: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
-    identity = get_current_identity()
 
     # Must be admin on this namespace (or superadmin)
     permission = await _resolve_permission(identity, prefix)
@@ -201,9 +199,8 @@ async def list_grants(
 async def create_grants(
     prefix: str,
     items: list[GrantCreate],
-    _: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
-    identity = get_current_identity()
 
     # Must be admin on this namespace
     permission = await _resolve_permission(identity, prefix)
@@ -270,9 +267,8 @@ async def create_grants(
 async def revoke_grants(
     prefix: str,
     items: list[GrantRevoke],
-    _: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
-    identity = get_current_identity()
 
     permission = await _resolve_permission(identity, prefix)
     if _PERMISSION_LEVELS.get(permission, 0) < _PERMISSION_LEVELS["admin"]:
@@ -311,10 +307,9 @@ async def revoke_grants(
     summary="List namespaces I can access",
 )
 async def my_namespaces(
-    _: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """List all namespaces the caller has access to, with permission levels."""
-    identity = get_current_identity()
 
     # Get all active namespaces
     all_ns = await Namespace.find({"status": "active"}).to_list()
@@ -338,14 +333,13 @@ async def my_namespaces(
 )
 async def my_namespace_permission(
     prefix: str,
-    _: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Get the caller's permission level on a specific namespace.
 
     Returns 404 if the namespace doesn't exist or the caller has no access
     (to avoid leaking namespace names).
     """
-    identity = get_current_identity()
 
     # Check namespace exists
     ns = await Namespace.find_one({"prefix": prefix})
@@ -370,7 +364,7 @@ async def check_permission_internal(
     email: str | None = None,
     groups: str | None = None,
     auth_method: str = "jwt",
-    _: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Internal endpoint for other WIP services to check permissions.
 
@@ -382,7 +376,7 @@ async def check_permission_internal(
 
     Only callable by privileged API keys (wip-admins or wip-services group).
     """
-    caller = get_current_identity()
+    caller = identity
     if not any(g in _PRIVILEGED_GROUPS for g in caller.groups):
         raise HTTPException(403, "Only service accounts can call this endpoint")
 
@@ -417,7 +411,7 @@ async def accessible_namespaces_internal(
     email: str | None = None,
     groups: str | None = None,
     auth_method: str = "jwt",
-    _: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Internal endpoint for services to get a user's accessible namespaces.
 
@@ -428,7 +422,7 @@ async def accessible_namespaces_internal(
 
     Only callable by privileged API keys (wip-admins or wip-services group).
     """
-    caller = get_current_identity()
+    caller = identity
     if not any(g in _PRIVILEGED_GROUPS for g in caller.groups):
         raise HTTPException(403, "Only service accounts can call this endpoint")
 

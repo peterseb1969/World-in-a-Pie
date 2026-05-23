@@ -6,8 +6,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from wip_auth import (
+    UserIdentity,
     check_namespace_permission,
-    get_current_identity,
     resolve_accessible_namespaces,
     resolve_or_404,
 )
@@ -30,7 +30,7 @@ async def export_terminology(
     include_inactive: bool = Query(False, description="Include inactive terms"),
     include_relations: bool = Query(False, description="Include ontology relations"),
     languages: str | None = Query(None, description="Comma-separated language codes"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """
     Export a terminology with all its terms.
@@ -46,7 +46,6 @@ async def export_terminology(
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
     if existing:
-        identity = get_current_identity()
         await check_namespace_permission(identity, existing.namespace, "read")
 
     try:
@@ -83,14 +82,13 @@ async def export_terminology(
 async def export_all_terminologies(
     format: str = Query("json", description="Export format: json"),
     include_inactive: bool = Query(False, description="Include inactive terminologies"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Export all terminologies with their terms."""
     # CASE-384 — restrict to namespaces the caller can read. Superadmin
     # gets None back from resolve_accessible_namespaces and the service
     # treats that as "no filter" (all namespaces). Non-admin scoped keys
     # get only their own namespaces' terminologies.
-    identity = get_current_identity()
     accessible = await resolve_accessible_namespaces(identity)
 
     results = await ImportExportService.export_all_terminologies(
@@ -120,7 +118,7 @@ async def import_terminology(
         description="Number of terms per registry HTTP call (default 100). "
         "Reduce if experiencing timeouts on large imports."
     ),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """
     Import a terminology with terms.
@@ -163,7 +161,6 @@ async def import_terminology(
             if isinstance(ns_val, str):
                 target_namespace = ns_val
     if target_namespace:
-        identity = get_current_identity()
         await check_namespace_permission(identity, target_namespace, "write")
 
     try:
@@ -209,7 +206,7 @@ async def import_ontology(
     skip_duplicates: bool = Query(True, description="Skip existing terms"),
     update_existing: bool = Query(False, description="Update existing terms"),
     created_by: str | None = Query(None, description="User performing import"),
-    api_key: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """
     Import an OBO Graph JSON ontology (HP, GO, CHEBI, etc.).
@@ -221,7 +218,6 @@ async def import_ontology(
     For large ontologies, use the CLI script `scripts/import_obo_graph.py` instead.
     """
     try:
-        identity = get_current_identity()
         await check_namespace_permission(identity, namespace, "write")
 
         if "graphs" not in data or not data["graphs"]:
@@ -272,7 +268,7 @@ async def import_from_url(
         description="Number of terms per registry HTTP call (default 100). "
         "Reduce if experiencing timeouts on large imports."
     ),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """
     Import a terminology from a URL.
@@ -292,7 +288,6 @@ async def import_from_url(
     # the service grows a "pre-flight namespace extraction" hook.
     # Filed as a follow-up consideration in CASE-384.
     from wip_auth.permissions import _is_superadmin
-    identity = get_current_identity()
     if not _is_superadmin(identity):
         # Non-admin URL imports are refused. Operators with scoped keys
         # should fetch the URL locally, then call POST /import with the

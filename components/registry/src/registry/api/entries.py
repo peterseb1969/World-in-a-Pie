@@ -41,6 +41,8 @@ from ..models.api_models import (
 )
 from ..models.entry import RegistryEntry, Synonym
 from ..models.id_algorithm import VALID_ENTITY_TYPES, IdFormatValidator
+from wip_auth import UserIdentity
+
 from ..models.namespace import Namespace
 from ..services.auth import require_api_key
 from ..services.hash import HashService
@@ -97,7 +99,7 @@ async def browse_entries(
     q: str | None = Query(None, description="Search across entry IDs and composite key values"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Page size"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BrowseEntriesResponse:
     """Browse registry entries with pagination and optional filters."""
     query: dict = {}
@@ -156,7 +158,7 @@ async def unified_search(
     status: str | None = Query(None, description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Page size"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> UnifiedSearchResponse:
     """
     Unified search across entry IDs, additional IDs, and all composite key values
@@ -266,7 +268,7 @@ async def unified_search(
 )
 async def get_entry_detail(
     entry_id: str,
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> EntryDetailResponse:
     """Get full details for a single registry entry by its entry_id."""
     entry = await RegistryEntry.find_one({"entry_id": entry_id})
@@ -299,7 +301,7 @@ async def get_entry_detail(
 )
 async def register_keys(
     items: list[RegisterKeyItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> RegisterBulkResponse:
     """
     Register one or more composite keys. This is sugar for reserve + immediate activate.
@@ -537,7 +539,7 @@ async def register_keys(
 )
 async def provision_ids(
     request: ProvisionRequest,
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> ProvisionResponse:
     """
     Provision (generate + reserve) IDs per namespace config.
@@ -598,7 +600,7 @@ async def provision_ids(
 )
 async def reserve_ids(
     items: list[ReserveItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> ReserveBulkResponse:
     """
     Validate and store client-provided IDs as reserved.
@@ -706,7 +708,7 @@ async def reserve_ids(
 )
 async def activate_entries(
     items: list[ActivateItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> ActivateBulkResponse:
     """Activate reserved entries, making them resolvable."""
     results = []
@@ -768,7 +770,7 @@ async def activate_entries(
 )
 async def lookup_by_ids(
     items: list[LookupByIdItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> LookupBulkResponse:
     """Look up registry entries by their IDs. Only active entries are resolvable."""
     results = []
@@ -840,7 +842,7 @@ async def lookup_by_ids(
 )
 async def lookup_by_keys(
     items: list[LookupByKeyItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> LookupBulkResponse:
     """Look up registry entries by their composite keys."""
     results = []
@@ -934,7 +936,7 @@ async def lookup_by_keys(
 )
 async def update_entries(
     items: list[UpdateEntryItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkUpdateResponse:
     """Update one or more registry entries."""
     results = []
@@ -984,7 +986,7 @@ async def update_entries(
 )
 async def delete_entries(
     items: list[DeleteItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkDeleteResponse:
     """Deactivate or hard-delete one or more registry entries.
 
@@ -1049,7 +1051,7 @@ async def delete_entries(
 )
 async def resolve_synonyms(
     items: list[ResolveItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResolveResponse:
     """
     Resolve synonyms or verify canonical IDs.

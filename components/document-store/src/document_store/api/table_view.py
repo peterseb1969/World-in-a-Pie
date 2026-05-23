@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
-from wip_auth import check_namespace_permission, get_current_identity
+from wip_auth import UserIdentity, check_namespace_permission, get_current_identity
 
 from ..models.document import Document, DocumentStatus
 from ..services.template_store_client import get_template_store_client
@@ -273,7 +273,7 @@ async def get_table_view(
         le=10000,
         description="Max cross-product rows before falling back to JSON arrays"
     ),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Get flattened table view for a template."""
 
@@ -291,7 +291,6 @@ async def get_table_view(
     ns = template.get("namespace")
     if not ns:
         raise HTTPException(status_code=500, detail="Template response missing namespace")
-    identity = get_current_identity()
     await check_namespace_permission(identity, ns, "read")
 
     # Extract column definitions and identify array fields
@@ -385,7 +384,7 @@ async def export_table_csv(
         True,
         description="Include _document_id, _version, etc. columns"
     ),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Export table view as CSV."""
     import csv
@@ -404,7 +403,6 @@ async def export_table_csv(
     ns = template.get("namespace")
     if not ns:
         raise HTTPException(status_code=500, detail="Template response missing namespace")
-    identity = get_current_identity()
     await check_namespace_permission(identity, ns, "read")
 
     # Extract column definitions and identify array fields

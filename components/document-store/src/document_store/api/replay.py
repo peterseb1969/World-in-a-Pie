@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from wip_auth import check_namespace_permission, get_current_identity, require_api_key
+from wip_auth import UserIdentity, check_namespace_permission, require_api_key
 
 from ..models.replay import ReplayRequest, ReplaySessionResponse
 from ..services.replay_service import get_replay_service
@@ -34,7 +34,11 @@ async def _enforce_replay_admin(session_id: str) -> dict:
             status_code=500,
             detail=f"Replay session {session_id} has no namespace recorded",
         )
-    identity = get_current_identity()
+    # _enforce_replay_admin is a helper called from handlers that already
+    # bind `identity` via Depends(require_api_key); pull it back from the
+    # ContextVar here since the helper isn't itself wired into FastAPI's DI.
+    from wip_auth import require_current_identity
+    identity = require_current_identity()
     await check_namespace_permission(identity, namespace, "admin")
     return session
 
@@ -42,7 +46,7 @@ async def _enforce_replay_admin(session_id: str) -> dict:
 @router.post("/start", response_model=ReplaySessionResponse)
 async def start_replay(
     request: ReplayRequest,
-    _auth=Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Start a replay session to republish stored documents as NATS events.
 
@@ -50,7 +54,6 @@ async def start_replay(
     with metadata.replay=true so consumers can distinguish them from live events.
     """
     # Replay is admin-level — it republishes events and can trigger downstream side effects
-    identity = get_current_identity()
     await check_namespace_permission(identity, request.filter.namespace, "admin")
 
     service = get_replay_service()
@@ -78,7 +81,7 @@ async def start_replay(
 @router.get("/{session_id}", response_model=ReplaySessionResponse)
 async def get_replay_session(
     session_id: str,
-    _auth=Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Get the current state of a replay session."""
     session = await _enforce_replay_admin(session_id)
@@ -96,7 +99,7 @@ async def get_replay_session(
 @router.post("/{session_id}/pause", response_model=ReplaySessionResponse)
 async def pause_replay(
     session_id: str,
-    _auth=Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Pause a running replay session."""
     await _enforce_replay_admin(session_id)
@@ -121,7 +124,7 @@ async def pause_replay(
 @router.post("/{session_id}/resume", response_model=ReplaySessionResponse)
 async def resume_replay(
     session_id: str,
-    _auth=Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Resume a paused replay session."""
     await _enforce_replay_admin(session_id)
@@ -146,7 +149,7 @@ async def resume_replay(
 @router.delete("/{session_id}", response_model=ReplaySessionResponse)
 async def cancel_replay(
     session_id: str,
-    _auth=Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Cancel a replay session and delete its NATS stream."""
     await _enforce_replay_admin(session_id)

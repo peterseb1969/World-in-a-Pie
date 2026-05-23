@@ -15,6 +15,8 @@ from ..models.api_models import (
     RemoveSynonymItem,
     RemoveSynonymResponse,
 )
+from wip_auth import UserIdentity
+
 from ..models.entry import RegistryEntry, Synonym
 from ..services.auth import require_api_key
 from ..services.hash import HashService
@@ -29,7 +31,7 @@ router = APIRouter()
 )
 async def add_synonyms(
     items: list[AddSynonymItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkSynonymAddResponse:
     """Add one or more synonyms to existing registry entries."""
     results = []
@@ -109,7 +111,7 @@ async def add_synonyms(
 )
 async def remove_synonyms(
     items: list[RemoveSynonymItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkSynonymRemoveResponse:
     """Remove one or more synonyms from registry entries."""
     results = []
@@ -172,7 +174,7 @@ async def remove_synonyms(
 )
 async def merge_entries(
     items: list[MergeItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkMergeResponse:
     """Merge two entries, making the deprecated one a synonym of the preferred."""
     results = []

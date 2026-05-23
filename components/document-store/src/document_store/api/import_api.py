@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 
-from wip_auth import check_namespace_permission, get_current_identity, require_api_key, resolve_or_404
+from wip_auth import UserIdentity, check_namespace_permission, require_api_key, resolve_or_404
 
 from ..models.api_models import DocumentCreateRequest
 from ..services.document_service import DocumentService
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/import", tags=["Import"])
 @router.post("/preview")
 async def preview_import(
     file: UploadFile = File(..., description="CSV or XLSX file to preview"),
-    _auth=Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> dict[str, Any]:
     """Preview a CSV/XLSX file: returns headers, sample rows, and detected format.
 
@@ -48,7 +48,7 @@ async def import_documents(
     column_mapping: str = Form(..., description="JSON object mapping CSV columns to template fields, e.g. {\"Name\": \"name\", \"Email\": \"email\"}"),
     namespace: str = Form(..., description="Target namespace"),
     skip_errors: bool = Form(False, description="Skip rows that fail validation instead of stopping"),
-    _auth=Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> dict[str, Any]:
     """Import documents from a CSV/XLSX file.
 
@@ -61,7 +61,6 @@ async def import_documents(
     Term fields: use human-readable values in the CSV (e.g., "United Kingdom").
     WIP resolves them to term_ids automatically.
     """
-    identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "write")
 
     # Resolve template_id synonym
