@@ -4,10 +4,15 @@ Provides grant CRUD (bulk-first) and user-facing permission queries.
 """
 
 from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from wip_auth import UserIdentity, get_current_identity
+
+# The wire-level set of auth_method values UserIdentity accepts. Mirrors
+# the Literal in libs/wip-auth/src/wip_auth/models.py::UserIdentity.
+AuthMethod = Literal["jwt", "api_key", "gateway_oidc", "none"]
 
 from ..models.grant import (
     GrantCreate,
@@ -41,7 +46,7 @@ def _build_synthetic_identity(
     user_id: str,
     email: str | None,
     groups: list[str],
-    auth_method: str,
+    auth_method: AuthMethod,
     key_namespaces_header: str | None,
 ) -> UserIdentity:
     """Reconstruct the calling service's UserIdentity at the Registry side.
@@ -363,7 +368,7 @@ async def check_permission_internal(
     user_id: str,
     email: str | None = None,
     groups: str | None = None,
-    auth_method: str = "jwt",
+    auth_method: AuthMethod = "jwt",
     identity: UserIdentity = Depends(require_api_key),
 ):
     """Internal endpoint for other WIP services to check permissions.
@@ -410,7 +415,7 @@ async def accessible_namespaces_internal(
     user_id: str,
     email: str | None = None,
     groups: str | None = None,
-    auth_method: str = "jwt",
+    auth_method: AuthMethod = "jwt",
     identity: UserIdentity = Depends(require_api_key),
 ):
     """Internal endpoint for services to get a user's accessible namespaces.
