@@ -299,11 +299,14 @@ class TerminologyService:
         _track("mutable", terminology.mutable, request.mutable)
 
         # Reject mutable changes if terms exist
-        if request.mutable is not None and request.mutable != terminology.mutable:
-            if terminology.term_count > 0:
-                raise ValueError(
-                    "Cannot change mutable flag on terminology with existing terms"
-                )
+        if (
+            request.mutable is not None
+            and request.mutable != terminology.mutable
+            and terminology.term_count > 0
+        ):
+            raise ValueError(
+                "Cannot change mutable flag on terminology with existing terms"
+            )
 
         # Apply updates
         if request.value is not None:
