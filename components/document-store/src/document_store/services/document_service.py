@@ -1934,6 +1934,112 @@ class DocumentService:
             timing={k: round(v, 1) for k, v in timing.items()},
         )
 
+    async def _validate_batch(
+        self,
+        items: list[DocumentCreateRequest],
+        namespace: str,
+        continue_on_error: bool,
+        timing: dict[str, float],
+    ) -> tuple[list, list[BulkResultItem], int, bool]:
+        """Stage 1 of bulk_create: validate every item.
+
+        Returns (validation_results, results, failed, aborted):
+        - validation_results: (i, item, validation_result) for each VALID item
+        - results: error/skipped BulkResultItems accumulated during validation
+        - failed: count of error rows
+        - aborted: True iff continue_on_error=False hit a failure and the batch
+          must stop before the create stages. continue_on_error=True never
+          aborts — it collects per-item errors concurrently and presses on.
+
+        Sets timing["1_validation"]. Behaviour mirrors the previous inline
+        two-path logic exactly; the pre-failure-item drop on the aborted path
+        is the wart tracked by CASE-413.
+        """
+        start = time.perf_counter()
+        validation_results: list = []
+        results: list[BulkResultItem] = []
+        failed = 0
+
+        validation_semaphore = asyncio.Semaphore(10)
+        # Shared cache for document reference lookups across the batch —
+        # avoids repeated MongoDB queries when many docs reference the same
+        # target (e.g., 50 FIN_TRANSACTIONs all pointing to one FIN_ACCOUNT).
+        doc_ref_cache: dict = {}
+
+        async def _validate_one(i: int, item: DocumentCreateRequest):
+            async with validation_semaphore:
+                return i, item, await self.validation_service.validate(
+                    item.template_id,
+                    item.data,
+                    template_version=getattr(item, 'template_version', None),
+                    namespace=namespace,
+                    doc_ref_cache=doc_ref_cache
+                )
+
+        def _skipped_rows(after_index: int) -> list[BulkResultItem]:
+            return [
+                BulkResultItem(index=j, status="skipped", error="Stopped due to previous error")
+                for j in range(after_index + 1, len(items))
+            ]
+
+        aborted = False
+        if continue_on_error:
+            # All validations run concurrently — errors collected per-item
+            tasks = [_validate_one(i, item) for i, item in enumerate(items)]
+            settled = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for task_idx, entry in enumerate(settled):
+                if isinstance(entry, BaseException):
+                    failed += 1
+                    results.append(BulkResultItem(
+                        index=task_idx, status="error", error=str(entry)
+                    ))
+                else:
+                    i, item, validation_result = entry
+                    if validation_result.valid:
+                        validation_results.append((i, item, validation_result))
+                    else:
+                        failed += 1
+                        results.append(BulkResultItem(
+                            index=i,
+                            status="error",
+                            error=self._format_validation_errors(validation_result.errors)
+                        ))
+        else:
+            # Sequential when continue_on_error=False — stop on first failure
+            for i, item in enumerate(items):
+                try:
+                    validation_result = await self.validation_service.validate(
+                        item.template_id,
+                        item.data,
+                        template_version=getattr(item, 'template_version', None),
+                        namespace=namespace,
+                        doc_ref_cache=doc_ref_cache
+                    )
+                    if validation_result.valid:
+                        validation_results.append((i, item, validation_result))
+                    else:
+                        failed += 1
+                        results.append(BulkResultItem(
+                            index=i,
+                            status="error",
+                            error=self._format_validation_errors(validation_result.errors)
+                        ))
+                        results.extend(_skipped_rows(i))
+                        aborted = True
+                        break
+                except Exception as e:
+                    failed += 1
+                    results.append(BulkResultItem(
+                        index=i, status="error", error=str(e)
+                    ))
+                    results.extend(_skipped_rows(i))
+                    aborted = True
+                    break
+
+        timing["1_validation"] = (time.perf_counter() - start) * 1000
+        return validation_results, results, failed, aborted
+
     async def bulk_create(
         self,
         items: list[DocumentCreateRequest],
@@ -1988,94 +2094,13 @@ class DocumentService:
         await asyncio.gather(*(warm_template(tid) for tid in unique_template_ids))
         timing["0_cache_warmup"] = (time.perf_counter() - start) * 1000
 
-        # Stage 1: Validate all documents (concurrently)
-        # Semaphore limits concurrent validations to avoid overwhelming
-        # upstream services (template-store, def-store) with HTTP requests.
-        # Cache warming in Stage 0 means most validations hit cache, but
-        # reference resolution and file validation still make I/O calls.
-        start = time.perf_counter()
-        validation_results = []
-        valid_indices = []  # Indices of valid documents
-
-        validation_semaphore = asyncio.Semaphore(10)
-        # Shared cache for document reference lookups across the batch —
-        # avoids repeated MongoDB queries when many docs reference the same
-        # target (e.g., 50 FIN_TRANSACTIONs all pointing to one FIN_ACCOUNT).
-        doc_ref_cache: dict = {}
-
-        async def _validate_one(i: int, item: DocumentCreateRequest):
-            async with validation_semaphore:
-                return i, item, await self.validation_service.validate(
-                    item.template_id,
-                    item.data,
-                    template_version=getattr(item, 'template_version', None),
-                    namespace=namespace,
-                    doc_ref_cache=doc_ref_cache
-                )
-
-        if continue_on_error:
-            # All validations run concurrently — errors collected per-item
-            tasks = [_validate_one(i, item) for i, item in enumerate(items)]
-            settled = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for task_idx, entry in enumerate(settled):
-                if isinstance(entry, BaseException):
-                    failed += 1
-                    results.append(BulkResultItem(
-                        index=task_idx, status="error", error=str(entry)
-                    ))
-                else:
-                    i, item, validation_result = entry
-                    if validation_result.valid:
-                        validation_results.append((i, item, validation_result))
-                        valid_indices.append(i)
-                    else:
-                        failed += 1
-                        results.append(BulkResultItem(
-                            index=i,
-                            status="error",
-                            error=self._format_validation_errors(validation_result.errors)
-                        ))
-        else:
-            # Sequential when continue_on_error=False — stop on first failure
-            for i, item in enumerate(items):
-                try:
-                    validation_result = await self.validation_service.validate(
-                        item.template_id,
-                        item.data,
-                        template_version=getattr(item, 'template_version', None),
-                        namespace=namespace,
-                        doc_ref_cache=doc_ref_cache
-                    )
-                    if validation_result.valid:
-                        validation_results.append((i, item, validation_result))
-                        valid_indices.append(i)
-                    else:
-                        failed += 1
-                        results.append(BulkResultItem(
-                            index=i,
-                            status="error",
-                            error=self._format_validation_errors(validation_result.errors)
-                        ))
-                        for j in range(i + 1, len(items)):
-                            results.append(BulkResultItem(
-                                index=j, status="skipped", error="Stopped due to previous error"
-                            ))
-                        timing["1_validation"] = (time.perf_counter() - start) * 1000
-                        return self._finalize_bulk_response(results, len(items), timing, total_start)
-                except Exception as e:
-                    failed += 1
-                    results.append(BulkResultItem(
-                        index=i, status="error", error=str(e)
-                    ))
-                    for j in range(i + 1, len(items)):
-                        results.append(BulkResultItem(
-                            index=j, status="skipped", error="Stopped due to previous error"
-                        ))
-                    timing["1_validation"] = (time.perf_counter() - start) * 1000
-                    return self._finalize_bulk_response(results, len(items), timing, total_start)
-
-        timing["1_validation"] = (time.perf_counter() - start) * 1000
+        # Stage 1: Validate all documents (see _validate_batch — concurrent
+        # when continue_on_error, sequential stop-on-first otherwise).
+        validation_results, results, failed, aborted = await self._validate_batch(
+            items, namespace, continue_on_error, timing
+        )
+        if aborted:
+            return self._finalize_bulk_response(results, len(items), timing, total_start)
 
         # Aggregate per-stage validation timing from all individual results
         val_stage_totals: dict[str, float] = {}
