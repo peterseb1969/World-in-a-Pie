@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from beanie.odm.enums import SortDirection
-
 from pymongo.errors import BulkWriteError, DuplicateKeyError
 
 # Import identity helper from wip-auth
@@ -875,6 +874,100 @@ class TerminologyService:
         return batch_created
 
     @staticmethod
+    async def _process_term_batch(
+        batch_terms: list[CreateTermRequest],
+        batch_start: int,
+        results: list[BulkResultItem | None],
+        terminology: Terminology,
+        namespace: str,
+        actor: str,
+        now: datetime,
+        client: Any,
+        registry_batch_size: int,
+        skip_duplicates: bool,
+        update_existing: bool,
+        batch_num: int,
+    ) -> int:
+        """Run one batch end-to-end: register IDs, query existing, partition, write.
+
+        Phase B (Registry bulk-register, with per-term entry_id pass-through
+        when the request carries one), Phase C (existing-by-id and
+        existing-by-value queries), then dispatch to _partition_term_batch
+        and _write_term_batch. The coordinator owns the chunking loop and
+        the cross-batch counter; this helper owns one batch's worth of work.
+
+        Returns the count of terms successfully created in this batch.
+        """
+        terminology_id = terminology.terminology_id
+
+        # Phase B: Registry call for this batch (with sub-batching)
+        logger.debug(f"Registering {len(batch_terms)} terms with registry...")
+        batch_registry_results = await client.register_terms_bulk(
+            terminology_id=terminology_id,
+            terms=[
+                {"value": t.value, "entry_id": t.term_id}
+                if hasattr(t, "term_id") and t.term_id
+                else {"value": t.value}
+                for t in batch_terms
+            ],
+            created_by=actor,
+            registry_batch_size=registry_batch_size,
+            namespace=namespace,
+        )
+        logger.debug(f"Registry registration complete for batch {batch_num}")
+
+        # Phase C: Duplicate check for this batch
+        batch_ids = [
+            r["registry_id"] for r in batch_registry_results
+            if r.get("status") != "error" and r.get("registry_id")
+        ]
+        batch_values = [t.value for t in batch_terms]
+
+        existing_by_id: dict[str, Term] = {}
+        existing_by_value: dict[str, Term] = {}
+        if batch_ids:
+            existing_terms = await Term.find(
+                {"term_id": {"$in": batch_ids}}
+            ).to_list()
+            existing_by_id = {t.term_id: t for t in existing_terms}
+        if batch_values:
+            value_matches = await Term.find({
+                "namespace": namespace,
+                "terminology_id": terminology_id,
+                "value": {"$in": batch_values},
+            }).to_list()
+            existing_by_value = {t.value: t for t in value_matches}
+
+        # Phase D: Partition this batch into create/skip/error
+        terms_to_insert, insert_indices = TerminologyService._partition_term_batch(
+            batch_terms=batch_terms,
+            batch_start=batch_start,
+            batch_registry_results=batch_registry_results,
+            existing_by_id=existing_by_id,
+            existing_by_value=existing_by_value,
+            results=results,
+            namespace=namespace,
+            terminology_id=terminology_id,
+            terminology_value=terminology.value,
+            actor=actor,
+            skip_duplicates=skip_duplicates,
+            update_existing=update_existing,
+        )
+
+        # Phases E-F3: Insert + per-create side effects
+        return await TerminologyService._write_term_batch(
+            terms_to_insert=terms_to_insert,
+            insert_indices=insert_indices,
+            results=results,
+            namespace=namespace,
+            terminology_id=terminology_id,
+            terminology_value=terminology.value,
+            actor=actor,
+            now=now,
+            client=client,
+        )
+
+    @staticmethod
     async def create_terms_bulk(
         terminology_id: str,
         terms: list[CreateTermRequest],
@@ -938,72 +1031,19 @@ class TerminologyService:
                 f"terms {batch_start+1}-{batch_end} of {total_terms}"
             )
 
-            # Phase B: Registry call for this batch (with sub-batching)
-            logger.debug(f"Registering {len(batch_terms)} terms with registry...")
-            batch_registry_results = await client.register_terms_bulk(
-                terminology_id=terminology_id,
-                terms=[
-                    {"value": t.value, "entry_id": t.term_id}
-                    if hasattr(t, "term_id") and t.term_id
-                    else {"value": t.value}
-                    for t in batch_terms
-                ],
-                created_by=actor,
-                registry_batch_size=registry_batch_size,
-                namespace=namespace,
-            )
-            logger.debug(f"Registry registration complete for batch {batch_num}")
-
-            # Phase C: Duplicate check for this batch
-            batch_ids = [
-                r["registry_id"] for r in batch_registry_results
-                if r.get("status") != "error" and r.get("registry_id")
-            ]
-            batch_values = [t.value for t in batch_terms]
-
-            existing_by_id = {}
-            existing_by_value = {}
-            if batch_ids:
-                existing_terms = await Term.find(
-                    {"term_id": {"$in": batch_ids}}
-                ).to_list()
-                existing_by_id = {t.term_id: t for t in existing_terms}
-            if batch_values:
-                value_matches = await Term.find({
-                    "namespace": namespace,
-                    "terminology_id": terminology_id,
-                    "value": {"$in": batch_values}
-                }).to_list()
-                existing_by_value = {t.value: t for t in value_matches}
-
-            # Phase D: Partition this batch into create/skip/error
-            terms_to_insert, insert_indices = TerminologyService._partition_term_batch(
+            batch_created = await TerminologyService._process_term_batch(
                 batch_terms=batch_terms,
                 batch_start=batch_start,
-                batch_registry_results=batch_registry_results,
-                existing_by_id=existing_by_id,
-                existing_by_value=existing_by_value,
                 results=results,
+                terminology=terminology,
                 namespace=namespace,
-                terminology_id=terminology_id,
-                terminology_value=terminology.value,
-                actor=actor,
-                skip_duplicates=skip_duplicates,
-                update_existing=update_existing,
-            )
-
-            # Phases E-F3: Insert this batch and publish all per-create
-            # side effects (audit logs, NATS events, auto-synonyms).
-            batch_created = await TerminologyService._write_term_batch(
-                terms_to_insert=terms_to_insert,
-                insert_indices=insert_indices,
-                results=results,
-                namespace=namespace,
-                terminology_id=terminology_id,
-                terminology_value=terminology.value,
                 actor=actor,
                 now=now,
                 client=client,
+                registry_batch_size=registry_batch_size,
+                skip_duplicates=skip_duplicates,
+                update_existing=update_existing,
+                batch_num=batch_num,
             )
             total_created += batch_created
             logger.info(
