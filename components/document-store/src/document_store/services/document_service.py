@@ -1908,6 +1908,32 @@ class DocumentService:
 
         return query
 
+    def _finalize_bulk_response(
+        self,
+        results: list[BulkResultItem],
+        total: int,
+        timing: dict[str, float],
+        total_start: float,
+    ) -> BulkResponse:
+        """Stamp total timing, record it, and build the sorted BulkResponse.
+
+        Used at every bulk_create exit — the early-return error paths and the
+        success path — so the envelope shape, the succeeded/failed tally, and
+        timing finalization live in exactly one place. succeeded/failed are
+        derived from the result rows (equivalent to the old per-site tallies;
+        the error paths only ever held error/skipped rows at their exit).
+        """
+        timing["total"] = (time.perf_counter() - total_start) * 1000
+        self._record_creation_timing(timing)
+        sorted_results = sorted(results, key=lambda r: r.index)
+        return BulkResponse(
+            results=sorted_results,
+            total=total,
+            succeeded=sum(1 for r in sorted_results if r.status not in ("error", "skipped")),
+            failed=sum(1 for r in sorted_results if r.status == "error"),
+            timing={k: round(v, 1) for k, v in timing.items()},
+        )
+
     async def bulk_create(
         self,
         items: list[DocumentCreateRequest],
@@ -2036,15 +2062,7 @@ class DocumentService:
                                 index=j, status="skipped", error="Stopped due to previous error"
                             ))
                         timing["1_validation"] = (time.perf_counter() - start) * 1000
-                        timing["total"] = (time.perf_counter() - total_start) * 1000
-                        self._record_creation_timing(timing)
-                        return BulkResponse(
-                            results=sorted(results, key=lambda r: r.index),
-                            total=len(items),
-                            succeeded=sum(1 for r in results if r.status not in ("error", "skipped")),
-                            failed=sum(1 for r in results if r.status == "error"),
-                            timing=timing,
-                        )
+                        return self._finalize_bulk_response(results, len(items), timing, total_start)
                 except Exception as e:
                     failed += 1
                     results.append(BulkResultItem(
@@ -2055,15 +2073,7 @@ class DocumentService:
                             index=j, status="skipped", error="Stopped due to previous error"
                         ))
                     timing["1_validation"] = (time.perf_counter() - start) * 1000
-                    timing["total"] = (time.perf_counter() - total_start) * 1000
-                    self._record_creation_timing(timing)
-                    return BulkResponse(
-                        results=sorted(results, key=lambda r: r.index),
-                        total=len(items),
-                        succeeded=sum(1 for r in results if r.status not in ("error", "skipped")),
-                        failed=sum(1 for r in results if r.status == "error"),
-                        timing=timing,
-                    )
+                    return self._finalize_bulk_response(results, len(items), timing, total_start)
 
         timing["1_validation"] = (time.perf_counter() - start) * 1000
 
@@ -2077,14 +2087,7 @@ class DocumentService:
                 timing[f"1v_{stage}"] = round(total_ms, 1)
 
         if not validation_results:
-            timing["total"] = (time.perf_counter() - total_start) * 1000
-            self._record_creation_timing(timing)
-            return BulkResponse(
-                results=sorted(results, key=lambda r: r.index),
-                total=len(items),
-                succeeded=0, failed=failed,
-                timing=timing,
-            )
+            return self._finalize_bulk_response(results, len(items), timing, total_start)
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -2119,14 +2122,7 @@ class DocumentService:
                     index=i, status="error", error=f"Registry error: {e!s}"
                 ))
             timing["2_registry_bulk"] = (time.perf_counter() - start) * 1000
-            timing["total"] = (time.perf_counter() - total_start) * 1000
-            self._record_creation_timing(timing)
-            return BulkResponse(
-                results=sorted(results, key=lambda r: r.index),
-                total=len(items),
-                succeeded=0, failed=failed,
-                timing=timing,
-            )
+            return self._finalize_bulk_response(results, len(items), timing, total_start)
 
         timing["2_registry_bulk"] = (time.perf_counter() - start) * 1000
 
@@ -2317,17 +2313,7 @@ class DocumentService:
                 for et, payload in pending_events
             ))
             timing["5_nats_publish"] = (time.perf_counter() - start) * 1000
-        timing["total"] = (time.perf_counter() - total_start) * 1000
-        self._record_creation_timing(timing)
-
-        sorted_results = sorted(results, key=lambda r: r.index)
-        return BulkResponse(
-            results=sorted_results,
-            total=len(items),
-            succeeded=sum(1 for r in sorted_results if r.status not in ("error", "skipped")),
-            failed=sum(1 for r in sorted_results if r.status == "error"),
-            timing={k: round(v, 1) for k, v in timing.items()},
-        )
+        return self._finalize_bulk_response(results, len(items), timing, total_start)
 
     async def validate_document(
         self,
