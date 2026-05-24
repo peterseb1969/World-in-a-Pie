@@ -1,12 +1,12 @@
-# /deploy — Routinized deployment with mandatory pre-flight
+# /wip-deploy — Routinized deployment with mandatory pre-flight
 
 Three modes. Each runs a **mandatory pre-flight** before any destructive operation, the operation itself, then a **mandatory smoke** after. Pre-flight refuses to proceed on failure; smoke reports failures but does not auto-rollback.
 
 | Invocation | Use |
 |---|---|
-| `/deploy redeploy [<service-name>]` | Redeploy current source to currently-running namespace. With service name: single-service redeploy. Without: full preset reapply. |
-| `/deploy install --preset <p> --target <t> [more flags]` | Full install. Wraps `wip-deploy install` with pre-flight. |
-| `/deploy verify` | Smoke-only. No change. Used after a deploy or when diagnosing. |
+| `/wip-deploy redeploy [<service-name>]` | Redeploy current source to currently-running namespace. With service name: single-service redeploy. Without: full preset reapply. |
+| `/wip-deploy install --preset <p> --target <t> [more flags]` | Full install. Wraps `wip-deploy install` with pre-flight. |
+| `/wip-deploy verify` | Smoke-only. No change. Used after a deploy or when diagnosing. |
 
 Pre-flight catches the recurring failure modes the constellation has hit:
 
@@ -21,13 +21,13 @@ If any pre-flight check fails, output the punch list and stop. Operator (Peter) 
 
 ---
 
-## Mode 1 — `/deploy redeploy [<service-name>]`
+## Mode 1 — `/wip-deploy redeploy [<service-name>]`
 
 The "I just changed code, get the cluster to re-pull" path. Most routine.
 
 ### Pre-flight (all run; output punch list at end)
 
-The recipe branches by **install target**. BE-YAC primarily redeploys against k8s (wip-kb, wip-stable), but the same `/deploy redeploy` flow also applies to compose-dev installs (wip-dev-local). `kubectl get nodes` against a compose-dev install would silently check the operator's *current* k8s context (often a different cluster), giving a false [ok]. Step 0 detects target so subsequent checks pick the right probe.
+The recipe branches by **install target**. BE-YAC primarily redeploys against k8s (wip-kb, wip-stable), but the same `/wip-deploy redeploy` flow also applies to compose-dev installs (wip-dev-local). `kubectl get nodes` against a compose-dev install would silently check the operator's *current* k8s context (often a different cluster), giving a false [ok]. Step 0 detects target so subsequent checks pick the right probe.
 
 ```bash
 # 0. Detect target from the install directory shape
@@ -82,8 +82,8 @@ test -f ~/.wip-deploy/<name>/secrets/api-key && echo "secrets ok" || echo "MISSI
 # SURFACE the bump as a punch-list item — propose the new pin (e.g., v1.2.6 → v1.2.7)
 # and STOP. The operator confirms before any pin file is edited. Do not auto-bump
 # without explicit operator approval; the pin file is a tracked artifact and the
-# bump is a discrete editorial decision, not a side effect of /deploy.
-# (Operator can override the prompt with `/deploy redeploy --auto-pin <svc>`.)
+# bump is a discrete editorial decision, not a side effect of /wip-deploy.
+# (Operator can override the prompt with `/wip-deploy redeploy --auto-pin <svc>`.)
 # If pin is already ahead of running OR source unchanged: report "no pin bump needed".
 
 # 7. Image-pull hostnames resolvable from cluster nodes (Day 46/47 nss-mdns prevention)
@@ -137,7 +137,7 @@ esac
 Pre-flight output is a single punch-list block:
 
 ```
-=== /deploy redeploy preflight ===
+=== /wip-deploy redeploy preflight ===
 [ok] cluster reachable
 [ok] current install: wip-kb namespace, 10 services on v1.2.6
 [ok] source HEAD: 9f5f29f
@@ -209,7 +209,7 @@ Smoke output is a checklist; failures don't auto-rollback (the operator decides)
 
 ---
 
-## Mode 2 — `/deploy install --preset <p> --target <t> [more flags]`
+## Mode 2 — `/wip-deploy install --preset <p> --target <t> [more flags]`
 
 Full install. Wraps `wip-deploy install` with the same pre-flight (steps 1, 4, 6, 7, 8 above) plus install-specific checks:
 
@@ -221,7 +221,7 @@ Pre-flight punch list, install command, smoke. Same shape as Mode 1.
 
 ---
 
-## Mode 3 — `/deploy verify`
+## Mode 3 — `/wip-deploy verify`
 
 Pre-flight steps 1, 2, 4, 7 + the entire Mode-1 smoke section. No change. Used to confirm "is the install still up and healthy" or to gather state before a planned change.
 
@@ -229,11 +229,11 @@ Output: just the punch list. No operation runs.
 
 ---
 
-## When NOT to use `/deploy`
+## When NOT to use `/wip-deploy`
 
-- **Net-new install design** — designing a new install shape (target type, preset, hostname strategy) is a fireside, not a routine deploy. Use `/report` for the design discussion; use `/deploy` once the parameters are decided.
+- **Net-new install design** — designing a new install shape (target type, preset, hostname strategy) is a fireside, not a routine deploy. Use `/wip-report` for the design discussion; use `/wip-deploy` once the parameters are decided.
 - **Multi-cluster orchestration** — out of scope for v1. Today's deploys are single-cluster (`wip-stable` and `wip-kb` are separate manual ops).
-- **Backup/restore** — separate set of operations; `/deploy` doesn't touch persistent state.
+- **Backup/restore** — separate set of operations; `/wip-deploy` doesn't touch persistent state.
 
 ---
 
@@ -245,4 +245,4 @@ This skill encapsulates the *recipe*. It does not replace BE-YAC's judgment when
 
 ## Backgrounding (future, not in v1 of this skill)
 
-Once the skill ships and pre-flight has been hardened against ~10 deploy cycles, wrapping invocations in `Task` subagents with `run_in_background` is a separate change — call it `/deploy redeploy --background`. Not in scope for this case; mentioned for the implementer's awareness so the skill's exit codes and output formats stay machine-parseable.
+Once the skill ships and pre-flight has been hardened against ~10 deploy cycles, wrapping invocations in `Task` subagents with `run_in_background` is a separate change — call it `/wip-deploy redeploy --background`. Not in scope for this case; mentioned for the implementer's awareness so the skill's exit codes and output formats stay machine-parseable.

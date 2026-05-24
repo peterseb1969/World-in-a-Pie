@@ -29,7 +29,7 @@ Execute Phase 1 (Exploratory) of the AI-Assisted Development process.
 If the `data-model/` directory already contains terminology and template seed files, the data model has been designed and implemented in a previous session. In this case:
 
 - Verify the seed files match what's in WIP (list terminologies and templates, compare)
-- If they match: Phase 2 (design) and Phase 3 (implement) are already done. Proceed directly to Phase 4 (`/build-app`) after the user confirms.
+- If they match: Phase 2 (design) and Phase 3 (implement) are already done. Proceed directly to Phase 4 (`/wip-build-app`) after the user confirms.
 - If they don't match: flag the discrepancy and ask the user whether to re-bootstrap from seed files or update the seed files from WIP's current state.
 
 ### Gate

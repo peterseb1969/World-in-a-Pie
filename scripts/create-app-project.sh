@@ -41,6 +41,7 @@ WIP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 APP_DIR=""
 APP_NAME=""
+APP_PREFIX=""
 PRESET="standard"
 REFRESH_MODE=false
 
@@ -54,18 +55,24 @@ while [[ $# -gt 0 ]]; do
             PRESET="$2"
             shift 2
             ;;
+        --prefix)
+            APP_PREFIX="$2"
+            shift 2
+            ;;
         --refresh)
             REFRESH_MODE=true
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 <app-directory> [--name \"App Name\"] [--preset standard|query]"
-            echo "       $0 --refresh <existing-app-directory>"
+            echo "Usage: $0 <app-directory> --prefix APP-<X> [--name \"App Name\"] [--preset standard|query]"
+            echo "       $0 --refresh <existing-app-directory> [--prefix APP-<X>]"
             echo ""
             echo "Creates a new WIP app project with all required files."
             echo ""
             echo "Options:"
             echo "  --name      Display name for the app (default: derived from directory name)"
+            echo "  --prefix    Session-role prefix (APP-KB, APP-RC, ...). Written to .claude/.session-role"
+            echo "              so /wip-setup and /wip-wake mint <PREFIX>-YYYYMMDD-HHMMSS session IDs (CASE-389)."
             echo "  --preset    Project preset: 'standard' (default) or 'query' (NL query app)"
             echo "  --refresh   Refresh machine-specific files (.mcp.json, libs) in an existing app"
             echo "  -h          Show this help"
@@ -155,14 +162,27 @@ echo "2. Copying slash commands..."
 cp "$WIP_ROOT/docs/slash-commands/app-builder/"*.md "$APP_DIR/.claude/commands/"
 echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
 
+# --- Session role marker (CASE-389) ---
+# /wip-setup and /wip-wake read this to mint <PREFIX>-YYYYMMDD-HHMMSS session IDs.
+if [ -n "$APP_PREFIX" ]; then
+    printf '%s\n' "$APP_PREFIX" > "$APP_DIR/.claude/.session-role"
+    echo "   Wrote: .claude/.session-role ($APP_PREFIX)"
+elif [ -f "$APP_DIR/.claude/.session-role" ]; then
+    echo "   Kept: .claude/.session-role ($(cat "$APP_DIR/.claude/.session-role"))"
+else
+    echo "   WARNING: no --prefix given and no .claude/.session-role present."
+    echo "            /wip-setup and /wip-wake need it to mint session IDs."
+    echo "            Re-run with --prefix APP-<X> (e.g. --prefix APP-KB)."
+fi
+
 # --- Generate .claude/settings.local.json defaults (CASE-169 + CASE-385) ---
 # 31 catchall bash patterns: 23 from CASE-169 (routine read-only file
 # inspection — cat/sed/grep/etc.) + 8 from CASE-385 tailored for
-# APP-YAC's /setup (node version check, npm deps check, container-
+# APP-YAC's /wip-setup (node version check, npm deps check, container-
 # runtime probe, curl health probe, wip-deploy add-app surface).
 # Differs from backend's mirror by dropping python:*/python3:* (APP-YACs
 # are Node-stack) and adding node:*/npm:*.
-# Goal: a fresh APP-YAC's first `/setup` runs through environment
+# Goal: a fresh APP-YAC's first `/wip-setup` runs through environment
 # checks with zero bash permission prompts, so time-to-productive
 # tracks the script wall-clock rather than human-approval latency.
 # File is gitignored; user customizations preserved on re-run.
@@ -619,7 +639,7 @@ Your development namespace is \`$DEV_NAMESPACE\`. Use it for all data modeling d
 **Why:** Terminologies and templates are hard to delete cleanly once documents reference them. A dev namespace lets you iterate freely — create, modify, delete, start over — without polluting production data.
 
 **Workflow:**
-1. Use \`$DEV_NAMESPACE\` for all \`/design-model\` and \`/implement\` work
+1. Use \`$DEV_NAMESPACE\` for all \`/wip-design-model\` and \`/wip-implement\` work
 2. Create terminologies, templates, and test documents in this namespace
 3. Iterate until the data model is stable
 4. When ready for production, create a new namespace (e.g., \`${APP_SLUG}\`) and recreate the finalized model there
@@ -681,35 +701,35 @@ The contract is target-agnostic — compose, k8s, and apps-only installs satisfy
 
 Follow the 4-phase development process.
 
-If a \`KICKOFF.md\` exists in this directory, read it first — the kickoff supersedes the standard \`/explore\` start for special-case apps (e.g. design-package-driven apps like APP-KB).
+If a \`KICKOFF.md\` exists in this directory, read it first — the kickoff supersedes the standard \`/wip-explore\` start for special-case apps (e.g. design-package-driven apps like APP-KB).
 
 Otherwise start with:
 
 \`\`\`
-/explore
+/wip-explore
 \`\`\`
 
 **Core phases** (in order):
-1. \`/explore\` — Read MCP resources, discover existing data model, understand the domain
-2. \`/design-model\` — Map the domain to WIP primitives (user must approve before proceeding)
-3. \`/implement\` — Create terminologies and templates in WIP, verify with test documents
-4. \`/build-app\` — Scaffold and build the React/TypeScript application
+1. \`/wip-explore\` — Read MCP resources, discover existing data model, understand the domain
+2. \`/wip-design-model\` — Map the domain to WIP primitives (user must approve before proceeding)
+3. \`/wip-implement\` — Create terminologies and templates in WIP, verify with test documents
+4. \`/wip-build-app\` — Scaffold and build the React/TypeScript application
 
 **After Phase 4:**
-- \`/improve\` — Iterate (add features, fix bugs, refine UI)
-- \`/document\` — Generate README, ARCHITECTURE, etc.
+- \`/wip-improve\` — Iterate (add features, fix bugs, refine UI)
+- \`/wip-document\` — Generate README, ARCHITECTURE, etc.
 
 **Available at any time:**
 - \`/wip-status\` — Check WIP service health and data state
-- \`/export-model\` — Save data model to git as seed files
-- \`/bootstrap\` — Recreate data model from seed files
-- \`/add-app\` — Add a second app that cross-references the first
-- \`/resume\` — Recover context after compaction or at start of a new session
-- \`/report\` — Capture fireside chat or trigger session summary
-- \`/deploy redeploy|verify\` — Redeploy this YAC's own source to the running dev install (or smoke-only). Subset of BE-YAC's \`/deploy\` — install is BE-YAC's territory (CASE-300)
-- \`/case file|list|read|respond|comment|close|implement\` — Cross-agent case management. **Filing must use \`bash yac-discussions/case-helper.sh claim <slug>\`** (atomic, race-safe; CASE-67 + CASE-301 collisions made this discipline mandatory — see CASE-306). After writing the body, mirror into the \`kb\` namespace via \`python3 ../FR-YAC/tools/add-to-kb.py yac-discussions/CASE-NN-...md\` (CASE-307). The dual-write is the canonical KB population path; not optional.
+- \`/wip-export-model\` — Save data model to git as seed files
+- \`/wip-bootstrap\` — Recreate data model from seed files
+- \`/wip-add-app\` — Add a second app that cross-references the first
+- \`/wip-wake\` — Recover context after compaction or at start of a new session
+- \`/wip-report\` — Capture fireside chat or trigger session summary
+- \`/wip-deploy redeploy|verify\` — Redeploy this YAC's own source to the running dev install (or smoke-only). Subset of BE-YAC's \`/wip-deploy\` — install is BE-YAC's territory (CASE-300)
+- \`/wip-case file|list|read|respond|comment|close|implement\` — Cross-agent case management. **Filing must use \`bash yac-discussions/case-helper.sh claim <slug>\`** (atomic, race-safe; CASE-67 + CASE-301 collisions made this discipline mandatory — see CASE-306). After writing the body, mirror into the \`kb\` namespace via \`python3 ../FR-YAC/tools/add-to-kb.py yac-discussions/CASE-NN-...md\` (CASE-307). The dual-write is the canonical KB population path; not optional.
 
-**Context management:** When context reaches ~70-80%, the human should tell you to run \`/resume\` or save state (DESIGN.md, memory files) before compaction hits.
+**Context management:** When context reaches ~70-80%, the human should tell you to run \`/wip-wake\` or save state (DESIGN.md, memory files) before compaction hits.
 
 ## Namespace Bootstrap on Launch
 
@@ -806,7 +826,7 @@ wip-toolkit --host wip-kb.local --proxy export kb /tmp/kb-backup.zip
 You will be replaced. This session — including everything you learn, every correction Peter makes, every insight you gain — ends when your context fills or the task completes. The next agent starts from scratch with no memory of this conversation.
 
 **Consequence:** Anything worth knowing must be encoded into a durable artifact before this session ends. If Peter corrects your approach, consider whether the correction belongs in:
-- A \`/lesson\` entry (quick, structured, for future gene pool review)
+- A \`/wip-lesson\` entry (quick, structured, for future gene pool review)
 - A session report "Dead Ends" section (for the next YAC continuing this work)
 - A CLAUDE.md update (if Peter agrees it's universal)
 
@@ -841,60 +861,23 @@ You are a YAC (Yet Another Claude). You report your work to the Field Reporter b
 
 ### Session Identity
 
-At the start of every session, run \`date '+%Y%m%d-%H%M'\` and assign yourself a session ID using your app prefix:
+Your session ID is minted by \`/wip-setup\` (fresh start) or \`/wip-wake\` (continuation after \`/clear\` or compaction) and stored in \`.claude/.session-id\`. **Read it; never hand-mint or rotate it** — \`cat "\$CLAUDE_PROJECT_DIR/.claude/.session-id"\`. Those commands also create \`reports/<session-id>/\`, write the initial \`session.md\`, and (for \`/wip-wake\`) auto-close the prior session with \`continues_from\` linkage.
 
-| App | Prefix |
-|-----|--------|
-| AuthorAssist | \`APP-AA\` |
-| ClinTrial Explorer | \`APP-CT\` |
-| D&D Compendium | \`APP-DND\` |
-| KB | \`APP-KB\` |
-| React Console | \`APP-RC\` |
-| New apps | \`APP-<SHORT>\` (pick a 2-4 letter code, tell the user) |
+Your role prefix is read from \`.claude/.session-role\` (e.g. \`APP-KB\`), written at scaffold time by \`create-app-project.sh --prefix\`. **Do not** run \`date\`-based ID assignment yourself.
 
-Format: \`<PREFIX>-YYYYMMDD-HHMM\`. Example: \`APP-CT-20260331-2015\`.
+The \`session.md\` these commands create carries this frontmatter — the **local-first identity contract** (\`.claude/.session-id\` + this frontmatter are authoritative; the kb SESSION record is a derived mirror that catches up on the next reachable write):
 
-### Report Directory
-
-Create your report directory at the start of every session:
-
-\`\`\`bash
-mkdir -p /Users/peter/Development/FR-YAC/reports/<PREFIX>-YYYYMMDD-HHMM/
-\`\`\`
-
-### Resuming — Check Previous Sessions
-
-At session start (and when running \`/resume\`), check for recent sessions with your prefix:
-
-\`\`\`bash
-ls -d /Users/peter/Development/FR-YAC/reports/<PREFIX>-* 2>/dev/null | tail -1
-\`\`\`
-
-If a previous session exists, read its \`session.md\` to recover context from the previous agent's work. This is faster and richer than reconstructing from git alone.
-
-If you are continuing work from that session (e.g., after context compaction), add this to your
-\`session.md\` frontmatter:
-
-\`\`\`
-continues: <PREVIOUS-SESSION-ID>
-\`\`\`
-
-### Session Start
-
-Create \`session.md\` immediately when starting work:
-
-\`\`\`markdown
+\`\`\`yaml
 ---
-session: <PREFIX>-YYYYMMDD-HHMM
-type: app
-app: <app name>
-repo: <repo directory name>
-started: YYYY-MM-DD HH:MM
-phase: <explore | design-model | implement | build-app | improve | other>
-tasks:
-  - <initial task from user>
+session_id: APP-<X>-YYYYMMDD-HHMMSS
+role: APP-<X>
+started_at: YYYY-MM-DDTHH:MM:SS
+status: active                      # flipped to \`closed\` by /wip-report session-end or /wip-wake
+continues_from: <prior-session-id>  # present only on a /wip-wake continuation
 ---
 \`\`\`
+
+Seconds precision (\`HHMMSS\`) eliminates the same-minute collision class. Record the app, phase, and task list in the \`session.md\` body as you go; don't add a hand-written \`continues:\` field — \`/wip-wake\` writes \`continues_from\` as part of the rollover.
 
 ### After Every Commit
 
@@ -918,7 +901,7 @@ If you encountered a PoNIF and handled it correctly, note which one. If you hit 
 ### Session Summary
 
 Write the session summary to \`session.md\` when:
-- Peter runs \`/report session-end\`
+- Peter runs \`/wip-report session-end\`
 - You detect context is running low (~70-80%)
 - The session is naturally ending
 
@@ -938,23 +921,23 @@ Update (overwrite) the summary section — don't append multiple summaries.
 
 ### Fireside Chats
 
-When Peter initiates a design discussion, architecture debate, or scope conversation, use the \`/report\` slash command to capture it. These are the high-value narrative moments — not just what was decided, but why, what alternatives were considered, and what Peter said.
+When Peter initiates a design discussion, architecture debate, or scope conversation, use the \`/wip-report\` slash command to capture it. These are the high-value narrative moments — not just what was decided, but why, what alternatives were considered, and what Peter said.
 
 ### Running Log
 
-For session-meaningful work that is **neither a change, an end-state, nor a fireside-grade decision**, append to \`session-updates.md\` via \`/report update-session [terse note]\`. Three trigger categories:
+For session-meaningful work that is **neither a change, an end-state, nor a fireside-grade decision**, append to \`session-updates.md\` via \`/wip-report update-session [terse note]\`. Three trigger categories:
 
 1. **Discoveries without a commit anchor** — e.g., "scaffold imports \`./wip-api.js\` which doesn't exist anywhere."
 2. **Scope-trim decisions mid-session** — why you're doing less than originally pitched, when the rationale matters for reading the resulting commit but isn't architectural enough for a fireside.
 3. **Block/unblock state and pre-\`/compact\` snapshots** — written when context is filling so the post-compaction same-agent self has more than just the last commit message and a stale session.md.
 
-**\`/compact\` vs \`/clear\`:** before \`/compact\` (same agent continues, conversation just summarized) write a running-log entry — this mode. Before \`/clear\` or end-of-day (next agent starts cold from durable artifacts) run \`/report session-end\`. The two events look similar but have different recovery semantics.
+**\`/compact\` vs \`/clear\`:** before \`/compact\` (same agent continues, conversation just summarized) write a running-log entry — this mode. Before \`/clear\` or end-of-day (next agent starts cold from durable artifacts) run \`/wip-report session-end\`. The two events look similar but have different recovery semantics.
 
 Append-only — distinct from \`session.md\` (overwritten at end) and \`report-<slug>.md\` (per-decision). Each entry is **timestamp + short headline + one paragraph**.
 
 Discipline test before writing: *"Would future-me, after a compaction, want to know this in 6 hours?"* If yes, write. If "this is just thinking out loud," don't.
 
-The four files together — \`session.md\` + \`commits.md\` + \`session-updates.md\` + any \`report-*.md\` — are what \`/resume\` reads to rebuild context.
+The four files together — \`session.md\` + \`commits.md\` + \`session-updates.md\` + any \`report-*.md\` — are what \`/wip-wake\` reads to rebuild context.
 EOF
 echo "   Written: CLAUDE.md"
 
@@ -966,6 +949,17 @@ if [ -n "$APP_KEY_PLAINTEXT" ] && [ -f "$APP_DIR/.env" ]; then
         printf '.env\n' >> "$APP_DIR/.gitignore"
     fi
 fi
+
+# Ensure the session sentinels are gitignored (CASE-389). .session-id is
+# per-session/ephemeral; .session-role is regenerated by --prefix / --refresh.
+# Neither should ever be committed.
+for _ign in '.claude/.session-id' '.claude/.session-role'; do
+    if [ ! -f "$APP_DIR/.gitignore" ]; then
+        printf '%s\n' "$_ign" > "$APP_DIR/.gitignore"
+    elif ! grep -qx "$_ign" "$APP_DIR/.gitignore"; then
+        printf '%s\n' "$_ign" >> "$APP_DIR/.gitignore"
+    fi
+done
 
 # --- Initialise git ---
 
@@ -1014,7 +1008,7 @@ if $REFRESH_MODE; then
     echo "Next steps:"
     echo "  cd $APP_DIR"
     echo "  claude          # Launch Claude Code"
-    echo "  /resume         # Recover context from existing code and docs"
+    echo "  /wip-wake         # Recover context from existing code and docs"
     echo ""
     echo "Verify MCP connection:"
     echo "  In Claude Code, run /mcp — you should see 71 tools and 5 resources."
@@ -1025,7 +1019,7 @@ else
     echo "Next steps:"
     echo "  cd $APP_DIR"
     echo "  claude          # Launch Claude Code"
-    echo "  /explore        # Start Phase 1"
+    echo "  /wip-explore        # Start Phase 1"
     echo ""
     echo "Verify MCP connection:"
     echo "  In Claude Code, run /mcp — you should see 71 tools and 5 resources."

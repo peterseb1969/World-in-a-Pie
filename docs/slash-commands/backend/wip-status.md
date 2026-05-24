@@ -1,12 +1,12 @@
 Check the current state of a running WIP instance — service health, data counts.
 
-**Prerequisite:** MCP tools must be connected. If they aren't available, tell the user: "MCP tools aren't connected. Run `/setup` to diagnose and fix your environment." Do NOT try to debug infrastructure problems — `/setup` handles that.
+**Prerequisite:** MCP tools must be connected. If they aren't available, tell the user: "MCP tools aren't connected. Run `/wip-setup` to diagnose and fix your environment." Do NOT try to debug infrastructure problems — `/wip-setup` handles that.
 
 ### Steps
 
 1. **Verify WIP connectivity:**
    - Call `get_wip_status` — confirms all services are healthy
-   - If it fails: "WIP services aren't reachable. Run `/setup` to check your environment." Stop here.
+   - If it fails: "WIP services aren't reachable. Run `/wip-setup` to check your environment." Stop here.
 
 2. **List terminologies:**
    - Call `list_terminologies`
@@ -26,6 +26,6 @@ Check the current state of a running WIP instance — service health, data count
    - Any issues or warnings
 
 ### When to Run
-- **Always** at the start of a session (after `/setup` has passed once)
+- **Always** at the start of a session (after `/wip-setup` has passed once)
 - After infrastructure changes (wip-deploy install / rebuild / restart)
 - Before and after running seed scripts

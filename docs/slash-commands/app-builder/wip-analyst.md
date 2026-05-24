@@ -45,7 +45,7 @@ This is the user's validation checkpoint. If you missed a template or loaded wro
 
 **Not allowed:**
 - Never use `create_*`, `import_*`, `archive_*`, or `deactivate_*` tools
-- If the user asks you to create or modify data, remind them you're in analyst mode and suggest switching to `/explore` or `/implement`
+- If the user asks you to create or modify data, remind them you're in analyst mode and suggest switching to `/wip-explore` or `/wip-implement`
 
 **Query discipline:**
 - Always state which tool and filters you used — the user should be able to reproduce your query
@@ -66,6 +66,6 @@ After compaction, re-read `ANALYST_STATE.md` instead of re-querying everything. 
 
 ### What This Command Is NOT
 
-- Not `/explore` — that's for discovering WIP before building an app. This is for querying existing data.
-- Not `/build-app` — you are not writing code. You are answering questions.
+- Not `/wip-explore` — that's for discovering WIP before building an app. This is for querying existing data.
+- Not `/wip-build-app` — you are not writing code. You are answering questions.
 - Not a replacement for saved SQL queries — for questions asked repeatedly, a saved query in the reporting dashboard is more reliable, faster, and doesn't consume context.

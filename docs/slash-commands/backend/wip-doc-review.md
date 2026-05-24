@@ -2,7 +2,7 @@
 description: Review open DOC-YAC documentation audit cases — verify accuracy flags against the codebase, propose markdown patches.
 ---
 
-Doc-review workflow. Subcommands: `/doc-review` (full queue), `/doc-review <number>` (single case).
+Doc-review workflow. Subcommands: `/wip-doc-review` (full queue), `/wip-doc-review <number>` (single case).
 
 **Pre-flight (do this first, every time):**
 

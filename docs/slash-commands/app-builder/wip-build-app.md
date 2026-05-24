@@ -4,7 +4,7 @@ Execute Phase 4 (Application Layer) of the AI-Assisted Development process.
 
 Phase 3 must be complete: all terminologies, templates, and test documents created and verified via MCP tools. If Phase 3 is not complete, stop and tell the user — do not proceed and do not load the playbook.
 
-Verify by running `/wip-status` first. If terminologies or templates are missing, the user needs to finish Phase 3 before running `/build-app`.
+Verify by running `/wip-status` first. If terminologies or templates are missing, the user needs to finish Phase 3 before running `/wip-build-app`.
 
 ### Critical: Build Incrementally
 
@@ -28,4 +28,4 @@ Then execute the playbook against the user's request.
 
 ### After Phase 4
 
-Once the app passes definition of done, is documented, and is committed, switch to `/improve` for all subsequent work. The `/improve` protocol has different rules — focused on surgical fixes, not greenfield building.
+Once the app passes definition of done, is documented, and is committed, switch to `/wip-improve` for all subsequent work. The `/wip-improve` protocol has different rules — focused on surgical fixes, not greenfield building.

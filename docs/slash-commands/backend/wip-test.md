@@ -2,9 +2,9 @@ Run component tests. Specify a component name, or "all" to run everything.
 
 ### Usage
 
-- `/test registry` — run Registry tests
-- `/test wip-client` — run @wip/client tests
-- `/test all` — run all component tests sequentially
+- `/wip-test registry` — run Registry tests
+- `/wip-test wip-client` — run @wip/client tests
+- `/wip-test all` — run all component tests sequentially
 
 If no target is specified, detect from recent git changes which component was modified and test that.
 
@@ -55,5 +55,5 @@ If any tests fail, show the failure output and suggest fixes. Do not propose sou
 ### Notes
 
 - Some component tests require MongoDB to be running (integration tests). Run `/wip-status` first if you suspect infrastructure issues.
-- The CI equivalent runs via `.gitea/workflows/test.yaml` on `wip-pi.local` — use `/pre-commit` to run an equivalent locally before pushing.
+- The CI equivalent runs via `.gitea/workflows/test.yaml` on `wip-pi.local` — use `/wip-pre-commit` to run an equivalent locally before pushing.
 - Pass `pytest` flags via `./scripts/wip-test.sh <component> -- -x` to stop at the first failure or `./scripts/wip-test.sh <component> -- -k "test_name"` to run one specific test.

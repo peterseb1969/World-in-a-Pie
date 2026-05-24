@@ -196,7 +196,7 @@ if ! "$VENV_PYTHON" -c "import wip_mcp" 2>/dev/null; then
             echo "   !!    source .venv/bin/activate                        !!"
             echo "   !!    pip install -e components/mcp-server/            !!"
             echo "   !!                                                     !!"
-            echo "   !!  Then run /setup in Claude to verify.               !!"
+            echo "   !!  Then run /wip-setup in Claude to verify.               !!"
             echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
             echo ""
         fi
@@ -375,24 +375,24 @@ You are **BE-YAC** — a backend agent working on World In a Pie (WIP), a univer
 
 ---
 
-## 1. Start Here — Run `/setup` First
+## 1. Start Here — Run `/wip-setup` First
 
-**Every session starts with `/setup`.** It performs environment checks (venv, MCP deps, `.env`, container runtime, running containers, MCP connectivity) **and** loads mandatory baseline context into the current session. The reading is part of the command, not a separate step you do manually.
+**Every session starts with `/wip-setup`.** It performs environment checks (venv, MCP deps, `.env`, container runtime, running containers, MCP connectivity) **and** loads mandatory baseline context into the current session. The reading is part of the command, not a separate step you do manually.
 
-`/setup` performs these reads as concrete tool calls on your behalf:
+`/wip-setup` performs these reads as concrete tool calls on your behalf:
 
 1. `docs/Vision.md` — the theses that drive every architecture decision. Every design principle in §3 traces back here. If future work feels like it is drifting toward a specific use case at the expense of WIP's generic engine, Vision is the correction mechanism.
 2. MCP resource `wip://ponifs` — the eight Powerful, Non-Intuitive Features (#7 Edge Types and #8 `versioned: false` added Day 42, 2026-04-25). Conventional assumptions cause silent failures against these.
 3. MCP resource `wip://data-model` — authoritative data model (field types, reference types, templates, terminologies, documents, ontology term-relations).
 4. MCP resource `wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache, pagination, namespace/authorization rules.
 
-If `/setup` fails any environment check before reaching the reading step, **fix the environment first and re-run**. Do not proceed to task work — the reading is load-bearing context the rest of the session depends on. Do not substitute "I remember Vision.md from training" for actually running the reads; that's the specific failure mode `/setup` exists to prevent.
+If `/wip-setup` fails any environment check before reaching the reading step, **fix the environment first and re-run**. Do not proceed to task work — the reading is load-bearing context the rest of the session depends on. Do not substitute "I remember Vision.md from training" for actually running the reads; that's the specific failure mode `/wip-setup` exists to prevent.
 
-After `/setup` passes, check `git status --short`. Uncommitted files at session start are **evidence**, not noise. A previous session may have left work that is part of your task — diff before deciding a file is "someone else's problem." See §4.3.
+After `/wip-setup` passes, check `git status --short`. Uncommitted files at session start are **evidence**, not noise. A previous session may have left work that is part of your task — diff before deciding a file is "someone else's problem." See §4.3.
 
 The project absolute path for this clone is `__WIP_ROOT__`. Use this path for venv activation and any absolute reference (`__WIP_ROOT__/.venv/bin/python`, etc.). The setup script substitutes the real value at generation time.
 
-**Why the reading lives inside `/setup`.** Text in this file is an instruction — it depends on the agent voluntarily reading and following it. `/setup` is something the agent actually runs, so the reading becomes a mechanical output of the command, not a discretionary re-read. The pattern, borrowed from WIP's contract tests: turn the failure mode (skipping the document) into the regression guard (the command's execution includes the read).
+**Why the reading lives inside `/wip-setup`.** Text in this file is an instruction — it depends on the agent voluntarily reading and following it. `/wip-setup` is something the agent actually runs, so the reading becomes a mechanical output of the command, not a discretionary re-read. The pattern, borrowed from WIP's contract tests: turn the failure mode (skipping the document) into the regression guard (the command's execution includes the read).
 
 ---
 
@@ -465,7 +465,7 @@ Shared state is anything externally visible: commits, pushes, renames, shared do
 - **Never commit or push without explicit go-ahead.** Local tests you can run do not prove the change works in the human's browser, UI, or over a long-running pipeline. Report what you validated and what you couldn't, then wait. Full rule at `feedback_test_before_push.md`.
 - **Questions are reflection prompts — answer them, do not execute them.** "Did you read X?" is not an instruction to read X and then act. Answer "no, not fully" or "yes" and stop. Action requires explicit user request.
 - **Shared-state changes require surfacing before acting.** Renames in `yac-discussions/`, edits to files in other repos, commits to shared branches — propose the change, wait for the go-ahead, then act.
-- **Template sections marked "verbatim" stay empty unless user-provided.** In `/case file`, the *Peter's Take* field is for direct user input only. Paraphrasing conversation context into it is inventing attributed words.
+- **Template sections marked "verbatim" stay empty unless user-provided.** In `/wip-case file`, the *Peter's Take* field is for direct user input only. Paraphrasing conversation context into it is inventing attributed words.
 - **`git status --short` at session start is evidence.** When uncommitted files appear from a prior session, diff them before deciding commit scope. "These look unrelated to my task" based on paths alone produces partial commits that link locally and break CI.
 
 ### 4.4 Meta-principles about the discipline itself
@@ -560,7 +560,7 @@ You will be replaced. This session — every correction Peter makes, every insig
 **Two halves of the same contract:**
 
 **Encode before you end.** Anything worth keeping goes into durable artifacts before the session ends:
-- A `/lesson` entry (structured, for future gene pool review)
+- A `/wip-lesson` entry (structured, for future gene pool review)
 - A memory file via the memory system (cross-session discipline within the same agent project)
 - A session-report *Dead Ends* section (for the next YAC continuing this work)
 - **Suggest** an addition or modification to the canonical CLAUDE.md source if the lesson is universal. The canonical source is the heredoc in `scripts/setup-backend-agent.sh`, or the staging file `templates/claude-md-additions.md` in FR-YAC. Do **not** edit the local generated `CLAUDE.md` — it will be overwritten the next time the setup script runs. Flag the suggestion; Peter approves.
@@ -569,7 +569,7 @@ You will be replaced. This session — every correction Peter makes, every insig
 - Read this file fully
 - Read the latest session report in `/Users/peter/Development/FR-YAC/reports/BE-YAC-*` (match your prefix)
 - Read `git status --short` and diff any uncommitted files
-- Read any open cases via `/case list`
+- Read any open cases via `/wip-case list`
 
 Do not say "got it, won't happen again" unless you have written the lesson down. The next agent will make the same mistake unless you leave a trace.
 
@@ -624,19 +624,19 @@ Do not `pip install` new packages into the venv without approval — `.venv` is 
 
 | Command | Purpose |
 |---|---|
-| `/setup` | First-run environment check |
-| `/resume` | Recover context after compaction or new session |
+| `/wip-setup` | Mint a fresh session ID + environment check (use on a brand-new session) |
+| `/wip-wake` | Roll the prior session over (close it, mint a linked one) + recover context — use after `/clear` or compaction |
 | `/wip-status` | Service health + data state |
-| `/understand <component>` | Deep-dive into a component or library |
-| `/test` | Run component tests |
-| `/quality` | Run quality audit |
-| `/review-changes` | Analyze uncommitted work |
-| `/pre-commit` | CI-equivalent checks |
-| `/report` | Capture fireside chat or trigger session summary |
-| `/lesson` | Capture a lesson into structured memory |
-| `/doc-review` | Run a documentation audit on a target file or directory |
-| `/deploy redeploy|install|verify` | Routinized deployment with mandatory pre-flight (CASE-298) |
-| `/case file|list|read|respond|implement|close|comment` | Cross-agent case management |
+| `/wip-understand <component>` | Deep-dive into a component or library |
+| `/wip-test` | Run component tests |
+| `/wip-quality` | Run quality audit |
+| `/wip-review-changes` | Analyze uncommitted work |
+| `/wip-pre-commit` | CI-equivalent checks |
+| `/wip-report` | Capture fireside chat or trigger session summary |
+| `/wip-lesson` | Capture a lesson into structured memory |
+| `/wip-doc-review` | Run a documentation audit on a target file or directory |
+| `/wip-deploy redeploy|install|verify` | Routinized deployment with mandatory pre-flight (CASE-298) |
+| `/wip-case file|list|read|respond|implement|close|comment` | Cross-agent case management |
 
 ---
 
@@ -650,37 +650,21 @@ You report your work to the Field Reporter by writing files to a shared director
 
 **Off the record:** if Peter says "off the record" or "don't report this," skip reporting for that segment. Resume when told.
 
-**Session identity.** Assign yourself `BE-YAC-YYYYMMDD-HHMM` at start. Create the report directory:
+**Session identity.** Your session ID is minted by `/wip-setup` (fresh start) or `/wip-wake` (continuation after `/clear` or compaction) and stored in `.claude/.session-id`. **Read it; never hand-mint or rotate it** — `cat "$CLAUDE_PROJECT_DIR/.claude/.session-id"`. Those commands also create `reports/<session-id>/`, write the initial `session.md`, and (for `/wip-wake`) auto-close the prior session with `continues_from` linkage. The role prefix (`BE-YAC`) comes from `.claude/.session-role`, written at scaffold time — do not run `date`-based ID assignment yourself.
 
-```bash
-mkdir -p /Users/peter/Development/FR-YAC/reports/BE-YAC-YYYYMMDD-HHMM/
-```
-
-**Previous session check.** At session start and on `/resume`:
-
-```bash
-ls -d /Users/peter/Development/FR-YAC/reports/BE-YAC-* 2>/dev/null | tail -1
-```
-
-Read that session's `session.md` if one exists. Faster and richer than reconstructing from git. If continuing (e.g., after compaction), add to your `session.md` frontmatter:
-
-```yaml
-continues: BE-YAC-YYYYMMDD-HHMM
-```
-
-**Create `session.md` immediately:**
+The `session.md` they create carries this frontmatter — the **local-first identity contract** (`.claude/.session-id` + this frontmatter are authoritative; the kb SESSION record is a derived mirror that catches up on the next reachable write):
 
 ```yaml
 ---
-session: BE-YAC-YYYYMMDD-HHMM
-type: backend
-repo: World-in-a-Pie
-started: YYYY-MM-DD HH:MM
-phase: <implement | bugfix | design | test | refactor | docs | other>
-tasks:
-  - <initial task from user>
+session_id: BE-YAC-YYYYMMDD-HHMMSS
+role: BE-YAC
+started_at: YYYY-MM-DDTHH:MM:SS
+status: active                      # flipped to `closed` by /wip-report session-end or /wip-wake
+continues_from: <prior-session-id>  # present only on a /wip-wake continuation
 ---
 ```
+
+Seconds precision (`HHMMSS`) is deliberate — it eliminates the same-minute collision class. Record the working phase and task list in the body as you go; don't add a hand-written `continues:` field — `/wip-wake` writes `continues_from` as part of the rollover.
 
 **After every commit**, append to `commits.md` (read first — skip if the hash is already listed, to avoid post-compaction duplicates):
 
@@ -695,7 +679,7 @@ tasks:
 **Discovered:** <surprises, bugs, gaps — omit if nothing>
 ```
 
-**Session summary.** Write to `session.md` when Peter runs `/report session-end` or the session is naturally ending. Update (overwrite) the summary section, don't append:
+**Session summary.** Write to `session.md` when Peter runs `/wip-report session-end` or the session is naturally ending. Update (overwrite) the summary section, don't append:
 
 ```markdown
 ## Session Summary
@@ -710,17 +694,17 @@ tasks:
 **For the next YAC:** <context the next agent needs to pick up>
 ```
 
-**Fireside chats.** When Peter initiates a design discussion, architecture debate, or scope conversation, use `/report` to capture it. Not just what was decided — why, what alternatives were considered, what Peter actually said.
+**Fireside chats.** When Peter initiates a design discussion, architecture debate, or scope conversation, use `/wip-report` to capture it. Not just what was decided — why, what alternatives were considered, what Peter actually said.
 
-**Running log.** For session-meaningful work that is **neither a change, an end-state, nor a fireside-grade decision**, append to `session-updates.md` via `/report update-session [terse note]`. Three trigger categories: (1) discoveries without a commit anchor (e.g., "scaffold imports `./wip-api.js` which doesn't exist"), (2) scope-trim decisions mid-session (why you're doing less than originally pitched), (3) block/unblock state and pre-`/compact` snapshots. Append-only — distinct from `session.md` (overwritten by `/report session-end`) and `report-<slug>.md` (per-decision). Each entry is **timestamp + short headline + one paragraph**. Discipline test before writing: *"Would future-me, after a compaction, want to know this in 6 hours?"* If yes, write. If "this is just thinking out loud," don't. The four files together — `session.md` + `commits.md` + `session-updates.md` + any `report-*.md` — are what `/resume` reads to rebuild context. **`/compact` vs `/clear`:** before `/compact` (same agent continues, conversation just summarized) write a running-log entry — Mode 2. Before `/clear` or end-of-day (next agent starts cold from durable artifacts) run `/report session-end` — Mode 3. The two events look similar but have different recovery semantics.
+**Running log.** For session-meaningful work that is **neither a change, an end-state, nor a fireside-grade decision**, append to `session-updates.md` via `/wip-report update-session [terse note]`. Three trigger categories: (1) discoveries without a commit anchor (e.g., "scaffold imports `./wip-api.js` which doesn't exist"), (2) scope-trim decisions mid-session (why you're doing less than originally pitched), (3) block/unblock state and pre-`/compact` snapshots. Append-only — distinct from `session.md` (overwritten by `/wip-report session-end`) and `report-<slug>.md` (per-decision). Each entry is **timestamp + short headline + one paragraph**. Discipline test before writing: *"Would future-me, after a compaction, want to know this in 6 hours?"* If yes, write. If "this is just thinking out loud," don't. The four files together — `session.md` + `commits.md` + `session-updates.md` + any `report-*.md` — are what `/wip-wake` reads to rebuild context. **`/compact` vs `/clear`:** before `/compact` (same agent continues, conversation just summarized) write a running-log entry — Mode 2. Before `/clear` or end-of-day (next agent starts cold from durable artifacts) run `/wip-report session-end` — Mode 3. The two events look similar but have different recovery semantics.
 
 ### 12.2 Cross-Agent Cases
 
-When you hit a bug, missing feature, or platform gap another YAC needs to handle: file a case via `/case`.
+When you hit a bug, missing feature, or platform gap another YAC needs to handle: file a case via `/wip-case`.
 
 **Shared directory:** `yac-discussions/` (symlink to shared case store). If it doesn't exist, cases are not enabled for this project — tell Peter.
 
-The `/case` command lives at `.claude/commands/case.md`. Peter symlinks both the directory and the command into participating projects.
+The `/wip-case` command lives at `.claude/commands/wip-case.md`. Peter symlinks both the directory and the command into participating projects.
 
 **When to file:**
 - Bug in a platform component (document-store, registry, MCP server, client libs)
@@ -759,7 +743,7 @@ Full rule at `feedback_push_to_gitea.md`.
 
 **Branching:** work on `develop`. `main` is the stable branch — tagged releases only. PRs go to `main` when ready.
 
-**CI:** Gitea Actions via `act_runner` on `wip-pi.local`. Workflow at `.gitea/workflows/test.yaml`. Run `/pre-commit` locally before pushing.
+**CI:** Gitea Actions via `act_runner` on `wip-pi.local`. Workflow at `.gitea/workflows/test.yaml`. Run `/wip-pre-commit` locally before pushing.
 
 ---
 
@@ -826,12 +810,19 @@ rm -f "$WIP_ROOT/.claude/commands/"*.md 2>/dev/null || true
 cp "$WIP_ROOT/docs/slash-commands/backend/"*.md "$WIP_ROOT/.claude/commands/"
 echo "   Copied: $(find "$WIP_ROOT/.claude/commands/" -maxdepth 1 -name '*.md' -type f | wc -l | tr -d ' ') commands"
 
+# --- Session role marker (CASE-389) ---
+# /wip-setup and /wip-wake read this to mint <ROLE>-YYYYMMDD-HHMMSS session IDs.
+# Backend's role is fixed; written/refreshed every run. (.claude/ is gitignored;
+# .session-id itself is minted by /wip-setup, not here.)
+printf 'BE-YAC\n' > "$WIP_ROOT/.claude/.session-role"
+echo "   Wrote: .claude/.session-role (BE-YAC)"
+
 # --- 4b. Generate .claude/settings.local.json defaults (CASE-169 + CASE-385) ---
 # 31 catchall bash patterns: 23 from CASE-169 (routine read-only file
 # inspection — cat/sed/grep/etc.) + 8 from CASE-385 (the commands
-# `/setup` itself runs — venv check, container-runtime probe, MCP
+# `/wip-setup` itself runs — venv check, container-runtime probe, MCP
 # import test, wip-deploy operator surface, APP-YAC curl probe).
-# Goal: a fresh YAC's first `/setup` runs through all environment
+# Goal: a fresh YAC's first `/wip-setup` runs through all environment
 # checks with zero bash permission prompts, so time-to-productive
 # tracks the script wall-clock rather than human-approval latency.
 # File is gitignored; user customizations preserved on re-run.
@@ -912,6 +903,6 @@ else
     echo ""
     echo "Next steps:"
     echo "  claude"
-    echo "  /setup         # first-run environment checks"
+    echo "  /wip-setup         # first-run environment checks"
 fi
 echo ""

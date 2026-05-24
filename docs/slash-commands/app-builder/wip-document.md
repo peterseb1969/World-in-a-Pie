@@ -1,4 +1,4 @@
-Generate or update standardized documentation for a constellation app. Run this after Phase 4, after significant `/improve` sessions, and before any handoff or long pause.
+Generate or update standardized documentation for a constellation app. Run this after Phase 4, after significant `/wip-improve` sessions, and before any handoff or long pause.
 
 ### Why this exists
 
