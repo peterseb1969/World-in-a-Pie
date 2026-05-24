@@ -495,6 +495,25 @@ def test_document_relationship_url_paths_match_phase4_routes() -> None:
 
 
 # =========================================================================
+# CASE-05: bulk document delete is exposed as an MCP tool + client method
+# =========================================================================
+
+
+def test_delete_documents_bulk_tool_and_method_exist() -> None:
+    """The bulk-delete surface must exist on both server and client, and be
+    classified as a write tool (so readonly mode strips it)."""
+    assert hasattr(server_module, "delete_documents_bulk"), (
+        "server.py missing tool: delete_documents_bulk"
+    )
+    assert hasattr(WipClient, "delete_documents"), (
+        "WipClient missing method: delete_documents"
+    )
+    assert "delete_documents_bulk" in server_module.WRITE_TOOLS, (
+        "delete_documents_bulk must be in WRITE_TOOLS (it mutates state)"
+    )
+
+
+# =========================================================================
 # Test J — CASE-315: query_documents wrapper splits namespace correctly
 # =========================================================================
 
@@ -516,7 +535,7 @@ async def test_query_documents_namespace_routed_as_query_param() -> None:
             "filters": [{"field": "data.title", "operator": "eq", "value": "x"}],
         })
 
-    args, kwargs = mock_http.post.call_args
+    _args, kwargs = mock_http.post.call_args
     body = kwargs.get("json")
     params = kwargs.get("params") or {}
 

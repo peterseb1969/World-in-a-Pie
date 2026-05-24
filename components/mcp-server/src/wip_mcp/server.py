@@ -2488,6 +2488,31 @@ async def delete_document(
         return _error(e)
 
 
+@mcp.tool()
+async def delete_documents_bulk(
+    document_ids: list[str],
+    hard_delete: bool = False,
+    namespace: str | None = None,
+) -> str:
+    """Delete multiple documents at once. Returns per-item results.
+
+    Prefer this over repeated delete_document calls when clearing many
+    documents (e.g., before a re-import). Soft-delete (deactivate) by default.
+
+    Args:
+        document_ids: Document IDs or synonyms to delete.
+        hard_delete: Permanently remove all listed documents (requires namespace
+            deletion_mode='full'). Applies uniformly to every id.
+        namespace: Namespace for synonym resolution. Omit to use the server default.
+    """
+    try:
+        items = [{"id": did, "hard_delete": hard_delete} for did in document_ids]
+        data = await get_client().delete_documents(items, namespace=namespace)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
 # ===================================================================
 # Tools — Import/Export
 # ===================================================================
@@ -3522,6 +3547,7 @@ WRITE_TOOLS = frozenset({
     "update_document",
     "archive_document",
     "delete_document",
+    "delete_documents_bulk",
     # Files
     "upload_file",
     "delete_file",

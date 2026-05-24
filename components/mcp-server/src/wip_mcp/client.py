@@ -128,19 +128,19 @@ class WipClient:
     ):
         base = api_url or os.getenv("WIP_API_URL")
 
-        self.registry_url = base or registry_url or os.getenv(
+        self.registry_url: str = base or registry_url or os.getenv(
             "REGISTRY_URL", "http://localhost:8001"
         )
-        self.def_store_url = base or def_store_url or os.getenv(
+        self.def_store_url: str = base or def_store_url or os.getenv(
             "DEF_STORE_URL", "http://localhost:8002"
         )
-        self.template_store_url = base or template_store_url or os.getenv(
+        self.template_store_url: str = base or template_store_url or os.getenv(
             "TEMPLATE_STORE_URL", "http://localhost:8003"
         )
-        self.document_store_url = base or document_store_url or os.getenv(
+        self.document_store_url: str = base or document_store_url or os.getenv(
             "DOCUMENT_STORE_URL", "http://localhost:8004"
         )
-        self.reporting_sync_url = base or reporting_sync_url or os.getenv(
+        self.reporting_sync_url: str = base or reporting_sync_url or os.getenv(
             "REPORTING_SYNC_URL", "http://localhost:8005"
         )
         self.api_key = api_key or _resolve_api_key()
@@ -1054,6 +1054,22 @@ class WipClient:
             namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
+
+    async def delete_documents(
+        self, items: list[dict], namespace: str | None = None,
+    ) -> dict:
+        """Delete multiple documents via the bulk DELETE endpoint.
+
+        Returns the full BulkResponse (per-item results). IDs may be synonyms;
+        `namespace` scopes their resolution (falls back to the client default).
+        """
+        resp = await self._delete(
+            self.document_store_url,
+            "/api/document-store/documents",
+            json=items,
+            namespace=namespace or self.default_namespace,
+        )
+        return self._unwrap_bulk(resp)
 
     async def query_documents(self, filters: dict) -> dict:
         # CASE-315: the doc-store endpoint accepts `namespace` as a QUERY PARAM,

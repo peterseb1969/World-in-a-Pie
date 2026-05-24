@@ -97,6 +97,14 @@ tools:
     notes: |
       Each item follows the same schema as create_document.
 
+  delete_documents_bulk:
+    description: "Delete multiple documents at once. Returns per-item results."
+    notes: |
+      Prefer this over repeated delete_document calls when clearing many
+      documents (e.g. before a re-import). Soft-delete by default; set
+      hard_delete=true to permanently remove (requires namespace
+      deletion_mode='full'). hard_delete applies uniformly to every id.
+
   # -- Query --
   query_documents:
     description: "Query documents with complex filters (low-level). Prefer query_by_template."
