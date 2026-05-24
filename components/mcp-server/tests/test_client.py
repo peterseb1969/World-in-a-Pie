@@ -608,6 +608,45 @@ async def test_delete_backup_job():
 
 
 # =========================================================================
+# CASE-05: delete_documents — bulk DELETE, full BulkResponse unwrap
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_delete_documents_sends_full_list_and_unwraps_bulk():
+    """delete_documents posts the whole item list to the bulk DELETE endpoint
+    and returns the full BulkResponse — not a single unwrapped result."""
+    bulk = {
+        "total": 2,
+        "succeeded": 2,
+        "failed": 0,
+        "results": [
+            {"index": 0, "status": "deleted", "id": "D-001"},
+            {"index": 1, "status": "deleted", "id": "D-002"},
+        ],
+    }
+    mock_http = _mock_http(_mock_response(bulk))
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        result = await client.delete_documents(
+            [{"id": "D-001", "hard_delete": True},
+             {"id": "D-002", "hard_delete": True}],
+            namespace="aa",
+        )
+
+    assert result["succeeded"] == 2
+    assert len(result["results"]) == 2
+    call = mock_http.request.call_args
+    assert call.args[0] == "DELETE"
+    assert "/api/document-store/documents" in call.args[1]
+    assert call.kwargs["json"] == [
+        {"id": "D-001", "hard_delete": True},
+        {"id": "D-002", "hard_delete": True},
+    ]
+    assert call.kwargs["params"] == {"namespace": "aa"}
+
+
+# =========================================================================
 # CASE-290: upsert_namespace — PUT body filters None fields
 # =========================================================================
 

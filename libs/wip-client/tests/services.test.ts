@@ -476,6 +476,41 @@ describe('Service classes via createWipClient', () => {
       expect(body).toEqual([{ id: 'D-001', updated_by: 'admin' }])
     })
 
+    it('deleteDocuments sends bulk DELETE', async () => {
+      mockJsonResponse({
+        results: [
+          { index: 0, status: 'deleted', id: 'D-001' },
+          { index: 1, status: 'deleted', id: 'D-002' },
+        ],
+        total: 2,
+        succeeded: 2,
+        failed: 0,
+      })
+
+      const result = await client.documents.deleteDocuments(['D-001', 'D-002'])
+
+      expect(result.succeeded).toBe(2)
+      const [, options] = fetchMock.mock.calls[0]
+      expect(options.method).toBe('DELETE')
+      const body = JSON.parse(options.body)
+      expect(body).toEqual([{ id: 'D-001' }, { id: 'D-002' }])
+    })
+
+    it('deleteDocuments forwards hard_delete on every item', async () => {
+      mockJsonResponse({
+        results: [{ index: 0, status: 'deleted', id: 'D-001' }],
+        total: 1,
+        succeeded: 1,
+        failed: 0,
+      })
+
+      await client.documents.deleteDocuments(['D-001'], { hardDelete: true })
+
+      const [, options] = fetchMock.mock.calls[0]
+      const body = JSON.parse(options.body)
+      expect(body).toEqual([{ id: 'D-001', hard_delete: true }])
+    })
+
     it('getTableView sends GET with params', async () => {
       mockJsonResponse({
         template_id: '0190c000-0000-7000-0000-000000000001',
