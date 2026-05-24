@@ -35,10 +35,10 @@ def render_router_caddyfile(cfg: RouterConfig) -> str:
         # CASE-378: emit a sibling bare-path handle when the route opts
         # out of redirect (the /mcp pattern from CASE-312). Without it,
         # `handle <path>/*` doesn't match the bare path; Caddy returns
-        # 200 + empty body; MCP client crashes with "Unexpected content
-        # type: null". For routes that DO redirect bare to trailing-
-        # slash (the /api/<svc>/* default), the bare match doesn't
-        # matter — apps always send a sub-path.
+        # 200 + empty body; the MCP client then crashes with an
+        # "Unexpected content type: null" error. For routes that DO
+        # redirect bare to trailing-slash (the /api/<svc>/* default),
+        # the bare match doesn't matter — apps always send a sub-path.
         matchers: list[str] = []
         if not route.redirect_bare_path:
             matchers.append(route.path)
