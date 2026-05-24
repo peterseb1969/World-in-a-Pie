@@ -25,8 +25,10 @@
 #   Use after a `git pull` brings new docs/slash-commands/backend/*.md or
 #   heredoc changes — those don't propagate to .claude/commands/* automatically
 #   because that directory is generated, not git-tracked.
-#   A running BE-YAC session picks up new slash commands only on /clear or
-#   next session start.
+#   Once --refresh re-copies them, a running session picks up the new slash
+#   commands automatically — Claude Code live-detects .claude/commands/ edits and
+#   re-reads on the next invocation (no /clear). CLAUDE.md and .mcp.json changes,
+#   by contrast, take effect only on a next session start.
 #
 
 set -euo pipefail
@@ -895,9 +897,9 @@ echo ""
 if $REFRESH_MODE; then
     echo "Done! Backend agent environment refreshed."
     echo ""
-    echo "A running Claude session picks up new slash commands only on /clear or"
-    echo "next session start; CLAUDE.md and .mcp.json changes take effect on next"
-    echo "session start. Restart Claude if you want the changes live now."
+    echo "Slash-command edits are live in the running session immediately —"
+    echo "Claude Code re-reads .claude/commands/ on the next invocation (no /clear"
+    echo "or restart). CLAUDE.md and .mcp.json changes do need a next session start."
 else
     echo "Done! Backend agent is configured."
     echo ""
