@@ -1940,6 +1940,13 @@ class DocumentService:
         timing["total"] = (time.perf_counter() - total_start) * 1000
         self._record_creation_timing(timing)
         sorted_results = sorted(results, key=lambda r: r.index)
+        # Bulk-response contract (CASE-413): every input item maps to exactly
+        # one result row. A mismatch means a code path dropped or duplicated an
+        # item — fail loud rather than return a silently incomplete envelope.
+        assert len(sorted_results) == total, (
+            f"bulk response invariant violated: {len(sorted_results)} result "
+            f"rows for {total} input items"
+        )
         return BulkResponse(
             results=sorted_results,
             total=total,
@@ -1954,20 +1961,22 @@ class DocumentService:
         namespace: str,
         continue_on_error: bool,
         timing: dict[str, float],
-    ) -> tuple[list, list[BulkResultItem], int, bool]:
-        """Stage 1 of bulk_create: validate every item.
+    ) -> tuple[list, list[BulkResultItem], int]:
+        """Stage 1 of bulk_create: validate items.
 
-        Returns (validation_results, results, failed, aborted):
+        Returns (validation_results, results, failed):
         - validation_results: (i, item, validation_result) for each VALID item
         - results: error/skipped BulkResultItems accumulated during validation
         - failed: count of error rows
-        - aborted: True iff continue_on_error=False hit a failure and the batch
-          must stop before the create stages. continue_on_error=True never
-          aborts — it collects per-item errors concurrently and presses on.
 
-        Sets timing["1_validation"]. Behaviour mirrors the previous inline
-        two-path logic exactly; the pre-failure-item drop on the aborted path
-        is the wart tracked by CASE-413.
+        continue_on_error=True validates every item concurrently, collecting
+        per-item errors. continue_on_error=False validates sequentially and
+        stops at the first failure: that item gets an error row and every item
+        after it gets a skipped row. Items that validated BEFORE the failure
+        are returned in validation_results and created downstream — CASE-413,
+        Option 2 (create-what-validated-then-stop).
+
+        Sets timing["1_validation"].
         """
         start = time.perf_counter()
         validation_results: list = []
@@ -1996,7 +2005,6 @@ class DocumentService:
                 for j in range(after_index + 1, len(items))
             ]
 
-        aborted = False
         if continue_on_error:
             # All validations run concurrently — errors collected per-item
             tasks = [_validate_one(i, item) for i, item in enumerate(items)]
@@ -2040,7 +2048,6 @@ class DocumentService:
                             error=self._format_validation_errors(validation_result.errors)
                         ))
                         results.extend(_skipped_rows(i))
-                        aborted = True
                         break
                 except Exception as e:
                     failed += 1
@@ -2048,11 +2055,10 @@ class DocumentService:
                         index=i, status="error", error=str(e)
                     ))
                     results.extend(_skipped_rows(i))
-                    aborted = True
                     break
 
         timing["1_validation"] = (time.perf_counter() - start) * 1000
-        return validation_results, results, failed, aborted
+        return validation_results, results, failed
 
     async def _apply_validated_item(
         self,
@@ -2243,12 +2249,14 @@ class DocumentService:
         timing["0_cache_warmup"] = (time.perf_counter() - start) * 1000
 
         # Stage 1: Validate all documents (see _validate_batch — concurrent
-        # when continue_on_error, sequential stop-on-first otherwise).
-        validation_results, results, failed, aborted = await self._validate_batch(
+        # when continue_on_error, sequential stop-on-first otherwise). On the
+        # sequential stop path, items that validated before the failure are in
+        # validation_results and proceed to creation (CASE-413, Option 2); the
+        # failing item's error row and the trailing skipped rows are already in
+        # results.
+        validation_results, results, failed = await self._validate_batch(
             items, namespace, continue_on_error, timing
         )
-        if aborted:
-            return self._finalize_bulk_response(results, len(items), timing, total_start)
 
         # Aggregate per-stage validation timing from all individual results
         val_stage_totals: dict[str, float] = {}
