@@ -159,6 +159,10 @@ mkdir -p "$APP_DIR/tools"
 # Canonical source is WIP. Gene pool updates must propagate to all repos.
 
 echo "2. Copying slash commands..."
+# Remove any existing commands first so renamed/retired gene-pool commands
+# (e.g. the pre-CASE-390 un-prefixed setup.md/resume.md) don't linger alongside
+# the current wip-* set. Matches setup-backend-agent.sh's refresh behavior.
+rm -f "$APP_DIR/.claude/commands/"*.md 2>/dev/null || true
 cp "$WIP_ROOT/docs/slash-commands/app-builder/"*.md "$APP_DIR/.claude/commands/"
 echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
 
