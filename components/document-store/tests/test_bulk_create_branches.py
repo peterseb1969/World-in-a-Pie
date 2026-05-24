@@ -34,24 +34,21 @@ def _person(national_id: str, **overrides) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_bulk_continue_on_error_false_halts_on_first_validation_failure(
+async def test_bulk_continue_on_error_false_creates_validated_then_stops(
     client: AsyncClient, auth_headers: dict
 ):
-    """continue_on_error=false halts the WHOLE batch on the first validation
-    failure, before the create stage runs.
+    """continue_on_error=false stops PROCESSING at the first validation
+    failure, but items that validated before it are still created
+    (CASE-413, Option 2 — create-what-validated-then-stop).
 
-    Pins CURRENT behaviour (CASE-336 test bed): validation runs for every
-    item up front, then the sequential path early-returns the moment an item
-    fails. Consequences worth knowing:
-      - The failing item (index 1) is reported 'error'.
-      - Items AFTER it (index 2) are reported 'skipped'.
-      - Items BEFORE it that already validated (index 0) are NOT created and
-        DO NOT appear in results at all — total=3 but only 2 result rows.
+      - Index 0 validated cleanly → 'created' (no longer silently dropped).
+      - The failing item (index 1) is reported 'error'; processing stops here.
+      - Items AFTER it (index 2) are reported 'skipped', never attempted.
 
-    The index-0 disappearance is a latent silent-data wart filed as CASE-413
-    (not fixed here — fixing it is a behaviour change, kept separate from the
-    decomposition refactor this test bed protects). When CASE-413 lands, the
-    `0 not in by_index` / `succeeded == 0` assertions below flip.
+    This matches how Stage-4 creation failures already behave with
+    continue_on_error=false (commit-what-succeeded, then stop). The invariant
+    CASE-413 restores: every input item has exactly one result row, so
+    len(results) == total always.
     """
     items = [
         _person("510000001"),
@@ -69,13 +66,15 @@ async def test_bulk_continue_on_error_false_halts_on_first_validation_failure(
     by_index = {r["index"]: r for r in bulk["results"]}
 
     assert bulk["total"] == 3
-    # Index 0 validated cleanly but is dropped entirely on the early return.
-    assert 0 not in by_index
+    # Every input item gets exactly one result row (the CASE-413 invariant).
+    assert len(bulk["results"]) == bulk["total"]
+    # Index 0 validated cleanly and is created — not dropped.
+    assert by_index[0]["status"] == "created"
     assert by_index[1]["status"] == "error"
     assert by_index[2]["status"] == "skipped"
     assert bulk["failed"] == 1
-    # Nothing was created — all-or-nothing on validation failure.
-    assert bulk["succeeded"] == 0
+    # Only the pre-failure valid item was created.
+    assert bulk["succeeded"] == 1
 
 
 @pytest.mark.asyncio
@@ -148,7 +147,7 @@ async def test_bulk_mixed_new_and_update(client: AsyncClient, auth_headers: dict
     brand-new document — Stage 4 must branch per-item correctly."""
     seed = [_person("550000001", age=20)]
     # seed is single-item → create_document path; create it, then batch-update.
-    await client.post(DOCS_URL, headers=auth_headers, json=seed + [_person("550000002", age=21)])
+    await client.post(DOCS_URL, headers=auth_headers, json=[*seed, _person("550000002", age=21)])
 
     batch = [
         _person("550000001", age=99),  # existing identity, changed → updated
