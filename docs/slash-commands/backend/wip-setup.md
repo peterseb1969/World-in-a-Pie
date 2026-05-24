@@ -26,7 +26,7 @@ First-run session-identity mint, environment check, guided setup, and **mandator
    ---
    session_id: <ID>
    role: <ROLE>
-   started_at: <ISO-8601 derived from the ID's YYYYMMDD-HHMMSS>
+   started_at: <the ID's YYYYMMDD-HHMMSS as a naive datetime, YYYY-MM-DDTHH:MM:SS, NO timezone suffix>
    status: active
    ---
    ```
