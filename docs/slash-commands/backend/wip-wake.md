@@ -14,7 +14,7 @@ Identity is **local-first**: `.claude/.session-id` is the single source of truth
      > Error: prior session dir `reports/<prior-id>/` not found. `/wip-wake` won't fabricate state. Restore the dir, or `rm .claude/.session-id` and run `/wip-setup` for a fresh discontinuous start.
    - Read the `status:` field from `reports/<prior-id>/session.md` frontmatter (local read). Missing or malformed frontmatter → treat as `active` (conservative default; the rewrite below regenerates well-formed frontmatter).
    - **Already `status: closed`** (operator ran `/wip-report session-end`, or a previous `/wip-wake` already closed it) → **skip the close phase**: do NOT recompose the body, do NOT touch `ended_at`, do NOT overwrite the hand-written `## Session Summary`. Go to step 3.
-   - **Otherwise** (`active` or missing) — compute `<close_ts>` once, then **atomically rewrite** `reports/<prior-id>/session.md` (read full content, modify, write to a temp file, `mv` over the original — POSIX-atomic; never truncate-in-place): set `status: closed` + `ended_at: <close_ts>` in frontmatter (regenerating `session_id` / `role` / `started_at` from `<prior-id>` if frontmatter was absent — `continues_from` cannot be recovered this way; that loss is acknowledged), preserve the existing body, and append `## Session Summary — auto-closed by /wip-wake (<close_ts>)`. The frontmatter flip and the summary append are **one** atomic write so a partial failure can't leave a half-state.
+   - **Otherwise** (`active` or missing) — compute `<close_ts>` once (`date '+%Y-%m-%dT%H:%M:%S'` — naive, NO timezone suffix), then **atomically rewrite** `reports/<prior-id>/session.md` (read full content, modify, write to a temp file, `mv` over the original — POSIX-atomic; never truncate-in-place): set `status: closed` + `ended_at: <close_ts>` in frontmatter (regenerating `session_id` / `role` / `started_at` from `<prior-id>` if frontmatter was absent — `continues_from` cannot be recovered this way; that loss is acknowledged), preserve the existing body, and append `## Session Summary — auto-closed by /wip-wake (<close_ts>)`. The frontmatter flip and the summary append are **one** atomic write so a partial failure can't leave a half-state.
    - Mirror the now-closed prior to kb: `python3 /Users/peter/Development/FR-YAC/tools/add-to-kb.py "/Users/peter/Development/FR-YAC/reports/<prior-id>/session.md"`. **kb-unreachable → warn-and-continue** — the local write already flipped `status: closed`, so a later re-run sees `closed` and skips; the manual retry is the same `add-to-kb.py` command.
 
 3. **Mint the new session** — `ROLE="$(cat "$CLAUDE_PROJECT_DIR/.claude/.session-role")"; NEW_ID="$ROLE-$(date '+%Y%m%d-%H%M%S')"`. (Role source is identical to `/wip-setup`. If `.session-role` is missing, stop and re-run the scaffold script with `--refresh`.)
@@ -24,7 +24,7 @@ Identity is **local-first**: `.claude/.session-id` is the single source of truth
    ---
    session_id: <NEW_ID>
    role: <ROLE>
-   started_at: <ISO-8601 derived from NEW_ID's YYYYMMDD-HHMMSS>
+   started_at: <NEW_ID's YYYYMMDD-HHMMSS as a naive datetime, YYYY-MM-DDTHH:MM:SS, NO timezone suffix>
    status: active
    continues_from: <prior-id>
    ---
