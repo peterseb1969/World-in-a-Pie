@@ -2024,7 +2024,9 @@ def nuke(
     """Tear down a WIP install.
 
     By default, runs `compose down` in the install dir (scoped teardown).
-    With `--purge-all`, removes every wip-* container/pod on the host.
+    With `--purge-all`, removes every wip-* container/pod on the host; with
+    `--remove-secrets` it also clears the `secrets/` dir of every install
+    under `~/.wip-deploy/` (host-wide, matching purge-all's blast radius).
 
     Examples:
 
@@ -2061,6 +2063,7 @@ def nuke(
         _nuke_purge_all(
             remove_data=remove_data,
             remove_images=remove_images,
+            remove_secrets=remove_secrets,
             dry_run=dry_run,
             yes=yes,
         )
@@ -2171,7 +2174,12 @@ def _read_saved_target_and_namespace(
 
 
 def _nuke_purge_all(
-    *, remove_data: bool, remove_images: bool, dry_run: bool, yes: bool
+    *,
+    remove_data: bool,
+    remove_images: bool,
+    remove_secrets: bool,
+    dry_run: bool,
+    yes: bool,
 ) -> None:
     typer.echo(
         typer.style("Purge-all scans for every wip-* resource on this host.", bold=True)
@@ -2190,6 +2198,14 @@ def _nuke_purge_all(
                 fg=typer.colors.YELLOW,
             )
         )
+    if remove_secrets:
+        typer.echo(
+            typer.style(
+                "  + secrets dirs will be removed for every install under "
+                "~/.wip-deploy/ — the next install regenerates fresh keys",
+                fg=typer.colors.YELLOW,
+            )
+        )
     if dry_run:
         typer.echo("  + dry-run: nothing will be removed")
     if not yes and not dry_run and not _confirm("Continue?"):
@@ -2199,6 +2215,7 @@ def _nuke_purge_all(
         report = nuke_purge_all(
             remove_data=remove_data,
             remove_images=remove_images,
+            remove_secrets=remove_secrets,
             dry_run=dry_run,
         )
     except NukeError as e:
@@ -2215,6 +2232,10 @@ def _nuke_purge_all(
         typer.echo(f"  networks:   {', '.join(report.networks_removed)}")
     if report.images_removed:
         typer.echo(f"  images:     {', '.join(report.images_removed)}")
+    if report.secrets_dirs_removed:
+        typer.echo(
+            f"  secrets:    {', '.join(str(p) for p in report.secrets_dirs_removed)}"
+        )
     typer.echo(
         typer.style(
             f"✓ {'dry-run: ' if dry_run else ''}{report.summary()}",

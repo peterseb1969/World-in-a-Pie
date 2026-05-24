@@ -279,6 +279,102 @@ class TestPurgeAll:
 
 
 # ────────────────────────────────────────────────────────────────────
+# purge-all + --remove-secrets (CASE-387)
+#
+# The bug: `nuke --purge-all --remove-secrets` silently dropped the
+# secrets removal, so a surviving secrets/api-key made the next install
+# reuse the same master key. purge-all is host-wide, so its secrets
+# removal sweeps every install's secrets/ dir under the install root.
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestPurgeAllRemoveSecrets:
+    @staticmethod
+    def _stub_podman(monkeypatch: pytest.MonkeyPatch) -> None:
+        """No containers/pods/volumes/images on the host — isolate the
+        secrets-removal behaviour from the resource sweep."""
+        monkeypatch.setattr("wip_deploy.nuke._podman_ls_names", lambda args: [])
+        monkeypatch.setattr("wip_deploy.nuke._podman", lambda args: None)
+
+    @staticmethod
+    def _make_install_root(tmp_path: Path, names: list[str]) -> Path:
+        """Build a fake ~/.wip-deploy/ with one install dir per name, each
+        carrying a secrets/api-key."""
+        root = tmp_path / ".wip-deploy"
+        root.mkdir()
+        for name in names:
+            secrets = root / name / "secrets"
+            secrets.mkdir(parents=True)
+            (secrets / "api-key").write_text("master-key-value")
+        return root
+
+    def test_removes_secrets_dir_for_every_install(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stub_podman(monkeypatch)
+        root = self._make_install_root(tmp_path, ["default", "wip-dev-local"])
+
+        report = nuke_purge_all(remove_secrets=True, install_root=root)
+
+        assert not (root / "default" / "secrets").exists()
+        assert not (root / "wip-dev-local" / "secrets").exists()
+        assert sorted(report.secrets_dirs_removed) == [
+            root / "default" / "secrets",
+            root / "wip-dev-local" / "secrets",
+        ]
+
+    def test_without_remove_secrets_leaves_dirs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stub_podman(monkeypatch)
+        root = self._make_install_root(tmp_path, ["default"])
+
+        report = nuke_purge_all(remove_secrets=False, install_root=root)
+
+        assert (root / "default" / "secrets").exists()
+        assert report.secrets_dirs_removed == []
+
+    def test_dry_run_reports_but_preserves(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stub_podman(monkeypatch)
+        root = self._make_install_root(tmp_path, ["default"])
+
+        report = nuke_purge_all(
+            remove_secrets=True, install_root=root, dry_run=True
+        )
+
+        # Reported as would-remove, but the dir survives the dry run.
+        assert (root / "default" / "secrets").exists()
+        assert report.secrets_dirs_removed == [root / "default" / "secrets"]
+
+    def test_install_without_secrets_dir_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stub_podman(monkeypatch)
+        root = tmp_path / ".wip-deploy"
+        root.mkdir()
+        # An install dir with no secrets/ subdir (e.g. a k8s-secrets install).
+        (root / "no-secrets-install").mkdir()
+        secrets = root / "has-secrets" / "secrets"
+        secrets.mkdir(parents=True)
+        (secrets / "api-key").write_text("v")
+
+        report = nuke_purge_all(remove_secrets=True, install_root=root)
+
+        assert report.secrets_dirs_removed == [root / "has-secrets" / "secrets"]
+
+    def test_missing_install_root_is_noop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stub_podman(monkeypatch)
+        report = nuke_purge_all(
+            remove_secrets=True, install_root=tmp_path / "nonexistent"
+        )
+        assert report.secrets_dirs_removed == []
+
+
+# ────────────────────────────────────────────────────────────────────
 # Image classification + parsing
 # ────────────────────────────────────────────────────────────────────
 
