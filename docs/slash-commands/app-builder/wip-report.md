@@ -40,7 +40,7 @@ Use for design decisions worth a permanent record.
 
 2. Identify the topic. Infer from context. If unclear, ask Peter. Create a short slug: `namespace-deletion-design`, `mutable-terminologies`, `scope-change-auth`.
 
-3. Create a file at `/Users/peter/Development/FR-YAC/reports/<YOUR-SESSION-ID>/wip-report-<topic-slug>.md` with this structure:
+3. Create a file at `/Users/peter/Development/FR-YAC/reports/<YOUR-SESSION-ID>/report-<topic-slug>.md` with this structure:
 
    ```markdown
    ---
@@ -141,7 +141,7 @@ Three things happen, in order:
 
 2. **Atomic local write** — in a *single* read-modify-write of `reports/<SESSION-ID>/session.md` (write a temp file, `mv` over the original — never truncate-in-place), do BOTH: (a) overwrite/insert the `## Session Summary` section in the body, and (b) set frontmatter `status: closed` and `ended_at: <now, ISO-8601>`. Collapsing both into one atomic write means a partial failure can't leave a half-state (summary without the status flip, or vice-versa).
 
-3. **Mirror to kb (warn-and-continue)** — `python3 /Users/peter/Development/FR-YAC/tools/add-to-kb.py "reports/<SESSION-ID>/session.md"`. Composes `data.body` per the SESSION dispatch and POSTs `status=closed` + `ended_at`. If kb is unreachable, log to stderr and proceed — the local write is authoritative; the mirror retries at the next mirror-emitting action or via a manual `add-to-kb.py` re-run.
+3. **Mirror to kb (warn-and-continue)** — `python3 /Users/peter/Development/FR-YAC/tools/add-to-kb.py "/Users/peter/Development/FR-YAC/reports/<SESSION-ID>/session.md"`. Composes `data.body` per the SESSION dispatch and POSTs `status=closed` + `ended_at`. If kb is unreachable, log to stderr and proceed — the local write is authoritative; the mirror retries at the next mirror-emitting action or via a manual `add-to-kb.py` re-run.
 
 **Idempotent on an already-closed session.** If the frontmatter already says `status: closed` (you ran `/wip-report session-end` once, or `/wip-wake` auto-closed it), do NOT append a second `## Session Summary` and do NOT re-flip the frontmatter — both are no-ops. Only the kb mirror re-fires (surfaces as `skipped` if the body is unchanged, `updated` if it was edited since).
 

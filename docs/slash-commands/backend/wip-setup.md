@@ -32,8 +32,8 @@ First-run session-identity mint, environment check, guided setup, and **mandator
    ```
    `continues_from` and `ended_at` are absent — `/wip-setup` never sets them (that's `/wip-wake`'s and `/wip-report session-end`'s job). Add a short body stub (task list, phase) as work begins.
 
-7. **Mirror to kb (warn-and-continue)** — `python3 /Users/peter/Development/FR-YAC/tools/add-to-kb.py "reports/$ID/session.md"`. If kb is unreachable, log to stderr and **PROCEED** — local state is authoritative; the mirror retries at the next `/wip-wake` or `/wip-report session-end`:
-   > Warning: kb mirror failed for `<ID>`; SESSION record not yet in kb. Will retry at next `/wip-wake`, `/wip-report session-end`, or manually via `python3 /Users/peter/Development/FR-YAC/tools/add-to-kb.py reports/<ID>/session.md`.
+7. **Mirror to kb (warn-and-continue)** — `python3 /Users/peter/Development/FR-YAC/tools/add-to-kb.py "/Users/peter/Development/FR-YAC/reports/$ID/session.md"`. If kb is unreachable, log to stderr and **PROCEED** — local state is authoritative; the mirror retries at the next `/wip-wake` or `/wip-report session-end`:
+   > Warning: kb mirror failed for `<ID>`; SESSION record not yet in kb. Will retry at next `/wip-wake`, `/wip-report session-end`, or manually via `python3 /Users/peter/Development/FR-YAC/tools/add-to-kb.py /Users/peter/Development/FR-YAC/reports/<ID>/session.md`.
 
 After Step 0, `.claude/.session-id` is the canonical identity for every subsequent `/wip-case`, `/wip-report`, and commit attribution. Proceed to the environment checks below.
 
