@@ -33,6 +33,6 @@ You have no memory between sessions. Without running this command, you risk recr
 
 ### When to Run
 - **Always** at the start of a new Claude Code session
-- Before running `/design-model` for a new app
-- Before running `/add-app` to add a constellation app
+- Before running `/wip-design-model` for a new app
+- Before running `/wip-add-app` to add a constellation app
 - Whenever you're unsure what state WIP is in

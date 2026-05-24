@@ -83,7 +83,7 @@ This makes context window exhaustion survivable. The next session picks up from 
 
 ### When to stop improving and build the next app
 
-There is no formal threshold. But consider moving to the next app (`/add-app`) when:
+There is no formal threshold. But consider moving to the next app (`/wip-add-app`) when:
 - Real data is imported and the core views work correctly
 - The primary workflow (import -> browse -> filter) is usable, not perfect
 - Known issues are cosmetic, not functional

@@ -4,9 +4,9 @@ Three modes. Each writes to a distinct file in your session report dir at `/User
 
 | Invocation | Mode | File written | Convention |
 |---|---|---|---|
-| `/report` (no arg) | Fireside | `report-<slug>.md` (one per decision) | Decision artifact: design discussions, choice points, alternatives weighed, rationale |
-| `/report update-session [optional terse note]` | Running log | `session-updates.md` (append-only) | Session-meaningful work that is neither a change, end-state, nor decision |
-| `/report session-end` | Wrap-up | `session.md` (Session Summary section, overwritten) | End-of-work synthesis: what happened, dead ends, downstream impact, unfinished, for-the-next-YAC |
+| `/wip-report` (no arg) | Fireside | `report-<slug>.md` (one per decision) | Decision artifact: design discussions, choice points, alternatives weighed, rationale |
+| `/wip-report update-session [optional terse note]` | Running log | `session-updates.md` (append-only) | Session-meaningful work that is neither a change, end-state, nor decision |
+| `/wip-report session-end` | Wrap-up | `session.md` (Session Summary section, overwritten) | End-of-work synthesis: what happened, dead ends, downstream impact, unfinished, for-the-next-YAC |
 
 ### Picking a mode before context resets
 
@@ -22,11 +22,11 @@ Reflex check: if the agent identity persists across the event, you want the runn
 
 ### Prerequisites
 
-You must have a session ID and report directory already created (see YAC Reporting section in CLAUDE.md). If you don't have one yet, create it now before proceeding.
+Your session ID lives in `.claude/.session-id` (written by `/wip-setup` or `/wip-wake`). Read it — `cat "$CLAUDE_PROJECT_DIR/.claude/.session-id"` (fall back to `$PWD/.claude/.session-id`) — and use that value as `<SESSION-ID>` everywhere below; the report dir is `/Users/peter/Development/FR-YAC/reports/<SESSION-ID>/`. If `.claude/.session-id` is missing, run `/wip-setup` (fresh) or `/wip-wake` (continuation) first — never hand-mint an ID.
 
 ---
 
-## Mode 1 — Bare `/report` (fireside)
+## Mode 1 — Bare `/wip-report` (fireside)
 
 Use for design decisions worth a permanent record.
 
@@ -40,7 +40,7 @@ Use for design decisions worth a permanent record.
 
 2. Identify the topic. Infer from context. If unclear, ask Peter. Create a short slug: `namespace-deletion-design`, `mutable-terminologies`, `scope-change-auth`.
 
-3. Create a file at `/Users/peter/Development/FR-YAC/reports/<YOUR-SESSION-ID>/report-<topic-slug>.md` with this structure:
+3. Create a file at `/Users/peter/Development/FR-YAC/reports/<YOUR-SESSION-ID>/wip-report-<topic-slug>.md` with this structure:
 
    ```markdown
    ---
@@ -83,13 +83,13 @@ Use for design decisions worth a permanent record.
 
 - Routine bug fixes → use `commits.md`
 - Standard phase work → use `session.md`
-- Session-meaningful work without a decision shape → use Mode 2 (`/report update-session`)
+- Session-meaningful work without a decision shape → use Mode 2 (`/wip-report update-session`)
 - Factual Q&A without broader implications → none of these
 - Peter said "off the record" → don't report
 
 ---
 
-## Mode 2 — `/report update-session [optional terse note]` (running log)
+## Mode 2 — `/wip-report update-session [optional terse note]` (running log)
 
 Use for session-meaningful work that is **neither a change, an end-state, nor a fireside-grade decision**. Three trigger categories:
 
@@ -101,7 +101,7 @@ Use for session-meaningful work that is **neither a change, an end-state, nor a 
 
 - Routine "still working" updates — those belong in chat, not the log.
 - Change-in-tree — use `commits.md`.
-- End-of-session wrap — use `/report session-end`.
+- End-of-session wrap — use `/wip-report session-end`.
 - Decision artifacts — use Mode 1.
 
 ### Entry format
@@ -118,22 +118,12 @@ If no `session-updates.md` exists yet, create it with this header at the top:
 ```
 # Session Updates — <session-id>
 
-Append-only running log. Distinct from session.md (overwritten at end) and report-<slug>.md (per-decision). Read by /resume after session.md and commits.md.
+Append-only running log. Distinct from session.md (overwritten at end) and report-<slug>.md (per-decision). Read by /wip-wake after session.md and commits.md.
 ```
 
-### Multi-day session rollover
+### One session-updates.md per session
 
-For sessions that span `/resume` calls (multi-day mega-sessions like `APP-RC-20260409-1649`): each `/resume` opens a new section with a `## /resume <YYYY-MM-DD HH:MM>` header. The file grows append-only, but the section breaks let `/resume` readers scope to the most recent block instead of reading through stale context.
-
-Example:
-
-```
-## /resume 2026-05-04 09:15
-First entry after the resume — picking up where the previous block left off.
-
-## 09:30 — short headline
-...
-```
+Under the session-per-context-window model (CASE-389), `session-updates.md` belongs to a **single** session and grows append-only within it — no multi-session rollover. `/wip-wake` ends the current session and mints a fresh one with its own `reports/<new-id>/` dir, so the next session's running log starts clean. Cross-session continuity is the `continues_from` chain (walk the SESSION records / `CONTINUES_FROM` edges), not in-file `## /resume`-style section breaks. (Legacy mega-sessions like `APP-RC-20260409-1649` predate this and packed many days into one file; new sessions don't.)
 
 ### Discipline test
 
@@ -141,22 +131,30 @@ Before writing an entry, ask: *"Would future-me reading this in 6 hours, after a
 
 ---
 
-## Mode 3 — `/report session-end` (wrap-up)
+## Mode 3 — `/wip-report session-end` (wrap-up)
 
-Overwrites the `## Session Summary` section in `session.md` with: what happened, dead ends, downstream impact, unfinished, for-the-next-YAC. Use before `/clear` or genuine end-of-day — when the next agent reads `session.md` cold. Skip before `/compact`: same agent continues, Mode 2 is the right artifact (see "Picking a mode" at the top). See the YAC Reporting section in CLAUDE.md for the full Session Summary structure.
+Closes the session: writes the operator-curated `## Session Summary`, flips the local frontmatter to `status: closed`, and mirrors the closed record to kb. Use before `/clear` or genuine end-of-day — when the next agent reads `session.md` cold. Skip before `/compact`: same agent continues, Mode 2 is the right artifact (see "Picking a mode" at the top).
 
-The end-of-session summary should reference key entries from `session-updates.md` if any were write-worthy in retrospect — but the running log is allowed to carry minor entries that the wrap-up skips.
+Three things happen, in order:
 
-Confirm to Peter that the summary was written.
+1. **Compose the Session Summary** from the current conversation — what happened, dead ends, downstream impact, unfinished, for-the-next-YAC. Operator-curated rich text (not a stock one-liner — that auto-close form is `/wip-wake`'s job). See the YAC Reporting section in CLAUDE.md for the full structure. Reference key `session-updates.md` entries if any were write-worthy in retrospect; the running log may carry minor entries the wrap-up skips.
+
+2. **Atomic local write** — in a *single* read-modify-write of `reports/<SESSION-ID>/session.md` (write a temp file, `mv` over the original — never truncate-in-place), do BOTH: (a) overwrite/insert the `## Session Summary` section in the body, and (b) set frontmatter `status: closed` and `ended_at: <now, ISO-8601>`. Collapsing both into one atomic write means a partial failure can't leave a half-state (summary without the status flip, or vice-versa).
+
+3. **Mirror to kb (warn-and-continue)** — `python3 /Users/peter/Development/FR-YAC/tools/add-to-kb.py "reports/<SESSION-ID>/session.md"`. Composes `data.body` per the SESSION dispatch and POSTs `status=closed` + `ended_at`. If kb is unreachable, log to stderr and proceed — the local write is authoritative; the mirror retries at the next mirror-emitting action or via a manual `add-to-kb.py` re-run.
+
+**Idempotent on an already-closed session.** If the frontmatter already says `status: closed` (you ran `/wip-report session-end` once, or `/wip-wake` auto-closed it), do NOT append a second `## Session Summary` and do NOT re-flip the frontmatter — both are no-ops. Only the kb mirror re-fires (surfaces as `skipped` if the body is unchanged, `updated` if it was edited since).
+
+Confirm to Peter that the summary was written and the session is closed.
 
 ---
 
-## Recovery integration (read by `/resume`)
+## Recovery integration (read by `/wip-wake`)
 
-`/resume` reads three files in order to rebuild context:
+`/wip-wake` reads three files in order to rebuild context:
 
-1. `session.md` — current state (last `/report session-end` snapshot or initial frontmatter)
+1. `session.md` — current state (last `/wip-report session-end` snapshot or initial frontmatter)
 2. `commits.md` — commits since session start
-3. `session-updates.md` — running log (most recent `## /resume` block first, if multi-day)
+3. `session-updates.md` — running log (append-only within this session)
 
 The three together rebuild richer context than the previous two-file recovery.

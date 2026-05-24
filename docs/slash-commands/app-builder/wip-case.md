@@ -49,4 +49,6 @@ Failure handling: exit 0 with empty table is normal (zero matches is not a failu
 cd yac-discussions && echo "Next case number: $(bash case-helper.sh next)" && echo "--- Recent cases ---" && bash case-helper.sh last 5 && echo "--- Open cases ---" && bash case-helper.sh open
 ```
 
+**Session attribution (write verbs only — `file` / `respond` / `comment` / `close` / `implement`):** read your session ID from `.claude/.session-id` — `cat "$CLAUDE_PROJECT_DIR/.claude/.session-id"` (fall back to `$PWD/.claude/.session-id`). Use that exact value for the attribution the playbook writes — `filed_by:` (on `file`), `responded_by:` (on `respond`), and the session ID stamped into `comment` / `implement` / `close` block headers. **Never type the session ID by hand.** If `.claude/.session-id` is missing, run `/wip-setup` (fresh) or `/wip-wake` (continuation) first — a case record must attribute to a real minted session.
+
 Then you MUST Read `docs/playbooks/case-workflow.md` before taking any action. Do not guess the file format, subcommand handlers, or status transitions from memory — they live in the playbook. Use the case number from the helper when filing new cases. Then execute the requested sub-command from `$ARGUMENTS`.

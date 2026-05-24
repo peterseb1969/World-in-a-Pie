@@ -2,8 +2,8 @@ Capture a lesson learned and encode it into the gene pool. Use this whenever Pet
 
 ### Usage
 
-`/lesson <text>` — record a lesson with the given text
-`/lesson` — infer the lesson from current conversation context
+`/wip-lesson <text>` — record a lesson with the given text
+`/wip-lesson` — infer the lesson from current conversation context
 
 ### Steps
 

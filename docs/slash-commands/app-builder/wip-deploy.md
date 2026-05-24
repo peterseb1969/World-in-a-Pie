@@ -1,13 +1,13 @@
-# /deploy — Routinized app-side redeploy with mandatory pre-flight
+# /wip-deploy — Routinized app-side redeploy with mandatory pre-flight
 
 Two modes, scoped to the dev-loop. Each runs **mandatory pre-flight** before any destructive operation, the operation itself, then **mandatory smoke** after. Pre-flight refuses on failure; smoke reports without auto-rollback.
 
 | Invocation | Use |
 |---|---|
-| `/deploy redeploy` | Redeploy this YAC's own source to the currently-running dev install. Most routine. |
-| `/deploy verify` | Smoke the currently-running install. No change. Used after a deploy or when diagnosing. |
+| `/wip-deploy redeploy` | Redeploy this YAC's own source to the currently-running dev install. Most routine. |
+| `/wip-deploy verify` | Smoke the currently-running install. No change. Used after a deploy or when diagnosing. |
 
-This skill is a strict subset of BE-YAC's `/deploy` (see the backend equivalent at `docs/slash-commands/backend/deploy.md` in the WIP repo). APP-YACs do not own `install` — fresh installs go through BE-YAC or Peter.
+This skill is a strict subset of BE-YAC's `/wip-deploy` (see the backend equivalent at `docs/slash-commands/backend/wip-deploy.md` in the WIP repo). APP-YACs do not own `install` — fresh installs go through BE-YAC or Peter.
 
 Pre-flight catches the recurring failure modes APP-YACs have hit:
 
@@ -19,7 +19,7 @@ If any pre-flight check fails, output the punch list and stop. Operator addresse
 
 ---
 
-## Mode 1 — `/deploy redeploy`
+## Mode 1 — `/wip-deploy redeploy`
 
 The "I just changed code, get the cluster to re-pull my app" path.
 
@@ -121,7 +121,7 @@ esac
 Pre-flight output is a single punch-list block:
 
 ```
-=== /deploy redeploy preflight (APP-RC) ===
+=== /wip-deploy redeploy preflight (APP-RC) ===
 [ok] cluster reachable
 [ok] current install: wip-dev-local namespace, react-console at SHA 7f3e2a1
 [ok] source HEAD: 9f5f29f
@@ -188,7 +188,7 @@ Smoke output is a checklist; failures don't auto-rollback (the operator decides)
 
 ---
 
-## Mode 2 — `/deploy verify`
+## Mode 2 — `/wip-deploy verify`
 
 Pre-flight steps 1, 2, 4, 7 + the entire Mode-1 smoke section. No change. Used to confirm "is the install still up and healthy" or to gather state before a planned change.
 
@@ -200,7 +200,7 @@ Output: just the punch list. No operation runs.
 
 - **Net-new install** — APP-YACs do not own `install`. Ask BE-YAC or Peter.
 - **Cross-app deployments** — this skill only redeploys the YAC's own component. Multi-app changes go through BE-YAC.
-- **Production cluster operations** — APP-YAC's `/deploy` is dev-loop only. Production cutovers go through BE-YAC.
+- **Production cluster operations** — APP-YAC's `/wip-deploy` is dev-loop only. Production cutovers go through BE-YAC.
 - **Refresh of a registry-image deployment** — if THIS app is running off a baked gitea-registry image (no `--app-source`), redeploy needs to happen at the BE-YAC level (build, push, manifest-pin bump). Pre-flight check A refuses these to make that boundary explicit.
 
 ---

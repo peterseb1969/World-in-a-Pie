@@ -6,7 +6,7 @@ Bootstrap a WIP instance with the constellation's data model. Use this to set up
 test -d data-model && echo "ok" || echo "missing"
 ```
 
-If `missing`, tell the user: "No `data-model/` directory found. Bootstrap requires seed files in `data-model/terminologies/` and `data-model/templates/`. Generate them via `/export-model` from a running WIP, or create them by hand." Then stop — do not load the playbook.
+If `missing`, tell the user: "No `data-model/` directory found. Bootstrap requires seed files in `data-model/terminologies/` and `data-model/templates/`. Generate them via `/wip-export-model` from a running WIP, or create them by hand." Then stop — do not load the playbook.
 
 ### Prerequisites (verify before proceeding)
 

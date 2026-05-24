@@ -78,7 +78,7 @@ git commit -m "Export data model: N terminologies, M templates"
 ### When to run this
 
 - **After Phase 3 of any app** — capture the terminologies and templates just created
-- **After /improve sessions that touched the data model** (Rule 6 in /improve)
+- **After /wip-improve sessions that touched the data model** (Rule 6 in /wip-improve)
 - **Before any major git milestone** — ensure the repo is self-contained
 - **Periodically** — as a safety net, especially if terms are added interactively
 

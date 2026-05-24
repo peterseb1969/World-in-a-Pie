@@ -35,4 +35,4 @@ This fails if issue counts exceed the tracked baseline. Useful before pushing.
 - Before committing significant changes
 - After refactoring
 - When cleaning up code quality debt
-- As a pre-push sanity check (lighter than `/pre-commit`)
+- As a pre-push sanity check (lighter than `/wip-pre-commit`)

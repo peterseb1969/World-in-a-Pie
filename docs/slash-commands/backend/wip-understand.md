@@ -2,7 +2,7 @@ Deep-dive into a WIP component or library. Use this to build understanding befor
 
 ### Usage
 
-Specify the target: `/understand registry`, `/understand wip-auth`, `/understand wip-client`, etc.
+Specify the target: `/wip-understand registry`, `/wip-understand wip-auth`, `/wip-understand wip-client`, etc.
 
 If no target is specified, ask the user which component they want to understand.
 
