@@ -37,6 +37,9 @@ class NukeReport:
     images_removed: list[str] = field(default_factory=list)
     networks_removed: list[str] = field(default_factory=list)
     secrets_dir_removed: Path | None = None
+    # purge-all clears secrets host-wide (one dir per install), so it needs
+    # a list rather than the scoped path's single dir (CASE-387).
+    secrets_dirs_removed: list[Path] = field(default_factory=list)
     compose_down_ran: bool = False
     # CASE-362 k8s teardown.
     k8s_namespace_removed: str | None = None
@@ -62,6 +65,8 @@ class NukeReport:
             parts.append(f"{len(self.networks_removed)} network(s) removed")
         if self.secrets_dir_removed:
             parts.append(f"secrets dir removed: {self.secrets_dir_removed}")
+        if self.secrets_dirs_removed:
+            parts.append(f"{len(self.secrets_dirs_removed)} secrets dir(s) removed")
         return "; ".join(parts) or "nothing to do"
 
 
@@ -315,14 +320,23 @@ def nuke_purge_all(
     *,
     remove_data: bool = False,
     remove_images: bool = False,
+    remove_secrets: bool = False,
+    install_root: Path | None = None,
     dry_run: bool = False,
 ) -> NukeReport:
     """Remove every `wip-*` container, pod, network, and (if
     `remove_data`) volume on this host. Optionally also images.
 
     Used to recover from cross-install conflicts or to fully reset a dev
-    machine. Data-destructive — `remove_data` and `remove_images` are
-    both opt-in.
+    machine. Data-destructive — `remove_data`, `remove_images`, and
+    `remove_secrets` are all opt-in.
+
+    `remove_secrets=True` deletes the file-backend `secrets/` directory of
+    every install under `install_root` (default `~/.wip-deploy/`). purge-all
+    is host-wide by design, so its secrets removal is too — symmetric with
+    the host-wide volume sweep. Without this, a surviving `secrets/api-key`
+    makes the next install reuse the same master key (CASE-387: the scoped
+    teardown honored `--remove-secrets`, but purge-all silently dropped it).
     """
     report = NukeReport()
 
@@ -367,6 +381,18 @@ def nuke_purge_all(
                 report.images_removed = _remove_images(wip_images)
             else:
                 report.images_removed = wip_images
+
+    if remove_secrets:
+        root = install_root if install_root is not None else (Path.home() / ".wip-deploy")
+        if root.exists():
+            for child in sorted(root.iterdir()):
+                if not child.is_dir():
+                    continue
+                secrets_dir = child / "secrets"
+                if secrets_dir.is_dir():
+                    if not dry_run:
+                        _remove_tree(secrets_dir)
+                    report.secrets_dirs_removed.append(secrets_dir)
 
     return report
 

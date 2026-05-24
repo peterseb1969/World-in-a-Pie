@@ -799,3 +799,44 @@ class TestStatusDiff:
         flat = " ".join(flat.split())
         assert "--diff" in flat
         assert "kubectl diff" in flat
+
+
+# ────────────────────────────────────────────────────────────────────
+# nuke --purge-all flag wiring (CASE-387)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestNukePurgeAllWiring:
+    """Regression guard for CASE-387: the `--purge-all` branch must forward
+    `--remove-secrets` to `_nuke_purge_all`. The bug was a silently-dropped
+    flag at the call site — these tests assert the kwarg reaches the helper.
+    """
+
+    def _patch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> dict[str, object]:
+        captured: dict[str, object] = {}
+
+        def fake_purge_all(**kwargs: object) -> None:
+            captured.update(kwargs)
+
+        # has_k8s_install is imported inside the command from wip_deploy.nuke.
+        monkeypatch.setattr("wip_deploy.nuke.has_k8s_install", lambda root: False)
+        monkeypatch.setattr("wip_deploy.cli._nuke_purge_all", fake_purge_all)
+        return captured
+
+    def test_remove_secrets_forwarded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured = self._patch(monkeypatch)
+        r = _invoke("nuke", "--purge-all", "--remove-secrets", "--yes")
+        assert r.exit_code == 0
+        assert captured["remove_secrets"] is True
+
+    def test_remove_secrets_defaults_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured = self._patch(monkeypatch)
+        r = _invoke("nuke", "--purge-all", "--yes")
+        assert r.exit_code == 0
+        assert captured["remove_secrets"] is False
