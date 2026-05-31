@@ -75,6 +75,40 @@ def resolve_routes(
     return resolved
 
 
+def resolve_root_redirect(
+    deployment: Deployment,
+    apps: list[App],
+) -> str | None:
+    """Target path for a bare-host (`/`) redirect, or None to emit none.
+
+    CASE-368: a fresh install left `https://<host>/` with no handler — on
+    k8s nginx returned a 404 from its default backend; on compose Caddy
+    returns a 200 + empty body. Both are confusing first-contact failures.
+    This resolves where `/` should send the user, computed once here so the
+    Caddy and nginx-ingress renderers can't disagree (same cross-target
+    invariant as resolve_routes).
+
+    v1 policy:
+      - First enabled app (in `spec.apps` / `--app` declaration order) → its
+        route_prefix, trailing-slashed. Deterministic; couples to declaration
+        order by design (the operator lists their primary app first).
+      - No apps enabled, gateway on → `/auth/login` (the user has to auth
+        first anyway).
+      - No apps enabled, gateway off → None: nothing meaningful to point at,
+        so no redirect is emitted and the bare host stays unhandled.
+    """
+    by_name = {a.metadata.name: a for a in apps}
+    for ref in deployment.spec.apps:
+        if not ref.enabled:
+            continue
+        app = by_name.get(ref.name)
+        if app is not None:
+            return app.app_metadata.route_prefix.rstrip("/") + "/"
+    if deployment.spec.auth.gateway:
+        return "/auth/login"
+    return None
+
+
 def _routes_for(
     owner: Component | App,
     gateway_on: bool,

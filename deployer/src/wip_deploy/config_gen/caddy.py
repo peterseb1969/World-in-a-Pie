@@ -13,7 +13,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from wip_deploy.config_gen.routing import ResolvedRoute, resolve_routes
+from wip_deploy.config_gen.routing import (
+    ResolvedRoute,
+    resolve_root_redirect,
+    resolve_routes,
+)
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
@@ -32,6 +36,9 @@ class CaddyConfig:
     routes: list[ResolvedRoute]
     has_dex: bool  # whether to emit /dex/* proxy
     dex_service: str  # DNS name of dex
+    # Bare-host `/` redirect target (CASE-368), or None to leave `/`
+    # unhandled. Resolved in the shared layer so compose and k8s agree.
+    root_redirect: str | None
 
 
 def generate_caddy_config(
@@ -63,4 +70,5 @@ def generate_caddy_config(
         routes=resolve_routes(deployment, components, apps),
         has_dex=dex_active,
         dex_service="wip-dex",
+        root_redirect=resolve_root_redirect(deployment, apps),
     )

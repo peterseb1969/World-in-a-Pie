@@ -39,6 +39,20 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
     _write_tls(out, cfg)
     out.write("\n")
 
+    # Bare-host redirect (CASE-368): send `/` to the resolved target (the
+    # first app's prefix, or /auth/login when only the gateway is up).
+    # Emitted up front, but `handle /` is an EXACT-path matcher — it
+    # doesn't overlap /api, /apps/*, etc., so order is irrelevant. Skipped
+    # when a component declares its own `/` route (the catch-all below
+    # owns it then). The explicit `*` matcher on `redir` avoids Caddy
+    # parsing a leading-`/` destination as a matcher (same disambiguation
+    # as the bare-path redirect in _write_route).
+    has_root_route = any(r.path == "/" for r in cfg.routes)
+    if cfg.root_redirect and not has_root_route:
+        out.write("    handle / {\n")
+        out.write(f"        redir * {cfg.root_redirect} permanent\n")
+        out.write("    }\n\n")
+
     # All browser-facing routes (/dex/*, /auth/*, /api/*, /apps/*, /)
     # flow through the component manifest → _write_route pipeline. No
     # renderer special-cases — both Caddy and nginx-ingress consume the
