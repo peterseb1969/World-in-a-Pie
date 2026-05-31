@@ -136,6 +136,14 @@ class RegisterKeyItem(StrictModel):
         description="Raw identity field values. Registry computes identity_hash, "
                     "injects it into composite_key, and creates a synonym with the raw values."
     )
+    skip_identity_value_synonym: bool = Field(
+        default=False,
+        description="CASE-430: still compute/inject identity_hash from "
+                    "identity_values, but do NOT create the raw-values synonym. "
+                    "Set by document-store for relationship/edge types, whose "
+                    "identity_values {source_ref, target_ref} omit the template "
+                    "and would collide across edge types between the same pair."
+    )
     source_info: SourceInfo | None = Field(default=None, description="Source system info")
     created_by: str | None = Field(default=None, description="Creator identifier")
     metadata: dict[str, Any] = Field(default_factory=dict)

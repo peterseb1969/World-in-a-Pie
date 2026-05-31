@@ -466,9 +466,14 @@ async def register_keys(
             else:
                 entry_id = await IdGeneratorService.generate(item.namespace, item.entity_type)
 
-            # Build synonyms list — add identity_values as a synonym if provided
+            # Build synonyms list — add identity_values as a synonym if provided.
+            # CASE-430: relationship/edge types set skip_identity_value_synonym
+            # so the bare {source_ref, target_ref} synonym (which omits the
+            # template and collides across edge types between the same pair) is
+            # not created. identity_hash is still computed + injected above, so
+            # the primary key and edge dedup/versioning are unaffected.
             synonyms = []
-            if item.identity_values and id_hash:
+            if item.identity_values and id_hash and not item.skip_identity_value_synonym:
                 synonyms.append(Synonym(
                     namespace=item.namespace,
                     entity_type=item.entity_type,
