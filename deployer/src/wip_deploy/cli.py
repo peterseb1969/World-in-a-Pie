@@ -1000,7 +1000,9 @@ def status(
             "--namespace", "-n",
             help=(
                 "Kubernetes namespace to query. When set, queries k8s "
-                "instead of compose. Requires kubectl to be configured "
+                "instead of compose. Optional for a k8s install reached by "
+                "--name: the target + namespace are auto-detected from the "
+                "saved deployer-state. Requires kubectl to be configured "
                 "against the target cluster."
             ),
         ),
@@ -1022,7 +1024,8 @@ def status(
     """Print a compact table of deployed services and their health.
 
     Compose/dev: reads `podman-compose ps` from the install directory.
-    K8s: reads `kubectl get pods` from the given namespace.
+    K8s: reads `kubectl get pods` from the namespace — given via --namespace,
+    or auto-detected from the saved deployer-state when reached by --name.
 
     With `--diff` (k8s only): re-renders manifests from the persisted
     spec and shells out to `kubectl diff` against the live cluster.
@@ -1056,6 +1059,19 @@ def status(
         split_services_and_apps,
     )
 
+    resolved_dir = install_dir or _default_install_dir(name)
+
+    # CASE-364: with no explicit --namespace, auto-detect the target from the
+    # persisted deployer-state so `status --name <k8s-install>` works without
+    # the operator remembering --namespace. Previously this fell straight to
+    # the compose path and errored "not a compose install" on a k8s install
+    # (the case's reproduced failure). Reuses the CASE-362 detection helper;
+    # falls through to compose on any read error or a non-k8s target.
+    if namespace is None:
+        saved_target, saved_ns = _read_saved_target_and_namespace(resolved_dir)
+        if saved_target == "k8s":
+            namespace = saved_ns
+
     if namespace is not None:
         try:
             rows = read_k8s_status(namespace)
@@ -1067,7 +1083,6 @@ def status(
         typer.echo(format_table(rows))
         return
 
-    resolved_dir = install_dir or _default_install_dir(name)
     try:
         rows = read_compose_status(resolved_dir)
     except StatusError as e:

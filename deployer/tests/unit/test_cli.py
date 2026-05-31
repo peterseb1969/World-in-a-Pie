@@ -840,3 +840,67 @@ class TestNukePurgeAllWiring:
         r = _invoke("nuke", "--purge-all", "--yes")
         assert r.exit_code == 0
         assert captured["remove_secrets"] is False
+
+
+# ────────────────────────────────────────────────────────────────────
+# CASE-364: `status` auto-detects k8s target from saved deployer-state
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestStatusK8sAutoDetect:
+    """`status --name <k8s-install>` (no --namespace) must read the saved
+    deployer-state, see target=k8s, and query kubectl with the saved
+    namespace — instead of falling to the compose path and erroring
+    'not a compose install' (the failure CASE-364 reproduced)."""
+
+    def _persist_k8s_state(self, tmp_path: Path) -> None:
+        # Reuse the k8s deployment shape from TestStatusDiff (namespace
+        # "wip-test", backend file) and persist it as the install dir's state.
+        from wip_deploy.cli import _persist_deployment
+        _persist_deployment(TestStatusDiff()._make_k8s_deployment(), tmp_path)
+
+    def test_name_only_routes_to_k8s_via_saved_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._persist_k8s_state(tmp_path)
+
+        from wip_deploy import status as status_mod
+        called: dict[str, str] = {}
+
+        def fake_k8s(ns: str):  # type: ignore[no-untyped-def]
+            called["ns"] = ns
+            return []
+
+        def boom_compose(install_dir):  # type: ignore[no-untyped-def]
+            raise AssertionError("compose path used for a k8s install")
+
+        monkeypatch.setattr(status_mod, "read_k8s_status", fake_k8s)
+        monkeypatch.setattr(status_mod, "read_compose_status", boom_compose)
+
+        # No --namespace — detection must come from the saved state.
+        r = _invoke("status", "--install-dir", str(tmp_path))
+        assert r.exit_code == 0
+        assert called.get("ns") == "wip-test"
+        assert "Namespace: wip-test" in r.output
+
+    def test_compose_install_still_uses_compose_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No deployer-state at all → detection returns (None, None) → compose
+        # path (the historical default) is used, not k8s.
+        from wip_deploy import status as status_mod
+        called: dict[str, bool] = {}
+
+        def fake_compose(install_dir):  # type: ignore[no-untyped-def]
+            called["compose"] = True
+            return []
+
+        def boom_k8s(ns):  # type: ignore[no-untyped-def]
+            raise AssertionError("k8s path used without a k8s deployer-state")
+
+        monkeypatch.setattr(status_mod, "read_compose_status", fake_compose)
+        monkeypatch.setattr(status_mod, "read_k8s_status", boom_k8s)
+
+        r = _invoke("status", "--install-dir", str(tmp_path))
+        assert r.exit_code == 0
+        assert called.get("compose") is True
