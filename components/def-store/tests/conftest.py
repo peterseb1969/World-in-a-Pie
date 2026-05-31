@@ -42,6 +42,7 @@ from def_store.services.registry_client import RegistryClient  # noqa: E402
 
 # Registry models and app (mounted in-process via transport injection)
 from registry.main import app as registry_app  # noqa: E402
+from registry.models.composite_key_claim import CompositeKeyClaim  # noqa: E402
 from registry.models.deletion_journal import DeletionJournal  # noqa: E402
 from registry.models.entry import RegistryEntry  # noqa: E402
 from registry.models.grant import NamespaceGrant  # noqa: E402
@@ -95,6 +96,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
         document_models=[
             # Registry models
             Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal,
+            CompositeKeyClaim,  # CASE-427: register_keys now claims keys here
             # Def-Store models
             Terminology, Term, TermAuditLog, TermRelation,
         ],
@@ -106,6 +108,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     await IdCounter.delete_all()
     await NamespaceGrant.delete_all()
     await DeletionJournal.delete_all()
+    await CompositeKeyClaim.delete_all()
     await Term.delete_all()
     await Terminology.delete_all()
     await TermAuditLog.delete_all()
