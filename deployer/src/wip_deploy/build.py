@@ -223,7 +223,15 @@ def _build_platform(inputs: BuildInputs) -> dict[str, Any]:
 def _build_secrets(inputs: BuildInputs) -> dict[str, Any]:
     backend = inputs.secrets_backend
     if backend is None:
-        backend = "k8s-secret" if inputs.target == "k8s" else "file"
+        # CASE-363: default to the file backend for every target, including
+        # k8s. The native k8s-secret backend isn't implemented (install
+        # rejects any non-file backend), and the k8s renderer already bakes
+        # file-backend values into an in-cluster Secret (renderers/k8s.py
+        # _render_secrets) — so file is the correct default for k8s, not a
+        # stopgap. Previously k8s defaulted to "k8s-secret", which made every
+        # fresh `install --target k8s` fail on its own default. Flip back to a
+        # target-conditional default if/when the k8s-secret backend lands.
+        backend = "file"
 
     block: dict[str, Any] = {"backend": backend}
 
