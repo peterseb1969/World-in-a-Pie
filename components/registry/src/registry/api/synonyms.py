@@ -1,8 +1,12 @@
 """Synonym management API endpoints."""
 
+import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Body, Depends
+from pymongo.errors import DuplicateKeyError
+
+from wip_auth import UserIdentity
 
 from ..models.api_models import (
     AddSynonymItem,
@@ -15,11 +19,12 @@ from ..models.api_models import (
     RemoveSynonymItem,
     RemoveSynonymResponse,
 )
-from wip_auth import UserIdentity
-
+from ..models.composite_key_claim import CompositeKeyClaim
 from ..models.entry import RegistryEntry, Synonym
 from ..services.auth import require_api_key
 from ..services.hash import HashService
+
+logger = logging.getLogger("registry.synonyms")
 
 router = APIRouter()
 
@@ -53,26 +58,43 @@ async def add_synonyms(
             # Compute hash for the new synonym
             synonym_hash = HashService.compute_composite_key_hash(item.synonym_composite_key)
 
-            # Check if this synonym already exists anywhere
-            existing = await RegistryEntry.find_one({
-                "$or": [
-                    {"primary_composite_key_hash": synonym_hash},
-                    {"synonyms.composite_key_hash": synonym_hash}
-                ]
-            })
+            # Fast path: this entry already owns the hash (primary or embedded
+            # synonym) → idempotent already_exists, no claim churn.
+            if (
+                entry.primary_composite_key_hash == synonym_hash
+                or entry.find_synonym_by_hash(synonym_hash) is not None
+            ):
+                results.append(AddSynonymResponse(
+                    input_index=i, status="already_exists",
+                    registry_id=entry.entry_id,
+                ))
+                continue
 
-            if existing:
-                if str(existing.id) == str(entry.id):
-                    results.append(AddSynonymResponse(
-                        input_index=i, status="already_exists",
-                        registry_id=entry.entry_id,
-                    ))
+            # Atomic uniqueness gate (CASE-427): claim the hash before writing.
+            # The unique index is the lock — no check-then-insert race.
+            try:
+                await CompositeKeyClaim.claim(
+                    item.synonym_namespace, item.synonym_entity_type,
+                    synonym_hash, entry.entry_id, "synonym",
+                )
+            except DuplicateKeyError:
+                existing_claim = await CompositeKeyClaim.find_existing(
+                    item.synonym_namespace, item.synonym_entity_type, synonym_hash
+                )
+                owner = existing_claim.owner_entry_id if existing_claim else "?"
+                if existing_claim and owner == entry.entry_id:
+                    # Self-owned orphan (claim points at us, embedded missing) —
+                    # safe to reclaim by writing the embedded synonym below.
+                    pass
                 else:
+                    # Owned by a different entry. Never auto-steal — even if that
+                    # entry doesn't currently embed it (cross-owner orphan,
+                    # cleared by reconciliation), the hot path stays safe.
                     results.append(AddSynonymResponse(
                         input_index=i, status="error",
-                        error=f"Synonym already registered under different entry: {existing.entry_id}"
+                        error=f"Synonym already registered under different entry: {owner}"
                     ))
-                continue
+                    continue
 
             synonym = Synonym(
                 namespace=item.synonym_namespace,
@@ -86,7 +108,16 @@ async def add_synonyms(
             entry.synonyms.append(synonym)
             entry.rebuild_search_values()
             entry.updated_at = datetime.now(UTC)
-            await entry.save()
+            try:
+                await entry.save()
+            except Exception:
+                # Compensate the no-transaction window: release the claim we
+                # just took so it doesn't dangle as an orphan, then re-raise.
+                await CompositeKeyClaim.release(
+                    item.synonym_namespace, item.synonym_entity_type,
+                    synonym_hash, owner_entry_id=entry.entry_id,
+                )
+                raise
 
             results.append(AddSynonymResponse(
                 input_index=i, status="added", registry_id=entry.entry_id,
@@ -150,6 +181,23 @@ async def remove_synonyms(
             entry.updated_at = datetime.now(UTC)
             entry.updated_by = item.updated_by
             await entry.save()
+
+            # Release the claim (CASE-427), scoped to this owner so we never
+            # delete a claim that belongs elsewhere. A leftover claim is a
+            # benign orphan reconciliation would clear, so failures here don't
+            # fail the user's remove.
+            try:
+                await CompositeKeyClaim.release(
+                    item.synonym_namespace, item.synonym_entity_type,
+                    synonym_hash, owner_entry_id=entry.entry_id,
+                )
+            except Exception as release_err:
+                logger.warning(
+                    "CASE-427: failed to release claim for %s (%s/%s) on entry "
+                    "%s after synonym removal: %s",
+                    synonym_hash, item.synonym_namespace, item.synonym_entity_type,
+                    entry.entry_id, release_err,
+                )
 
             results.append(RemoveSynonymResponse(
                 input_index=i, status="removed", registry_id=entry.entry_id,
@@ -219,11 +267,28 @@ async def merge_entries(
                 created_by=item.updated_by,
             )
             if not any(s.composite_key_hash == entry_id_hash for s in preferred.synonyms):
+                # CASE-427: claim the entry_id-as-synonym for preferred. The
+                # hash is unique to deprecated's id, so a conflict can only be a
+                # prior partial merge of this pair → transfer to preferred.
+                try:
+                    await CompositeKeyClaim.claim(
+                        deprecated.namespace, deprecated.entity_type,
+                        entry_id_hash, preferred.entry_id, "synonym",
+                    )
+                except DuplicateKeyError:
+                    await CompositeKeyClaim.transfer(
+                        deprecated.namespace, deprecated.entity_type,
+                        entry_id_hash, preferred.entry_id,
+                    )
                 preferred.synonyms.append(entry_id_synonym)
 
-            # Transfer all deprecated synonyms
+            # Transfer all deprecated synonyms (claim re-points to preferred).
             for syn in deprecated.synonyms:
                 if not any(s.composite_key_hash == syn.composite_key_hash for s in preferred.synonyms):
+                    await CompositeKeyClaim.transfer(
+                        syn.namespace, syn.entity_type, syn.composite_key_hash,
+                        preferred.entry_id,
+                    )
                     preferred.synonyms.append(syn)
 
             deprecated.status = "inactive"
