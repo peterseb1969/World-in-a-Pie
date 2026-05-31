@@ -5,7 +5,7 @@ Handles the bulk response envelope so callers get clean results.
 """
 
 import os
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -128,20 +128,25 @@ class WipClient:
     ):
         base = api_url or os.getenv("WIP_API_URL")
 
-        self.registry_url: str = base or registry_url or os.getenv(
-            "REGISTRY_URL", "http://localhost:8001"
+        # Each chain ends in a non-optional str literal, so the result is
+        # always `str` (mypy can't prove that when the fallback is
+        # os.getenv(key, default), since the env value could be ""). Semantics
+        # are unchanged for any real URL — only an explicitly-empty env var now
+        # falls through to the default, which is the desired behaviour anyway.
+        self.registry_url: str = (
+            base or registry_url or os.getenv("REGISTRY_URL") or "http://localhost:8001"
         )
-        self.def_store_url: str = base or def_store_url or os.getenv(
-            "DEF_STORE_URL", "http://localhost:8002"
+        self.def_store_url: str = (
+            base or def_store_url or os.getenv("DEF_STORE_URL") or "http://localhost:8002"
         )
-        self.template_store_url: str = base or template_store_url or os.getenv(
-            "TEMPLATE_STORE_URL", "http://localhost:8003"
+        self.template_store_url: str = (
+            base or template_store_url or os.getenv("TEMPLATE_STORE_URL") or "http://localhost:8003"
         )
-        self.document_store_url: str = base or document_store_url or os.getenv(
-            "DOCUMENT_STORE_URL", "http://localhost:8004"
+        self.document_store_url: str = (
+            base or document_store_url or os.getenv("DOCUMENT_STORE_URL") or "http://localhost:8004"
         )
-        self.reporting_sync_url: str = base or reporting_sync_url or os.getenv(
-            "REPORTING_SYNC_URL", "http://localhost:8005"
+        self.reporting_sync_url: str = (
+            base or reporting_sync_url or os.getenv("REPORTING_SYNC_URL") or "http://localhost:8005"
         )
         self.api_key = api_key or _resolve_api_key()
         self.default_namespace = os.getenv("WIP_MCP_DEFAULT_NAMESPACE")
@@ -195,7 +200,8 @@ class WipClient:
         params = {k: v for k, v in params.items() if v is not None}
         resp = await client.get(f"{base_url}{path}", params=params)
         _raise_for_status_with_body(resp)
-        return resp.json()
+        data: dict[str, Any] = resp.json()
+        return data
 
     async def _post(
         self, base_url: str, path: str, json: Any = None, **params
@@ -205,7 +211,8 @@ class WipClient:
         params = {k: v for k, v in params.items() if v is not None}
         resp = await client.post(f"{base_url}{path}", json=json, params=params)
         _raise_for_status_with_body(resp)
-        return resp.json()
+        data: dict[str, Any] = resp.json()
+        return data
 
     async def _put(
         self, base_url: str, path: str, json: Any = None, **params
@@ -215,7 +222,8 @@ class WipClient:
         params = {k: v for k, v in params.items() if v is not None}
         resp = await client.put(f"{base_url}{path}", json=json, params=params)
         _raise_for_status_with_body(resp)
-        return resp.json()
+        data: dict[str, Any] = resp.json()
+        return data
 
     async def _patch(
         self, base_url: str, path: str, json: Any = None, **params
@@ -225,7 +233,8 @@ class WipClient:
         params = {k: v for k, v in params.items() if v is not None}
         resp = await client.patch(f"{base_url}{path}", json=json, params=params)
         _raise_for_status_with_body(resp)
-        return resp.json()
+        data: dict[str, Any] = resp.json()
+        return data
 
     async def _delete(
         self, base_url: str, path: str, json: Any = None, **params
@@ -237,11 +246,12 @@ class WipClient:
             "DELETE", f"{base_url}{path}", json=json, params=params,
         )
         _raise_for_status_with_body(resp)
-        return resp.json()
+        data: dict[str, Any] = resp.json()
+        return data
 
     def _unwrap_single(self, bulk_response: dict[str, Any]) -> dict[str, Any]:
         """Unwrap a single-item BulkResponse. Raise on error."""
-        result = bulk_response["results"][0]
+        result: dict[str, Any] = bulk_response["results"][0]
         if result.get("status") == "error":
             raise BulkError(
                 result.get("error", "Unknown error"),
@@ -270,7 +280,10 @@ class WipClient:
             include_archived=include_archived,
         )
         # Registry returns a list directly
-        return data if isinstance(data, list) else data.get("items", data)
+        return cast(
+            "list[dict[str, Any]]",
+            data if isinstance(data, list) else data.get("items", data),
+        )
 
     async def create_namespace(
         self, prefix: str, description: str = "", **kwargs
@@ -349,7 +362,7 @@ class WipClient:
         confirm_enable_deletion: bool = False,
     ) -> dict:
         client = await self._get_client()
-        params = {
+        params: dict[str, Any] = {
             "deletion_mode": deletion_mode,
             "confirm_enable_deletion": confirm_enable_deletion,
         }
@@ -358,7 +371,8 @@ class WipClient:
             params=params,
         )
         _raise_for_status_with_body(resp)
-        return resp.json()
+        parsed: dict[str, Any] = resp.json()
+        return parsed
 
     async def search_registry(
         self,
@@ -664,42 +678,44 @@ class WipClient:
     # ========================================================
 
     async def get_term_children(self, term_id: str, namespace: str | None = None) -> list[dict]:
-        return await self._get(
+        # Ontology endpoints return a bare JSON array; _get is typed dict, so
+        # cast to the real shape.
+        return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/children",
             namespace=namespace,
-        )
+        ))
 
     async def get_term_parents(self, term_id: str, namespace: str | None = None) -> list[dict]:
-        return await self._get(
+        return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/parents",
             namespace=namespace,
-        )
+        ))
 
     async def get_term_ancestors(
         self, term_id: str, relation_type: str | None = None,
         max_depth: int = 10, namespace: str | None = None,
     ) -> list[dict]:
-        return await self._get(
+        return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/ancestors",
             relation_type=relation_type,
             max_depth=max_depth,
             namespace=namespace,
-        )
+        ))
 
     async def get_term_descendants(
         self, term_id: str, relation_type: str | None = None,
         max_depth: int = 10, namespace: str | None = None,
     ) -> list[dict]:
-        return await self._get(
+        return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/descendants",
             relation_type=relation_type,
             max_depth=max_depth,
             namespace=namespace,
-        )
+        ))
 
     async def create_term_relations(
         self, term_relations: list[dict], namespace: str | None = None,
@@ -1108,7 +1124,7 @@ class WipClient:
     ) -> str:
         """Returns raw CSV content as a string."""
         client = await self._get_client()
-        params = {"include_metadata": include_metadata}
+        params: dict[str, Any] = {"include_metadata": include_metadata}
         if status:
             params["status"] = status
         resp = await client.get(
@@ -1173,7 +1189,8 @@ class WipClient:
             headers={"X-API-Key": self.api_key},  # Override default JSON headers
         )
         _raise_for_status_with_body(resp)
-        return resp.json()
+        parsed: dict[str, Any] = resp.json()
+        return parsed
 
     async def delete_file(self, file_id: str, force: bool = False, namespace: str | None = None) -> dict:
         item: dict[str, Any] = {"id": file_id}
@@ -1257,7 +1274,8 @@ class WipClient:
             headers={"X-API-Key": self.api_key},
         )
         _raise_for_status_with_body(resp)
-        return resp.json()
+        parsed: dict[str, Any] = resp.json()
+        return parsed
 
     async def import_documents(
         self,
@@ -1286,7 +1304,8 @@ class WipClient:
             headers={"X-API-Key": self.api_key},
         )
         _raise_for_status_with_body(resp)
-        return resp.json()
+        parsed: dict[str, Any] = resp.json()
+        return parsed
 
     # ========================================================
     # Document-Store: Replay
@@ -1411,7 +1430,8 @@ class WipClient:
                 headers={"X-API-Key": self.api_key},
             )
         _raise_for_status_with_body(resp)
-        return resp.json()
+        parsed: dict[str, Any] = resp.json()
+        return parsed
 
     async def get_backup_job(self, job_id: str) -> dict:
         return await self._get(
@@ -1432,7 +1452,10 @@ class WipClient:
             status=status,
             limit=limit,
         )
-        return data if isinstance(data, list) else data.get("items", data)
+        return cast(
+            "list[dict[str, Any]]",
+            data if isinstance(data, list) else data.get("items", data),
+        )
 
     async def download_backup_archive(
         self, job_id: str, dest_path: str
@@ -1586,7 +1609,10 @@ class WipClient:
 
     async def list_api_keys(self) -> list[dict]:
         data = await self._get(self.registry_url, "/api/registry/api-keys")
-        return data if isinstance(data, list) else data.get("items", data)
+        return cast(
+            "list[dict[str, Any]]",
+            data if isinstance(data, list) else data.get("items", data),
+        )
 
     async def get_api_key(self, name: str) -> dict:
         return await self._get(
