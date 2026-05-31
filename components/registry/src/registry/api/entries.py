@@ -1,11 +1,14 @@
 """Registry entry management API endpoints."""
 
+import logging
 import math
 from datetime import UTC, datetime
 from typing import cast
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+
+from wip_auth import UserIdentity
 
 from ..models.api_models import (
     ActivateBulkResponse,
@@ -39,14 +42,16 @@ from ..models.api_models import (
     UpdateEntryItem,
     UpdateEntryResponse,
 )
+from ..models.composite_key_claim import CompositeKeyClaim
 from ..models.entry import RegistryEntry, Synonym
 from ..models.id_algorithm import VALID_ENTITY_TYPES, IdFormatValidator
-from wip_auth import UserIdentity
-
 from ..models.namespace import Namespace
 from ..services.auth import require_api_key
+from ..services.claims import claim_entry_keys
 from ..services.hash import HashService
 from ..services.id_generator import IdGeneratorService
+
+logger = logging.getLogger("registry.entries")
 
 router = APIRouter()
 
@@ -504,6 +509,10 @@ async def register_keys(
             await RegistryEntry.insert_many(entries_to_insert)
             for pos, idx in enumerate(insert_indices):
                 entry = entries_to_insert[pos]
+                # CASE-427: populate the unified claims domain for the new
+                # entry (primary + any identity-value synonym). Best-effort —
+                # primary uniqueness is already guaranteed by the unique index.
+                await claim_entry_keys(entry)
                 results[idx] = RegisterKeyResponse(
                     input_index=idx,
                     status="created",
@@ -584,6 +593,8 @@ async def provision_ids(
 
     if entries:
         await RegistryEntry.insert_many(entries)
+        for entry in entries:  # CASE-427: claim primary keys for reserved entries
+            await claim_entry_keys(entry)
 
     return ProvisionResponse(
         namespace=request.namespace,
@@ -680,6 +691,7 @@ async def reserve_ids(
             await RegistryEntry.insert_many(entries_to_insert)
             for pos, idx in enumerate(insert_indices):
                 entry = entries_to_insert[pos]
+                await claim_entry_keys(entry)  # CASE-427
                 results[idx] = ReserveItemResponse(
                     input_index=idx, status="reserved", entry_id=entry.entry_id
                 )
@@ -883,7 +895,20 @@ async def lookup_by_keys(
                         "status": "active"
                     }
 
-                entry = await RegistryEntry.find_one(query)
+                # CASE-427 defensive guard: fetch up to 2 matches in one query
+                # so we can detect (and loudly log) the invariant violation of a
+                # composite key resolving to more than one entry — which the
+                # claim gate + migration make impossible. No client-facing change;
+                # [0] is the deterministic pick exactly as find_one returned.
+                matches = await RegistryEntry.find(query).limit(2).to_list()
+                if len(matches) > 1:
+                    logger.error(
+                        "CASE-427 INVARIANT VIOLATION: composite key %s (%s/%s) "
+                        "resolved to multiple entries %s — uniqueness gate breached.",
+                        key_hash, item.namespace, item.entity_type,
+                        [e.entry_id for e in matches],
+                    )
+                entry = matches[0] if matches else None
 
                 if not entry:
                     results.append(LookupResponse(input_index=i, status="not_found"))
@@ -1018,6 +1043,9 @@ async def delete_entries(
 
                 # Permanently remove from MongoDB
                 await entry.delete()
+                # CASE-427: release all claims owned by this entry (hard delete
+                # only — soft-delete keeps the entry and its key ownership).
+                await CompositeKeyClaim.release_for_owner(entry.entry_id)
                 results.append(DeleteResponse(
                     input_index=i, status="deleted", registry_id=item.entry_id,
                 ))
@@ -1105,7 +1133,16 @@ async def resolve_synonyms(
                     query["namespace"] = item.namespace
                 if item.entity_type:
                     query["entity_type"] = item.entity_type
-                entry = await RegistryEntry.find_one(query)
+                # CASE-427 defensive guard (see lookup_by_keys): detect+log a
+                # key resolving to >1 entry, deterministic [0] pick otherwise.
+                matches = await RegistryEntry.find(query).limit(2).to_list()
+                if len(matches) > 1:
+                    logger.error(
+                        "CASE-427 INVARIANT VIOLATION: composite key %s resolved "
+                        "to multiple entries %s — uniqueness gate breached.",
+                        key_hash, [e.entry_id for e in matches],
+                    )
+                entry = matches[0] if matches else None
 
             if entry:
                 results.append(ResolveResponse(

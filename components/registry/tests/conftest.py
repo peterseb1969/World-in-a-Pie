@@ -19,6 +19,7 @@ from registry.api.api_keys import configure_api_key_management
 from registry.main import app
 from registry.main import providers as _app_providers
 from registry.models.api_key import StoredAPIKey
+from registry.models.composite_key_claim import CompositeKeyClaim
 from registry.models.deletion_journal import DeletionJournal
 from registry.models.entry import RegistryEntry
 from registry.models.grant import NamespaceGrant
@@ -58,7 +59,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     await _ensure_mongo_reachable(mongo_client, mongo_uri)
     await init_beanie(
         database=mongo_client[os.environ["DATABASE_NAME"]],
-        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal, StoredAPIKey]
+        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal, StoredAPIKey, CompositeKeyClaim]
     )
 
     # Clean up data from previous test
@@ -67,6 +68,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     await IdCounter.delete_all()
     await DeletionJournal.delete_all()
     await StoredAPIKey.delete_all()
+    await CompositeKeyClaim.delete_all()
 
     # Store client in app state (needed by health check)
     app.state.mongodb_client = mongo_client

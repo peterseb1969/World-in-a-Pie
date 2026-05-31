@@ -24,6 +24,7 @@ from wip_auth import (
 from .api import api_router
 from .api.api_keys import configure_api_key_management
 from .models.api_key import StoredAPIKey
+from .models.composite_key_claim import CompositeKeyClaim
 from .models.deletion_journal import DeletionJournal
 from .models.entry import RegistryEntry
 from .models.grant import NamespaceGrant
@@ -61,7 +62,7 @@ async def lifespan(app: FastAPI):
     # yet on fresh k8s boot, node drain, pod reschedule.
     await init_beanie_with_retry(
         database=client[settings.DATABASE_NAME],
-        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal, StoredAPIKey],
+        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal, StoredAPIKey, CompositeKeyClaim],
         description=f"MongoDB init ({settings.DATABASE_NAME})",
     )
     print("MongoDB connection and Beanie initialization successful.")
@@ -111,6 +112,16 @@ async def lifespan(app: FastAPI):
         await get_deletion_service().recover_incomplete_deletions()
     except Exception as e:
         print(f"WARNING: Failed to recover incomplete deletions: {e}")
+
+    # Prune orphan composite-key claims (CASE-427) — non-destructive to
+    # entries; only deletes dangling claims (deleted entries, cross-namespace
+    # synonym residue, no-transaction write-failure orphans). The destructive
+    # backfill is a separate explicit one-shot, not run here.
+    from .services.claims import reconcile_orphan_claims
+    try:
+        await reconcile_orphan_claims()
+    except Exception as e:
+        print(f"WARNING: Failed to reconcile orphan claims: {e}")
 
     # Initialize auth service
     if settings.MASTER_API_KEY:

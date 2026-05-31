@@ -40,6 +40,10 @@ _EXTERNAL_COLLECTIONS = [
 _REGISTRY_COLLECTIONS = [
     ("registry_entries", "namespace"),
     ("namespace_grants", "namespace"),
+    # CASE-427: composite-key claims scoped to this namespace. Cross-namespace
+    # synonym claims owned by a now-deleted entry in another namespace are
+    # mopped up by startup reconcile_orphan_claims (owner-entry-missing).
+    ("composite_key_claims", "namespace"),
 ]
 
 
