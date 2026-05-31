@@ -283,6 +283,7 @@ for component_dir in \
     "$ROOT_DIR/components/document-store/src" \
     "$ROOT_DIR/components/reporting-sync/src" \
     "$ROOT_DIR/components/ingest-gateway/src" \
+    "$ROOT_DIR/components/mcp-server/src" \
     "$ROOT_DIR/libs/wip-auth/src"; do
 
     component_name=$(echo "$component_dir" | sed "s|$ROOT_DIR/||" | sed 's|/src||' | sed 's|/|-|g')
