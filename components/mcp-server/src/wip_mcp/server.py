@@ -2207,6 +2207,44 @@ async def validate_document(
 
 
 @mcp.tool()
+async def validate_documents(
+    template_id: str,
+    items: list[dict],
+    namespace: str | None = None,
+    template_version: int | None = None,
+) -> str:
+    """Validate multiple documents against ONE template without saving (CASE-419).
+
+    Bulk, side-effect-free counterpart to validate_document — validate a whole
+    dataset as a dry run in a single call instead of one request per row. All
+    items validate against the same template; no documents, versions, or
+    identity-hash registrations are created.
+
+    Args:
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym. One template for the whole batch.
+        items: List of field-value dicts, each matching the template's fields (like validate_document's `data`).
+        namespace: Namespace scope (applies to every item).
+        template_version: Specific template version. None = latest.
+
+    Returns {"results": [...]} — one validation result per input item, in the
+    same order, each with: valid (bool), errors (list), warnings (list),
+    identity_hash (if valid), template_version. A document being invalid is
+    reported via that item's valid=false + errors. An unresolvable template_id
+    fails the whole call (404), since the batch is single-template.
+    """
+    try:
+        data = await get_client().validate_documents(
+            template_id=template_id,
+            items=items,
+            namespace=namespace,
+            template_version=template_version,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def create_document(document: dict, namespace: str | None = None) -> str:
     """Create a document (an instance of a template).
 

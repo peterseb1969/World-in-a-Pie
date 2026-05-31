@@ -105,6 +105,17 @@ tools:
       hard_delete=true to permanently remove (requires namespace
       deletion_mode='full'). hard_delete applies uniformly to every id.
 
+  validate_documents:
+    description: "Validate many documents against one template without saving. Returns per-item results."
+    notes: |
+      Bulk, side-effect-free dry run (CASE-419). Prefer this over repeated
+      validate_document calls when checking a whole dataset — one call instead
+      of one per row. All items validate against a single template_id/namespace;
+      the template is warmed into cache once. Returns {"results": [...]} in input
+      order. A document being invalid is reported by that item's valid=false +
+      errors; an unresolvable template_id fails the whole call. No documents,
+      versions, or identity-hash registrations are created.
+
   # -- Query --
   query_documents:
     description: "Query documents with complex filters (low-level). Prefer query_by_template."

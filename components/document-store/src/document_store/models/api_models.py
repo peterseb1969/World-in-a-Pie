@@ -504,6 +504,49 @@ class ValidationResponse(BaseModel):
     )
 
 
+class BulkValidationRequest(StrictModel):
+    """Request to validate multiple documents against ONE template (CASE-419).
+
+    Single-template-per-call: every item validates against the same
+    `template_id` in the same `namespace`. The dry-run validator has no write
+    path, so this is side-effect-free — no documents, versions, or
+    identity-hash registrations are created. Mirrors the singular
+    ``ValidationRequest`` but takes a list of ``data`` payloads.
+    """
+
+    template_id: str = Field(
+        ...,
+        description="Template ID to validate all items against"
+    )
+    namespace: str = Field(
+        ...,
+        description="Namespace for the documents"
+    )
+    template_version: int | None = Field(
+        default=None,
+        description="Specific template version to validate against (default: latest)"
+    )
+    items: list[dict[str, Any]] = Field(
+        ...,
+        description="Document data payloads to validate, each shaped like the singular validate `data`"
+    )
+
+
+class BulkValidationResponse(BaseModel):
+    """Per-item validation results, in input order (CASE-419).
+
+    Each element is a full ``ValidationResponse`` — a document being invalid is
+    reported via that item's ``valid: false`` + ``errors``, not as a batch-level
+    error. An unresolvable template fails the whole request at the endpoint
+    (404), since the batch is single-template.
+    """
+
+    results: list[ValidationResponse] = Field(
+        default_factory=list,
+        description="One ValidationResponse per input item, in the same order"
+    )
+
+
 # ============================================================================
 # File Management
 # ============================================================================

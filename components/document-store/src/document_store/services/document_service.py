@@ -2388,18 +2388,17 @@ class DocumentService:
             timing["5_nats_publish"] = (time.perf_counter() - start) * 1000
         return self._finalize_bulk_response(results, len(items), timing, total_start)
 
-    async def validate_document(
-        self,
-        template_id: str,
-        data: dict[str, Any],
-        namespace: str,
-    ) -> ValidationResponse:
-        """Validate document without saving."""
+    @staticmethod
+    def _result_to_validation_response(result) -> ValidationResponse:
+        """Build a ValidationResponse from a ValidationResult.
+
+        Dry-run: identity_hash is computed locally (no Registry side effects).
+        Shared by the singular validate_document and the bulk
+        validate_documents_bulk (CASE-419) so both produce identical per-item
+        shapes.
+        """
         from .identity_service import IdentityService
 
-        result = await self.validation_service.validate(template_id, data, namespace=namespace)
-
-        # Dry-run: compute identity_hash locally (no Registry side effects)
         identity_hash = None
         if result.valid and result.identity_values:
             identity_hash = IdentityService.compute_hash(result.identity_values)
@@ -2422,6 +2421,72 @@ class DocumentService:
             references=result.references,
             file_references=result.file_references
         )
+
+    async def validate_document(
+        self,
+        template_id: str,
+        data: dict[str, Any],
+        namespace: str,
+    ) -> ValidationResponse:
+        """Validate document without saving."""
+        result = await self.validation_service.validate(template_id, data, namespace=namespace)
+        return self._result_to_validation_response(result)
+
+    async def validate_documents_bulk(
+        self,
+        template_id: str,
+        items: list[dict[str, Any]],
+        namespace: str,
+        template_version: int | None = None,
+    ) -> list[ValidationResponse]:
+        """Validate multiple documents against ONE template without saving (CASE-419).
+
+        Single-template batch: warm the template (and its nested term/template
+        refs) into cache once, then validate every item from cache — mirroring
+        bulk_create's Stage-0 warmup. Side-effect-free: identity hashes are
+        computed locally, no Registry writes. Results are returned in input
+        order. The caller (endpoint) has already resolved template_id and
+        checked the namespace read permission.
+        """
+        # Stage 0: pre-warm the template + its nested refs once so the per-item
+        # validate loop runs entirely from cache (same pattern as bulk_create).
+        template_client = get_template_store_client()
+        def_store_client = get_def_store_client()
+        warmed_templates: set[str] = set()
+
+        async def warm_template(tid: str):
+            if tid in warmed_templates:
+                return
+            warmed_templates.add(tid)
+            template = await template_client.get_template_resolved(tid)
+            if not template:
+                return
+            for field in template.get("fields", []):
+                for key in ("terminology_ref", "array_terminology_ref"):
+                    ref = field.get(key)
+                    if ref:
+                        await def_store_client._get_terminology_cached(ref)
+                for key in ("template_ref", "array_template_ref"):
+                    ref = field.get(key)
+                    if ref:
+                        await warm_template(ref)
+
+        await warm_template(template_id)
+
+        # Shared document-reference cache across the batch (same as
+        # _validate_batch) so repeated reference lookups hit cache.
+        doc_ref_cache: dict = {}
+        responses: list[ValidationResponse] = []
+        for data in items:
+            result = await self.validation_service.validate(
+                template_id,
+                data,
+                namespace=namespace,
+                template_version=template_version,
+                doc_ref_cache=doc_ref_cache,
+            )
+            responses.append(self._result_to_validation_response(result))
+        return responses
 
     async def _batch_to_responses(self, documents: list[Document]) -> list[DocumentResponse]:
         """Convert a batch of Documents to DocumentResponses with a single aggregation.

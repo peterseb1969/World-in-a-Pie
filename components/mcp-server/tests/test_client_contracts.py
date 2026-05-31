@@ -514,6 +514,31 @@ def test_delete_documents_bulk_tool_and_method_exist() -> None:
 
 
 # =========================================================================
+# CASE-419: bulk dry-run validate is exposed as an MCP tool + client method
+# =========================================================================
+
+
+def test_validate_documents_tool_and_method_exist() -> None:
+    """The bulk-validate surface must exist on both server and client, and —
+    being side-effect-free, like singular validate_document — must NOT be a
+    write tool (readonly mode keeps it available)."""
+    assert hasattr(server_module, "validate_documents"), (
+        "server.py missing tool: validate_documents"
+    )
+    assert hasattr(WipClient, "validate_documents"), (
+        "WipClient missing method: validate_documents"
+    )
+    assert "validate_documents" not in server_module.WRITE_TOOLS, (
+        "validate_documents is a dry run (no persistence) — must NOT be in WRITE_TOOLS"
+    )
+    # Guard the invariant for the singular tool too, so a future refactor
+    # doesn't accidentally reclassify either as a write.
+    assert "validate_document" not in server_module.WRITE_TOOLS, (
+        "validate_document is side-effect-free — must NOT be in WRITE_TOOLS"
+    )
+
+
+# =========================================================================
 # Test J — CASE-315: query_documents wrapper splits namespace correctly
 # =========================================================================
 

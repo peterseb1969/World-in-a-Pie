@@ -172,6 +172,21 @@ export interface ValidateDocumentRequest {
   data: Record<string, unknown>
 }
 
+/** Bulk validate request (CASE-419): one template, many data payloads. */
+export interface ValidateDocumentsRequest {
+  template_id: string
+  namespace: string
+  /** Specific template version to validate against. Default: latest. */
+  template_version?: number
+  /** Document data payloads, each shaped like the singular validate `data`. */
+  items: Array<Record<string, unknown>>
+}
+
+/** Bulk validate response (CASE-419): one result per item, in input order. */
+export interface BulkValidationResponse {
+  results: DocumentValidationResponse[]
+}
+
 export interface DocumentVersionSummary {
   document_id: string
   version: number
