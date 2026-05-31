@@ -14,15 +14,31 @@ If `missing`, tell Peter: "Cross-agent cases are not enabled for this project. T
 
 **`read` short-circuit (do this BEFORE the playbook load when applicable):**
 
-If `$ARGUMENTS` starts with `read ` followed by a number:
+If `$ARGUMENTS` starts with `read ` followed by a number (optionally with `--brief`):
 
 1. Resolve the FR-YAC root via the `yac-discussions` symlink, then run case-fetch.py:
    ```bash
    python3 "$(dirname "$(realpath yac-discussions)")/tools/case-fetch.py" case <N>
    ```
    (REST-canonical retrieval helper, CASE-393. The `realpath` derivation works whether `yac-discussions` was symlinked relative (`../FR-YAC/yac-discussions`) or absolute.)
-2. Present the output to the user. STOP.
-3. Do NOT load the playbook; the read flow does not need it.
+2. Present the fetched case to the user.
+3. **If `--brief` was passed:** STOP here (raw read only). Otherwise continue to the assessment (the default).
+4. **Assess the case** and append the structured block below. Actually look — read the files/code the case cites, and check whether sibling `related:` cases are still open — before writing each line. Do NOT assess from the case prose alone.
+
+   ```
+   ## CASE-<N> — assessment
+   - Relevance: live | stale (cites X that no longer exists) | superseded by CASE-Y | overtaken by code (detail)
+   - Accuracy: verified against <files/commands you actually read or ran> | UNCHECKED: <load-bearing claims you did NOT verify> → deeper verify before implementing? [yes/no]
+   - Effort: S | M | L — touches <surfaces you inspected>; depends on <prereq cases / blockers>
+   - Recommendation: <one line — act now / needs verification / stale-consider-closing / blocked on X>
+   ```
+
+   Assessment rules (the point of the feature — follow them or the block is worse than useless):
+   - **Accuracy is two-part and honest.** State only what you actually verified, and against what (`path:line`, a command you ran, a doc you read). List every load-bearing claim you did NOT check under `UNCHECKED:`. Read-time checks are shallow — if a load-bearing claim is unverified, set "deeper verify before implementing? yes". Never write "verified" for something inferred from the case text.
+   - **Cross-repo honesty.** If the case targets code not in your repo, say so under `UNCHECKED:` ("targets code not present in this clone") — do not guess its accuracy.
+   - **Relevance is cheap — actually check it.** Grep that cited files/paths/APIs still exist; check whether `related:` cases are closed/superseded; note if the code already changed in a way that overtakes the case.
+   - **Effort is sized from what you inspected**, not the title. Name the surfaces and any prereq cases/blockers.
+5. Do NOT load the playbook; the read/assess flow does not need it.
 
 Failure handling (pass through, do not fall back to FS glob or to memory):
 - Exit 1 (not found): report "case `<N>` not found" and stop.
