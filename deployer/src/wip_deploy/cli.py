@@ -311,7 +311,13 @@ def _auth_gateway_opt() -> typer.models.OptionInfo:
 
 def _secrets_backend_opt() -> typer.models.OptionInfo:
     return typer.Option(
-        "--secrets-backend", help="Secret backend: file | k8s-secret | sops."
+        "--secrets-backend",
+        help=(
+            "Secret backend. Default: file (all targets, incl. k8s — the k8s "
+            "renderer bakes file values into an in-cluster Secret). "
+            "'k8s-secret' is not yet implemented and is rejected at install; "
+            "'sops' requires --secrets-location."
+        ),
     )
 
 

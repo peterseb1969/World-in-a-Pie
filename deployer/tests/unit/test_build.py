@@ -214,11 +214,18 @@ class TestSecrets:
         assert d.spec.secrets.location is not None
         assert "wip-deploy" in d.spec.secrets.location
 
-    def test_k8s_defaults_to_k8s_secret_backend(self) -> None:
+    def test_k8s_defaults_to_file_backend(self) -> None:
+        # CASE-363: k8s now defaults to the file backend (the only implemented
+        # one; the k8s renderer bakes file values into an in-cluster Secret).
+        # Previously this defaulted to "k8s-secret", which made every fresh
+        # k8s install fail on its own default. k8s-secret stays available
+        # explicitly but is still rejected at install until natively built.
         d = build_deployment(
             _minimal_compose_inputs(target="k8s", compose_data_dir=None)
         )
-        assert d.spec.secrets.backend == "k8s-secret"
+        assert d.spec.secrets.backend == "file"
+        assert d.spec.secrets.location is not None
+        assert "wip-deploy" in d.spec.secrets.location
 
     def test_explicit_sops_on_compose(self) -> None:
         d = build_deployment(
