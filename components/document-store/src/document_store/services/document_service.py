@@ -422,6 +422,13 @@ class DocumentService:
         # Determine if template has identity fields
         has_identity_fields = bool(validation_result.identity_fields)
 
+        # CASE-430: for relationship/edge types, suppress the bare
+        # identity-values synonym ({source_ref, target_ref}) — it omits the
+        # template and collides across edge types between the same pair. The
+        # template-scoped auto-synonym (register_auto_synonym) still covers
+        # restore portability.
+        is_relationship = bool(template and template.get("usage") == "relationship")
+
         # Whether this is a restore (client provides both ID and version)
         version_override = request.version if (request.document_id and request.version is not None) else None
 
@@ -440,6 +447,7 @@ class DocumentService:
                 created_by=get_identity_string(),
                 namespace=namespace,
                 entry_id=restore_entry_id,
+                skip_identity_value_synonym=is_relationship,
             )
         except RegistryError as e:
             return None, f"Failed to generate document ID: {e!s}"
@@ -2277,12 +2285,25 @@ class DocumentService:
         # gets back identity_hash for each item)
         start = time.perf_counter()
         registry = get_registry_client()
+        # CASE-430: suppress the bare identity-values synonym for
+        # relationship/edge types. Usage is read from the templates already
+        # warmed into cache in Stage 0, so this is a cache hit per template_id.
+        template_client = get_template_store_client()
+        _usage_is_rel: dict[str, bool] = {}
+
+        async def _is_relationship(tid: str) -> bool:
+            if tid not in _usage_is_rel:
+                t = await template_client.get_template_resolved(tid)
+                _usage_is_rel[tid] = bool(t and t.get("usage") == "relationship")
+            return _usage_is_rel[tid]
+
         registry_items = []
         for vr in validation_results:
             reg_item: dict[str, Any] = {
                 "identity_values": vr[2].identity_values or None,
                 "template_id": vr[1].template_id,
                 "has_identity_fields": bool(vr[2].identity_fields),
+                "skip_identity_value_synonym": await _is_relationship(vr[1].template_id),
             }
             # Pass through pre-assigned document_id for restore/migration
             if vr[1].document_id:

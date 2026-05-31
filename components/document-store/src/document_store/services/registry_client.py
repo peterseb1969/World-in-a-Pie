@@ -48,8 +48,15 @@ class RegistryClient(RegistryClientBase):
         has_identity_fields: bool = True,
         created_by: str | None = None,
         entry_id: str | None = None,
+        skip_identity_value_synonym: bool = False,
     ) -> tuple[str, bool, str | None]:
-        """Generate or retrieve a document ID. Returns (id, is_new, identity_hash)."""
+        """Generate or retrieve a document ID. Returns (id, is_new, identity_hash).
+
+        skip_identity_value_synonym (CASE-430): for relationship/edge types,
+        still compute identity_hash for the primary key but suppress the bare
+        identity-values synonym ({source_ref, target_ref}) that would collide
+        across edge types between the same pair.
+        """
         composite_key: dict[str, Any] = (
             {"ns": namespace, "template_id": template_id} if has_identity_fields else {}
         )
@@ -58,6 +65,7 @@ class RegistryClient(RegistryClientBase):
             "entity_type": "documents",
             "composite_key": composite_key,
             "identity_values": identity_values if has_identity_fields else None,
+            "skip_identity_value_synonym": skip_identity_value_synonym,
             "created_by": created_by,
             "source_info": {"system_id": "document-store"},
         }
@@ -107,6 +115,9 @@ class RegistryClient(RegistryClientBase):
                 "entity_type": "documents",
                 "composite_key": composite_key,
                 "identity_values": identity_values,
+                # CASE-430: relationship/edge types suppress the bare
+                # identity-values synonym (set per item by bulk_create).
+                "skip_identity_value_synonym": bool(item.get("skip_identity_value_synonym")),
                 "created_by": created_by,
                 "source_info": {"system_id": "document-store"},
             }
