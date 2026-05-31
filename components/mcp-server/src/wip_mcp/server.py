@@ -1227,7 +1227,7 @@ async def create_terminology(
     try:
         client = get_client()
         namespace = client._ns(namespace)
-        kwargs = {}
+        kwargs: dict[str, object] = {}
         if description:
             kwargs["description"] = description
         if mutable:
@@ -1276,7 +1276,7 @@ async def update_terminology(
         mutable: Set mutability (optional). Only allowed when term_count is 0.
     """
     try:
-        updates = {}
+        updates: dict[str, object] = {}
         if label is not None:
             updates["label"] = label
         if description is not None:
@@ -2641,6 +2641,8 @@ async def get_table_view(
             value=template_value, namespace=namespace
         )
         template_id = tmpl.get("template_id")
+        if not template_id:
+            raise ValueError(f"template '{template_value}' has no template_id")
         data = await get_client().get_table_view(
             template_id=template_id, status=status, page=page, page_size=page_size
         )
@@ -2672,6 +2674,8 @@ async def export_table_csv(
             value=template_value, namespace=namespace
         )
         template_id = tmpl.get("template_id")
+        if not template_id:
+            raise ValueError(f"template '{template_value}' has no template_id")
         csv_content = await get_client().export_table_csv(
             template_id=template_id, status=status, include_metadata=include_metadata
         )
@@ -3189,6 +3193,8 @@ async def import_documents_csv(
         # Resolve template_id
         tmpl = await client.get_template_by_value(value=template_value)
         template_id = tmpl.get("template_id")
+        if not template_id:
+            raise ValueError(f"template '{template_value}' has no template_id")
 
         result = await client.import_documents(
             file_content=content,
