@@ -62,6 +62,7 @@ from document_store.services.def_store_client import DefStoreClient  # noqa: E40
 from document_store.services.registry_client import RegistryClient  # noqa: E402
 from document_store.services.template_store_client import TemplateStoreClient  # noqa: E402
 from registry.main import app as registry_app  # noqa: E402
+from registry.models.composite_key_claim import CompositeKeyClaim  # noqa: E402
 from registry.models.deletion_journal import DeletionJournal  # noqa: E402
 from registry.models.entry import RegistryEntry  # noqa: E402
 from registry.models.grant import NamespaceGrant  # noqa: E402
@@ -607,6 +608,7 @@ async def setup_registry_and_app(mongo_client, document_models=None):
         document_models=[
             # Registry models
             Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal,
+            CompositeKeyClaim,  # CASE-427: register_keys now claims keys here
             # Document-Store models
             *document_models,
         ],
@@ -618,6 +620,7 @@ async def setup_registry_and_app(mongo_client, document_models=None):
     await IdCounter.delete_all()
     await NamespaceGrant.delete_all()
     await DeletionJournal.delete_all()
+    await CompositeKeyClaim.delete_all()
     for model in document_models:
         await model.delete_all()
 
