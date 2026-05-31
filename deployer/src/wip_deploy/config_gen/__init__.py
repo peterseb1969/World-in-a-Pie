@@ -33,7 +33,11 @@ from wip_deploy.config_gen.nginx_ingress import (
     IngressRule,
     generate_ingress_config,
 )
-from wip_deploy.config_gen.routing import ResolvedRoute, resolve_routes
+from wip_deploy.config_gen.routing import (
+    ResolvedRoute,
+    resolve_root_redirect,
+    resolve_routes,
+)
 from wip_deploy.config_gen.spec_context import (
     SpecContext,
     SpecContextAuth,
@@ -43,7 +47,10 @@ from wip_deploy.config_gen.spec_context import (
     resolve_from_spec,
 )
 
-__all__ = [
+# Grouped by subsystem for readability rather than alpha-sorted; RUF022
+# would flatten these purpose-groups into one list, mislabelling the
+# section comments (CASE-368 surfaced this when adding resolve_root_redirect).
+__all__ = [  # noqa: RUF022
     # Env
     "EnvMap",
     "EnvValue",
@@ -62,6 +69,7 @@ __all__ = [
     "resolve_from_spec",
     # Routing
     "ResolvedRoute",
+    "resolve_root_redirect",
     "resolve_routes",
     # Dex
     "DexConfig",

@@ -937,7 +937,67 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
                 },
             })
 
+    # Bare-host redirect (CASE-368): a standalone Ingress that 301s `/` to
+    # the resolved target via nginx's permanent-redirect annotation. The
+    # annotation fires before proxying, so the backend is never contacted —
+    # but the Ingress schema still requires one, so we point it at the
+    # service that owns the redirect target (longest path-prefix match).
+    if cfg.root_redirect_target:
+        backend = _root_redirect_backend(cfg.root_redirect_target, cfg.rules)
+        if backend is not None:
+            redirect_annotations = dict(base_annotations)
+            redirect_annotations["nginx.ingress.kubernetes.io/permanent-redirect"] = (
+                f"https://{cfg.hostname}{cfg.root_redirect_target}"
+            )
+            docs.append({
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "Ingress",
+                "metadata": {
+                    "name": "wip-root-redirect",
+                    "namespace": ns,
+                    "labels": {_LABELS_PART_OF: "wip"},
+                    "annotations": redirect_annotations,
+                },
+                "spec": {
+                    "ingressClassName": cfg.ingress_class,
+                    "tls": tls_block,
+                    "rules": [{
+                        "host": cfg.hostname,
+                        "http": {"paths": [{
+                            "path": "/",
+                            "pathType": "Exact",
+                            "backend": {
+                                "service": {
+                                    "name": backend[0],
+                                    "port": {"number": backend[1]},
+                                },
+                            },
+                        }]},
+                    }],
+                },
+            })
+
     return _dump_multi(docs)
+
+
+def _root_redirect_backend(
+    target: str, rules: list[Any]
+) -> tuple[str, int] | None:
+    """Pick the (never-hit) placeholder backend for the root-redirect Ingress.
+
+    The rule whose path is the longest prefix of the redirect target owns
+    that target (e.g. target `/apps/rc/` → rule `/apps/rc`; `/auth/login` →
+    rule `/auth`). Returns (service_name, port), or None if no rule matches
+    (defensive — the target is derived from an enabled app or the gateway,
+    both of which always contribute a rule).
+    """
+    best: Any = None
+    for r in rules:
+        if target.startswith(r.path) and (best is None or len(r.path) > len(best.path)):
+            best = r
+    if best is None:
+        return None
+    return best.backend_service, best.backend_port
 
 
 def _ingress_path(rule: Any) -> dict[str, Any]:

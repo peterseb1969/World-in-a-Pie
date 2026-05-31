@@ -291,6 +291,45 @@ class TestIngress:
         assert tls[0]["hosts"] == ["wip-kubi.local"]
         assert tls[0]["secretName"] == "wip-tls"
 
+    def test_root_redirect_ingress_emitted_with_app(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-368: with an app enabled, a wip-root-redirect Ingress 301s
+        `/` to the app's prefix via nginx's permanent-redirect annotation."""
+        docs = self._render_ingress(
+            tmp_path, real_discovery, apps=["react-console"]
+        )
+        redirect = next(
+            d for d in docs if d["metadata"]["name"] == "wip-root-redirect"
+        )
+        ann = redirect["metadata"]["annotations"]
+        assert (
+            ann["nginx.ingress.kubernetes.io/permanent-redirect"]
+            == "https://wip-kubi.local/apps/rc/"
+        )
+        path = redirect["spec"]["rules"][0]["http"]["paths"][0]
+        assert path["path"] == "/"
+        assert path["pathType"] == "Exact"
+        # Placeholder backend (never hit) points at the app's own service.
+        assert path["backend"]["service"]["name"] == "wip-react-console"
+
+    def test_no_root_redirect_without_apps(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """No apps + gateway on → redirect to /auth/login (gateway always
+        contributes the /auth rule that backs the placeholder)."""
+        docs = self._render_ingress(tmp_path, real_discovery)
+        redirect = next(
+            (d for d in docs if d["metadata"]["name"] == "wip-root-redirect"),
+            None,
+        )
+        assert redirect is not None
+        ann = redirect["metadata"]["annotations"]
+        assert (
+            ann["nginx.ingress.kubernetes.io/permanent-redirect"]
+            == "https://wip-kubi.local/auth/login"
+        )
+
 
 # ────────────────────────────────────────────────────────────────────
 # Inactive components

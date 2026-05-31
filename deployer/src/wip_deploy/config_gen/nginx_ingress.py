@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from wip_deploy.config_gen.routing import resolve_routes
+from wip_deploy.config_gen.routing import resolve_root_redirect, resolve_routes
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
@@ -43,6 +43,10 @@ class IngressConfig:
     rules: list[IngressRule]
     # Annotations: gateway forward-auth URL (None iff gateway disabled)
     gateway_auth_url: str | None
+    # Bare-host `/` redirect target (CASE-368), or None to leave `/`
+    # unhandled (nginx returns its default-backend 404). Resolved in the
+    # shared layer so compose and k8s agree on the destination.
+    root_redirect_target: str | None = None
     # No body-size limit by default. nginx-ingress treats "0" as
     # unlimited, matching Caddy's (compose) default. Real backups run
     # into the multi-GB range; capping here would just surface a 413
@@ -103,4 +107,5 @@ def generate_ingress_config(
         namespace=k8s.namespace,
         rules=rules,
         gateway_auth_url=gateway_auth_url,
+        root_redirect_target=resolve_root_redirect(deployment, apps),
     )

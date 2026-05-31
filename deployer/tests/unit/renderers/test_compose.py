@@ -210,6 +210,49 @@ class TestComposeYaml:
         # And non-strip routes still use `handle /path/*`.
         assert "handle /api/document-store/* {" in caddyfile
 
+    def test_root_redirect_block_emitted_with_app(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-368: with an app enabled, the Caddyfile redirects bare `/`
+        to the app's prefix. Uses `handle /` (exact root) + an explicit `*`
+        matcher on redir so Caddy doesn't parse the leading-/ destination
+        as a matcher."""
+        d = _minimal_compose(apps=["react-console"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        assert "handle / {" in caddyfile
+        assert "redir * /apps/rc/ permanent" in caddyfile
+
+    def test_root_redirect_to_login_without_apps(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """No apps + gateway on → bare `/` redirects to /auth/login."""
+        d = _minimal_compose()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        assert "redir * /auth/login permanent" in caddyfile
+
+    def test_no_root_redirect_without_apps_or_gateway(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """No apps + gateway off → nothing to point `/` at, no root redirect.
+
+        `handle / {` is the exact-root block unique to the root redirect;
+        per-route bare-path redirects use `handle /api/registry {` etc., so
+        this discriminates the root redirect from those (which still emit
+        their own `permanent` redirs)."""
+        d = _minimal_compose()
+        d.spec.auth.gateway = False
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        assert "handle / {" not in caddyfile
+
     def test_minio_active_document_store_gets_public_endpoint_env(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:

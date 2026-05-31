@@ -3,9 +3,9 @@ invariant."""
 
 from __future__ import annotations
 
-from wip_deploy.config_gen import resolve_routes
+from wip_deploy.config_gen import resolve_root_redirect, resolve_routes
 from wip_deploy.discovery import Discovery
-from wip_deploy.spec import Deployment
+from wip_deploy.spec import AppRef, Deployment
 
 
 class TestActiveComponentsContributeRoutes:
@@ -103,6 +103,57 @@ class TestBackendPortResolution:
         assert by_component["def-store"].backend_port == 8002
         assert by_component["template-store"].backend_port == 8003
         assert by_component["document-store"].backend_port == 8004
+
+
+class TestRootRedirect:
+    """resolve_root_redirect — bare-host `/` target (CASE-368). Three
+    branches: apps present, no-apps+gateway, no-apps+no-gateway."""
+
+    def test_first_enabled_app_prefix(
+        self, compose_deployment: Deployment, real_discovery: Discovery
+    ) -> None:
+        d = compose_deployment.model_copy(deep=True)
+        d.spec.apps = [AppRef(name="react-console")]
+        target = resolve_root_redirect(d, real_discovery.apps)
+        assert target == "/apps/rc/"
+
+    def test_redirect_follows_declaration_order(
+        self, compose_deployment: Deployment, real_discovery: Discovery
+    ) -> None:
+        """The FIRST enabled app in spec.apps order wins, not alphabetical."""
+        d = compose_deployment.model_copy(deep=True)
+        d.spec.apps = [AppRef(name="dnd"), AppRef(name="react-console")]
+        target = resolve_root_redirect(d, real_discovery.apps)
+        assert target == "/apps/dnd/"
+
+    def test_disabled_first_app_skipped(
+        self, compose_deployment: Deployment, real_discovery: Discovery
+    ) -> None:
+        d = compose_deployment.model_copy(deep=True)
+        d.spec.apps = [
+            AppRef(name="dnd", enabled=False),
+            AppRef(name="react-console"),
+        ]
+        target = resolve_root_redirect(d, real_discovery.apps)
+        assert target == "/apps/rc/"
+
+    def test_no_apps_with_gateway_redirects_to_login(
+        self, compose_deployment: Deployment, real_discovery: Discovery
+    ) -> None:
+        d = compose_deployment.model_copy(deep=True)
+        d.spec.apps = []
+        d.spec.auth.gateway = True
+        target = resolve_root_redirect(d, real_discovery.apps)
+        assert target == "/auth/login"
+
+    def test_no_apps_no_gateway_no_redirect(
+        self, compose_deployment: Deployment, real_discovery: Discovery
+    ) -> None:
+        d = compose_deployment.model_copy(deep=True)
+        d.spec.apps = []
+        d.spec.auth.gateway = False
+        target = resolve_root_redirect(d, real_discovery.apps)
+        assert target is None
 
 
 class TestStreaming:
