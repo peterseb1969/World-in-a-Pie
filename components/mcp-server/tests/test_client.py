@@ -647,6 +647,57 @@ async def test_delete_documents_sends_full_list_and_unwraps_bulk():
 
 
 # =========================================================================
+# CASE-419: validate_documents — bulk dry-run validate, single template
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_validate_documents_posts_items_to_validate_bulk():
+    """validate_documents posts the item list to the bulk validate endpoint
+    and returns the full {results: [...]} envelope."""
+    bulk = {
+        "results": [
+            {"valid": True, "errors": []},
+            {"valid": False, "errors": [{"field": "data.name", "code": "required", "message": "required"}]},
+        ]
+    }
+    mock_http = _mock_http(_mock_response(bulk))
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        result = await client.validate_documents(
+            template_id="PERSON",
+            items=[{"name": "Ada"}, {}],
+            namespace="wip",
+        )
+
+    assert len(result["results"]) == 2
+    assert result["results"][0]["valid"] is True
+    assert result["results"][1]["valid"] is False
+    call = mock_http.post.call_args
+    assert "/api/document-store/validation/validate-bulk" in call.args[0]
+    assert call.kwargs["json"] == {
+        "template_id": "PERSON",
+        "namespace": "wip",
+        "items": [{"name": "Ada"}, {}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_validate_documents_includes_template_version_when_set():
+    """template_version is forwarded only when provided (omitted otherwise)."""
+    mock_http = _mock_http(_mock_response({"results": [{"valid": True, "errors": []}]}))
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.validate_documents(
+            template_id="PERSON", items=[{"name": "Ada"}], namespace="wip",
+            template_version=2,
+        )
+
+    call = mock_http.post.call_args
+    assert call.kwargs["json"]["template_version"] == 2
+
+
+# =========================================================================
 # CASE-290: upsert_namespace — PUT body filters None fields
 # =========================================================================
 

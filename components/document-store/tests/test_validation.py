@@ -336,3 +336,96 @@ async def test_create_document_rejects_unknown_fields(client: AsyncClient, auth_
     assert bulk["failed"] == 1
     assert bulk["succeeded"] == 0
     assert "unknown field" in bulk["results"][0]["error"].lower()
+
+
+# =========================================================================
+# CASE-419: bulk dry-run validate (single template, no persistence)
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_validate_bulk_mixed_valid_and_invalid(
+    client: AsyncClient, auth_headers: dict, sample_person_data: dict
+):
+    """Bulk validate returns one result per item, in input order, each a full
+    ValidationResponse — invalid items report valid=false rather than erroring
+    the batch."""
+    bad = {"national_id": "999"}  # missing required first_name/last_name
+    response = await client.post(
+        "/api/document-store/validation/validate-bulk",
+        headers=auth_headers,
+        json={
+            "template_id": "PERSON",
+            "namespace": "wip",
+            "items": [sample_person_data, bad],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["results"]) == 2
+    # Order preserved: item 0 valid, item 1 invalid.
+    assert body["results"][0]["valid"] is True
+    assert body["results"][0]["identity_hash"] is not None
+    assert body["results"][1]["valid"] is False
+    assert "required" in [e["code"] for e in body["results"][1]["errors"]]
+
+
+@pytest.mark.asyncio
+async def test_validate_bulk_empty_items(client: AsyncClient, auth_headers: dict):
+    """An empty item list is a valid no-op: 200 with an empty results list."""
+    response = await client.post(
+        "/api/document-store/validation/validate-bulk",
+        headers=auth_headers,
+        json={"template_id": "PERSON", "namespace": "wip", "items": []},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"] == []
+
+
+@pytest.mark.asyncio
+async def test_validate_bulk_template_not_found(
+    client: AsyncClient, auth_headers: dict, sample_person_data: dict
+):
+    """An unresolvable template fails the whole request with 404 — the batch is
+    single-template, so there's no per-item template to fall back to."""
+    response = await client.post(
+        "/api/document-store/validation/validate-bulk",
+        headers=auth_headers,
+        json={
+            "template_id": "NONEXISTENT_TEMPLATE",
+            "namespace": "wip",
+            "items": [sample_person_data],
+        },
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_validate_bulk_does_not_persist(
+    client: AsyncClient, auth_headers: dict, sample_person_data: dict
+):
+    """Dry run: validating must not create any document. Validate twice, then
+    confirm no PERSON documents exist for the validated identity."""
+    for _ in range(2):
+        resp = await client.post(
+            "/api/document-store/validation/validate-bulk",
+            headers=auth_headers,
+            json={
+                "template_id": "PERSON",
+                "namespace": "wip",
+                "items": [sample_person_data],
+            },
+        )
+        assert resp.status_code == 200
+
+    # No documents should have been created by validation.
+    listed = await client.get(
+        "/api/document-store/documents",
+        headers=auth_headers,
+        params={"template_value": "PERSON", "namespace": "wip"},
+    )
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 0

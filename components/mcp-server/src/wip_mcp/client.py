@@ -1217,6 +1217,28 @@ class WipClient:
             json={"template_id": template_id, "namespace": namespace, "data": data},
         )
 
+    async def validate_documents(
+        self,
+        template_id: str,
+        items: list[dict],
+        namespace: str | None = None,
+        template_version: int | None = None,
+    ) -> dict:
+        """Validate multiple documents against one template without saving (CASE-419)."""
+        namespace = self._ns(namespace)
+        body: dict[str, Any] = {
+            "template_id": template_id,
+            "namespace": namespace,
+            "items": items,
+        }
+        if template_version is not None:
+            body["template_version"] = template_version
+        return await self._post(
+            self.document_store_url,
+            "/api/document-store/validation/validate-bulk",
+            json=body,
+        )
+
     # ========================================================
     # Document-Store: Import
     # ========================================================

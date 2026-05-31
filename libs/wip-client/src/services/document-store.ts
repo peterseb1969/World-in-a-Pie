@@ -8,6 +8,8 @@ import type {
   DocumentQueryRequest,
   DocumentValidationResponse,
   ValidateDocumentRequest,
+  ValidateDocumentsRequest,
+  BulkValidationResponse,
   DocumentVersionResponse,
   PatchDocumentRequest,
   TableViewResponse,
@@ -116,6 +118,15 @@ export class DocumentStoreService extends BaseService {
 
   async validateDocument(data: ValidateDocumentRequest): Promise<DocumentValidationResponse> {
     return this.post('/validation/validate', data)
+  }
+
+  /**
+   * Bulk validate (CASE-419): validate many data payloads against ONE template
+   * without saving. Side-effect-free — no documents/versions/identity-hash
+   * registrations. Returns per-item results in input order.
+   */
+  async validateDocuments(request: ValidateDocumentsRequest): Promise<BulkValidationResponse> {
+    return this.post('/validation/validate-bulk', request)
   }
 
   // ---- Versions ----

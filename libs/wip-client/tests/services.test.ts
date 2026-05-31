@@ -615,6 +615,45 @@ describe('Service classes via createWipClient', () => {
       expect(options.method).toBe('POST')
     })
 
+    it('validateDocuments sends bulk POST to /validate-bulk (CASE-419)', async () => {
+      mockJsonResponse({
+        results: [
+          { valid: true, errors: [] },
+          { valid: false, errors: [{ field: 'data.name', code: 'required', message: 'required' }] },
+        ],
+      })
+
+      const result = await client.documents.validateDocuments({
+        template_id: 'PERSON',
+        namespace: 'wip',
+        items: [{ name: 'Ada' }, {}],
+      })
+
+      expect(result.results).toHaveLength(2)
+      expect(result.results[0].valid).toBe(true)
+      expect(result.results[1].valid).toBe(false)
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/validation/validate-bulk')
+      expect(options.method).toBe('POST')
+      const body = JSON.parse(options.body)
+      expect(body).toEqual({ template_id: 'PERSON', namespace: 'wip', items: [{ name: 'Ada' }, {}] })
+    })
+
+    it('validateDocuments forwards template_version when given', async () => {
+      mockJsonResponse({ results: [{ valid: true, errors: [] }] })
+
+      await client.documents.validateDocuments({
+        template_id: 'PERSON',
+        namespace: 'wip',
+        template_version: 2,
+        items: [{ name: 'Ada' }],
+      })
+
+      const [, options] = fetchMock.mock.calls[0]
+      const body = JSON.parse(options.body)
+      expect(body.template_version).toBe(2)
+    })
+
     // ---- Phase-4 relationship-graph queries (CASE-296) ----
 
     it('getDocumentRelationships fetches /relationships', async () => {
