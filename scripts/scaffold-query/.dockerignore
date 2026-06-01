@@ -1,0 +1,17 @@
+# Build context excludes (CASE-370). Keep this lean so `docker build .` is fast.
+node_modules
+dist
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+npm-debug.log*
+*.log
+.DS_Store
+coverage
+.vite
+
+# Do NOT add a broad `*.md` exclude here. Server code may read Markdown files
+# at runtime (e.g. prompt templates under server/), and a blanket *.md exclude
+# silently drops them from the image. Exclude specific docs if needed, by name.

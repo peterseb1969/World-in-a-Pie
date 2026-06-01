@@ -494,6 +494,13 @@ if ! $REFRESH_MODE && [ "$PRESET" = "query" ]; then
     cp "$SCAFFOLD_DIR/postcss.config.js" "$APP_DIR/"
     cp "$SCAFFOLD_DIR/index.html" "$APP_DIR/"
     cp "$SCAFFOLD_DIR/.env.example" "$APP_DIR/"
+    # k8s-ready from day 1 (CASE-370): the production Dockerfile, the
+    # Dockerfile.dev (wip-deploy --app-source dev flow) + its entrypoint, and
+    # .dockerignore are root-level files that `cp -r src` doesn't catch.
+    cp "$SCAFFOLD_DIR/Dockerfile" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/Dockerfile.dev" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/docker-entrypoint-dev.sh" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/.dockerignore" "$APP_DIR/"
     cp "$SCAFFOLD_DIR/.gitignore" "$APP_DIR/.gitignore.scaffold"
 
     # Merge .gitignore (scaffold additions)
@@ -512,8 +519,9 @@ if ! $REFRESH_MODE && [ "$PRESET" = "query" ]; then
     sed -i '' "s|/path/to/WorldInPie|$WIP_ROOT|g" "$APP_DIR/.env.example"
 
     echo "   Copied: server/ (agent.ts, index.ts, prompts/)"
-    echo "   Copied: src/ (App.tsx, AskBar.tsx, HomePage.tsx)"
+    echo "   Copied: src/ (App.tsx, AskBar.tsx, HomePage.tsx, vite-env.d.ts)"
     echo "   Copied: package.json, tsconfig.json, vite.config.ts, tailwind, .env.example"
+    echo "   Copied: Dockerfile, Dockerfile.dev, docker-entrypoint-dev.sh, .dockerignore (k8s-ready from day 1 — CASE-370)"
     echo "   App slug: $APP_SLUG"
 
     STEP_OFFSET=1
