@@ -23,7 +23,7 @@ spec:
     # 2026-05-23 bump: picks up febae69 (CASE-404 Path B seed extension),
     # 9de1b45 (CASE-408 peer projection carries data.status), and
     # dea9ea8 (SearchPage Severity facet using CASE-404 data.severity).
-    tag: wipkb-20260601b
+    tag: wipkb-20260601c
 
   ports:
     - {name: http, container_port: 3012}
@@ -56,6 +56,11 @@ spec:
       - {name: MCP_URL, source: {literal: "http://wip-mcp-server:8007/mcp"}}
 
   routes:
+    # CASE-439: served KB client (manifest + files) must be fetchable headlessly
+    # with an API key / anonymously — exempt it from gateway browser-auth. More
+    # specific than /apps/kb, so nginx longest-prefix routes it to the no-auth
+    # shared ingress; the app already restricts these to read-only whitelisted files.
+    - {path: /apps/kb/server-api/kb-client, auth_required: false}
     - {path: /apps/kb, auth_required: true}
 
   # WIP-KB writes documents to the kb namespace via the WIP API proxy.
