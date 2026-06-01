@@ -637,6 +637,12 @@ var DocumentStoreService = class extends BaseService {
       version: options?.version
     }, "DELETE");
   }
+  async deleteDocuments(ids, options) {
+    return this.bulkWrite("/documents", ids.map((id) => ({
+      id,
+      hard_delete: options?.hardDelete
+    })), "DELETE");
+  }
   async archiveDocument(id, archivedBy) {
     return this.bulkWriteOne("/documents/archive", { id, archived_by: archivedBy });
   }
@@ -644,6 +650,14 @@ var DocumentStoreService = class extends BaseService {
   // ---- Validation ----
   async validateDocument(data) {
     return this.post("/validation/validate", data);
+  }
+  /**
+   * Bulk validate (CASE-419): validate many data payloads against ONE template
+   * without saving. Side-effect-free — no documents/versions/identity-hash
+   * registrations. Returns per-item results in input order.
+   */
+  async validateDocuments(request) {
+    return this.post("/validation/validate-bulk", request);
   }
   // ---- Versions ----
   async getVersions(id) {
