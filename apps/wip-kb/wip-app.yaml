@@ -23,7 +23,7 @@ spec:
     # 2026-05-23 bump: picks up febae69 (CASE-404 Path B seed extension),
     # 9de1b45 (CASE-408 peer projection carries data.status), and
     # dea9ea8 (SearchPage Severity facet using CASE-404 data.severity).
-    tag: wipkb-20260601c
+    tag: wipkb-20260602b
 
   ports:
     - {name: http, container_port: 3012}
