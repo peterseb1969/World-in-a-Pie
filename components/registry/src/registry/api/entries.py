@@ -1035,16 +1035,33 @@ async def delete_entries(
                 ))
                 continue
 
-            if item.hard_delete:
-                # Verify namespace allows hard-delete
-                namespace = await Namespace.find_one({"prefix": entry.namespace})
-                if not namespace or namespace.deletion_mode != "full":
-                    mode = namespace.deletion_mode if namespace else "unknown"
-                    results.append(DeleteResponse(
-                        input_index=i, status="error", registry_id=item.entry_id,
-                        error=f"Hard-delete requires namespace deletion_mode='full' (currently '{mode}')",
-                    ))
-                    continue
+            if item.hard_delete or item.rollback_uncommitted:
+                # CASE-436: rollback_uncommitted bypasses the deletion_mode gate
+                # for privileged (service/admin) callers — it aborts a
+                # just-allocated entry whose backing object was never committed
+                # (a document create that failed on synonym registration), which
+                # is a trusted write-rollback, not user-data deletion. Ordinary
+                # keys never get the bypass; their flag falls through to the gate.
+                privileged_rollback = (
+                    item.rollback_uncommitted
+                    and identity.has_any_group(["wip-admins", "wip-services"])
+                )
+                if privileged_rollback:
+                    logger.info(
+                        "CASE-436: rollback_uncommitted hard-delete of entry %s "
+                        "(ns=%s) by %s — bypassing deletion_mode gate.",
+                        item.entry_id, entry.namespace, identity.user_id,
+                    )
+                else:
+                    # Verify namespace allows hard-delete
+                    namespace = await Namespace.find_one({"prefix": entry.namespace})
+                    if not namespace or namespace.deletion_mode != "full":
+                        mode = namespace.deletion_mode if namespace else "unknown"
+                        results.append(DeleteResponse(
+                            input_index=i, status="error", registry_id=item.entry_id,
+                            error=f"Hard-delete requires namespace deletion_mode='full' (currently '{mode}')",
+                        ))
+                        continue
 
                 # Permanently remove from MongoDB
                 await entry.delete()
