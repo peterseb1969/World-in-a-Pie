@@ -522,6 +522,18 @@ class DeleteItem(StrictModel):
 
     entry_id: str
     hard_delete: bool = Field(default=False, description="Permanently remove entry (requires namespace deletion_mode='full')")
+    rollback_uncommitted: bool = Field(
+        default=False,
+        description=(
+            "Roll back a just-allocated entry whose backing object was never "
+            "committed (e.g. a document create that failed on synonym "
+            "registration). Hard-deletes the entry and releases its claims "
+            "while BYPASSING the namespace deletion_mode='full' gate. Honored "
+            "ONLY for privileged callers (wip-admins / wip-services) — it is a "
+            "trusted-service write-rollback primitive, not a way for ordinary "
+            "keys to circumvent retain-mode. Implies hard_delete."
+        ),
+    )
     updated_by: str | None = None
 
 
