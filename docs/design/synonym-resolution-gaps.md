@@ -1,8 +1,45 @@
 # Synonym Resolution: Gap Analysis and Side Effects
 
-**Status:** Analysis (2026-03-30, updated 2026-04-04). Companion to `universal-synonym-resolution.md`.
+**Status:** Analysis (2026-03-30, updated 2026-04-04, **refreshed 2026-06-01**). Companion to `universal-synonym-resolution.md`.
 
-> **2026-04-04 Update:** All 7 API-boundary gaps identified in the plan (`jolly-coalescing-narwhal.md`) have been resolved in commit `3dece58`. See "Resolved Gaps" section below. The deeper internal resolution gaps (template-store `_resolve_to_*` methods, cross-namespace resolution, reserved/draft entity resolution) remain open and are documented in this file.
+> **2026-06-01 Refresh (BE-YAC-20260531-181651).** A full-codebase synonym
+> creation/resolution audit re-verified this document against current code.
+> **The "Core Gap" analysed at length below (template-store `_resolve_to_*`
+> methods) is CLOSED** — those methods no longer exist (grep-verified, zero
+> matches). The §"Core Gap" / §"Side Effects" / §"Recommended Implementation
+> Order" sections are retained for historical/design context but describe
+> already-completed work. Specifically verified on `develop` (2026-06-01):
+>
+> - `template_service._normalize_field_references` now resolves every field
+>   reference (`terminology_ref`, `template_ref`, `target_templates`,
+>   `array_*_ref`, `target_terminologies`) through the shared
+>   `resolve_entity_ids` (`template_service.py:745`), with the activation-set
+>   `known_templates` fast-path (`:2214-2226`) and `include_statuses` for
+>   reserved/draft resolution (`:2226`, `:2234`). That closes the two
+>   "prerequisites" this doc flagged (activation-set + reserved/draft).
+> - Cross-namespace resolution was solved via an **explicit-prefix model**
+>   (`NS:VALUE` / `NS:TERMINOLOGY:VALUE`) in `resolve._build_composite_key`
+>   (`resolve.py:80-130`) — *not* the automatic own→wip→allowed_external_refs
+>   search order proposed in §3/§"Recommended Implementation Order" below.
+>   Bare values resolve in the caller's own namespace; cross-namespace requires
+>   an explicit prefix. Treat the auto-search-order proposal below as NOT the
+>   path taken.
+>
+> **Residual, still-accurate gaps** (the only ones live as of 2026-06-01):
+> - **CASE-432** — two service-local lookups that bypass the Registry entirely:
+>   template-store `create_template`/version resolves `extends` via MongoDB-direct
+>   (`template_service.py:276-283`, `:997-1000`); document-store validation's
+>   `_lookup_by_business_key` fallback queries `data.<identity_field>` directly
+>   (`validation_service.py:1628-1672`).
+> - **CASE-433** — `def-store` (`/lookup/by-key` + `search_synonyms`) and
+>   `document-store` (`/lookup/by-id`) hand-roll divergent per-domain lookup
+>   clients for the same "resolve an identifier" operation; not unified onto a
+>   shared method.
+>
+> Everything below the next horizontal rule predates this refresh; read it as
+> history, and trust the two cases above for what remains.
+
+> **2026-04-04 Update:** All 7 API-boundary gaps identified in the plan (`jolly-coalescing-narwhal.md`) have been resolved in commit `3dece58`. See "Resolved Gaps" section below. The deeper internal resolution gaps (template-store `_resolve_to_*` methods, cross-namespace resolution, reserved/draft entity resolution) remain open and are documented in this file. *(2026-06-01: these are now closed — see the refresh note above.)*
 **Context:** The universal synonym resolution design is sound but incompletely implemented. This document audits the current state, identifies gaps, and analyzes the side effects of closing them.
 
 ---
