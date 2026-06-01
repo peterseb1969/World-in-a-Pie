@@ -1532,8 +1532,25 @@ class ValidationService:
                 doc = await self._resolve_via_registry(value, namespace, "documents")
 
                 if not doc:
-                    # Fallback: Business key lookup
-                    doc = await self._lookup_by_business_key(value, target_templates)
+                    # CASE-435: the Registry didn't resolve this string reference.
+                    # The old service-local business-key fallback (a direct Mongo
+                    # query on data.<identity_field>) is REMOVED — it could resolve
+                    # a value the Registry doesn't know, a "guardrail that works
+                    # sometimes" (Vision §"References Must Resolve"). String refs
+                    # now resolve through the Registry only. Verified the fallback
+                    # was unreachable for correctly-registered docs: the
+                    # identity-values synonym flattens the value into search_values,
+                    # which the by-id lookup already matches. Log the miss so an
+                    # under-registered target (missing Registry synonym) surfaces
+                    # instead of being silently papered over by a Mongo bypass.
+                    logger.warning(
+                        "CASE-435: string reference %r (field %r, ns %r) did not "
+                        "resolve via the Registry; the business-key Mongo fallback "
+                        "was removed — treating as unresolved. If this should "
+                        "resolve, the target's Registry synonym is missing "
+                        "(registration gap).",
+                        value, field_path, namespace,
+                    )
         elif isinstance(value, dict):
             # Composite business key
             doc = await self._lookup_by_business_key(value, target_templates)
