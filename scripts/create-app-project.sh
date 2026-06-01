@@ -372,9 +372,14 @@ else
     echo "5. Copying client libraries..."
 fi
 MISSING_LIBS=()
-CLIENT_TARBALL=$(find "$WIP_ROOT/libs/wip-client/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
-REACT_TARBALL=$(find "$WIP_ROOT/libs/wip-react/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
-PROXY_TARBALL=$(find "$WIP_ROOT/libs/wip-proxy/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
+# CASE-441: pick the maintained `-latest.tgz` (force-tracked, kept current by the
+# lib build/pack flow), NOT `find … | head -1` — that returned a tarball in
+# arbitrary directory order, and since old versioned .tgz accumulate (gitignored,
+# never cleaned) it silently picked a STALE version (e.g. wip-client-0.20.0 over
+# 0.21.0). Empty result falls through to the rebuild block below.
+CLIENT_TARBALL=$(find "$WIP_ROOT/libs/wip-client/" -maxdepth 1 -name 'wip-client-latest.tgz' -type f 2>/dev/null | head -1)
+REACT_TARBALL=$(find "$WIP_ROOT/libs/wip-react/" -maxdepth 1 -name 'wip-react-latest.tgz' -type f 2>/dev/null | head -1)
+PROXY_TARBALL=$(find "$WIP_ROOT/libs/wip-proxy/" -maxdepth 1 -name 'wip-proxy-latest.tgz' -type f 2>/dev/null | head -1)
 
 # Auto-build tarballs if missing or invalid
 # Fresh clones have no node_modules, so we must npm install before npm pack
@@ -388,7 +393,13 @@ rebuild_tarball() {
         echo "   Warning: failed to build $lib_name tarball" >&2
         return 1
     fi
-    find "$lib_dir" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1
+    # CASE-441: return the exact tarball `npm pack` just produced
+    # (<name>-<version>.tgz from package.json), not `find … | head -1` which
+    # returned an arbitrary (often stale) tarball from the accumulated set.
+    local base ver pj="$lib_dir/package.json"
+    base=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$pj','utf8')).name.replace('@wip/','wip-'))" 2>/dev/null)
+    ver=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$pj','utf8')).version)" 2>/dev/null)
+    [ -n "$base" ] && [ -n "$ver" ] && [ -f "$lib_dir/${base}-${ver}.tgz" ] && printf '%s\n' "$lib_dir/${base}-${ver}.tgz"
 }
 
 if command -v npm &>/dev/null; then
@@ -421,6 +432,11 @@ copy_tarball() {
         return
     fi
 
+    # CASE-441: drop any previously-copied tarballs for this lib so the app's
+    # `npm install ./libs/<lib>-*.tgz` glob resolves to exactly this one — older
+    # (buggy) refreshes copied version-named tarballs; leaving them makes the glob
+    # ambiguous and can pin a stale version alongside the new one.
+    rm -f "$APP_DIR/libs/wip-${lib_name#@wip/}-"*.tgz
     cp "$tarball" "$APP_DIR/libs/"
     if tar -xzf "$tarball" --to-stdout package/README.md > "$APP_DIR/libs/$readme_name" 2>/dev/null; then
         echo "   Copied: $(basename "$tarball") + README"
