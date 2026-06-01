@@ -13,7 +13,7 @@ spec:
     name: react-console
     # App lives in its own repo (WIP-ReactConsole).
     # v1.2.2 — refreshed RC build (BE-YAC-20260430-2000).
-    tag: wipkb-20260513
+    tag: wipkb-20260601
 
   ports:
     - {name: http, container_port: 3011}
