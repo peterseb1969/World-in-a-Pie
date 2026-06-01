@@ -48,6 +48,14 @@ export interface UpdateNamespaceRequest {
   allowed_external_refs?: string[]
   id_config?: Record<string, IdAlgorithmConfig>
   updated_by?: string
+  /**
+   * Required to be `true` when flipping `deletion_mode` from 'retain' to
+   * 'full' on an existing namespace (enabling hard-delete on namespace
+   * deletion). The backend rejects the transition without it. Ignored for
+   * other updates, and not needed when creating a namespace directly with
+   * `deletion_mode: 'full'`. Safety guard — see CASE-291 / CASE-429.
+   */
+  confirm_enable_deletion?: boolean
 }
 
 export interface RegistryEntry {
