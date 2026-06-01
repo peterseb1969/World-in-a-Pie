@@ -324,9 +324,19 @@ class RegistryClientBase:
     # ── Universal public methods ────────────────────────────────────────
 
     async def hard_delete_entry(
-        self, entry_id: str, updated_by: str | None = None
+        self,
+        entry_id: str,
+        updated_by: str | None = None,
+        rollback_uncommitted: bool = False,
     ) -> bool:
-        """Hard-delete a Registry entry. Returns True if deleted."""
+        """Hard-delete a Registry entry. Returns True if deleted.
+
+        rollback_uncommitted (CASE-436): set when aborting a just-allocated
+        entry whose backing object was never committed (e.g. a document create
+        that failed on synonym registration). It bypasses the namespace
+        deletion_mode='full' gate, honored only for privileged (service/admin)
+        callers — see DeleteItem.rollback_uncommitted.
+        """
         async with self._make_client() as client:
             response = await client.request(
                 "DELETE",
@@ -335,6 +345,7 @@ class RegistryClientBase:
                 json=[{
                     "entry_id": entry_id,
                     "hard_delete": True,
+                    "rollback_uncommitted": rollback_uncommitted,
                     "updated_by": updated_by,
                 }],
             )

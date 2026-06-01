@@ -145,7 +145,14 @@ class RegistryClient(RegistryClientBase):
         entity_type: str,
         synonyms: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Register synonyms for a registry entry."""
+        """Register synonyms for a registry entry.
+
+        Returns the per-item result list (each {input_index, status,
+        registry_id, error}); status is one of added / already_exists /
+        target_not_found / error. The bulk envelope is unwrapped here so callers
+        can inspect per-synonym outcomes (CASE-434/436) rather than discarding
+        them.
+        """
         items = [
             {
                 "target_id": entry_id,
@@ -165,7 +172,40 @@ class RegistryClient(RegistryClientBase):
                 raise RegistryError(
                     f"Failed to add synonyms: {response.status_code} - {response.text}"
                 )
-            return cast(list[dict[str, Any]], response.json())
+            data = response.json()
+            return cast(list[dict[str, Any]], data.get("results", []))
+
+    async def remove_synonyms(
+        self,
+        entry_id: str,
+        namespace: str,
+        entity_type: str,
+        synonyms: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Remove synonyms from a registry entry (rollback of a partial
+        add). Returns the per-item result list. Not gated by deletion_mode —
+        it is a normal synonym edit that also releases the claim."""
+        items = [
+            {
+                "target_id": entry_id,
+                "synonym_namespace": namespace,
+                "synonym_entity_type": entity_type,
+                "synonym_composite_key": syn,
+            }
+            for syn in synonyms
+        ]
+        async with self._make_client() as client:
+            response = await client.post(
+                f"{self.base_url}/api/registry/synonyms/remove",
+                headers=self._get_headers(),
+                json=items,
+            )
+            if response.status_code != 200:
+                raise RegistryError(
+                    f"Failed to remove synonyms: {response.status_code} - {response.text}"
+                )
+            data = response.json()
+            return cast(list[dict[str, Any]], data.get("results", []))
 
     async def register_auto_synonym(
         self,
