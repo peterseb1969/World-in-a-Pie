@@ -28,13 +28,13 @@ os.environ.setdefault("WIP_AUTH_MODE", "api_key_only")
 os.environ.setdefault("REGISTRY_API_KEY", "test_api_key")
 
 from registry.main import app as registry_app  # noqa: E402
+from registry.models.composite_key_claim import CompositeKeyClaim  # noqa: E402
 from registry.models.deletion_journal import DeletionJournal  # noqa: E402
 from registry.models.entry import RegistryEntry  # noqa: E402
 from registry.models.grant import NamespaceGrant  # noqa: E402
 from registry.models.id_counter import IdCounter  # noqa: E402
 from registry.models.namespace import Namespace  # noqa: E402
 from registry.services.auth import AuthService  # noqa: E402
-
 from wip_auth.fastapi_helpers import (  # noqa: E402
     _derive_namespace_from_identity,
     resolve_or_404,
@@ -68,13 +68,17 @@ async def registry():
 
     await init_beanie(
         database=mongo_client["wip_auth_helpers_test"],
-        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal],
+        document_models=[
+            Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal,
+            CompositeKeyClaim,
+        ],
     )
     await RegistryEntry.delete_all()
     await Namespace.delete_all()
     await IdCounter.delete_all()
     await NamespaceGrant.delete_all()
     await DeletionJournal.delete_all()
+    await CompositeKeyClaim.delete_all()
 
     registry_app.state.mongodb_client = mongo_client
     AuthService.initialize(master_key=os.environ.get("MASTER_API_KEY", "test_api_key"))

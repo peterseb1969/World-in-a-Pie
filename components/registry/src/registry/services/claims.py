@@ -52,6 +52,19 @@ async def claim_entry_keys(entry: RegistryEntry) -> None:
                 "by %s — cross-feed/concurrent collision, left for reconciliation.",
                 kind, key_hash, ns, etype, entry.entry_id, owner,
             )
+        except Exception:
+            # CASE-431: truly best-effort. The entry is already inserted and its
+            # primary uniqueness is guaranteed by namespace_entity_keyhash_unique_idx;
+            # the claim is only cross-feed protection for future add_synonyms. Any
+            # non-DuplicateKeyError hiccup (transient Mongo error, or an
+            # uninitialised collection in a misconfigured harness) must NOT fail
+            # the committed entry — log it and leave the missing claim for startup
+            # reconciliation.
+            logger.exception(
+                "CASE-431: %s key %s (%s/%s) claim for committed entry %s failed "
+                "unexpectedly — entry stands; missing claim left for reconciliation.",
+                kind, key_hash, ns, etype, entry.entry_id,
+            )
 
 
 async def backfill_claims() -> dict[str, int]:
