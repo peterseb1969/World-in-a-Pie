@@ -15,7 +15,7 @@ spec:
     # compute_template_compatibility landed at 3f45b2a; without this pin,
     # wip-deploy install would use the deployer-state default tag
     # (wipkb-20260521) which predates the fix.
-    tag: wipkb-20260523
+    tag: wipkb-20260601
     build_context: .
 
   ports:
