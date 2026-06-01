@@ -3,6 +3,8 @@
 import contextlib
 import logging
 from datetime import UTC, datetime
+from typing import ClassVar
+
 from beanie.odm.enums import SortDirection
 
 from wip_auth.resolve import (
@@ -272,6 +274,15 @@ class TemplateService:
         # Validate extends if provided
         parent_namespace: str | None = None
         if request.extends:
+            # CASE-432: resolve `extends` through the Registry first so a
+            # registered synonym for the parent resolves identically to its
+            # canonical ID (Vision §"References Must Resolve"), matching how
+            # activation (resolve_entity_id) and field references already
+            # resolve. On a miss, fall through to the legacy lookups — draft
+            # mode may legitimately name a not-yet-created parent, and a draft
+            # parent is still found by the any-status value lookup below.
+            with contextlib.suppress(EntityNotFoundError):
+                request.extends = await resolve_entity_id(request.extends, "template", namespace)
             # Find latest version of parent (template_id is stable across versions)
             parent_results = await Template.find({"template_id": request.extends}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             parent = parent_results[0] if parent_results else None
@@ -681,13 +692,13 @@ class TemplateService:
     # references to the same entity compare equal. The principle: synonyms
     # MUST work identically to canonical IDs at every comparison site
     # (Vision.md §"References Must Resolve", docs/design/synonym-resolution-gaps.md).
-    _FIELD_REF_SCALAR_PROPS = {
+    _FIELD_REF_SCALAR_PROPS: ClassVar = {
         "terminology_ref": "terminology",
         "template_ref": "template",
         "array_terminology_ref": "terminology",
         "array_template_ref": "template",
     }
-    _FIELD_REF_LIST_PROPS = {
+    _FIELD_REF_LIST_PROPS: ClassVar = {
         "target_templates": "template",
         "target_terminologies": "terminology",
     }
@@ -994,6 +1005,10 @@ class TemplateService:
         # Validate extends if changing
         extends_value = request.extends if request.extends is not None else original.extends
         if extends_value and extends_value != original.extends:
+            # CASE-432: resolve `extends` through the Registry first (synonym →
+            # canonical), then fall through to the legacy lookups on a miss.
+            with contextlib.suppress(EntityNotFoundError):
+                extends_value = await resolve_entity_id(extends_value, "template", original.namespace)
             parent_results = await Template.find({"template_id": extends_value}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             parent = parent_results[0] if parent_results else None
             if not parent:
