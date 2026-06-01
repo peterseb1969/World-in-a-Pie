@@ -22,7 +22,7 @@ You must have a session ID (see YAC Reporting section in CLAUDE.md).
 
 Case files are named: `CASE-<NN>-<status>-<slug>.md`
 
-- `<NN>` — a short number (zero-padded to 2 digits), unique within the directory. Assigned at filing time as the next available number.
+- `<NN>` — a short number, unique within the directory. **Server-assigned** at allocation (the `CASE-<n>` Registry synonym of the case's UUID; `case_helper.sh claim` retired — see `/case file`). The flat filename carries it for the FS record; identity lives in kb.
 - `<status>` — one of: `open`, `responded`, `closed`, `implemented`
 - `<slug>` — 2-4 word kebab-case topic
 
@@ -48,7 +48,7 @@ ls yac-discussions/CASE-03-*.md 2>/dev/null
 
 ## Handling `/case file`
 
-> **Filing discipline (do not skip).** Filing a case ALWAYS goes through `case-helper.sh claim <slug>` (step 3 below) — never the `Write` tool, never `case-helper.sh next` followed by `Write`. The race is real (CASE-67 on Apr 27, CASE-301 on May 6 — both 2-YAC 13-minute collisions); the atomic mechanism is the only collision-safe path. If you find yourself reasoning about case numbers ("what's the next available?", "let me check if N is taken"), stop and run `claim <slug>` instead. The script does the reasoning. Concurrent filers get distinct numbers by construction. `case-helper.sh next` is **only** for displaying-the-likely-next-number for awareness; it is NEVER the path to actually filing. CASE-306 names this discipline gap explicitly.
+> **Filing discipline (do not skip).** Filing a NEW case ALWAYS goes through the **served allocator** `case_allocate.py` (step 3 below) — never the `Write` tool, never hand-picking a number. The number is server-assigned: `case_allocate` reads the current max, then **claims the `CASE-<n>` Registry synonym atomically** and creates the CASE_RECORD; a concurrent filer who grabbed `CASE-<n>` first causes a `synonym_conflict`, and the allocator advances to `<n>+1` and retries. **The atomic synonym claim is the serializer** (CASE-427/436) — no FS lock, no client-side number reasoning, distinct numbers by construction. If you find yourself reasoning about case numbers ("what's the next available?", "is N taken?"), stop — `case_allocate` does it. This replaces the old FS `case-helper.sh claim` (CASE-67/CASE-301 collisions, CASE-306 discipline) with server-side allocation per CASE-425/437; the FS claim is retired.
 
 ### 1. Get the current time
 
@@ -60,22 +60,23 @@ date '+%Y-%m-%d %H:%M'
 
 Infer a short slug from context: `unknown-fields`, `relative-baseurl`, `template-update-missing`. 2-4 words, lowercase kebab-case (matches the regex `^[a-z0-9]+(-[a-z0-9]+)*$`).
 
-### 3. Claim a case number AND filename atomically
+### 3. Allocate a case number (server-side, atomic)
 
 ```bash
-bash yac-discussions/case-helper.sh claim <slug>
-# Echoes: yac-discussions/CASE-<NN>-open-<slug>.md
+bash ../FR-YAC/tools/kb-client.sh case_allocate.py \
+  --title "<short case title>" --filed-by "<your session ID>" \
+  --type <bug|question|request|platform-gap> --severity <blocks-me|annoying|fyi> \
+  --component <document-store|registry|scaffold|mcp-server|wip-client|wip-react|wip-proxy|wip-auth|reporting-sync|other>
+# Prints: CASE-<n> <document_id>
 ```
 
-The script creates the file with a placeholder body (`_(case body in progress — DO NOT FILE NEW CASE WITH THIS NUMBER)_`). **The file existence is the lock.** Two YACs running this concurrently get different numbers — the first to win the file-create takes `<NN>`; the second hits a noclobber error, retries with `<NN>+1`, and gets that.
+`kb-client.sh` fetches the version-matched KB client from the running instance (the loaders are APP-KB-owned and served — CASE-437) and runs the allocator. `case_allocate` reserves `<n>` by **atomically claiming the `CASE-<n>` synonym** and creating the CASE_RECORD (`data.case_number=<n>`, `data.status=open`). On `synonym_conflict` it advances `<n>+1` and retries — concurrent filers get distinct numbers by construction. Note the printed `<n>`; it is the assigned case number.
 
-This replaces the older "find highest, add 1, then write 2–4 minutes later" flow that produced the CASE-67 collision on Apr 27 (race window: a YAC chews on the case body for minutes between getting `next` and writing the file).
+(Path to `kb-client.sh` is from your YAC's repo root; the wrapper itself is the one client-side bootstrap — it fetches the served client. Adjust the path if your repo layout differs.)
 
-If your slug is invalid (uppercase, spaces, special chars), the script errors with a hint. Pick a different slug and retry.
+### 4. Write the case file (the FS record)
 
-### 4. Fill in the case body
-
-The file now exists at the path the script echoed, with the placeholder line as its only content. Open it and replace the placeholder with proper frontmatter + body:
+`case_allocate` has created the kb record + reserved the number. Now write the flat file `yac-discussions/CASE-<n>-open-<slug>.md` (the git-tracked FS record), filling the assigned `<n>` into the frontmatter `case:` field:
 
 ```markdown
 ---
@@ -107,23 +108,21 @@ Be specific enough that a BE-YAC with no knowledge of your app can understand.>
 <If Peter provided a comment with `/case file`, put it here verbatim. If no comment, omit this section entirely.>
 ```
 
-### 5. Mirror to wip-kb (last step before confirming)
+### 5. Sync the body to wip-kb (resolve-then-update)
 
-After the body is written and the case file is final, mirror it into the `kb` namespace on `wip-kb.local` so the constellation's knowledge layer has the canonical record:
+`case_allocate` already created the record (step 3). Now push the full file body into it — `add-to-kb` **resolves the `CASE-<n>` synonym to the document_id and updates in place** (v2 resolve-then-update; it does NOT create — the doc already exists):
 
 ```bash
-python3 ../FR-YAC/tools/add-to-kb.py yac-discussions/CASE-<NN>-open-<slug>.md
+bash ../FR-YAC/tools/kb-client.sh add-to-kb.py yac-discussions/CASE-<n>-open-<slug>.md
 ```
 
-(Path to the script is from your YAC's repo root; adjust if your repo layout differs.)
+The served client:
+- Resolves `CASE-<n>` → document_id and updates `data.body` with the full file content (JSON Merge Patch, a new version; no duplicate — v2 CASE_RECORD has `identity_fields:[]`, so a create would append — resolve-then-update is mandatory).
+- Derives `REFERENCES` edges from your frontmatter `related:` field (each `CASE-N` mention → an outbound edge to the matching CASE_RECORD via its synonym; targets not yet in KB are silently skipped).
+- Handshakes against the instance manifest and refuses to write on `schema_version` skew (no-skew guarantee).
+- Writes one canonical instance (the one that served the client) — no local+remote dual-write.
 
-The script:
-- POSTs a `CASE_RECORD` document into the `kb` namespace with the full file content as `data.body`.
-- Derives `REFERENCES` edges from your frontmatter `related:` field (each `CASE-N` mention becomes an outbound edge to the matching active CASE_RECORD; targets not yet in KB are silently skipped).
-- Is idempotent — re-runs update the existing record's body via JSON Merge Patch (a new version), no duplicates.
-- Exits 0 on success; non-zero on any per-item failure. Fix and re-run.
-
-This step is **not optional.** Without it, the flat file lives in FR-YAC but the KB record never lands. The dual-write is the canonical population path for KB; this script is the surface that enforces it. Filed as CASE-307.
+This step is **not optional** — without it the record carries only the title/metadata from allocation, not the body. CASE-307 names the dual-write; CASE-425/437 the v2 resolve-then-update.
 
 ### 6. Confirm
 
@@ -237,7 +236,7 @@ mv yac-discussions/CASE-<NN>-open-<slug>.md yac-discussions/CASE-<NN>-responded-
 Re-run the loader to refresh the kb record body (idempotent — updates the existing CASE_RECORD via JSON Merge Patch, no duplicates):
 
 ```bash
-python3 ../FR-YAC/tools/add-to-kb.py yac-discussions/CASE-<NN>-responded-<slug>.md
+bash ../FR-YAC/tools/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-responded-<slug>.md
 ```
 
 This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.
@@ -279,7 +278,7 @@ If the user provided text with the command (e.g., `/case comment 3 This is urgen
 Re-run the loader to refresh the kb record body (idempotent — comments don't change status, but the appended body must propagate to kb):
 
 ```bash
-python3 ../FR-YAC/tools/add-to-kb.py yac-discussions/CASE-<NN>-*.md
+bash ../FR-YAC/tools/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-*.md
 ```
 
 This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.
@@ -317,7 +316,7 @@ Rename: `CASE-<NN>-<old-status>-<slug>.md` → `CASE-<NN>-closed-<slug>.md`
 Re-run the loader to refresh the kb record body and status:
 
 ```bash
-python3 ../FR-YAC/tools/add-to-kb.py yac-discussions/CASE-<NN>-closed-<slug>.md
+bash ../FR-YAC/tools/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-closed-<slug>.md
 ```
 
 This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.
@@ -385,7 +384,7 @@ Rename: `CASE-<NN>-<old-status>-<slug>.md` → `CASE-<NN>-implemented-<slug>.md`
 Re-run the loader to refresh the kb record body and status:
 
 ```bash
-python3 ../FR-YAC/tools/add-to-kb.py yac-discussions/CASE-<NN>-implemented-<slug>.md
+bash ../FR-YAC/tools/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-implemented-<slug>.md
 ```
 
 This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.
