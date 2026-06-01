@@ -72,7 +72,15 @@ async def create_documents(
         # Single item — use direct create path
         response, error = await service.create_document(items[0], namespace=items[0].namespace)
         if error:
-            results = [BulkResultItem(index=0, status="error", error=error)]
+            # CASE-436: surface a machine-readable error_code for the codes the
+            # service prefixes ("<code>: <message>"), matching the bulk path so
+            # callers branch on error_code, not the message string.
+            err_code = next(
+                (c for c in ("synonym_conflict", "registry_error")
+                 if error.startswith(f"{c}: ")),
+                None,
+            )
+            results = [BulkResultItem(index=0, status="error", error=error, error_code=err_code)]
         else:
             assert response is not None  # paired with error: when error is None, response is set
             if response.is_new:

@@ -1,7 +1,7 @@
 """API request and response models for the Document Store."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -66,6 +66,18 @@ class DocumentCreateRequest(StrictModel):
     synonyms: list[dict[str, Any]] | None = Field(
         default=None,
         description="Optional synonym composite keys to register for this document in the Registry"
+    )
+    on_synonym_conflict: Literal["fail", "warn"] = Field(
+        default="fail",
+        description=(
+            "How to handle an inline synonym that the Registry refuses (e.g. "
+            "already owned by a different entry). 'fail' (default): the whole "
+            "create fails, the document is NOT created, and any synonyms/entry "
+            "allocated for it are rolled back — use this when the synonyms are "
+            "load-bearing (e.g. you rely on original IDs to resolve after "
+            "import). 'warn': the document is created and the refused synonyms "
+            "are reported in `warnings`."
+        ),
     )
 
 

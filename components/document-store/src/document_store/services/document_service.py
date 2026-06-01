@@ -462,7 +462,7 @@ class DocumentService:
             result = await self._create_new_document(
                 request, validation_result, document_id=document_id,
                 namespace=namespace, synonyms=request.synonyms,
-                version_override=version_override,
+                version_override=version_override, is_new_entry=is_new,
             )
             timing["3_restore"] = (time.perf_counter() - start) * 1000
         elif is_new:
@@ -470,7 +470,8 @@ class DocumentService:
             start = time.perf_counter()
             result = await self._create_new_document(
                 request, validation_result, document_id=document_id,
-                namespace=namespace, synonyms=request.synonyms
+                namespace=namespace, synonyms=request.synonyms,
+                is_new_entry=is_new,
             )
             timing["3_create_new"] = (time.perf_counter() - start) * 1000
         else:
@@ -489,7 +490,8 @@ class DocumentService:
                 # No active version found (all inactive?) — create as version 1
                 result = await self._create_new_document(
                     request, validation_result, document_id=document_id,
-                    namespace=namespace, synonyms=request.synonyms
+                    namespace=namespace, synonyms=request.synonyms,
+                    is_new_entry=is_new,
                 )
             timing["3_create_version"] = (time.perf_counter() - start) * 1000
 
@@ -497,6 +499,99 @@ class DocumentService:
         self._record_creation_timing(timing)
 
         return result
+
+    async def _register_inline_synonyms(
+        self,
+        *,
+        document_id: str,
+        namespace: str,
+        synonyms: list[dict],
+        on_synonym_conflict: str,
+        is_new_entry: bool,
+    ) -> tuple[list[str], str | None, str | None]:
+        """Register inline synonyms for a document's registry entry (CASE-434/436).
+
+        Returns (warnings, error_code, error_message):
+          - all added / already-owned     -> ([], None, None)
+          - on_synonym_conflict == "warn"  -> (warnings, None, None); caller proceeds
+          - on_synonym_conflict == "fail"  -> ([], code, msg) AFTER rolling back
+            the synonyms added in this call (and, if is_new_entry, releasing the
+            document's own entry). The caller must then abort without persisting.
+
+        ``already_exists`` is success: re-supplying a synonym the entry already
+        owns (idempotent re-create) is not a conflict.
+        """
+        registry = get_registry_client()
+        try:
+            results = await registry.add_synonyms(
+                entry_id=document_id, namespace=namespace,
+                entity_type="documents", synonyms=synonyms,
+            )
+        except RegistryError as e:
+            if on_synonym_conflict == "warn":
+                return [f"Synonyms not registered (registry error): {e}"], None, None
+            await self._rollback_synonym_allocation(document_id, namespace, [], is_new_entry)
+            return [], "registry_error", f"Synonym registration failed: {e}"
+
+        added: list[dict] = []
+        failures: list[str] = []
+        for res in results:
+            status = res.get("status")
+            idx = res.get("input_index", 0)
+            syn = synonyms[idx] if isinstance(idx, int) and 0 <= idx < len(synonyms) else {}
+            if status == "added":
+                added.append(syn)
+            elif status in ("error", "target_not_found"):
+                failures.append(res.get("error") or f"synonym {syn} rejected ({status})")
+
+        if not failures:
+            return [], None, None
+
+        if on_synonym_conflict == "warn":
+            return [f"Synonym not registered: {m}" for m in failures], None, None
+
+        # strict — roll back what landed and abort.
+        await self._rollback_synonym_allocation(document_id, namespace, added, is_new_entry)
+        return [], "synonym_conflict", "; ".join(failures)
+
+    async def _rollback_synonym_allocation(
+        self,
+        document_id: str,
+        namespace: str,
+        added_synonyms: list[dict],
+        is_new_entry: bool,
+    ) -> None:
+        """Best-effort rollback of a failed strict-mode inline-synonym create.
+
+        If this call allocated the document's entry, release that entry
+        (CASE-436 rollback_uncommitted — bypasses the deletion_mode gate); the
+        hard-delete cascades to its claims and embedded synonyms, so the
+        just-added ones go with it. Otherwise (update path) remove only the
+        synonyms added in this call. Failures are logged, never raised, so the
+        original conflict is what surfaces; any residue is swept by the
+        registry's claim reconciliation.
+        """
+        registry = get_registry_client()
+        if is_new_entry:
+            try:
+                await registry.hard_delete_entry(document_id, rollback_uncommitted=True)
+                return
+            except RegistryError as e:
+                logger.error(
+                    "CASE-436: failed to roll back entry %s after synonym conflict: %s",
+                    document_id, e,
+                )
+        if added_synonyms:
+            try:
+                await registry.remove_synonyms(
+                    entry_id=document_id, namespace=namespace,
+                    entity_type="documents", synonyms=added_synonyms,
+                )
+            except RegistryError as e:
+                logger.warning(
+                    "CASE-436: failed to remove %d added synonym(s) from %s during "
+                    "rollback: %s", len(added_synonyms), document_id, e,
+                )
 
     async def _create_new_document(
         self,
@@ -506,31 +601,29 @@ class DocumentService:
         namespace: str,
         synonyms: list[dict] | None = None,
         version_override: int | None = None,
-    ) -> tuple[DocumentCreateResponse, str | None]:
+        is_new_entry: bool = True,
+    ) -> tuple[DocumentCreateResponse | None, str | None]:
         """Create a brand new document with the given stable document_id."""
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Register synonyms if provided
+        # Register inline synonyms (CASE-434/436). Strict by default: a refused
+        # synonym rolls back (and releases the just-allocated entry) and aborts
+        # the create; "warn" creates the doc and surfaces the refusal.
+        synonym_warnings: list[str] = []
         if synonyms:
-            try:
-                registry = get_registry_client()
-                await registry.add_synonyms(
-                    entry_id=document_id,
-                    namespace=namespace,
-                    entity_type="documents",
-                    synonyms=synonyms
-                )
-            except RegistryError as e:
-                import logging
-                logging.getLogger(__name__).warning(
-                    f"Failed to register synonyms for {document_id}: {e}"
-                )
+            synonym_warnings, err_code, err_msg = await self._register_inline_synonyms(
+                document_id=document_id, namespace=namespace, synonyms=synonyms,
+                on_synonym_conflict=request.on_synonym_conflict, is_new_entry=is_new_entry,
+            )
+            if err_code:
+                return None, f"{err_code}: {err_msg}"
 
         # Create document
         now = datetime.now(UTC)
+        all_warnings = validation_result.warnings + synonym_warnings
         metadata = DocumentMetadata(
-            warnings=validation_result.warnings,
+            warnings=all_warnings,
             custom=request.metadata or {}
         )
 
@@ -595,7 +688,7 @@ class DocumentService:
             version=document.version,
             is_new=document.version == 1,
             previous_version=None if document.version == 1 else document.version - 1,
-            warnings=validation_result.warnings
+            warnings=all_warnings
         ), None
 
     def _data_has_changed(
@@ -740,13 +833,26 @@ class DocumentService:
         validation_result: Any,
         document_id: str,
         namespace: str
-    ) -> tuple[DocumentCreateResponse, str | None]:
+    ) -> tuple[DocumentCreateResponse | None, str | None]:
         """Create a new version of an existing document with stable document_id.
 
         For templates with versioned=False, overwrites the existing
         document in place instead of creating a new version. Same
         document_id, same version number, just newer data/timestamps.
         """
+        # CASE-434/436 sibling fix: the update path used to ignore inline
+        # synonyms entirely. Process them under the same mode, against the
+        # EXISTING entry (is_new_entry=False — never release a live doc's entry;
+        # rollback removes only the synonyms added in this call).
+        synonym_warnings: list[str] = []
+        if request.synonyms:
+            synonym_warnings, err_code, err_msg = await self._register_inline_synonyms(
+                document_id=document_id, namespace=namespace, synonyms=request.synonyms,
+                on_synonym_conflict=request.on_synonym_conflict, is_new_entry=False,
+            )
+            if err_code:
+                return None, f"{err_code}: {err_msg}"
+
         # Check if data has actually changed
         if not self._data_has_changed(
             existing,
@@ -765,13 +871,14 @@ class DocumentService:
                 version=existing.version,
                 is_new=False,
                 previous_version=None,  # No previous version because nothing changed
-                warnings=validation_result.warnings
+                warnings=validation_result.warnings + synonym_warnings
             ), None
 
         # Phase 3: templates with versioned=false overwrite in place.
         if not await self._is_template_versioned(request.template_id):
             return await self._overwrite_in_place(
                 request, existing, validation_result, namespace,
+                extra_warnings=synonym_warnings,
             )
 
         # Get authenticated identity (not client-provided)
@@ -787,7 +894,7 @@ class DocumentService:
         now = datetime.now(UTC)
         new_version = existing.version + 1
         metadata = DocumentMetadata(
-            warnings=validation_result.warnings,
+            warnings=validation_result.warnings + synonym_warnings,
             custom=request.metadata or {}
         )
 
@@ -829,7 +936,7 @@ class DocumentService:
             version=new_version,
             is_new=False,
             previous_version=existing.version,
-            warnings=validation_result.warnings
+            warnings=validation_result.warnings + synonym_warnings
         ), None
 
     async def _overwrite_in_place(
@@ -838,6 +945,7 @@ class DocumentService:
         existing: Document,
         validation_result: Any,
         namespace: str,
+        extra_warnings: list[str] | None = None,
     ) -> tuple[DocumentCreateResponse, str | None]:
         """Phase-3 overwrite: update the existing document's data and
         references without creating a new version. Used when the
@@ -854,6 +962,7 @@ class DocumentService:
         """
         actor = get_identity_string()
         now = datetime.now(UTC)
+        all_warnings = validation_result.warnings + (extra_warnings or [])
 
         previous_file_refs = list(existing.file_references)
 
@@ -864,7 +973,7 @@ class DocumentService:
         existing.template_version = validation_result.template_version or existing.template_version
         existing.template_value = validation_result.template_value or existing.template_value
         existing.metadata = DocumentMetadata(
-            warnings=validation_result.warnings,
+            warnings=all_warnings,
             custom=request.metadata or {},
         )
         existing.updated_at = now
@@ -894,7 +1003,7 @@ class DocumentService:
             version=existing.version,
             is_new=False,
             previous_version=None,  # No new version created
-            warnings=validation_result.warnings,
+            warnings=all_warnings,
         ), None
 
     async def _find_active_by_document_id(
@@ -2112,6 +2221,26 @@ class DocumentService:
             item.version if item.document_id and item.version is not None else None
         )
 
+        # CASE-434/436: register inline synonyms per item (bulk previously
+        # ignored them entirely). Strict by default — a refused synonym fails
+        # THIS item (and rolls back its entry/synonyms) without affecting the
+        # rest of the batch; "warn" surfaces it in the item's warnings.
+        synonym_warnings: list[str] = []
+        if item.synonyms:
+            synonym_warnings, err_code, err_msg = await self._register_inline_synonyms(
+                document_id=document_id, namespace=namespace, synonyms=item.synonyms,
+                on_synonym_conflict=item.on_synonym_conflict,
+                is_new_entry=is_new_from_registry,
+            )
+            if err_code:
+                return _ItemOutcome(
+                    BulkResultItem(
+                        index=i, status="error", error_code=err_code, error=err_msg,
+                    ),
+                    None,
+                    "failed",
+                )
+
         if existing and version_override is None:
             if not self._data_has_changed(
                 existing,
@@ -2129,7 +2258,7 @@ class DocumentService:
                         identity_hash=identity_hash,
                         version=existing.version,
                         is_new=False,
-                        warnings=validation_result.warnings,
+                        warnings=validation_result.warnings + synonym_warnings,
                     ),
                     None,
                     "unchanged",
@@ -2152,7 +2281,7 @@ class DocumentService:
         # Create document with retry on duplicate key (handles concurrent
         # requests racing on the same identity hash).
         metadata = DocumentMetadata(
-            warnings=validation_result.warnings,
+            warnings=validation_result.warnings + synonym_warnings,
             custom=item.metadata or {},
         )
         document = await self._insert_with_retry(
@@ -2196,7 +2325,7 @@ class DocumentService:
                 identity_hash=identity_hash,
                 version=new_version,
                 is_new=is_new,
-                warnings=validation_result.warnings,
+                warnings=validation_result.warnings + synonym_warnings,
             ),
             pending_event,
             "created" if is_new else "updated",
