@@ -245,6 +245,11 @@ fi
 if [ -d "$WIP_ROOT/docs/playbooks/app-builder" ]; then
     mkdir -p "$APP_DIR/docs/playbooks"
     cp "$WIP_ROOT/docs/playbooks/app-builder/"*.md "$APP_DIR/docs/playbooks/" 2>/dev/null || true
+    # CASE-440 (Defect 2): the cross-YAC case playbook lives at top-level
+    # docs/playbooks/case-workflow.md, NOT under app-builder/, so the copy above
+    # misses it and --refresh never propagated it to clones. Copy it explicitly.
+    # (Interim band-aid; the durable fix is serving it from APP-KB alongside the client.)
+    cp "$WIP_ROOT/docs/playbooks/case-workflow.md" "$APP_DIR/docs/playbooks/" 2>/dev/null || true
     PLAYBOOK_COUNT=$(find "$APP_DIR/docs/playbooks/" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
     echo "   Copied: $PLAYBOOK_COUNT playbook(s) to docs/playbooks/"
 else
