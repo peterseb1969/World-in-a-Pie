@@ -736,7 +736,7 @@ The `/wip-case` command lives at `.claude/commands/wip-case.md`. Peter symlinks 
 git push gitea develop && git push origin develop
 ```
 
-- **gitea** → `http://gitea.local:3000/peter/World-in-a-Pie.git` (Gitea, primary, runs CI)
+- **gitea** → `http://gitea.internal:3000/peter/World-in-a-Pie.git` (Gitea, primary, runs CI)
 - **origin** → `https://github.com/peterseb1969/World-in-a-Pie` (GitHub, mirror)
 
 Verify with `git remote -v` if in doubt.

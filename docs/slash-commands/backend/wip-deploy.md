@@ -90,7 +90,7 @@ test -f ~/.wip-deploy/<name>/secrets/api-key && echo "secrets ok" || echo "MISSI
 case "$TARGET" in
   k8s)
     # Scope: ONLY hostnames the cluster's container runtime needs to resolve
-    # to pull images — that's the `gitea.local` style registry hostname
+    # to pull images — that's the `gitea.internal` style registry hostname
     # referenced in `components/<svc>/wip-component.yaml` `image:` lines. The
     # browser-facing ingress hostname (e.g., `wip-kb.local`) is NOT in scope
     # — pods don't talk to it; only the operator's Mac and end-user browsers
@@ -100,7 +100,7 @@ case "$TARGET" in
     # via direct SSH to each node (works on the Pi cluster):
     #
     #   for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
-    #     for host in gitea.local; do  # extend list per spec.images.registry
+    #     for host in gitea.internal; do  # extend list per spec.images.registry
     #       ssh "$node" "getent hosts $host || grep -F \" $host \" /etc/hosts || echo 'UNRESOLVED on '$(hostname)"
     #     done
     #   done
@@ -109,7 +109,7 @@ case "$TARGET" in
     # --image=busybox -- nslookup <host>`, when kubectl debug is enabled.
     #
     # Day 46/47 fix: /etc/hosts entries on every node for image-pull
-    # hostnames (e.g., `192.168.1.17  gitea.local`). Pi-Hole-driven local
+    # hostnames (e.g., `192.168.1.17  gitea.internal`). Pi-Hole-driven local
     # DNS would also work; whichever the operator chose, this check
     # verifies it's actually live.
     ;;
@@ -156,7 +156,7 @@ Pre-flight output is a single punch-list block:
 # (the components/<svc>/wip-component.yaml edits surfaced and approved in pre-flight)
 
 # Build + push (or skip-build if --no-build flag)
-scripts/build-release.sh --registry gitea.local:3000/peter --tag <new-pin> --push --insecure [<service>]
+scripts/build-release.sh --registry gitea.internal:3000/peter --tag <new-pin> --push --insecure [<service>]
 
 # Redeploy
 wip-deploy install --name <current-name> [other flags from current install]

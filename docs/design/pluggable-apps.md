@@ -259,7 +259,7 @@ This replaces:
 
 ### Install Flow
 
-1. User provides image reference (e.g., `gitea.local:3000/peter/clintrial-explorer:1.2.0`)
+1. User provides image reference (e.g., `gitea.internal:3000/peter/clintrial-explorer:1.2.0`)
 2. Console calls `POST /apps/install`
 3. App Manager pulls image, reads manifest, shows the user what will be created
 4. User confirms
