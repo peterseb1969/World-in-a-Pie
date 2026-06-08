@@ -6,14 +6,14 @@
 #
 # Usage:
 #   scripts/build-release.sh                                    # Build all, local tags
-#   scripts/build-release.sh --registry gitea.local:3000/peter --tag 1.0.0
-#   scripts/build-release.sh --registry gitea.local:3000/peter --tag 1.0.0 --push --insecure
+#   scripts/build-release.sh --registry gitea.internal:3000/peter --tag 1.0.0
+#   scripts/build-release.sh --registry gitea.internal:3000/peter --tag 1.0.0 --push --insecure
 #   scripts/build-release.sh --service document-store           # Build one service
 #   scripts/build-release.sh --generate-compose                 # Also emit docker-compose.production.yml
 #   scripts/build-release.sh --platforms linux/amd64,linux/arm64 --push  # Multi-arch
 #
 # Image naming:
-#   With --registry: <registry>/<service>:<tag>    (e.g. gitea.local:3000/peter/registry:1.0.0)
+#   With --registry: <registry>/<service>:<tag>    (e.g. gitea.internal:3000/peter/registry:1.0.0)
 #   Without:         wip/<service>:<tag>           (local only)
 #
 # Multi-arch builds:
@@ -58,7 +58,7 @@ Usage: $(basename "$0") [OPTIONS]
 Build WIP release images with libraries baked in.
 
 Options:
-  --registry REG       Image registry prefix (e.g. gitea.local:3000/peter)
+  --registry REG       Image registry prefix (e.g. gitea.internal:3000/peter)
   --tag TAG            Image tag (default: latest)
   --push               Push images after building
   --insecure           Use --tls-verify=false for push (needed for HTTP registries)
@@ -75,13 +75,13 @@ Services: registry, def-store, template-store, document-store,
 
 Examples:
   # Build all and push to Gitea (native arch only)
-  $(basename "$0") --registry gitea.local:3000/peter --tag 1.0.0 --push --insecure
+  $(basename "$0") --registry gitea.internal:3000/peter --tag 1.0.0 --push --insecure
 
   # Build one service locally
   $(basename "$0") --service document-store
 
   # Build all + generate production compose
-  $(basename "$0") --registry gitea.local:3000/peter --tag 1.0.0 --push --insecure --generate-compose
+  $(basename "$0") --registry gitea.internal:3000/peter --tag 1.0.0 --push --insecure --generate-compose
 
   # Multi-arch build for GHCR (amd64 + arm64)
   $(basename "$0") --registry ghcr.io/peterseb1969 --tag v1.0 \\

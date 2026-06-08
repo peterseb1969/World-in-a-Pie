@@ -17,12 +17,12 @@ jobs:
       - name: Login to Gitea registry
         run: |
           echo "${{ secrets.GITEA_REGISTRY_TOKEN }}" | \
-            podman login --tls-verify=false gitea.local:3000 -u peter --password-stdin
+            podman login --tls-verify=false gitea.internal:3000 -u peter --password-stdin
 
       - name: Build and push all images
         run: |
           bash scripts/build-release.sh \
-            --registry gitea.local:3000/peter \
+            --registry gitea.internal:3000/peter \
             --tag "${{ steps.tag.outputs.version }}" \
             --push \
             --insecure \
@@ -31,7 +31,7 @@ jobs:
       - name: Generate production compose
         run: |
           bash scripts/build-release.sh \
-            --registry gitea.local:3000/peter \
+            --registry gitea.internal:3000/peter \
             --tag "${{ steps.tag.outputs.version }}" \
             --generate-compose
 

@@ -12,11 +12,11 @@ Two halves: the release builder (Peter on Mac, cutting a release) and the instal
 
 ```bash
 # Login to the registry (first time only)
-podman login --tls-verify=false gitea.local:3000 -u peter
+podman login --tls-verify=false gitea.internal:3000 -u peter
 
 # Build all service images and push them
 scripts/build-release.sh \
-  --registry gitea.local:3000/peter \
+  --registry gitea.internal:3000/peter \
   --tag <version> \
   --push \
   --insecure
@@ -26,7 +26,7 @@ Multi-arch builds (e.g., for a Pi target from a Mac):
 
 ```bash
 scripts/build-release.sh \
-  --registry gitea.local:3000/peter \
+  --registry gitea.internal:3000/peter \
   --tag <version> \
   --platforms linux/amd64,linux/arm64 \
   --push \
@@ -53,7 +53,7 @@ That's it — the deployer pulls images from the registry at install time, so th
 
 - Linux, macOS, or Windows (WSL2) with `podman` + `podman-compose` (or Docker + docker-compose)
 - ~10 GB free disk
-- Network access to wherever the images are hosted (e.g., `gitea.local:3000`)
+- Network access to wherever the images are hosted (e.g., `gitea.internal:3000`)
 - Python 3.11+ (the deployer is a Python tool)
 
 **Hardware notes for Pi targets:**
@@ -69,7 +69,7 @@ Skip this step if your registry uses real TLS.
 mkdir -p ~/.config/containers
 cat > ~/.config/containers/registries.conf << 'EOF'
 [[registry]]
-location = "gitea.local:3000"
+location = "gitea.internal:3000"
 insecure = true
 EOF
 ```

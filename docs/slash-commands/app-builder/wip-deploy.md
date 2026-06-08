@@ -104,7 +104,7 @@ case "$TARGET" in
     # Inspect $INSTALL_DIR/docker-compose.yaml's build directive for THIS YAC's
     # component. The build context must point at <YAC-repo-root>.
     grep -A 3 "^  <self>:" "$INSTALL_DIR/docker-compose.yaml" | grep -q "context: <YAC-repo-root>"
-    # If it points at a registry image instead (image: gitea.local:.../<self>:...
+    # If it points at a registry image instead (image: gitea.internal:.../<self>:...
     # without a build directive), REFUSE: "this skill redeploys bind-mounted
     # source, not registry images. Ask BE-YAC for a registry-image refresh."
     ;;
@@ -139,7 +139,7 @@ Pre-flight output is a single punch-list block:
 # (the components/<self>/wip-component.yaml edit surfaced and approved in pre-flight)
 
 # Build + push (or skip-build if --no-build)
-scripts/build-release.sh --registry gitea.local:3000/peter --tag <new-pin> --push --insecure <self>
+scripts/build-release.sh --registry gitea.internal:3000/peter --tag <new-pin> --push --insecure <self>
 
 # Redeploy this app's component via the existing dev install
 wip-deploy install --name <current-name> [original flags from current install] --app-source <self>=<repo-root>
