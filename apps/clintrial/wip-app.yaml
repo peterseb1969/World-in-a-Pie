@@ -12,7 +12,7 @@ spec:
     name: clintrial-explorer
     # App lives in its own repo (WIP-ClinTrial). No code change for
     # the backend v1.2.1 retry work, so pin to v1.2.0.
-    tag: v1.2.0
+    tag: 20260610a
 
   ports:
     - {name: http, container_port: 3001}

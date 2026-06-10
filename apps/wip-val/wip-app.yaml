@@ -1,0 +1,53 @@
+api_version: wip.dev/v1
+kind: App
+metadata:
+  name: wip-val
+  category: optional
+  description: |
+    WIP-VAL — spreadsheet validation. Parses vendor / C02 Excel workbooks into
+    WIP-native templates, validates uploaded data against them (delegating to
+    WIP's document validation), records validation runs, and exports templates
+    back to Excel. Vite SPA + Express server (tsx). Identity delivered by the
+    auth-gateway via X-WIP-User headers; no per-app OIDC client.
+
+spec:
+  image:
+    name: wip-val
+    # App lives in its own repo (WIP-VAL). First containerized build.
+    tag: 20260610a
+
+  ports:
+    - {name: http, container_port: 3015}
+    # CASE-375: Vite dev-server, used only when --app-source is active.
+    # 5181 chosen to avoid colliding with wip-kb (5173), react-console
+    # (5174), and wip-aa (5180) on a multi-app dev install.
+    - {name: dev, container_port: 5181}
+
+  env:
+    required:
+      - {name: WIP_BASE_URL, source: {from_component: router}}
+      - {name: WIP_API_KEY, source: {from_secret: api-key}}
+      - {name: PORT, source: {literal: "3015"}}
+      - {name: APP_BASE_PATH, source: {literal: /apps/wip-val}}
+      - {name: NODE_ENV, source: {literal: production}}
+    optional:
+      # askBar / NL-query feature uses Anthropic. Degrades gracefully
+      # when the key is unset.
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+
+  routes:
+    - {path: /apps/wip-val, auth_required: true}
+
+  # WIP-VAL reads/writes templates, terminologies, documents, and files in the
+  # wip-val namespace via the WIP API proxy.
+  depends_on: [document-store]
+
+  healthcheck:
+    endpoint: /apps/wip-val/api/health
+    probe: auto
+    start_period_seconds: 15
+
+app_metadata:
+  display_name: WIP Validation
+  route_prefix: /apps/wip-val
+  ui_only: false
