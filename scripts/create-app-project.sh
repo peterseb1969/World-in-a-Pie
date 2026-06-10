@@ -626,6 +626,11 @@ if ! $REFRESH_MODE; then
     STEP_OFFSET=$((STEP_OFFSET + 1))
 
     # Best-effort — WIP may not be running. Non-fatal.
+    # ACTIVE_KEY is the admin key content from the wip-deploy secrets file.
+    # (Its assignment was dropped in 4e39dde's .mcp.json rework while the two
+    # uses below survived — under `set -u` that aborted every fresh create at
+    # this step. Empty/missing file degrades to the non-fatal HTTP branches.)
+    ACTIVE_KEY=$(cat "$WIP_API_KEY_FILE" 2>/dev/null || true)
     NS_RESPONSE=$(curl -k -s -o /dev/null -w "%{http_code}" \
         -X POST "https://localhost:8443/api/registry/namespaces" \
         -H "X-API-Key: $ACTIVE_KEY" \
