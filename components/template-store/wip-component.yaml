@@ -11,10 +11,10 @@ metadata:
 spec:
   image:
     name: template-store
-    # Per-component tag override. CASE-406 semantic field equality in
-    # compute_template_compatibility landed at 3f45b2a; without this pin,
-    # wip-deploy install would use the deployer-state default tag
-    # (wipkb-20260521) which predates the fix.
+    # Fallback release tag (CASE-438): applies only when the operator
+    # passes no --tag / --image-tag — an explicit CLI tag overrides this
+    # pin. Originally pinned so installs without a CLI tag wouldn't pull
+    # an image predating CASE-406 (semantic field equality).
     tag: 20260610a
     build_context: .
 

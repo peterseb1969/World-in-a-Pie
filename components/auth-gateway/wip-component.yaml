@@ -13,9 +13,10 @@ metadata:
 spec:
   image:
     name: auth-gateway
-    # Per-component tag override. The auth-gateway was added after the
-    # v1.1.0 release (Theme 7) and has its own cadence — using
-    # spec.images.tag would pin it to an unpublished version.
+    # Fallback release tag (CASE-438): applies only when the operator
+    # passes no --tag / --image-tag — an explicit CLI tag overrides this
+    # pin. Originally pinned because the auth-gateway was added after
+    # v1.1.0 (Theme 7) and had its own release cadence.
     tag: 20260610a
     build_context: .
 

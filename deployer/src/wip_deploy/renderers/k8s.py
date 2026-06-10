@@ -38,6 +38,7 @@ from wip_deploy.config_gen import (
     resolve_all_env,
 )
 from wip_deploy.config_gen.env import Literal
+from wip_deploy.config_gen.images import image_ref as _image_ref
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose_dex import render_dex_config
@@ -652,20 +653,6 @@ def _container_spec(
             container["resources"] = resources
 
     return container
-
-
-def _image_ref(owner: Component | App, deployment: Deployment) -> str:
-    """Same logic as compose renderer — fully-qualified images are
-    untouched; short names get the registry prefix."""
-    ref = owner.spec.image
-    spec_images = deployment.spec.images
-    if "/" in ref.name:
-        tag = ref.tag or "latest"
-        return f"{ref.name}:{tag}"
-    tag = ref.tag or spec_images.tag
-    if spec_images.registry:
-        return f"{spec_images.registry}/{ref.name}:{tag}"
-    return f"{ref.name}:{tag}"
 
 
 def _command_for(owner: Component | App) -> list[str] | None:

@@ -296,6 +296,23 @@ class TestImages:
         assert d.spec.images.registry == "ghcr.io/peterseb1969"
         assert d.spec.images.tag == "v2.0.0"
 
-    def test_tag_defaults_to_latest(self) -> None:
+    def test_tag_defaults_to_none(self) -> None:
+        # CASE-438: no CLI tag → spec.images.tag stays None, so manifest
+        # pins apply at render time (then "latest"). A non-None default
+        # would silently override every pin.
         d = build_deployment(_minimal_compose_inputs())
-        assert d.spec.images.tag == "latest"
+        assert d.spec.images.tag is None
+
+    def test_tag_overrides_propagate(self) -> None:
+        # CASE-438: --image-tag NAME=TAG entries land in
+        # spec.images.tag_overrides verbatim.
+        d = build_deployment(
+            _minimal_compose_inputs(
+                tag_overrides={"registry": "20260611-fix"},
+            )
+        )
+        assert d.spec.images.tag_overrides == {"registry": "20260611-fix"}
+
+    def test_tag_overrides_default_empty(self) -> None:
+        d = build_deployment(_minimal_compose_inputs())
+        assert d.spec.images.tag_overrides == {}

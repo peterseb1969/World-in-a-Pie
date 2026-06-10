@@ -38,6 +38,7 @@ from wip_deploy.config_gen import (
 from wip_deploy.config_gen.env import (
     Literal,
 )
+from wip_deploy.config_gen.images import image_ref as _image_ref
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose_caddy import render_caddyfile
@@ -302,29 +303,6 @@ def _caddy_service_block(deployment: Deployment) -> dict[str, Any]:
 
 def _container_name(component_name: str) -> str:
     return f"wip-{component_name}"
-
-
-def _image_ref(owner: Component | App, deployment: Deployment) -> str:
-    """Resolve the full image reference.
-
-    - Fully qualified (contains `/`): `{name}:{tag}` — tag from the
-      ImageRef (required for infra pinning).
-    - Short name + deployment registry set: `{registry}/{name}:{tag}`.
-      Tag falls back to `spec.images.tag`.
-    - Short name + no registry: bare `{name}:{tag}` (assumed local
-      build will produce this image).
-    """
-    ref = owner.spec.image
-    spec_images = deployment.spec.images
-
-    if "/" in ref.name:
-        tag = ref.tag or "latest"
-        return f"{ref.name}:{tag}"
-
-    tag = ref.tag or spec_images.tag
-    if spec_images.registry:
-        return f"{spec_images.registry}/{ref.name}:{tag}"
-    return f"{ref.name}:{tag}"
 
 
 def _build_block(

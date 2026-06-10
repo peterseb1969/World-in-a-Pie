@@ -284,10 +284,15 @@ class ImageRef(WIPModel):
         plus `:{tag}`. The `/` character discriminates; renderers MUST
         detect it rather than duplicating the check.
 
-    `tag=None` means "inherit `spec.images.tag`" — right for WIP services
-    which track the deployment-wide tag. Infrastructure components
-    (mongo, postgres, dex) pin their own tag to a specific upstream
-    version and must set this explicitly.
+    `tag` is a FALLBACK default, not an override (CASE-438): it applies
+    only when the deployment specifies no tag for this service. An
+    explicit `spec.images.tag` (CLI `--tag`) or a
+    `spec.images.tag_overrides` entry (CLI `--image-tag NAME=TAG`) wins.
+    `tag=None` means "no fallback" — resolution ends at `latest`.
+    Infrastructure components (mongo, postgres, dex) use fully-qualified
+    names, which exempts them from the deployment-wide tag; they pin
+    their own upstream version here. Full precedence:
+    `config_gen/images.py`.
 
     `build_context=None` means pre-built image only. `build_context=Path(...)`
     enables local builds on compose/dev when `spec.images.registry` is None.
