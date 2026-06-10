@@ -35,6 +35,21 @@ set -euo pipefail
 
 WIP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# --- Branch guard (CASE-383) ---
+# Canonical BE-YAC gene-pool content lives on develop. Running this script
+# from another branch (typically a fresh clone still on main) scaffolds the
+# agent with stale slash commands and docs — the 2026-05-14 incident put a
+# fresh BE-YAC on pre-v2 setup.md and cost a 30-minute false alarm.
+
+CURRENT_BRANCH="$(git -C "$WIP_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+if [[ "$CURRENT_BRANCH" != "develop" && -z "${ALLOW_NON_DEVELOP:-}" ]]; then
+    echo "Error: clone is on '$CURRENT_BRANCH' branch, not 'develop'." >&2
+    echo "  Canonical BE-YAC work lives on develop." >&2
+    echo "  Fix: cd $WIP_ROOT && git checkout develop && git pull" >&2
+    echo "  Override (rare): ALLOW_NON_DEVELOP=1 $0 $*" >&2
+    exit 1
+fi
+
 # --- Parse arguments ---
 
 TARGET="local"

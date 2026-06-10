@@ -1746,7 +1746,8 @@ def main():
         return
 
     # Initialize custom namespace in registry
-    # Default 'wip' namespace is initialized by setup.sh, not the seed script
+    # Default 'wip' namespace is initialized by the registry's own startup
+    # bootstrap under wip-deploy, not the seed script
     if not args.dry_run and seeder._custom_ns:
         print("\nInitializing namespace...")
         seeder.initialize_namespace()

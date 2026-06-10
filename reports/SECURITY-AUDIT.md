@@ -4,6 +4,14 @@
 **Scope:** Code review and configuration review of the entire WIP attack surface
 **Auditor:** Automated security audit with manual review
 
+> **Superseded tooling note (2026-06-10, CASE-383):** v1 commands referenced
+> in this report (`setup.sh --prod`, `production-check.sh`) were retired —
+> the scripts in commit `69f7036` and the checker in the CASE-383 sweep.
+> `wip-deploy install` is the current installer (secrets are generated
+> randomly per install); a v2-native security verification is tracked in
+> CASE-445. The findings below are preserved unchanged as a historical
+> record.
+
 ---
 
 ## Executive Summary

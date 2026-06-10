@@ -250,7 +250,7 @@ Service that consumes [events](#event) from NATS and synchronizes data to Postgr
 A field-level type hint that triggers format-specific validation and reporting behavior. Types: `email`, `url`, `latitude`, `longitude`, `percentage`, `duration`, `geo_point`. Specified via `semantic_type` on template fields.
 
 ### Setup Script
-`wip-deploy install --preset standard --target compose --hostname <X>` is the canonical installer. Generates manifests + `.env`, brings the stack up. Replaces the legacy `scripts/setup.sh` + `scripts/setup-wip.sh` pair (being retired). See [WIP Guide](wip-guide.md).
+`wip-deploy install --preset standard --target compose --hostname <X>` is the canonical installer. Generates manifests + `.env`, brings the stack up. Replaces the legacy `scripts/setup.sh` + `scripts/setup-wip.sh` pair (retired and deleted, commit `69f7036`). See [WIP Guide](wip-guide.md).
 
 ### Status
 Lifecycle state of an entity. Values for documents: `active`, `inactive`, `archived`. Values for terms: `active`, `deprecated` (with reason and optional replacement), `inactive` (soft-delete). Values for templates: `draft`, `active`, `inactive`.

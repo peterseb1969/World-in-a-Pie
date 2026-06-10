@@ -209,12 +209,13 @@ See [Development Guide](docs/development-guide.md) for details on both modes.
 # Tier 1 — home network. Random secrets, self-signed TLS via Caddy.
 wip-deploy install --preset standard --target compose --hostname wip-pi.local --tls internal
 
-# Validate production readiness
-./scripts/security/production-check.sh
-
 # Retrieve the admin password from the secrets backend
 cat ~/.wip-deploy/default/secrets/dex-password-admin
 ```
+
+Before exposing an install, walk the security-hardening checklist in the
+[WIP Guide](docs/wip-guide.md) §7 (a v2-native automated check is tracked
+in CASE-445).
 
 For internet-exposed deployments with Let's Encrypt TLS:
 ```bash

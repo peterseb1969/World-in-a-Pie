@@ -37,6 +37,21 @@ set -euo pipefail
 
 WIP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# --- Branch guard (CASE-383) ---
+# The scaffold copies gene-pool content (slash commands, docs, templates)
+# out of this clone. Running from a non-develop branch (typically a fresh
+# clone still on main) seeds the APP-YAC with stale content. Same guard as
+# setup-backend-agent.sh.
+
+CURRENT_BRANCH="$(git -C "$WIP_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+if [[ "$CURRENT_BRANCH" != "develop" && -z "${ALLOW_NON_DEVELOP:-}" ]]; then
+    echo "Error: WIP clone is on '$CURRENT_BRANCH' branch, not 'develop'." >&2
+    echo "  Canonical gene-pool content lives on develop." >&2
+    echo "  Fix: cd $WIP_ROOT && git checkout develop && git pull" >&2
+    echo "  Override (rare): ALLOW_NON_DEVELOP=1 $0 $*" >&2
+    exit 1
+fi
+
 # --- Parse arguments ---
 
 APP_DIR=""

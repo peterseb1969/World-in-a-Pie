@@ -32,13 +32,9 @@ done
 
 ## 3. Security
 
-```bash
-./scripts/security/production-check.sh
-```
-
-- [ ] `production-check.sh` passes on a `wip-deploy install --tls letsencrypt` (or `--tls internal`) deployment
+- [ ] Manual pre-exposure checks pass on a `wip-deploy install --tls letsencrypt` (or `--tls internal`) deployment — see WIP Guide §7.3 (the v1 `production-check.sh` is retired, CASE-383; automated v2 check tracked in CASE-445)
 - [ ] No new security warnings from `pip-audit` or `bandit`
-- [ ] Default dev API key (`dev_master_key_for_testing`) rejected in prod mode
+- [ ] Default dev API key (`dev_master_key_for_testing`) not present in any install's secret backend (note: the in-service prod-mode rejection gate is currently inert under v2 — CASE-445)
 
 ## 4. API Consistency
 
@@ -114,8 +110,8 @@ Test on at least one real device (Pi or VM), not just localhost.
 # Fresh deployment via the canonical v2 deployer
 wip-deploy install --preset standard --target compose --hostname <host> --tls internal
 
-# Verify all services respond and the secrets backend is sane
-./scripts/security/production-check.sh
+# Verify all services respond
+wip-deploy status
 ```
 
 - [ ] `wip-deploy install` completes without errors
