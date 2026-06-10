@@ -27,7 +27,10 @@ Thumbs.db
 # Docker
 *.log
 
-# npm pack artifacts
+# npm pack artifacts. Exception (force-added with `git add -f`): the CURRENT
+# wip-<lib>-<version>.tgz in each libs/wip-* dir — the versioned, immutable
+# lib artifact apps consume (CASE-442). On a version bump: `git rm` the old
+# tarball, `git add -f` the new one.
 *.tgz
 
 # Generated config files (created by scripts/setup.sh)

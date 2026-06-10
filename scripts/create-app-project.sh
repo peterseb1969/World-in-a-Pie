@@ -372,14 +372,24 @@ else
     echo "5. Copying client libraries..."
 fi
 MISSING_LIBS=()
-# CASE-441: pick the maintained `-latest.tgz` (force-tracked, kept current by the
-# lib build/pack flow), NOT `find … | head -1` — that returned a tarball in
-# arbitrary directory order, and since old versioned .tgz accumulate (gitignored,
-# never cleaned) it silently picked a STALE version (e.g. wip-client-0.20.0 over
-# 0.21.0). Empty result falls through to the rebuild block below.
-CLIENT_TARBALL=$(find "$WIP_ROOT/libs/wip-client/" -maxdepth 1 -name 'wip-client-latest.tgz' -type f 2>/dev/null | head -1)
-REACT_TARBALL=$(find "$WIP_ROOT/libs/wip-react/" -maxdepth 1 -name 'wip-react-latest.tgz' -type f 2>/dev/null | head -1)
-PROXY_TARBALL=$(find "$WIP_ROOT/libs/wip-proxy/" -maxdepth 1 -name 'wip-proxy-latest.tgz' -type f 2>/dev/null | head -1)
+# CASE-442 (supersedes CASE-441's `-latest.tgz` selection): distribute the
+# VERSIONED tarball named by the lib's package.json (wip-<lib>-<version>.tgz).
+# `-latest.tgz` was a mutable artifact — fixed filename, changing content — so
+# every rebuild desynced consumer package-lock.json integrity (and the npm
+# cache) from the shipped file, and `npm ci` failed with EINTEGRITY. A
+# version-named tarball is immutable by convention: a content change requires
+# a version bump, which changes the `file:` spec and forces npm to re-resolve
+# from disk. Empty result (no tarball matching the lib's current version)
+# falls through to the rebuild block below.
+lib_tarball() {
+    local lib_dir="$1" base ver
+    base=$(basename "$lib_dir")
+    ver=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$lib_dir/package.json" 2>/dev/null | head -1)
+    [ -n "$ver" ] && [ -f "$lib_dir/${base}-${ver}.tgz" ] && printf '%s\n' "$lib_dir/${base}-${ver}.tgz"
+}
+CLIENT_TARBALL=$(lib_tarball "$WIP_ROOT/libs/wip-client")
+REACT_TARBALL=$(lib_tarball "$WIP_ROOT/libs/wip-react")
+PROXY_TARBALL=$(lib_tarball "$WIP_ROOT/libs/wip-proxy")
 
 # Auto-build tarballs if missing or invalid
 # Fresh clones have no node_modules, so we must npm install before npm pack
@@ -396,10 +406,7 @@ rebuild_tarball() {
     # CASE-441: return the exact tarball `npm pack` just produced
     # (<name>-<version>.tgz from package.json), not `find … | head -1` which
     # returned an arbitrary (often stale) tarball from the accumulated set.
-    local base ver pj="$lib_dir/package.json"
-    base=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$pj','utf8')).name.replace('@wip/','wip-'))" 2>/dev/null)
-    ver=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$pj','utf8')).version)" 2>/dev/null)
-    [ -n "$base" ] && [ -n "$ver" ] && [ -f "$lib_dir/${base}-${ver}.tgz" ] && printf '%s\n' "$lib_dir/${base}-${ver}.tgz"
+    lib_tarball "$lib_dir"
 }
 
 if command -v npm &>/dev/null; then
@@ -432,6 +439,19 @@ copy_tarball() {
         return
     fi
 
+    # CASE-442: versioned tarballs are immutable — the same filename must mean
+    # the same bytes. If the app already holds a tarball of this exact name
+    # with DIFFERENT content, the lib's content changed without a version bump;
+    # shipping it would silently re-point the version at new bytes. Fail loudly.
+    local dest="$APP_DIR/libs/$(basename "$tarball")"
+    if [ -f "$dest" ] && ! cmp -s "$tarball" "$dest"; then
+        echo "   ERROR: $(basename "$tarball") already exists in the app with different content."
+        echo "   The library's content changed without a version bump (CASE-442: versioned"
+        echo "   tarballs are immutable). Bump the version in the lib's package.json,"
+        echo "   npm pack, commit the new tarball, then re-run --refresh."
+        exit 1
+    fi
+
     # CASE-441: drop any previously-copied tarballs for this lib so the app's
     # `npm install ./libs/<lib>-*.tgz` glob resolves to exactly this one — older
     # (buggy) refreshes copied version-named tarballs; leaving them makes the glob
@@ -449,6 +469,54 @@ copy_tarball() {
 copy_tarball "$CLIENT_TARBALL" "@wip/client" "wip-client-README.md"
 copy_tarball "$REACT_TARBALL" "@wip/react" "wip-react-README.md"
 copy_tarball "$PROXY_TARBALL" "@wip/proxy" "wip-proxy-README.md"
+
+# CASE-442: on refresh, re-record the shipped tarballs in the app's
+# package.json + package-lock.json. Copying a tarball alone leaves the
+# lockfile pinning the OLD content hash, and `npm ci` (the Dockerfile
+# default) fails with EINTEGRITY. `npm install ./libs/<name>-<version>.tgz`
+# rewrites the `file:` spec and re-hashes the file from disk — a changed spec
+# cannot be satisfied from the npm cache, which is what made lockfile-only
+# regeneration against the old mutable `-latest.tgz` unreliable. Only deps
+# the app already declares are synced — refresh must not add libraries the
+# app doesn't use.
+if $REFRESH_MODE && [ -f "$APP_DIR/package.json" ] && command -v npm &>/dev/null; then
+    SYNC_SPECS=()
+    for tb in "$CLIENT_TARBALL" "$REACT_TARBALL" "$PROXY_TARBALL"; do
+        [ -n "$tb" ] || continue
+        pkg="@wip/$(basename "$tb" | sed 's/^wip-//; s/-[0-9].*//')"
+        if grep -q "\"$pkg\"" "$APP_DIR/package.json"; then
+            SYNC_SPECS+=("./libs/$(basename "$tb")")
+        fi
+    done
+    if [ ${#SYNC_SPECS[@]} -gt 0 ]; then
+        echo "   Syncing package.json + package-lock.json to the shipped tarballs..."
+        if (cd "$APP_DIR" && npm install "${SYNC_SPECS[@]}" --no-audit --no-fund --loglevel=error); then
+            # Guard against same-version content drift: the lockfile must now
+            # record the hash of the file we shipped. A mismatch means npm
+            # satisfied the spec from a stale cache entry — i.e. the lib's
+            # content changed without a version bump (the immutable-tarball
+            # rule this fix exists to enforce). Fail loudly, not silently.
+            for spec in "${SYNC_SPECS[@]}"; do
+                tb_name=$(basename "$spec")
+                pkg="@wip/$(echo "$tb_name" | sed 's/^wip-//; s/-[0-9].*//')"
+                want="sha512-$(node -e "const c=require('crypto'),f=require('fs');process.stdout.write(c.createHash('sha512').update(f.readFileSync('$APP_DIR/libs/$tb_name')).digest('base64'))")"
+                got=$(node -e "const l=JSON.parse(require('fs').readFileSync('$APP_DIR/package-lock.json','utf8'));const e=l.packages&&l.packages['node_modules/$pkg'];process.stdout.write((e&&e.integrity)||'')")
+                if [ "$want" != "$got" ]; then
+                    echo "   ERROR: $tb_name — lockfile integrity does not match the shipped file."
+                    echo "   The library's content changed without a version bump (CASE-442:"
+                    echo "   versioned tarballs are immutable). Bump the version in the lib's"
+                    echo "   package.json, npm pack, commit the new tarball, then re-run --refresh."
+                    exit 1
+                fi
+            done
+            echo "   Lockfile synced — commit package.json + package-lock.json in the app repo."
+        else
+            echo "   WARNING: npm install failed — sync the lockfile manually:"
+            echo "     cd $APP_DIR && npm install ${SYNC_SPECS[*]}"
+            echo "   then commit package.json + package-lock.json."
+        fi
+    fi
+fi
 
 # --- Copy wip-toolkit ---
 #
