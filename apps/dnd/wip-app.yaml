@@ -14,6 +14,12 @@ spec:
 
   ports:
     - {name: http, container_port: 3012}
+    # CASE-375: Vite dev-server. Used only when --app-source is active.
+    # The dev_simple renderer routes /apps/dnd/* to this port instead of
+    # 3012 (which only serves the API in dev). Ignored on compose/k8s and
+    # on dev without the override. 3010 keeps the dev port unique on
+    # multi-app dev installs (KB 5173, RC 5174, AA 5180).
+    - {name: dev, container_port: 3010}
 
   env:
     required:
@@ -38,7 +44,9 @@ spec:
   depends_on: [document-store]
 
   healthcheck:
-    endpoint: /api/image-proxy/health
+    # Locally answerable (no WIP dependency), and includes the base path —
+    # the app mounts ALL routes under APP_BASE_PATH (no prefix stripping).
+    endpoint: /apps/dnd/health
     probe: auto
     start_period_seconds: 15
 
