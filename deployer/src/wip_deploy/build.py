@@ -77,9 +77,13 @@ class BuildInputs:
     # target=dev; ignored otherwise.
     apps_from_registry: list[str] = field(default_factory=list)
 
-    # Images
+    # Images. tag=None → no deployment-wide tag: manifest pins apply
+    # (then "latest"). When set, the tag is authoritative over manifest
+    # pins for WIP-built images (CASE-438). tag_overrides carries
+    # per-service `--image-tag NAME=TAG` entries — highest precedence.
     registry: str | None = None
-    tag: str = "latest"
+    tag: str | None = None
+    tag_overrides: dict[str, str] = field(default_factory=dict)
 
     # Modules / apps
     add: list[str] = field(default_factory=list)
@@ -180,8 +184,10 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
     # Images
     if inputs.registry is not None:
         spec_dict["images"]["registry"] = inputs.registry
-    if inputs.tag:
+    if inputs.tag is not None:
         spec_dict["images"]["tag"] = inputs.tag
+    if inputs.tag_overrides:
+        spec_dict["images"]["tag_overrides"] = dict(inputs.tag_overrides)
 
     # Secrets — target-derived default
     spec_dict["secrets"] = _build_secrets(inputs)

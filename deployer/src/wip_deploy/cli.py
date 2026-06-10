@@ -186,7 +186,59 @@ def _registry_opt() -> typer.models.OptionInfo:
 
 
 def _tag_opt() -> typer.models.OptionInfo:
-    return typer.Option("--tag", help="Image tag.")
+    return typer.Option(
+        "--tag",
+        help=(
+            "Deployment-wide image tag. When set, it is authoritative: "
+            "every WIP-built component/app image renders at this tag, "
+            "overriding manifest pins (CASE-438). Unset → manifest pins "
+            "apply, then 'latest'. Fully-qualified infra images (mongo, "
+            "postgres, dex…) keep their own pins; use --image-tag to "
+            "override one of those explicitly."
+        ),
+    )
+
+
+def _image_tag_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--image-tag",
+        help=(
+            "Per-service image-tag override. Format: NAME=TAG, where "
+            "NAME is a component or app name. Repeatable. Highest "
+            "precedence — beats both --tag and manifest pins. The "
+            "hotfix path: --tag 20260610a --image-tag registry=20260611-fix. "
+            "CASE-438."
+        ),
+    )
+
+
+def _parse_image_tags_or_exit(raw: list[str]) -> dict[str, str]:
+    """CLI-facing wrapper around `_parse_image_tags` that reports parse
+    errors via typer and exits 2 on failure."""
+    try:
+        return _parse_image_tags(raw)
+    except ValueError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from e
+
+
+def _parse_image_tags(raw: list[str]) -> dict[str, str]:
+    """Parse `--image-tag NAME=TAG` entries. Raise ValueError on bad input."""
+    out: dict[str, str] = {}
+    for entry in raw:
+        if "=" not in entry:
+            raise ValueError(
+                f"--image-tag expects NAME=TAG, got {entry!r} (missing '=')"
+            )
+        name, tag = entry.split("=", 1)
+        name = name.strip()
+        tag = tag.strip()
+        if not name or not tag:
+            raise ValueError(
+                f"--image-tag expects non-empty NAME and TAG, got {entry!r}"
+            )
+        out[name] = tag
+    return out
 
 
 def _add_opt() -> typer.models.OptionInfo:
@@ -428,7 +480,8 @@ def validate(
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
-    tag: Annotated[str, _tag_opt()] = "latest",
+    tag: Annotated[str | None, _tag_opt()] = None,
+    image_tag: Annotated[list[str], _image_tag_opt()] = [],
     add: Annotated[list[str], _add_opt()] = [],
     remove: Annotated[list[str], _remove_opt()] = [],
     apps: Annotated[list[str], _app_opt()] = [],
@@ -473,6 +526,7 @@ def validate(
         dev_mode=dev_mode,
         registry=registry,
         tag=tag,
+        tag_overrides=_parse_image_tags_or_exit(image_tag),
         add=add,
         remove=remove,
         apps=apps,
@@ -545,7 +599,8 @@ def show_spec(
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
-    tag: Annotated[str, _tag_opt()] = "latest",
+    tag: Annotated[str | None, _tag_opt()] = None,
+    image_tag: Annotated[list[str], _image_tag_opt()] = [],
     add: Annotated[list[str], _add_opt()] = [],
     remove: Annotated[list[str], _remove_opt()] = [],
     apps: Annotated[list[str], _app_opt()] = [],
@@ -592,6 +647,7 @@ def show_spec(
         dev_mode=dev_mode,
         registry=registry,
         tag=tag,
+        tag_overrides=_parse_image_tags_or_exit(image_tag),
         add=add,
         remove=remove,
         apps=apps,
@@ -637,7 +693,8 @@ def render(
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
-    tag: Annotated[str, _tag_opt()] = "latest",
+    tag: Annotated[str | None, _tag_opt()] = None,
+    image_tag: Annotated[list[str], _image_tag_opt()] = [],
     add: Annotated[list[str], _add_opt()] = [],
     remove: Annotated[list[str], _remove_opt()] = [],
     apps: Annotated[list[str], _app_opt()] = [],
@@ -688,6 +745,7 @@ def render(
         dev_mode=dev_mode,
         registry=registry,
         tag=tag,
+        tag_overrides=_parse_image_tags_or_exit(image_tag),
         add=add,
         remove=remove,
         apps=apps,
@@ -752,7 +810,8 @@ def install(
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
-    tag: Annotated[str, _tag_opt()] = "latest",
+    tag: Annotated[str | None, _tag_opt()] = None,
+    image_tag: Annotated[list[str], _image_tag_opt()] = [],
     add: Annotated[list[str], _add_opt()] = [],
     remove: Annotated[list[str], _remove_opt()] = [],
     apps: Annotated[list[str], _app_opt()] = [],
@@ -816,8 +875,11 @@ def install(
       # Hot-reload an app from a local checkout
       wip-deploy install --target dev --app-source react-console=$HOME/Dev/WIP-ReactConsole
 
-      # Override image tag for one app (skip the manifest pin)
-      wip-deploy install --tag v1.2.0 --app react-console
+      # Deploy everything at one tag (--tag overrides manifest pins)
+      wip-deploy install --tag 20260610a --registry ghcr.io/you
+
+      # Override the tag for a single service (beats --tag and pins)
+      wip-deploy install --tag 20260610a --image-tag registry=20260611-fix
 
       # Render against K8s instead of compose
       wip-deploy install --target k8s --namespace wip --tls external
@@ -849,6 +911,7 @@ def install(
         dev_mode=dev_mode,
         registry=registry,
         tag=tag,
+        tag_overrides=_parse_image_tags_or_exit(image_tag),
         add=add,
         remove=remove,
         apps=apps,
@@ -2760,8 +2823,11 @@ DEV LOOP — hot-reload an app from a local checkout
       --app-source react-console=$HOME/Dev/WIP-ReactConsole \\
       --app-source clintrial=$HOME/Dev/WIP-ClinTrial
 
-  Override the image tag for one app (skip the manifest pin):
-    wip-deploy install --tag v1.2.0 --app react-console
+  Deploy every WIP-built image at one tag (--tag overrides manifest pins):
+    wip-deploy install --tag 20260610a --registry ghcr.io/you
+
+  Override the tag for a single service (beats --tag and manifest pins):
+    wip-deploy install --tag 20260610a --image-tag registry=20260611-fix
 
 CHANGING AN EXISTING INSTALL
   Pick up an env-var change, no rebuild:
@@ -2848,7 +2914,8 @@ def _assemble(
     tls_secret_name: str,
     dev_mode: str,
     registry: str | None,
-    tag: str,
+    tag: str | None,
+    tag_overrides: dict[str, str],
     add: list[str],
     remove: list[str],
     apps: list[str],
@@ -2948,6 +3015,7 @@ def _assemble(
         dev_mode=dev_mode,
         registry=registry,
         tag=tag,
+        tag_overrides=tag_overrides,
         add=add,
         remove=remove,
         apps=apps,

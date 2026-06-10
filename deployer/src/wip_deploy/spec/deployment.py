@@ -220,10 +220,20 @@ class ImagesSpec(WIPModel):
     `registry=None` means build-from-source where a `build_context` is
     declared in the component manifest, and pull-by-name otherwise. Set
     a registry to pull all images by `{registry}/{name}:{tag}`.
+
+    Tag resolution (CASE-438) is centralized in
+    `config_gen.images.image_ref`. Precedence for WIP-built (short-name)
+    images: `tag_overrides[name]` > `tag` (when set, it is authoritative
+    over manifest pins) > manifest pin (`spec.image.tag`) > `latest`.
+    `tag=None` means "no deployment-wide tag specified" — manifest pins
+    apply. Fully-qualified images (mongo, postgres, dex…) ignore `tag`
+    (their pins are upstream version numbers, not WIP release tags) but
+    honor an explicit `tag_overrides` entry.
     """
 
     registry: str | None = None
-    tag: str = "latest"
+    tag: str | None = None
+    tag_overrides: dict[str, str] = Field(default_factory=dict)
     pull_policy: Literal["always", "if-not-present"] = "if-not-present"
 
 

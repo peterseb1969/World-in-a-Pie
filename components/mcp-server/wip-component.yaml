@@ -11,9 +11,10 @@ metadata:
 spec:
   image:
     name: mcp-server
-    # Per-component tag override. The /health-exempt-from-auth fix
-    # landed after v1.1.0; using spec.images.tag=v1.1.0 would pull the
-    # old image with the broken /health endpoint.
+    # Fallback release tag (CASE-438): applies only when the operator
+    # passes no --tag / --image-tag — an explicit CLI tag overrides this
+    # pin. Originally pinned because the /health-exempt-from-auth fix
+    # landed after v1.1.0.
     tag: 20260610a
     build_context: .
 
