@@ -40,8 +40,9 @@ def check_production_security() -> None:
         logger.critical(
             "SECURITY: Default API key detected in production mode! "
             "The key 'dev_master_key_for_testing' is publicly documented. "
-            "Set a secure API_KEY in .env or re-run: "
-            "./scripts/setup.sh --preset <preset> --hostname <host> --prod -y -- "
+            "wip-deploy install generates a random api-key secret — "
+            "redeploy with it, or replace the api-key value in the "
+            "install's secret backend (~/.wip-deploy/<name>/secrets/). "
             "Refusing to start."
         )
         sys.exit(1)

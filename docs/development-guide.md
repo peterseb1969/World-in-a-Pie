@@ -58,12 +58,14 @@ When adding or modifying fields/features, changes must propagate across multiple
 ## Security Checks
 
 ```bash
-# Validate production hardening
-./scripts/security/production-check.sh
-
 # Generate a new API key
 ./scripts/security/generate-api-key.sh
 ```
+
+The v1 `production-check.sh` validator was retired with the v1 deployment
+shape it checked (CASE-383); a v2-native pre-exposure verification is
+tracked in CASE-445. Until it lands, validate manually per the
+[WIP Guide](wip-guide.md) §7 *Security Hardening*.
 
 ---
 

@@ -119,7 +119,7 @@ What changes:
 - Let's Encrypt issues a real cert via Caddy. You need port 443 reachable from the public internet for the ACME HTTP-01 challenge, and a hostname that resolves on the public internet.
 - HSTS and standard hardening headers are added by default.
 - For testing the ACME flow without burning rate limits, use `--tls letsencrypt --acme-staging` (staging cert is *not* trusted by browsers).
-- You should run `scripts/security/production-check.sh` before exposing the host (see §7 *Security Hardening*).
+- Walk the §7 *Security Hardening* checklist before exposing the host (the v1 `production-check.sh` validator is retired — CASE-383; a v2-native check is tracked in CASE-445).
 
 ### Tier 3: Enterprise
 
@@ -649,11 +649,20 @@ Rotation cadences worth defaulting to:
 
 ### 7.3 Validate before exposing
 
-```bash
-./scripts/security/production-check.sh
-```
+The v1 `production-check.sh` validator was retired with the v1 deployment
+shape it checked (CASE-383); a v2-native automated check is tracked in
+CASE-445. Until it lands, verify manually on the install:
 
-Expected output for a Tier-2-ready install: all `[PASS]`. The script checks API key strength, MongoDB / NATS auth, secret-file permissions (700/600), TLS configuration, and the production-variant flag. Use `--fix` to auto-correct permission drift.
+```bash
+# Secret backend permissions: dir 700, files 600
+ls -ld ~/.wip-deploy/<name>/secrets && ls -l ~/.wip-deploy/<name>/secrets
+
+# API key is the generated random one, not the documented dev default
+grep -c "dev_master_key_for_testing" ~/.wip-deploy/<name>/.env   # expect 0
+
+# TLS mode matches the exposure (letsencrypt for public hostnames)
+grep -m1 -A2 "tls" ~/.wip-deploy/<name>/config/caddy/Caddyfile
+```
 
 ### 7.4 Ongoing health monitoring
 
