@@ -46,6 +46,9 @@ spec:
       - {name: MCP_URL, source: {literal: "http://wip-mcp-server:8007/mcp"}}
       - {name: MCP_TRANSPORT, source: {literal: "http"}}
 
+  routes:
+    - {path: /apps/aa, auth_required: true}
+
   # AuthorAssist reads/writes documents in the aa namespace via the WIP
   # API proxy. document-store is the hard start-order requirement.
   depends_on: [document-store]
