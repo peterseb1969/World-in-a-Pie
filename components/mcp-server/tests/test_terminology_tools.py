@@ -150,7 +150,7 @@ async def test_update_terminology_label_only():
 
     data = json.loads(result)
     assert data["label"] == "Countries"
-    mock.update_terminology.assert_awaited_once_with("0190b000-0000-7000-0000-000000000001", {"label": "Countries"})
+    mock.update_terminology.assert_awaited_once_with("0190b000-0000-7000-0000-000000000001", {"label": "Countries"}, namespace=None)
 
 
 @pytest.mark.asyncio
@@ -167,7 +167,7 @@ async def test_update_terminology_mutable_true():
 
     data = json.loads(result)
     assert data["mutable"] is True
-    mock.update_terminology.assert_awaited_once_with("0190b000-0000-7000-0000-000000000001", {"mutable": True})
+    mock.update_terminology.assert_awaited_once_with("0190b000-0000-7000-0000-000000000001", {"mutable": True}, namespace=None)
 
 
 @pytest.mark.asyncio
@@ -211,6 +211,7 @@ async def test_update_terminology_multiple_fields():
             "description": "ISO country codes",
             "mutable": True,
         },
+        namespace=None,
     )
 
 
@@ -272,7 +273,7 @@ async def test_delete_terminology_without_force():
 
     data = json.loads(result)
     assert data["status"] == "deleted"
-    mock.delete_terminology.assert_awaited_once_with("0190b000-0000-7000-0000-000000000001", force=False, hard_delete=False)
+    mock.delete_terminology.assert_awaited_once_with("0190b000-0000-7000-0000-000000000001", force=False, hard_delete=False, namespace=None)
 
 
 @pytest.mark.asyncio
@@ -289,7 +290,7 @@ async def test_delete_terminology_with_force():
 
     data = json.loads(result)
     assert data["status"] == "deleted"
-    mock.delete_terminology.assert_awaited_once_with("0190b000-0000-7000-0000-000000000001", force=True, hard_delete=False)
+    mock.delete_terminology.assert_awaited_once_with("0190b000-0000-7000-0000-000000000001", force=True, hard_delete=False, namespace=None)
 
 
 # =========================================================================

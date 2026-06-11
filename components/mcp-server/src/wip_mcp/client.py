@@ -572,12 +572,14 @@ class WipClient:
         return self._unwrap_single(resp)
 
     async def restore_terminology(
-        self, terminology_id: str, restore_terms: bool = True
+        self, terminology_id: str, restore_terms: bool = True,
+        namespace: str | None = None,
     ) -> dict:
         return await self._post(
             self.def_store_url,
             f"/api/def-store/terminologies/{terminology_id}/restore",
             restore_terms=restore_terms,
+            namespace=namespace,
         )
 
     # ========================================================
@@ -599,9 +601,10 @@ class WipClient:
             page_size=page_size,
         )
 
-    async def get_term(self, term_id: str) -> dict:
+    async def get_term(self, term_id: str, namespace: str | None = None) -> dict:
         return await self._get(
-            self.def_store_url, f"/api/def-store/terms/{term_id}"
+            self.def_store_url, f"/api/def-store/terms/{term_id}",
+            namespace=namespace,
         )
 
     async def create_terms(
@@ -772,12 +775,14 @@ class WipClient:
         terminology_id: str,
         format: str = "json",
         include_relations: bool = True,
+        namespace: str | None = None,
     ) -> dict:
         return await self._get(
             self.def_store_url,
             f"/api/def-store/import-export/export/{terminology_id}",
             format=format,
             include_relations=include_relations,
+            namespace=namespace,
         )
 
     async def import_terminology(
@@ -821,12 +826,14 @@ class WipClient:
         )
 
     async def get_template(
-        self, template_id: str, version: int | None = None
+        self, template_id: str, version: int | None = None,
+        namespace: str | None = None,
     ) -> dict:
         return await self._get(
             self.template_store_url,
             f"/api/template-store/templates/{template_id}",
             version=version,
+            namespace=namespace,
         )
 
     async def get_template_by_value(self, value: str, namespace: str | None = None) -> dict:
@@ -836,10 +843,11 @@ class WipClient:
             namespace=namespace,
         )
 
-    async def get_template_raw(self, template_id: str) -> dict:
+    async def get_template_raw(self, template_id: str, namespace: str | None = None) -> dict:
         return await self._get(
             self.template_store_url,
             f"/api/template-store/templates/{template_id}/raw",
+            namespace=namespace,
         )
 
     async def create_template(self, template: dict) -> dict:
@@ -880,7 +888,7 @@ class WipClient:
 
     async def deactivate_template(
         self, template_id: str, version: int | None = None, force: bool = False,
-        hard_delete: bool = False,
+        hard_delete: bool = False, namespace: str | None = None,
     ) -> dict:
         item: dict[str, Any] = {"id": template_id}
         if version is not None:
@@ -893,6 +901,7 @@ class WipClient:
             self.template_store_url,
             "/api/template-store/templates",
             json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
@@ -909,17 +918,19 @@ class WipClient:
             namespace=namespace,
         )
 
-    async def validate_template(self, template_id: str) -> dict:
+    async def validate_template(self, template_id: str, namespace: str | None = None) -> dict:
         return await self._post(
             self.template_store_url,
             f"/api/template-store/templates/{template_id}/validate",
             json={},
+            namespace=namespace,
         )
 
-    async def get_template_dependencies(self, template_id: str) -> dict:
+    async def get_template_dependencies(self, template_id: str, namespace: str | None = None) -> dict:
         return await self._get(
             self.template_store_url,
             f"/api/template-store/templates/{template_id}/dependencies",
+            namespace=namespace,
         )
 
     # ========================================================
