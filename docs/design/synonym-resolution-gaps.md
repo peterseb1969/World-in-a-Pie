@@ -31,10 +31,12 @@
 >   (`template_service.py:276-283`, `:997-1000`); document-store validation's
 >   `_lookup_by_business_key` fallback queries `data.<identity_field>` directly
 >   (`validation_service.py:1628-1672`).
-> - **CASE-433** — `def-store` (`/lookup/by-key` + `search_synonyms`) and
->   `document-store` (`/lookup/by-id`) hand-roll divergent per-domain lookup
->   clients for the same "resolve an identifier" operation; not unified onto a
->   shared method.
+> - **CASE-433** — *resolved 2026-06-11*: the def-store/template-store
+>   `/lookup/by-key` wrappers were dead code (zero callers) and were deleted;
+>   the one live lookup, `resolve_identifier` (`/lookup/by-id`), moved to
+>   `RegistryClientBase`. The three Registry endpoints (`/lookup/by-id`,
+>   `/lookup/by-key`, `/entries/resolve`) are NOT behaviorally equivalent and
+>   all remain — see the case's Response for the equivalence analysis.
 >
 > Everything below the next horizontal rule predates this refresh; read it as
 > history, and trust the two cases above for what remains.

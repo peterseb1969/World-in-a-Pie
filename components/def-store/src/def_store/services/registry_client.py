@@ -14,7 +14,7 @@ register_terminology / register_term / register_terms_bulk surface.
 
 import asyncio
 import logging
-from typing import Any, cast
+from typing import Any
 
 from wip_auth.registry_client import (
     RegistryClientBase,
@@ -208,40 +208,6 @@ class RegistryClient(RegistryClientBase):
             raise
         except Exception as e:
             raise RegistryError(f"Failed to register auto-synonyms bulk: {e}") from e
-
-    async def lookup_by_value(
-        self,
-        namespace: str,
-        entity_type: str,
-        value: str,
-        additional_fields: dict[str, Any] | None = None,
-    ) -> str | None:
-        """Look up a registry ID via /api/registry/entries/lookup/by-key.
-
-        Domain-specific endpoint; not in the canonical base because
-        document-store uses /by-id with a different shape.
-        """
-        composite_key: dict[str, Any] = {"ns": namespace, "value": value}
-        if additional_fields:
-            composite_key.update(additional_fields)
-
-        async with self._make_client() as client:
-            response = await client.post(
-                f"{self.base_url}/api/registry/entries/lookup/by-key",
-                headers=self._get_headers(),
-                json=[{
-                    "namespace": namespace,
-                    "entity_type": entity_type,
-                    "composite_key": composite_key,
-                    "search_synonyms": True,
-                }],
-            )
-            if response.status_code != 200:
-                return None
-            data = response.json()
-            if data["found"] > 0:
-                return cast("str | None", data["results"][0].get("entry_id"))
-            return None
 
 
 # ── Singleton ───────────────────────────────────────────────────────────────

@@ -316,12 +316,41 @@ class RegistryClientBase:
                 return []
             return [AddSynonymResult.model_validate(r) for r in results_data]
 
-    # Lookup endpoints (/api/registry/entries/lookup/by-key vs /by-id) are
-    # called per-domain — def-store/template-store use by-key with composite
-    # keys; document-store uses by-id for identifier resolution. Components
-    # keep their own lookup wrappers using self._make_client() + self._get_headers().
-
     # ── Universal public methods ────────────────────────────────────────
+
+    async def resolve_identifier(
+        self,
+        namespace: str | None,
+        entity_type: str | None,
+        value: str,
+    ) -> str | None:
+        """Resolve any identifier to a canonical entry_id via
+        POST /api/registry/entries/lookup/by-id.
+
+        by-id rather than /entries/resolve is deliberate (CASE-433): its
+        search_values fallback matches raw value strings without requiring
+        the caller to know the composite-key shape — value-form references
+        depend on that. /entries/resolve only matches entry_id or a full
+        hashed composite key.
+        """
+        lookup_item: dict[str, Any] = {"entry_id": value}
+        if namespace:
+            lookup_item["namespace"] = namespace
+        if entity_type:
+            lookup_item["entity_type"] = entity_type
+        async with self._make_client() as client:
+            response = await client.post(
+                f"{self.base_url}/api/registry/entries/lookup/by-id",
+                headers=self._get_headers(),
+                json=[lookup_item],
+            )
+            if response.status_code != 200:
+                return None
+            data = response.json()
+            results = data.get("results", [])
+            if results and results[0].get("status") == "found":
+                return cast("str | None", results[0].get("entry_id"))
+            return None
 
     async def hard_delete_entry(
         self,
