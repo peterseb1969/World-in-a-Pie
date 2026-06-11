@@ -159,7 +159,7 @@ run_build() {
     if [[ -z "$PLATFORMS" ]]; then
         # Native-only fast path (unchanged behavior).
         if $BUILDER build ${extra[@]+"${extra[@]}"} -t "$img" "$context"; then
-            push_image "$img"
+            push_image "$img" || return 1
             return 0
         fi
         return 1
@@ -380,7 +380,7 @@ else
 fi
 echo ""
 echo "  Built ${#BUILT_IMAGES[@]} images:"
-for img in "${BUILT_IMAGES[@]}"; do
+for img in ${BUILT_IMAGES[@]+"${BUILT_IMAGES[@]}"}; do
     echo "    ${img}"
 done
 if ! $PUSH; then
