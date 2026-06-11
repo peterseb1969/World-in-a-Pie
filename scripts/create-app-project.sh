@@ -685,6 +685,7 @@ if ! $REFRESH_MODE; then
                 \"owner\": \"dev@wip.local\",
                 \"groups\": [],
                 \"namespaces\": [\"${DEV_NAMESPACE}\"],
+                \"grant_permission\": \"write\",
                 \"description\": \"${APP_NAME} — scoped to dev namespace\"
             }" 2>/dev/null || echo "")
 
@@ -698,12 +699,14 @@ if ! $REFRESH_MODE; then
         fi
 
         if [ -n "$APP_KEY_PLAINTEXT" ]; then
-            echo "   Created API key: $APP_SLUG (scoped to $DEV_NAMESPACE)"
+            echo "   Created API key: $APP_SLUG (scoped to $DEV_NAMESPACE, write grant included — CASE-450)"
             echo "   Key propagates to all services within ~30 seconds"
 
             # Write .env with the provisioned key
             cat > "$APP_DIR/.env" << ENVEOF
-# App API key — namespace-scoped to $DEV_NAMESPACE
+# App API key — namespace-scoped to $DEV_NAMESPACE, with a write grant
+# (grant_permission=write at creation — CASE-450; without the grant a
+# scoped key can read its namespace but not write)
 # Created by create-app-project.sh via POST /api/registry/api-keys
 # This is a runtime key (managed via API, not config file)
 WIP_API_KEY=$APP_KEY_PLAINTEXT
@@ -804,6 +807,8 @@ fi
 cat >> "$APP_DIR/CLAUDE.md" << EOF
 
 Because this key is scoped to a single namespace (\`$DEV_NAMESPACE\`), WIP derives the namespace automatically when you omit the \`namespace\` parameter. This means synonym resolution works without passing \`namespace\` on every API call.
+
+**Grants (CASE-450):** namespace *scoping* gives a key read visibility only — **writes need an explicit namespace grant**. The scaffold provisioned this key with \`grant_permission: write\`, so it works out of the box. If you ever create a key by hand, pass \`grant_permission\` on \`create_api_key\` / \`POST /api/registry/api-keys\`, or add a grant afterwards (\`create_grant\` MCP tool, \`registry.createGrants\` in @wip/client, or \`POST /api/registry/namespaces/<ns>/grants\`). Grant subject for api keys is the bare key name.
 
 **Key management:** Runtime keys can be listed, updated, and revoked via the Registry API. See WIP's \`docs/api-key-management.md\` for details.
 

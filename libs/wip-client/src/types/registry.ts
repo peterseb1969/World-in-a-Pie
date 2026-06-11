@@ -280,10 +280,18 @@ export interface CreateAPIKeyRequest {
   namespaces?: string[] | null
   description?: string
   expires_at?: string
+  /**
+   * CASE-450: also create a namespace grant at this level for the new key
+   * (subject = key name) on each namespace in `namespaces`. Without it a
+   * scoped key can read its namespaces but not write.
+   */
+  grant_permission?: 'read' | 'write' | 'admin'
 }
 
 export interface CreateAPIKeyResponse extends APIKeyInfo {
   plaintext_key: string
+  /** Namespaces a grant was created on (CASE-450 grant_permission). */
+  granted_namespaces?: string[] | null
 }
 
 export interface UpdateAPIKeyRequest {

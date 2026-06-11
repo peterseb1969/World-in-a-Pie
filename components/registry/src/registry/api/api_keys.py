@@ -29,6 +29,7 @@ from ..models.api_key import (
     StoredAPIKey,
     generate_plaintext_key,
 )
+from ..models.grant import NamespaceGrant
 from ..services.auth import require_admin_key, require_api_key
 
 logger = logging.getLogger("registry.api_keys")
@@ -102,6 +103,14 @@ async def create_api_key(
     """Create a new runtime API key. The plaintext is returned once and never stored."""
     provider = _get_provider()
 
+    # CASE-450: grant_permission without a namespace scope is meaningless —
+    # there is nothing to grant on.
+    if request.grant_permission and not request.namespaces:
+        raise HTTPException(
+            status_code=422,
+            detail="grant_permission requires `namespaces` to be set",
+        )
+
     # Reject name collision with config-file keys
     if request.name in _config_key_names:
         raise HTTPException(
@@ -151,7 +160,32 @@ async def create_api_key(
     logger.info("Created runtime API key: name=%s owner=%s created_by=%s",
                 doc.name, doc.owner, doc.created_by)
 
+    # CASE-450: optionally create namespace grants for the new key in the
+    # same call, so a scoped key is usable (not read-only) immediately.
+    # Mirrors POST /namespaces/{prefix}/grants semantics with the canonical
+    # api_key subject (bare key name). Namespace existence is intentionally
+    # not enforced — key namespace scoping isn't either, and app
+    # provisioning flows may create the namespace after the key.
+    granted_namespaces: list[str] | None = None
+    if request.grant_permission and request.namespaces:
+        granted_namespaces = []
+        for prefix in request.namespaces:
+            grant = NamespaceGrant(
+                namespace=prefix,
+                subject=doc.name,
+                subject_type="api_key",
+                permission=request.grant_permission,
+                granted_by=get_identity_string(),
+            )
+            await grant.create()
+            granted_namespaces.append(prefix)
+        logger.info(
+            "Granted %s on %s to api_key %s (CASE-450 grant_permission)",
+            request.grant_permission, granted_namespaces, doc.name,
+        )
+
     return APIKeyCreatedResponse(
+        granted_namespaces=granted_namespaces,
         name=doc.name,
         owner=doc.owner,
         groups=doc.groups,

@@ -1606,6 +1606,7 @@ class WipClient:
         namespaces: list[str] | None = None,
         description: str | None = None,
         expires_at: str | None = None,
+        grant_permission: str | None = None,
     ) -> dict:
         payload: dict[str, Any] = {"name": name, "owner": owner}
         if groups is not None:
@@ -1614,6 +1615,8 @@ class WipClient:
             payload["namespaces"] = namespaces
         if description is not None:
             payload["description"] = description
+        if grant_permission is not None:
+            payload["grant_permission"] = grant_permission
         if expires_at is not None:
             payload["expires_at"] = expires_at
         return await self._post(
@@ -1640,6 +1643,30 @@ class WipClient:
     async def revoke_api_key(self, name: str) -> dict:
         return await self._delete(
             self.registry_url, f"/api/registry/api-keys/{name}"
+        )
+
+    # ========================================================
+    # Registry: Namespace grants (CASE-450)
+    # ========================================================
+
+    async def list_grants(self, namespace: str) -> list[dict]:
+        data = await self._get(
+            self.registry_url, f"/api/registry/namespaces/{namespace}/grants"
+        )
+        return cast("list[dict[str, Any]]", data)
+
+    async def create_grants(self, namespace: str, items: list[dict]) -> dict:
+        return await self._post(
+            self.registry_url,
+            f"/api/registry/namespaces/{namespace}/grants",
+            json=items,
+        )
+
+    async def revoke_grants(self, namespace: str, items: list[dict]) -> dict:
+        return await self._delete(
+            self.registry_url,
+            f"/api/registry/namespaces/{namespace}/grants",
+            json=items,
         )
 
     # ========================================================
