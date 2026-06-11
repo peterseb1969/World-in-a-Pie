@@ -890,7 +890,7 @@ Read these before starting:
 
 ## MCP
 
-WIP is accessed exclusively via MCP tools (88 tools, 5 resources). Before starting:
+WIP is accessed exclusively via MCP tools (91 tools, 5 resources). Before starting:
 - Read \`wip://conventions\` — bulk-first API, identity hashing, versioning
 - Read \`wip://data-model\` — terminologies, templates, documents, fields, term-relations
 - Read \`wip://ponifs\` — 8 behaviours that trip up every new developer
@@ -1132,7 +1132,7 @@ if $REFRESH_MODE; then
     echo "  /wip-wake         # Recover context from existing code and docs"
     echo ""
     echo "Verify MCP connection:"
-    echo "  In Claude Code, run /mcp — you should see 71 tools and 5 resources."
+    echo "  In Claude Code, run /mcp — you should see 91 tools and 5 resources."
     echo ""
     echo "Note: .mcp.json has been regenerated with paths for this machine."
     echo "      Add it to .gitignore if you don't want to commit machine-specific paths."
@@ -1143,5 +1143,5 @@ else
     echo "  /wip-explore        # Start Phase 1"
     echo ""
     echo "Verify MCP connection:"
-    echo "  In Claude Code, run /mcp — you should see 71 tools and 5 resources."
+    echo "  In Claude Code, run /mcp — you should see 91 tools and 5 resources."
 fi
