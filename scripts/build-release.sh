@@ -388,3 +388,6 @@ if ! $PUSH; then
     echo "  Run with --push to push images to the registry."
 fi
 echo "=========================================="
+
+# Exit nonzero on any failed build so CI wrappers fail loudly.
+[[ ${#FAILED[@]} -eq 0 ]]
