@@ -1,0 +1,51 @@
+api_version: wip.dev/v1
+kind: App
+metadata:
+  name: song
+  category: optional
+  description: |
+    WIP-Song — song teaching and singing app. Records the user's singing,
+    translates it into notes, scores it against target melodies (piano-roll
+    and guitar-fretboard views), imports MIDI/karaoke files, and tracks
+    lesson progress. App source lives in its own repo (WIP-Song).
+
+spec:
+  image:
+    name: wip-song
+    tag: dev
+
+  ports:
+    - {name: http, container_port: 3016}
+    # Vite dev server (CASE-55/57). Used only with
+    # `wip-deploy install --target dev --app-source song=<path>`.
+    - {name: dev, container_port: 5181}
+
+  env:
+    required:
+      - {name: WIP_BASE_URL, source: {from_component: router}}
+      - {name: WIP_API_KEY, source: {from_secret: api-key}}
+      - {name: APP_BASE_PATH, source: {literal: /apps/song}}
+      - {name: VITE_BASE_PATH, source: {literal: /apps/song}}
+      - {name: PORT, source: {literal: "3016"}}
+      - {name: NODE_ENV, source: {literal: production}}
+      - {name: WIP_NAMESPACE, source: {literal: dev-wip-song}}
+    optional:
+      # AskBar agent (scaffold feature); app degrades gracefully without it.
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+      - {name: MCP_URL, source: {literal: "http://wip-router:8080/mcp"}}
+
+  routes:
+    - {path: /apps/song, auth_required: true}
+
+  depends_on: [document-store]
+
+  healthcheck:
+    # Locally answerable; must not require WIP to be reachable (contract).
+    endpoint: /apps/song/api/health
+    probe: auto
+    start_period_seconds: 15
+
+app_metadata:
+  display_name: WIP-Song
+  route_prefix: /apps/song
+  ui_only: false
