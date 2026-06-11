@@ -2,9 +2,8 @@
 
 Per-domain thin wrapper around the canonical client in
 libs/wip-auth/src/wip_auth/registry_client.py. Adds document-specific
-ID-generation methods (generate_document_id, generate_document_ids_bulk)
-and an identifier-resolution helper that uses /api/registry/entries/lookup/by-id
-(distinct from the by-key endpoint def-store / template-store use).
+ID-generation methods (generate_document_id, generate_document_ids_bulk).
+Identifier resolution (resolve_identifier) lives on the base (CASE-433).
 
 CASE-398 consolidated the universal infrastructure into the canonical
 base; what's left here is document-store-specific.
@@ -242,34 +241,6 @@ class RegistryClient(RegistryClientBase):
             composite_key=composite_key,
             created_by=created_by,
         )
-
-    async def resolve_identifier(
-        self,
-        namespace: str | None,
-        entity_type: str | None,
-        value: str,
-    ) -> str | None:
-        """Resolve any identifier to a canonical entry_id via
-        POST /api/registry/entries/lookup/by-id. Distinct endpoint
-        from def-store/template-store's by-key lookup."""
-        lookup_item: dict[str, Any] = {"entry_id": value}
-        if namespace:
-            lookup_item["namespace"] = namespace
-        if entity_type:
-            lookup_item["entity_type"] = entity_type
-        async with self._make_client() as client:
-            response = await client.post(
-                f"{self.base_url}/api/registry/entries/lookup/by-id",
-                headers=self._get_headers(),
-                json=[lookup_item],
-            )
-            if response.status_code != 200:
-                return None
-            data = response.json()
-            results = data.get("results", [])
-            if results and results[0].get("status") == "found":
-                return cast("str | None", results[0].get("entry_id"))
-            return None
 
 
 # ── Singleton ───────────────────────────────────────────────────────────────
