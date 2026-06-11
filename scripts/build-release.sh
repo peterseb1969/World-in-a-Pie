@@ -214,7 +214,7 @@ build_python_with_libs() {
     local tmpdir
     tmpdir="$(mktemp -d)"
     # Clean up temp dir on function exit
-    trap "rm -rf '$tmpdir'" RETURN
+    trap 'rm -rf "$tmpdir"' RETURN
 
     # Copy service files into temp build context
     cp "${svc_dir}/Dockerfile" "$tmpdir/"
