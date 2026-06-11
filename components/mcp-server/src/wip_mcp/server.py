@@ -1266,6 +1266,7 @@ async def update_terminology(
     label: str | None = None,
     description: str | None = None,
     mutable: bool | None = None,
+    namespace: str | None = None,
 ) -> str:
     """Update a terminology's label, description, or mutability.
 
@@ -1274,6 +1275,8 @@ async def update_terminology(
         label: New label (optional).
         description: New description (optional).
         mutable: Set mutability (optional). Only allowed when term_count is 0.
+        namespace: Namespace for value/synonym resolution (required with
+            multi-namespace or privileged keys; single-namespace keys derive it).
     """
     try:
         updates: dict[str, object] = {}
@@ -1285,7 +1288,7 @@ async def update_terminology(
             updates["mutable"] = mutable
         if not updates:
             return "Error: Provide at least one field to update (label, description, mutable)."
-        data = await get_client().update_terminology(terminology_id, updates)
+        data = await get_client().update_terminology(terminology_id, updates, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1294,6 +1297,7 @@ async def update_terminology(
 @mcp.tool()
 async def delete_terminology(
     terminology_id: str, force: bool = False, hard_delete: bool = False,
+    namespace: str | None = None,
 ) -> str:
     """Delete a terminology. Mutable terminologies are always hard-deleted.
     Immutable ones are soft-deleted unless hard_delete=true (requires namespace deletion_mode='full').
@@ -1308,6 +1312,7 @@ async def delete_terminology(
     try:
         data = await get_client().delete_terminology(
             terminology_id, force=force, hard_delete=hard_delete,
+            namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1316,7 +1321,8 @@ async def delete_terminology(
 
 @mcp.tool()
 async def restore_terminology(
-    terminology_id: str, restore_terms: bool = True
+    terminology_id: str, restore_terms: bool = True,
+    namespace: str | None = None,
 ) -> str:
     """Restore a previously deactivated terminology back to active status.
 
@@ -1326,7 +1332,8 @@ async def restore_terminology(
     """
     try:
         data = await get_client().restore_terminology(
-            terminology_id, restore_terms=restore_terms
+            terminology_id, restore_terms=restore_terms,
+            namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1364,10 +1371,16 @@ async def list_terms(
 
 
 @mcp.tool()
-async def get_term(term_id: str) -> str:
-    """Get a term by ID, value (e.g., 'STATUS:approved'), or synonym."""
+async def get_term(term_id: str, namespace: str | None = None) -> str:
+    """Get a term by ID, value (e.g., 'STATUS:approved'), or synonym.
+
+    Args:
+        term_id: Term ID, value, or synonym.
+        namespace: Namespace for value/synonym resolution (required with
+            multi-namespace or privileged keys; single-namespace keys derive it).
+    """
     try:
-        data = await get_client().get_term(term_id)
+        data = await get_client().get_term(term_id, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1424,6 +1437,7 @@ async def update_term(
     aliases: list[str] | None = None,
     description: str | None = None,
     sort_order: int | None = None,
+    namespace: str | None = None,
 ) -> str:
     """Update a term's label, aliases, description, or sort order.
 
@@ -1446,14 +1460,16 @@ async def update_term(
             updates["sort_order"] = sort_order
         if not updates:
             return "Error: Provide at least one field to update."
-        data = await get_client().update_term(term_id, updates)
+        data = await get_client().update_term(term_id, updates, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
 
 
 @mcp.tool()
-async def delete_term(term_id: str, hard_delete: bool = False) -> str:
+async def delete_term(
+    term_id: str, hard_delete: bool = False, namespace: str | None = None,
+) -> str:
     """Delete a term. Soft-delete (deactivate) by default.
     Terms in mutable terminologies are always hard-deleted.
     Set hard_delete=true to permanently remove from immutable terminologies
@@ -1464,7 +1480,9 @@ async def delete_term(term_id: str, hard_delete: bool = False) -> str:
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
     """
     try:
-        data = await get_client().delete_term(term_id, hard_delete=hard_delete)
+        data = await get_client().delete_term(
+            term_id, hard_delete=hard_delete, namespace=namespace,
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1475,6 +1493,7 @@ async def deprecate_term(
     term_id: str,
     reason: str,
     replaced_by_term_id: str | None = None,
+    namespace: str | None = None,
 ) -> str:
     """Deprecate a term with a reason and optional replacement pointer.
 
@@ -1491,6 +1510,7 @@ async def deprecate_term(
         data = await get_client().deprecate_term(
             term_id=term_id, reason=reason,
             replaced_by_term_id=replaced_by_term_id,
+            namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1673,6 +1693,7 @@ async def list_templates(
 async def get_template(
     template_id: str,
     version: int | None = None,
+    namespace: str | None = None,
 ) -> str:
     """Get a template by ID. Returns the resolved template (with inherited fields).
 
@@ -1682,7 +1703,7 @@ async def get_template(
     """
     try:
         data = await get_client().get_template(
-            template_id=template_id, version=version
+            template_id=template_id, version=version, namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1702,14 +1723,14 @@ async def get_template_by_value(value: str, namespace: str | None = None) -> str
 
 
 @mcp.tool()
-async def get_template_raw(template_id: str) -> str:
+async def get_template_raw(template_id: str, namespace: str | None = None) -> str:
     """Get a template WITHOUT inheritance resolution. Shows only fields defined directly on this template.
 
     Args:
         template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
     """
     try:
-        data = await get_client().get_template_raw(template_id)
+        data = await get_client().get_template_raw(template_id, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1975,7 +1996,9 @@ async def create_edge_type(
 
 
 @mcp.tool()
-async def update_template(template_id: str, updates: dict) -> str:
+async def update_template(
+    template_id: str, updates: dict, namespace: str | None = None,
+) -> str:
     """Update a template by creating a new version. Use this to add/remove/modify fields.
 
     The template_id stays the same across versions — only the version number increments.
@@ -2007,7 +2030,7 @@ async def update_template(template_id: str, updates: dict) -> str:
     Returns version info: template_id, value, version (new), is_new_version, previous_version.
     """
     try:
-        data = await get_client().update_template(template_id, updates)
+        data = await get_client().update_template(template_id, updates, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -2041,6 +2064,7 @@ async def deactivate_template(
     version: int | None = None,
     force: bool = False,
     hard_delete: bool = False,
+    namespace: str | None = None,
 ) -> str:
     """Delete a template version. Soft-delete (deactivate) by default.
     Set hard_delete=true to permanently remove (requires namespace deletion_mode='full').
@@ -2057,7 +2081,7 @@ async def deactivate_template(
     try:
         data = await get_client().deactivate_template(
             template_id=template_id, version=version, force=force,
-            hard_delete=hard_delete,
+            hard_delete=hard_delete, namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -2065,14 +2089,14 @@ async def deactivate_template(
 
 
 @mcp.tool()
-async def get_template_dependencies(template_id: str) -> str:
+async def get_template_dependencies(template_id: str, namespace: str | None = None) -> str:
     """Show what depends on a template: child templates and documents.
 
     Args:
         template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
     """
     try:
-        data = await get_client().get_template_dependencies(template_id)
+        data = await get_client().get_template_dependencies(template_id, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -2108,7 +2132,7 @@ async def get_template_versions(
 
 
 @mcp.tool()
-async def validate_template(template_id: str) -> str:
+async def validate_template(template_id: str, namespace: str | None = None) -> str:
     """Validate a template's references (terminologies, parent templates).
 
     Checks that all terminology_ref and extends references point to
@@ -2118,7 +2142,7 @@ async def validate_template(template_id: str) -> str:
         template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
     """
     try:
-        data = await get_client().validate_template(template_id)
+        data = await get_client().validate_template(template_id, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -2561,6 +2585,7 @@ async def export_terminology(
     terminology_id: str,
     format: str = "json",
     include_relations: bool = True,
+    namespace: str | None = None,
 ) -> str:
     """Export a terminology with all its terms (and optionally relations).
 
@@ -2574,6 +2599,7 @@ async def export_terminology(
             terminology_id=terminology_id,
             format=format,
             include_relations=include_relations,
+            namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

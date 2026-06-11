@@ -224,6 +224,7 @@ async def get_terminology_dependencies(
 async def restore_terminology(
     terminology_id: str,
     restore_terms: bool = Query(True, description="Also reactivate inactive terms"),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     identity: UserIdentity = Depends(require_api_key)
 ) -> TerminologyResponse:
     """
@@ -233,7 +234,7 @@ async def restore_terminology(
     Set restore_terms=false to restore only the terminology itself.
     """
     terminology_id = await resolve_or_404(
-        terminology_id, "terminology", namespace=None, param_name="terminology_id"
+        terminology_id, "terminology", namespace, param_name="terminology_id"
     )
 
     # CASE-384 — restore is a mutation; require write on the terminology's
