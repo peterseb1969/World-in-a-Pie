@@ -99,23 +99,29 @@ async def test_upload_file_with_optional_fields():
 
 
 @pytest.mark.asyncio
-async def test_upload_file_uses_api_key_header():
-    """upload_file overrides Content-Type header with just X-API-Key."""
-    mock_http = _mock_http(_mock_response({"file_id": "FILE-003"}))
+async def test_upload_file_sends_multipart_content_type():
+    """The real httpx client must emit multipart, not JSON, for upload_file.
 
+    CASE-449: a client-level Content-Type default silently overrode the
+    multipart boundary httpx derives from files=, so every upload arrived
+    at the API declared as application/json and 422'd. The old test here
+    asserted a per-request headers kwarg (the gesture); this one builds
+    the request through the actual configured client and asserts the wire
+    Content-Type (the outcome).
+    """
     client = _make_client()
-    with patch.object(client, "_get_client", return_value=mock_http):
-        await client.upload_file(
-            file_content=b"x",
-            filename="x.bin",
-            content_type="application/octet-stream",
-            namespace="wip",
-        )
-
-    headers = mock_http.post.call_args.kwargs["headers"]
-    assert headers == {"X-API-Key": "test_key"}
-    # Should NOT have Content-Type (multipart sets its own)
-    assert "Content-Type" not in headers
+    http = await client._get_client()
+    req = http.build_request(
+        "POST", "http://x/api/document-store/files",
+        files={"file": ("x.bin", b"x", "application/octet-stream")},
+        data={"namespace": "wip"},
+    )
+    assert req.headers["content-type"].startswith("multipart/form-data; boundary=")
+    assert req.headers["x-api-key"] == "test_key"
+    # json= bodies must still come out as JSON without a client-level default
+    req_json = http.build_request("POST", "http://x/y", json=[{"a": 1}])
+    assert req_json.headers["content-type"] == "application/json"
+    await client.close()
 
 
 # =========================================================================
