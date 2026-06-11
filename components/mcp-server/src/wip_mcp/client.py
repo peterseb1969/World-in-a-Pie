@@ -169,9 +169,12 @@ class WipClient:
 
     @property
     def _headers(self) -> dict[str, str]:
+        # No Content-Type here: a client-level default would override the
+        # per-request value httpx derives from the body (json= → JSON,
+        # files= → multipart with boundary). A JSON default silently broke
+        # every multipart upload (CASE-449).
         return {
             "X-API-Key": self.api_key,
-            "Content-Type": "application/json",
         }
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -1197,7 +1200,6 @@ class WipClient:
             f"{self.document_store_url}/api/document-store/files",
             files=files,
             data=data,
-            headers={"X-API-Key": self.api_key},  # Override default JSON headers
         )
         _raise_for_status_with_body(resp)
         parsed: dict[str, Any] = resp.json()
