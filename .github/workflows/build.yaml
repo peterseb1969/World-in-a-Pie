@@ -1,0 +1,51 @@
+name: Build & Push Images (x86)
+
+# Manually triggered: Actions tab -> "Build & Push Images (x86)" -> Run workflow.
+# Builds all 8 WIP service images natively on amd64 via scripts/build-release.sh
+# (wip-auth / WIP-Toolkit baked in) and pushes them to GHCR as
+# ghcr.io/<owner>/<service>:<tag>.
+#
+# Tag convention: version tags (e.g. 1.2.0) are write-once — never re-push an
+# existing version, bump instead. An empty tag input falls back to sha-<short>.
+# arm64/multi-arch is a planned second step (build-release.sh's --platforms
+# path is podman-specific; needs podman or buildx support on the runner).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag (e.g. 1.2.0). Leave empty for sha-<short-commit>.'
+        required: false
+        default: ''
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="sha-$(git rev-parse --short HEAD)"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building with tag: $TAG"
+
+      - name: Login to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push all images
+        run: |
+          bash scripts/build-release.sh \
+            --registry "ghcr.io/${{ github.repository_owner }}" \
+            --tag "${{ steps.tag.outputs.tag }}" \
+            --push \
+            --builder docker
