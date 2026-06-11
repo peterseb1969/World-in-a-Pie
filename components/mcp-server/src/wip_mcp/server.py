@@ -979,6 +979,85 @@ async def delete_namespace(
 
 
 # ===================================================================
+# Tools — Namespace grants (CASE-450)
+# ===================================================================
+
+
+@mcp.tool()
+async def list_grants(namespace: str) -> str:
+    """List permission grants on a namespace (requires admin on it).
+
+    Each grant maps a subject (user email, api_key name, or group) to a
+    permission level (read | write | admin). Note: a namespace-scoped API
+    key with NO grant can read its namespaces but not write — see
+    create_api_key's grant_permission for the provisioning shortcut.
+
+    Args:
+        namespace: Namespace prefix.
+    """
+    try:
+        data = await get_client().list_grants(namespace)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def create_grant(
+    namespace: str,
+    subject: str,
+    subject_type: str,
+    permission: str,
+    expires_at: str | None = None,
+) -> str:
+    """Grant a permission on a namespace (requires admin on it). Upserts —
+    an existing grant for the same subject is updated to the new level.
+
+    Args:
+        namespace: Namespace prefix.
+        subject: User email, API key name (bare name, e.g. 'my-app' — an
+            'apikey:' prefix is normalized away), or group name.
+        subject_type: 'user' | 'api_key' | 'group'.
+        permission: 'read' | 'write' | 'admin'.
+        expires_at: ISO 8601 expiry (None = never).
+    """
+    try:
+        item: dict = {
+            "subject": subject,
+            "subject_type": subject_type,
+            "permission": permission,
+        }
+        if expires_at is not None:
+            item["expires_at"] = expires_at
+        data = await get_client().create_grants(namespace, [item])
+        result = data.get("results", [{}])[0]
+        if result.get("status") == "error":
+            return f"Error: {result.get('error', 'unknown error')}"
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def revoke_grant(namespace: str, subject: str, subject_type: str) -> str:
+    """Revoke a permission grant on a namespace (requires admin on it).
+
+    Args:
+        namespace: Namespace prefix.
+        subject: User email, API key name, or group name.
+        subject_type: 'user' | 'api_key' | 'group'.
+    """
+    try:
+        data = await get_client().revoke_grants(
+            namespace, [{"subject": subject, "subject_type": subject_type}]
+        )
+        result = data.get("results", [{}])[0]
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+# ===================================================================
 # Tools — API Key Management
 # ===================================================================
 
@@ -991,6 +1070,7 @@ async def create_api_key(
     namespaces: list[str] | None = None,
     description: str | None = None,
     expires_at: str | None = None,
+    grant_permission: str | None = None,
 ) -> str:
     """Create a runtime API key. Returns the plaintext key (shown once, never stored).
 
@@ -1001,6 +1081,10 @@ async def create_api_key(
         namespaces: Namespace scope (e.g., ['wip']). None = unrestricted.
         description: Human-readable description
         expires_at: ISO 8601 expiry datetime (None = never expires)
+        grant_permission: 'read' | 'write' | 'admin' — also create a namespace
+            grant for the key on each scoped namespace (requires namespaces).
+            Without it a scoped key can READ its namespaces but not WRITE;
+            for app provisioning you almost always want 'write' (CASE-450).
     """
     try:
         data = await get_client().create_api_key(
@@ -1010,6 +1094,7 @@ async def create_api_key(
             namespaces=namespaces,
             description=description,
             expires_at=expires_at,
+            grant_permission=grant_permission,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -3642,6 +3727,12 @@ WRITE_TOOLS = frozenset({
     "create_namespace",
     "upsert_namespace",
     "delete_namespace",
+    # Grants + API keys (CASE-450 — the api-key pair was missing here
+    # before: a readonly server could still mint/revoke keys)
+    "create_grant",
+    "revoke_grant",
+    "create_api_key",
+    "revoke_api_key",
 })
 
 

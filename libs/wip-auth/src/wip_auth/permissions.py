@@ -102,6 +102,13 @@ async def _fetch_permission_from_registry(
     }
     if identity.email:
         params["email"] = identity.email
+    # CASE-450 — forward username so api_key grant subjects match the same
+    # spelling (bare key name) on this path as on direct Registry calls.
+    # Without it the Registry's synthetic identity falls back to
+    # username=user_id ("apikey:<name>") and grants stored under the key
+    # name never match cross-service checks.
+    if identity.username:
+        params["username"] = identity.username
 
     # Pass groups in header (M2 — avoid leaking group names in access logs/caches)
     headers = {"X-API-Key": api_key}
@@ -250,6 +257,9 @@ async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str] |
     }
     if identity.email:
         params["email"] = identity.email
+    # CASE-450 — see _fetch_permission_from_registry.
+    if identity.username:
+        params["username"] = identity.username
 
     headers = {"X-API-Key": api_key}
     if identity.groups:

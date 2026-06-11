@@ -48,6 +48,7 @@ def _build_synthetic_identity(
     groups: list[str],
     auth_method: AuthMethod,
     key_namespaces_header: str | None,
+    username: str | None = None,
 ) -> UserIdentity:
     """Reconstruct the calling service's UserIdentity at the Registry side.
 
@@ -73,9 +74,13 @@ def _build_synthetic_identity(
             ns.strip() for ns in key_namespaces_header.split(",") if ns.strip()
         ]
         raw_claims = {"namespaces": ns_list}
+    # CASE-450: callers that forward `username` (api-key name) get exact
+    # grant-subject parity with direct Registry calls. The email/user_id
+    # fallback keeps old-lib callers working (covered by the compat match
+    # in _resolve_permission).
     return UserIdentity(
         user_id=user_id,
-        username=email or user_id,
+        username=username or email or user_id,
         email=email,
         groups=groups,
         auth_method=auth_method,
@@ -122,6 +127,12 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     subjects = []
     if identity.auth_method == "api_key":
         subjects.append(("api_key", identity.username))
+        # CASE-450 compat: cross-service callers on a pre-450 wip-auth don't
+        # forward username, so the synthetic identity carries the user_id
+        # form ("apikey:<name>") while grants are stored under the bare key
+        # name. Match both spellings.
+        if identity.username.startswith("apikey:"):
+            subjects.append(("api_key", identity.username.removeprefix("apikey:")))
         # Check API key namespace restrictions
         namespaces = (identity.raw_claims or {}).get("namespaces")
         if namespaces is not None:
@@ -220,10 +231,16 @@ async def create_grants(
     results = []
     for i, item in enumerate(items):
         try:
+            # CASE-450: canonical api_key subject is the bare key name —
+            # normalize a user_id-form spelling so one logical grant has
+            # one stored record regardless of how the operator wrote it.
+            subject = item.subject
+            if item.subject_type == "api_key":
+                subject = subject.removeprefix("apikey:")
             # Upsert: update permission if grant already exists
             existing = await NamespaceGrant.find_one({
                 "namespace": prefix,
-                "subject": item.subject,
+                "subject": subject,
                 "subject_type": item.subject_type,
             })
             if existing:
@@ -234,12 +251,12 @@ async def create_grants(
                 await existing.save()
                 results.append({
                     "index": i, "status": "updated",
-                    "subject": item.subject, "permission": item.permission,
+                    "subject": subject, "permission": item.permission,
                 })
             else:
                 grant = NamespaceGrant(
                     namespace=prefix,
-                    subject=item.subject,
+                    subject=subject,
                     subject_type=item.subject_type,
                     permission=item.permission,
                     granted_by=identity.identity_string,
@@ -248,7 +265,7 @@ async def create_grants(
                 await grant.create()
                 results.append({
                     "index": i, "status": "created",
-                    "subject": item.subject, "permission": item.permission,
+                    "subject": subject, "permission": item.permission,
                 })
         except Exception as e:
             results.append({
@@ -281,16 +298,20 @@ async def revoke_grants(
 
     results = []
     for i, item in enumerate(items):
+        # CASE-450: match the canonical (bare key name) spelling — see create.
+        subject = item.subject
+        if item.subject_type == "api_key":
+            subject = subject.removeprefix("apikey:")
         grant = await NamespaceGrant.find_one({
             "namespace": prefix,
-            "subject": item.subject,
+            "subject": subject,
             "subject_type": item.subject_type,
         })
         if grant:
             await grant.delete()
-            results.append({"index": i, "status": "revoked", "subject": item.subject})
+            results.append({"index": i, "status": "revoked", "subject": subject})
         else:
-            results.append({"index": i, "status": "not_found", "subject": item.subject})
+            results.append({"index": i, "status": "not_found", "subject": subject})
 
     succeeded = sum(1 for r in results if r["status"] == "revoked")
     return {
@@ -367,6 +388,7 @@ async def check_permission_internal(
     namespace: str,
     user_id: str,
     email: str | None = None,
+    username: str | None = None,
     groups: str | None = None,
     auth_method: AuthMethod = "jwt",
     identity: UserIdentity = Depends(require_api_key),
@@ -397,6 +419,7 @@ async def check_permission_internal(
     synthetic = _build_synthetic_identity(
         user_id=user_id,
         email=email,
+        username=username,
         groups=group_list,
         auth_method=auth_method,
         key_namespaces_header=request.headers.get("X-Key-Namespaces"),
@@ -414,6 +437,7 @@ async def accessible_namespaces_internal(
     request: Request,
     user_id: str,
     email: str | None = None,
+    username: str | None = None,
     groups: str | None = None,
     auth_method: AuthMethod = "jwt",
     identity: UserIdentity = Depends(require_api_key),
@@ -438,6 +462,7 @@ async def accessible_namespaces_internal(
     synthetic = _build_synthetic_identity(
         user_id=user_id,
         email=email,
+        username=username,
         groups=group_list,
         auth_method=auth_method,
         key_namespaces_header=request.headers.get("X-Key-Namespaces"),
