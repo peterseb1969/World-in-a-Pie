@@ -1,14 +1,18 @@
 name: Build & Push Images (x86)
 
 # Manually triggered: Actions tab -> "Build & Push Images (x86)" -> Run workflow.
-# Builds all 8 WIP service images natively on amd64 via scripts/build-release.sh
-# (wip-auth / WIP-Toolkit baked in) and pushes them to GHCR as
+# Builds all 8 WIP service images via scripts/build-release.sh (wip-auth /
+# WIP-Toolkit baked in) and pushes them to GHCR as
 # ghcr.io/<owner>/<service>:<tag>.
 #
 # Tag convention: version tags (e.g. 1.2.0) are write-once — never re-push an
 # existing version, bump instead. An empty tag input falls back to sha-<short>.
-# arm64/multi-arch is a planned second step (build-release.sh's --platforms
-# path is podman-specific; needs podman or buildx support on the runner).
+#
+# Platforms: default is native amd64 (fast path, docker builder). Setting the
+# platforms input to e.g. "linux/amd64,linux/arm64" switches to podman +
+# QEMU emulation — build-release.sh's --platforms path uses podman manifest
+# commands, which plain docker does not support. Emulated arm64 builds are
+# slow (expect 2-3x per emulated arch).
 
 on:
   workflow_dispatch:
@@ -17,6 +21,10 @@ on:
         description: 'Image tag (e.g. 1.2.0). Leave empty for sha-<short-commit>.'
         required: false
         default: ''
+      platforms:
+        description: 'Comma-separated platforms. Default native amd64; e.g. linux/amd64,linux/arm64 for multi-arch (QEMU, slow).'
+        required: false
+        default: 'linux/amd64'
 
 jobs:
   build-and-push:
@@ -37,15 +45,38 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Building with tag: $TAG"
 
-      - name: Login to GHCR
+      - name: Set up QEMU (multi-arch only)
+        if: inputs.platforms != 'linux/amd64'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Ensure podman is available (multi-arch only)
+        if: inputs.platforms != 'linux/amd64'
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | \
-            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          if ! command -v podman >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y podman
+          fi
+          podman --version
 
       - name: Build and push all images
         run: |
-          bash scripts/build-release.sh \
-            --registry "ghcr.io/${{ github.repository_owner }}" \
-            --tag "${{ steps.tag.outputs.tag }}" \
-            --push \
-            --builder docker
+          PLATFORMS="${{ inputs.platforms }}"
+          if [ "$PLATFORMS" = "linux/amd64" ]; then
+            # Native fast path: docker builder, per-image push.
+            echo "${{ secrets.GITHUB_TOKEN }}" | \
+              docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            bash scripts/build-release.sh \
+              --registry "ghcr.io/${{ github.repository_owner }}" \
+              --tag "${{ steps.tag.outputs.tag }}" \
+              --push \
+              --builder docker
+          else
+            # Multi-arch path: podman manifest lists + QEMU emulation.
+            echo "${{ secrets.GITHUB_TOKEN }}" | \
+              podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+            bash scripts/build-release.sh \
+              --registry "ghcr.io/${{ github.repository_owner }}" \
+              --tag "${{ steps.tag.outputs.tag }}" \
+              --platforms "$PLATFORMS" \
+              --push \
+              --builder podman
+          fi
