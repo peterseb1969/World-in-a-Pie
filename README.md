@@ -323,7 +323,7 @@ WIP ships with a **Model Context Protocol (MCP) server** that exposes the full p
 }
 ```
 
-88 tools covering all CRUD operations, plus 5 resources for API conventions, data model documentation, and non-obvious behaviours. Supports stdio, SSE, and HTTP streamable transports — validated on local, SSH proxy, and Kubernetes deployments.
+91 tools covering all CRUD operations, plus 5 resources for API conventions, data model documentation, and non-obvious behaviours. Supports stdio, SSE, and HTTP streamable transports — validated on local, SSH proxy, and Kubernetes deployments.
 
 > [!CAUTION]
 > **Cloud AI + your data: three channels of exposure.**
