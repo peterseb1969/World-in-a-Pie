@@ -159,7 +159,8 @@ if $REFRESH_MODE; then
             echo "       Re-run with --name \"App Name\"."
             exit 1
         fi
-        DEV_NAMESPACE="$(sed -n '/^## Dev Namespace/,/^## /p' "$APP_DIR/CLAUDE.md" | grep -o '\`[a-z0-9][a-z0-9-]*\`' | head -1 | tr -d '\`')"
+        # shellcheck disable=SC2016  # literal backticks: extracting a `code`-formatted namespace from markdown
+        DEV_NAMESPACE="$(sed -n '/^## Dev Namespace/,/^## /p' "$APP_DIR/CLAUDE.md" | grep -o '`[a-z0-9][a-z0-9-]*`' | head -1 | tr -d '`')"
         META_SOURCE="CLAUDE.md backfill"
     else
         echo "Error: --refresh cannot resolve app metadata: no .claude/.app-meta,"
