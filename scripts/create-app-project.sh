@@ -64,6 +64,10 @@ FORCE_CLAUDE_MD=false
 # Create-only provisioning output; must exist (set -u) when --refresh renders
 # the CLAUDE.md heredocs, which branch on it (CASE-418).
 APP_KEY_PLAINTEXT=""
+# Tier-3 (KB) opt-in — CASE-463. Tier 2 (WIP-only) is the default.
+KB_URL=""
+KB_KEY_FILE=""
+ENABLE_KB_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -87,6 +91,18 @@ while [[ $# -gt 0 ]]; do
             FORCE_CLAUDE_MD=true
             shift
             ;;
+        --kb)
+            KB_URL="$2"
+            shift 2
+            ;;
+        --kb-key)
+            KB_KEY_FILE="$2"
+            shift 2
+            ;;
+        --enable-kb)
+            ENABLE_KB_MODE=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 <app-directory> --prefix APP-<X> [--name \"App Name\"] [--preset standard|query]"
             echo "       $0 --refresh <existing-app-directory> [--prefix APP-<X>]"
@@ -103,6 +119,12 @@ while [[ $# -gt 0 ]]; do
             echo "              fresh render to CLAUDE.md.refresh instead (CASE-418)."
             echo "  --force-claude-md   With --refresh: overwrite an existing CLAUDE.md outright"
             echo "              instead of writing CLAUDE.md.refresh. App-authored content is lost."
+            echo "  --kb        KB instance URL — makes the repo tier 3 (KB-backed collaboration,"
+            echo "              CASE-463). Default is tier 2: WIP-only, zero KB plumbing emitted."
+            echo "  --kb-key    Path to the KB API key file (default: ~/.wip-deploy/wip-kb/secrets/api-key)"
+            echo "  --enable-kb Retrofit tier 3 onto an existing repo: writes .claude/kb.json,"
+            echo "              installs the served KB client, drops the /wip-case stub. Idempotent."
+            echo "              Usage: $0 --enable-kb <app-directory> --kb <url> [--kb-key <path>]"
             echo "  -h          Show this help"
             exit 0
             ;;
@@ -126,6 +148,70 @@ fi
 
 # Resolve to absolute path
 APP_DIR="$(cd "$(dirname "$APP_DIR")" 2>/dev/null && pwd)/$(basename "$APP_DIR")" || APP_DIR="$(pwd)/$APP_DIR"
+
+# --- Tier resolution (CASE-463) ---
+# Tier 2 (WIP-only) is the default; tier 3 (KB-backed collaboration) is
+# explicit, declared by .claude/kb.json — written ONLY by --kb / --enable-kb,
+# never by --refresh (the tier is user intent, not generated content; it
+# deliberately does NOT live in settings.json, which is regenerated every
+# run). The config file is the single fact every tier-conditional step tests.
+KB_CONFIG="$APP_DIR/.claude/kb.json"
+TIER3=false
+[ -f "$KB_CONFIG" ] && TIER3=true
+[ -n "$KB_URL" ] && TIER3=true
+
+enable_kb() {
+    # Idempotent tier-3 enable: config + served client + case stub + staging note.
+    if [ -z "$KB_URL" ] && [ -f "$KB_CONFIG" ]; then
+        KB_URL="$(python3 -c "import json;print(json.load(open('$KB_CONFIG'))['kb_app_url'])")"
+        KB_KEY_FILE="$(python3 -c "import json;print(json.load(open('$KB_CONFIG'))['kb_api_key_file'])")"
+    fi
+    if [ -z "$KB_URL" ]; then
+        echo "Error: tier-3 enable needs --kb <url> (no existing .claude/kb.json to reuse)."
+        exit 1
+    fi
+    KB_KEY_FILE="${KB_KEY_FILE:-$HOME/.wip-deploy/wip-kb/secrets/api-key}"
+    mkdir -p "$APP_DIR/.claude/commands"
+    cat > "$KB_CONFIG" << KBEOF
+{
+  "kb_app_url": "$KB_URL",
+  "kb_api_key_file": "$KB_KEY_FILE"
+}
+KBEOF
+    echo "   Wrote: .claude/kb.json (tier 3 — KB at $KB_URL)"
+    # Served-client install: digest-gated, harmless to re-run. Failure is
+    # non-fatal — the cached runner may already exist; recovery is the same
+    # one-liner by hand (case-workflow playbook, "The served KB client").
+    if [ -f "$KB_KEY_FILE" ]; then
+        if curl -fsSk -H "X-API-Key: $(cat "$KB_KEY_FILE")" \
+            "$KB_URL/apps/kb/server-api/kb-client/install" | sh; then
+            echo "   Served KB client installed/refreshed (~/.cache/wip-kb-client/)"
+        else
+            echo "   WARNING: served-client install failed; run the install one-liner"
+            echo "            from docs/playbooks/case-workflow.md when KB is reachable."
+        fi
+    else
+        echo "   WARNING: KB key file not found at $KB_KEY_FILE; skipped client install."
+    fi
+    if cp "$WIP_ROOT/docs/slash-commands/app-builder/wip-case.md" "$APP_DIR/.claude/commands/" 2>/dev/null; then
+        echo "   Dropped: /wip-case stub"
+    fi
+    if [ ! -e "$APP_DIR/yac-discussions" ]; then
+        echo "   NOTE: no yac-discussions/ staging surface. Symlink the shared case"
+        echo "         store (transition) — the write-gateway (CASE-464) will make it optional."
+    fi
+}
+
+if $ENABLE_KB_MODE; then
+    echo "Enabling tier 3 (KB) on existing repo: $APP_DIR"
+    if [ ! -d "$APP_DIR" ]; then
+        echo "Error: $APP_DIR does not exist — --enable-kb retrofits an existing repo."
+        exit 1
+    fi
+    enable_kb
+    echo "Done. Re-run --refresh to regenerate CLAUDE.md with the tier-3 sections."
+    exit 0
+fi
 
 # --- Resolve app metadata (CASE-418) ---
 # Refresh mode NEVER derives metadata from the directory name — that produced
@@ -247,7 +333,22 @@ echo "2. Copying slash commands..."
 # the current wip-* set. Matches setup-backend-agent.sh's refresh behavior.
 rm -f "$APP_DIR/.claude/commands/"*.md 2>/dev/null || true
 cp "$WIP_ROOT/docs/slash-commands/app-builder/"*.md "$APP_DIR/.claude/commands/"
+if ! $TIER3; then
+    # Tier 2: /wip-case is KB-backed collaboration — a tier-3 artifact.
+    # Emitting it in a no-KB repo errors on the missing yac-discussions
+    # symlink (CASE-463; the tier rule: no tier hard-depends on the one above).
+    rm -f "$APP_DIR/.claude/commands/wip-case.md"
+    echo "   Tier 2 (no KB): /wip-case stub omitted"
+fi
 echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
+
+# --- Tier-3 provisioning (CASE-463) ---
+# Create with --kb, or any run on a repo whose .claude/kb.json exists:
+# (re)write the config, refresh the served client (digest-gated), keep the
+# /wip-case stub current. Tier-2 runs skip this entirely.
+if $TIER3; then
+    enable_kb
+fi
 
 # --- Session role marker (CASE-389) ---
 # /wip-setup and /wip-wake read this to mint <PREFIX>-YYYYMMDD-HHMMSS session IDs.
@@ -362,11 +463,11 @@ echo "   Written: .claude/settings.json (committed baseline — regenerated ever
 if [ -d "$WIP_ROOT/docs/playbooks/app-builder" ]; then
     mkdir -p "$APP_DIR/docs/playbooks"
     cp "$WIP_ROOT/docs/playbooks/app-builder/"*.md "$APP_DIR/docs/playbooks/" 2>/dev/null || true
-    # CASE-440 (Defect 2): the cross-YAC case playbook lives at top-level
-    # docs/playbooks/case-workflow.md, NOT under app-builder/, so the copy above
-    # misses it and --refresh never propagated it to clones. Copy it explicitly.
-    # (Interim band-aid; the durable fix is serving it from APP-KB alongside the client.)
-    cp "$WIP_ROOT/docs/playbooks/case-workflow.md" "$APP_DIR/docs/playbooks/" 2>/dev/null || true
+    # The per-clone case-workflow.md copy lane (CASE-440 Defect-2 band-aid) is
+    # retired (CASE-463): the served bundle owns the playbook and the /wip-case
+    # stub reads it from ~/.cache/wip-kb-client/ — version-matched to the
+    # client by construction. Remove stale copies from existing clones.
+    rm -f "$APP_DIR/docs/playbooks/case-workflow.md"
     PLAYBOOK_COUNT=$(find "$APP_DIR/docs/playbooks/" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
     echo "   Copied: $PLAYBOOK_COUNT playbook(s) to docs/playbooks/"
 else
@@ -969,7 +1070,9 @@ Otherwise start with:
 - \`/wip-wake\` — Recover context after compaction or at start of a new session
 - \`/wip-report\` — Capture fireside chat or trigger session summary
 - \`/wip-deploy redeploy|verify\` — Redeploy this YAC's own source to the running dev install (or smoke-only). Subset of BE-YAC's \`/wip-deploy\` — install is BE-YAC's territory (CASE-300)
-- \`/wip-case file|list|read|respond|comment|close|implement\` — Cross-agent case management. **Filing must allocate via the served allocator** — \`bash ~/.cache/wip-kb-client/kb-client.sh case_allocate.py …\` (atomic Registry-synonym claim, race-safe; CASE-425/437 — it replaced the FS \`case-helper.sh claim\` path that CASE-67/301 collisions made mandatory, CASE-306). After writing the body, mirror via \`bash ~/.cache/wip-kb-client/kb-client.sh add-to-kb.py yac-discussions/CASE-NN-...md\` (CASE-307/440). Single-canonical write; not optional. Runner missing → install one-liner in the case-workflow playbook.
+<!--TIER3-->
+- \`/wip-case file|list|read|respond|comment|close|implement\` — Cross-agent case management. **Filing must allocate via the served allocator** — \`bash ~/.cache/wip-kb-client/kb-client.sh case_allocate.py …\` (atomic Registry-synonym claim, race-safe; CASE-425/437 — it replaced the FS \`case-helper.sh claim\` path that CASE-67/301 collisions made mandatory, CASE-306). After writing the body, mirror via \`bash ~/.cache/wip-kb-client/kb-client.sh add-to-kb.py yac-discussions/CASE-NN-...md\` (CASE-307/440). Single-canonical write; not optional. Runner missing → install one-liner in the served case-workflow playbook (\`~/.cache/wip-kb-client/case-workflow.md\`).
+<!--/TIER3-->
 
 **Context management:** When context reaches ~70-80%, the human should tell you to run \`/wip-wake\` or save state (DESIGN.md, memory files) before compaction hits.
 
@@ -1181,6 +1284,16 @@ Discipline test before writing: *"Would future-me, after a compaction, want to k
 
 The four files together — \`session.md\` + \`commits.md\` + \`session-updates.md\` + any \`report-*.md\` — are what \`/wip-wake\` reads to rebuild context.
 EOF
+
+# --- Tier filter (CASE-463) ---
+# <!--TIER3--> ... <!--/TIER3--> regions in the heredocs are KB-collaboration
+# content. Tier 3 keeps the content (markers stripped); tier 2 drops the
+# regions. Markers never reach the emitted file.
+if $TIER3; then
+    sed -i '' '/^<!--TIER3-->$/d;/^<!--\/TIER3-->$/d' "$CLAUDE_TARGET"
+else
+    sed -i '' '/^<!--TIER3-->$/,/^<!--\/TIER3-->$/d' "$CLAUDE_TARGET"
+fi
 echo "   Written: ${CLAUDE_TARGET##*/}"
 if $CLAUDE_PREEXISTS; then
     echo ""

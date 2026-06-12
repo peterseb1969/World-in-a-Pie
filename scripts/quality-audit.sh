@@ -506,8 +506,18 @@ print(f'{undoc} undocumented exports, {stale} stale counts')
 " 2>/dev/null || echo "?")
 ok "Doc drift: $DOC_DRIFT ($(step_time $STEP_START))"
 
-# ─── Step 14: Generate report ────────────────────────────────────────
-info "Step 14: Generating report..."
+# ─── Step 14: Tier-2 purity (CASE-463) ───────────────────────────────
+info "Step 14: Tier-2 purity..."
+STEP_START=$(date +%s)
+
+if "$SCRIPT_DIR/check-tier2-purity.sh" > "$RAW_DIR/tier2-purity.log" 2>&1; then
+    ok "Tier-2 purity: clean ($(step_time $STEP_START))"
+else
+    warn "Tier-2 purity: VIOLATIONS — see $RAW_DIR/tier2-purity.log ($(step_time $STEP_START))"
+fi
+
+# ─── Step 15: Generate report ────────────────────────────────────────
+info "Step 15: Generating report..."
 STEP_START=$(date +%s)
 
 MODE="full"

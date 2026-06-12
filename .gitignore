@@ -74,6 +74,9 @@ k8s/secrets.local.yaml
 CLAUDE.md
 .claude/*
 !.claude/settings.json
+# .claude/kb.json (CASE-463 tier-3 flag) stays ignored DELIBERATELY: this is
+# a public repo — a committed kb.json would bake one operator's KB into every
+# clone. Backend tier is per-clone; app repos commit theirs (private).
 .claude-context-pct
 
 # Local-only docs (deployment-specific, not committed)
