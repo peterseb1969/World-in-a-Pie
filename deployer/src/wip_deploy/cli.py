@@ -1705,6 +1705,7 @@ def _apply_and_persist_mutation(
     apps_list: list,
     target_dir: Path,
     action_label: str,
+    services_scope: list[str] | None = None,
 ) -> None:
     """Shared post-mutation lifecycle: validate → render → apply → persist.
 
@@ -1713,6 +1714,14 @@ def _apply_and_persist_mutation(
     flags. The render+apply path is the same; persistence overwrites
     the deployment-state with the mutated spec so subsequent verbs
     see the latest.
+
+    `services_scope` (CASE-443, compose targets only): scope the apply
+    to the named compose services instead of a full-stack re-up — see
+    `apply_compose`. Ignored on k8s, where `kubectl apply` is already
+    incremental. App verbs pass it; module verbs deliberately do NOT —
+    flipping a module changes OTHER services' rendered env (e.g. NATS_URL
+    appears on document-store when nats arrives via from_component), so
+    the full re-up is semantically required there.
     """
     _validate_or_exit(deployment, components, apps_list)
 
@@ -1730,6 +1739,9 @@ def _apply_and_persist_mutation(
         raise typer.Exit(2) from e
 
     apply_fn = apply_k8s if deployment.spec.target == "k8s" else apply_compose
+    apply_kwargs: dict = {}
+    if deployment.spec.target != "k8s":
+        apply_kwargs["services_scope"] = services_scope
     try:
         result = apply_fn(
             deployment=deployment,
@@ -1737,6 +1749,7 @@ def _apply_and_persist_mutation(
             apps=apps_list,
             tree=tree,
             install_dir=target_dir,
+            **apply_kwargs,
         )
     except ApplyError as e:
         # CASE-455: see the install command — post-mutation failures must
@@ -1865,6 +1878,9 @@ def add_app(
         apps_list,
         target_dir,
         f"Added app {app_name!r} to {resolved_name}",
+        # CASE-443: up only the new app's service; reload proxies whose
+        # config changed; leave everything else genuinely untouched.
+        services_scope=[app_name],
     )
 
 
@@ -1926,6 +1942,11 @@ def remove_app(
         apps_list,
         target_dir,
         f"Removed app {app_name!r} from {resolved_name}",
+        # CASE-443: config-only apply — the container is already removed
+        # above; an empty scope skips `compose up` entirely (a bare
+        # `up -d` would recreate the whole stack) and still reloads the
+        # proxies so the dropped route disappears.
+        services_scope=[],
     )
 
 

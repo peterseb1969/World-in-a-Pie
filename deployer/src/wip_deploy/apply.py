@@ -77,6 +77,16 @@ class ApplyResult:
 # ────────────────────────────────────────────────────────────────────
 
 
+# CASE-443: proxies whose mounted config a scoped mutation may change.
+# Both mount their rendered Caddyfile at /etc/caddy/Caddyfile (ro), so a
+# scoped `up -d <svc>` never recreates them — config changes need an
+# explicit graceful reload.
+_PROXY_CONFIG_FILES: dict[str, str] = {
+    "wip-caddy": "config/caddy/Caddyfile",
+    "wip-router": "config/router/Caddyfile",
+}
+
+
 def apply_compose(
     *,
     deployment: Deployment,
@@ -84,12 +94,30 @@ def apply_compose(
     apps: list[App],
     tree: FileTree,
     install_dir: Path,
+    services_scope: list[str] | None = None,
 ) -> ApplyResult:
     """Materialize the tree and run `podman-compose up -d`.
 
     Honors `deployment.spec.apply` — wait/timeout/on_timeout.
+
+    `services_scope` (CASE-443): None — full-stack up (install semantics,
+    unchanged). A list — incremental mutation: `up -d` only the named
+    compose services (empty list = config-only change, nothing to up),
+    skip the dev-target stale-container wipe, reload any proxy whose
+    mounted Caddyfile content changed, and scope the health wait to the
+    named services. This is what makes `add-app`/`remove-app` honor
+    their "preserves the rest untouched" contract on compose.
     """
     install_dir = Path(install_dir)
+
+    # Snapshot proxy configs before the tree overwrites them, so we can
+    # detect changes and reload only what actually changed.
+    old_proxy_content: dict[str, str | None] = {}
+    if services_scope is not None:
+        for ctr, rel in _PROXY_CONFIG_FILES.items():
+            path = install_dir / rel
+            old_proxy_content[ctr] = path.read_text() if path.is_file() else None
+
     tree.write(install_dir)
 
     compose_cmd = _detect_compose_cmd()
@@ -106,7 +134,9 @@ def apply_compose(
     # left over from an earlier install with a different project name)
     # silently survive `compose up`, leaving the operator with a mix
     # of fresh and stale containers. Wipe them up front.
-    if deployment.spec.target == "dev":
+    # CASE-443: never on a scoped mutation — the wipe would take down
+    # the exact containers the scope promises to leave untouched.
+    if deployment.spec.target == "dev" and services_scope is None:
         _remove_stale_wip_containers()
 
     # CASE-455: everything from `compose up` onward changes the running
@@ -114,10 +144,34 @@ def apply_compose(
     # so the CLI persists the new spec instead of keeping a stale
     # "last-known-good" that no longer describes reality.
     try:
-        _run_up(install_dir, compose_cmd, force_build=force_build)
+        if services_scope is None:
+            _run_up(install_dir, compose_cmd, force_build=force_build)
+        elif services_scope:
+            _run_up(
+                install_dir,
+                compose_cmd,
+                force_build=force_build,
+                services=services_scope,
+            )
+        # else: empty scope — config-only mutation (e.g. remove-app, whose
+        # container was already removed); nothing to bring up. NB: an empty
+        # list must NOT reach _run_up — `up -d` with no service args is the
+        # full-stack up this scoping exists to prevent.
+
+        # CASE-443: a scoped up never recreates the proxies (their service
+        # definitions are unchanged — only mounted files moved). Reload the
+        # ones whose rendered config actually changed.
+        if services_scope is not None:
+            for ctr, rel in _PROXY_CONFIG_FILES.items():
+                path = install_dir / rel
+                new_content = path.read_text() if path.is_file() else None
+                if new_content is not None and new_content != old_proxy_content.get(ctr):
+                    _reload_proxy(ctr)
 
         # Count the services in our rendered file to report a summary.
-        up_count = _count_services(tree)
+        up_count = (
+            len(services_scope) if services_scope is not None else _count_services(tree)
+        )
 
         healthy = True
         if deployment.spec.apply.wait:
@@ -127,6 +181,11 @@ def apply_compose(
                 components=components,
                 apps=apps,
                 deployment=deployment,
+                only=(
+                    {f"wip-{s}" for s in services_scope}
+                    if services_scope is not None
+                    else None
+                ),
             )
 
         if deployment.spec.apply.wait and not healthy:
@@ -370,6 +429,35 @@ def restart_compose_services(
         ) from e
 
 
+def _reload_proxy(container: str) -> None:
+    """Gracefully reload a Caddy proxy whose mounted config changed (CASE-443).
+
+    A scoped `compose up` never recreates the proxies — their service
+    definitions are unchanged, only the mounted Caddyfile content moved.
+    `caddy reload` applies the new config with zero downtime; if the exec
+    fails (stopped container, image without the admin endpoint), fall back
+    to a container restart. Best-effort either way: a route to a brand-new
+    app failing to materialize is visible and recoverable; killing the
+    whole mutation over it is not proportionate.
+    """
+    cli = "podman" if shutil.which("podman") else (
+        "docker" if shutil.which("docker") else None
+    )
+    if cli is None:
+        return
+    result = subprocess.run(
+        [
+            cli, "exec", container,
+            "caddy", "reload",
+            "--config", "/etc/caddy/Caddyfile",
+            "--adapter", "caddyfile",
+        ],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        subprocess.run([cli, "restart", container], capture_output=True)
+
+
 def stop_and_remove_container(name: str) -> None:
     """Force-stop and remove a single `wip-<name>` container.
 
@@ -499,10 +587,18 @@ def _wait_healthy(
     components: list[Component],
     apps: list[App],
     deployment: Deployment,
+    only: set[str] | None = None,
 ) -> bool:
     """Poll `compose ps` until every service with a healthcheck reports
-    healthy, or the timeout elapses."""
+    healthy, or the timeout elapses.
+
+    `only` (CASE-443): restrict the wait to these container names — a
+    scoped mutation must not fail because an unrelated, pre-existing
+    container is unhealthy.
+    """
     expected = _services_with_healthchecks(components, apps, deployment)
+    if only is not None:
+        expected = expected & only
     if not expected:
         return True
 
