@@ -1950,6 +1950,91 @@ def remove_app(
     )
 
 
+@app.command("app-deploy")
+def app_deploy(
+    app_name: Annotated[
+        str,
+        typer.Argument(help="Name of an app already enabled in the install."),
+    ],
+    tag: Annotated[
+        str,
+        typer.Option(
+            "--tag",
+            help=(
+                "Image tag to roll the app to (e.g. sha-abc1234). Must "
+                "already exist on the install's registry — this verb does "
+                "NOT build or push; the app repo's CI does that."
+            ),
+        ),
+    ],
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+) -> None:
+    """Roll ONE enabled app to a new image tag on an existing install.
+
+    The APP-YAC self-deploy last mile (CASE-410): the app's own repo CI
+    builds and pushes the image (sha-tagged, on GHCR); this verb points
+    the install at that tag and recreates only the named app's container
+    (CASE-443 scoped apply — other apps, components, secrets, network
+    untouched; proxies reloaded only if their config changed, which a
+    tag roll doesn't cause).
+
+    The override persists in the install's own state
+    (`spec.images.tag_overrides[<app>]`, highest precedence per
+    CASE-438) — no World-in-a-Pie manifest edit involved. Fails loudly
+    if the tag can't be pulled.
+
+    Examples:
+
+      wip-deploy app-deploy wip-kb --tag sha-6ceff9a --name wip-local
+      wip-deploy app-deploy song --tag sha-b2f664c
+    """
+    resolved_name, target_dir, deployment, components, apps_list = (
+        _load_and_discover_for_mutation(name, install_dir)
+    )
+
+    if not tag.strip():
+        typer.echo("error: --tag must be a non-empty image tag", err=True)
+        raise typer.Exit(2)
+    tag = tag.strip()
+
+    ref = next((a for a in deployment.spec.apps if a.name == app_name), None)
+    if ref is None or not ref.enabled:
+        enabled = sorted(a.name for a in deployment.spec.apps if a.enabled)
+        typer.echo(
+            f"error: app {app_name!r} is not enabled in this install — "
+            f"app-deploy rolls tags for already-enabled apps only "
+            f"(use `add-app` first). Enabled: "
+            f"{', '.join(enabled) or '(none)'}",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    if deployment.spec.images.tag_overrides.get(app_name) == tag:
+        typer.echo(
+            f"⊙ app {app_name!r} is already pinned to tag {tag!r} — no change."
+        )
+        return
+
+    deployment.spec.images.tag_overrides[app_name] = tag
+
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Rolled app {app_name!r} to tag {tag!r} on {resolved_name}",
+        # CASE-443/410: recreate only this app's container.
+        services_scope=[app_name],
+    )
+
+
 @app.command("add-module")
 def add_module(
     module_name: Annotated[
