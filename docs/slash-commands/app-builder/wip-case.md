@@ -2,25 +2,30 @@
 description: Cross-agent case management — file/list/read/respond/comment/close/implement bugs and requests for other YACs.
 ---
 
-Cross-agent case workflow. Subcommands: `file`, `list`, `read`, `respond`, `comment`, `close`, `implement`.
+Cross-agent case workflow (tier 3). Subcommands: `file`, `list`, `read`, `respond`, `comment`, `close`, `implement`.
+
+This stub is deliberately thin (CASE-463 phase B): it carries only the tier
+check, the cache-ensure, and the cheap read paths. Every verb procedure,
+gateway endpoint, and format rule lives in the SERVED playbook
+(`~/.cache/wip-kb-client/case-workflow.md`), which version-matches the
+backend by construction — do not reproduce its content here.
 
 **Pre-flight (do this first, every time):**
 
-```bash
-test -d yac-discussions && echo "ok" || echo "missing"
-```
+1. **Tier check** — `test -f .claude/kb.json`. If missing, tell Peter: "This is a tier-2 repo — cross-agent cases are not enabled. Enable with the scaffold's `--enable-kb` (CASE-463)." Then STOP.
+2. **Cache-ensure** — `test -f ~/.cache/wip-kb-client/kb-client.sh`. If missing, install the served client using the two facts in `.claude/kb.json`:
+   ```bash
+   curl -fsSk -H "X-API-Key: $(cat "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')")" \
+     "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/apps/kb/server-api/kb-client/install" | sh
+   ```
 
-If `missing`, tell Peter: "Cross-agent cases are not enabled for this project. To enable, symlink `yac-discussions/` to the shared case store." Then stop — do not read the playbook.
-
-**`read` short-circuit (do this BEFORE the playbook load when applicable):**
+**`read` short-circuit (no playbook load):**
 
 If `$ARGUMENTS` starts with `read ` followed by a number (optionally with `--brief`):
 
-1. Run case-fetch.py via the served KB client (cached runner, self-refreshing — CASE-437/440/462):
-   ```bash
+1. ```bash
    bash ~/.cache/wip-kb-client/kb-client.sh case-fetch.py case <N>
    ```
-   (REST-canonical retrieval helper, CASE-393. If the runner is missing at `~/.cache/wip-kb-client/`, run the install one-liner from the playbook's "served KB client" section — it is served by the instance itself.)
 2. Present the fetched case to the user.
 3. **If `--brief` was passed:** STOP here (raw read only). Otherwise continue to the assessment (the default).
 4. **Assess the case** and append the structured block below. Actually look — read the files/code the case cites, and check whether sibling `related:` cases are still open — before writing each line. Do NOT assess from the case prose alone.
@@ -38,33 +43,20 @@ If `$ARGUMENTS` starts with `read ` followed by a number (optionally with `--bri
    - **Cross-repo honesty.** If the case targets code not in your repo, say so under `UNCHECKED:` ("targets code not present in this clone") — do not guess its accuracy.
    - **Relevance is cheap — actually check it.** Grep that cited files/paths/APIs still exist; check whether `related:` cases are closed/superseded; note if the code already changed in a way that overtakes the case.
    - **Effort is sized from what you inspected**, not the title. Name the surfaces and any prereq cases/blockers.
-5. Do NOT load the playbook; the read/assess flow does not need it.
 
-Failure handling (pass through, do not fall back to FS glob or to memory):
-- Exit 1 (not found): report "case `<N>` not found" and stop.
-- Exit 2 (transport error): report the underlying error verbatim and stop.
+Failure handling (pass through, do not fall back to FS glob or to memory): exit 1 (not found) → report "case `<N>` not found" and stop; exit 2 (transport error) → report the underlying error verbatim and stop.
 
-**`list` short-circuit (do this BEFORE the playbook load when applicable):**
+**`list` short-circuit (no playbook load):**
 
 If `$ARGUMENTS` starts with `list`:
 
 1. Extract any filter args after `list` (e.g., `list --status open` → `--status open`). Supported flags: `--status open,responded,closed,implemented`, `--filed-by <session-id>`, `--limit N` (default 50, cap 100), `--format table|json`.
-2. Run case-fetch.py via the same served runner as `read`:
-   ```bash
+2. ```bash
    bash ~/.cache/wip-kb-client/kb-client.sh case-fetch.py list <filter args>
    ```
-   (CASE-403; reduced filter set — severity/type/component not available until the kb schema extension lands as a follow-up case.)
-3. Present the output as-is. STOP.
-4. Do NOT load the playbook; the list flow does not need it.
+3. Present the output as-is. STOP. Exit 0 with an empty table is normal (zero matches); exit 2 is transport error — report verbatim and stop.
 
-Failure handling: exit 0 with empty table is normal (zero matches is not a failure); exit 2 is transport error — report verbatim and stop.
+**All write verbs** (`file` / `respond` / `comment` / `close` / `implement`):
 
-**Otherwise** (`file` / `list` / `respond` / `comment` / `close` / `implement`), run the case helper for context:
-
-```bash
-cd yac-discussions && echo "Next case number: $(bash case-helper.sh next)" && echo "--- Recent cases ---" && bash case-helper.sh last 5 && echo "--- Open cases ---" && bash case-helper.sh open
-```
-
-**Session attribution (write verbs only — `file` / `respond` / `comment` / `close` / `implement`):** read your session ID from `.claude/.session-id` — `cat "$CLAUDE_PROJECT_DIR/.claude/.session-id"` (fall back to `$PWD/.claude/.session-id`). Use that exact value for the attribution the playbook writes — `filed_by:` (on `file`), `responded_by:` (on `respond`), and the session ID stamped into `comment` / `implement` / `close` block headers. **Never type the session ID by hand.** If `.claude/.session-id` is missing, run `/wip-setup` (fresh) or `/wip-wake` (continuation) first — a case record must attribute to a real minted session.
-
-Then you MUST Read `~/.cache/wip-kb-client/case-workflow.md` (the served playbook — version-matched to the runner; the per-clone copy lane is retired, CASE-463) before taking any action. Do not guess the file format, subcommand handlers, or status transitions from memory — they live in the playbook. If the file is missing, re-run the tier-3 enable step (`--enable-kb`) or the install one-liner it printed. Use the case number from the helper when filing new cases. Then execute the requested sub-command from `$ARGUMENTS`.
+1. Read your session ID from `.claude/.session-id` (`cat "$CLAUDE_PROJECT_DIR/.claude/.session-id"`, fall back to `$PWD/.claude/.session-id`) — it is the `author`/`filed_by` attribution on every gateway call. **Never type a session ID by hand.** If the file is missing, run `/wip-setup` (fresh) or `/wip-wake` (continuation) first.
+2. You MUST Read `~/.cache/wip-kb-client/case-workflow.md` — the served playbook — and execute the verb's gateway flow from there. Do not guess endpoints, payloads, or status transitions from memory, and do not fall back to retired clients (`add-to-kb.py`, `case_allocate.py`, FS claim helpers); the gateway verbs replaced them (CASE-464).

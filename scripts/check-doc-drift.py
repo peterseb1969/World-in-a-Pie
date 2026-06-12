@@ -43,12 +43,22 @@ EXPORT_STAR_RE = re.compile(r"export\s+\*\s+from\s+['\"]([^'\"]+)['\"]")
 SERVICE_METHOD_RE = re.compile(r"^\s{2}(?:public\s+)?async\s+(\w+)\(", re.MULTILINE)
 COUNT_CLAIM_RE = re.compile(r"\b(\d+)\s+(tools|resources)\b")
 
-# Tooling invocations retired by served-client cutovers (CASE-425/437/440/462).
-# Live invocations go through ~/.cache/wip-kb-client/kb-client.sh.
+# Tooling invocations retired by served-client / gateway cutovers
+# (CASE-425/437/440/462/464). Reads go through the cached runner's
+# case-fetch.py; ALL kb writes are gateway verbs (POST …/server-api/kb/…).
 RETIRED_PATH_PATTERNS = [
     ("FR-YAC/tools/", "kb tools moved to the served bundle (CASE-440/462)"),
     ('realpath yac-discussions)")/tools/', "case-fetch via FR-YAC checkout (CASE-462)"),
     ("case-helper.sh claim", "FS claim retired for served case_allocate (CASE-425/437)"),
+    ("case_allocate.py", "served allocator retired for the gateway POST /cases (CASE-464)"),
+    ("add-to-kb.py", "loader writes retired for the gateway verbs (CASE-464 Rolls A+B)"),
+]
+
+# The repo's copy of the case playbook is a sync of the SERVED one (the
+# bundle is authoritative). When the local cache is present and differs,
+# the repo copy is stale — re-sync it from ~/.cache/wip-kb-client/.
+SYNCED_FROM_SERVED = [
+    ("docs/playbooks/case-workflow.md", Path.home() / ".cache/wip-kb-client/case-workflow.md"),
 ]
 
 
@@ -231,12 +241,23 @@ def main() -> int:
             f"— {hit['why']}"
         )
 
+    # ── Check 4: served-playbook sync freshness (only where the cache exists) ──
+    findings["stale_synced_copies"] = []
+    for rel, served in SYNCED_FROM_SERVED:
+        local = root / rel
+        if not (local.is_file() and served.is_file()):
+            continue  # no cache on this machine (e.g. CI) — nothing to compare
+        if local.read_text() != served.read_text():
+            findings["stale_synced_copies"].append(rel)
+            print(f"  STALE SYNC {rel} differs from served copy {served} — re-sync from the bundle")
+
     if args.output:
         args.output.write_text(json.dumps(findings, indent=2) + "\n")
 
     drift = (
         bool(findings["count_mismatches"])
         or bool(findings["retired_paths"])
+        or bool(findings["stale_synced_copies"])
         or any(findings["undocumented"].values())
     )
     if drift and args.strict:
