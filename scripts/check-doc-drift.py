@@ -18,6 +18,12 @@ Two checks, both grounded in source so they cannot rot:
    generated things drift with ordinary feature work (88 vs 91 vs 94 were
    all simultaneously claimed on 2026-06-12).
 
+3. Retired paths (CASE-462) — docs/ and scripts/ must not instruct callers
+   to invoke retired tooling. A behavioral check, not a consistency check:
+   a stub that matches its source passes every diff while both copies are
+   wrong about the world. Patterns cover the pre-CASE-440 FR-YAC kb tools
+   and the pre-CASE-425 FS case allocator.
+
 Exit 0 in default warn mode; --strict exits 1 on any drift.
 """
 
@@ -36,6 +42,14 @@ EXPORT_DECL_RE = re.compile(
 EXPORT_STAR_RE = re.compile(r"export\s+\*\s+from\s+['\"]([^'\"]+)['\"]")
 SERVICE_METHOD_RE = re.compile(r"^\s{2}(?:public\s+)?async\s+(\w+)\(", re.MULTILINE)
 COUNT_CLAIM_RE = re.compile(r"\b(\d+)\s+(tools|resources)\b")
+
+# Tooling invocations retired by served-client cutovers (CASE-425/437/440/462).
+# Live invocations go through ~/.cache/wip-kb-client/kb-client.sh.
+RETIRED_PATH_PATTERNS = [
+    ("FR-YAC/tools/", "kb tools moved to the served bundle (CASE-440/462)"),
+    ('realpath yac-discussions)")/tools/', "case-fetch via FR-YAC checkout (CASE-462)"),
+    ("case-helper.sh claim", "FS claim retired for served case_allocate (CASE-425/437)"),
+]
 
 
 def resolve_module(from_file: Path, spec: str) -> Path | None:
@@ -128,6 +142,32 @@ def find_count_claims(root: Path) -> list[dict]:
     return claims
 
 
+def find_retired_paths(root: Path) -> list[dict]:
+    hits = []
+    for d in [root / "docs", root / "scripts"]:
+        for f in sorted(d.rglob("*")):
+            if f.suffix not in {".md", ".sh", ".py"} or not f.is_file():
+                continue
+            if f.name == Path(__file__).name:
+                continue
+            for lineno, line in enumerate(f.read_text(errors="ignore").splitlines(), 1):
+                # Retirement notices legitimately name the old path
+                # ("X replaced case-helper.sh claim") — mention, not use.
+                if re.search(r"\bretired?\b|\breplace[ds]?\b", line):
+                    continue
+                for pattern, why in RETIRED_PATH_PATTERNS:
+                    if pattern in line:
+                        hits.append(
+                            {
+                                "file": str(f.relative_to(root)),
+                                "line": lineno,
+                                "pattern": pattern,
+                                "why": why,
+                            }
+                        )
+    return hits
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
@@ -136,7 +176,12 @@ def main() -> int:
     args = ap.parse_args()
     root = args.root
 
-    findings = {"undocumented": {}, "count_mismatches": [], "actual_counts": {}}
+    findings = {
+        "undocumented": {},
+        "count_mismatches": [],
+        "actual_counts": {},
+        "retired_paths": [],
+    }
 
     # ── Check 1: TS lib export completeness ──
     for lib in TS_LIBS:
@@ -178,11 +223,21 @@ def main() -> int:
                 f"{claim['claimed']} {claim['kind']} (actual {actual[claim['kind']]})"
             )
 
+    # ── Check 3: retired tooling paths ──
+    findings["retired_paths"] = find_retired_paths(root)
+    for hit in findings["retired_paths"]:
+        print(
+            f"  RETIRED PATH {hit['file']}:{hit['line']} uses '{hit['pattern']}' "
+            f"— {hit['why']}"
+        )
+
     if args.output:
         args.output.write_text(json.dumps(findings, indent=2) + "\n")
 
-    drift = bool(findings["count_mismatches"]) or any(
-        findings["undocumented"].values()
+    drift = (
+        bool(findings["count_mismatches"])
+        or bool(findings["retired_paths"])
+        or any(findings["undocumented"].values())
     )
     if drift and args.strict:
         return 1

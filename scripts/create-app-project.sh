@@ -969,7 +969,7 @@ Otherwise start with:
 - \`/wip-wake\` — Recover context after compaction or at start of a new session
 - \`/wip-report\` — Capture fireside chat or trigger session summary
 - \`/wip-deploy redeploy|verify\` — Redeploy this YAC's own source to the running dev install (or smoke-only). Subset of BE-YAC's \`/wip-deploy\` — install is BE-YAC's territory (CASE-300)
-- \`/wip-case file|list|read|respond|comment|close|implement\` — Cross-agent case management. **Filing must use \`bash yac-discussions/case-helper.sh claim <slug>\`** (atomic, race-safe; CASE-67 + CASE-301 collisions made this discipline mandatory — see CASE-306). After writing the body, mirror into the \`kb\` namespace via \`python3 ../FR-YAC/tools/add-to-kb.py yac-discussions/CASE-NN-...md\` (CASE-307). The dual-write is the canonical KB population path; not optional.
+- \`/wip-case file|list|read|respond|comment|close|implement\` — Cross-agent case management. **Filing must allocate via the served allocator** — \`bash ~/.cache/wip-kb-client/kb-client.sh case_allocate.py …\` (atomic Registry-synonym claim, race-safe; CASE-425/437 — it replaced the FS \`case-helper.sh claim\` path that CASE-67/301 collisions made mandatory, CASE-306). After writing the body, mirror via \`bash ~/.cache/wip-kb-client/kb-client.sh add-to-kb.py yac-discussions/CASE-NN-...md\` (CASE-307/440). Single-canonical write; not optional. Runner missing → install one-liner in the case-workflow playbook.
 
 **Context management:** When context reaches ~70-80%, the human should tell you to run \`/wip-wake\` or save state (DESIGN.md, memory files) before compaction hits.
 
