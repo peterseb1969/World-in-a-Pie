@@ -1011,6 +1011,18 @@ def install(
             install_dir=target_dir,
         )
     except ApplyError as e:
+        # CASE-455: if the apply already mutated the running deployment
+        # (compose up / kubectl apply ran), the old state is no longer a
+        # truthful last-known-good — persist the spec that was actually
+        # applied so add-app/status/rebuild reason from reality and a
+        # flagless re-install can't silently revert the deployment shape.
+        if getattr(e, "mutated", False):
+            _persist_deployment(deployment, target_dir)
+            typer.echo(
+                "deployer-state persisted: the apply changed the running "
+                "deployment before failing (CASE-455)",
+                err=True,
+            )
         typer.echo(
             typer.style(f"✗ install failed: {e}", fg=typer.colors.RED, bold=True),
             err=True,
@@ -1019,8 +1031,9 @@ def install(
 
     # Persist the Deployment so `wip-deploy status --diff` can re-render
     # against the same spec without needing the install args. Written
-    # post-apply because a failed install leaves the prior deployment.json
-    # in place (last-known-good state for diff).
+    # post-apply; PRE-mutation failures (render/build errors) leave the
+    # prior state in place as last-known-good, while post-mutation
+    # failures persist in the except-branch above (CASE-455).
     _persist_deployment(deployment, target_dir)
 
     typer.echo("")
@@ -1726,6 +1739,15 @@ def _apply_and_persist_mutation(
             install_dir=target_dir,
         )
     except ApplyError as e:
+        # CASE-455: see the install command — post-mutation failures must
+        # persist the applied spec or state diverges from reality.
+        if getattr(e, "mutated", False):
+            _persist_deployment(deployment, target_dir)
+            typer.echo(
+                "deployer-state persisted: the apply changed the running "
+                "deployment before failing (CASE-455)",
+                err=True,
+            )
         typer.echo(
             typer.style(f"✗ {action_label} failed: {e}", fg=typer.colors.RED, bold=True),
             err=True,
