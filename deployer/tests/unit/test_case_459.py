@@ -27,8 +27,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from click.testing import Result
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from wip_deploy.cli import (
     _load_state_repo_root,
