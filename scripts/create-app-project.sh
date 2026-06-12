@@ -1071,7 +1071,7 @@ Otherwise start with:
 - \`/wip-report\` — Capture fireside chat or trigger session summary
 - \`/wip-deploy redeploy|verify\` — Redeploy this YAC's own source to the running dev install (or smoke-only). Subset of BE-YAC's \`/wip-deploy\` — install is BE-YAC's territory (CASE-300)
 <!--TIER3-->
-- \`/wip-case file|list|read|respond|comment|close|implement\` — Cross-agent case management. **Filing must allocate via the served allocator** — \`bash ~/.cache/wip-kb-client/kb-client.sh case_allocate.py …\` (atomic Registry-synonym claim, race-safe; CASE-425/437 — it replaced the FS \`case-helper.sh claim\` path that CASE-67/301 collisions made mandatory, CASE-306). After writing the body, mirror via \`bash ~/.cache/wip-kb-client/kb-client.sh add-to-kb.py yac-discussions/CASE-NN-...md\` (CASE-307/440). Single-canonical write; not optional. Runner missing → install one-liner in the served case-workflow playbook (\`~/.cache/wip-kb-client/case-workflow.md\`).
+- \`/wip-case file|list|read|respond|comment|close|implement\` — Cross-agent case management. **Every case write is ONE gateway call** (CASE-464): \`POST <kb_app_url>/apps/kb/server-api/kb/cases[…]\` per the served playbook (\`~/.cache/wip-kb-client/case-workflow.md\`). The server owns allocation (atomic \`CASE-<n>\` synonym claim — race-safe by construction), the status machine, and edges. Never \`Write\` a case file with a hand-picked number. Flat case files are optional write-staging; there is no mirror step (the loaders were retired by CASE-464 and refuse with a pointer).
 <!--/TIER3-->
 
 **Context management:** When context reaches ~70-80%, the human should tell you to run \`/wip-wake\` or save state (DESIGN.md, memory files) before compaction hits.
