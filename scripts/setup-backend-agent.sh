@@ -57,6 +57,10 @@ TARGET="local"
 HOST=""
 CERT_PATH=""
 REFRESH_MODE=false
+# Tier-3 (KB) opt-in — CASE-463. Tier 2 (WIP-only) is the default.
+KB_URL=""
+KB_KEY_FILE=""
+ENABLE_KB_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -76,9 +80,22 @@ while [[ $# -gt 0 ]]; do
             REFRESH_MODE=true
             shift
             ;;
+        --kb)
+            KB_URL="$2"
+            shift 2
+            ;;
+        --kb-key)
+            KB_KEY_FILE="$2"
+            shift 2
+            ;;
+        --enable-kb)
+            ENABLE_KB_MODE=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [--target local|ssh|http] [--host HOST] [--cert CERT_PATH]"
             echo "       $0 --refresh [--target local|ssh|http] [--host HOST] [--cert CERT_PATH]"
+            echo "       $0 --enable-kb --kb <url> [--kb-key <path>]"
             echo ""
             echo "Set up a WIP repo for a backend coding agent."
             echo ""
@@ -93,6 +110,11 @@ while [[ $# -gt 0 ]]; do
             echo "  --refresh         Re-sync gene-pool surfaces (slash commands, CLAUDE.md, .mcp.json)"
             echo "                    in an existing BE-YAC clone. Preserves venv + settings.local.json;"
             echo "                    regenerates the committed .claude/settings.json baseline (CASE-446)."
+            echo "  --kb URL          KB instance URL — makes this clone tier 3 (KB-backed collaboration,"
+            echo "                    CASE-463). Default is tier 2: WIP-only, no KB plumbing emitted."
+            echo "  --kb-key PATH     KB API key file (default: ~/.wip-deploy/wip-kb/secrets/api-key)"
+            echo "  --enable-kb       Retrofit tier 3 onto this clone: writes .claude/kb.json, installs"
+            echo "                    the served KB client, drops the /wip-case stub. Idempotent."
             echo "  -h, --help        Show this help"
             exit 0
             ;;
@@ -108,6 +130,63 @@ done
 if [[ "$TARGET" == "ssh" || "$TARGET" == "http" ]] && [[ -z "$HOST" ]]; then
     echo "Error: --host is required for --target $TARGET"
     exit 1
+fi
+
+# --- Tier resolution (CASE-463) ---
+# Tier 2 (WIP-only) is the default; tier 3 (KB-backed collaboration) is
+# explicit, declared by .claude/kb.json — written ONLY by --kb / --enable-kb,
+# never by --refresh (the tier is user intent; it deliberately does NOT live
+# in settings.json, which is regenerated every run). The config file is the
+# single fact every tier-conditional step tests.
+KB_CONFIG="$WIP_ROOT/.claude/kb.json"
+TIER3=false
+[ -f "$KB_CONFIG" ] && TIER3=true
+[ -n "$KB_URL" ] && TIER3=true
+
+enable_kb() {
+    # Idempotent tier-3 enable: config + served client + case stub + staging note.
+    if [ -z "$KB_URL" ] && [ -f "$KB_CONFIG" ]; then
+        KB_URL="$(python3 -c "import json;print(json.load(open('$KB_CONFIG'))['kb_app_url'])")"
+        KB_KEY_FILE="$(python3 -c "import json;print(json.load(open('$KB_CONFIG'))['kb_api_key_file'])")"
+    fi
+    if [ -z "$KB_URL" ]; then
+        echo "Error: tier-3 enable needs --kb <url> (no existing .claude/kb.json to reuse)."
+        exit 1
+    fi
+    KB_KEY_FILE="${KB_KEY_FILE:-$HOME/.wip-deploy/wip-kb/secrets/api-key}"
+    mkdir -p "$WIP_ROOT/.claude/commands"
+    cat > "$KB_CONFIG" << KBEOF
+{
+  "kb_app_url": "$KB_URL",
+  "kb_api_key_file": "$KB_KEY_FILE"
+}
+KBEOF
+    echo "   Wrote: .claude/kb.json (tier 3 — KB at $KB_URL)"
+    if [ -f "$KB_KEY_FILE" ]; then
+        if curl -fsSk -H "X-API-Key: $(cat "$KB_KEY_FILE")" \
+            "$KB_URL/apps/kb/server-api/kb-client/install" | sh; then
+            echo "   Served KB client installed/refreshed (~/.cache/wip-kb-client/)"
+        else
+            echo "   WARNING: served-client install failed; run the install one-liner"
+            echo "            from docs/playbooks/case-workflow.md when KB is reachable."
+        fi
+    else
+        echo "   WARNING: KB key file not found at $KB_KEY_FILE; skipped client install."
+    fi
+    if cp "$WIP_ROOT/docs/slash-commands/backend/wip-case.md" "$WIP_ROOT/.claude/commands/" 2>/dev/null; then
+        echo "   Dropped: /wip-case stub"
+    fi
+    if [ ! -e "$WIP_ROOT/yac-discussions" ]; then
+        echo "   NOTE: no yac-discussions/ staging surface. Symlink the shared case"
+        echo "         store (transition) — the write-gateway (CASE-464) will make it optional."
+    fi
+}
+
+if $ENABLE_KB_MODE; then
+    echo "Enabling tier 3 (KB) on this clone: $WIP_ROOT"
+    enable_kb
+    echo "Done. Re-run --refresh to regenerate CLAUDE.md with the tier-3 sections."
+    exit 0
 fi
 
 if $REFRESH_MODE; then
@@ -483,8 +562,10 @@ Shared state is anything externally visible: commits, pushes, renames, shared do
 
 - **Never commit or push without explicit go-ahead.** Local tests you can run do not prove the change works in the human's browser, UI, or over a long-running pipeline. Report what you validated and what you couldn't, then wait. Full rule at `feedback_test_before_push.md`.
 - **Questions are reflection prompts — answer them, do not execute them.** "Did you read X?" is not an instruction to read X and then act. Answer "no, not fully" or "yes" and stop. Action requires explicit user request.
-- **Shared-state changes require surfacing before acting.** Renames in `yac-discussions/`, edits to files in other repos, commits to shared branches — propose the change, wait for the go-ahead, then act.
+- **Shared-state changes require surfacing before acting.** Renames in shared case stores, edits to files in other repos, commits to shared branches — propose the change, wait for the go-ahead, then act.
+<!--TIER3-->
 - **Template sections marked "verbatim" stay empty unless user-provided.** In `/wip-case file`, the *Peter's Take* field is for direct user input only. Paraphrasing conversation context into it is inventing attributed words.
+<!--/TIER3-->
 - **`git status --short` at session start is evidence.** When uncommitted files appear from a prior session, diff them before deciding commit scope. "These look unrelated to my task" based on paths alone produces partial commits that link locally and break CI.
 
 ### 4.4 Meta-principles about the discipline itself
@@ -588,7 +669,9 @@ You will be replaced. This session — every correction Peter makes, every insig
 - Read this file fully
 - Read the latest session report in `/Users/peter/Development/FR-YAC/reports/BE-YAC-*` (match your prefix)
 - Read `git status --short` and diff any uncommitted files
+<!--TIER3-->
 - Read any open cases via `/wip-case list`
+<!--/TIER3-->
 
 Do not say "got it, won't happen again" unless you have written the lesson down. The next agent will make the same mistake unless you leave a trace.
 
@@ -655,7 +738,9 @@ Do not `pip install` new packages into the venv without approval — `.venv` is 
 | `/wip-lesson` | Capture a lesson into structured memory |
 | `/wip-doc-review` | Run a documentation audit on a target file or directory |
 | `/wip-deploy redeploy|install|verify` | Routinized deployment with mandatory pre-flight (CASE-298) |
+<!--TIER3-->
 | `/wip-case file|list|read|respond|implement|close|comment` | Cross-agent case management |
+<!--/TIER3-->
 
 ---
 
@@ -717,6 +802,7 @@ Seconds precision (`HHMMSS`) is deliberate — it eliminates the same-minute col
 
 **Running log.** For session-meaningful work that is **neither a change, an end-state, nor a fireside-grade decision**, append to `session-updates.md` via `/wip-report update-session [terse note]`. Three trigger categories: (1) discoveries without a commit anchor (e.g., "scaffold imports `./wip-api.js` which doesn't exist"), (2) scope-trim decisions mid-session (why you're doing less than originally pitched), (3) block/unblock state and pre-`/compact` snapshots. Append-only — distinct from `session.md` (overwritten by `/wip-report session-end`) and `report-<slug>.md` (per-decision). Each entry is **timestamp + short headline + one paragraph**. Discipline test before writing: *"Would future-me, after a compaction, want to know this in 6 hours?"* If yes, write. If "this is just thinking out loud," don't. The four files together — `session.md` + `commits.md` + `session-updates.md` + any `report-*.md` — are what `/wip-wake` reads to rebuild context. **`/compact` vs `/clear`:** before `/compact` (same agent continues, conversation just summarized) write a running-log entry — Mode 2. Before `/clear` or end-of-day (next agent starts cold from durable artifacts) run `/wip-report session-end` — Mode 3. The two events look similar but have different recovery semantics.
 
+<!--TIER3-->
 ### 12.2 Cross-Agent Cases
 
 When you hit a bug, missing feature, or platform gap another YAC needs to handle: file a case via `/wip-case`.
@@ -742,6 +828,7 @@ The `/wip-case` command lives at `.claude/commands/wip-case.md`. Peter symlinks 
 - *Peter's Take* is for Peter's verbatim input only. Empty unless provided.
 - Renaming or editing existing case files is a shared-state change — propose, wait for approval.
 - Filing hypotheses as findings is fabrication. Label them.
+<!--/TIER3-->
 
 ---
 
@@ -794,7 +881,7 @@ __WIP_ROOT__/
 ├── components/               # Eight services, each with src/ and tests/
 ├── deployer/                 # wip-deploy v2 (the canonical deployer)
 ├── apps/                     # App manifests (not app source — apps live in their own repos)
-├── yac-discussions/          # Cross-agent cases (symlinked)
+├── yac-discussions/          # Cross-agent cases (symlinked; tier 3 only)
 └── WIP-Toolkit/              # CLI toolkit
 ```
 
@@ -816,7 +903,18 @@ CLAUDEEOF
 # Substitute __WIP_ROOT__ placeholders with the actual absolute path
 sed -i.bak "s|__WIP_ROOT__|$WIP_ROOT|g" "$WIP_ROOT/CLAUDE.md" && rm -f "$WIP_ROOT/CLAUDE.md.bak"
 
-echo "   Written: CLAUDE.md"
+# --- Tier filter (CASE-463) ---
+# <!--TIER3--> ... <!--/TIER3--> regions in the heredoc are KB-collaboration
+# content. Tier 3 keeps the content (markers stripped); tier 2 drops the
+# regions. Markers never reach the emitted file.
+if $TIER3; then
+    sed -i.bak '/^<!--TIER3-->$/d;/^<!--\/TIER3-->$/d' "$WIP_ROOT/CLAUDE.md"
+else
+    sed -i.bak '/^<!--TIER3-->$/,/^<!--\/TIER3-->$/d' "$WIP_ROOT/CLAUDE.md"
+fi
+rm -f "$WIP_ROOT/CLAUDE.md.bak"
+
+echo "   Written: CLAUDE.md (tier $($TIER3 && echo 3 || echo 2))"
 
 # --- 4. Copy backend slash commands ---
 
@@ -827,7 +925,20 @@ mkdir -p "$WIP_ROOT/.claude/commands"
 rm -f "$WIP_ROOT/.claude/commands/"*.md 2>/dev/null || true
 
 cp "$WIP_ROOT/docs/slash-commands/backend/"*.md "$WIP_ROOT/.claude/commands/"
+if ! $TIER3; then
+    # Tier 2: /wip-case is KB-backed collaboration — a tier-3 artifact (CASE-463).
+    rm -f "$WIP_ROOT/.claude/commands/wip-case.md"
+    echo "   Tier 2 (no KB): /wip-case stub omitted"
+fi
 echo "   Copied: $(find "$WIP_ROOT/.claude/commands/" -maxdepth 1 -name '*.md' -type f | wc -l | tr -d ' ') commands"
+
+# --- Tier-3 provisioning (CASE-463) ---
+# Create with --kb, or any run on a clone whose .claude/kb.json exists:
+# (re)write the config, refresh the served client (digest-gated), keep the
+# /wip-case stub current. Tier-2 runs skip this entirely.
+if $TIER3; then
+    enable_kb
+fi
 
 # --- Session role marker (CASE-389) ---
 # /wip-setup and /wip-wake read this to mint <ROLE>-YYYYMMDD-HHMMSS session IDs.

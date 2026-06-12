@@ -9,9 +9,9 @@ Priorities live in the **case system**, not a static doc. The old `docs/roadmap.
 Cross-agent cases ARE the backlog. List the open ones:
 
 ```bash
-test -d yac-discussions && \
+test -f .claude/kb.json && \
   bash ~/.cache/wip-kb-client/kb-client.sh case-fetch.py list --status open \
-  || echo "(no yac-discussions/ symlink here — skip to step 2)"
+  || echo "(tier-2 repo, no KB — the backlog view starts at step 2; CASE-463)"
 ```
 
 (REST-canonical via the served KB client — cached runner, self-refreshing; same pattern as `/wip-case`. CASE-393/403/462. If the runner is missing at `~/.cache/wip-kb-client/`, run the install one-liner from the case-workflow playbook's "served KB client" section.) Each row carries the case number, status, and — where populated — severity / type / component / app from the CASE_RECORD structured fields.
