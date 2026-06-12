@@ -18,6 +18,29 @@ By the time you are reading this, `yac-discussions/` is known to exist. Do not r
 
 You must have a session ID (see YAC Reporting section in CLAUDE.md).
 
+## The served KB client (one-time setup, self-refreshing)
+
+All kb reads/writes in this playbook go through the **served KB client** — fetched
+from the running KB instance itself (CASE-437/440), version-matched, with **zero
+FR-YAC dependency**. The only inputs are the instance URL and your API key:
+
+```bash
+curl -fsSk -H "X-API-Key: $(cat ~/.wip-deploy/wip-kb/secrets/api-key)" \
+  https://wip-kb.local/apps/kb/server-api/kb-client/install | sh
+```
+
+This materializes the bundle (loaders + the `kb-client.sh` runner + this playbook)
+into `~/.cache/wip-kb-client/`. Run it once per machine; every subsequent
+invocation of the runner **self-refreshes when the instance's bundle digest
+changes**, so you never re-install by hand:
+
+```bash
+bash ~/.cache/wip-kb-client/kb-client.sh <script.py> [args...]
+```
+
+If `~/.cache/wip-kb-client/kb-client.sh` is missing, run the install one-liner —
+that is the whole recovery procedure.
+
 ## Filename Convention
 
 Case files are named: `CASE-<NN>-<status>-<slug>.md`
@@ -63,16 +86,16 @@ Infer a short slug from context: `unknown-fields`, `relative-baseurl`, `template
 ### 3. Allocate a case number (server-side, atomic)
 
 ```bash
-bash ../FR-YAC/tools/kb-client.sh case_allocate.py \
+bash ~/.cache/wip-kb-client/kb-client.sh case_allocate.py \
   --title "<short case title>" --filed-by "<your session ID>" \
   --type <bug|question|request|platform-gap> --severity <blocks-me|annoying|fyi> \
   --component <document-store|registry|scaffold|mcp-server|wip-client|wip-react|wip-proxy|wip-auth|reporting-sync|other>
 # Prints: CASE-<n> <document_id>
 ```
 
-`kb-client.sh` fetches the version-matched KB client from the running instance (the loaders are APP-KB-owned and served — CASE-437) and runs the allocator. `case_allocate` reserves `<n>` by **atomically claiming the `CASE-<n>` synonym** and creating the CASE_RECORD (`data.case_number=<n>`, `data.status=open`). On `synonym_conflict` it advances `<n>+1` and retries — concurrent filers get distinct numbers by construction. Note the printed `<n>`; it is the assigned case number.
+The runner re-fetches the version-matched KB client from the running instance whenever the served bundle changes (the loaders are APP-KB-owned and served — CASE-437/440), then runs the allocator. `case_allocate` reserves `<n>` by **atomically claiming the `CASE-<n>` synonym** and creating the CASE_RECORD (`data.case_number=<n>`, `data.status=open`). On `synonym_conflict` it advances `<n>+1` and retries — concurrent filers get distinct numbers by construction. Note the printed `<n>`; it is the assigned case number.
 
-(Path to `kb-client.sh` is from your YAC's repo root; the wrapper itself is the one client-side bootstrap — it fetches the served client. Adjust the path if your repo layout differs.)
+(If the runner is missing at `~/.cache/wip-kb-client/`, run the install one-liner from "The served KB client" section above — it is served by the instance itself; no repo checkout is involved.)
 
 ### 4. Write the case file (the FS record)
 
@@ -113,7 +136,7 @@ Be specific enough that a BE-YAC with no knowledge of your app can understand.>
 `case_allocate` already created the record (step 3). Now push the full file body into it — `add-to-kb` **resolves the `CASE-<n>` synonym to the document_id and updates in place** (v2 resolve-then-update; it does NOT create — the doc already exists):
 
 ```bash
-bash ../FR-YAC/tools/kb-client.sh add-to-kb.py yac-discussions/CASE-<n>-open-<slug>.md
+bash ~/.cache/wip-kb-client/kb-client.sh add-to-kb.py yac-discussions/CASE-<n>-open-<slug>.md
 ```
 
 The served client:
@@ -236,7 +259,7 @@ mv yac-discussions/CASE-<NN>-open-<slug>.md yac-discussions/CASE-<NN>-responded-
 Re-run the loader to refresh the kb record body (idempotent — updates the existing CASE_RECORD via JSON Merge Patch, no duplicates):
 
 ```bash
-bash ../FR-YAC/tools/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-responded-<slug>.md
+bash ~/.cache/wip-kb-client/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-responded-<slug>.md
 ```
 
 This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.
@@ -278,7 +301,7 @@ If the user provided text with the command (e.g., `/case comment 3 This is urgen
 Re-run the loader to refresh the kb record body (idempotent — comments don't change status, but the appended body must propagate to kb):
 
 ```bash
-bash ../FR-YAC/tools/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-*.md
+bash ~/.cache/wip-kb-client/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-*.md
 ```
 
 This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.
@@ -316,7 +339,7 @@ Rename: `CASE-<NN>-<old-status>-<slug>.md` → `CASE-<NN>-closed-<slug>.md`
 Re-run the loader to refresh the kb record body and status:
 
 ```bash
-bash ../FR-YAC/tools/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-closed-<slug>.md
+bash ~/.cache/wip-kb-client/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-closed-<slug>.md
 ```
 
 This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.
@@ -384,7 +407,7 @@ Rename: `CASE-<NN>-<old-status>-<slug>.md` → `CASE-<NN>-implemented-<slug>.md`
 Re-run the loader to refresh the kb record body and status:
 
 ```bash
-bash ../FR-YAC/tools/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-implemented-<slug>.md
+bash ~/.cache/wip-kb-client/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-implemented-<slug>.md
 ```
 
 This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.

@@ -53,6 +53,20 @@ Two halves:
    or, as part of a full install, one more `--app-source <name>=<path>`
    flag. Either way the image builds from *your checkout's* `Dockerfile.dev`.
 
+**Rolling a production install to your new image (CASE-410):** once your
+repo's CI has pushed a sha-tagged image, one verb points the install at it:
+
+```bash
+wip-deploy app-deploy <name> --tag sha-<short> --name <install>
+```
+
+This works from any directory — including your own repo — on installs made
+after CASE-459 (the deployer reads the WIP checkout location from the
+install's own state). On an older install you'll get "discovery found no
+components/apps under <path>": run it from the World-in-a-Pie root, pass
+`--repo-root`, or set `WIP_REPO_ROOT` — the error is about *where you ran
+it from*, not your app or the install.
+
 ## 3. What the dev render gives you
 
 Observed from a live render (wip-song, 2026-06-12):
