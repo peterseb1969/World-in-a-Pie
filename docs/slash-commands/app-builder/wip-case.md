@@ -16,11 +16,11 @@ If `missing`, tell Peter: "Cross-agent cases are not enabled for this project. T
 
 If `$ARGUMENTS` starts with `read ` followed by a number (optionally with `--brief`):
 
-1. Resolve the FR-YAC root via the `yac-discussions` symlink, then run case-fetch.py:
+1. Run case-fetch.py via the served KB client (cached runner, self-refreshing — CASE-437/440/462):
    ```bash
-   python3 "$(dirname "$(realpath yac-discussions)")/tools/case-fetch.py" case <N>
+   bash ~/.cache/wip-kb-client/kb-client.sh case-fetch.py case <N>
    ```
-   (REST-canonical retrieval helper, CASE-393. The `realpath` derivation works whether `yac-discussions` was symlinked relative (`../FR-YAC/yac-discussions`) or absolute.)
+   (REST-canonical retrieval helper, CASE-393. If the runner is missing at `~/.cache/wip-kb-client/`, run the install one-liner from the playbook's "served KB client" section — it is served by the instance itself.)
 2. Present the fetched case to the user.
 3. **If `--brief` was passed:** STOP here (raw read only). Otherwise continue to the assessment (the default).
 4. **Assess the case** and append the structured block below. Actually look — read the files/code the case cites, and check whether sibling `related:` cases are still open — before writing each line. Do NOT assess from the case prose alone.
@@ -49,9 +49,9 @@ Failure handling (pass through, do not fall back to FS glob or to memory):
 If `$ARGUMENTS` starts with `list`:
 
 1. Extract any filter args after `list` (e.g., `list --status open` → `--status open`). Supported flags: `--status open,responded,closed,implemented`, `--filed-by <session-id>`, `--limit N` (default 50, cap 100), `--format table|json`.
-2. Run case-fetch.py via the same `realpath` derivation as `read`:
+2. Run case-fetch.py via the same served runner as `read`:
    ```bash
-   python3 "$(dirname "$(realpath yac-discussions)")/tools/case-fetch.py" list <filter args>
+   bash ~/.cache/wip-kb-client/kb-client.sh case-fetch.py list <filter args>
    ```
    (CASE-403; reduced filter set — severity/type/component not available until the kb schema extension lands as a follow-up case.)
 3. Present the output as-is. STOP.
