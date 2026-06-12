@@ -46,7 +46,23 @@ from wip_deploy.spec.component import Component
 
 
 class ApplyError(Exception):
-    """Anything that went wrong during apply."""
+    """Anything that went wrong during apply.
+
+    `mutated` is True when the failure happened AFTER the apply started
+    changing the running deployment (compose up / kubectl apply began) —
+    from that point on, the previously persisted deployer-state no longer
+    describes reality, and callers must persist the new spec even though
+    the apply failed (CASE-455: a health-timeout after a full container
+    recreate left state saying `compose` while the running stack was
+    `dev`; every state-reading verb then reasoned from fiction).
+    Pre-mutation failures (render errors, missing binaries, build
+    failures) keep `mutated=False` — there the old state is still the
+    truthful last-known-good.
+    """
+
+    def __init__(self, message: str, *, mutated: bool = False):
+        super().__init__(message)
+        self.mutated = mutated
 
 
 @dataclass
@@ -93,28 +109,36 @@ def apply_compose(
     if deployment.spec.target == "dev":
         _remove_stale_wip_containers()
 
-    _run_up(install_dir, compose_cmd, force_build=force_build)
+    # CASE-455: everything from `compose up` onward changes the running
+    # deployment — any ApplyError beyond this point is stamped mutated=True
+    # so the CLI persists the new spec instead of keeping a stale
+    # "last-known-good" that no longer describes reality.
+    try:
+        _run_up(install_dir, compose_cmd, force_build=force_build)
 
-    # Count the services in our rendered file to report a summary.
-    up_count = _count_services(tree)
+        # Count the services in our rendered file to report a summary.
+        up_count = _count_services(tree)
 
-    healthy = True
-    if deployment.spec.apply.wait:
-        healthy = _wait_healthy(
-            install_dir=install_dir,
-            compose_cmd=compose_cmd,
-            components=components,
-            apps=apps,
-            deployment=deployment,
-        )
+        healthy = True
+        if deployment.spec.apply.wait:
+            healthy = _wait_healthy(
+                install_dir=install_dir,
+                compose_cmd=compose_cmd,
+                components=components,
+                apps=apps,
+                deployment=deployment,
+            )
 
-    if deployment.spec.apply.wait and not healthy:
-        behavior = deployment.spec.apply.on_timeout
-        if behavior == "fail":
-            raise ApplyError("apply timed out: not all services became healthy")
-        # warn/continue: caller decides what to print.
+        if deployment.spec.apply.wait and not healthy:
+            behavior = deployment.spec.apply.on_timeout
+            if behavior == "fail":
+                raise ApplyError("apply timed out: not all services became healthy")
+            # warn/continue: caller decides what to print.
 
-    _run_post_install(install_dir, compose_cmd, components, apps, deployment)
+        _run_post_install(install_dir, compose_cmd, components, apps, deployment)
+    except ApplyError as e:
+        e.mutated = True
+        raise
 
     return ApplyResult(install_dir=install_dir, services_up=up_count, healthy=healthy)
 
@@ -786,26 +810,32 @@ def apply_k8s(
             hostname=deployment.spec.network.hostname,
         )
 
-    _kubectl_apply_tree(install_dir, ns)
+    # CASE-455: see apply_compose — post-`kubectl apply` failures are
+    # post-mutation; stamp them so the CLI persists the applied spec.
+    try:
+        _kubectl_apply_tree(install_dir, ns)
 
-    up_count = _count_k8s_workloads(tree)
+        up_count = _count_k8s_workloads(tree)
 
-    healthy = True
-    if deployment.spec.apply.wait:
-        healthy = _wait_k8s_rollout(
-            install_dir=install_dir,
-            ns=ns,
-            components=components,
-            apps=apps,
-            deployment=deployment,
-        )
+        healthy = True
+        if deployment.spec.apply.wait:
+            healthy = _wait_k8s_rollout(
+                install_dir=install_dir,
+                ns=ns,
+                components=components,
+                apps=apps,
+                deployment=deployment,
+            )
 
-    if deployment.spec.apply.wait and not healthy:
-        behavior = deployment.spec.apply.on_timeout
-        if behavior == "fail":
-            raise ApplyError("apply timed out: not all workloads became ready")
+        if deployment.spec.apply.wait and not healthy:
+            behavior = deployment.spec.apply.on_timeout
+            if behavior == "fail":
+                raise ApplyError("apply timed out: not all workloads became ready")
 
-    _run_post_install_k8s(ns, components, apps, deployment)
+        _run_post_install_k8s(ns, components, apps, deployment)
+    except ApplyError as e:
+        e.mutated = True
+        raise
 
     return ApplyResult(install_dir=install_dir, services_up=up_count, healthy=healthy)
 
