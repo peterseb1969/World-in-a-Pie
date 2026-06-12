@@ -39,12 +39,103 @@ from .registry_client import RegistryError, get_registry_client
 logger = logging.getLogger(__name__)
 
 
+class EntityExistsError(ValueError):
+    """Duplicate create: the value already exists in scope (CASE-465).
+
+    Subclasses ValueError so every existing handler keeps working (the
+    import/export 409 mapping string-matches "already exists" in the
+    message). Carries the existing entity's ID and the config diff so
+    routes can implement `on_conflict` semantics without string-matching.
+    `changed` empty means the request is an identical re-create.
+    """
+
+    def __init__(self, message: str, existing_id: str, changed: list[str]) -> None:
+        super().__init__(message)
+        self.existing_id = existing_id
+        self.changed = changed
+
+
+def conflict_result(
+    index: int,
+    exc: EntityExistsError,
+    on_conflict: str,
+    value: str | None = None,
+) -> BulkResultItem:
+    """Map a duplicate-create onto a bulk result item per `on_conflict`.
+
+    CASE-465 idempotent bootstrap: 'validate' makes an identical re-create
+    a no-op ('unchanged' + existing id) and a config-divergent re-create a
+    loud, machine-readable error; 'error' (the default) preserves the
+    historical failure but stamps error_code so callers can branch on the
+    code instead of the message string.
+    """
+    if on_conflict == "validate":
+        if not exc.changed:
+            return BulkResultItem(
+                index=index, status="unchanged", id=exc.existing_id, value=value
+            )
+        return BulkResultItem(
+            index=index,
+            status="error",
+            id=exc.existing_id,
+            value=value,
+            error=f"{exc} — existing config differs: {', '.join(exc.changed)}",
+            error_code="incompatible_config",
+            details={"changed": exc.changed},
+        )
+    return BulkResultItem(
+        index=index,
+        status="error",
+        value=value,
+        error=str(exc),
+        error_code="already_exists",
+    )
+
+
 class TerminologyService:
     """Service for managing terminologies and terms."""
 
     # =========================================================================
     # TERMINOLOGY OPERATIONS
     # =========================================================================
+
+    @staticmethod
+    def _terminology_config_diff(
+        existing: Terminology, request: CreateTerminologyRequest
+    ) -> list[str]:
+        """Field names where the existing terminology differs from a
+        creation request — empty list means an identical re-create
+        (CASE-465 on_conflict=validate)."""
+        # mutable implies extensible at create time — compare the
+        # effective value, mirroring create_terminology.
+        effective_extensible = request.extensible or request.mutable
+        checks = {
+            "label": existing.label != request.label,
+            "description": (existing.description or None) != (request.description or None),
+            "case_sensitive": existing.case_sensitive != request.case_sensitive,
+            "allow_multiple": existing.allow_multiple != request.allow_multiple,
+            "extensible": existing.extensible != effective_extensible,
+            "mutable": existing.mutable != request.mutable,
+            "metadata": existing.metadata != (request.metadata or TerminologyMetadata()),
+        }
+        return [name for name, differs in checks.items() if differs]
+
+    @staticmethod
+    def _term_config_diff(existing: Term, request: CreateTermRequest) -> list[str]:
+        """Field names where the existing term differs from a creation
+        request — empty list means an identical re-create (CASE-465)."""
+        # Label defaults to value at create time — compare the effective value.
+        effective_label = request.label or request.value
+        checks = {
+            "label": existing.label != effective_label,
+            "aliases": existing.aliases != request.aliases,
+            "description": (existing.description or None) != (request.description or None),
+            "sort_order": existing.sort_order != request.sort_order,
+            "parent_term_id": existing.parent_term_id != request.parent_term_id,
+            "translations": existing.translations != request.translations,
+            "metadata": existing.metadata != request.metadata,
+        }
+        return [name for name, differs in checks.items() if differs]
 
     @staticmethod
     async def create_terminology(
@@ -71,7 +162,11 @@ class TerminologyService:
         # Check if value already exists within namespace
         existing = await Terminology.find_one({"namespace": namespace, "value": request.value})
         if existing:
-            raise ValueError(f"Terminology with value '{request.value}' already exists in namespace '{namespace}'")
+            raise EntityExistsError(
+                f"Terminology with value '{request.value}' already exists in namespace '{namespace}'",
+                existing_id=existing.terminology_id,
+                changed=TerminologyService._terminology_config_diff(existing, request),
+            )
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -559,8 +654,10 @@ class TerminologyService:
             "value": request.value
         })
         if existing:
-            raise ValueError(
-                f"Term with value '{request.value}' already exists in terminology"
+            raise EntityExistsError(
+                f"Term with value '{request.value}' already exists in terminology",
+                existing_id=existing.term_id,
+                changed=TerminologyService._term_config_diff(existing, request),
             )
 
         # Get authenticated identity (not client-provided)
@@ -728,6 +825,7 @@ class TerminologyService:
                         status="error",
                         value=term_req.value,
                         error=f"Term with value '{term_req.value}' already exists",
+                        error_code="already_exists",
                     )
                 continue
 

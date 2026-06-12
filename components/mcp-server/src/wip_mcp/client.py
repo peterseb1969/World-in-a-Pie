@@ -536,18 +536,23 @@ class WipClient:
         )
 
     async def create_terminology(
-        self, value: str, label: str, namespace: str | None = None, **kwargs
+        self, value: str, label: str, namespace: str | None = None,
+        on_conflict: str | None = None, **kwargs
     ) -> dict:
         namespace = self._ns(namespace)
         payload = {"value": value, "label": label, "namespace": namespace, **kwargs}
         resp = await self._post(
-            self.def_store_url, "/api/def-store/terminologies", json=[payload]
+            self.def_store_url, "/api/def-store/terminologies", json=[payload],
+            on_conflict=on_conflict,
         )
         return self._unwrap_single(resp)
 
-    async def create_terminologies(self, items: list[dict]) -> dict:
+    async def create_terminologies(
+        self, items: list[dict], on_conflict: str | None = None
+    ) -> dict:
         resp = await self._post(
-            self.def_store_url, "/api/def-store/terminologies", json=items
+            self.def_store_url, "/api/def-store/terminologies", json=items,
+            on_conflict=on_conflict,
         )
         return self._unwrap_bulk(resp)
 
@@ -611,7 +616,8 @@ class WipClient:
         )
 
     async def create_terms(
-        self, terminology_id: str, terms: list[dict], batch_size: int | None = None
+        self, terminology_id: str, terms: list[dict], batch_size: int | None = None,
+        on_conflict: str | None = None,
     ) -> dict:
         # Accept UUID or value/synonym — the docstring promises both.
         # The path-segment endpoint at the def-store side only matches
@@ -631,6 +637,7 @@ class WipClient:
             f"/api/def-store/terminologies/{terminology_id}/terms",
             json=terms,
             batch_size=batch_size,
+            on_conflict=on_conflict,
         )
         return self._unwrap_bulk(resp)
 

@@ -280,6 +280,19 @@ In `validate` mode the per-item result reflects the verdict:
 
 Compatibility is intentionally narrow: **only "added optional field" qualifies as compatible**. Any change to an existing field (label, description, validation, type, mandatory flag), removed field, added required field, or `identity_fields` change is incompatible. The structured diff lets the bootstrap script show the human a useful error.
 
+### Terminology / term create with conflict validation (CASE-465)
+
+`POST /api/def-store/terminologies` and the **single-item** path of `POST /api/def-store/terminologies/{id}/terms` accept the same `on_conflict` query parameter (also exposed on the `create_terminology`, `create_terminologies_bulk`, and `create_terms` MCP tools):
+
+| Mode | Behavior on duplicate value |
+|------|------------------------------|
+| `error` (default) | Per-item `status: "error"` with `error_code: "already_exists"`. Message text unchanged — backwards compatible, but callers can now branch on the code. |
+| `validate` | Identical config → `unchanged` (returns the existing ID); any config difference → `error` with `error_code: "incompatible_config"`, `details: {changed: [field names]}`. |
+
+There is deliberately no "compatible update" tier for terminologies — terminology config changes (e.g. `mutable`) have their own rules and a bootstrap should never absorb config drift silently. Compared fields: terminologies — `label`, `description`, `case_sensitive`, `allow_multiple`, `extensible` (effective: `extensible or mutable`), `mutable`, `metadata`; terms — `label` (effective: defaults to `value`), `aliases`, `description`, `sort_order`, `parent_term_id`, `translations`, `metadata`.
+
+Bulk term creates (2+ items) skip duplicates regardless of `on_conflict` (`status: "skipped"`, `error_code: "already_exists"` only on the import-export error path), and duplicate term relations are skipped (an inactive duplicate is reactivated). `unchanged` and `skipped` both count toward `succeeded` — a re-run of a bootstrap that uses `on_conflict=validate` reports success end to end.
+
 ```typescript
 import { WipBulkItemError } from '@wip/client'
 

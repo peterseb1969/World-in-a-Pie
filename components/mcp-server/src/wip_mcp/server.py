@@ -108,9 +108,11 @@ When to PATCH vs create_document:
   may change (create_document is still an upsert — same identity = new version).
 
 ## Idempotent Bootstrap (apps installing themselves)
-Two endpoints exist so an app can provision its namespace and templates against
-a fresh WIP instance and re-run the same script repeatedly without ugly
-GET → 404 → POST dances or silent schema drift.
+These endpoints exist so an app can provision its namespace, templates, and
+vocabularies against a fresh WIP instance and re-run the same script repeatedly
+without ugly GET → 404 → POST dances or silent schema drift. A bootstrap that
+died mid-run (network blip, seed bug) is recovered by simply running it again
+(CASE-465).
 
 ### Namespace upsert: PUT /api/registry/namespaces/{prefix}
 PUT is an upsert — creates the namespace on missing using platform defaults
@@ -150,6 +152,21 @@ comparison site — the diff checker will not flag a value↔UUID mismatch as
 `modified_existing`. This is the universal rule (CASE-406, Vision.md
 §"References Must Resolve"): synonyms work identically to canonical IDs
 everywhere the platform compares references.
+
+### Terminology / term create with conflict validation (CASE-465)
+POST /terminologies and single-item POST /terminologies/{id}/terms accept the
+same on_conflict parameter (also exposed on the create_terminology,
+create_terminologies_bulk, and create_terms MCP tools):
+- on_conflict='error' (default): duplicates return per-item status='error'
+  with error_code='already_exists'.
+- on_conflict='validate':
+  * identical config → status='unchanged' (returns the existing ID)
+  * different config → status='error', error_code='incompatible_config',
+    details={changed: [field names]}
+No 'compatible update' tier — any config difference is loud, matching the
+template philosophy. Bulk term creates (2+ items) skip duplicates regardless
+(status='skipped'), and duplicate term relations are skipped (an inactive
+duplicate is reactivated). 'unchanged'/'skipped' count as succeeded.
 
 ## Querying Documents
 Two primary query tools:
@@ -1299,6 +1316,7 @@ async def create_terminology(
     namespace: str | None = None,
     description: str | None = None,
     mutable: bool = False,
+    on_conflict: str = "error",
 ) -> str:
     """Create a terminology (controlled vocabulary).
 
@@ -1308,6 +1326,10 @@ async def create_terminology(
         namespace: Namespace to create in. Uses WIP_MCP_DEFAULT_NAMESPACE if omitted.
         description: Optional description of what this terminology contains.
         mutable: If true, terms can be hard-deleted (not just deprecated). Implies extensible=true.
+        on_conflict: 'error' (default) fails on an existing value with
+            error_code='already_exists'; 'validate' makes the call idempotent —
+            identical re-create returns status='unchanged' with the existing ID,
+            config drift returns error_code='incompatible_config' (CASE-465).
     """
     try:
         client = get_client()
@@ -1318,7 +1340,8 @@ async def create_terminology(
         if mutable:
             kwargs["mutable"] = True
         data = await client.create_terminology(
-            value=value, label=label, namespace=namespace, **kwargs
+            value=value, label=label, namespace=namespace,
+            on_conflict=on_conflict, **kwargs
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1326,12 +1349,19 @@ async def create_terminology(
 
 
 @mcp.tool()
-async def create_terminologies_bulk(items: list[dict], namespace: str | None = None) -> str:
+async def create_terminologies_bulk(
+    items: list[dict], namespace: str | None = None, on_conflict: str = "error"
+) -> str:
     """Create multiple terminologies at once.
 
     Args:
         items: List of {value, label, description?} objects.
         namespace: Namespace for all items. Omit to use per-item namespace or server default.
+        on_conflict: 'error' (default) fails existing values with
+            error_code='already_exists'; 'validate' makes re-runs idempotent —
+            identical items come back status='unchanged', config drift comes
+            back error_code='incompatible_config' (CASE-465). Check per-item
+            results[i].status either way.
     """
     try:
         client = get_client()
@@ -1339,7 +1369,7 @@ async def create_terminologies_bulk(items: list[dict], namespace: str | None = N
         if ns:
             for item in items:
                 item.setdefault("namespace", ns)
-        data = await client.create_terminologies(items)
+        data = await client.create_terminologies(items, on_conflict=on_conflict)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1475,6 +1505,7 @@ async def get_term(term_id: str, namespace: str | None = None) -> str:
 async def create_terms(
     terminology_id: str,
     terms: list[dict],
+    on_conflict: str = "error",
 ) -> str:
     """Create terms in a terminology.
 
@@ -1482,6 +1513,12 @@ async def create_terms(
         terminology_id: Terminology ID (UUID) or value (e.g., 'COUNTRY').
         terms: List of term objects. Each must have 'value' and 'label'.
             Optional: 'description', 'aliases' (list of strings).
+        on_conflict: Single-term calls only: 'error' (default) fails on an
+            existing value with error_code='already_exists'; 'validate' makes
+            the call idempotent — identical re-create returns
+            status='unchanged', config drift returns
+            error_code='incompatible_config' (CASE-465). Multi-term calls
+            skip duplicates regardless (status='skipped').
 
     Example:
         create_terms("T-xxx", [
@@ -1491,7 +1528,7 @@ async def create_terms(
     """
     try:
         data = await get_client().create_terms(
-            terminology_id=terminology_id, terms=terms
+            terminology_id=terminology_id, terms=terms, on_conflict=on_conflict
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
