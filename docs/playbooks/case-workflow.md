@@ -41,6 +41,20 @@ bash ~/.cache/wip-kb-client/kb-client.sh <script.py> [args...]
 If `~/.cache/wip-kb-client/kb-client.sh` is missing, run the install one-liner —
 that is the whole recovery procedure.
 
+**Case WRITES go through the gateway verbs (CASE-464), not the runner.** Set
+once per shell:
+
+```bash
+BASE="https://wip-kb.local/apps/kb/server-api/kb"
+KEY="$(cat ~/.wip-deploy/wip-kb/secrets/api-key)"   # or your YAC's runtime key
+```
+
+The verbs are server-side domain logic: allocation, the `CASE-<n>` synonym
+claim, REFERENCES edges, the status machine, and race-safe section appends
+(`if_match`) all live in the gateway. Reads stay on the runner's
+`case-fetch.py` for now (the read API `GET $BASE/cases…` also works;
+`?since=` under-reports on the cluster until CASE-466 closes).
+
 ## Filename Convention
 
 Case files are named: `CASE-<NN>-<status>-<slug>.md`
@@ -57,7 +71,7 @@ CASE-03-closed-relative-baseurl.md
 CASE-04-implemented-doc-faq.md
 ```
 
-**Status changes require renaming the file.** When updating status in the frontmatter, also rename the file to match.
+**Status lives in kb (`data.status`), maintained by the gateway verbs.** Flat files are optional write-staging (CASE-464) — regenerable via `GET $BASE/cases/<n>`. If you keep one, renaming it to match the status is a courtesy for FS browsing, not a required step; there is no rename-and-re-mirror flow anymore.
 
 ## Finding Cases by Number
 
@@ -71,7 +85,7 @@ ls yac-discussions/CASE-03-*.md 2>/dev/null
 
 ## Handling `/case file`
 
-> **Filing discipline (do not skip).** Filing a NEW case ALWAYS goes through the **served allocator** `case_allocate.py` (step 3 below) — never the `Write` tool, never hand-picking a number. The number is server-assigned: `case_allocate` reads the current max, then **claims the `CASE-<n>` Registry synonym atomically** and creates the CASE_RECORD; a concurrent filer who grabbed `CASE-<n>` first causes a `synonym_conflict`, and the allocator advances to `<n>+1` and retries. **The atomic synonym claim is the serializer** (CASE-427/436) — no FS lock, no client-side number reasoning, distinct numbers by construction. If you find yourself reasoning about case numbers ("what's the next available?", "is N taken?"), stop — `case_allocate` does it. This replaces the old FS `case-helper.sh claim` (CASE-67/CASE-301 collisions, CASE-306 discipline) with server-side allocation per CASE-425/437; the FS claim is retired.
+> **Filing discipline (do not skip).** Filing a NEW case is ONE gateway call — `POST $BASE/cases` (CASE-464) — never the `Write` tool with a hand-picked number, never client-side number reasoning. The server allocates the number, claims the `CASE-<n>` Registry synonym atomically (CASE-427/436 — the serializer; concurrent filers get distinct numbers by construction), creates the record with `data.status=open`, and derives REFERENCES edges from `related`. If you find yourself asking "what's the next available number?", stop — the verb does it. (History: FS `case-helper.sh claim` retired by CASE-440; the served `case_allocate.py` retired by CASE-464.)
 
 ### 1. Get the current time
 
@@ -83,23 +97,9 @@ date '+%Y-%m-%d %H:%M'
 
 Infer a short slug from context: `unknown-fields`, `relative-baseurl`, `template-update-missing`. 2-4 words, lowercase kebab-case (matches the regex `^[a-z0-9]+(-[a-z0-9]+)*$`).
 
-### 3. Allocate a case number (server-side, atomic)
+### 3. Compose the case body
 
-```bash
-bash ~/.cache/wip-kb-client/kb-client.sh case_allocate.py \
-  --title "<short case title>" --filed-by "<your session ID>" \
-  --type <bug|question|request|platform-gap> --severity <blocks-me|annoying|fyi> \
-  --component <document-store|registry|scaffold|mcp-server|wip-client|wip-react|wip-proxy|wip-auth|reporting-sync|other>
-# Prints: CASE-<n> <document_id>
-```
-
-The runner re-fetches the version-matched KB client from the running instance whenever the served bundle changes (the loaders are APP-KB-owned and served — CASE-437/440), then runs the allocator. `case_allocate` reserves `<n>` by **atomically claiming the `CASE-<n>` synonym** and creating the CASE_RECORD (`data.case_number=<n>`, `data.status=open`). On `synonym_conflict` it advances `<n>+1` and retries — concurrent filers get distinct numbers by construction. Note the printed `<n>`; it is the assigned case number.
-
-(If the runner is missing at `~/.cache/wip-kb-client/`, run the install one-liner from "The served KB client" section above — it is served by the instance itself; no repo checkout is involved.)
-
-### 4. Write the case file (the FS record)
-
-`case_allocate` has created the kb record + reserved the number. Now write the flat file `yac-discussions/CASE-<n>-open-<slug>.md` (the git-tracked FS record), filling the assigned `<n>` into the frontmatter `case:` field:
+Full case markdown, frontmatter included. Leave `case:` as `<NN>` — the server assigns the number; fill it into your staged copy afterwards if you keep one:
 
 ```markdown
 ---
@@ -131,25 +131,24 @@ Be specific enough that a BE-YAC with no knowledge of your app can understand.>
 <If Peter provided a comment with `/case file`, put it here verbatim. If no comment, omit this section entirely.>
 ```
 
-### 5. Sync the body to wip-kb (resolve-then-update)
+Optionally stage it to `yac-discussions/CASE-<n>-open-<slug>.md` after the POST returns the number — the staged file is a local convenience, regenerable via `GET $BASE/cases/<n>`; kb is the record.
 
-`case_allocate` already created the record (step 3). Now push the full file body into it — `add-to-kb` **resolves the `CASE-<n>` synonym to the document_id and updates in place** (v2 resolve-then-update; it does NOT create — the doc already exists):
+### 4. File it (one gateway call)
 
 ```bash
-bash ~/.cache/wip-kb-client/kb-client.sh add-to-kb.py yac-discussions/CASE-<n>-open-<slug>.md
+curl -fsSk -X POST "$BASE/cases" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"title":"<short case title>","filed_by":"<your session ID>",
+       "type":"<bug|question|request|platform-gap>","severity":"<blocks-me|annoying|fyi>",
+       "component":"<component>","app":"<your app>",
+       "body":"<the full case markdown from step 3>","related":["CASE-12","CASE-340"]}'
+# -> 201 {"case":N,"synonym":"CASE-N","document_id":"…","edges":K}
 ```
 
-The served client:
-- Resolves `CASE-<n>` → document_id and updates `data.body` with the full file content (JSON Merge Patch, a new version; no duplicate — v2 CASE_RECORD has `identity_fields:[]`, so a create would append — resolve-then-update is mandatory).
-- Derives `REFERENCES` edges from your frontmatter `related:` field (each `CASE-N` mention → an outbound edge to the matching CASE_RECORD via its synonym; targets not yet in KB are silently skipped).
-- Handshakes against the instance manifest and refuses to write on `schema_version` skew (no-skew guarantee).
-- Writes one canonical instance (the one that served the client) — no local+remote dual-write.
+Allocation, synonym, `data.status=open`, and REFERENCES edges are all server-side. A 422 names the invalid field; retries are safe (a failed create allocates nothing).
 
-This step is **not optional** — without it the record carries only the title/metadata from allocation, not the body. CASE-307 names the dual-write; CASE-425/437 the v2 resolve-then-update.
+### 5. Confirm
 
-### 6. Confirm
-
-Tell Peter the case number, slug, file path, and the kb document_id printed by the script.
+Tell Peter the case number, the kb document_id, and the staged file path if you kept one.
 
 ---
 
@@ -230,43 +229,21 @@ Find `yac-discussions/CASE-<NN>-*.md`. If it doesn't exist, tell Peter and stop.
 
 The goal: every response demonstrates that the solution was analysed, not just executed. CASE-50 was implemented blindly (OIDC issuer split) and broke because the library validates issuer consistency. CASE-36 was analysed properly (three agents contributed different perspectives) and produced the right fix. Be like CASE-36.
 
-### 3. Append a response section
+### 3. Post the response (one gateway call)
 
-Append to the case file:
-
-```markdown
-## Response — <your session ID> (<YYYY-MM-DD HH:MM>)
-
-### Analysis
-<What you checked, what the root cause is, whether the proposed solution works and why/why not.>
-
-### Fix
-<Your proposed or implemented fix. Reference specific files, lines, commits.>
-```
-
-### 3. Update the status and rename
-
-Change `status: open` to `status: responded` in the frontmatter.
-
-Rename the file: `CASE-<NN>-open-<slug>.md` → `CASE-<NN>-responded-<slug>.md`
+Compose the section content — `### Analysis` / `### Fix` subsections as before — **without** the `## Response — …` heading (the server composes it from `author` + its own timestamp), then:
 
 ```bash
-mv yac-discussions/CASE-<NN>-open-<slug>.md yac-discussions/CASE-<NN>-responded-<slug>.md
+curl -fsSk -X POST "$BASE/cases/<n>/respond" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"author":"<your session ID>","text":"<the section markdown WITHOUT the ## heading>"}'
+# -> 200 {"case":N,"status":"responded","doc_version":V} | 422 illegal transition | 404 unknown | 409 after 3 conflict retries
 ```
 
-### 4. Mirror to wip-kb
+The append is race-safe (`if_match` + re-read retry — concurrent writers both land, CASE-462's lesson) and the status transition (open→responded) is enforced server-side. No file rename, no mirror step — kb is the record; refresh any staged flat file from `GET $BASE/cases/<n>` if you keep one.
 
-Re-run the loader to refresh the kb record body (idempotent — updates the existing CASE_RECORD via JSON Merge Patch, no duplicates):
+### 4. Confirm
 
-```bash
-bash ~/.cache/wip-kb-client/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-responded-<slug>.md
-```
-
-This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.
-
-### 5. Confirm
-
-Tell Peter what you responded and the case number.
+Tell Peter the case number and the returned status.
 
 ---
 
@@ -284,31 +261,19 @@ Find `yac-discussions/CASE-<NN>-*.md`. If it doesn't exist, tell Peter and stop.
 date '+%Y-%m-%d %H:%M'
 ```
 
-### 3. Append a comment section
-
-Append to the case file:
-
-```markdown
-## Comment — <your session ID> (<YYYY-MM-DD HH:MM>)
-
-<The comment. If Peter dictated this, attribute it: "Peter: <his words>">
-```
-
-If the user provided text with the command (e.g., `/case comment 3 This is urgent`), use that as the comment body. Otherwise, infer from the current conversation context.
-
-### 4. Mirror to wip-kb
-
-Re-run the loader to refresh the kb record body (idempotent — comments don't change status, but the appended body must propagate to kb):
+### 3. Post the comment (one gateway call)
 
 ```bash
-bash ~/.cache/wip-kb-client/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-*.md
+curl -fsSk -X POST "$BASE/cases/<n>/comment" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"author":"<your session ID>","text":"<the comment markdown WITHOUT the ## heading>"}'
+# -> 200 (no status change — comments are legal in every state, including terminal)
 ```
 
-This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.
+Race-safe append; the server composes the `## Comment — <author> (<ts>)` heading. No rename, no mirror.
 
-### 5. Confirm
+### 4. Confirm
 
-Tell Peter the comment was added.
+One line to Peter: comment posted on CASE-<n>.
 
 ---
 
@@ -320,31 +285,19 @@ Close a case without implementing anything. Use for: won't-fix, not-an-issue, de
 
 Find `yac-discussions/CASE-<NN>-*.md`. If it doesn't exist, tell Peter and stop.
 
-### 2. Append a resolution
+### 2. Post the resolution (one gateway call)
 
-```markdown
-## Resolution — <your session ID> (<YYYY-MM-DD HH:MM>)
-
-<Won't fix / Not an issue / Deferred / Handled manually — brief explanation.>
-```
-
-### 3. Update the status and rename
-
-Change `status:` to `status: closed` in the frontmatter.
-
-Rename: `CASE-<NN>-<old-status>-<slug>.md` → `CASE-<NN>-closed-<slug>.md`
-
-### 4. Mirror to wip-kb
-
-Re-run the loader to refresh the kb record body and status:
+Compose the resolution rationale (won't-fix / not-an-issue / deferred / handled manually — with the why), then:
 
 ```bash
-bash ~/.cache/wip-kb-client/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-closed-<slug>.md
+curl -fsSk -X POST "$BASE/cases/<n>/close" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"author":"<your session ID>","text":"<resolution markdown WITHOUT the ## heading>"}'
+# -> 200 {"case":N,"status":"closed",…} | 422 if the transition is illegal
 ```
 
-This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.
+Terminal: after this, comments remain legal but no further transitions. No rename, no mirror.
 
-### 5. Confirm
+### 3. Confirm
 
 Tell Peter the case is closed and why.
 
@@ -386,47 +339,18 @@ git diff
 
 Tell Peter what was applied and what was skipped (if any). Let Peter review the diff before committing.
 
-### 5. Update the status and rename
+### 5. Post the implementation record (one gateway call)
 
-After Peter confirms (or immediately if the changes are clean):
-
-Change `status:` to `status: implemented` in the frontmatter.
-
-Append:
-
-```markdown
-## Implementation — <your session ID> (<YYYY-MM-DD HH:MM>)
-
-Applied N of M proposed changes. <Note any skipped changes and why.>
-```
-
-Rename: `CASE-<NN>-<old-status>-<slug>.md` → `CASE-<NN>-implemented-<slug>.md`
-
-### 6. Mirror to wip-kb
-
-Re-run the loader to refresh the kb record body and status:
+Compose the implementation section — what was applied, where, verification results — then:
 
 ```bash
-bash ~/.cache/wip-kb-client/kb-client.sh add-to-kb.py yac-discussions/CASE-<NN>-implemented-<slug>.md
+curl -fsSk -X POST "$BASE/cases/<n>/implement" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"author":"<your session ID>","text":"<implementation markdown WITHOUT the ## heading>"}'
+# -> 200 {"case":N,"status":"implemented",…}
 ```
 
-This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.
+Terminal; server-side transition; no rename, no mirror.
 
-### 7. Confirm
+### 6. Confirm
 
-Tell Peter the case is implemented. Do NOT commit — Peter decides when to commit.
-
----
-
-## When to use `/case file`
-
-- You hit a bug in a platform component (document-store, registry, MCP server, client libs)
-- You need a feature that doesn't exist (missing MCP tool, missing React hook)
-- You discover a platform gap (behavior that contradicts docs or conventions)
-- Peter tells you to file a case
-
-## When NOT to use `/case file`
-
-- Routine bugs in your own app code (fix them yourself)
-- Questions you can answer by reading docs or MCP resources
-- Peter said "off the record"
+Tell Peter what was applied and that the case is implemented.
