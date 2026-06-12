@@ -61,6 +61,11 @@ spec:
     # specific than /apps/kb, so nginx longest-prefix routes it to the no-auth
     # shared ingress; the app already restricts these to read-only whitelisted files.
     - {path: /apps/kb/server-api/kb-client, auth_required: false}
+    # CASE-464: KB write-gateway verbs — headless callers with an API key. NOT
+    # unauthenticated in effect: every verb requires X-API-Key and executes its
+    # WIP calls with the caller's key (un-privileged pass-through; a bad key
+    # fails at the platform).
+    - {path: /apps/kb/server-api/kb, auth_required: false}
     - {path: /apps/kb, auth_required: true}
 
   # WIP-KB writes documents to the kb namespace via the WIP API proxy.
