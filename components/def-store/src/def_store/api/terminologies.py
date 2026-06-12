@@ -23,7 +23,11 @@ from ..models.api_models import (
 )
 from ..services.dependency_service import DependencyService, TerminologyDependencies
 from ..services.registry_client import RegistryError
-from ..services.terminology_service import TerminologyService
+from ..services.terminology_service import (
+    EntityExistsError,
+    TerminologyService,
+    conflict_result,
+)
 from .auth import require_api_key
 
 router = APIRouter(prefix="/terminologies", tags=["Terminologies"])
@@ -32,6 +36,16 @@ router = APIRouter(prefix="/terminologies", tags=["Terminologies"])
 @router.post("", response_model=BulkResponse, summary="Create terminologies")
 async def create_terminologies(
     items: list[CreateTerminologyRequest] = Body(...),
+    on_conflict: str = Query(
+        "error",
+        description=(
+            "Duplicate handling (CASE-465 idempotent bootstrap): 'error' "
+            "(default) fails the item with error_code='already_exists'; "
+            "'validate' returns status='unchanged' for an identical "
+            "re-create and error_code='incompatible_config' with the "
+            "changed fields when the existing config differs."
+        ),
+    ),
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """
@@ -40,6 +54,12 @@ async def create_terminologies(
     Each terminology will be registered with the Registry service to get
     a unique ID. Namespace is specified per item (default: "wip").
     """
+    if on_conflict not in ("error", "validate"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid on_conflict value: {on_conflict!r}. Must be 'error' or 'validate'.",
+        )
+
     namespaces = {item.namespace for item in items}
     for ns in namespaces:
         await check_namespace_permission(identity, ns, "write")
@@ -49,6 +69,8 @@ async def create_terminologies(
         try:
             result = await TerminologyService.create_terminology(item, namespace=item.namespace)
             results.append(BulkResultItem(index=i, status="created", id=result.terminology_id))
+        except EntityExistsError as e:
+            results.append(conflict_result(i, e, on_conflict, value=item.value))
         except (ValueError, HTTPException) as e:
             results.append(BulkResultItem(index=i, status="error", error=str(e)))
         except RegistryError as e:

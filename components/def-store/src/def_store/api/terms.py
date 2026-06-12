@@ -7,7 +7,6 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from wip_auth import (
     UserIdentity,
     check_namespace_permission,
-    get_current_identity,
     resolve_namespace_filter,
     resolve_or_404,
 )
@@ -28,7 +27,11 @@ from ..models.api_models import (
 )
 from ..models.terminology import Terminology
 from ..services.registry_client import RegistryError
-from ..services.terminology_service import TerminologyService
+from ..services.terminology_service import (
+    EntityExistsError,
+    TerminologyService,
+    conflict_result,
+)
 from .auth import require_api_key
 
 router = APIRouter(tags=["Terms"])
@@ -59,6 +62,18 @@ async def create_terms(
         description="Number of terms per registry HTTP call (default 100). "
         "Reduce if experiencing timeouts on large imports."
     ),
+    on_conflict: str = Query(
+        "error",
+        description=(
+            "Duplicate handling on the single-item path (CASE-465 "
+            "idempotent bootstrap): 'error' (default) fails the item with "
+            "error_code='already_exists'; 'validate' returns "
+            "status='unchanged' for an identical re-create and "
+            "error_code='incompatible_config' when the existing term "
+            "differs. The bulk path (2+ items) skips duplicates "
+            "regardless (status='skipped')."
+        ),
+    ),
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """
@@ -72,6 +87,12 @@ async def create_terms(
     - `batch_size`: Controls MongoDB batch size (default 1000)
     - `registry_batch_size`: Controls registry HTTP call batch size (default 100)
     """
+    if on_conflict not in ("error", "validate"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid on_conflict value: {on_conflict!r}. Must be 'error' or 'validate'.",
+        )
+
     # Resolve terminology_id synonym (e.g., "STATUS" → UUID)
     terminology_id = await resolve_or_404(
         terminology_id, "terminology", namespace, param_name="terminology_id"
@@ -87,6 +108,8 @@ async def create_terms(
         try:
             result = await TerminologyService.create_term(terminology_id, items[0])
             results = [BulkResultItem(index=0, status="created", id=result.term_id, value=items[0].value)]
+        except EntityExistsError as e:
+            results = [conflict_result(0, e, on_conflict, value=items[0].value)]
         except ValueError as e:
             msg = str(e)
             if "not found" in msg:

@@ -39,7 +39,8 @@ class BulkResultItemBase(BaseModel):
             "Machine-readable error code. Documented codes: not_found, "
             "forbidden, archived, identity_field_change, "
             "concurrency_conflict, validation_failed, reference_violation, "
-            "internal_error, incompatible_schema."
+            "internal_error, incompatible_schema, already_exists, "
+            "incompatible_config."
         ),
     )
     details: dict[str, Any] | None = Field(
