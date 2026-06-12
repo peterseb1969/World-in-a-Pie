@@ -60,6 +60,10 @@ APP_NAME=""
 APP_PREFIX=""
 PRESET="standard"
 REFRESH_MODE=false
+FORCE_CLAUDE_MD=false
+# Create-only provisioning output; must exist (set -u) when --refresh renders
+# the CLAUDE.md heredocs, which branch on it (CASE-418).
+APP_KEY_PLAINTEXT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -79,6 +83,10 @@ while [[ $# -gt 0 ]]; do
             REFRESH_MODE=true
             shift
             ;;
+        --force-claude-md)
+            FORCE_CLAUDE_MD=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 <app-directory> --prefix APP-<X> [--name \"App Name\"] [--preset standard|query]"
             echo "       $0 --refresh <existing-app-directory> [--prefix APP-<X>]"
@@ -90,7 +98,11 @@ while [[ $# -gt 0 ]]; do
             echo "  --prefix    Session-role prefix (APP-KB, APP-RC, ...). Written to .claude/.session-role"
             echo "              so /wip-setup and /wip-wake mint <PREFIX>-YYYYMMDD-HHMMSS session IDs (CASE-389)."
             echo "  --preset    Project preset: 'standard' (default) or 'query' (NL query app)"
-            echo "  --refresh   Refresh machine-specific files (.mcp.json, libs) in an existing app"
+            echo "  --refresh   Refresh machine-specific files (.mcp.json, libs) in an existing app."
+            echo "              Also regenerates CLAUDE.md when missing; when present, writes a"
+            echo "              fresh render to CLAUDE.md.refresh instead (CASE-418)."
+            echo "  --force-claude-md   With --refresh: overwrite an existing CLAUDE.md outright"
+            echo "              instead of writing CLAUDE.md.refresh. App-authored content is lost."
             echo "  -h          Show this help"
             exit 0
             ;;
@@ -115,14 +127,65 @@ fi
 # Resolve to absolute path
 APP_DIR="$(cd "$(dirname "$APP_DIR")" 2>/dev/null && pwd)/$(basename "$APP_DIR")" || APP_DIR="$(pwd)/$APP_DIR"
 
-# Derive app name from directory if not provided
+# --- Resolve app metadata (CASE-418) ---
+# Refresh mode NEVER derives metadata from the directory name — that produced
+# 'Dev ns: dev-.' on a `--refresh .` run. Resolution order: persisted
+# .claude/.app-meta -> explicit --name -> backfill from the existing
+# CLAUDE.md title -> hard error.
+
+APP_META_FILE="$APP_DIR/.claude/.app-meta"
+APP_SLUG=""
+DEV_NAMESPACE=""
+META_SOURCE=""
+
+meta_get() { sed -n "s/^$1=\"\(.*\)\"\$/\1/p" "$APP_META_FILE" 2>/dev/null | head -1; }
+
+if $REFRESH_MODE; then
+    if [ -f "$APP_META_FILE" ] && [ -n "$(meta_get APP_NAME)" ]; then
+        APP_NAME="$(meta_get APP_NAME)"
+        APP_SLUG="$(meta_get APP_SLUG)"
+        DEV_NAMESPACE="$(meta_get DEV_NAMESPACE)"
+        META_SOURCE=".claude/.app-meta"
+    elif [ -n "$APP_NAME" ]; then
+        META_SOURCE="--name"
+    elif [ -f "$APP_DIR/CLAUDE.md" ]; then
+        # One-time backfill for pre-.app-meta clones: the title line was
+        # interpolated from APP_NAME at create time; the namespace is the
+        # first backticked token in the Dev Namespace section (apps can use
+        # namespaces that are NOT dev-<slug>, e.g. WIP-DnD's `dnd`).
+        APP_NAME="$(sed -n 's/^# //p' "$APP_DIR/CLAUDE.md" | head -1)"
+        if [ -z "$APP_NAME" ]; then
+            echo "Error: --refresh could not derive the app name from $APP_DIR/CLAUDE.md."
+            echo "       Re-run with --name \"App Name\"."
+            exit 1
+        fi
+        DEV_NAMESPACE="$(sed -n '/^## Dev Namespace/,/^## /p' "$APP_DIR/CLAUDE.md" | grep -o '\`[a-z0-9][a-z0-9-]*\`' | head -1 | tr -d '\`')"
+        META_SOURCE="CLAUDE.md backfill"
+    else
+        echo "Error: --refresh cannot resolve app metadata: no .claude/.app-meta,"
+        echo "       no --name, and no existing CLAUDE.md to derive from."
+        echo "       Re-run with --name \"App Name\" (CASE-418)."
+        exit 1
+    fi
+fi
+
+# Derive app name from directory if not provided (create mode only — refresh
+# resolved it above or exited)
 if [ -z "$APP_NAME" ]; then
     APP_NAME="$(basename "$APP_DIR" | sed 's/[-_]/ /g' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1')"
 fi
 
 # Derive slug from app name (lowercase, hyphens) — used for namespace and package name
-APP_SLUG="$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/ /-/g')"
-DEV_NAMESPACE="dev-${APP_SLUG}"
+if [ -z "$APP_SLUG" ]; then
+    APP_SLUG="$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/ /-/g')"
+fi
+if [ -z "$DEV_NAMESPACE" ]; then
+    DEV_NAMESPACE="dev-${APP_SLUG}"
+    if [ "$META_SOURCE" = "CLAUDE.md backfill" ]; then
+        echo "Warning: could not parse the namespace from CLAUDE.md; assuming '$DEV_NAMESPACE'."
+        echo "         If the app uses a different namespace, fix .claude/.app-meta after this run."
+    fi
+fi
 
 if $REFRESH_MODE; then
     echo "Refreshing WIP app environment:"
@@ -133,6 +196,9 @@ echo "  Directory: $APP_DIR"
 echo "  App name:  $APP_NAME"
 echo "  Slug:      $APP_SLUG"
 echo "  Dev ns:    $DEV_NAMESPACE"
+if [ -n "$META_SOURCE" ]; then
+    echo "  Metadata:  $META_SOURCE"
+fi
 echo "  Preset:    $PRESET"
 echo "  WIP root:  $WIP_ROOT"
 echo ""
@@ -194,6 +260,21 @@ else
     echo "            /wip-setup and /wip-wake need it to mint session IDs."
     echo "            Re-run with --prefix APP-<X> (e.g. --prefix APP-KB)."
 fi
+
+# --- Persist app metadata (CASE-418) ---
+# Sibling to .session-role, but committed (per-app, not per-machine): --refresh
+# reads it to regenerate CLAUDE.md with correct metadata instead of deriving
+# from the directory name. Rewritten every run from the resolved values.
+mkdir -p "$APP_DIR/.claude"
+cat > "$APP_META_FILE" << META_EOF
+# Generated by create-app-project.sh (CASE-418). Read by --refresh to
+# regenerate CLAUDE.md. Edit deliberately if the app's metadata changes.
+APP_NAME="$APP_NAME"
+APP_SLUG="$APP_SLUG"
+DEV_NAMESPACE="$DEV_NAMESPACE"
+PRESET="$PRESET"
+META_EOF
+echo "   Wrote: .claude/.app-meta ($APP_NAME / $DEV_NAMESPACE)"
 
 # --- Generate committed .claude/settings.json baseline (CASE-446) ---
 # Replaces the old create-time-only settings.local.json seed (CASE-169 +
@@ -755,12 +836,25 @@ ENVEOF
     fi
 fi
 
-# --- Generate CLAUDE.md (new projects only) ---
+# --- Generate CLAUDE.md (both modes — CASE-418) ---
+# Create mode writes CLAUDE.md directly. Refresh mode: missing file -> generate
+# it (nothing to clobber); existing file -> render to CLAUDE.md.refresh + merge
+# notice (app CLAUDE.md is generated-then-customised; a silent overwrite would
+# clobber app-authored content), unless --force-claude-md.
 
+CLAUDE_TARGET="$APP_DIR/CLAUDE.md"
+CLAUDE_PREEXISTS=false
+if $REFRESH_MODE && [ -f "$APP_DIR/CLAUDE.md" ] && ! $FORCE_CLAUDE_MD; then
+    CLAUDE_TARGET="$APP_DIR/CLAUDE.md.refresh"
+    CLAUDE_PREEXISTS=true
+fi
 if ! $REFRESH_MODE; then
 STEP_NUM=$((7 + STEP_OFFSET))
 echo "$STEP_NUM. Generating CLAUDE.md..."
-cat > "$APP_DIR/CLAUDE.md" << EOF
+else
+echo "Generating ${CLAUDE_TARGET##*/} (metadata: $META_SOURCE)..."
+fi
+cat > "$CLAUDE_TARGET" << EOF
 # $APP_NAME
 
 <!-- last reviewed: 2026-05-07 / CASE-301 -->
@@ -806,7 +900,7 @@ The MCP server uses a privileged admin key (from WIP's \`.env\`). This is fine f
 EOF
 
 if [ -n "$APP_KEY_PLAINTEXT" ]; then
-cat >> "$APP_DIR/CLAUDE.md" << EOF
+cat >> "$CLAUDE_TARGET" << EOF
 This key was auto-provisioned by \`create-app-project.sh\` and is scoped to \`$DEV_NAMESPACE\`. It is a **runtime key** managed via the Registry API (not a config-file key).
 
 \`\`\`bash
@@ -815,7 +909,7 @@ WIP_API_KEY=$APP_KEY_PLAINTEXT
 \`\`\`
 EOF
 else
-cat >> "$APP_DIR/CLAUDE.md" << 'EOF'
+cat >> "$CLAUDE_TARGET" << 'EOF'
 No key was auto-provisioned by this script. If WIP is running locally and you have an admin key, create a runtime key via `mcp__wip__create_api_key` (or `POST /api/registry/api-keys`). If a key was already provisioned out-of-band (e.g. for a non-localhost target like `wip-kb.local`), check `.env` and `~/.wip-deploy/<deployment>/secrets/`.
 
 Save the `plaintext_key` from the response to `.env`:
@@ -825,7 +919,7 @@ WIP_API_KEY=<plaintext_key from response>
 EOF
 fi
 
-cat >> "$APP_DIR/CLAUDE.md" << EOF
+cat >> "$CLAUDE_TARGET" << EOF
 
 Because this key is scoped to a single namespace (\`$DEV_NAMESPACE\`), WIP derives the namespace automatically when you omit the \`namespace\` parameter. This means synonym resolution works without passing \`namespace\` on every API call.
 
@@ -1086,8 +1180,21 @@ Discipline test before writing: *"Would future-me, after a compaction, want to k
 
 The four files together — \`session.md\` + \`commits.md\` + \`session-updates.md\` + any \`report-*.md\` — are what \`/wip-wake\` reads to rebuild context.
 EOF
-echo "   Written: CLAUDE.md"
+echo "   Written: ${CLAUDE_TARGET##*/}"
+if $CLAUDE_PREEXISTS; then
+    echo ""
+    echo "   ============================================================"
+    echo "   NOTICE (CASE-418): existing CLAUDE.md left untouched — it"
+    echo "   carries app-authored content. A fresh scaffold render was"
+    echo "   written to CLAUDE.md.refresh: merge the platform-owned"
+    echo "   sections you want, then delete it. To overwrite outright,"
+    echo "   re-run with --force-claude-md."
+    echo "   ============================================================"
+    echo ""
+fi
 
+# --- Git init + gitignore sentinels (new projects only) ---
+if ! $REFRESH_MODE; then
 # Ensure .env is gitignored (contains plaintext API key)
 if [ -n "$APP_KEY_PLAINTEXT" ] && [ -f "$APP_DIR/.env" ]; then
     if [ ! -f "$APP_DIR/.gitignore" ]; then
@@ -1117,7 +1224,7 @@ echo "$STEP_NUM. Initialising git repository..."
 Generated by WIP create-app-project.sh from:
   $WIP_ROOT")
 echo "   Git repo initialised with initial commit"
-fi  # end of ! $REFRESH_MODE block (CLAUDE.md + git init)
+fi  # end of ! $REFRESH_MODE block (gitignore sentinels + git init)
 
 # --- Done ---
 
