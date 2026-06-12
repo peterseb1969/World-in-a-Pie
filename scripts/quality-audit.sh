@@ -488,8 +488,26 @@ done
 
 ok "Dependency health ($(step_time $STEP_START))"
 
-# ─── Step 13: Generate report ────────────────────────────────────────
-info "Step 13: Generating report..."
+# ─── Step 13: Doc drift (CASE-456) ───────────────────────────────────
+info "Step 13: Doc drift..."
+STEP_START=$(date +%s)
+
+python3 "$SCRIPT_DIR/check-doc-drift.py" \
+    --root "$ROOT_DIR" \
+    --output "$RAW_DIR/doc-drift.json" \
+    2>&1 || true
+
+DOC_DRIFT=$(python3 -c "
+import json
+data = json.load(open('$RAW_DIR/doc-drift.json'))
+undoc = sum(len(v) for v in data.get('undocumented', {}).values())
+stale = len(data.get('count_mismatches', []))
+print(f'{undoc} undocumented exports, {stale} stale counts')
+" 2>/dev/null || echo "?")
+ok "Doc drift: $DOC_DRIFT ($(step_time $STEP_START))"
+
+# ─── Step 14: Generate report ────────────────────────────────────────
+info "Step 14: Generating report..."
 STEP_START=$(date +%s)
 
 MODE="full"
