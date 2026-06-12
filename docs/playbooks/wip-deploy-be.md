@@ -64,9 +64,20 @@ install command once green to heal it.
 | `restart <svc>` | — | For backend source-only edits in dev mode, `podman restart wip-<svc>` does the same (CLAUDE.md §7). |
 | `add-app NAME --app-source <path>` | Add one app to a running install without touching the rest | Dev-target only for `--app-source`. Reads the persisted state — see CASE-455 note above. |
 | `remove-app`, `add-module`, `remove-module` | Single-element spec mutations | Same persisted-state mechanics as add-app. |
+| `app-deploy <name> --tag <t>` | Roll ONE enabled app to a new image tag (the APP-YAC self-deploy last mile, CASE-410) | No build/push — the app repo's CI owns that. Persists in `spec.images.tag_overrides` (CASE-438 precedence); scoped apply recreates only that container (CASE-443). |
 | `status --name <n>` | What's deployed, on which images | `--diff` re-renders from persisted spec and compares. |
 | `render` / `show-spec` / `validate` | Inspect without applying | `show-spec --preset full --target dev` answers "what would this preset give me". |
 | `check-app-deployability <path>` | **Before any `--app-source`** | See the APP playbook for the 7 checks and the subdirectory rule. |
+
+**Cwd independence of the mutation verbs (CASE-459):** `add-app`,
+`remove-app`, `app-deploy`, `add-module`, `remove-module` resolve the WIP
+checkout from the `repo_root` stamped into `deployment.deployer-state` at
+install time, so they run from any directory. Installs whose state predates
+CASE-459 carry no stamp — for those, run from the WIP repo root, pass
+`--repo-root <path>`, or set `WIP_REPO_ROOT`; the next successful install
+or mutation re-stamps the state. If you ever see "discovery found no
+components/apps under <path>", that's this — the discovery root is wrong,
+not your spec.
 
 ## 3. Dev target specifics
 

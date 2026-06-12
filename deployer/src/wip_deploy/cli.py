@@ -10,7 +10,7 @@ import json
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 import yaml
@@ -379,7 +379,9 @@ def _secrets_location_opt() -> typer.models.OptionInfo:
 
 def _repo_root_opt() -> typer.models.OptionInfo:
     return typer.Option(
-        "--repo-root", help="Repo root (auto-detected from .git if omitted)."
+        "--repo-root",
+        envvar="WIP_REPO_ROOT",
+        help="Repo root (auto-detected from .git if omitted).",
     )
 
 
@@ -1001,6 +1003,15 @@ def install(
     )
     typer.echo("")
 
+    # CASE-459: stamp the source checkout into the deployer-state so the
+    # mutation verbs (add-app / app-deploy / ...) can discover manifests
+    # from any cwd. Same resolution _assemble used — its success above
+    # guarantees the walk resolves; the guard is belt-and-braces.
+    try:
+        effective_repo_root = (repo_root or find_repo_root()).resolve()
+    except FileNotFoundError:
+        effective_repo_root = None
+
     apply_fn = apply_k8s if deployment.spec.target == "k8s" else apply_compose
     try:
         result = apply_fn(
@@ -1017,7 +1028,7 @@ def install(
         # applied so add-app/status/rebuild reason from reality and a
         # flagless re-install can't silently revert the deployment shape.
         if getattr(e, "mutated", False):
-            _persist_deployment(deployment, target_dir)
+            _persist_deployment(deployment, target_dir, repo_root=effective_repo_root)
             typer.echo(
                 "deployer-state persisted: the apply changed the running "
                 "deployment before failing (CASE-455)",
@@ -1034,7 +1045,7 @@ def install(
     # post-apply; PRE-mutation failures (render/build errors) leave the
     # prior state in place as last-known-good, while post-mutation
     # failures persist in the except-branch above (CASE-455).
-    _persist_deployment(deployment, target_dir)
+    _persist_deployment(deployment, target_dir, repo_root=effective_repo_root)
 
     typer.echo("")
     if result.healthy:
@@ -1665,9 +1676,10 @@ def validate_manifest_cmd(
 
 
 def _load_and_discover_for_mutation(
-    install_name: str,
+    install_name: str | None,
     install_dir: Path | None,
-) -> tuple[str, Path, Deployment, list, list]:
+    repo_root: Path | None = None,
+) -> tuple[str, Path, Deployment, list[Component], list[App], Path]:
     """Shared prelude for the additive verbs.
 
     Resolves the install dir, loads the persisted Deployment (exits
@@ -1675,6 +1687,13 @@ def _load_and_discover_for_mutation(
     existing install), discovers components + apps in the WIP repo,
     and returns the tuple. Errors hit typer.Exit with actionable
     messages.
+
+    Discovery-root resolution (CASE-459): `--repo-root` flag > root
+    stamped into the deployer-state envelope at install time > .git
+    walk from cwd. The cwd walk alone matched ANY git repo — run from
+    an app checkout it "succeeded" with the wrong root, discovery came
+    back empty, and validation emitted misdirecting per-item
+    "unknown component/app (known: [])" errors.
     """
     resolved_name = _resolve_name(install_name)
     target_dir = install_dir or _default_install_dir(resolved_name)
@@ -1683,11 +1702,17 @@ def _load_and_discover_for_mutation(
     # Discover against the WIP repo root — components/apps may have
     # been added since the last install (which is exactly what the
     # operator is trying to use here).
-    try:
-        root = find_repo_root()
-    except FileNotFoundError as e:
-        typer.echo(f"error: {e}", err=True)
-        raise typer.Exit(1) from e
+    root = repo_root
+    if root is None:
+        stamped = _load_state_repo_root(target_dir)
+        if stamped is not None and stamped.is_dir():
+            root = stamped
+    if root is None:
+        try:
+            root = find_repo_root()
+        except FileNotFoundError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
 
     discovery = discover(root)
     if not discovery.ok:
@@ -1696,16 +1721,40 @@ def _load_and_discover_for_mutation(
             typer.echo(f"  - {err}", err=True)
         raise typer.Exit(1)
 
-    return resolved_name, target_dir, deployment, discovery.components, discovery.apps
+    # CASE-459: zero components AND zero apps is never a real WIP
+    # checkout — fail naming the cause instead of letting validation
+    # spew per-item spec errors that point at the wrong layer.
+    if not discovery.components and not discovery.apps:
+        typer.echo(
+            f"error: discovery found no components/apps under {root} — "
+            "this is not a World-in-a-Pie checkout. Run from the WIP "
+            "repo root, pass --repo-root <path> (or set WIP_REPO_ROOT), "
+            "or re-run `wip-deploy install` to stamp the checkout into "
+            "the deployer-state.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # The resolved root rides along so the verb's persist re-stamps it —
+    # a successful mutation heals a pre-CASE-459 (unstamped) state file.
+    return (
+        resolved_name,
+        target_dir,
+        deployment,
+        discovery.components,
+        discovery.apps,
+        root.resolve(),
+    )
 
 
 def _apply_and_persist_mutation(
     deployment: Deployment,
-    components: list,
-    apps_list: list,
+    components: list[Component],
+    apps_list: list[App],
     target_dir: Path,
     action_label: str,
     services_scope: list[str] | None = None,
+    repo_root: Path | None = None,
 ) -> None:
     """Shared post-mutation lifecycle: validate → render → apply → persist.
 
@@ -1739,7 +1788,7 @@ def _apply_and_persist_mutation(
         raise typer.Exit(2) from e
 
     apply_fn = apply_k8s if deployment.spec.target == "k8s" else apply_compose
-    apply_kwargs: dict = {}
+    apply_kwargs: dict[str, Any] = {}
     if deployment.spec.target != "k8s":
         apply_kwargs["services_scope"] = services_scope
     try:
@@ -1755,7 +1804,7 @@ def _apply_and_persist_mutation(
         # CASE-455: see the install command — post-mutation failures must
         # persist the applied spec or state diverges from reality.
         if getattr(e, "mutated", False):
-            _persist_deployment(deployment, target_dir)
+            _persist_deployment(deployment, target_dir, repo_root=repo_root)
             typer.echo(
                 "deployer-state persisted: the apply changed the running "
                 "deployment before failing (CASE-455)",
@@ -1767,7 +1816,7 @@ def _apply_and_persist_mutation(
         )
         raise typer.Exit(1) from e
 
-    _persist_deployment(deployment, target_dir)
+    _persist_deployment(deployment, target_dir, repo_root=repo_root)
 
     if result.healthy:
         typer.echo(typer.style(f"✓ {action_label}.", fg=typer.colors.GREEN, bold=True))
@@ -1810,6 +1859,7 @@ def add_app(
             help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
         ),
     ] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
 ) -> None:
     """Add an app to an existing install without dropping anything else.
 
@@ -1823,8 +1873,8 @@ def add_app(
       wip-deploy add-app react-console --name wip-dev-local
       wip-deploy add-app kb --app-source /Users/peter/Development/WIP-KB
     """
-    resolved_name, target_dir, deployment, components, apps_list = (
-        _load_and_discover_for_mutation(name, install_dir)
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
     )
 
     # Verify the named app actually has a manifest in the WIP repo.
@@ -1881,6 +1931,7 @@ def add_app(
         # CASE-443: up only the new app's service; reload proxies whose
         # config changed; leave everything else genuinely untouched.
         services_scope=[app_name],
+        repo_root=repo_root,
     )
 
 
@@ -1898,6 +1949,7 @@ def remove_app(
             help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
         ),
     ] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
 ) -> None:
     """Remove an app from an existing install without dropping the rest.
 
@@ -1912,8 +1964,8 @@ def remove_app(
 
       wip-deploy remove-app clintrial --name wip-dev-local
     """
-    resolved_name, target_dir, deployment, components, apps_list = (
-        _load_and_discover_for_mutation(name, install_dir)
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
     )
 
     before = len(deployment.spec.apps)
@@ -1947,6 +1999,7 @@ def remove_app(
         # `up -d` would recreate the whole stack) and still reloads the
         # proxies so the dropped route disappears.
         services_scope=[],
+        repo_root=repo_root,
     )
 
 
@@ -1975,6 +2028,7 @@ def app_deploy(
             help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
         ),
     ] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
 ) -> None:
     """Roll ONE enabled app to a new image tag on an existing install.
 
@@ -1995,8 +2049,8 @@ def app_deploy(
       wip-deploy app-deploy wip-kb --tag sha-6ceff9a --name wip-local
       wip-deploy app-deploy song --tag sha-b2f664c
     """
-    resolved_name, target_dir, deployment, components, apps_list = (
-        _load_and_discover_for_mutation(name, install_dir)
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
     )
 
     if not tag.strip():
@@ -2032,6 +2086,7 @@ def app_deploy(
         f"Rolled app {app_name!r} to tag {tag!r} on {resolved_name}",
         # CASE-443/410: recreate only this app's container.
         services_scope=[app_name],
+        repo_root=repo_root,
     )
 
 
@@ -2054,6 +2109,7 @@ def add_module(
             help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
         ),
     ] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
 ) -> None:
     """Enable an optional module in an existing install without dropping anything.
 
@@ -2065,8 +2121,8 @@ def add_module(
 
       wip-deploy add-module reporting-sync --name wip-dev-local
     """
-    resolved_name, target_dir, deployment, components, apps_list = (
-        _load_and_discover_for_mutation(name, install_dir)
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
     )
 
     # Module must exist as a discovered component with category=optional.
@@ -2096,6 +2152,7 @@ def add_module(
         apps_list,
         target_dir,
         f"Added module {module_name!r} to {resolved_name}",
+        repo_root=repo_root,
     )
 
 
@@ -2113,6 +2170,7 @@ def remove_module(
             help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
         ),
     ] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
 ) -> None:
     """Disable an optional module in an existing install without dropping anything.
 
@@ -2124,8 +2182,8 @@ def remove_module(
 
       wip-deploy remove-module minio --name wip-dev-local
     """
-    resolved_name, target_dir, deployment, components, apps_list = (
-        _load_and_discover_for_mutation(name, install_dir)
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
     )
 
     if module_name not in deployment.spec.modules.optional:
@@ -2147,6 +2205,7 @@ def remove_module(
         apps_list,
         target_dir,
         f"Removed module {module_name!r} from {resolved_name}",
+        repo_root=repo_root,
     )
 
 
@@ -2665,6 +2724,8 @@ def export_ca(
     # pointing at the right place to look.
     spec = deployment.spec
     if spec.target == "k8s":
+        k8s = spec.platform.k8s
+        assert k8s is not None  # platform_block_matches_target guarantees it
         typer.echo(
             typer.style(
                 "✗ export-ca is not supported for k8s installs.",
@@ -2674,9 +2735,9 @@ def export_ca(
         )
         typer.echo(
             f"  K8s installs use an operator-provided TLS cert in the "
-            f"{spec.platform.k8s.tls_secret_name!r} Secret. "
+            f"{k8s.tls_secret_name!r} Secret. "
             "Export it with: kubectl get secret "
-            f"{spec.platform.k8s.tls_secret_name} -n {spec.platform.k8s.namespace} "
+            f"{k8s.tls_secret_name} -n {k8s.namespace} "
             "-o jsonpath='{.data.tls\\.crt}' | base64 -d",
             err=True,
         )
@@ -3294,17 +3355,31 @@ _DEPLOYMENT_JSON_VERSION = 1
 _DEPLOYMENT_STATE_FILENAME = "deployment.deployer-state"
 
 
-def _persist_deployment(deployment: Deployment, install_dir: Path) -> None:
+def _persist_deployment(
+    deployment: Deployment,
+    install_dir: Path,
+    repo_root: Path | None = None,
+) -> None:
     """Persist the Deployment to the install dir so `status --diff`
     can re-render against the same spec without needing the install
     args. Versioned envelope so future schema evolution can refuse
     older files cleanly.
+
+    `repo_root` (CASE-459) is stamped into the envelope — NOT the spec,
+    which is `extra="forbid"` and would make older deployers hard-fail
+    on newer state files — so mutation verbs can discover manifests
+    from any cwd. When None (the mutation-verb persists), an existing
+    stamp is carried forward; it must be read BEFORE the overwrite.
     """
+    if repo_root is None:
+        repo_root = _load_state_repo_root(install_dir)
     install_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "wip_deploy_format_version": _DEPLOYMENT_JSON_VERSION,
         "deployment": deployment.model_dump(mode="json"),
     }
+    if repo_root is not None:
+        payload["repo_root"] = str(repo_root)
     (install_dir / _DEPLOYMENT_STATE_FILENAME).write_text(
         json.dumps(payload, indent=2, default=str) + "\n"
     )
@@ -3316,6 +3391,23 @@ def _persist_deployment(deployment: Deployment, install_dir: Path) -> None:
     legacy = install_dir / "deployment.json"
     if legacy.exists():
         legacy.unlink()
+
+
+def _load_state_repo_root(install_dir: Path) -> Path | None:
+    """Repo root stamped in the deployer-state envelope (CASE-459).
+
+    Returns None for pre-CASE-459 state files, missing/corrupt state,
+    or an absent stamp — callers fall back to cwd-based discovery.
+    """
+    target = install_dir / _DEPLOYMENT_STATE_FILENAME
+    if not target.exists():
+        return None
+    try:
+        payload = json.loads(target.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    raw = payload.get("repo_root")
+    return Path(raw) if isinstance(raw, str) and raw else None
 
 
 def _load_deployment(install_dir: Path) -> Deployment:
