@@ -12,8 +12,8 @@
 #   3. Generates a backend-focused CLAUDE.md (overwrites any existing)
 #   4. Copies backend slash commands to .claude/commands/ (deletes any existing
 #      *.md in that directory first — custom commands will be lost)
-#   4b. Writes .claude/settings.local.json with 23 catchall bash patterns
-#       (CASE-169) if the file does not already exist; preserved if present
+#   4b. Regenerates the committed .claude/settings.json permission baseline
+#       on every run (CASE-446); .claude/settings.local.json is never touched
 #   5. Verifies MCP connectivity (local target only)
 #
 # --refresh mode (for existing BE-YAC clones):
@@ -21,7 +21,8 @@
 #   in .claude/commands/, regenerates CLAUDE.md from the current heredoc,
 #   regenerates .mcp.json with current arguments, and re-runs the idempotent
 #   wip_mcp install so dependency changes pick up. Preserves: venv (recreates
-#   only if missing), .claude/settings.local.json (preserved if present).
+#   only if missing), .claude/settings.local.json (never touched; the
+#   committed .claude/settings.json baseline is regenerated — CASE-446).
 #   Use after a `git pull` brings new docs/slash-commands/backend/*.md or
 #   heredoc changes — those don't propagate to .claude/commands/* automatically
 #   because that directory is generated, not git-tracked.
@@ -90,7 +91,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --host HOST       Remote hostname (required for ssh/http)"
             echo "  --cert CERT_PATH  TLS cert for self-signed HTTPS (auto-detects from data/secrets/)"
             echo "  --refresh         Re-sync gene-pool surfaces (slash commands, CLAUDE.md, .mcp.json)"
-            echo "                    in an existing BE-YAC clone. Preserves venv + settings.local.json."
+            echo "                    in an existing BE-YAC clone. Preserves venv + settings.local.json;"
+            echo "                    regenerates the committed .claude/settings.json baseline (CASE-446)."
             echo "  -h, --help        Show this help"
             exit 0
             ;;
@@ -834,20 +836,26 @@ echo "   Copied: $(find "$WIP_ROOT/.claude/commands/" -maxdepth 1 -name '*.md' -
 printf 'BE-YAC\n' > "$WIP_ROOT/.claude/.session-role"
 echo "   Wrote: .claude/.session-role (BE-YAC)"
 
-# --- 4b. Generate .claude/settings.local.json defaults (CASE-169 + CASE-385) ---
-# 31 catchall bash patterns: 23 from CASE-169 (routine read-only file
-# inspection — cat/sed/grep/etc.) + 8 from CASE-385 (the commands
-# `/wip-setup` itself runs — venv check, container-runtime probe, MCP
-# import test, wip-deploy operator surface, APP-YAC curl probe).
-# Goal: a fresh YAC's first `/wip-setup` runs through all environment
-# checks with zero bash permission prompts, so time-to-productive
-# tracks the script wall-clock rather than human-approval latency.
-# File is gitignored; user customizations preserved on re-run.
-# find:* deliberately omitted — find -exec / -delete are destructive
-# and should be earned per session.
+# --- 4b. Generate committed .claude/settings.json baseline (CASE-446) ---
+# Replaces the old create-time-only settings.local.json seed (CASE-169 +
+# CASE-385): that file is gitignored and was written only if missing, so
+# allowlist improvements never reached existing repos and every clone
+# re-paid the approval tax (1,126 accumulated local rules measured across
+# 8 repos, 2026-06-11).
+#
+# This file is 100% scaffold-owned and REGENERATED ON EVERY RUN — do not
+# hand-edit it; machine-/operator-specific rules belong in
+# .claude/settings.local.json (which this script no longer touches).
+# Permission scopes merge at runtime, so existing local files keep working.
+#
+# Shape verified against code.claude.com/docs/en/permissions.md
+# (2026-06-12): evaluation order is deny > ask > allow regardless of rule
+# specificity, so the destructive-verb `ask` entries below reliably gate
+# the broad allows. MCP partial-name wildcards (mcp__wip__get_*) are valid.
+# find:* deliberately omitted (find -exec/-delete are destructive); git
+# deliberately omitted (commit/push discipline stays human-gated).
 
-if [ ! -f "$WIP_ROOT/.claude/settings.local.json" ]; then
-    cat > "$WIP_ROOT/.claude/settings.local.json" << 'EOF'
+cat > "$WIP_ROOT/.claude/settings.json" << 'EOF'
 {
   "permissions": {
     "allow": [
@@ -878,18 +886,37 @@ if [ ! -f "$WIP_ROOT/.claude/settings.local.json" ]; then
       "Bash(command:*)",
       "Bash(python:*)",
       "Bash(python3:*)",
+      "Bash(node:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
       "Bash(podman:*)",
       "Bash(docker:*)",
       "Bash(wip-deploy:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "mcp__wip__get_*",
+      "mcp__wip__list_*",
+      "mcp__wip__query_*",
+      "mcp__wip__search",
+      "mcp__wip__search_registry",
+      "mcp__wip__describe_data_model",
+      "mcp__wip__lookup_entry",
+      "mcp__wip__validate_*",
+      "mcp__wip__export_*"
+    ],
+    "ask": [
+      "Bash(wip-deploy nuke:*)",
+      "Bash(podman rm:*)",
+      "Bash(podman volume rm:*)",
+      "Bash(podman system prune:*)",
+      "Bash(docker rm:*)",
+      "Bash(docker volume rm:*)",
+      "Bash(docker system prune:*)",
+      "Bash(npm publish:*)"
     ]
   }
 }
 EOF
-    echo "   Written: .claude/settings.local.json (31 catchall patterns)"
-else
-    echo "   Skipped: .claude/settings.local.json already exists (preserved)"
-fi
+echo "   Written: .claude/settings.json (committed baseline — regenerated every run, CASE-446)"
 
 # --- 5. Verify MCP connectivity (local only) ---
 
