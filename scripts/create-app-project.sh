@@ -245,8 +245,27 @@ if $REFRESH_MODE; then
             echo "       Re-run with --name \"App Name\"."
             exit 1
         fi
+        # Backfill is a fallback PARSER, not an invariant. The grep exits 1
+        # when the '## Dev Namespace' heading is absent or has drifted (long-
+        # lived clones rename it '## Namespace' etc.); under `set -euo
+        # pipefail` that 1 propagates and kills the script AT THIS ASSIGNMENT,
+        # before any output — a silent death (CASE-460). `|| true` makes the
+        # parse tolerant; the empty result is then handled loudly below.
         # shellcheck disable=SC2016  # literal backticks: extracting a `code`-formatted namespace from markdown
-        DEV_NAMESPACE="$(sed -n '/^## Dev Namespace/,/^## /p' "$APP_DIR/CLAUDE.md" | grep -o '`[a-z0-9][a-z0-9-]*`' | head -1 | tr -d '`')"
+        DEV_NAMESPACE="$(sed -n '/^## Dev Namespace/,/^## /p' "$APP_DIR/CLAUDE.md" | grep -o '`[a-z0-9][a-z0-9-]*`' | head -1 | tr -d '`' || true)"
+        if [ -z "$DEV_NAMESPACE" ]; then
+            # Refuse to guess. Heading drift means this app may run on a
+            # namespace that is NOT dev-<slug> (e.g. a live one); silently
+            # defaulting would pin the wrong namespace into durable state.
+            # Fail with the same remediation as the no-CLAUDE.md path.
+            echo "Error: --refresh found $APP_DIR/CLAUDE.md but could not parse a"
+            echo "       namespace from a '## Dev Namespace' section (the heading"
+            echo "       may have drifted, e.g. '## Namespace'). Refusing to guess —"
+            echo "       this app may use a non-dev-<slug> namespace."
+            echo "       Fix: write .claude/.app-meta with the real values, or"
+            echo "       re-run with --name \"App Name\" (CASE-418/460)."
+            exit 1
+        fi
         META_SOURCE="CLAUDE.md backfill"
     else
         echo "Error: --refresh cannot resolve app metadata: no .claude/.app-meta,"
@@ -267,11 +286,10 @@ if [ -z "$APP_SLUG" ]; then
     APP_SLUG="$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/ /-/g')"
 fi
 if [ -z "$DEV_NAMESPACE" ]; then
+    # Create mode (or a --name refresh with no parsed namespace): dev-<slug>
+    # is the documented default. The CLAUDE.md-backfill path never reaches
+    # here empty — it fails loud above rather than guess (CASE-460).
     DEV_NAMESPACE="dev-${APP_SLUG}"
-    if [ "$META_SOURCE" = "CLAUDE.md backfill" ]; then
-        echo "Warning: could not parse the namespace from CLAUDE.md; assuming '$DEV_NAMESPACE'."
-        echo "         If the app uses a different namespace, fix .claude/.app-meta after this run."
-    fi
 fi
 
 if $REFRESH_MODE; then
