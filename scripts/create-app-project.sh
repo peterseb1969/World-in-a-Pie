@@ -196,6 +196,42 @@ KBEOF
     if cp "$WIP_ROOT/docs/slash-commands/app-builder/wip-case.md" "$APP_DIR/.claude/commands/" 2>/dev/null; then
         echo "   Dropped: /wip-case stub"
     fi
+    # Best-effort: register the role prefix as a SESSION_ROLE term (CASE-420).
+    # A tier-3 clone's first /wip-setup session mirror is term-validated against
+    # SESSION_ROLE (namespace kb); an unregistered prefix bounces. Enable is
+    # exactly when the clone becomes mirror-capable, so it registers here.
+    # Non-fatal — a laptop may have no KB reach. APP-KB confirmed SESSION_ROLE
+    # still gates the mirror and owns the durable seed; KB_TARGET_YAC is NOT a
+    # sync gap (free strings, hand-curated) so it is deliberately skipped.
+    # Direct def-store POST is correct: terminology provisioning, not a
+    # kb-document write (no CASE-464 gateway conflict). Base/key from kb.json;
+    # bulk-first means HTTP is always 200 — parse the per-item body, not the code.
+    ROLE_PREFIX="${APP_PREFIX:-$(cat "$APP_DIR/.claude/.session-role" 2>/dev/null || true)}"
+    if [ -n "$ROLE_PREFIX" ] && [ -f "$KB_KEY_FILE" ]; then
+        DS="${KB_URL%/}/api/def-store"
+        KB_KEY="$(cat "$KB_KEY_FILE")"
+        SR_TID="$(curl -sk "$DS/terminologies/by-value/SESSION_ROLE" -H "X-API-Key: $KB_KEY" 2>/dev/null \
+                  | sed -n 's/.*"terminology_id"[": ]*"\([^"]*\)".*/\1/p' | head -1 || true)"
+        if [ -z "$SR_TID" ]; then
+            echo "   SESSION_ROLE not resolvable at $DS — skip; add $ROLE_PREFIX via APP-KB's SESSION_ROLE.json (CASE-420)"
+        else
+            SR_RESP="$(curl -sk -X POST "$DS/terminologies/$SR_TID/terms" \
+                       -H "X-API-Key: $KB_KEY" -H "Content-Type: application/json" \
+                       -d "[{\"value\":\"$ROLE_PREFIX\",\"label\":\"$ROLE_PREFIX\",\"description\":\"YAC role ($ROLE_PREFIX).\"}]" \
+                       2>/dev/null || echo '{}')"
+            if printf '%s' "$SR_RESP" | grep -q '"succeeded":[ ]*1'; then
+                echo "   Registered new SESSION_ROLE term: $ROLE_PREFIX"
+                echo "   *** Durable seed: add \"$ROLE_PREFIX\" to APP-KB's SESSION_ROLE.json —"
+                echo "       live registration alone drifts on the next kb re-bootstrap (CASE-420)."
+            elif printf '%s' "$SR_RESP" | grep -q 'already exists'; then
+                echo "   SESSION_ROLE term $ROLE_PREFIX already present — ok"
+            elif [ "$SR_RESP" = '{}' ]; then
+                echo "   KB unreachable — register $ROLE_PREFIX in SESSION_ROLE later (rerun --enable-kb online)"
+            else
+                echo "   SESSION_ROLE registration: unexpected response for $ROLE_PREFIX — $SR_RESP"
+            fi
+        fi
+    fi
     if [ ! -e "$APP_DIR/yac-discussions" ]; then
         echo "   NOTE: no yac-discussions/ staging surface. Symlink the shared case"
         echo "         store (transition) — the write-gateway (CASE-464) will make it optional."
