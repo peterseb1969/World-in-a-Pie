@@ -518,11 +518,34 @@ if ! $REFRESH_MODE; then
     if [ -d "$BOOTSTRAP_SRC" ]; then
         echo ""
         echo "   Copying bootstrap templates..."
+        # Genesis-copy provenance stamp (CASE-415). These three files are
+        # one-time Phase-1 STARTING POINTS — the APP-YAC builds
+        # server/lib/bootstrap.ts from them by hand, then they are vestigial.
+        # A frozen, unmarked copy invites the grep-it-as-canonical misread
+        # that produced CASE-414. Stamp each SPAWNED copy with its source SHA,
+        # a "not canonical" warning, and a delete-after-use instruction. The
+        # canonical source in WIP_ROOT is never touched. `|| echo unknown`
+        # keeps the SHA capture from dying under set -euo pipefail (CASE-460).
+        STAMP_SHA="$(git -C "$WIP_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        STAMP_DATE="$(date '+%Y-%m-%d')"
         mkdir -p "$APP_DIR/templates/bootstrap"
         for tpl in bootstrap.server.ts.template bootstrap.routes.ts.template BootstrapGate.tsx.template; do
             if [ -f "$BOOTSTRAP_SRC/$tpl" ]; then
-                cp "$BOOTSTRAP_SRC/$tpl" "$APP_DIR/templates/bootstrap/"
-                echo "     templates/bootstrap/$tpl"
+                dest="$APP_DIR/templates/bootstrap/$tpl"
+                {
+                    cat <<BANNER
+// ============================================================================
+// GENESIS COPY (CASE-415) — not canonical, not live. One-time Phase-1 start.
+//   Source: World-in-a-Pie@${STAMP_SHA}, spawned ${STAMP_DATE}.
+//   Canonical scaffold: World-in-a-Pie/apps/templates/bootstrap/ — this frozen
+//   copy WILL drift from it. NEVER grep this dir as evidence of platform or
+//   scaffold behavior (that misread caused CASE-414).
+//   After you build server/lib/bootstrap.ts from this, DELETE templates/bootstrap/.
+// ============================================================================
+BANNER
+                    cat "$BOOTSTRAP_SRC/$tpl"
+                } > "$dest"
+                echo "     templates/bootstrap/$tpl (genesis-stamped)"
             else
                 echo "     Warning: $tpl not found in $BOOTSTRAP_SRC, skipping"
             fi
