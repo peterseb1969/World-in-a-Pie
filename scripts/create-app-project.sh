@@ -121,7 +121,7 @@ while [[ $# -gt 0 ]]; do
             echo "              instead of writing CLAUDE.md.refresh. App-authored content is lost."
             echo "  --kb        KB instance URL — makes the repo tier 3 (KB-backed collaboration,"
             echo "              CASE-463). Default is tier 2: WIP-only, zero KB plumbing emitted."
-            echo "  --kb-key    Path to the KB API key file (default: ~/.wip-deploy/wip-kb/secrets/api-key)"
+            echo "  --kb-key    Path to the KB API key file (default: ~/.wip-deploy/kb/secrets/api-key)"
             echo "  --enable-kb Retrofit tier 3 onto an existing repo: writes .claude/kb.json,"
             echo "              installs the served KB client, drops the /wip-case stub. Idempotent."
             echo "              Usage: $0 --enable-kb <app-directory> --kb <url> [--kb-key <path>]"
@@ -170,7 +170,7 @@ enable_kb() {
         echo "Error: tier-3 enable needs --kb <url> (no existing .claude/kb.json to reuse)."
         exit 1
     fi
-    KB_KEY_FILE="${KB_KEY_FILE:-$HOME/.wip-deploy/wip-kb/secrets/api-key}"
+    KB_KEY_FILE="${KB_KEY_FILE:-$HOME/.wip-deploy/kb/secrets/api-key}"
     mkdir -p "$APP_DIR/.claude/commands"
     cat > "$KB_CONFIG" << KBEOF
 {

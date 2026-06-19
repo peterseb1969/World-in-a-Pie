@@ -112,7 +112,7 @@ while [[ $# -gt 0 ]]; do
             echo "                    regenerates the committed .claude/settings.json baseline (CASE-446)."
             echo "  --kb URL          KB instance URL — makes this clone tier 3 (KB-backed collaboration,"
             echo "                    CASE-463). Default is tier 2: WIP-only, no KB plumbing emitted."
-            echo "  --kb-key PATH     KB API key file (default: ~/.wip-deploy/wip-kb/secrets/api-key)"
+            echo "  --kb-key PATH     KB API key file (default: ~/.wip-deploy/kb/secrets/api-key)"
             echo "  --enable-kb       Retrofit tier 3 onto this clone: writes .claude/kb.json, installs"
             echo "                    the served KB client, drops the /wip-case stub. Idempotent."
             echo "  -h, --help        Show this help"
@@ -153,7 +153,7 @@ enable_kb() {
         echo "Error: tier-3 enable needs --kb <url> (no existing .claude/kb.json to reuse)."
         exit 1
     fi
-    KB_KEY_FILE="${KB_KEY_FILE:-$HOME/.wip-deploy/wip-kb/secrets/api-key}"
+    KB_KEY_FILE="${KB_KEY_FILE:-$HOME/.wip-deploy/kb/secrets/api-key}"
     mkdir -p "$WIP_ROOT/.claude/commands"
     cat > "$KB_CONFIG" << KBEOF
 {
