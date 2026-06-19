@@ -25,8 +25,8 @@ from the running KB instance itself (CASE-437/440), version-matched, with **zero
 FR-YAC dependency**. The only inputs are the instance URL and your API key:
 
 ```bash
-curl -fsSk -H "X-API-Key: $(cat ~/.wip-deploy/wip-kb/secrets/api-key)" \
-  https://wip-kb.local/apps/kb/server-api/kb-client/install | sh
+curl -fsSk -H "X-API-Key: $(cat "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')")" \
+  "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/apps/kb/server-api/kb-client/install" | sh
 ```
 
 This materializes the bundle (loaders + the `kb-client.sh` runner + this playbook)
@@ -45,8 +45,8 @@ that is the whole recovery procedure.
 once per shell:
 
 ```bash
-BASE="https://wip-kb.local/apps/kb/server-api/kb"
-KEY="$(cat ~/.wip-deploy/wip-kb/secrets/api-key)"   # or your YAC's runtime key
+BASE="$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/apps/kb/server-api/kb"
+KEY="$(cat "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')")"   # or your YAC's runtime key
 ```
 
 The verbs are server-side domain logic: allocation, the `CASE-<n>` synonym
