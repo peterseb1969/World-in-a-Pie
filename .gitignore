@@ -65,6 +65,14 @@ logs/
 # Quality audit raw output
 reports/quality-audit/raw/
 
+# Session report staging (CASE-467/463): tier-3 sessions stage to project-local
+# reports/<session-id>/. World-in-a-Pie is PUBLIC — those session narratives
+# must NOT be committed (the kb mirror is the durable record). Ignore every
+# subdir of reports/ EXCEPT the tracked audit artifacts; SECURITY-AUDIT.md is a
+# file (not matched by the dir glob) so it stays tracked.
+reports/*/
+!reports/quality-audit/
+
 # K8s deployment secrets (real credentials, never commit)
 k8s/secrets.local.yaml
 
