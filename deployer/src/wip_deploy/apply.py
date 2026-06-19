@@ -29,7 +29,9 @@ translates to a non-zero exit code.
 
 from __future__ import annotations
 
+import base64
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -1045,7 +1047,13 @@ def _ensure_self_signed_tls_secret(
         capture_output=True, text=True,
     )
     if existing.returncode == 0:
-        return  # Secret already there; idempotent re-install.
+        # CASE-473: the Secret exists, but CASE-247 used to no-op here
+        # without checking the cert. A stale SAN (left from a prior
+        # --hostname, or a wip-tls reused across a rename) was then served
+        # silently and surfaced as a late browser TLS error instead of an
+        # actionable pre-flight stop. Verify SAN coverage before trusting it.
+        _verify_tls_secret_san(ns=ns, secret_name=secret_name, hostname=hostname)
+        return  # Secret present and SAN covers hostname; idempotent re-install.
 
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
@@ -1084,6 +1092,94 @@ def _ensure_self_signed_tls_secret(
                 f"kubectl create secret tls {secret_name} -n {ns} failed "
                 f"(exit {e.returncode}): {stderr}"
             ) from e
+
+
+def _verify_tls_secret_san(
+    *, ns: str, secret_name: str, hostname: str,
+) -> None:
+    """Fail loud if an existing TLS Secret's cert SAN doesn't cover hostname.
+
+    CASE-473: `_ensure_self_signed_tls_secret` used to no-op the moment a
+    Secret with the right name existed, never checking the certificate
+    actually matched `network.hostname`. A stale `wip-tls` (left from a
+    prior `--hostname`, or reused across a rename) was then served with a
+    SAN mismatch — surfacing as a late browser TLS error instead of an
+    actionable pre-flight stop. This reads the cert from the Secret and
+    verifies `hostname` is among its DNS SANs (wildcard-aware). `openssl`
+    is already confirmed on PATH by the caller.
+    """
+    pem = subprocess.run(
+        ["kubectl", "get", "secret", secret_name, "-n", ns,
+         "-o", r"jsonpath={.data.tls\.crt}"],
+        capture_output=True, text=True,
+    )
+    cert_b64 = (pem.stdout or "").strip()
+    if pem.returncode != 0 or not cert_b64:
+        raise ApplyError(
+            f"TLS Secret {secret_name!r} in namespace {ns!r} exists but its "
+            f"tls.crt could not be read for SAN verification "
+            f"(kubectl exit {pem.returncode}): {(pem.stderr or '').strip()}. "
+            f"Delete it and re-install to re-mint: "
+            f"kubectl delete secret {secret_name} -n {ns}"
+        )
+    try:
+        # binascii.Error subclasses ValueError, so this covers both.
+        cert_pem = base64.b64decode(cert_b64, validate=True)
+    except ValueError as e:
+        raise ApplyError(
+            f"TLS Secret {secret_name!r} in namespace {ns!r} has a tls.crt "
+            f"that is not valid base64 ({e}). Delete it and re-install to "
+            f"re-mint: kubectl delete secret {secret_name} -n {ns}"
+        ) from e
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        crt_path = Path(tmp) / "existing.crt"
+        crt_path.write_bytes(cert_pem)
+        san_proc = subprocess.run(
+            ["openssl", "x509", "-in", str(crt_path), "-noout",
+             "-ext", "subjectAltName"],
+            capture_output=True, text=True,
+        )
+    sans = _parse_dns_sans(san_proc.stdout if san_proc.returncode == 0 else "")
+    if not _hostname_in_sans(hostname, sans):
+        listed = ", ".join(sorted(sans)) if sans else "(none)"
+        raise ApplyError(
+            f"TLS Secret {secret_name!r} in namespace {ns!r} exists but its "
+            f"certificate SAN [{listed}] does not cover hostname "
+            f"{hostname!r}. Serving it would cause a browser TLS error. "
+            f"If this is a self-signed cert you want wip-deploy to manage, "
+            f"delete it and re-install to re-mint:\n"
+            f"  kubectl delete secret {secret_name} -n {ns}\n"
+            f"If it is operator/CA-managed, re-issue it with a SAN covering "
+            f"{hostname!r}."
+        )
+
+
+def _parse_dns_sans(openssl_san_output: str) -> set[str]:
+    """Extract DNS SAN entries from `openssl x509 -ext subjectAltName` output.
+
+    The relevant line looks like:
+        X509v3 Subject Alternative Name:
+            DNS:kb.internal, DNS:*.internal, IP Address:10.0.0.1
+    Only DNS entries are returned (IP SANs are not hostname-matched here).
+    """
+    return {m.lower() for m in re.findall(r"DNS:([^,\s]+)", openssl_san_output)}
+
+
+def _hostname_in_sans(hostname: str, sans: set[str]) -> bool:
+    """True if `hostname` is covered by any DNS SAN, with single-label
+    wildcard matching (`*.internal` covers `kb.internal`, not `a.b.internal`
+    or `internal`)."""
+    host = hostname.lower()
+    for san in sans:
+        if san == host:
+            return True
+        if san.startswith("*."):
+            suffix = san[1:]  # ".internal"
+            if host.endswith(suffix) and host.count(".") == san.count("."):
+                return True
+    return False
 
 
 def _ensure_namespace(ns: str) -> None:

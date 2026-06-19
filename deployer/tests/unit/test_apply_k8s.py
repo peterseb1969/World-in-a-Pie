@@ -360,23 +360,90 @@ class TestEnsureSelfSignedTLSSecret:
 
     @patch("wip_deploy.apply.subprocess.run")
     @patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/openssl")
-    def test_skips_when_secret_exists(
+    def test_skips_when_secret_exists_and_san_matches(
         self, _which: MagicMock, mock_run: MagicMock
     ) -> None:
-        # First call: ensure_namespace (rc=0). Second: get secret (rc=0 → exists).
+        import base64
+        cert_b64 = base64.b64encode(b"dummy-pem").decode()
+        # ensure_namespace, get secret (exists), read cert, openssl SAN.
         mock_run.side_effect = [
             MagicMock(returncode=0, stderr=""),  # create namespace
             MagicMock(returncode=0, stderr=""),  # get secret (exists)
+            MagicMock(returncode=0, stdout=cert_b64, stderr=""),  # read tls.crt
+            MagicMock(  # openssl x509 -ext subjectAltName
+                returncode=0,
+                stdout="X509v3 Subject Alternative Name:\n    DNS:wip-test.local\n",
+                stderr="",
+            ),
         ]
         _ensure_self_signed_tls_secret(
             ns="wip-test", secret_name="wip-tls", hostname="wip-test.local"
         )
-        # Should NOT have called openssl or kubectl create secret.
+        # SAN covers hostname → no cert generation (openssl req) or secret create.
         cmds = [c[0][0] for c in mock_run.call_args_list]
-        assert not any("openssl" in c[0] for c in cmds)
+        assert not any("req" in c for c in cmds)
         assert not any(
             "create" in c and "secret" in c and "tls" in c for c in cmds
         )
+
+    @patch("wip_deploy.apply.subprocess.run")
+    @patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/openssl")
+    def test_raises_when_existing_san_mismatch(
+        self, _which: MagicMock, mock_run: MagicMock
+    ) -> None:
+        import base64
+        cert_b64 = base64.b64encode(b"dummy-pem").decode()
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=""),  # create namespace
+            MagicMock(returncode=0, stderr=""),  # get secret (exists)
+            MagicMock(returncode=0, stdout=cert_b64, stderr=""),  # read tls.crt
+            MagicMock(  # SAN covers a DIFFERENT host
+                returncode=0,
+                stdout="X509v3 Subject Alternative Name:\n    DNS:old-host.local\n",
+                stderr="",
+            ),
+        ]
+        with pytest.raises(ApplyError, match="does not cover hostname"):
+            _ensure_self_signed_tls_secret(
+                ns="wip-test", secret_name="wip-tls", hostname="kb.internal"
+            )
+
+    @patch("wip_deploy.apply.subprocess.run")
+    @patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/openssl")
+    def test_wildcard_san_covers_single_label(
+        self, _which: MagicMock, mock_run: MagicMock
+    ) -> None:
+        import base64
+        cert_b64 = base64.b64encode(b"dummy-pem").decode()
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=""),  # create namespace
+            MagicMock(returncode=0, stderr=""),  # get secret (exists)
+            MagicMock(returncode=0, stdout=cert_b64, stderr=""),  # read tls.crt
+            MagicMock(
+                returncode=0,
+                stdout="X509v3 Subject Alternative Name:\n    DNS:*.internal\n",
+                stderr="",
+            ),
+        ]
+        # *.internal covers kb.internal — no exception.
+        _ensure_self_signed_tls_secret(
+            ns="wip-test", secret_name="wip-tls", hostname="kb.internal"
+        )
+
+    @patch("wip_deploy.apply.subprocess.run")
+    @patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/openssl")
+    def test_raises_when_existing_cert_unreadable(
+        self, _which: MagicMock, mock_run: MagicMock
+    ) -> None:
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=""),  # create namespace
+            MagicMock(returncode=0, stderr=""),  # get secret (exists)
+            MagicMock(returncode=0, stdout="", stderr=""),  # empty tls.crt
+        ]
+        with pytest.raises(ApplyError, match="could not be read for SAN"):
+            _ensure_self_signed_tls_secret(
+                ns="wip-test", secret_name="wip-tls", hostname="kb.internal"
+            )
 
     @patch("wip_deploy.apply.subprocess.run")
     @patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/openssl")
