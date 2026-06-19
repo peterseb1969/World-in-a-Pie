@@ -70,7 +70,17 @@ Use for design decisions worth a permanent record.
    <How this affects current work, other apps, or the platform>
    ```
 
-4. Tell Peter the report was written and what file it's in. Continue with the session's work.
+4. **Mirror the fireside to kb (tier 3 only, warn-and-continue)** — **Tier gate (CASE-463):** runs only in tier-3 repos; if `.claude/kb.json` is absent, skip this step silently (tier-2 solo mode is by design). A fireside is a **first-class, findable FIRESIDE entity** (CASE-479) — not session-body sediment. Compose the file locally first (step 3), then:
+
+   ```bash
+   KB_URL="$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')"; KB_KEYFILE="$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')"
+   python3 -c 'import json,sys; print(json.dumps({"body":open(sys.argv[1]).read(),"session_id":"<YOUR-SESSION-ID>"}))' "reports/<YOUR-SESSION-ID>/report-<topic-slug>.md" \
+     | curl -fsSk -X POST "$KB_URL/apps/kb/server-api/kb/firesides/mirror" -H "X-API-Key: $(cat "$KB_KEYFILE")" -H "Content-Type: application/json" -d @-
+   ```
+
+   The gateway derives `title`/`topic`/`authored_by`/`chat_date` from the fireside frontmatter (`topic`, `participants`, `time`) and upserts by `title`, so re-running is idempotent (PoNIF #3). If kb is unreachable, log to stderr and **proceed** — the local file is authoritative; re-run the same POST to retry.
+
+5. Tell Peter the report was written and what file it's in. Continue with the session's work.
 
 ### When to use Mode 1
 
