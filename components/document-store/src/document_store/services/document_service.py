@@ -2036,6 +2036,21 @@ class DocumentService:
                 query[field] = {"$exists": value}
             elif operator == "regex":
                 query[field] = {"$regex": value}
+            else:
+                # `operator` is a free str on QueryFilter (not an enum), so an
+                # unrecognized value reaches here. Before CASE-466 it fell
+                # through silently: the filter was never applied and the query
+                # over-returned (no filtering on that field) with no error —
+                # the same silent-empty/silent-wrong class the case names, on
+                # the operator axis. Fail loud; the route maps ValueError->422.
+                # NOTE: this validates the OPERATOR only. Unknown filter FIELDS
+                # stay free by design (CLAUDE.md §5: query filters are ad-hoc
+                # reads, not declarative commitments) — out of scope here.
+                raise ValueError(
+                    f"Unsupported filter operator '{operator}' on field "
+                    f"'{field}'. Supported: eq, ne, gt, gte, lt, lte, in, "
+                    f"nin, exists, regex."
+                )
 
         return query
 
