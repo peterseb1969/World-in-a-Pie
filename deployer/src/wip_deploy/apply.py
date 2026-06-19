@@ -431,6 +431,133 @@ def restart_compose_services(
         ) from e
 
 
+# ────────────────────────────────────────────────────────────────────
+# Reversible run-state: stop / start (CASE-475)
+#
+# A zero-delete halt-and-resume pair. Run-state only — no render, no
+# rebuild, no spec recompute (the same class as `up`/`restart`). The
+# missing primitive before this: the only k8s teardown was `nuke`, which
+# deletes the whole namespace (PVCs included; only Retain-policy PVs
+# survive), and `up` is compose-only — so "shut it down, change nothing,
+# bring it back" forced a `nuke` + re-`install` round trip or a drop to
+# raw kubectl.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _compose_run_state(install_dir: Path, verb: str) -> None:
+    """Run `compose <verb>` (stop|start) against a rendered install.
+
+    Keeps the containers in place — `stop` is NOT `down`, `start`
+    revives the stopped containers without recreating them. Raises
+    ApplyError if the compose file is missing or the command fails.
+    """
+    install_dir = Path(install_dir)
+    compose_file = install_dir / "docker-compose.yaml"
+    if not compose_file.is_file():
+        raise ApplyError(
+            f"no docker-compose.yaml under {install_dir}; run "
+            f"`wip-deploy install` first"
+        )
+
+    compose_cmd = _detect_compose_cmd()
+    cmd = [
+        *compose_cmd,
+        "--env-file", ".env",
+        "-f", "docker-compose.yaml",
+        verb,
+    ]
+    try:
+        subprocess.run(cmd, cwd=install_dir, check=True)
+    except subprocess.CalledProcessError as e:
+        raise ApplyError(
+            f"{compose_cmd[0]} {verb} failed (exit {e.returncode})"
+        ) from e
+
+
+def _k8s_scale_all(namespace: str, replicas: int) -> None:
+    """Scale every wip-managed Deployment AND StatefulSet in `namespace`
+    to `replicas`, in one call.
+
+    Covering both workload kinds is the load-bearing detail: the renderer
+    stamps `app.kubernetes.io/part-of=wip` on each workload it writes
+    (renderers/k8s.py) and selects StatefulSet vs Deployment from
+    `owner.spec.storage`. A bare `kubectl scale deployment --all` would
+    halt the stateless service tier but silently leave the storage-bearing
+    StatefulSets (mongodb/postgres/minio/nats/dex) running — the exact
+    silent half-stop CASE-475 documents. The label selector also scopes
+    the scale to wip workloads, so a shared namespace is untouched. A
+    selector that matches nothing is a no-op (kubectl exits 0).
+
+    Restoring to `replicas=1` matches the renderer's hardcoded
+    `replicas: 1` (renderers/k8s.py); if a configurable replica field is
+    ever added to the spec, `start` must read each workload's desired
+    count instead of assuming 1.
+    """
+    _kubectl_run([
+        "-n", namespace,
+        "scale", "deployment,statefulset",
+        "--selector=app.kubernetes.io/part-of=wip",
+        f"--replicas={replicas}",
+    ])
+
+
+def stop_install(
+    *,
+    install_dir: Path,
+    target: str,
+    namespace: str | None = None,
+) -> None:
+    """Halt a running install without deleting anything (CASE-475).
+
+    Run-state only — no render, no rebuild, no spec recompute. Reverse
+    with `start_install`.
+
+    - compose/dev: `compose stop` — stops the containers, keeps them.
+    - k8s: scale every wip Deployment AND StatefulSet to 0 replicas;
+      PVCs, Services, Ingress, and secrets are left intact.
+
+    Raises ApplyError if a k8s stop is requested without a namespace,
+    or if the underlying command fails.
+    """
+    if target == "k8s":
+        if not namespace:
+            raise ApplyError(
+                "k8s stop requires a namespace (none found in the saved "
+                "deployer-state); pass --namespace explicitly"
+            )
+        _k8s_scale_all(namespace, 0)
+    else:
+        _compose_run_state(Path(install_dir), "stop")
+
+
+def start_install(
+    *,
+    install_dir: Path,
+    target: str,
+    namespace: str | None = None,
+) -> None:
+    """Bring a stopped install back to running without re-render (CASE-475).
+
+    The reciprocal of `stop_install` — run-state only, no spec recompute.
+
+    - compose/dev: `compose start` — revives the stopped containers.
+    - k8s: scale every wip Deployment AND StatefulSet back to 1 replica
+      (the renderer's hardcoded count — see `_k8s_scale_all`).
+
+    Raises ApplyError if a k8s start is requested without a namespace,
+    or if the underlying command fails.
+    """
+    if target == "k8s":
+        if not namespace:
+            raise ApplyError(
+                "k8s start requires a namespace (none found in the saved "
+                "deployer-state); pass --namespace explicitly"
+            )
+        _k8s_scale_all(namespace, 1)
+    else:
+        _compose_run_state(Path(install_dir), "start")
+
+
 def _reload_proxy(container: str) -> None:
     """Gracefully reload a Caddy proxy whose mounted config changed (CASE-443).
 

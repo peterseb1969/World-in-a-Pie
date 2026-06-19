@@ -568,10 +568,18 @@ wip-deploy upgrade [--target T] [--tag TAG] [wait options]
     # Re-render, re-apply. Secrets preserved. Useful for image-tag bumps
     # or picking up manifest changes.
 
-wip-deploy start [COMPONENT...]
-wip-deploy stop [COMPONENT...]
+wip-deploy stop  [--name N | --namespace NS]   # CASE-475
+wip-deploy start [--name N | --namespace NS]    # CASE-475
+    # Reversible, zero-delete halt + resume of a WHOLE install. Run-state
+    # only — no render, no rebuild, no spec recompute. compose: `compose
+    # stop`/`start` (keeps containers). k8s: scale every wip Deployment
+    # AND StatefulSet to 0 / 1 replicas (the StatefulSet half is required —
+    # a bare `scale deploy --all` leaves the storage tier running). Target
+    # + namespace auto-detected from the saved deployer-state via --name.
+
 wip-deploy restart [COMPONENT...]
-    # Operator shortcuts. Empty list = all components.
+    # Compose/dev only. Bounce one or more named services (at least one
+    # required) — `compose restart <svc>`. NOT a whole-install verb.
 
 wip-deploy status
     # Reads deployed state: running containers/pods, health, image tags.

@@ -904,3 +904,86 @@ class TestStatusK8sAutoDetect:
         r = _invoke("status", "--install-dir", str(tmp_path))
         assert r.exit_code == 0
         assert called.get("compose") is True
+
+
+# ────────────────────────────────────────────────────────────────────
+# CASE-475: stop / start verbs — reversible, zero-delete halt + resume.
+# The target/namespace auto-detection reuses `status`'s deployer-state
+# path (CASE-364); these assert the new verbs wire into it correctly.
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestStopStartVerb:
+    def test_stop_help_renders(self) -> None:
+        r = _invoke("stop", "--help")
+        assert r.exit_code == 0
+        assert "Halt a running install without deleting anything" in r.output
+
+    def test_start_help_renders(self) -> None:
+        r = _invoke("start", "--help")
+        assert r.exit_code == 0
+        assert "Bring a stopped install back to running" in r.output
+
+    def _persist_k8s_state(self, tmp_path: Path) -> None:
+        from wip_deploy.cli import _persist_deployment
+        _persist_deployment(TestStatusDiff()._make_k8s_deployment(), tmp_path)
+
+    def test_stop_name_only_routes_to_k8s_via_saved_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`stop --install-dir <k8s-state>` (no --namespace) must read the
+        saved deployer-state, see target=k8s, and pass the saved namespace
+        to the apply layer — not fall to the compose path."""
+        self._persist_k8s_state(tmp_path)
+
+        from wip_deploy import apply as apply_mod
+        captured: dict[str, object] = {}
+
+        def fake_stop(*, install_dir, target, namespace=None):  # type: ignore[no-untyped-def]
+            captured["target"] = target
+            captured["namespace"] = namespace
+
+        monkeypatch.setattr(apply_mod, "stop_install", fake_stop)
+
+        r = _invoke("stop", "--install-dir", str(tmp_path))
+        assert r.exit_code == 0
+        assert captured["target"] == "k8s"
+        assert captured["namespace"] == "wip-test"
+
+    def test_start_name_only_routes_to_k8s_via_saved_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._persist_k8s_state(tmp_path)
+
+        from wip_deploy import apply as apply_mod
+        captured: dict[str, object] = {}
+
+        def fake_start(*, install_dir, target, namespace=None):  # type: ignore[no-untyped-def]
+            captured["target"] = target
+            captured["namespace"] = namespace
+
+        monkeypatch.setattr(apply_mod, "start_install", fake_start)
+
+        r = _invoke("start", "--install-dir", str(tmp_path))
+        assert r.exit_code == 0
+        assert captured["target"] == "k8s"
+        assert captured["namespace"] == "wip-test"
+
+    def test_stop_compose_install_uses_compose_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No deployer-state → (None, None) → compose target (historical
+        # default), namespace stays None.
+        from wip_deploy import apply as apply_mod
+        captured: dict[str, object] = {}
+
+        def fake_stop(*, install_dir, target, namespace=None):  # type: ignore[no-untyped-def]
+            captured["target"] = target
+            captured["namespace"] = namespace
+
+        monkeypatch.setattr(apply_mod, "stop_install", fake_stop)
+
+        r = _invoke("stop", "--install-dir", str(tmp_path))
+        assert r.exit_code == 0
+        assert captured["target"] == "compose"
+        assert captured["namespace"] is None
