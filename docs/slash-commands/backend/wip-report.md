@@ -131,6 +131,17 @@ If no `session-updates.md` exists yet, create it with this header at the top:
 Append-only running log. Distinct from session.md (overwritten at end) and report-<slug>.md (per-decision). Read by /wip-wake after session.md and commits.md.
 ```
 
+### Mirror to kb (tier 3 only, warn-and-continue)
+
+After appending the entry, push the running log to kb so its kb copy is never stale — **every** update-session, not a selected subset. **Tier gate (CASE-463):** runs only in tier-3 repos; if `.claude/kb.json` is absent, skip silently (tier-2 keeps the log local by design). The session stays `active` — this re-mirrors the whole session dir (now carrying the fresh `session-updates.md`) without touching frontmatter; it is Mode 3's mirror minus the `status: closed` flip. Idempotent upsert by `session_id`.
+
+```bash
+KB_URL="$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')"; KB_KEYFILE="$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')"
+( cd reports/<SESSION-ID> && python3 -c 'import json,glob; print(json.dumps({"session_id":"<SESSION-ID>","files":{f:open(f).read() for f in sorted(glob.glob("*.md"))}}))' | curl -fsSk -X POST "$KB_URL/apps/kb/server-api/kb/sessions/mirror" -H "X-API-Key: $(cat "$KB_KEYFILE")" -H "Content-Type: application/json" -d @- )
+```
+
+If kb is unreachable, log to stderr and proceed — the local append is authoritative; the next mirror-emitting action (another update, wake, or session-end) re-pushes it.
+
 ### One session-updates.md per session
 
 Under the session-per-context-window model (CASE-389), `session-updates.md` belongs to a **single** session and grows append-only within it — no multi-session rollover. `/wip-wake` ends the current session and mints a fresh one with its own `reports/<new-id>/` dir, so the next session's running log starts clean. Cross-session continuity is the `continues_from` chain (walk the SESSION records / `CONTINUES_FROM` edges), not in-file `## /resume`-style section breaks. (Legacy mega-sessions like `APP-RC-20260409-1649` predate this and packed many days into one file; new sessions don't.)
