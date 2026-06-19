@@ -1089,7 +1089,7 @@ WIP_API_KEY=$APP_KEY_PLAINTEXT
 EOF
 else
 cat >> "$CLAUDE_TARGET" << 'EOF'
-No key was auto-provisioned by this script. If WIP is running locally and you have an admin key, create a runtime key via `mcp__wip__create_api_key` (or `POST /api/registry/api-keys`). If a key was already provisioned out-of-band (e.g. for a non-localhost target like `wip-kb.local`), check `.env` and `~/.wip-deploy/<deployment>/secrets/`.
+No key was auto-provisioned by this script. If WIP is running locally and you have an admin key, create a runtime key via `mcp__wip__create_api_key` (or `POST /api/registry/api-keys`). If a key was already provisioned out-of-band (e.g. for a non-localhost target like `kb.internal`), check `.env` and `~/.wip-deploy/<deployment>/secrets/`.
 
 Save the `plaintext_key` from the response to `.env`:
 ```bash
@@ -1214,7 +1214,7 @@ The WIP libs are tarballs in \`libs/\`. \`@tanstack/react-query\` is the peer de
 
 ## Dev Setup Gotchas
 
-**TLS:** WIP uses a self-signed cert on whichever hostname the install runs at — \`https://localhost:8443\` for compose dev, \`https://<ingress-hostname>\` for k8s (e.g. \`https://wip-kb.local\`). Node.js \`fetch()\` rejects self-signed certs; add \`NODE_TLS_REJECT_UNAUTHORIZED=0\` to your \`dev:server\` script (NOT \`start\`/production). The python wip_mcp client uses \`WIP_VERIFY_TLS=false\` (already set in \`.mcp.json\`). Production with proper certs needs no workaround.
+**TLS:** WIP uses a self-signed cert on whichever hostname the install runs at — \`https://localhost:8443\` for compose dev, \`https://<ingress-hostname>\` for k8s (e.g. \`https://kb.internal\`). Node.js \`fetch()\` rejects self-signed certs; add \`NODE_TLS_REJECT_UNAUTHORIZED=0\` to your \`dev:server\` script (NOT \`start\`/production). The python wip_mcp client uses \`WIP_VERIFY_TLS=false\` (already set in \`.mcp.json\`). Production with proper certs needs no workaround.
 
 **@wip/client baseUrl:** In browser apps behind a Vite proxy, use \`baseUrl: '/wip'\` (resolved to \`window.location.origin + '/wip'\`). Do NOT use a bare relative path without the client resolving it — \`new URL('/wip/...')\` throws without a protocol.
 
@@ -1240,7 +1240,7 @@ Key commands:
 
 Remote WIP instances:
 \`\`\`bash
-wip-toolkit --host wip-kb.local --proxy export kb /tmp/kb-backup.zip
+wip-toolkit --host kb.internal --proxy export kb /tmp/kb-backup.zip
 \`\`\`
 
 ## Session Awareness
