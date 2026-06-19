@@ -1446,6 +1446,162 @@ def up(
 
 
 # ────────────────────────────────────────────────────────────────────
+# stop / start (CASE-475) — reversible, zero-delete halt + resume
+# ────────────────────────────────────────────────────────────────────
+
+
+def _stop_namespace_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--namespace", "-n",
+        help=(
+            "Kubernetes namespace to act on. When set, operates on k8s "
+            "instead of compose. Optional for a k8s install reached by "
+            "--name: the target + namespace are auto-detected from the "
+            "saved deployer-state. Requires kubectl configured against "
+            "the target cluster."
+        ),
+    )
+
+
+@app.command()
+def stop(
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+    name: Annotated[str | None, _name_opt()] = None,
+    namespace: Annotated[str | None, _stop_namespace_opt()] = None,
+) -> None:
+    """Halt a running install without deleting anything (CASE-475).
+
+    Run-state only — no render, no rebuild, no spec recompute (the same
+    class as `up` / `restart`). Reverse with `wip-deploy start`.
+
+    compose/dev: `compose stop` — stops the containers but keeps them
+    (NOT `nuke` / `down`). k8s: scales every wip Deployment AND
+    StatefulSet to 0 replicas — PVCs, Services, Ingress, and secrets are
+    left intact. Scaling both kinds is deliberate: a bare `kubectl scale
+    deployment --all` would leave the storage StatefulSets
+    (mongodb/postgres/minio/nats/dex) running. The target + namespace are
+    auto-detected from the saved deployer-state when reached by --name;
+    pass --namespace to address a k8s install directly.
+
+    Useful for cutovers, idle/cost parking, and maintenance windows
+    without the `nuke` + re-`install` round trip.
+
+    Examples:
+
+      wip-deploy stop
+      wip-deploy stop --name wip-dev-local
+      wip-deploy stop --namespace wip-kb
+    """
+    from wip_deploy.apply import ApplyError, stop_install
+
+    name = _resolve_name(
+        name,
+        target=("k8s" if namespace is not None else None),
+        namespace=namespace,
+    )
+    resolved_dir = install_dir or _default_install_dir(name)
+
+    # No explicit --namespace: auto-detect the target from the persisted
+    # deployer-state so `stop --name <k8s-install>` works without the
+    # operator remembering --namespace (mirrors `status`, CASE-364). Falls
+    # through to compose on any read error or a non-k8s target.
+    if namespace is None:
+        saved_target, saved_ns = _read_saved_target_and_namespace(resolved_dir)
+        if saved_target == "k8s":
+            namespace = saved_ns
+
+    target = "k8s" if namespace is not None else "compose"
+
+    try:
+        stop_install(
+            install_dir=resolved_dir, target=target, namespace=namespace
+        )
+    except ApplyError as e:
+        typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
+        raise typer.Exit(1) from e
+
+    where = (
+        f"namespace {namespace}" if target == "k8s"
+        else f"install at {resolved_dir}"
+    )
+    typer.echo(
+        typer.style(f"✓ Stopped {where}", fg=typer.colors.GREEN, bold=True)
+    )
+
+
+@app.command()
+def start(
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+    name: Annotated[str | None, _name_opt()] = None,
+    namespace: Annotated[str | None, _stop_namespace_opt()] = None,
+) -> None:
+    """Bring a stopped install back to running (CASE-475).
+
+    The reciprocal of `wip-deploy stop` — run-state only, no render, no
+    rebuild, no spec recompute.
+
+    compose/dev: `compose start` — revives the stopped containers. k8s:
+    scales every wip Deployment AND StatefulSet back to 1 replica (the
+    renderer's count). The target + namespace are auto-detected from the
+    saved deployer-state when reached by --name; pass --namespace to
+    address a k8s install directly.
+
+    For a post-reboot compose recovery that picks up *exited* containers
+    use `wip-deploy up`; `start` is specifically the resume half of a
+    `stop`.
+
+    Examples:
+
+      wip-deploy start
+      wip-deploy start --name wip-dev-local
+      wip-deploy start --namespace wip-kb
+    """
+    from wip_deploy.apply import ApplyError, start_install
+
+    name = _resolve_name(
+        name,
+        target=("k8s" if namespace is not None else None),
+        namespace=namespace,
+    )
+    resolved_dir = install_dir or _default_install_dir(name)
+
+    if namespace is None:
+        saved_target, saved_ns = _read_saved_target_and_namespace(resolved_dir)
+        if saved_target == "k8s":
+            namespace = saved_ns
+
+    target = "k8s" if namespace is not None else "compose"
+
+    try:
+        start_install(
+            install_dir=resolved_dir, target=target, namespace=namespace
+        )
+    except ApplyError as e:
+        typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
+        raise typer.Exit(1) from e
+
+    where = (
+        f"namespace {namespace}" if target == "k8s"
+        else f"install at {resolved_dir}"
+    )
+    typer.echo(
+        typer.style(f"✓ Started {where}", fg=typer.colors.GREEN, bold=True)
+    )
+
+
+# ────────────────────────────────────────────────────────────────────
 # register-app / unregister-app (CASE-356)
 #
 # Per-operator local-app-source registry at `~/.wip-deploy/apps/`.
@@ -3044,6 +3200,16 @@ KUBERNETES
 
   Install against a real cluster (needs kubectl context set):
     wip-deploy install --target k8s --namespace wip --tls external
+
+PAUSE / RESUME (zero-delete halt — keeps every object and all data)
+  Stop a running install without deleting anything:
+    wip-deploy stop --name wip-dev-local
+
+  Bring it back (scales k8s workloads up / starts compose containers):
+    wip-deploy start --name wip-dev-local
+
+  Pause a k8s instance by namespace (scales Deployments AND StatefulSets):
+    wip-deploy stop --namespace wip-kb
 
 TEARDOWN
   Tear down (preserve data and secrets — re-install reuses both):
