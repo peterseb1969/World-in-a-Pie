@@ -13,8 +13,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from wip_deploy.config_gen import make_spec_context, resolve_all_env
 from wip_deploy.discovery import Discovery, discover
 from wip_deploy.renderers import render_dev_simple
+from wip_deploy.renderers.dev_simple import _render_dev_compose_yaml
 from wip_deploy.secrets import ensure_secrets
 from wip_deploy.secrets_backend import FileSecretBackend, ResolvedSecrets
 from wip_deploy.spec import (
@@ -689,3 +691,83 @@ class TestWipAuthBindMount:
         for v in reg.get("volumes", []):
             assert "/app/src" not in v
             assert "/app/libs/wip-auth/src" not in v
+
+
+# ────────────────────────────────────────────────────────────────────
+# build_args plumbing (CASE-488)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestBuildArgs:
+    """image.build_args must reach the rendered compose build.args.
+
+    _dev_service_block plumbs build_args at three sites: the build_context
+    branch (dev_simple.py:371-372), the --app-source branch (:384-385), and
+    the _resolve_build_context fallback (:392-393). Before CASE-488 none were
+    tested. CASE-472's dev build-stamp delivery rides the --app-source branch,
+    so that one is load-bearing.
+
+    Each test uses a fresh discover() — it mutates build_args, so it must not
+    touch the session-scoped real_discovery fixture.
+    """
+
+    def test_build_args_in_build_context_branch(self, tmp_path: Path) -> None:
+        disc = discover(REPO_ROOT)
+        registry = next(c for c in disc.components if c.metadata.name == "registry")
+        registry.spec.image.build_args = {"VITE_X": "y"}
+        d = _dev_deployment()
+        s = _secrets(tmp_path, d, disc)
+        tree = render_dev_simple(
+            d, disc.components, disc.apps, s, repo_root=REPO_ROOT,
+        )
+        doc = yaml.safe_load(tree.files[Path("docker-compose.yaml")].content)
+        assert doc["services"]["registry"]["build"]["args"] == {"VITE_X": "y"}
+
+    def test_build_args_in_app_source_branch(self, tmp_path: Path) -> None:
+        # The exact path CASE-472's dev build-stamp delivery uses.
+        disc = discover(REPO_ROOT)
+        rc = next(a for a in disc.apps if a.metadata.name == "react-console")
+        rc.spec.image.build_args = {"VITE_BUILD_STAMP": "2026-06-20T00:00:00Z"}
+        fake_app = tmp_path / "fake-rc-checkout"
+        fake_app.mkdir()
+        (fake_app / "Dockerfile").write_text("FROM node:20\n")
+        d = _dev_deployment(
+            apps=["react-console"], app_sources={"react-console": fake_app},
+        )
+        s = _secrets(tmp_path, d, disc)
+        tree = render_dev_simple(
+            d, disc.components, disc.apps, s, repo_root=REPO_ROOT,
+        )
+        doc = yaml.safe_load(tree.files[Path("docker-compose.yaml")].content)
+        assert doc["services"]["react-console"]["build"]["args"] == {
+            "VITE_BUILD_STAMP": "2026-06-20T00:00:00Z"
+        }
+
+    def test_build_args_in_resolve_build_context_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        # The fallback branch (:392-393) is NOT reachable through
+        # render_dev_simple — the materialize loop puts every active
+        # build-context component into build_context_paths (branch 1). Exercise
+        # it directly via _render_dev_compose_yaml with an empty
+        # build_context_paths, forcing the build-context registry component down
+        # the else/_resolve_build_context path.
+        disc = discover(REPO_ROOT)
+        registry = next(c for c in disc.components if c.metadata.name == "registry")
+        registry.spec.image.build_args = {"VITE_X": "y"}
+        d = _dev_deployment()
+        s = _secrets(tmp_path, d, disc)
+        ctx = make_spec_context(d, disc.components)
+        resolved_env = resolve_all_env(
+            d, disc.components, disc.apps, ctx,
+            collected_secrets=set(s.values.keys()),
+        )
+        yaml_text = _render_dev_compose_yaml(
+            d, disc.components, disc.apps, resolved_env, REPO_ROOT,
+            source_mount=False, build_context_paths={}, app_sources={},
+        )
+        reg = yaml.safe_load(yaml_text)["services"]["registry"]
+        # Reached branch 3: context from _resolve_build_context, not a
+        # materialized build_context_paths entry.
+        assert reg["build"]["context"].endswith("/components/registry")
+        assert reg["build"]["args"] == {"VITE_X": "y"}
