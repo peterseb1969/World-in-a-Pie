@@ -7,6 +7,30 @@ import AskBar from './components/AskBar'
 // ingress. Net-zero for local dev — BASE_URL is '/' → basename '/'.
 const BASENAME = (import.meta.env.BASE_URL || '/').replace(/\/$/, '') || '/'
 
+// CASE-472: surface which build is running. VITE_BUILD_STAMP / VITE_BUILD_SHA
+// are baked at image-build time via the Dockerfile's `--build-arg` (see
+// Dockerfile + .env.example). They are 'dev'/undefined for local builds, in
+// which case the stamp is hidden. The scaffold has no @wip/react dependency,
+// so this is a minimal inline element rather than <WipFooter buildStamp=…>;
+// React apps that already use @wip/react should pass the same env values to
+// WipFooter instead.
+function BuildStamp() {
+  const parts = [
+    import.meta.env.VITE_BUILD_STAMP,
+    import.meta.env.VITE_BUILD_SHA,
+  ].filter((v): v is string => Boolean(v) && v !== 'dev')
+  if (parts.length === 0) return null
+  return (
+    <div
+      className="fixed bottom-2 left-3 z-40 select-none text-xs text-gray-400"
+      title="Build of the running image"
+      data-build-stamp
+    >
+      {parts.join(' · ')}
+    </div>
+  )
+}
+
 export default function App() {
   return (
     <BrowserRouter basename={BASENAME}>
@@ -14,6 +38,7 @@ export default function App() {
         <Route path="/" element={<HomePage />} />
       </Routes>
       <AskBar />
+      <BuildStamp />
     </BrowserRouter>
   )
 }

@@ -9,6 +9,18 @@ export interface WipFooterProps {
   variant?: 'compact' | 'full'
   /** Optional inline style override for the wrapper. */
   style?: CSSProperties
+  /**
+   * Build timestamp baked at image-build time, e.g.
+   * `import.meta.env.VITE_BUILD_STAMP`. When set (and not the local-dev
+   * sentinel 'dev'), it renders as a muted suffix so an operator can see
+   * which build a running app is (CASE-472). Omit/leave 'dev' to hide.
+   */
+  buildStamp?: string
+  /**
+   * Short git SHA of the build, e.g. `import.meta.env.VITE_BUILD_SHA`.
+   * Rendered alongside buildStamp when set.
+   */
+  buildSha?: string
 }
 
 const WRAPPER_BASE = 'mt-12 border-t border-gray-200 py-4'
@@ -40,8 +52,17 @@ export function WipFooter({
   className,
   variant = 'compact',
   style,
+  buildStamp,
+  buildSha,
 }: WipFooterProps): ReactElement {
   const text = appName ? `${appName} · Built on WIP` : 'Built on WIP'
+
+  // 'dev' is the Dockerfile/scaffold sentinel for "no build-arg supplied"
+  // (local `vite build`/dev). Treat it the same as absent so the stamp
+  // only shows for real, build-arg-stamped images.
+  const stamp = buildStamp && buildStamp !== 'dev' ? buildStamp : undefined
+  const sha = buildSha && buildSha !== 'dev' ? buildSha : undefined
+  const buildText = [stamp, sha].filter(Boolean).join(' · ')
 
   return (
     <footer className={joinClassNames(WRAPPER_BASE, className)} style={style} data-wip-footer-variant={variant}>
@@ -58,6 +79,11 @@ export function WipFooter({
           <rect x="5" y="86" width="90" height="6" rx="3" fill="#2B579A" />
         </svg>
         <span>{text}</span>
+        {buildText ? (
+          <span className="opacity-60" data-wip-build-stamp title="Build of the running image">
+            {`· ${buildText}`}
+          </span>
+        ) : null}
       </div>
     </footer>
   )

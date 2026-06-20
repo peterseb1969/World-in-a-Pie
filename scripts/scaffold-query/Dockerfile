@@ -7,6 +7,16 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
 COPY . .
+# CASE-472: bake a build-stamp into the SPA so a running app shows which build
+# it is. The image builder (CI / wip-deploy) supplies these via --build-arg,
+# e.g. `--build-arg VITE_BUILD_STAMP=$(date -u +%FT%TZ) --build-arg
+# VITE_BUILD_SHA=$(git rev-parse --short HEAD)`. Default 'dev' means an
+# unstamped local build → the UI hides the stamp. Vite inlines VITE_* env
+# present at `vite build` time, so these must be ENV (not just ARG) here.
+ARG VITE_BUILD_STAMP=dev
+ARG VITE_BUILD_SHA=dev
+ENV VITE_BUILD_STAMP=${VITE_BUILD_STAMP}
+ENV VITE_BUILD_SHA=${VITE_BUILD_SHA}
 RUN npm run build          # vite build → /app/dist
 
 FROM node:22-slim AS runtime

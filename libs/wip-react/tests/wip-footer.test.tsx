@@ -57,4 +57,32 @@ describe('WipFooter (CASE-308 + CASE-314)', () => {
     const { container } = render(<WipFooter />)
     expect(container.querySelector('footer')).not.toBeNull()
   })
+
+  // CASE-472: optional build-stamp suffix for operational legibility.
+  it('renders no build-stamp span when buildStamp/buildSha are absent', () => {
+    const { container } = render(<WipFooter />)
+    expect(container.querySelector('[data-wip-build-stamp]')).toBeNull()
+  })
+
+  it('renders the build timestamp and sha as a muted suffix when provided', () => {
+    const { container } = render(
+      <WipFooter buildStamp="2026-06-20T09:00:00Z" buildSha="a1b2c3d" />,
+    )
+    const stamp = container.querySelector('[data-wip-build-stamp]')
+    expect(stamp).not.toBeNull()
+    expect(stamp!.textContent).toContain('2026-06-20T09:00:00Z')
+    expect(stamp!.textContent).toContain('a1b2c3d')
+  })
+
+  it("treats the 'dev' sentinel as absent (hides the stamp for unstamped local builds)", () => {
+    const { container } = render(<WipFooter buildStamp="dev" buildSha="dev" />)
+    expect(container.querySelector('[data-wip-build-stamp]')).toBeNull()
+  })
+
+  it('renders the stamp even when only one of buildStamp/buildSha is set', () => {
+    const { container } = render(<WipFooter buildSha="a1b2c3d" />)
+    const stamp = container.querySelector('[data-wip-build-stamp]')
+    expect(stamp).not.toBeNull()
+    expect(stamp!.textContent).toContain('a1b2c3d')
+  })
 })
