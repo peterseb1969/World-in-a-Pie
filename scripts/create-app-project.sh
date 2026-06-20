@@ -444,8 +444,10 @@ echo "   Wrote: .claude/.app-meta ($APP_NAME / $DEV_NAMESPACE)"
 # (2026-06-12): deny > ask > allow regardless of specificity, so the
 # destructive-verb `ask` entries reliably gate the broad allows. MCP
 # partial-name wildcards (mcp__wip__get_*) are valid.
-# find:* deliberately omitted (find -exec/-delete are destructive); git
-# deliberately omitted (commit/push discipline stays human-gated).
+# find:* deliberately omitted (find -exec/-delete are destructive). git
+# WRITE verbs deliberately omitted (commit/push/add/reset/branch -D stay
+# human-gated); read-only git subcommands (log/status/diff/show/rev-parse/
+# ls-files/blame) are allowed below — no destructive form.
 
 cat > "$APP_DIR/.claude/settings.json" << 'EOF'
 {
@@ -485,6 +487,18 @@ cat > "$APP_DIR/.claude/settings.json" << 'EOF'
       "Bash(docker:*)",
       "Bash(wip-deploy:*)",
       "Bash(curl:*)",
+      "Bash(cd:*)",
+      "Bash(echo:*)",
+      "Bash(date:*)",
+      "Bash(rg:*)",
+      "Bash(jq:*)",
+      "Bash(git log:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git blame:*)",
       "mcp__wip__get_*",
       "mcp__wip__list_*",
       "mcp__wip__query_*",
@@ -1232,6 +1246,7 @@ The WIP libs are tarballs in \`libs/\`. \`@tanstack/react-query\` is the peer de
 
 - **Never set Bash \`timeout > 60000\` ms.** Use \`run_in_background: true\` for any command that may exceed 60 s. Use \`Monitor\` for streaming output, or wait for the auto-completion notification when the background task finishes. A user-scoped PreToolUse hook (\`~/.claude/hooks/block-long-bash-timeout.sh\`) mechanically rejects calls with \`timeout > 60000\` — the discipline rule still applies even if the hook is disabled or absent. *Origin: CASE-319, where this rule lived in feedback memory and failed to prevent recurrence twice in 90 minutes within one session.*
 - **Verify-before-wait.** Before scheduling any wait on a long-running command, verify the prerequisites that command depends on can succeed. For npm/test runs that hit a backend cluster: check the host-bound port (e.g., \`nc -z localhost 8443\`) before kicking the wait off. The class of failure is *waiting on an action that depends on unverified state* — the wait then can't complete and burns wall time on a hang. *Origin: CASE-319 / CASE-320 — agent waited 10 minutes for tests that couldn't finish because the deployer no longer exposed the relevant port.*
+- **Bash hygiene — don't prefix commands with \`cd\`.** Your commands already run from the project root, so a \`cd\` prefix is unnecessary *and* trips approval prompts: \`cd "\${CLAUDE_PROJECT_DIR:-\$PWD}" && …\` forces an *expansion* prompt (shell expansion can't be statically verified against the allowlist), and \`cd dir && … > file\` forces a *path-bypass* prompt (the redirect could land outside an allowlisted path). Both are avoidable — use explicit / relative-to-root paths for reading **and** writing. Keeps inspection and file writes prompt-free *and* safer.
 
 ## WIP Toolkit
 
