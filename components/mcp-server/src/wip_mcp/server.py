@@ -2644,6 +2644,9 @@ async def update_document(
     Restrictions:
         - Cannot change identity fields (use create_document to create a new
           document instead — error code `identity_field_change`).
+        - Returns `append_only` if the document's template declares no
+          `identity_fields`: identity-less templates are append-only
+          (create-only) — create a new document instead of patching.
         - Cannot patch archived documents (unarchive first — `archived`).
         - Soft-deleted / non-existent documents return `not_found`.
         - The merged document must still validate against the template the
