@@ -13,6 +13,14 @@ export interface WipProxyOptions {
   extraHeaders?: Record<string, string>
   /** Forward X-WIP-User, X-WIP-Groups, X-WIP-Auth-Method from incoming request */
   forwardIdentity?: boolean
+  /**
+   * Namespace to scope reads to under a multi-namespace (e.g. install admin)
+   * key. Appends `?namespace=<value>` to the documents query endpoint when
+   * the caller hasn't scoped it — fixes the CASE-457 silent-zero-rows trap
+   * without each app re-implementing the middleware. See `ApiProxyOptions`
+   * for why the injection is limited to that one endpoint.
+   */
+  defaultNamespace?: string
 }
 
 /**
@@ -44,6 +52,7 @@ export function wipProxy(options: WipProxyOptions): Router {
     bodyLimit,
     extraHeaders: options.extraHeaders,
     forwardIdentity: options.forwardIdentity,
+    defaultNamespace: options.defaultNamespace,
   }
 
   const fileOptions: FileProxyOptions = {
