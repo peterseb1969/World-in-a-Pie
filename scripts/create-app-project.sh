@@ -886,6 +886,12 @@ if ! $REFRESH_MODE && [ "$PRESET" = "query" ]; then
     cp "$SCAFFOLD_DIR/Dockerfile.dev" "$APP_DIR/"
     cp "$SCAFFOLD_DIR/docker-entrypoint-dev.sh" "$APP_DIR/"
     cp "$SCAFFOLD_DIR/.dockerignore" "$APP_DIR/"
+    # Scaffold-owned CI workflow (CASE-489): a single template so cross-cutting
+    # CI changes are one edit, not an N-repo sweep. Templates the proven shape
+    # as-is (arch/runner behaviour unchanged — the arm64 regression is a
+    # separate concern, not entangled here).
+    mkdir -p "$APP_DIR/.github/workflows"
+    cp "$SCAFFOLD_DIR/.github/workflows/build.yaml" "$APP_DIR/.github/workflows/"
     cp "$SCAFFOLD_DIR/.gitignore" "$APP_DIR/.gitignore.scaffold"
 
     # Merge .gitignore (scaffold additions)
@@ -899,6 +905,7 @@ if ! $REFRESH_MODE && [ "$PRESET" = "query" ]; then
     # Replace placeholders
     sed -i '' "s/SCAFFOLD_APP_SLUG/$APP_SLUG/g" "$APP_DIR/package.json"
     sed -i '' "s/SCAFFOLD_APP_NAME/$APP_NAME/g" "$APP_DIR/index.html"
+    sed -i '' "s/SCAFFOLD_APP_SLUG/$APP_SLUG/g" "$APP_DIR/.github/workflows/build.yaml"
 
     # Update .env.example with actual paths
     sed -i '' "s|/path/to/WorldInPie|$WIP_ROOT|g" "$APP_DIR/.env.example"
@@ -907,6 +914,7 @@ if ! $REFRESH_MODE && [ "$PRESET" = "query" ]; then
     echo "   Copied: src/ (App.tsx, AskBar.tsx, HomePage.tsx, vite-env.d.ts)"
     echo "   Copied: package.json, tsconfig.json, vite.config.ts, tailwind, .env.example"
     echo "   Copied: Dockerfile, Dockerfile.dev, docker-entrypoint-dev.sh, .dockerignore (k8s-ready from day 1 — CASE-370)"
+    echo "   Copied: .github/workflows/build.yaml (scaffold-owned CI — CASE-489)"
     echo "   App slug: $APP_SLUG"
 
     STEP_OFFSET=1
