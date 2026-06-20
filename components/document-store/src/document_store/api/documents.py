@@ -195,10 +195,14 @@ async def list_documents(
     """
     ns_filter = await resolve_namespace_filter(identity, namespace)
 
-    # Resolve template_id synonym if provided (e.g., "PATIENT" → UUID)
+    # Resolve template_id synonym if provided (e.g., "PATIENT" → UUID).
+    # Filter context with no value fallback — strict=True so a non-UUID
+    # template_id with no namespace fails loud (422) rather than silently
+    # filtering to zero rows (CASE-457).
     if template_id:
         template_id = await resolve_or_404(
-            template_id, "template", namespace, param_name="template_id"
+            template_id, "template", namespace, param_name="template_id",
+            strict=True,
         )
 
     service = get_document_service()
@@ -536,8 +540,12 @@ async def query_documents(
 ):
     """Query documents with filters."""
     if request.template_id:
+        # Filter context, no value fallback: a non-UUID template_id with no
+        # namespace would otherwise pass through raw and silently match zero
+        # rows (CASE-457). strict=True turns that into a loud 422.
         request.template_id = await resolve_or_404(
-            request.template_id, "template", namespace=namespace, param_name="template_id"
+            request.template_id, "template", namespace=namespace,
+            param_name="template_id", strict=True,
         )
 
     ns_filter = await resolve_namespace_filter(identity, namespace=namespace)
