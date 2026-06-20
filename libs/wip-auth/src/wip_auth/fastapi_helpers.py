@@ -46,6 +46,7 @@ async def resolve_or_404(
     namespace: str | None,
     *,
     param_name: str | None = None,
+    strict: bool = False,
 ) -> str:
     """Resolve any identifier to a canonical ID, raising HTTP 404 on failure.
 
@@ -59,24 +60,48 @@ async def resolve_or_404(
         entity_type: Entity type for resolution (terminology, term, template, document).
         namespace: Namespace for resolution context. If None, derived from identity.
         param_name: Optional parameter name for error messages.
+        strict: When True, a non-UUID identifier that cannot be resolved for
+            lack of namespace context raises HTTP 422 instead of passing the
+            raw value through. Use this in **filter contexts** that have no
+            value-based fallback (e.g. a query's ``template_id``): there, the
+            raw value flows into the storage filter, matches nothing, and the
+            request "succeeds" with zero rows — a silent misconfiguration of
+            the CASE-316/317/318 class (CASE-457). Endpoints that DO have a
+            value fallback (a GET's by-value branch) must leave this False so
+            the pass-through remains load-bearing.
 
     Returns:
         Canonical entity ID.
 
     Raises:
         HTTPException(404): When the identifier cannot be resolved.
+        HTTPException(422): When ``strict`` and the identifier is a non-UUID
+            value with no namespace context to resolve it against.
     """
     if namespace is None:
         namespace = _derive_namespace_from_identity()
 
     if namespace is None:
-        # Still no namespace — cannot resolve, return raw for value-based fallback.
+        # Still no namespace — cannot resolve.
         if not _looks_like_uuid(raw_id):
+            if strict:
+                # No value-based fallback downstream: fail loud instead of
+                # letting the unresolved value silently match nothing.
+                label = param_name or entity_type
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Cannot resolve {label} '{raw_id}': no namespace "
+                        "context. Pass ?namespace= or use a single-namespace "
+                        "API key."
+                    ),
+                )
             logger.warning(
                 "resolve_or_404: no namespace for %s=%s — synonym resolution skipped. "
                 "Use a namespace-scoped API key or pass namespace explicitly.",
                 param_name or entity_type, raw_id,
             )
+        # UUID (canonical, self-resolving) or non-strict caller → pass through.
         return raw_id
 
     try:
