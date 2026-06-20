@@ -591,6 +591,7 @@ Rules describe what to do. These describe why applying them is harder than it so
 
 - **Never set Bash `timeout > 60000` ms.** Use `run_in_background: true` for any command that may exceed 60 s. Use `Monitor` for streaming output, or wait for the auto-completion notification when the background task finishes. A PreToolUse hook (`~/.claude/hooks/block-long-bash-timeout.sh`) now mechanically rejects calls with `timeout > 60000` — the discipline rule still applies even if the hook is disabled or absent in a future setup. *Origin: CASE-319, where this rule lived in `feedback_no_long_bash_timeouts.md` and failed to prevent recurrence twice in 90 minutes within one session.*
 - **Verify-before-wait.** Before scheduling any wait on a long-running command, verify the prerequisites that command depends on can succeed. For pytest runs against a dev cluster: check the host-bound ports the conftest will connect to (e.g., `nc -z localhost 27017` for MongoDB) before kicking the test off. The class of failure is *waiting on an action that depends on unverified state* — the wait then can't complete and burns wall time on a hang. *Origin: CASE-319 (compounded with CASE-320 — the agent waited 10 minutes for tests that couldn't finish because the deployer no longer exposed mongo's port to the host; nc -z would have caught it in 50 ms).*
+- **Bash hygiene — don't prefix commands with `cd`.** Your commands already run from the project root, so a `cd` prefix is unnecessary *and* trips approval prompts: `cd "${CLAUDE_PROJECT_DIR:-$PWD}" && …` forces an *expansion* prompt (shell expansion can't be statically verified against the allowlist), and `cd dir && … > file` forces a *path-bypass* prompt (the redirect could land outside an allowlisted path). Both are avoidable — use explicit / relative-to-root paths for reading **and** writing. Keeps inspection and file writes prompt-free *and* safer.
 
 ---
 
@@ -963,8 +964,10 @@ echo "   Wrote: .claude/.session-role (BE-YAC)"
 # (2026-06-12): evaluation order is deny > ask > allow regardless of rule
 # specificity, so the destructive-verb `ask` entries below reliably gate
 # the broad allows. MCP partial-name wildcards (mcp__wip__get_*) are valid.
-# find:* deliberately omitted (find -exec/-delete are destructive); git
-# deliberately omitted (commit/push discipline stays human-gated).
+# find:* deliberately omitted (find -exec/-delete are destructive). git
+# WRITE verbs deliberately omitted (commit/push/add/reset/branch -D stay
+# human-gated); read-only git subcommands (log/status/diff/show/rev-parse/
+# ls-files/blame) are allowed below — no destructive form.
 
 cat > "$WIP_ROOT/.claude/settings.json" << 'EOF'
 {
@@ -1004,6 +1007,18 @@ cat > "$WIP_ROOT/.claude/settings.json" << 'EOF'
       "Bash(docker:*)",
       "Bash(wip-deploy:*)",
       "Bash(curl:*)",
+      "Bash(cd:*)",
+      "Bash(echo:*)",
+      "Bash(date:*)",
+      "Bash(rg:*)",
+      "Bash(jq:*)",
+      "Bash(git log:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git blame:*)",
       "mcp__wip__get_*",
       "mcp__wip__list_*",
       "mcp__wip__query_*",
