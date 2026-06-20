@@ -92,14 +92,19 @@ Semantics:
 - Empty patch or a no-op patch returns status "unchanged" (no new version)
 - Identity fields CANNOT be changed via PATCH — you get error_code
   `identity_field_change`. To change identity, POST a new document.
+- A template with NO identity_fields (append-only) CANNOT be PATCHed at all —
+  you get error_code `append_only`. Its documents have only a surrogate
+  document_id, not a logical identity; PATCH operates on logical entities. The
+  error carries remediation: create a new document, or declare identity_fields
+  on the template (CASE-478).
 - `if_match=N` is optional per-item optimistic concurrency control: if the
   current version != N, you get error_code `concurrency_conflict`.
 - template_version and identity_hash are preserved — the new version validates
   against the template version recorded on the document, not the latest.
 
 Error codes from PATCH: `not_found`, `forbidden`, `archived`,
-`identity_field_change`, `concurrency_conflict`, `validation_failed`,
-`reference_violation`, `internal_error`.
+`identity_field_change`, `append_only`, `concurrency_conflict`,
+`validation_failed`, `reference_violation`, `internal_error`.
 
 When to PATCH vs create_document:
 - Use update_document when the identity is unchanged and you're correcting or
@@ -207,7 +212,7 @@ Templates define identity_fields. WIP hashes those fields to decide:
 same hash = new version (update), different hash = new document (create).
 The same create_document tool handles both — it's an upsert.
 
-- Zero identity fields = every submission creates a new document (append-only, no update path)
+- Zero identity fields = every submission creates a new document (append-only, no update path: create always appends AND PATCH is rejected with `append_only` — CASE-478)
 - Too many identity fields = corrections create duplicates instead of versions
 - Never add timestamps or per-run data to identity fields — it makes every
   hash unique, creating duplicates instead of versions
@@ -375,7 +380,7 @@ A document is an instance of a template — a filled-in form.
 - Terms are resolved: you submit the value, WIP stores both value and term_id
 - Versioned: same identity → same document_id, new version
 - identity_fields (defined on template) control what makes a document "the same"
-- Zero identity fields = append-only (every POST creates a new document)
+- Zero identity fields = append-only (every POST creates a new document; PATCH is rejected with `append_only` — CASE-478)
 
 ## Files
 Binary files stored in MinIO, referenced by documents.
@@ -441,7 +446,7 @@ Map your domain onto WIP primitives:
 5. Define identity_fields for deduplication — choose carefully:
    - Too few → unrelated entities collide into one document
    - Too many → corrections create duplicates instead of versions
-   - Zero → append-only, no update path (fine for event logs)
+   - Zero → append-only, no update path: create appends, PATCH is rejected (`append_only`) — fine for event logs; such templates are always versioned:true (CASE-478)
    - NEVER include timestamps or per-run data in identity fields
    - Avoid timestamps in non-identity fields too — they trigger unnecessary
      version updates on otherwise unchanged documents
@@ -555,7 +560,13 @@ create_document call handles both — it's an upsert.
 Trap: Adding a timestamp to document data makes every hash unique — you get
       duplicates instead of versions. Too many identity fields means corrections
       create new documents instead of new versions. Zero identity fields means
-      every submission creates a new document (no update path).
+      every submission creates a new document — append-only, NO update path at
+      all: the create/upsert path always appends, AND PATCH-by-document_id is
+      rejected with error_code `append_only` (CASE-478). A document_id is a
+      surrogate row handle, not a logical identity; PATCH operates on logical
+      entities, so an identity-less doc cannot be patched. To change such data,
+      create a new document; to make a template updatable, declare
+      identity_fields on it.
 Rule: Identity fields answer "is this the same real-world thing?" — no more,
       no less. Never include timestamps, run IDs, or per-execution data.
 
@@ -632,6 +643,14 @@ such an edge type stay at version=1 forever, updates overwrite the existing
 payload, the previous data is gone. Used for relationships where the edge
 identity matters but its history doesn't (e.g. "monster has spell"). The
 flag is immutable after creation.
+
+Invariant (CASE-478): `versioned: false` REQUIRES non-empty identity_fields.
+Overwrite-in-place means "re-address the same entity and replace it" — you
+cannot re-address a thing with no identity. `versioned: false` + empty
+identity_fields is rejected at template create AND update (the update check
+matters because `versioned` is immutable but identity_fields is not). So
+`versioned` is N/A for append-only (identity-less) templates, which are always
+`versioned: true`.
 
 Trap: You write code that loads `version=N-1` to compute a diff between
       versions, or assumes `get_document_versions(id)` returns more than one

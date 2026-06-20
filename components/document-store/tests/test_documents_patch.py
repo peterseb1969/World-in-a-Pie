@@ -139,10 +139,16 @@ async def test_patch_preserves_template_version(
 
 
 @pytest.mark.asyncio
-async def test_patch_no_identity_template(
+async def test_patch_no_identity_template_rejected_append_only(
     client: AsyncClient, auth_headers: dict
 ):
-    """A template with no identity fields can still be patched."""
+    """PATCH on an identity-less (append-only) template is rejected (CASE-478).
+
+    A template with empty identity_fields declares append-only: each document
+    is addressed only by a surrogate document_id, not a logical identity. PATCH
+    operates on logical entities, so it is rejected with error_code 'append_only'
+    and the error carries remediation. The document is left unchanged.
+    """
     initial = await create_one(
         client,
         auth_headers,
@@ -154,16 +160,21 @@ async def test_patch_no_identity_template(
     _, result = await patch_one(
         client, auth_headers, initial["document_id"], {"notes": "updated"}
     )
-    assert result["status"] == "updated"
-    assert result["version"] == 2
+    assert result["status"] == "error"
+    assert result["error_code"] == "append_only"
+    # The error must teach (KB-YAC): remediation travels with the payload.
+    assert "identity_fields" in result["error"]
+    assert "create a new document" in result["error"]
 
+    # The document is untouched — still v1, original data.
     resp = await client.get(
         f"/api/document-store/documents/{initial['document_id']}",
         headers=auth_headers,
     )
     doc = resp.json()
+    assert doc["version"] == 1
     assert doc["data"]["title"] == "Original"
-    assert doc["data"]["notes"] == "updated"
+    assert doc["data"]["notes"] == "first"
 
 
 @pytest.mark.asyncio
