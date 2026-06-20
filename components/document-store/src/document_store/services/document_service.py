@@ -2898,6 +2898,29 @@ class DocumentService:
                     self._format_validation_errors(validation_result.errors),
                 )
 
+            # 5b. Append-only guard (CASE-478). A template with no
+            #     identity_fields declares append-only: every document is a
+            #     standalone record addressed only by a surrogate document_id,
+            #     not a logical identity. PATCH operates on logical entities, so
+            #     there is nothing to update here — fail loud with remediation
+            #     rather than silently mutating a surrogate-keyed row (which
+            #     would let any holder of the document_id repurpose it). The
+            #     guard reads identity_fields off the template (via the
+            #     validation result), not the per-doc identity_hash. It sits
+            #     after the validity check so identity_fields is populated, and
+            #     in the shared apply loop so REST, MCP update_document, and
+            #     bulk_patch all enforce it identically.
+            if not validation_result.identity_fields:
+                raise PatchError(
+                    "append_only",
+                    "This template declares no identity_fields (append-only): "
+                    "each document is a standalone record addressed only by "
+                    "document_id, not a logical identity, so it cannot be "
+                    "PATCHed. To change the data, create a new document; to "
+                    "make this template updatable, declare identity_fields on "
+                    "the template.",
+                )
+
             # 6. Identity-field invariant (design §3).
             #    Compare resolved values via dot-path lookup so nested identity
             #    fields (e.g. "address.city") are handled correctly.

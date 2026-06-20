@@ -192,6 +192,9 @@ async def test_relationship_template_with_versioned_false(
     await _ensure_endpoint_templates(client, auth_headers, "EXPERIMENT", "MOLECULE")
     payload = _relationship_template(value="LATEST_ONLY_REL")
     payload["versioned"] = False
+    # versioned:false requires explicit identity_fields (CASE-478). The edge
+    # identity is (source_ref, target_ref); it must be declared, not implied.
+    payload["identity_fields"] = ["source_ref", "target_ref"]
     result = await _post_template(client, auth_headers, payload)
     assert result["status"] == "created", result
 
@@ -290,6 +293,8 @@ async def test_usage_and_versioned_preserved_across_update(
     await _ensure_endpoint_templates(client, auth_headers, "EXPERIMENT", "MOLECULE")
     payload = _relationship_template(value="REL_IMMUT")
     payload["versioned"] = False
+    # versioned:false requires explicit identity_fields (CASE-478).
+    payload["identity_fields"] = ["source_ref", "target_ref"]
     create_result = await _post_template(client, auth_headers, payload)
     assert create_result["status"] == "created"
     template_id = create_result["id"]

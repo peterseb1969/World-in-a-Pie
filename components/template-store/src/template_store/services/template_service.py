@@ -213,6 +213,32 @@ class TemplateService:
                 f"field(s) {indexed_names} cannot be indexed without sync"
             )
 
+    @staticmethod
+    def _validate_versioned_requires_identity(
+        versioned: bool, identity_fields: list[str] | None
+    ) -> None:
+        """Reject ``versioned: false`` paired with empty ``identity_fields`` (CASE-478).
+
+        ``versioned: false`` means "overwrite the document in place on update,
+        addressed by its identity". With no identity_fields there is nothing to
+        address: every write is a fresh append (identity-less docs never match),
+        and PATCH is rejected too (append_only). So the combination is incoherent
+        — ``versioned`` is N/A without an identity. Enforced on both create and
+        update, because ``versioned`` is immutable after creation but
+        ``identity_fields`` is not: an update could otherwise empty
+        ``identity_fields`` on a ``versioned: false`` template and reach the
+        forbidden state behind the create-time check.
+
+        Raises ValueError on violation (purely declarative — no DB calls).
+        """
+        if versioned is False and not identity_fields:
+            raise ValueError(
+                "versioned:false requires identity_fields: an overwrite-in-place "
+                "template must declare an identity to address the document being "
+                "updated. Set identity_fields, or use versioned:true (the default). "
+                "Append-only templates (empty identity_fields) are versioned:true."
+            )
+
     # =========================================================================
     # TEMPLATE CRUD OPERATIONS
     # =========================================================================
@@ -261,6 +287,12 @@ class TemplateService:
         # Read-path query filters remain free.
         TemplateService._validate_no_metadata_in_declarative_slots(
             request.identity_fields, request.fields
+        )
+
+        # Reject versioned:false + empty identity_fields (CASE-478) — declarative,
+        # runs in draft mode too.
+        TemplateService._validate_versioned_requires_identity(
+            request.versioned, request.identity_fields
         )
 
         # Check if value already exists within namespace — skip in restore mode
@@ -1056,6 +1088,14 @@ class TemplateService:
         )
         TemplateService._validate_no_metadata_in_declarative_slots(
             new_identity_fields, new_fields
+        )
+
+        # Reject versioned:false + empty identity_fields after the merge (CASE-478).
+        # versioned is immutable (preserved from original below), but identity_fields
+        # can be edited — so an update could empty it on a versioned:false template;
+        # catch that here, not just at create.
+        TemplateService._validate_versioned_requires_identity(
+            original.versioned, new_identity_fields
         )
 
         # Stable ID: reuse original template_id (no Registry call for updates)

@@ -148,6 +148,7 @@ Codes defined by `PATCH /documents`:
 | `forbidden` | Caller lacks write permission on the document's namespace |
 | `archived` | Latest version has `status=ARCHIVED` — unarchive first |
 | `identity_field_change` | Patch attempts to change a template-defined identity field — not allowed |
+| `append_only` | Template has empty `identity_fields` (append-only) — the document has no logical identity, only a surrogate `document_id`, so it cannot be PATCHed. The error carries remediation: create a new document, or declare `identity_fields` on the template (CASE-478) |
 | `concurrency_conflict` | `if_match` mismatch, or internal version race lost after retries |
 | `validation_failed` | Merged document fails template validation |
 | `reference_violation` | Cross-namespace reference validation failed |
@@ -157,10 +158,11 @@ Codes defined by `PATCH /documents`:
 
 ### Key Rules (PATCH-specific)
 
-1. **PATCH always creates a new version** on success — it is not an in-place mutation of the MongoDB document. The previous version stays in history.
+1. **PATCH always creates a new version** on success — it is not an in-place mutation of the MongoDB document. The previous version stays in history. (Exception: a `versioned: false` template overwrites its single version in place; such a template must declare `identity_fields` — see rule 5.)
 2. **PATCH cannot change identity fields** — attempting to do so fails with `identity_field_change`. Use POST to create a new entity under a different identity.
 3. **PATCH preserves `template_version` and `identity_hash`** — the new version validates against the template version recorded on the document, not the latest template version.
 4. **PATCH reuses existing NATS event types** — e.g., `EventType.DOCUMENT_UPDATED`. Reporting-sync and other downstream consumers need no changes.
+5. **PATCH requires logical identity** — a template with empty `identity_fields` is append-only; its documents have only a surrogate `document_id`, not a logical identity, so PATCH is rejected with `append_only`. Relatedly, `versioned: false` requires non-empty `identity_fields` (rejected at template create *and* update), so the append-only + overwrite-in-place combination cannot exist. "Zero identity fields = no update path" therefore covers **both** the create/upsert path and PATCH (CASE-478).
 
 ---
 
