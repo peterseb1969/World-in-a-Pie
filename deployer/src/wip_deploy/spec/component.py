@@ -295,7 +295,13 @@ class ImageRef(WIPModel):
     `config_gen/images.py`.
 
     `build_context=None` means pre-built image only. `build_context=Path(...)`
-    enables local builds on compose/dev when `spec.images.registry` is None.
+    enables a local source build on the **dev** target only — the dev renderer
+    (`renderers/dev_simple.py`) materializes the context and builds incrementally.
+    **compose** never local-builds (`renderers/compose.py:_build_block` returns
+    None by design — pre-built / registry-pull only); **k8s** pulls too
+    (`build_context`-set images are pushed to a LAN registry, then pulled —
+    `renderers/k8s.py`). `spec.images.registry` selects the pull source; it does
+    not gate a build.
     """
 
     name: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9._/-]*$")
