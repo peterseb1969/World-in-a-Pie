@@ -52,12 +52,14 @@ This command relies ONLY on durable artifacts — files on disk, git history, WI
 
 #### 1. Reload baseline context (mandatory)
 
-Compaction wipes prior reads. As an APP-YAC, you must reload baseline context as concrete tool calls — do not substitute "I remember from training" for actually running the reads:
+Compaction wipes prior reads. As an APP-YAC, you must reload baseline context as concrete tool calls — do not substitute "I remember from training" for actually running the reads. This list is the **same baseline `/wip-setup` forces at creation** — wake must reload it, not a narrower subset, or you recover into a thinner context than you were born with:
 
+- `Read` `/Users/peter/Development/World-in-a-Pie/docs/Vision.md` — WIP's theses and design principles. **This is the drift-correction mechanism**: if any work has bent toward a specific use case at the expense of WIP's generic engine (the failure mode that builds sidecar models instead of using the primitives), this is what catches it. It is exactly the doc a long, feature-pressured session loses sight of — which is why reloading it on every wake is non-negotiable, not just at birth.
 - `ReadMcpResourceTool server=wip uri=wip://development-guide` — the four-phase process for building on WIP. **Golden Rule: Never modify WIP. Only consume its APIs.** This is the single most important boundary for an APP-YAC; reload it.
 - `ReadMcpResourceTool server=wip uri=wip://ponifs` — the eight PoNIFs (#7 Edge Types and #8 `versioned: false` added 2026-04-25). Conventional assumptions cause silent failures.
 - `ReadMcpResourceTool server=wip uri=wip://data-model` — entity shapes in WIP.
 - `ReadMcpResourceTool server=wip uri=wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache, namespace/authorization rules.
+- `Read` `/Users/peter/Development/FR-YAC/papers/wip-deployable-app-contract.md` — what your app must satisfy to ship under `wip-deploy install`. Reload it so deploy-contract drift doesn't creep in across a long build.
 
 Output one line per source confirming it was loaded. This step is non-optional; recovery without baseline context is recovery into the same drift the previous session ended in.
 
@@ -145,7 +147,7 @@ Ask the user to confirm before proceeding. They may have context you can't recov
 
 ### When to use this
 
-- **After context compaction** — you notice gaps in your understanding of the current work
+- **ALWAYS after a compaction — no exceptions.** Run `/wip-wake` the moment context is compacted (manual `/compact`, auto-compaction, or built-in `/resume`), *even when the work feels like a seamless continuation of a long-running plan.* That "seamless continuation" feeling is the trap: it is precisely when the baseline reload (Step B.1) is skipped that an agent drifts — runs on evicted context, loses the vision, and starts taking the cheapest route (e.g. a sidecar model in metadata) instead of using WIP's primitives. The reload is cheap; the drift is not. Do not judge whether you "still remember" — you cannot reliably tell what compaction dropped.
 - **At the start of any session** — especially if you're not sure what was done previously
 - **When confused** — if something doesn't make sense, recover context before guessing
 - **Proactively** — if a session is getting long and you want to checkpoint your understanding
