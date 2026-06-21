@@ -44,8 +44,11 @@ If an improvement requires:
 - A changed identity field
 - A new template
 - A new reference between templates
+- **Persisting any new structured state — rules, config, per-doc-type behaviour, anything your code reads back — that doesn't have a home in a declared `data` field**
 
 Then this is NOT a casual improvement. It's a data model change. Go back to Phase 2 (propose the change, get approval) and Phase 3 (implement via MCP tools, test). Only then continue with the UI change.
+
+**The last item is the disguise to watch for.** Under feature pressure the cheapest route is to dump the new state into `metadata.*` and read it back — no template change, ships today. That IS a data model change wearing a disguise: `metadata.*` is a throwaway scratchpad, never a model. The moment your code branches on it, sorts by it, or treats its shape as a schema, you've built a **sidecar model**. Config that matters is a config *document* (create the config template first); a controlled vocabulary is **terms**. WIP's primitives — namespaces, terminologies, terms, templates, documents, files, relationships — are your only data model. Stuck on where something belongs? Ask — don't invent a shape in metadata.
 
 This rule exists because data model changes have consequences beyond the current app — they affect versioning, existing documents, cross-app references, and future apps in the constellation.
 

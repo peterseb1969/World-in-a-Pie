@@ -4,6 +4,8 @@ Execute Phase 3 (Implementation) of the AI-Assisted Development process.
 Phase 2 must be complete with **explicit user approval** of the data model.
 The WIP MCP server must be connected.
 
+The model is **approved and frozen** for this command. If you discover mid-implementation that you need a shape the approved model doesn't have, that is a Phase-2 event — Step 0 Q1 — not an inline addition.
+
 ### Before Any MCP Calls
 Read `docs/WIP_PoNIFs.md` — the 8 PoNIFs describe non-intuitive WIP behaviours that will cause silent failures if you rely on conventional assumptions. Pay special attention to:
 - PoNIF #2: Template update does NOT replace the old version — both stay active
@@ -13,6 +15,18 @@ Read `docs/WIP_PoNIFs.md` — the 8 PoNIFs describe non-intuitive WIP behaviours
 - PoNIF #8: `versioned: false` edge types overwrite in place — no version history
 
 ### Steps — Strict Order, Using MCP Tools
+
+#### Step 0: Modelling gate (STOP if this is a new design event)
+`/wip-implement` executes an **already-approved** model (see Prerequisites). Before any MCP write, answer both questions **explicitly in your output** — not silently in your head. This check is mechanical; running it is part of the command.
+
+**Q1 — Is every terminology, term, template, field, identity-field, and edge type you are about to create or change part of the Phase-2 model the user approved?**
+- **Yes** → proceed to Step 1.
+- **No — you are adding to or extending the model** → **STOP. This is a new design event, not implementation.** A new template, a new `data` field, an identity-field change, a new terminology, or a new edge type is a Phase-2 decision. Return to `/wip-design-model`, get explicit user approval, then re-enter here. Do **not** add it inline because you're already in the command.
+
+**Q2 — Are you about to persist app state — rules, config, per-doc-type behaviour, anything your code will later read back — anywhere other than a `data` field of a declared template?**
+- **`metadata.*` is a throwaway scratchpad, never a data model.** It is caller-attached context (source tags, loader hints, audit traces) the platform makes no commitments about. The moment your code branches on it, sorts by it, queries it as identity, or treats its shape as a schema, you are building a **sidecar model** — the exact failure this gate exists to stop.
+- **Config that matters is a document of a config template.** Need per-doc-type rules? Create the config *template* first (Phase 2), then store the rules as a config *document*. Need a controlled vocabulary? Those are **terms** — create the terminology. WIP's primitives — namespaces, terminologies, terms, templates, documents, files, relationships — are your toolkit; if a value needs structure or meaning, it has a home among them.
+- **If you're unsure where something belongs, that's a discussion, not a workaround.** Ask the user before inventing a shape.
 
 #### Step 1: Create terminologies
 For each terminology in the approved data model:
