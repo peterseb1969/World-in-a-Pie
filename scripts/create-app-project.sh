@@ -519,10 +519,59 @@ cat > "$APP_DIR/.claude/settings.json" << 'EOF'
       "Bash(docker system prune:*)",
       "Bash(npm publish:*)"
     ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/post-compact-reanchor.sh"
+          }
+        ]
+      }
+    ]
   }
 }
 EOF
 echo "   Written: .claude/settings.json (committed baseline — regenerated every run, CASE-446)"
+
+# --- Generate the post-compaction re-anchor hook (CASE-480) ---
+# SessionStart[matcher=compact] fires deterministically on every compaction
+# (manual /compact, auto, or /resume). Compaction evicts the baseline reading
+# /wip-setup + /wip-wake load, which is precisely when an agent drifts — runs on
+# evicted context, loses the vision, takes the cheapest route (a sidecar model in
+# metadata). Hooks CANNOT auto-run a slash command, so this re-injects the core
+# modelling invariant + an instruction to run /wip-wake for the full rollover.
+# Scaffold-owned, regenerated every run; verified against code.claude.com/docs/en/hooks.md.
+mkdir -p "$APP_DIR/.claude/hooks"
+cat > "$APP_DIR/.claude/hooks/post-compact-reanchor.sh" << 'HOOKEOF'
+#!/usr/bin/env bash
+# SessionStart[matcher=compact] re-anchor (CASE-480). Plain stdout on exit 0 is
+# injected into context before the next turn. Do not auto-run slash commands here
+# (unsupported) — nudge; running /wip-wake is the model's job.
+cat <<'REANCHOR'
+[post-compaction re-anchor] Context was just compacted — your baseline reading
+(Vision.md, wip://ponifs, wip://data-model, wip://conventions, the deployable-app
+contract) was likely evicted. This is NOT a seamless continuation; that feeling is
+exactly when drift starts.
+
+  → RUN /wip-wake NOW, before continuing. It rolls this session and reloads the
+    baseline. Do not judge whether you "still remember" — you cannot reliably tell
+    what compaction dropped.
+
+Core invariant that must survive every compaction:
+  WIP's primitives are your only data model — namespaces, terminologies, terms,
+  templates, documents, files, relationships. metadata.* is a throwaway scratchpad,
+  never identity, config, or schema. If your code reads metadata back as structure,
+  you have built a sidecar model — stop and model it properly. A data-model change
+  is a design event: get approval, do not inline it, do not route around it via
+  metadata.
+REANCHOR
+HOOKEOF
+chmod +x "$APP_DIR/.claude/hooks/post-compact-reanchor.sh"
+echo "   Written: .claude/hooks/post-compact-reanchor.sh (SessionStart/compact re-anchor, CASE-480)"
 
 # --- Copy slash command playbooks (new + refresh) ---
 # Slim slash commands reference docs/playbooks/<name>.md (flat) for full procedures.
