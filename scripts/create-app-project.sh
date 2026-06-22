@@ -1125,6 +1125,8 @@ WIP is the backend. This app is a frontend that maps a domain onto WIP's primiti
 
 Your development namespace is \`$DEV_NAMESPACE\`. Use it for all data modeling during development.
 
+**A missing namespace is never a setup failure.** The namespace is created at *bootstrap* — when you actually have data to put in it — not as a setup precondition. \`/wip-setup\` does not check for it, and its absence at session start is expected and non-blocking. If you have no data model yet (or this app is a cross-namespace console that owns no namespace of its own), there is simply nothing to create now — do **not** treat an absent \`$DEV_NAMESPACE\` as an error, fail setup over it, or go hunting for a namespace that was never provisioned.
+
 **Why:** Terminologies and templates are hard to delete cleanly once documents reference them. A dev namespace lets you iterate freely — create, modify, delete, start over — without polluting production data.
 
 **Workflow:**
@@ -1226,7 +1228,7 @@ Otherwise start with:
 
 ## Namespace Bootstrap on Launch
 
-Every WIP-consuming app must follow the **offer-on-empty / use-on-exists** discipline at runtime. Three rules:
+Every WIP-consuming app must follow the **offer-on-empty / use-on-exists** discipline at runtime. This is a **runtime** discipline (triggered at app launch, when a user is present to act), **not a setup precondition** — a namespace absent at \`/wip-setup\` time is expected and creates no obligation; it is created here, at bootstrap, only when there is data to put in it. Three rules:
 
 1. **Namespace missing on launch** → show the user an explicit bootstrap offer. Do **not** auto-bootstrap silently. The user can either (a) confirm bootstrap or (b) restore from a backup via the WIP console / \`wip-deploy\` first and reload.
 2. **Namespace exists on launch** → use it as-is. **No** schema reconciliation, **no** "templates differ" check, **no** merge logic. Rolling redeploys against an existing namespace must come up clean. A partially-bootstrapped namespace is the user's signal to use the console, not the app's signal to silently re-bootstrap.
