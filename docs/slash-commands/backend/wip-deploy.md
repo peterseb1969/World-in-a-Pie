@@ -10,9 +10,9 @@ Three modes. Each runs a **mandatory pre-flight** before any destructive operati
 
 Pre-flight catches the recurring failure modes the constellation has hit:
 
-- CASE-282: `wip-deploy install --target dev` silently using stale registry images
-- CASE-288 manifest-pin lesson: pushing same tag doesn't re-pull on k8s
-- CASE-247: manual self-signed TLS ceremony
+- `wip-deploy install --target dev` silently using stale registry images
+- Manifest-pin lesson: pushing same tag doesn't re-pull on k8s
+- Manual self-signed TLS ceremony
 - Day 46/47 nss-mdns: `.local` resolution gaps on Pi nodes
 - Day 47 secrets-dir-missing: `--name` defaulting to `default` not the namespace
 - Day 51 deletion_mode-retain blocking nuke
@@ -73,10 +73,10 @@ cd /Users/peter/Development/World-in-a-Pie && git rev-parse --short HEAD
 test -f ~/.wip-deploy/<name>/secrets/api-key && echo "secrets ok" || echo "MISSING — see Day 47 lesson"
 # Per Day 47: --name defaults to "default", not the namespace. If missing, instruct: ls ~/.wip-deploy/ to find actual dir.
 
-# 5. Image-source policy check (CASE-282 prevention)
+# 5. Image-source policy check
 # If --target dev AND --app-source NOT supplied for an app: REFUSE. State the rule.
 
-# 6. Manifest-pin freshness check (CASE-288 prevention)
+# 6. Manifest-pin freshness check
 # Read components/<svc>/wip-component.yaml pin for each service to redeploy.
 # If pin equals what's currently running per step 2 AND source has changed since:
 # SURFACE the bump as a punch-list item — propose the new pin (e.g., v1.2.6 → v1.2.7)
@@ -120,7 +120,7 @@ case "$TARGET" in
     ;;
 esac
 
-# 8. TLS secret present in target namespace (CASE-247 prevention)
+# 8. TLS secret present in target namespace
 case "$TARGET" in
   k8s)
     kubectl -n <namespace> get secret <tls-secret-name> 2>&1 | grep -q "NotFound" \
@@ -213,7 +213,7 @@ Smoke output is a checklist; failures don't auto-rollback (the operator decides)
 
 Full install. Wraps `wip-deploy install` with the same pre-flight (steps 1, 4, 6, 7, 8 above) plus install-specific checks:
 
-- **9. Target consistency** — if `--target dev` AND any app references gitea-registry images, REFUSE (CASE-282 prevention). Dev-target apps must use `--app-source`.
+- **9. Target consistency** — if `--target dev` AND any app references gitea-registry images, REFUSE. Dev-target apps must use `--app-source`.
 - **10. Namespace pre-existence** — if the namespace exists already AND the install command would change its `deletion_mode` or `isolation_mode`, surface the change explicitly. Day 51 deletion_mode lesson.
 - **11. Required apps' `wip-app.yaml` reachable** — for each `--app NAME`, verify `apps/<name>/wip-app.yaml` exists AND parses.
 
