@@ -1254,6 +1254,79 @@ class TemplateService:
 
         return True
 
+    @staticmethod
+    async def reactivate_template(
+        template_id: str,
+        version: int,
+    ) -> "Template":
+        """Reactivate a soft-deleted (inactive) template version (CASE-490).
+
+        The symmetric inverse of deactivate. Flips a specific inactive
+        version back to active so documents pinned to it can be updated
+        again. Version is required and version-specific — there is no
+        "latest" default, because the caller is targeting a known frozen
+        version (`activate_template` is draft-only and cannot address this).
+
+        Idempotent: an already-active version is returned unchanged. A draft
+        version is rejected — drafts are activated, not reactivated.
+
+        Raises:
+            ValueError: version not found, or the version is a draft.
+        """
+        template = await Template.find_one(
+            {"template_id": template_id, "version": version}
+        )
+        if not template:
+            raise ValueError(
+                f"Template '{template_id}' version {version} not found"
+            )
+
+        if template.status == "draft":
+            raise ValueError(
+                f"Template '{template_id}' version {version} is 'draft', not "
+                "'inactive'. Use activate_template for drafts; reactivate only "
+                "restores a soft-deleted (inactive) version."
+            )
+
+        if template.status == "active":
+            return template  # idempotent — already active
+
+        actor = get_identity_string()
+        template.status = "active"
+        template.updated_at = datetime.now(UTC)
+        template.updated_by = actor
+        await template.save()
+
+        await publish_template_event(
+            EventType.TEMPLATE_UPDATED,
+            TemplateService._template_to_event_payload(template),
+            changed_by=actor,
+        )
+
+        return template
+
+    @staticmethod
+    async def get_namespace_template_stamp(namespace: str) -> str:
+        """Cheap change-detection stamp over all templates in a namespace (CASE-490).
+
+        Returns ``"<count>:<max_updated_at>"``. The ``count`` catches creates
+        and hard-deletes; ``max(updated_at)`` catches updates and status flips
+        (deactivate and reactivate both touch ``updated_at``). A consumer that
+        caches templates can poll this single value per namespace to decide
+        whether its cache is still valid, instead of re-fetching every template
+        — O(namespaces) freshness checks rather than O(templates).
+        """
+        count = await Template.find({"namespace": namespace}).count()
+        latest = (
+            await Template.find({"namespace": namespace})
+            .sort([("updated_at", SortDirection.DESCENDING)])
+            .limit(1)
+            .to_list()
+        )
+        max_updated = latest[0].updated_at if latest else None
+        stamp_ts = max_updated.isoformat() if max_updated else ""
+        return f"{count}:{stamp_ts}"
+
     # =========================================================================
     # BULK OPERATIONS
     # =========================================================================

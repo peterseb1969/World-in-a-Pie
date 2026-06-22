@@ -6,8 +6,11 @@ from typing import Any, cast
 
 import httpx
 
-# How long to cache "latest version" resolution (seconds).
-# Pinned (template_id, version) pairs are cached forever — they're immutable.
+# How long to cache "latest version" resolution (seconds), and how often a
+# namespace's change-stamp is re-polled. A pinned (template_id, version) pair's
+# SCHEMA is immutable, but its `status` is not (deactivate/reactivate), so the
+# pinned cache is bounded by the namespace stamp rather than cached forever
+# (CASE-490).
 LATEST_TTL_SECONDS = 5.0
 
 
@@ -48,12 +51,19 @@ class TemplateStoreClient:
         ))
         self.timeout = timeout
 
-        # Permanent cache: keyed by "template_id:v{version}" — immutable
+        # Pinned-version cache: keyed by "template_id:v{version}". The schema is
+        # immutable, but `status` is not — staleness is bounded by the namespace
+        # stamp (see _namespace_is_fresh), not cached forever (CASE-490).
         self._template_cache: dict[str, dict[str, Any] | None] = {}
 
         # TTL cache for "latest" resolution: keyed by template_id
         # Value: (template_data, timestamp)
         self._latest_cache: dict[str, tuple[dict[str, Any] | None, float]] = {}
+
+        # Per-namespace change-stamp: namespace -> (stamp, checked_at_monotonic).
+        # Polled at most once per LATEST_TTL_SECONDS per namespace; a changed
+        # stamp evicts that namespace's entries from both caches (CASE-490).
+        self._ns_stamp: dict[str, tuple[str, float]] = {}
 
     def _get_headers(self) -> dict[str, str]:
         """Get request headers with authentication."""
@@ -75,8 +85,62 @@ class TemplateStoreClient:
         """Clear all template caches (mainly for testing)."""
         self._template_cache.clear()
         self._latest_cache.clear()
+        self._ns_stamp.clear()
         self._cache_hits = 0
         self._cache_misses = 0
+
+    async def _fetch_namespace_stamp(self, namespace: str) -> str | None:
+        """Fetch the template-store change-stamp for a namespace, or None on
+        any error (caller treats None as 'unknown — keep serving cache')."""
+        url = f"{self.base_url}/api/template-store/templates/stamp"
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(
+                    url, headers=self._get_headers(), params={"namespace": namespace}
+                )
+                if response.status_code != 200:
+                    return None
+                return cast(str | None, response.json().get("stamp"))
+        except httpx.RequestError:
+            return None
+
+    def _evict_namespace(self, namespace: str) -> None:
+        """Drop every cached entry belonging to `namespace` from both caches."""
+        self._template_cache = {
+            k: v for k, v in self._template_cache.items()
+            if not (v is not None and v.get("namespace") == namespace)
+        }
+        self._latest_cache = {
+            k: v for k, v in self._latest_cache.items()
+            if not (v[0] is not None and v[0].get("namespace") == namespace)
+        }
+
+    async def _namespace_is_fresh(self, namespace: str | None) -> None:
+        """Bounded-staleness cache-coherence check for a namespace (CASE-490).
+
+        At most once per LATEST_TTL_SECONDS per namespace, re-poll the template
+        store's namespace stamp. If it changed since last seen, evict that
+        namespace's entries from both caches — so a status flip (deactivate /
+        reactivate) or any template change propagates within ~5s without a pod
+        restart, while an unchanged namespace costs one tiny request per 5s
+        regardless of how many templates it holds. A transient stamp-fetch
+        failure keeps the cache (availability over freshness) and retries on the
+        next lookup.
+        """
+        if not namespace:
+            return
+        now = time.monotonic()
+        cached = self._ns_stamp.get(namespace)
+        if cached is not None and (now - cached[1]) < LATEST_TTL_SECONDS:
+            return  # checked recently — assume fresh
+        stamp = await self._fetch_namespace_stamp(namespace)
+        if stamp is None:
+            return  # fetch failed: keep cache, don't bump checked_at (retry next time)
+        # Evict only on a CHANGE from a known baseline — first sight just records
+        # the baseline (entries were fetched fresh, so they're already current).
+        if cached is not None and stamp != cached[0]:
+            self._evict_namespace(namespace)
+        self._ns_stamp[namespace] = (stamp, now)
 
     async def get_template(
         self,
@@ -107,15 +171,22 @@ class TemplateStoreClient:
             now = time.monotonic()
             if version is not None:
                 cache_key = f"{template_id}:v{version}"
-                if cache_key in self._template_cache:
-                    self._cache_hits = getattr(self, '_cache_hits', 0) + 1
-                    return self._template_cache[cache_key]
-            else:
-                if template_id in self._latest_cache:
-                    cached_template, cached_at = self._latest_cache[template_id]
-                    if (now - cached_at) < LATEST_TTL_SECONDS:
+                entry = self._template_cache.get(cache_key)
+                if entry is not None:
+                    await self._namespace_is_fresh(entry.get("namespace"))
+                    entry = self._template_cache.get(cache_key)
+                    if entry is not None:
                         self._cache_hits = getattr(self, '_cache_hits', 0) + 1
-                        return cached_template
+                        return entry
+            else:
+                cached = self._latest_cache.get(cast(str, template_id))
+                if cached is not None and (now - cached[1]) < LATEST_TTL_SECONDS:
+                    if cached[0] is not None:
+                        await self._namespace_is_fresh(cached[0].get("namespace"))
+                        cached = self._latest_cache.get(cast(str, template_id))
+                    if cached is not None and (time.monotonic() - cached[1]) < LATEST_TTL_SECONDS:
+                        self._cache_hits = getattr(self, '_cache_hits', 0) + 1
+                        return cached[0]
 
         if template_id:
             url = f"{self.base_url}/api/template-store/templates/{template_id}"
@@ -190,19 +261,28 @@ class TemplateStoreClient:
         """
         now = time.monotonic()
 
-        # --- Pinned version: permanent cache ---
+        # --- Pinned version: namespace-stamp-bounded cache ---
         if version is not None:
             cache_key = f"{template_id}:v{version}"
-            if cache_key in self._template_cache:
-                self._cache_hits = getattr(self, '_cache_hits', 0) + 1
-                return self._template_cache[cache_key]
-        else:
-            # --- Latest: TTL cache ---
-            if template_id in self._latest_cache:
-                cached_template, cached_at = self._latest_cache[template_id]
-                if (now - cached_at) < LATEST_TTL_SECONDS:
+            entry = self._template_cache.get(cache_key)
+            if entry is not None:
+                # Bound `status` staleness: a changed namespace stamp evicts
+                # this entry, forcing a re-fetch (CASE-490).
+                await self._namespace_is_fresh(entry.get("namespace"))
+                entry = self._template_cache.get(cache_key)
+                if entry is not None:
                     self._cache_hits = getattr(self, '_cache_hits', 0) + 1
-                    return cached_template
+                    return entry
+        else:
+            # --- Latest: TTL cache, also namespace-stamp gated ---
+            cached = self._latest_cache.get(template_id)
+            if cached is not None and (now - cached[1]) < LATEST_TTL_SECONDS:
+                if cached[0] is not None:
+                    await self._namespace_is_fresh(cached[0].get("namespace"))
+                    cached = self._latest_cache.get(template_id)
+                if cached is not None and (time.monotonic() - cached[1]) < LATEST_TTL_SECONDS:
+                    self._cache_hits = getattr(self, '_cache_hits', 0) + 1
+                    return cached[0]
 
         # Fetch from service
         self._cache_misses = getattr(self, '_cache_misses', 0) + 1
