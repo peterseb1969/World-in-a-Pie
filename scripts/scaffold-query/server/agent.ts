@@ -9,6 +9,19 @@ import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
+// CASE-495: resolve the runtime key from WIP_API_KEY_FILE (the live wip-deploy
+// secrets file the MCP config also uses) when no literal WIP_API_KEY is set —
+// so a key rotation / target-redeploy is picked up on restart instead of
+// stranding a baked, stale .env value.
+function readKeyFile(path: string | undefined): string {
+  if (!path) return ''
+  try {
+    return readFileSync(path, 'utf-8').trim()
+  } catch {
+    return ''
+  }
+}
+
 // ---------- Configuration ----------
 
 let mcpClient: Client | null = null
@@ -29,7 +42,7 @@ const env = () => ({
   // request. The MCP SDK's transports don't auto-read process.env — they take
   // explicit requestInit.headers. Without this, the platform's auth middleware
   // 401s the initialize handshake and the agent crashes at startup.
-  WIP_API_KEY: process.env.WIP_API_KEY || '',
+  WIP_API_KEY: process.env.WIP_API_KEY || readKeyFile(process.env.WIP_API_KEY_FILE),
   MAX_TURNS: parseInt(process.env.MAX_TURNS || '15'),
   SESSION_TTL_MS: parseInt(process.env.SESSION_TTL_MINUTES || '30') * 60_000,
 })
