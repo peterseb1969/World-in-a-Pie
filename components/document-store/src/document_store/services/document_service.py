@@ -2893,6 +2893,18 @@ class DocumentService:
                 template_version=current.template_version,
             )
             if not validation_result.valid:
+                # CASE-490: a PATCH whose pinned template version is inactive
+                # (the version was deactivated after the doc was created) gets a
+                # distinct, branchable error_code instead of being buried in the
+                # generic validation_failed — so a caller (and the kb gateway,
+                # which should map it to a 4xx, not a 502) can detect a "frozen
+                # template" cleanly. Remediation: reactivate the version
+                # (reactivate_template), or migrate the doc to an active version.
+                if any(e.get("code") == "template_inactive" for e in validation_result.errors):
+                    raise PatchError(
+                        "template_inactive",
+                        self._format_validation_errors(validation_result.errors),
+                    )
                 raise PatchError(
                     "validation_failed",
                     self._format_validation_errors(validation_result.errors),
