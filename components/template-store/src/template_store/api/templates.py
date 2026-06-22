@@ -145,6 +145,25 @@ async def list_templates(
     )
 
 
+# NOTE: declared before "/{template_id}" so the literal "/stamp" path is not
+# captured as a template_id by the dynamic route below.
+@router.get("/stamp")
+async def get_namespace_template_stamp(
+    namespace: str = Query(..., description="Namespace to stamp"),
+):
+    """Change-detection stamp for all templates in a namespace (CASE-490).
+
+    Returns ``{"namespace": ..., "stamp": "<count>:<max_updated_at>"}`` — a
+    single cheap value a template-caching consumer (e.g. document-store) polls
+    per namespace to decide whether its cached templates are still valid,
+    rather than re-fetching every template. `count` catches creates/deletes;
+    `max(updated_at)` catches updates and status flips (deactivate/reactivate).
+    """
+    require_current_identity()
+    stamp = await TemplateService.get_namespace_template_stamp(namespace)
+    return {"namespace": namespace, "stamp": stamp}
+
+
 @router.get("/{template_id}", response_model=TemplateResponse)
 async def get_template(
     template_id: str,
@@ -487,6 +506,36 @@ async def activate_template(
             template_id=template_id,
             namespace=namespace,
             dry_run=dry_run
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/{template_id}/reactivate", response_model=TemplateResponse)
+async def reactivate_template(
+    template_id: str,
+    namespace: str = Query(..., description="Namespace for the template"),
+    version: int = Query(..., description="The inactive version to reactivate"),
+):
+    """
+    Reactivate a soft-deleted (inactive) template version.
+
+    The symmetric inverse of deactivate (CASE-490): restores a specific
+    inactive version to active so documents pinned to it can be updated
+    again. `version` is required — reactivate targets a known frozen version,
+    there is no "latest" default (and `/activate` is draft-only, so it cannot
+    address an inactive version). Idempotent on an already-active version;
+    a draft version is rejected (use `/activate`).
+    """
+    identity = require_current_identity()
+    await check_namespace_permission(identity, namespace, "write")
+
+    template_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
+
+    try:
+        return await TemplateService.reactivate_template(
+            template_id=template_id,
+            version=version,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

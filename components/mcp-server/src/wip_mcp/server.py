@@ -2230,6 +2230,34 @@ async def deactivate_template(
 
 
 @mcp.tool()
+async def reactivate_template(
+    template_id: str,
+    version: int,
+    namespace: str | None = None,
+) -> str:
+    """Reactivate a soft-deleted (inactive) template version — the inverse of
+    deactivate_template. Restores a specific inactive version to active so
+    documents pinned to it can be updated again.
+
+    `version` is required: reactivate targets a known frozen version (unlike
+    activate_template, which is draft-only and operates on the latest version).
+    Idempotent on an already-active version; a draft version is rejected.
+
+    Args:
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
+        version: The inactive version to restore to active.
+        namespace: Namespace scope.
+    """
+    try:
+        data = await get_client().reactivate_template(
+            template_id=template_id, version=version, namespace=namespace,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def get_template_dependencies(template_id: str, namespace: str | None = None) -> str:
     """Show what depends on a template: child templates and documents.
 
@@ -3755,6 +3783,7 @@ WRITE_TOOLS = frozenset({
     "update_template",
     "activate_template",
     "deactivate_template",
+    "reactivate_template",
     # Documents
     "create_document",
     "create_documents_bulk",

@@ -915,6 +915,16 @@ class WipClient:
         )
         return self._unwrap_single(resp)
 
+    async def reactivate_template(
+        self, template_id: str, version: int, namespace: str | None = None
+    ) -> dict:
+        return await self._post(
+            self.template_store_url,
+            f"/api/template-store/templates/{template_id}/reactivate",
+            namespace=namespace or self.default_namespace,
+            version=version,
+        )
+
     async def get_template_versions(self, template_id: str) -> dict:
         return await self._get(
             self.template_store_url,
