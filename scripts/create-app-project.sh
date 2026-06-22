@@ -61,9 +61,6 @@ APP_PREFIX=""
 PRESET="standard"
 REFRESH_MODE=false
 FORCE_CLAUDE_MD=false
-# Create-only provisioning output; must exist (set -u) when --refresh renders
-# the CLAUDE.md heredocs, which branch on it (CASE-418).
-APP_KEY_PLAINTEXT=""
 # Tier-3 (KB) opt-in — CASE-463. Tier 2 (WIP-only) is the default.
 KB_URL=""
 KB_KEY_FILE=""
