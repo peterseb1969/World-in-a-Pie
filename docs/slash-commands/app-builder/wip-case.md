@@ -4,7 +4,7 @@ description: Cross-agent case management — file/list/read/respond/comment/clos
 
 Cross-agent case workflow (tier 3). Subcommands: `file`, `list`, `read`, `respond`, `comment`, `close`, `implement`.
 
-This stub is deliberately thin (CASE-463 phase B): it carries only the tier
+This stub is deliberately thin: it carries only the tier
 check, the cache-ensure, and the cheap read paths. Every verb procedure,
 gateway endpoint, and format rule lives in the SERVED playbook
 (`~/.cache/wip-kb-client/case-workflow.md`), which version-matches the
@@ -12,7 +12,7 @@ backend by construction — do not reproduce its content here.
 
 **Pre-flight (do this first, every time):**
 
-1. **Tier check** — `test -f .claude/kb.json`. If missing, tell Peter: "This is a tier-2 repo — cross-agent cases are not enabled. Enable with the scaffold's `--enable-kb` (CASE-463)." Then STOP.
+1. **Tier check** — `test -f .claude/kb.json`. If missing, tell Peter: "This is a tier-2 repo — cross-agent cases are not enabled. Enable with the scaffold's `--enable-kb`." Then STOP.
 2. **Cache-ensure** — `test -f ~/.cache/wip-kb-client/kb-client.sh`. If missing, install the served client using the two facts in `.claude/kb.json`:
    ```bash
    curl -fsSk -H "X-API-Key: $(cat "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')")" \
@@ -59,4 +59,4 @@ If `$ARGUMENTS` starts with `list`:
 **All write verbs** (`file` / `respond` / `comment` / `close` / `implement`):
 
 1. Read your session ID from `.claude/.session-id` (`cat "$CLAUDE_PROJECT_DIR/.claude/.session-id"`, fall back to `$PWD/.claude/.session-id`) — it is the `author`/`filed_by` attribution on every gateway call. **Never type a session ID by hand.** If the file is missing, run `/wip-setup` (fresh) or `/wip-wake` (continuation) first.
-2. You MUST Read `~/.cache/wip-kb-client/case-workflow.md` — the served playbook — and execute the verb's gateway flow from there. Do not guess endpoints, payloads, or status transitions from memory, and do not fall back to retired clients (`add-to-kb.py`, `case_allocate.py`, FS claim helpers); the gateway verbs replaced them (CASE-464).
+2. You MUST Read `~/.cache/wip-kb-client/case-workflow.md` — the served playbook — and execute the verb's gateway flow from there. Do not guess endpoints, payloads, or status transitions from memory, and do not fall back to retired clients (`add-to-kb.py`, `case_allocate.py`, FS claim helpers); the gateway verbs replaced them.

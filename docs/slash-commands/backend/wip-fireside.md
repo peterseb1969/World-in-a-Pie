@@ -4,11 +4,11 @@ description: Read firesides (design-chat transcripts) from kb — list and read.
 
 Read-only access to firesides (`FIRESIDE` — design-chat / fireside transcripts). Subcommands: `list`, `read <document_id>`.
 
-Firesides are **written** by `/wip-report` (bare, Mode 1), which mirrors them to kb via `POST /firesides/mirror`. This command only **reads** them — there is no file/edit/respond verb (CASE-479). The runner reads through the kb gateway (`GET /firesides[/:id]`), never the backend store directly; the legacy backend-direct readers are tracked for migration in CASE-482.
+Firesides are **written** by `/wip-report` (bare, Mode 1), which mirrors them to kb via `POST /firesides/mirror`. This command only **reads** them — there is no file/edit/respond verb. The runner reads through the kb gateway (`GET /firesides[/:id]`), never the backend store directly.
 
 **Pre-flight (do this first, every time):**
 
-1. **Tier check** — `test -f .claude/kb.json`. If missing, tell the user: "This is a tier-2 repo — kb firesides are not enabled. Enable with the scaffold's `--enable-kb` (CASE-463)." Then STOP.
+1. **Tier check** — `test -f .claude/kb.json`. If missing, tell the user: "This is a tier-2 repo — kb firesides are not enabled. Enable with the scaffold's `--enable-kb`." Then STOP.
 2. **Cache-ensure** — `test -f ~/.cache/wip-kb-client/kb-client.sh`. If missing, install the served client using the two facts in `.claude/kb.json`:
    ```bash
    curl -fsSk -H "X-API-Key: $(cat "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')")" \

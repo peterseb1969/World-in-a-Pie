@@ -14,4 +14,4 @@ If `missing`, tell Peter: "Cross-agent cases are not enabled for this project. T
 
 If `ok`, you MUST Read `docs/playbooks/backend/doc-review-workflow.md` before taking any action. Do not guess the response format, questionnaire structure, re-review rules, **or the deletion-sweep pre-flight**, from memory — they live in the playbook. Then execute the requested action from `$ARGUMENTS`.
 
-When the queue contains **three or more `type: doc-deletion` cases**, the playbook's §3 (Deletion-sweep pre-flight) is mandatory before any destructive op. Skip it for smaller queues; the per-case §A.2 grep suffices at that scale. CASE-281 names the failure mode it prevents (cross-cutting forced-read dependencies missed when deletions are processed in queue order).
+When the queue contains **three or more `type: doc-deletion` cases**, the playbook's §3 (Deletion-sweep pre-flight) is mandatory before any destructive op. Skip it for smaller queues; the per-case §A.2 grep suffices at that scale. It prevents cross-cutting forced-read dependencies being missed when deletions are processed in queue order.

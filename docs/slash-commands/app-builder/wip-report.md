@@ -70,7 +70,7 @@ Use for design decisions worth a permanent record.
    <How this affects current work, other apps, or the platform>
    ```
 
-4. **Mirror the fireside to kb (tier 3 only, warn-and-continue)** — **Tier gate (CASE-463):** runs only in tier-3 repos; if `.claude/kb.json` is absent, skip this step silently (tier-2 solo mode is by design). A fireside is a **first-class, findable FIRESIDE entity** (CASE-479) — not session-body sediment. Compose the file locally first (step 3), then:
+4. **Mirror the fireside to kb (tier 3 only, warn-and-continue)** — **Tier gate:** runs only in tier-3 repos; if `.claude/kb.json` is absent, skip this step silently (tier-2 solo mode is by design). A fireside is a **first-class, findable FIRESIDE entity** — not session-body sediment. Compose the file locally first (step 3), then:
 
    ```bash
    KB_URL="$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')"; KB_KEYFILE="$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')"
@@ -133,7 +133,7 @@ Append-only running log. Distinct from session.md (overwritten at end) and repor
 
 ### Mirror to kb (tier 3 only, warn-and-continue)
 
-After appending the entry, push the running log to kb so its kb copy is never stale — **every** update-session, not a selected subset. **Tier gate (CASE-463):** runs only in tier-3 repos; if `.claude/kb.json` is absent, skip silently (tier-2 keeps the log local by design). The session stays `active` — this re-mirrors the whole session dir (now carrying the fresh `session-updates.md`) without touching frontmatter; it is Mode 3's mirror minus the `status: closed` flip. Idempotent upsert by `session_id`.
+After appending the entry, push the running log to kb so its kb copy is never stale — **every** update-session, not a selected subset. **Tier gate:** runs only in tier-3 repos; if `.claude/kb.json` is absent, skip silently (tier-2 keeps the log local by design). The session stays `active` — this re-mirrors the whole session dir (now carrying the fresh `session-updates.md`) without touching frontmatter; it is Mode 3's mirror minus the `status: closed` flip. Idempotent upsert by `session_id`.
 
 ```bash
 KB_URL="$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')"; KB_KEYFILE="$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')"
@@ -144,7 +144,7 @@ If kb is unreachable, log to stderr and proceed — the local append is authorit
 
 ### One session-updates.md per session
 
-Under the session-per-context-window model (CASE-389), `session-updates.md` belongs to a **single** session and grows append-only within it — no multi-session rollover. `/wip-wake` ends the current session and mints a fresh one with its own `reports/<new-id>/` dir, so the next session's running log starts clean. Cross-session continuity is the `continues_from` chain (walk the SESSION records / `CONTINUES_FROM` edges), not in-file `## /resume`-style section breaks. (Legacy mega-sessions like `APP-RC-20260409-1649` predate this and packed many days into one file; new sessions don't.)
+Under the session-per-context-window model, `session-updates.md` belongs to a **single** session and grows append-only within it — no multi-session rollover. `/wip-wake` ends the current session and mints a fresh one with its own `reports/<new-id>/` dir, so the next session's running log starts clean. Cross-session continuity is the `continues_from` chain (walk the SESSION records / `CONTINUES_FROM` edges), not in-file `## /resume`-style section breaks. (Legacy mega-sessions like `APP-RC-20260409-1649` predate this and packed many days into one file; new sessions don't.)
 
 ### Discipline test
 
@@ -162,7 +162,7 @@ Three things happen, in order:
 
 2. **Atomic local write** — in a *single* read-modify-write of `reports/<SESSION-ID>/session.md` (write a temp file, `mv` over the original — never truncate-in-place), do BOTH: (a) overwrite/insert the `## Session Summary` section in the body, and (b) set frontmatter `status: closed` and `ended_at: <now as a naive datetime, YYYY-MM-DDTHH:MM:SS, NO timezone suffix>`. Collapsing both into one atomic write means a partial failure can't leave a half-state (summary without the status flip, or vice-versa).
 
-3. **Mirror to kb (tier 3 only, warn-and-continue)** — **Tier gate (CASE-463):** kb mirrors run only in tier-3 repos — if `.claude/kb.json` is absent, skip this step silently and continue (tier-2 solo mode is by design; nothing to warn about). Then: `KB_URL="$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')"; KB_KEYFILE="$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')"; ( cd reports/<SESSION-ID> && python3 -c 'import json,glob; print(json.dumps({"session_id":"<SESSION-ID>","files":{f:open(f).read() for f in sorted(glob.glob("*.md"))}}))' | curl -fsSk -X POST "$KB_URL/apps/kb/server-api/kb/sessions/mirror" -H "X-API-Key: $(cat "$KB_KEYFILE")" -H "Content-Type: application/json" -d @- )`. The gateway composes the body server-side (session.md first, siblings alphabetical — CASE-464) and upserts by session_id; a closed frontmatter carries `status`/`ended_at` through. If kb is unreachable, log to stderr and proceed — the local write is authoritative; the mirror retries at the next mirror-emitting action or via re-running the same POST.
+3. **Mirror to kb (tier 3 only, warn-and-continue)** — **Tier gate:** kb mirrors run only in tier-3 repos — if `.claude/kb.json` is absent, skip this step silently and continue (tier-2 solo mode is by design; nothing to warn about). Then: `KB_URL="$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')"; KB_KEYFILE="$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')"; ( cd reports/<SESSION-ID> && python3 -c 'import json,glob; print(json.dumps({"session_id":"<SESSION-ID>","files":{f:open(f).read() for f in sorted(glob.glob("*.md"))}}))' | curl -fsSk -X POST "$KB_URL/apps/kb/server-api/kb/sessions/mirror" -H "X-API-Key: $(cat "$KB_KEYFILE")" -H "Content-Type: application/json" -d @- )`. The gateway composes the body server-side (session.md first, siblings alphabetical) and upserts by session_id; a closed frontmatter carries `status`/`ended_at` through. If kb is unreachable, log to stderr and proceed — the local write is authoritative; the mirror retries at the next mirror-emitting action or via re-running the same POST.
 
 **Idempotent on an already-closed session.** If the frontmatter already says `status: closed` (you ran `/wip-report session-end` once, or `/wip-wake` auto-closed it), do NOT append a second `## Session Summary` and do NOT re-flip the frontmatter — both are no-ops. Only the kb mirror re-fires (surfaces as `skipped` if the body is unchanged, `updated` if it was edited since).
 

@@ -13,7 +13,7 @@ Pre-flight catches the recurring failure modes APP-YACs have hit:
 
 - APP-RC's "wip-deploy fumble" (Day 22): re-ran `install` without replaying the original flag set
 - APP-KB's secrets-dir trap (Day 47): `~/.wip-deploy/<namespace>/secrets/` missing because `--name` defaulted to `default`
-- APP-KB's manifest-pin loop (Day 51 / CASE-288 round-trip): pushed new build, cluster didn't re-pull
+- APP-KB's manifest-pin loop (Day 51 round-trip): pushed new build, cluster didn't re-pull
 
 If any pre-flight check fails, output the punch list and stop. Operator addresses the failure or overrides with `--skip-preflight=<check>` (logged in the YAC's session report).
 
@@ -76,7 +76,7 @@ test -f "$INSTALL_DIR/secrets/api-key" && echo "secrets ok" || echo "MISSING —
 # If pin equals what's currently running per step 2 AND source has changed since: emit
 #   [NEEDS CONFIRMATION] punch-list line proposing the new pin. STOP.
 # Otherwise: report "no pin bump needed" explicitly.
-# Per CASE-298 Departure 1: never auto-bump. The pin file is editorial.
+# never auto-bump — the pin file is editorial.
 # Compose dev uses bind-mounted source — pin freshness only matters for k8s redeploys
 # AND for compose redeploys that fall back to registry images (no --app-source). For
 # bind-mounted compose dev runs, this check reports "n/a — bind-mounted source".
