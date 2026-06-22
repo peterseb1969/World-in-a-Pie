@@ -1019,71 +1019,32 @@ if ! $REFRESH_MODE; then
         echo "   Set WIP_NAMESPACE=$DEV_NAMESPACE in .env.example"
     fi
 
-    # --- Provision namespace-scoped API key ---
-
+    # --- Runtime key source: the live wip-deploy secrets file (CASE-495) ---
+    # Point .env at the SAME live file the MCP config uses ($WIP_API_KEY_FILE),
+    # rather than provisioning a namespace-scoped key and baking its plaintext
+    # into .env. A baked key goes stale the moment the deploy key rotates or
+    # the target redeploys — which stranded the whole fleet. Reading the file
+    # at app startup (the @wip/proxy `apiKeyFile` option does this) makes a
+    # rotation a non-event: just restart. The deploy key is an admin/proxy key
+    # spanning all namespaces — what a cross-namespace console needs as-is; a
+    # data-model app wanting least-privilege can provision its own scoped key
+    # and repoint WIP_API_KEY_FILE at it (Peter's call, CASE-495).
     STEP_NUM=$((7 + STEP_OFFSET))
-    echo "$STEP_NUM. Provisioning namespace-scoped API key..."
+    echo "$STEP_NUM. Pointing .env runtime key at the wip-deploy secrets file..."
     STEP_OFFSET=$((STEP_OFFSET + 1))
 
-    APP_KEY_PLAINTEXT=""
-    if [ "$NS_RESPONSE" != "000" ]; then
-        # WIP is reachable — create a runtime API key scoped to the dev namespace
-        KEY_JSON=$(curl -k -s \
-            -X POST "https://localhost:8443/api/registry/api-keys" \
-            -H "X-API-Key: $ACTIVE_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{
-                \"name\": \"${APP_SLUG}\",
-                \"owner\": \"dev@wip.local\",
-                \"groups\": [],
-                \"namespaces\": [\"${DEV_NAMESPACE}\"],
-                \"grant_permission\": \"write\",
-                \"description\": \"${APP_NAME} — scoped to dev namespace\"
-            }" 2>/dev/null || echo "")
-
-        if [ -n "$KEY_JSON" ]; then
-            # Extract plaintext_key — try jq first, fall back to grep
-            if command -v jq &>/dev/null; then
-                APP_KEY_PLAINTEXT=$(echo "$KEY_JSON" | jq -r '.plaintext_key // empty' 2>/dev/null)
-            else
-                APP_KEY_PLAINTEXT=$(echo "$KEY_JSON" | grep -o '"plaintext_key":"[^"]*"' | cut -d'"' -f4)
-            fi
-        fi
-
-        if [ -n "$APP_KEY_PLAINTEXT" ]; then
-            echo "   Created API key: $APP_SLUG (scoped to $DEV_NAMESPACE, write grant included — CASE-450)"
-            echo "   Key propagates to all services within ~30 seconds"
-
-            # Write .env with the provisioned key
-            cat > "$APP_DIR/.env" << ENVEOF
-# App API key — namespace-scoped to $DEV_NAMESPACE, with a write grant
-# (grant_permission=write at creation — CASE-450; without the grant a
-# scoped key can read its namespace but not write)
-# Created by create-app-project.sh via POST /api/registry/api-keys
-# This is a runtime key (managed via API, not config file)
-WIP_API_KEY=$APP_KEY_PLAINTEXT
+    cat > "$APP_DIR/.env" << ENVEOF
+# Runtime key SOURCE — the live wip-deploy secrets file (CASE-495).
+# Resolved at app startup (like the MCP server's WIP_API_KEY_FILE), so a key
+# rotation or target-redeploy is picked up on restart rather than baked stale
+# here. This is the deployment's admin/proxy key and spans all namespaces — a
+# cross-namespace console uses it as-is. A data-model app that wants a
+# least-privilege, namespace-scoped key can provision one (POST
+# /api/registry/api-keys with "namespaces" + "grant_permission") and repoint
+# WIP_API_KEY_FILE below at its own secrets file.
+WIP_API_KEY_FILE=$WIP_API_KEY_FILE
 ENVEOF
-            echo "   Written: .env (with provisioned key)"
-
-            # Update .env.example if query preset (replace the dev master key placeholder)
-            if [ "$PRESET" = "query" ] && [ -f "$APP_DIR/.env.example" ]; then
-                sed -i '' "s|WIP_API_KEY=dev_master_key_for_testing|WIP_API_KEY=$APP_KEY_PLAINTEXT|" "$APP_DIR/.env.example"
-            fi
-        else
-            # Key creation failed — maybe name collision (409) or auth issue
-            echo "   Warning: Could not provision API key (response: ${KEY_JSON:-empty})"
-            echo "   You can create one manually:"
-            echo "     curl -k -X POST https://localhost:8443/api/registry/api-keys \\"
-            echo "       -H 'X-API-Key: <admin-key>' -H 'Content-Type: application/json' \\"
-            echo "       -d '{\"name\": \"$APP_SLUG\", \"namespaces\": [\"$DEV_NAMESPACE\"]}'"
-        fi
-    else
-        echo "   WIP not reachable — skipping key provisioning"
-        echo "   When WIP is running, create a key with:"
-        echo "     curl -k -X POST https://localhost:8443/api/registry/api-keys \\"
-        echo "       -H 'X-API-Key: <admin-key>' -H 'Content-Type: application/json' \\"
-        echo "       -d '{\"name\": \"$APP_SLUG\", \"namespaces\": [\"$DEV_NAMESPACE\"]}'"
-    fi
+    echo "   Written: .env (WIP_API_KEY_FILE -> $WIP_API_KEY_FILE)"
 fi
 
 # --- Generate CLAUDE.md (both modes — CASE-418) ---
@@ -1142,40 +1103,36 @@ Your development namespace is \`$DEV_NAMESPACE\`. Use it for all data modeling d
    honours each namespace's deletion mode (\`retain\` vs \`full\`) — no
    \`--force\` flag needed.
 
-**Important:** MCP tool calls use the privileged admin key, so always pass \`namespace=$DEV_NAMESPACE\` explicitly. Your app's runtime key (scoped to one namespace) gets automatic namespace derivation — no \`namespace\` parameter needed in app code.
+**Important:** MCP tool calls use the privileged admin key, so always pass \`namespace=$DEV_NAMESPACE\` explicitly when modeling. Your app's runtime key comes from \`WIP_API_KEY_FILE\` in \`.env\` (the wip-deploy secrets file) — see **API Key** below.
 
 ## API Key
 
-The MCP server uses a privileged admin key (from WIP's \`.env\`). This is fine for data modeling via MCP tools.
+The MCP server resolves its key from \`WIP_API_KEY_FILE\` (the live wip-deploy secrets file) — see \`.mcp.json\`. This is fine for data modeling via MCP tools.
 
-**For your app's runtime API calls**, use the namespace-scoped key in \`.env\`.
+**For your app's runtime API calls**, \`.env\` carries \`WIP_API_KEY_FILE\` pointing at that same live file. Resolve the key from the file at startup — the \`@wip/proxy\` \`apiKeyFile\` option does this for you, mirroring the MCP server — rather than baking a plaintext key. A key rotation or target-redeploy is then picked up on restart instead of stranding a stale \`.env\` (CASE-495). This is the deployment's admin/proxy key and spans all namespaces, which a cross-namespace console needs as-is.
 EOF
 
-if [ -n "$APP_KEY_PLAINTEXT" ]; then
 cat >> "$CLAUDE_TARGET" << EOF
-This key was auto-provisioned by \`create-app-project.sh\` and is scoped to \`$DEV_NAMESPACE\`. It is a **runtime key** managed via the Registry API (not a config-file key).
+\`.env\` was written with \`WIP_API_KEY_FILE=$WIP_API_KEY_FILE\` — no plaintext key is baked in. The runtime reads the file at startup, so rotating the deploy key or redeploying the target needs no edit here.
 
 \`\`\`bash
 # .env (already created)
-WIP_API_KEY=$APP_KEY_PLAINTEXT
+WIP_API_KEY_FILE=$WIP_API_KEY_FILE
+\`\`\`
+
+**Least-privilege (optional).** The deploy key is admin-scoped. If this app owns a single namespace and you want a least-privilege key, provision one and repoint \`WIP_API_KEY_FILE\` at its own secrets file:
+\`\`\`bash
+curl -k -X POST https://localhost:8443/api/registry/api-keys \\
+  -H 'X-API-Key: <admin-key>' -H 'Content-Type: application/json' \\
+  -d '{"name": "$APP_SLUG", "namespaces": ["$DEV_NAMESPACE"], "grant_permission": "write"}'
 \`\`\`
 EOF
-else
-cat >> "$CLAUDE_TARGET" << 'EOF'
-No key was auto-provisioned by this script. If WIP is running locally and you have an admin key, create a runtime key via `mcp__wip__create_api_key` (or `POST /api/registry/api-keys`). If a key was already provisioned out-of-band (e.g. for a non-localhost target like `kb.internal`), check `.env` and `~/.wip-deploy/<deployment>/secrets/`.
-
-Save the `plaintext_key` from the response to `.env`:
-```bash
-WIP_API_KEY=<plaintext_key from response>
-```
-EOF
-fi
 
 cat >> "$CLAUDE_TARGET" << EOF
 
-Because this key is scoped to a single namespace (\`$DEV_NAMESPACE\`), WIP derives the namespace automatically when you omit the \`namespace\` parameter. This means synonym resolution works without passing \`namespace\` on every API call.
+**Multi-namespace key → pass \`namespace\` explicitly.** The deploy admin/proxy key spans all namespaces, so WIP cannot derive one for you — pass \`namespace=$DEV_NAMESPACE\` on API calls that need scoping, or set \`defaultNamespace\` on \`@wip/proxy\` to scope reads (CASE-457). A single-namespace key (the least-privilege opt-in above) gets automatic derivation instead.
 
-**Grants:** namespace *scoping* gives a key read visibility only — **writes need an explicit namespace grant**. The scaffold provisioned this key with \`grant_permission: write\`, so it works out of the box. If you ever create a key by hand, pass \`grant_permission\` on \`create_api_key\` / \`POST /api/registry/api-keys\`, or add a grant afterwards (\`create_grant\` MCP tool, \`registry.createGrants\` in @wip/client, or \`POST /api/registry/namespaces/<ns>/grants\`). Grant subject for api keys is the bare key name.
+**Grants:** writes need an explicit namespace grant. If you provision a least-privilege key, pass \`grant_permission\` on \`create_api_key\` / \`POST /api/registry/api-keys\`, or add a grant afterwards (\`create_grant\` MCP tool, \`registry.createGrants\` in @wip/client, or \`POST /api/registry/namespaces/<ns>/grants\`). Grant subject for api keys is the bare key name.
 
 **Key management:** Runtime keys can be listed, updated, and revoked via the Registry API. See WIP's \`docs/api-key-management.md\` for details.
 
@@ -1460,8 +1417,9 @@ fi
 
 # --- Git init + gitignore sentinels (new projects only) ---
 if ! $REFRESH_MODE; then
-# Ensure .env is gitignored (contains plaintext API key)
-if [ -n "$APP_KEY_PLAINTEXT" ] && [ -f "$APP_DIR/.env" ]; then
+# Ensure .env is gitignored — environment-specific (carries WIP_API_KEY_FILE,
+# the local wip-deploy secrets path; CASE-495 removed the baked plaintext key)
+if [ -f "$APP_DIR/.env" ]; then
     if [ ! -f "$APP_DIR/.gitignore" ]; then
         printf '.env\n' > "$APP_DIR/.gitignore"
     elif ! grep -qx '.env' "$APP_DIR/.gitignore"; then

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { Router, raw } from 'express'
 import { handleApiProxy, WIP_API_PREFIXES, type ApiProxyOptions } from './api-proxy.js'
 import { handleFileContent, type FileProxyOptions } from './file-proxy.js'
@@ -5,8 +6,20 @@ import { handleFileContent, type FileProxyOptions } from './file-proxy.js'
 export interface WipProxyOptions {
   /** WIP instance base URL (e.g., 'https://localhost:8443') */
   baseUrl: string
-  /** API key injected into upstream requests */
-  apiKey: string
+  /**
+   * API key injected into upstream requests. Provide this OR `apiKeyFile`.
+   * When both are set, `apiKeyFile` wins.
+   */
+  apiKey?: string
+  /**
+   * Path to a file containing the API key — typically the live wip-deploy
+   * secrets file (`~/.wip-deploy/<deployment>/secrets/api-key`), the same
+   * source the MCP server resolves via `WIP_API_KEY_FILE`. Read once at
+   * construction, so a key rotation / target-redeploy is picked up on app
+   * restart instead of stranding a baked, stale `.env` value (CASE-495).
+   * Takes precedence over `apiKey`.
+   */
+  apiKeyFile?: string
   /** Request body size limit (default: '100mb') */
   bodyLimit?: string
   /** Additional headers to forward upstream */
@@ -43,12 +56,13 @@ export interface WipProxyOptions {
 export function wipProxy(options: WipProxyOptions): Router {
   const router = Router()
   const bodyLimit = options.bodyLimit || '100mb'
+  const apiKey = resolveApiKey(options)
 
   const rawBody = raw({ type: '*/*', limit: bodyLimit })
 
   const apiOptions: ApiProxyOptions = {
     baseUrl: options.baseUrl,
-    apiKey: options.apiKey,
+    apiKey,
     bodyLimit,
     extraHeaders: options.extraHeaders,
     forwardIdentity: options.forwardIdentity,
@@ -57,7 +71,7 @@ export function wipProxy(options: WipProxyOptions): Router {
 
   const fileOptions: FileProxyOptions = {
     baseUrl: options.baseUrl,
-    apiKey: options.apiKey,
+    apiKey,
     forwardIdentity: options.forwardIdentity,
   }
 
@@ -78,6 +92,24 @@ export function wipProxy(options: WipProxyOptions): Router {
   }
 
   return router
+}
+
+/**
+ * Resolve the upstream API key from `apiKeyFile` (preferred — read once at
+ * startup, like the MCP server's `WIP_API_KEY_FILE`) or `apiKey`. Throws if
+ * neither yields a non-empty key, so a misconfigured proxy fails loudly at
+ * construction rather than silently 401-ing every upstream call (CASE-495).
+ */
+export function resolveApiKey(options: WipProxyOptions): string {
+  if (options.apiKeyFile) {
+    const key = readFileSync(options.apiKeyFile, 'utf8').trim()
+    if (!key) {
+      throw new Error(`wipProxy: apiKeyFile '${options.apiKeyFile}' is empty`)
+    }
+    return key
+  }
+  if (options.apiKey) return options.apiKey
+  throw new Error('wipProxy: one of apiKey or apiKeyFile is required')
 }
 
 export { WIP_API_PREFIXES } from './api-proxy.js'

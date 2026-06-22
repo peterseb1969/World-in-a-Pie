@@ -41,8 +41,8 @@ After Step 0, `.claude/.session-id` is the canonical identity for every subseque
 
 1. **Node version** — `node --version`. Expect 20.x+ (matches the canonical `node:20-alpine` Dockerfile.dev base). Older versions may work but are off-contract.
 2. **Package manager + deps** — `command -v npm` then check `node_modules/` exists and is non-empty. If missing, suggest `npm ci` (or `npm install` if no `package-lock.json` yet).
-3. **`.env` file** — `test -f .env`. If missing, point at this app's CLAUDE.md "API Key" section and ask Peter for the runtime key. Confirm `WIP_API_KEY` is set (don't print the value).
-4. **WIP reachable** — `curl -sk -m 3 https://localhost:8443/api/registry/namespaces -H "X-API-Key: $(grep ^WIP_API_KEY .env | cut -d= -f2)"` (or the install host this app targets). If unreachable, point at `wip-deploy install` or `wip-deploy restart`.
+3. **`.env` file** — `test -f .env`. If missing, point at this app's CLAUDE.md "API Key" section. The runtime key SOURCE is the **live wip-deploy secrets file** (CASE-495), referenced as `WIP_API_KEY_FILE` — not a baked `WIP_API_KEY`. Confirm `WIP_API_KEY_FILE` is set and the file it points at exists and is non-empty: `KF="$(grep ^WIP_API_KEY_FILE .env | cut -d= -f2)"; test -s "$KF"` (don't print the contents). A literal `WIP_API_KEY` is a legacy/local fallback — accept it if present, but prefer the file.
+4. **WIP reachable** — resolve the key from the live file, not a baked value: `KEY="$(cat "$(grep ^WIP_API_KEY_FILE .env | cut -d= -f2)" 2>/dev/null || grep ^WIP_API_KEY .env | cut -d= -f2)"; curl -sk -m 3 https://localhost:8443/api/registry/namespaces -H "X-API-Key: $KEY"` (or the install host this app targets). If unreachable, point at `wip-deploy install` or `wip-deploy restart`.
 5. **MCP connectivity** — call `get_wip_status` via MCP tools. If MCP tools aren't available, suggest restarting Claude Code and checking `.mcp.json`. If the call fails, suggest checking containers / network.
 
 ### Step 6 — Mandatory context loading (required on all-pass)
