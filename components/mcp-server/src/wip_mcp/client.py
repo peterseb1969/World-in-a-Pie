@@ -1067,6 +1067,44 @@ class WipClient:
         )
         return self._unwrap_single(resp)
 
+    async def migrate_documents(
+        self,
+        template_id: str,
+        from_version: int,
+        to_version: int,
+        dry_run: bool = True,
+        namespace: str | None = None,
+    ) -> dict:
+        """Migrate documents pinned to ``from_version`` onto ``to_version``.
+
+        Returns the full migrate envelope (``dry_run``, ``from_version``,
+        ``to_version``, ``total``, ``succeeded``, ``failed``, ``results``).
+        Per-document outcomes are in ``results`` (bulk-first 200). Operation
+        -level problems (bad versions, identity mismatch, inactive target)
+        raise via the 4xx body.
+        """
+        resp = await self._post(
+            self.document_store_url,
+            "/api/document-store/documents/migrate",
+            json={
+                "template_id": template_id,
+                "from_version": from_version,
+                "to_version": to_version,
+                "dry_run": dry_run,
+            },
+            namespace=namespace or self.default_namespace,
+        )
+        return {
+            "dry_run": resp.get("dry_run"),
+            "template_id": resp.get("template_id"),
+            "from_version": resp.get("from_version"),
+            "to_version": resp.get("to_version"),
+            "total": resp.get("total", 0),
+            "succeeded": resp.get("succeeded", 0),
+            "failed": resp.get("failed", 0),
+            "results": resp.get("results", []),
+        }
+
     async def get_document_versions(self, document_id: str) -> dict:
         return await self._get(
             self.document_store_url,
