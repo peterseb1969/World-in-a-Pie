@@ -291,23 +291,57 @@ async def get_template_versions(
 
 
 @router.get("/by-value/{value}/versions/{version}", response_model=TemplateResponse)
-async def get_template_by_value_and_version(value: str, version: int):
+async def get_template_by_value_and_version(
+    value: str,
+    version: int,
+    namespace: str | None = Query(
+        default=None,
+        description="Namespace to disambiguate the value (omit to search all). CASE-497.",
+    ),
+):
     """
     Get a specific version of a template.
 
     Args:
         value: Template value
         version: Version number
+        namespace: Restrict to this namespace — a value is unique only within a
+            namespace, so omitting it is ambiguous (CASE-497). Omit to search all.
 
     Returns the template with inheritance resolved.
     """
-    template = await TemplateService.get_template_by_value_and_version(value, version)
+    template = await TemplateService.get_template_by_value_and_version(
+        value, version, namespace=namespace
+    )
     if not template:
         raise HTTPException(status_code=404, detail="Template version not found")
     # CASE-386 — gate read on the template's actual namespace.
     identity = require_current_identity()
     await check_namespace_permission(identity, template.namespace, "read")
     return template
+
+
+@router.get("/{template_id}/versions", response_model=TemplateListResponse)
+async def get_template_versions_by_id(template_id: str):
+    """
+    Get all versions of a template by its template_id (CASE-497).
+
+    A template_id is globally unique and stable across versions, so no namespace
+    is needed — the cleanest call when the caller already holds the id. Returns
+    all versions newest-first.
+    """
+    versions = await TemplateService.get_template_versions_by_id(template_id)
+    if not versions:
+        raise HTTPException(status_code=404, detail="Template not found")
+    # CASE-386 — gate read on the template's namespace (all versions share it).
+    identity = require_current_identity()
+    await check_namespace_permission(identity, versions[0].namespace, "read")
+    return TemplateListResponse(
+        items=versions,
+        total=len(versions),
+        page=1,
+        page_size=len(versions),
+    )
 
 
 @router.put("", response_model=BulkResponse)

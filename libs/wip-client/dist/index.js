@@ -528,8 +528,11 @@ var TemplateStoreService = class extends BaseService {
   async getTemplateVersions(value, opts) {
     return this.get(`/templates/by-value/${value}/versions`, opts?.namespace ? { namespace: opts.namespace } : void 0);
   }
-  async getTemplateByValueAndVersion(value, version) {
-    return this.get(`/templates/by-value/${value}/versions/${version}`);
+  async getTemplateByValueAndVersion(value, version, opts) {
+    return this.get(`/templates/by-value/${value}/versions/${version}`, opts?.namespace ? { namespace: opts.namespace } : void 0);
+  }
+  async getTemplateVersionsById(templateId) {
+    return this.get(`/templates/${templateId}/versions`);
   }
   /**
    * Create a single template.
