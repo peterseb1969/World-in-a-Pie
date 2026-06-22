@@ -516,6 +516,8 @@ Shared libraries:
 - `libs/wip-react/` — `@wip/react` hooks
 - `libs/wip-proxy/` — `@wip/proxy` Express middleware (apps use this for WIP API proxying with auth injection)
 
+**Bumping a `@wip/*` lib version is three coordinated edits, not one.** (1) `package.json` `version`; (2) the tracked built `dist/` — `wip-client` and `wip-react` force-add their `dist/` to git, so run `npm run build` (`wip-proxy` does *not* track dist); (3) the vendored `libs/<lib>/wip-<lib>-<version>.tgz` that apps actually `npm install` — run `npm pack`, then swap it (`git rm` the old tarball, `git add -f` the new one — `*.tgz` is gitignored; see the comment in the root `.gitignore`). Skipping (3) is **silent**: `package.json` and `dist/` look bumped, but any app re-vendoring the stale tarball gets the OLD code. After any bump, `git ls-files | grep tgz` must show the new version. This step has been missed repeatedly — it is invisible unless you look for it here.
+
 ---
 
 ## 3. Design Principles (Must Follow)
