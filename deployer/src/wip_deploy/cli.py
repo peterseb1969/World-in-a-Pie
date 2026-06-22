@@ -16,7 +16,7 @@ import typer
 import yaml
 
 from wip_deploy import __version__
-from wip_deploy.apply import ApplyError, apply_compose, apply_k8s
+from wip_deploy.apply import ApplyError, ApplyResult, apply_compose, apply_k8s
 from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.discovery import discover, find_repo_root
 from wip_deploy.export_ca import (
@@ -57,6 +57,25 @@ def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"wip-deploy {__version__}")
         raise typer.Exit()
+
+
+def _echo_skipped_post_install(result: ApplyResult) -> None:
+    """Surface post-install hooks skipped because health was not established
+    (--no-wait, or a timed-out warn/continue rollout). Skipping is correct —
+    the hooks declare `after: healthy` — but it leaves setup incomplete (e.g.
+    bucket / namespace bootstrap), so it must be visible, not silent. Re-run a
+    waited `wip-deploy install` to complete them (CASE-426)."""
+    if not result.post_install_skipped:
+        return
+    typer.echo(
+        typer.style(
+            "⚠ Skipped post-install hooks (health not established; "
+            "re-run without --no-wait to complete setup):",
+            fg=typer.colors.YELLOW,
+        )
+    )
+    for label in result.post_install_skipped:
+        typer.echo(f"    - {label}")
 
 
 @app.callback()
@@ -1058,6 +1077,7 @@ def install(
                 bold=True,
             )
         )
+    _echo_skipped_post_install(result)
     scheme_port = deployment.spec.network.https_port
     scheme_suffix = "" if scheme_port in (443,) else f":{scheme_port}"
     typer.echo(f"  https://{deployment.spec.network.hostname}{scheme_suffix}")
@@ -1984,6 +2004,7 @@ def _apply_and_persist_mutation(
                 bold=True,
             )
         )
+    _echo_skipped_post_install(result)
 
 
 @app.command("add-app")

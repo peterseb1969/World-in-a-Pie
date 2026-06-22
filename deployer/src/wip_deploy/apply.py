@@ -35,14 +35,14 @@ import re
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
-from wip_deploy.spec.component import Component
+from wip_deploy.spec.component import Component, PostInstallHook
 
 # ────────────────────────────────────────────────────────────────────
 
@@ -72,6 +72,12 @@ class ApplyResult:
     install_dir: Path
     services_up: int
     healthy: bool
+    # Post-install hooks declare `after: healthy`; when health was never
+    # established (--no-wait, or a timed-out rollout with on_timeout != "fail")
+    # the hooks are skipped rather than run against a not-ready target. Each
+    # entry is a "<hook> on <owner>" label the CLI surfaces so the skip is
+    # visible, not silent (CASE-426).
+    post_install_skipped: list[str] = field(default_factory=list)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -176,6 +182,7 @@ def apply_compose(
         )
 
         healthy = True
+        post_install_skipped: list[str] = []
         if deployment.spec.apply.wait:
             healthy = _wait_healthy(
                 install_dir=install_dir,
@@ -196,12 +203,27 @@ def apply_compose(
                 raise ApplyError("apply timed out: not all services became healthy")
             # warn/continue: caller decides what to print.
 
-        _run_post_install(install_dir, compose_cmd, components, apps, deployment)
+        # Post-install hooks declare `after: healthy`; only run them once
+        # health is confirmed. --no-wait (health never established) and a
+        # timed-out warn/continue rollout both skip them — running against a
+        # not-ready container is the CASE-426 race. The skip is surfaced, not
+        # silent: see ApplyResult.post_install_skipped.
+        if deployment.spec.apply.wait and healthy:
+            _run_post_install(install_dir, compose_cmd, components, apps, deployment)
+        else:
+            post_install_skipped = _skipped_post_install_labels(
+                components, apps, deployment
+            )
     except ApplyError as e:
         e.mutated = True
         raise
 
-    return ApplyResult(install_dir=install_dir, services_up=up_count, healthy=healthy)
+    return ApplyResult(
+        install_dir=install_dir,
+        services_up=up_count,
+        healthy=healthy,
+        post_install_skipped=post_install_skipped,
+    )
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -934,6 +956,40 @@ def _parse_ps_output(stdout: str) -> dict[str, str]:
 # ────────────────────────────────────────────────────────────────────
 
 
+def _post_install_owners(
+    components: list[Component],
+    apps: list[App],
+    deployment: Deployment,
+) -> list[tuple[str, list[PostInstallHook]]]:
+    """Active components + enabled apps that declare post-install hooks,
+    in apply order. Single source of truth for who has hooks, shared by the
+    runners and by the skip-accounting path (CASE-426)."""
+    enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
+
+    owners: list[tuple[str, list[PostInstallHook]]] = []
+    for c in components:
+        if is_component_active(c, deployment) and c.spec.post_install:
+            owners.append((c.metadata.name, c.spec.post_install))
+    for a in apps:
+        if a.metadata.name in enabled_app_names and a.spec.post_install:
+            owners.append((a.metadata.name, a.spec.post_install))
+    return owners
+
+
+def _skipped_post_install_labels(
+    components: list[Component],
+    apps: list[App],
+    deployment: Deployment,
+) -> list[str]:
+    """`<hook> on <owner>` labels for every post-install hook that will not
+    run because health was not established (CASE-426)."""
+    return [
+        f"{hook.name} on {owner_name}"
+        for owner_name, hooks in _post_install_owners(components, apps, deployment)
+        for hook in hooks
+    ]
+
+
 def _run_post_install(
     install_dir: Path,
     compose_cmd: list[str],
@@ -943,17 +999,7 @@ def _run_post_install(
 ) -> None:
     """Run every active component's post-install hooks. Hooks run inside
     their owning container via `compose exec`."""
-    enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
-
-    owners: list[tuple[str, list]] = []  # type: ignore[type-arg]
-    for c in components:
-        if is_component_active(c, deployment) and c.spec.post_install:
-            owners.append((c.metadata.name, c.spec.post_install))
-    for a in apps:
-        if a.metadata.name in enabled_app_names and a.spec.post_install:
-            owners.append((a.metadata.name, a.spec.post_install))
-
-    for owner_name, hooks in owners:
+    for owner_name, hooks in _post_install_owners(components, apps, deployment):
         for hook in hooks:
             cmd = [
                 *compose_cmd,
@@ -1043,6 +1089,7 @@ def apply_k8s(
         up_count = _count_k8s_workloads(tree)
 
         healthy = True
+        post_install_skipped: list[str] = []
         if deployment.spec.apply.wait:
             healthy = _wait_k8s_rollout(
                 install_dir=install_dir,
@@ -1057,12 +1104,28 @@ def apply_k8s(
             if behavior == "fail":
                 raise ApplyError("apply timed out: not all workloads became ready")
 
-        _run_post_install_k8s(ns, components, apps, deployment)
+        # Post-install hooks declare `after: healthy`; only run them once a
+        # pod is confirmed Running. --no-wait (health never established) and a
+        # timed-out warn/continue rollout both skip them — selecting a pod
+        # with `--field-selector=status.phase=Running` milliseconds after
+        # apply yields empty items and the install dies on the jsonpath. This
+        # is the CASE-426 race. The skip is surfaced via post_install_skipped.
+        if deployment.spec.apply.wait and healthy:
+            _run_post_install_k8s(ns, components, apps, deployment)
+        else:
+            post_install_skipped = _skipped_post_install_labels(
+                components, apps, deployment
+            )
     except ApplyError as e:
         e.mutated = True
         raise
 
-    return ApplyResult(install_dir=install_dir, services_up=up_count, healthy=healthy)
+    return ApplyResult(
+        install_dir=install_dir,
+        services_up=up_count,
+        healthy=healthy,
+        post_install_skipped=post_install_skipped,
+    )
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -1410,17 +1473,7 @@ def _run_post_install_k8s(
     """Run every active component's post-install hooks inside a running
     pod via `kubectl exec`. Pod is selected by the
     `app.kubernetes.io/name` label."""
-    enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
-
-    owners: list[tuple[str, list]] = []  # type: ignore[type-arg]
-    for c in components:
-        if is_component_active(c, deployment) and c.spec.post_install:
-            owners.append((c.metadata.name, c.spec.post_install))
-    for a in apps:
-        if a.metadata.name in enabled_app_names and a.spec.post_install:
-            owners.append((a.metadata.name, a.spec.post_install))
-
-    for owner_name, hooks in owners:
+    for owner_name, hooks in _post_install_owners(components, apps, deployment):
         pod = _pod_for_component(ns, owner_name)
         for hook in hooks:
             try:
