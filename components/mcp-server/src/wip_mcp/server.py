@@ -544,6 +544,20 @@ Corollary: Existing documents survive template updates unchanged. The
       (new doc version, populated new field) rather than a CREATE — no
       data migration step needed, just a backfill pass.
 
+Moving a cohort forward (CASE-491): the corollary handles ADDITIVE changes
+      for free (existing docs stay valid on their pinned version). When you need
+      to actively re-pin existing documents to a newer version, use the
+      `migrate_documents` tool / `POST /documents/migrate` — a validated,
+      identity-preserving bulk move. Dry-run first: it validates each doc against
+      the TARGET version and reports per-doc readiness; apply then writes a new
+      doc version pinned to the target, keeping the same document_id and
+      identity_hash. Migration is still never AUTOMATIC (that's the PoNIF — the
+      system won't silently move your data) — but it is now a first-class
+      operation, not MongoDB surgery. The source version may be inactive
+      (frozen) — migrate validates against the target, not the source. An
+      identity-changing move is a FORK (create new docs), not a migrate, and is
+      rejected.
+
 v2 caveat: v2's template-ID redesign (Day 29 fireside on template ID
       management, FR-YAC reports / docs/design/v2-index.md) is planning to
       make template_id version-specific and route logical identity through
@@ -2693,6 +2707,62 @@ async def update_document(
     try:
         data = await get_client().update_document(
             document_id, patch, if_match=if_match,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def migrate_documents(
+    template_id: str,
+    from_version: int,
+    to_version: int,
+    dry_run: bool = True,
+    namespace: str | None = None,
+) -> str:
+    """Migrate a cohort of documents from one template version to another.
+
+    The "move" half of the template-version lifecycle: re-pins every active
+    document currently on `from_version` to `to_version`. Each document's
+    existing data is re-validated against the TARGET version (which must be
+    active; the source may be inactive/frozen). On apply a new document version
+    is created — or the single version overwritten in place for `versioned:
+    false` templates — keeping the same document_id and identity_hash. No data
+    transformation happens here.
+
+    ALWAYS dry-run first (the default). A dry-run returns a per-document
+    readiness report without writing anything; `failed == 0` guarantees a
+    successful apply (barring concurrent writes). Documents that fail surface
+    `validation_failed` with the field errors — e.g. a field removed in the new
+    version is still present (`unknown_field`), or a newly-mandatory field is
+    missing (`required`). Fix those (e.g. PATCH-null a removed field via
+    update_document) while the source version is still writable, then re-run.
+
+    The migration is IDENTITY-PRESERVING only: the two template versions must
+    declare the same identity_fields. If they differ the re-pin would change the
+    identity hash — that is a fork (create new documents under the new template),
+    not a migrate, and the whole operation is rejected (`identity_fields_changed`).
+
+    Args:
+        template_id: Template to migrate (canonical UUID or registered value/synonym).
+        from_version: Source template version the documents are currently pinned to.
+            May be inactive (frozen) — migration validates against the target.
+        to_version: Target template version. Must be active.
+        dry_run: When true (default), report readiness without writing.
+        namespace: Cohort namespace. Omittable only for single-namespace API keys.
+
+    Returns the migrate envelope: dry_run, from/to_version, total, succeeded,
+    failed, and per-document `results`.
+
+    Example — readiness check, then apply:
+        migrate_documents("WIDGET", from_version=1, to_version=2)            # dry-run
+        migrate_documents("WIDGET", from_version=1, to_version=2, dry_run=False)
+    """
+    try:
+        data = await get_client().migrate_documents(
+            template_id, from_version, to_version,
+            dry_run=dry_run, namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
