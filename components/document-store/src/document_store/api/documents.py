@@ -19,6 +19,8 @@ from ..models.api_models import (
     DeleteItem,
     DocumentCreateRequest,
     DocumentListResponse,
+    DocumentMigrateRequest,
+    DocumentMigrateResponse,
     DocumentQueryRequest,
     DocumentQueryResponse,
     DocumentResponse,
@@ -165,6 +167,87 @@ async def patch_documents(
     result = await service.bulk_patch(items)
     await asyncio.sleep(get_throttle_delay())
     return result
+
+
+@router.post(
+    "/migrate",
+    response_model=DocumentMigrateResponse,
+    summary="Migrate documents to a newer template version",
+    description="""
+Re-pin every active document currently on `from_version` to `to_version`
+(CASE-491). The "move" half of the template-version lifecycle.
+
+Each document's existing data is re-validated against the TARGET version
+(which must be active; the source may be inactive/frozen). On apply a new
+document version is created — or the single version is overwritten in place
+for `versioned: false` templates — pinned to `to_version`, keeping the same
+`document_id` and `identity_hash`. No data transformation happens here.
+
+Identity-preserving only: the two template versions must declare the same
+`identity_fields`, otherwise the re-pin would change the identity hash — that
+is a fork (create new documents), not a migrate, and the whole operation is
+rejected with `identity_fields_changed`.
+
+Workflow: run with `dry_run=true` (default) for a per-document readiness
+report — a result with `failed==0` guarantees a successful apply (barring
+concurrent writes). Fix any failing documents (e.g. PATCH-null a removed
+field) while the source version is still writable, optionally freeze the
+source version (deactivate) as a migration lock, then re-run with
+`dry_run=false`.
+
+Bulk-first: always HTTP 200, per-document outcome in the `results` array.
+Operation-level problems (bad versions, identity mismatch, inactive target)
+return a 4xx.
+""",
+)
+async def migrate_documents(
+    request: DocumentMigrateRequest = Body(...),
+    namespace: str | None = Query(
+        None,
+        description="Namespace of the cohort. Omittable only for single-namespace API keys.",
+    ),
+    identity: UserIdentity = Depends(require_api_key),
+):
+    """Migrate a cohort of documents from one template version to another."""
+    # Resolve to a single concrete namespace + enforce write permission.
+    nsf = await resolve_namespace_filter(identity, namespace, "write")
+    if namespace:
+        ns = namespace
+    elif nsf.namespaces and len(nsf.namespaces) == 1:
+        ns = nsf.namespaces[0]
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="namespace is required (omittable only for single-namespace keys)",
+        )
+
+    # Resolve template_id synonym → canonical. strict: a non-UUID value with no
+    # namespace context fails loud rather than silently matching nothing.
+    template_id = await resolve_or_404(
+        request.template_id, "template", ns, param_name="template_id", strict=True,
+    )
+
+    service = get_document_service()
+    response, error_code, error_message = await service.migrate_document_version(
+        template_id=template_id,
+        from_version=request.from_version,
+        to_version=request.to_version,
+        namespace=ns,
+        dry_run=request.dry_run,
+    )
+    if error_code:
+        status_code = {
+            "invalid_migration": 400,
+            "template_not_found": 404,
+            "target_inactive": 409,
+            "identity_fields_changed": 409,
+        }.get(error_code, 400)
+        raise HTTPException(
+            status_code=status_code,
+            detail={"error_code": error_code, "error": error_message},
+        )
+    await asyncio.sleep(get_throttle_delay())
+    return response
 
 
 @router.get(

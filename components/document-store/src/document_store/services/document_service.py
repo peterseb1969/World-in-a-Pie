@@ -18,6 +18,7 @@ from ..models.api_models import (
     DocumentCreateRequest,
     DocumentCreateResponse,
     DocumentListResponse,
+    DocumentMigrateResponse,
     DocumentQueryRequest,
     DocumentQueryResponse,
     DocumentResponse,
@@ -832,13 +833,21 @@ class DocumentService:
         existing: Document,
         validation_result: Any,
         document_id: str,
-        namespace: str
+        namespace: str,
+        force_new_version: bool = False,
     ) -> tuple[DocumentCreateResponse | None, str | None]:
         """Create a new version of an existing document with stable document_id.
 
         For templates with versioned=False, overwrites the existing
         document in place instead of creating a new version. Same
         document_id, same version number, just newer data/timestamps.
+
+        When ``force_new_version`` is True the data-unchanged short-circuit is
+        bypassed: a new version (or in-place re-pin) is always written even if
+        the data is byte-identical. This is the template-version migrate path
+        (CASE-491) — the *intent* is to re-pin to a different ``template_version``,
+        which the data-only change check (`_data_has_changed`) deliberately
+        ignores so it doesn't disturb ordinary create dedup.
         """
         # CASE-434/436 sibling fix: the update path used to ignore inline
         # synonyms entirely. Process them under the same mode, against the
@@ -853,8 +862,10 @@ class DocumentService:
             if err_code:
                 return None, f"{err_code}: {err_msg}"
 
-        # Check if data has actually changed
-        if not self._data_has_changed(
+        # Check if data has actually changed. The migrate path (force_new_version)
+        # skips this gate: re-pinning to a new template_version is a real change
+        # even when the data bytes are identical (the typical migration).
+        if not force_new_version and not self._data_has_changed(
             existing,
             request.data,
             validation_result.term_references,
@@ -2771,6 +2782,172 @@ class DocumentService:
                         f"Failed to update reference count for file {file_id}: {e}"
                     )
 
+
+    # ========================================================================
+    # POST /documents/migrate  (template-version re-pin — CASE-491)
+    # ========================================================================
+
+    async def migrate_document_version(
+        self,
+        template_id: str,
+        from_version: int,
+        to_version: int,
+        namespace: str,
+        dry_run: bool,
+    ) -> tuple[DocumentMigrateResponse | None, str | None, str | None]:
+        """Migrate every active document pinned to ``from_version`` to ``to_version``.
+
+        Validated, identity-preserving, bulk re-pin (CASE-491). Each document's
+        existing data is re-validated against the TARGET version (which must be
+        active; the source may be inactive/frozen). On apply a new document
+        version is created (or the single version overwritten in place for
+        ``versioned: false`` templates), pinned to ``to_version``, with the same
+        ``document_id`` and ``identity_hash``. No data transformation happens here.
+
+        Op-level failures return ``(None, error_code, message)`` for the route to
+        map to a 4xx; per-document outcomes ride the bulk-first 200 envelope.
+
+        Returns:
+            (response, error_code, error_message)
+        """
+        start = time.perf_counter()
+
+        # ---- Op-level guards (fail the whole migration) ----
+        if from_version == to_version:
+            return None, "invalid_migration", "from_version and to_version must differ"
+
+        client = get_template_store_client()
+        target = await client.get_template_resolved(template_id, version=to_version)
+        if target is None:
+            return None, "template_not_found", (
+                f"Template '{template_id}' version {to_version} not found"
+            )
+        if target.get("status") != "active":
+            return None, "target_inactive", (
+                f"Target version {to_version} is not active; migration must target an "
+                "active version. Reactivate it first or pick an active target."
+            )
+
+        source = await client.get_template_resolved(template_id, version=from_version)
+        if source is None:
+            return None, "template_not_found", (
+                f"Template '{template_id}' version {from_version} not found"
+            )
+
+        # Identity-preserving only: a change in identity_fields would re-key every
+        # document (the CASE-36/316 collision class). That is a fork, not a migrate.
+        source_idf = list(source.get("identity_fields") or [])
+        target_idf = list(target.get("identity_fields") or [])
+        if source_idf != target_idf:
+            return None, "identity_fields_changed", (
+                f"identity_fields differ between v{from_version} ({source_idf}) and "
+                f"v{to_version} ({target_idf}); this is a fork (create new documents), "
+                "not a migrate."
+            )
+
+        # ---- Per-document fan-out (cohort = active docs pinned to from_version) ----
+        cohort = await Document.find({
+            "namespace": namespace,
+            "template_id": template_id,
+            "template_version": from_version,
+            "status": DocumentStatus.ACTIVE.value,
+        }).to_list()
+
+        results: list[BulkResultItem] = []
+        for index, doc in enumerate(cohort):
+            try:
+                results.append(
+                    await self._migrate_one(
+                        index, doc, template_id, to_version, namespace, dry_run,
+                    )
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Unexpected error migrating document %s", doc.document_id,
+                )
+                results.append(BulkResultItem(
+                    index=index, status="error", document_id=doc.document_id,
+                    error=f"Internal error: {exc}", error_code="internal_error",
+                ))
+
+        succeeded = sum(1 for r in results if r.status != "error")
+        failed = sum(1 for r in results if r.status == "error")
+        timing = {"total": (time.perf_counter() - start) * 1000}
+        return DocumentMigrateResponse(
+            results=results, total=len(results), succeeded=succeeded, failed=failed,
+            timing=timing, dry_run=dry_run, template_id=template_id,
+            from_version=from_version, to_version=to_version,
+        ), None, None
+
+    async def _migrate_one(
+        self,
+        index: int,
+        doc: Document,
+        template_id: str,
+        to_version: int,
+        namespace: str,
+        dry_run: bool,
+    ) -> BulkResultItem:
+        """Validate one document against the target version; apply the re-pin
+        unless ``dry_run``. Validating the document's existing data against the
+        target IS the readiness check — a now-removed field still present surfaces
+        as ``unknown_field``; a newly-mandatory field missing surfaces as ``required``.
+        """
+        vr = await self.validation_service.validate(
+            template_id, doc.data, namespace=namespace, template_version=to_version,
+        )
+        if not vr.valid:
+            return BulkResultItem(
+                index=index, status="error", document_id=doc.document_id,
+                error=self._format_validation_errors(vr.errors),
+                error_code="validation_failed", details={"errors": vr.errors},
+            )
+
+        # Defensive: with identity_fields matched at the op level, the recomputed
+        # hash should equal the stored one. If it diverges, refuse rather than
+        # silently re-parent onto a different entity.
+        if vr.identity_hash and vr.identity_hash != doc.identity_hash:
+            return BulkResultItem(
+                index=index, status="error", document_id=doc.document_id,
+                error="re-pin would change the document's identity hash",
+                error_code="identity_fields_changed",
+            )
+
+        if dry_run:
+            return BulkResultItem(
+                index=index, status="updated", id=doc.document_id,
+                document_id=doc.document_id, identity_hash=doc.identity_hash,
+                version=to_version, is_new=False,
+            )
+
+        # Apply: reuse the create-new-version machinery, forcing a write even when
+        # the data is byte-identical (the re-pin is the change). Reuse the existing
+        # document_id + identity_hash — the entity is already registered; migration
+        # changes only template_version, so no new Registry resolve is needed.
+        migrate_request = DocumentCreateRequest(
+            template_id=template_id,
+            template_version=to_version,
+            namespace=namespace,
+            data=doc.data,
+            metadata=(doc.metadata.custom if doc.metadata else None),
+        )
+        vr.identity_hash = doc.identity_hash
+        response, error = await self._create_new_version(
+            migrate_request, doc, vr,
+            document_id=doc.document_id, namespace=namespace,
+            force_new_version=True,
+        )
+        if error:
+            return BulkResultItem(
+                index=index, status="error", document_id=doc.document_id,
+                error=error, error_code="internal_error",
+            )
+        assert response is not None
+        return BulkResultItem(
+            index=index, status="updated", id=response.document_id,
+            document_id=response.document_id, identity_hash=response.identity_hash,
+            version=response.version, is_new=False, warnings=response.warnings,
+        )
 
     # ========================================================================
     # PATCH /documents

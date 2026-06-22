@@ -480,20 +480,35 @@ def _build_sample_templates(id_map: dict[str, str]) -> dict[str, dict]:
     return templates
 
 
+# Per-(key, version) template overrides for tests that need MULTIPLE active
+# versions of one template — e.g. the migrate primitive (CASE-491), which
+# resolves a source and a target version that differ. Keyed by
+# (template_key, version) where template_key is any SAMPLE_TEMPLATES key
+# (canonical UUID, legacy key, or value) and version is the int passed to the
+# client. Empty by default → zero effect on existing tests. Tests populate it
+# and must clear it in teardown (see the `version_overrides` fixture).
+VERSIONED_TEMPLATE_OVERRIDES: dict[tuple[str, int], dict] = {}
+
+
 def create_mock_template_store_client():
     """Create a mock Template Store client for testing.
 
-    Looks up templates in SAMPLE_TEMPLATES (keyed by both UUID7 and legacy).
+    Looks up templates in SAMPLE_TEMPLATES (keyed by both UUID7 and legacy),
+    consulting VERSIONED_TEMPLATE_OVERRIDES first when a specific version is
+    requested.
     """
     mock_client = AsyncMock(spec=TemplateStoreClient)
 
     async def mock_get_template(template_id=None, template_value=None, resolve_inheritance=True, version=None):
-        # `version` accepted to match the real client signature
-        # (template_store_client.TemplateStoreClient.get_template); we
-        # ignore it here because SAMPLE_TEMPLATES holds one version per
-        # template. Phase-6 enrichment in document_service calls with
-        # version= so silently dropping it would lose the enrichment
-        # payload (test caught this).
+        # Version-specific override wins when a concrete version is requested
+        # (multi-version tests). Falls through to the single-version
+        # SAMPLE_TEMPLATES otherwise — preserving legacy behaviour, since
+        # SAMPLE_TEMPLATES holds one version per template.
+        if version is not None:
+            key = template_id or template_value
+            override = VERSIONED_TEMPLATE_OVERRIDES.get((key, version))
+            if override is not None:
+                return override
         if template_id and template_id in SAMPLE_TEMPLATES:
             return SAMPLE_TEMPLATES[template_id]
         # Also try looking up by value
@@ -504,7 +519,7 @@ def create_mock_template_store_client():
         return None
 
     async def mock_get_template_resolved(template_id, version=None):
-        return await mock_get_template(template_id=template_id)
+        return await mock_get_template(template_id=template_id, version=version)
 
     async def mock_template_exists(template_ref):
         if template_ref in SAMPLE_TEMPLATES:

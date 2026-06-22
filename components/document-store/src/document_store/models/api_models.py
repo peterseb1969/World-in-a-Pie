@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # Re-exported here under the document-store-facing names so existing
 # callers keep working without re-defining the schema.
 from wip_auth.bulk_models import (
-    DocumentBulkResponse as BulkResponse,  # noqa: F401
+    DocumentBulkResponse as BulkResponse,
 )
 from wip_auth.bulk_models import (
     DocumentBulkResultItem as BulkResultItem,  # noqa: F401
@@ -435,6 +435,62 @@ class PatchDocumentItem(StrictModel):
         description="Expected current version. If provided and the current version "
                     "differs, the item fails with concurrency_conflict."
     )
+
+
+# ============================================================================
+# Migrate (template-version re-pin)
+# ============================================================================
+
+class DocumentMigrateRequest(StrictModel):
+    """Request to migrate a cohort of documents from one template version to another.
+
+    Re-pins every active document currently on ``from_version`` to ``to_version``,
+    creating a new document version (or overwriting in place for ``versioned: false``
+    templates). The migration is **identity-preserving only**: the two template
+    versions must declare the same ``identity_fields``. If they differ the identity
+    hash would change — that is a *fork* (create new documents), not a migrate, and
+    the operation is rejected. No data transformation happens here; any per-document
+    data prep (e.g. PATCH-null a removed field) is the app's job, done while the
+    source version is still writable.
+    """
+
+    template_id: str = Field(
+        ...,
+        description="Template to migrate (canonical UUID or registered value/synonym)"
+    )
+    from_version: int = Field(
+        ...,
+        description="Source template version the documents are currently pinned to. "
+                    "May be inactive (frozen) — migration validates against the target, not the source."
+    )
+    to_version: int = Field(
+        ...,
+        description="Target template version to re-pin to. Must be active."
+    )
+    dry_run: bool = Field(
+        default=True,
+        description="When true (default), report per-document readiness without writing. "
+                    "A dry-run with failed==0 guarantees a successful apply (barring concurrent writes)."
+    )
+
+
+class DocumentMigrateResponse(BulkResponse):
+    """Bulk-first migrate result. Always HTTP 200; per-document outcome in ``results``.
+
+    Per-item status:
+    - ``updated`` — a new version was (apply) or would be (dry_run) pinned to to_version.
+    - ``error`` — the document fails validation against to_version (e.g. a now-removed
+      field still present → ``unknown_field``, or a newly-mandatory field missing).
+      ``error_code`` is ``validation_failed`` (details carry the field errors) or
+      ``identity_fields_changed`` (the re-pin would alter the identity hash).
+
+    When ``dry_run`` is true the statuses are PROJECTED — nothing was written.
+    """
+
+    dry_run: bool
+    template_id: str
+    from_version: int
+    to_version: int
 
 
 # ============================================================================
