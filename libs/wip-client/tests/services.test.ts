@@ -267,6 +267,23 @@ describe('Service classes via createWipClient', () => {
       expect(options.method).toBe('POST')
     })
 
+    it('reactivateTemplate sends POST with required namespace + version query params', async () => {
+      mockJsonResponse({ template_id: '0190c000-0000-7000-0000-000000000001', value: 'PATIENT', version: 3, status: 'active' })
+
+      const result = await client.templates.reactivateTemplate(
+        '0190c000-0000-7000-0000-000000000001',
+        3,
+        { namespace: 'kb' },
+      )
+
+      expect(result.status).toBe('active')
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/template-store/templates/0190c000-0000-7000-0000-000000000001/reactivate')
+      expect(url).toContain('namespace=kb')
+      expect(url).toContain('version=3')
+      expect(options.method).toBe('POST')
+    })
+
     it('getTemplateVersions fetches all versions by value', async () => {
       mockJsonResponse({ items: [{ version: 1 }, { version: 2 }], total: 2, page: 1, page_size: 50, pages: 1 })
 

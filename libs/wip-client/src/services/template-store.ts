@@ -139,6 +139,29 @@ export class TemplateStoreService extends BaseService {
     return this.post(`/templates/${id}/activate`, null, options)
   }
 
+  // ---- Reactivate ----
+
+  /**
+   * Reactivate a soft-deleted (inactive) template version (CASE-498).
+   *
+   * The inverse of soft-delete-by-version (`deleteTemplate(id, { version })`):
+   * restores a specific frozen version to active so documents pinned to it
+   * can be updated again. Distinct from `activateTemplate`, which is draft-only
+   * and addresses the latest version — `version` is required here and targets a
+   * known frozen version (there is no "latest" default). Idempotent on an
+   * already-active version; a draft version is rejected by the backend.
+   */
+  async reactivateTemplate(
+    id: string,
+    version: number,
+    options: { namespace: string },
+  ): Promise<Template> {
+    return this.post(`/templates/${id}/reactivate`, null, {
+      namespace: options.namespace,
+      version,
+    })
+  }
+
   // ---- Cascade ----
 
   async cascadeTemplate(id: string): Promise<CascadeResponse> {

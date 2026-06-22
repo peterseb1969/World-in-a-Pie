@@ -56,6 +56,7 @@ export {
   useUpdateTemplate,
   useDeleteTemplate,
   useActivateTemplate,
+  useReactivateTemplate,
   // Documents
   useCreateDocument,
   useCreateDocuments,

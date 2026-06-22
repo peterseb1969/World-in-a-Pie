@@ -11,6 +11,7 @@ import type {
   CreateTemplateRequest,
   UpdateTemplateRequest,
   ActivateTemplateResponse,
+  Template,
   CreateDocumentRequest,
   PatchDocumentRequest,
   FileUploadMetadata,
@@ -220,6 +221,23 @@ export function useActivateTemplate(
     ...restOptions,
     mutationFn: ({ id, ...opts }: { id: string; namespace: string; dry_run?: boolean }) =>
       client.templates.activateTemplate(id, opts),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.templates.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useReactivateTemplate(
+  options?: Omit<UseMutationOptions<Template, Error, { id: string; version: number; namespace: string }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ id, version, ...opts }: { id: string; version: number; namespace: string }) =>
+      client.templates.reactivateTemplate(id, version, opts),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.templates.all })
       onSuccess?.(...args)
