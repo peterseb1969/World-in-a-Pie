@@ -84,6 +84,7 @@ import {
   useUpdateTemplate,
   useDeleteTemplate,
   useActivateTemplate,
+  useReactivateTemplate,
   useCreateDocuments,
   useArchiveDocument,
   useDeleteFile,
@@ -115,6 +116,7 @@ function createMockClient() {
       updateTemplate: vi.fn().mockResolvedValue({ entity_id: 'tpl1', status: 'updated' }),
       deleteTemplate: vi.fn().mockResolvedValue({ entity_id: 'tpl1', status: 'deleted' }),
       activateTemplate: vi.fn().mockResolvedValue({ template_id: 'tpl1', activated: true }),
+      reactivateTemplate: vi.fn().mockResolvedValue({ template_id: 'tpl1', version: 3, status: 'active' }),
     },
     documents: {
       createDocuments: vi.fn().mockResolvedValue({ results: [], total: 0, succeeded: 0, failed: 0 }),
@@ -739,6 +741,23 @@ describe('useActivateTemplate', () => {
     expect(mockClient.templates.activateTemplate).toHaveBeenCalledWith('tpl1', {
       namespace: 'kb',
       dry_run: false,
+    })
+  })
+})
+
+describe('useReactivateTemplate', () => {
+  it('calls templates.reactivateTemplate with id, version, and namespace', async () => {
+    const mockClient = createMockClient()
+    const { Wrapper } = createWrapper(mockClient)
+    const { result } = renderHook(() => useReactivateTemplate(), { wrapper: Wrapper })
+
+    await act(async () => {
+      result.current.mutate({ id: 'tpl1', version: 3, namespace: 'kb' })
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(mockClient.templates.reactivateTemplate).toHaveBeenCalledWith('tpl1', 3, {
+      namespace: 'kb',
     })
   })
 })

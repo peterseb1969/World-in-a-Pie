@@ -793,6 +793,19 @@ declare class TemplateStoreService extends BaseService {
         namespace: string;
         dry_run?: boolean;
     }): Promise<ActivateTemplateResponse>;
+    /**
+     * Reactivate a soft-deleted (inactive) template version (CASE-498).
+     *
+     * The inverse of soft-delete-by-version (`deleteTemplate(id, { version })`):
+     * restores a specific frozen version to active so documents pinned to it
+     * can be updated again. Distinct from `activateTemplate`, which is draft-only
+     * and addresses the latest version — `version` is required here and targets a
+     * known frozen version (there is no "latest" default). Idempotent on an
+     * already-active version; a draft version is rejected by the backend.
+     */
+    reactivateTemplate(id: string, version: number, options: {
+        namespace: string;
+    }): Promise<Template>;
     cascadeTemplate(id: string): Promise<CascadeResponse>;
 }
 
