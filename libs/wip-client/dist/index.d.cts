@@ -757,7 +757,10 @@ declare class TemplateStoreService extends BaseService {
     getTemplateVersions(value: string, opts?: {
         namespace?: string;
     }): Promise<TemplateListResponse>;
-    getTemplateByValueAndVersion(value: string, version: number): Promise<Template>;
+    getTemplateByValueAndVersion(value: string, version: number, opts?: {
+        namespace?: string;
+    }): Promise<Template>;
+    getTemplateVersionsById(templateId: string): Promise<TemplateListResponse>;
     /**
      * Create a single template.
      *

@@ -57,8 +57,16 @@ export class TemplateStoreService extends BaseService {
     return this.get(`/templates/by-value/${value}/versions`, opts?.namespace ? { namespace: opts.namespace } : undefined)
   }
 
-  async getTemplateByValueAndVersion(value: string, version: number): Promise<Template> {
-    return this.get(`/templates/by-value/${value}/versions/${version}`)
+  async getTemplateByValueAndVersion(value: string, version: number, opts?: { namespace?: string }): Promise<Template> {
+    // A `value` is unique only within a namespace; pass `namespace` to disambiguate
+    // (CASE-497). Backend: GET /templates/by-value/{value}/versions/{version}.
+    return this.get(`/templates/by-value/${value}/versions/${version}`, opts?.namespace ? { namespace: opts.namespace } : undefined)
+  }
+
+  async getTemplateVersionsById(templateId: string): Promise<TemplateListResponse> {
+    // A template_id is globally unique and stable across versions, so no namespace
+    // is needed (CASE-497). Backend: GET /templates/{template_id}/versions.
+    return this.get(`/templates/${templateId}/versions`)
   }
 
   /**

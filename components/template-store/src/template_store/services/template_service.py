@@ -610,10 +610,30 @@ class TemplateService:
         return [TemplateService._to_template_response(t) for t in templates]
 
     @staticmethod
+    async def get_template_versions_by_id(
+        template_id: str
+    ) -> list[TemplateResponse]:
+        """
+        Get all versions of a template by its template_id (CASE-497).
+
+        A template_id is namespace-scoped by the Registry and stable across
+        versions, so this is unambiguous and needs no namespace param — the
+        cleanest call when the caller already holds the id.
+
+        Returns:
+            List of all versions, sorted by version descending (newest first)
+        """
+        templates = await Template.find({"template_id": template_id}) \
+            .sort([("version", SortDirection.DESCENDING)]) \
+            .to_list()
+        return [TemplateService._to_template_response(t) for t in templates]
+
+    @staticmethod
     async def get_template_by_value_and_version(
         value: str,
         version: int,
-        resolve_inheritance: bool = True
+        resolve_inheritance: bool = True,
+        namespace: str | None = None,
     ) -> TemplateResponse | None:
         """
         Get a specific version of a template by value and version number.
@@ -622,11 +642,17 @@ class TemplateService:
             value: Template value
             version: Version number
             resolve_inheritance: Whether to resolve inheritance
+            namespace: Restrict to this namespace — a value is unique only
+                within a namespace, so omitting it is ambiguous across
+                namespaces (CASE-497). None searches all namespaces.
 
         Returns:
             Template if found, None otherwise
         """
-        template = await Template.find_one({"value": value, "version": version})
+        query: dict = {"value": value, "version": version}
+        if namespace is not None:
+            query["namespace"] = namespace
+        template = await Template.find_one(query)
         if not template:
             return None
 
