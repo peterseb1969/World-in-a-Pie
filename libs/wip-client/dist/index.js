@@ -519,14 +519,14 @@ var TemplateStoreService = class extends BaseService {
   async getTemplateRaw(id, version) {
     return this.get(`/templates/${id}/raw`, version ? { version } : void 0);
   }
-  async getTemplateByValue(value) {
-    return this.get(`/templates/by-value/${value}`);
+  async getTemplateByValue(value, opts) {
+    return this.get(`/templates/by-value/${value}`, opts?.namespace ? { namespace: opts.namespace } : void 0);
   }
   async getTemplateByValueRaw(value, namespace) {
     return this.get(`/templates/by-value/${value}/raw?namespace=${encodeURIComponent(namespace)}`);
   }
-  async getTemplateVersions(value) {
-    return this.get(`/templates/by-value/${value}/versions`);
+  async getTemplateVersions(value, opts) {
+    return this.get(`/templates/by-value/${value}/versions`, opts?.namespace ? { namespace: opts.namespace } : void 0);
   }
   async getTemplateByValueAndVersion(value, version) {
     return this.get(`/templates/by-value/${value}/versions/${version}`);

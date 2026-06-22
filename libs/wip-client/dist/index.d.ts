@@ -750,9 +750,13 @@ declare class TemplateStoreService extends BaseService {
     }): Promise<TemplateListResponse>;
     getTemplate(id: string, version?: number): Promise<Template>;
     getTemplateRaw(id: string, version?: number): Promise<Template>;
-    getTemplateByValue(value: string): Promise<Template>;
+    getTemplateByValue(value: string, opts?: {
+        namespace?: string;
+    }): Promise<Template>;
     getTemplateByValueRaw(value: string, namespace: string): Promise<Template>;
-    getTemplateVersions(value: string): Promise<TemplateListResponse>;
+    getTemplateVersions(value: string, opts?: {
+        namespace?: string;
+    }): Promise<TemplateListResponse>;
     getTemplateByValueAndVersion(value: string, version: number): Promise<Template>;
     /**
      * Create a single template.
@@ -1734,9 +1738,17 @@ interface CreateAPIKeyRequest {
     namespaces?: string[] | null;
     description?: string;
     expires_at?: string;
+    /**
+     * CASE-450: also create a namespace grant at this level for the new key
+     * (subject = key name) on each namespace in `namespaces`. Without it a
+     * scoped key can read its namespaces but not write.
+     */
+    grant_permission?: 'read' | 'write' | 'admin';
 }
 interface CreateAPIKeyResponse extends APIKeyInfo {
     plaintext_key: string;
+    /** Namespaces a grant was created on (CASE-450 grant_permission). */
+    granted_namespaces?: string[] | null;
 }
 interface UpdateAPIKeyRequest {
     description?: string;

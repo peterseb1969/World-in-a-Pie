@@ -39,16 +39,22 @@ export class TemplateStoreService extends BaseService {
     return this.get(`/templates/${id}/raw`, version ? { version } : undefined)
   }
 
-  async getTemplateByValue(value: string): Promise<Template> {
-    return this.get(`/templates/by-value/${value}`)
+  async getTemplateByValue(value: string, opts?: { namespace?: string }): Promise<Template> {
+    // A template `value` is unique only within a namespace; with a cross-namespace
+    // (admin) key, omitting `namespace` returns the latest across ALL namespaces.
+    // Pass `namespace` to scope (CASE-496). Backend: GET /templates/by-value/{value}.
+    return this.get(`/templates/by-value/${value}`, opts?.namespace ? { namespace: opts.namespace } : undefined)
   }
 
   async getTemplateByValueRaw(value: string, namespace: string): Promise<Template> {
     return this.get(`/templates/by-value/${value}/raw?namespace=${encodeURIComponent(namespace)}`)
   }
 
-  async getTemplateVersions(value: string): Promise<TemplateListResponse> {
-    return this.get(`/templates/by-value/${value}/versions`)
+  async getTemplateVersions(value: string, opts?: { namespace?: string }): Promise<TemplateListResponse> {
+    // Without `namespace`, a cross-namespace key gets every namespace's versions of
+    // this value (a `value` is unique only within a namespace). Pass `namespace` to
+    // scope (CASE-496). Backend: GET /templates/by-value/{value}/versions.
+    return this.get(`/templates/by-value/${value}/versions`, opts?.namespace ? { namespace: opts.namespace } : undefined)
   }
 
   async getTemplateByValueAndVersion(value: string, version: number): Promise<Template> {
