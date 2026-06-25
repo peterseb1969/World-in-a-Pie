@@ -216,6 +216,7 @@ vulture \
     "$ROOT_DIR/components/document-store/src" \
     "$ROOT_DIR/components/reporting-sync/src" \
     "$ROOT_DIR/components/ingest-gateway/src" \
+    "$ROOT_DIR/components/mcp-server/src" \
     "$ROOT_DIR/libs/wip-auth/src" \
     "$ROOT_DIR/vulture_allowlist.py" \
     --min-confidence 80 \
@@ -258,6 +259,7 @@ python3 -m radon cc \
     "$ROOT_DIR/components/document-store/src" \
     "$ROOT_DIR/components/reporting-sync/src" \
     "$ROOT_DIR/components/ingest-gateway/src" \
+    "$ROOT_DIR/components/mcp-server/src" \
     "$ROOT_DIR/libs/wip-auth/src" \
     --min C --json \
     > "$RAW_DIR/radon.json" 2>&1 || true
