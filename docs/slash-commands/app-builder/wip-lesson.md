@@ -1,79 +1,61 @@
-Capture a lesson learned and encode it into the gene pool. Use this whenever Peter or a YAC discovers something that future agents should know.
+Capture a lesson learned as a first-class `LESSON` record in the KB, so future agents (and gene-pool review) can find it. Use whenever Peter or a YAC discovers something future agents should know.
+
+**Lessons live in the KB now** — the `LESSON` doc type, written through the served KB client (same surface as cases). The old flat `lessons.md` staging file is retired; do not append to it.
 
 ### Usage
 
 `/wip-lesson <text>` — record a lesson with the given text
-`/wip-lesson` — infer the lesson from current conversation context
+`/wip-lesson` — infer the lesson from the current conversation context
+
+### Pre-flight (every time)
+
+1. **Tier check** — `test -f .claude/kb.json`. If missing, tell Peter: "This is a tier-2 repo — the KB isn't enabled, so `/wip-lesson` can't write. Enable with the scaffold's `--enable-kb`." Then STOP.
+2. **Cache-ensure** — `test -f ~/.cache/wip-kb-client/kb-client.sh`. If missing, install the served client:
+   ```bash
+   curl -fsSk -H "X-API-Key: $(cat "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')")" \
+     "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/apps/kb/server-api/kb-client/install" | sh
+   ```
+3. **Session ID** — read `.claude/.session-id` (`cat "$CLAUDE_PROJECT_DIR/.claude/.session-id"`, fall back to `$PWD/.claude/.session-id`); it is the `authored_by` attribution. **Never type it by hand.** If missing, run `/wip-setup` (fresh) or `/wip-wake` (continuation) first.
 
 ### Steps
 
-#### 1. Get the current time
+1. **Determine the lesson.** If the user gave an argument, use it. Otherwise infer from the conversation — what was just discovered, corrected, or decided that a future agent needs to know. A lesson is a durable, actionable fact/rule, not a task log.
 
-```bash
-date '+%Y-%m-%d %H:%M'
-```
+2. **Compose `lesson.md`** — frontmatter keys are `LESSON` fields; the markdown after the fence is the body. `lesson_number` is **minted by the gateway** — do NOT set it.
+   ```markdown
+   ---
+   title: <short, searchable lesson title>
+   authored_by: <your session ID>
+   doc_status: published
+   tags: [<category>, ...]      # e.g. dependency, api, testing, tooling, workflow, platform
+   ---
 
-#### 2. Determine the lesson text
+   <the lesson — concise and actionable: what to do / not do, and why.>
+   ```
 
-If the user provided an argument, use it as the lesson. Otherwise, infer from the current conversation — what was just discovered, corrected, or decided that a future agent needs to know.
+3. **Write it** through the served client (the gateway mints `lesson_number` + the `LESSON-<n>` synonym):
+   ```bash
+   bash ~/.cache/wip-kb-client/kb-client.sh kb-write.py LESSON lesson.md
+   # -> created LESSON-<n> (<document_id>)
+   ```
+   Run from the project root (where `.claude/kb.json` lives). `kb-write.py --list` shows all writable types if you need to confirm the surface. Do not guess the endpoint or fall back to retired mechanisms (the old `lessons.md` append, `add-to-kb.py`) — the served `kb-write.py` is the version-matched write surface.
 
-#### 3. Categorize the lesson
-
-Assign one category:
-
-| Category | When to use |
-|----------|-------------|
-| `dependency` | Version pins, install order, package conflicts |
-| `api` | Endpoint behavior, resolution, payload requirements |
-| `testing` | Test infrastructure, mock patterns, CI behavior |
-| `tooling` | Shell, venv, paths, environment setup |
-| `workflow` | Agent behavior, process, handoff patterns |
-| `platform` | WIP-specific behavior, PoNIFs, conventions |
-
-#### 4. Append to the lessons file
-
-Append to `/Users/peter/Development/FR-YAC/lessons.md`:
-
-If the file doesn't exist, create it with this header:
-
-```markdown
-# Lessons Learned
-
-Encoded lessons from the WIP Constellation Experiment. These are facts discovered through practice that future agents and gene pool updates should incorporate.
-
-| Date | Category | Lesson | Source |
-|------|----------|--------|--------|
-```
-
-Then append one row:
-
-```markdown
-| <YYYY-MM-DD> | <category> | <lesson text — one line, concise, actionable> | <session ID or "Peter"> |
-```
-
-#### 5. Confirm
-
-Tell Peter what was recorded. One line.
+4. **Confirm** — tell Peter the `LESSON-<n>` and a one-line gist.
 
 ### When to use this
 
-- After discovering a dependency pin, version conflict, or install order issue
+- After discovering a dependency pin, version conflict, or install-order issue
 - After a bug caused by an assumption that turned out wrong
 - After Peter corrects an agent's approach in a way that applies broadly
-- After a PoNIF encounter that should be documented
-- Whenever Peter says "remember this" or "lesson learned" or similar
+- After a PoNIF encounter worth documenting
+- Whenever Peter says "remember this" / "lesson learned"
 
 ### What NOT to record
 
 - Things already in CLAUDE.md (check first)
 - One-off task details that won't recur
-- Opinions or preferences (use memory for those)
+- Personal preferences (use the memory system for those)
 
-### Gene Pool Integration
+### Gene-pool review
 
-The lessons file is a staging area. Periodically, lessons should be reviewed and the important ones incorporated into:
-- CLAUDE.md files (for all agents)
-- Setup script heredocs (for specific agent types)
-- Slash command updates (for specific workflows)
-
-This review is a human task — lessons don't auto-propagate. The file makes them findable.
+`LESSON` records are the findable staging surface for gene-pool review — periodically the important ones get folded into CLAUDE.md, setup heredocs, or slash commands. That review is a human task; lessons don't auto-propagate. They're queryable in the KB (via the served client / app), not a flat file.
