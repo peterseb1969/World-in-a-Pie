@@ -10,6 +10,12 @@ set -euo pipefail
 #   ./scripts/quality-audit.sh --fix        # Auto-fix ruff + eslint issues
 #   ./scripts/quality-audit.sh --ci         # Fail if issues exceed baseline
 #   ./scripts/quality-audit.sh --update-baseline  # Write current counts to baseline
+#
+#   Re-pin baselines deliberately on a cadence (not only reactively) so real
+#   drift surfaces in days, not after a month of silent accumulation. radon is
+#   version-pinned (radon==6.0.1) for the same reason: an unpinned bump moves
+#   complexity counts and makes the baseline a moving target. Bump it in
+#   lockstep with a baseline re-pin.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -112,6 +118,9 @@ if [ ${#MISSING[@]} -gt 0 ] || { [ "$INSTALL_DEPS" = true ] && [ "$PYTEST_COV_MI
             for tool in "${MISSING[@]}"; do
                 case "$tool" in
                     shellcheck) PIP_PKGS+=("shellcheck-py") ;;
+                    # radon pinned — its CC counts shift across releases, which
+                    # would make the radon-cc-c-plus baseline a moving target.
+                    radon)      PIP_PKGS+=("radon==6.0.1") ;;
                     *)          PIP_PKGS+=("$tool") ;;
                 esac
             done
@@ -139,7 +148,7 @@ if [ ${#MISSING[@]} -gt 0 ] || { [ "$INSTALL_DEPS" = true ] && [ "$PYTEST_COV_MI
         fail "Missing tools: ${MISSING[*]}"
         echo ""
         echo "Install with:"
-        echo "  pip install ruff mypy vulture radon pytest-cov"
+        echo "  pip install ruff mypy vulture radon==6.0.1 pytest-cov"
         echo "  brew install shellcheck  # or: pip install shellcheck-py"
         echo ""
         echo "Or re-run with --install-deps to install them into the active venv."
