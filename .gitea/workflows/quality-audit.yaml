@@ -14,5 +14,10 @@ jobs:
         run: |
           python3 -m venv "$PWD/.venv"
           . "$PWD/.venv/bin/activate"
-          pip install ruff mypy vulture radon shellcheck-py
+          # radon is version-pinned: its cyclomatic-complexity counts shift
+          # slightly across releases, which would make the radon-cc-c-plus
+          # baseline a moving target (an unpinned bump reads as phantom drift).
+          # Pin so a baseline-vs-current delta means "code changed", not "tool
+          # changed". Bump deliberately, alongside a baseline re-pin.
+          pip install ruff mypy vulture radon==6.0.1 shellcheck-py
           ./scripts/quality-audit.sh --quick --ci
