@@ -1185,7 +1185,7 @@ Otherwise start with:
 - \`/wip-report\` — Capture fireside chat or trigger session summary
 - \`/wip-deploy redeploy|verify\` — Redeploy this YAC's own source to the running dev install (or smoke-only). Subset of BE-YAC's \`/wip-deploy\` — install is BE-YAC's territory
 <!--TIER3-->
-- \`/wip-case file|list|read|respond|comment|close|implement\` — Cross-agent case management. **Every case write is ONE gateway call:** \`POST <kb_app_url>/apps/kb/server-api/kb/cases[…]\` per the served playbook (\`~/.cache/wip-kb-client/case-workflow.md\`). The server owns allocation (atomic \`CASE-<n>\` synonym claim — race-safe by construction), the status machine, and edges. Never \`Write\` a case file with a hand-picked number. Flat case files are optional write-staging; there is no mirror step (the retired loaders refuse with a pointer).
+- \`/wip-case file|list|read|respond|comment|close|implement\` — Cross-agent case management. **All KB reads/writes go through the served client — never a raw gateway curl:** \`kbc kb-write.py <TYPE> …\` (writes) / \`kbc case-fetch.py …\` (reads); the served playbook (\`~/.cache/wip-kb-client/case-workflow.md\`) is the version-matched source of truth for each verb. The gateway mints the \`CASE-<n>\` number + synonym and persists edges, but status-transition validity is enforced caller-side and a respond/close/implement is two writes (response doc + \`CASE_RECORD --patch status=…\`). Cases live in the KB, not on disk — never \`Write\` a case file with a hand-picked number; never reason about "the next number".
 <!--/TIER3-->
 
 **Context management:** When context reaches ~70-80%, the human should tell you to run \`/wip-wake\` or save state (DESIGN.md, memory files) before compaction hits.
