@@ -329,6 +329,17 @@ describe('Service classes via createWipClient', () => {
       expect(url).toContain('version=2')
     })
 
+    it('getDocument maps namespace to the query param (CASE-457)', async () => {
+      mockJsonResponse({ document_id: 'D-001', version: 1 })
+
+      await client.documents.getDocument('SONG_TRACK', undefined, 'dev-wip-song')
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/documents/SONG_TRACK')
+      expect(url).toContain('namespace=dev-wip-song')
+      expect(url).not.toContain('version=')
+    })
+
     it('createDocument sends bulk POST', async () => {
       mockJsonResponse({
         results: [{ index: 0, status: 'created', document_id: 'D-001', is_new: true }],
@@ -559,6 +570,20 @@ describe('Service classes via createWipClient', () => {
       const [url, options] = fetchMock.mock.calls[0]
       expect(url).toContain('/api/document-store/documents/query')
       expect(options.method).toBe('POST')
+    })
+
+    it('queryDocuments maps namespace to the query param, not the body (CASE-457)', async () => {
+      mockJsonResponse({ items: [{ document_id: 'D-001' }], total: 1, page: 1, page_size: 50, pages: 1 })
+
+      await client.documents.queryDocuments(
+        { template_value: 'SONG_TRACK', filters: [] } as any,
+        'dev-wip-song',
+      )
+
+      const [url, options] = fetchMock.mock.calls[0]
+      // namespace rides the query string (body namespace is extra_forbidden server-side)
+      expect(url).toContain('namespace=dev-wip-song')
+      expect(JSON.parse(options.body as string)).not.toHaveProperty('namespace')
     })
 
     it('getVersions fetches version history', async () => {
