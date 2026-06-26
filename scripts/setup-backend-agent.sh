@@ -810,9 +810,9 @@ Seconds precision (`HHMMSS`) is deliberate — it eliminates the same-minute col
 
 When you hit a bug, missing feature, or platform gap another YAC needs to handle: file a case via `/wip-case`.
 
-**Shared directory:** `yac-discussions/` (symlink to shared case store). If it doesn't exist, cases are not enabled for this project — tell Peter.
+**Tier check:** cross-agent cases are enabled when `.claude/kb.json` exists (tier 3). If it's absent, this is a tier-2 repo — cases are not enabled; tell Peter (enable with the scaffold's `--enable-kb`). This is the same signal the `/wip-case` stub checks; do not gate on a `yac-discussions/` directory.
 
-The `/wip-case` command lives at `.claude/commands/wip-case.md`. Peter symlinks both the directory and the command into participating projects.
+The `/wip-case` command lives at `.claude/commands/wip-case.md`. Peter symlinks it into participating projects.
 
 **When to file:**
 - Bug in a platform component (document-store, registry, MCP server, client libs)
@@ -884,7 +884,7 @@ __WIP_ROOT__/
 ├── components/               # Eight services, each with src/ and tests/
 ├── deployer/                 # wip-deploy v2 (the canonical deployer)
 ├── apps/                     # App manifests (not app source — apps live in their own repos)
-├── yac-discussions/          # Cross-agent cases (symlinked; tier 3 only)
+├── yac-discussions/          # Optional case-staging symlink (tier 3; cases live in the KB)
 └── WIP-Toolkit/              # CLI toolkit
 ```
 

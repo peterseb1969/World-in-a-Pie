@@ -7,10 +7,10 @@ Doc-review workflow. Subcommands: `/wip-doc-review` (full queue), `/wip-doc-revi
 **Pre-flight (do this first, every time):**
 
 ```bash
-test -d yac-discussions && echo "ok" || echo "missing"
+test -f .claude/kb.json && echo "ok" || echo "missing"
 ```
 
-If `missing`, tell Peter: "Cross-agent cases are not enabled for this project. To enable, symlink `yac-discussions/` to the shared case store." Then stop — do not read the playbook.
+If `missing`, tell Peter: "This is a tier-2 repo — cross-agent cases are not enabled. Enable with the scaffold's `--enable-kb`." Then stop — do not read the playbook. (This is the same tier signal `/wip-case` checks; don't gate on a `yac-discussions/` directory.)
 
 If `ok`, you MUST Read `docs/playbooks/backend/doc-review-workflow.md` before taking any action. Do not guess the response format, questionnaire structure, re-review rules, **or the deletion-sweep pre-flight**, from memory — they live in the playbook. Then execute the requested action from `$ARGUMENTS`.
 
