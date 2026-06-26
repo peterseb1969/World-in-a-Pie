@@ -4,7 +4,7 @@ description: Read firesides (design-chat transcripts) from kb — list and read.
 
 Read-only access to firesides (`FIRESIDE` — design-chat / fireside transcripts). Subcommands: `list`, `read <document_id>`.
 
-Firesides are **written** by `/wip-report` (bare, Mode 1), which mirrors them to kb via `POST /firesides/mirror`. This command only **reads** them — there is no file/edit/respond verb. The runner reads through the kb gateway (`GET /firesides[/:id]`), never the backend store directly.
+Firesides are **written** by `/wip-report` (bare, Mode 1), which writes them to kb via `kb-write.py FIRESIDE`. This command only **reads** them — there is no file/edit/respond verb. The runner reads through the kb gateway (`GET /firesides[/:id]`), never the backend store directly.
 
 **Pre-flight (do this first, every time):**
 
