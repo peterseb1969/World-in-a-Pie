@@ -1226,6 +1226,8 @@ WIP is accessed exclusively via MCP tools (94 tools, 5 resources). Before starti
 \`wip://development-guide\` provides the full 4-phase workflow reference if needed.
 \`wip://query-assistant-prompt\` provides a complete system prompt for NL query agents (used by --preset query apps).
 
+**Query preset — runtime Anthropic key (CASE-509).** The \`--preset query\` agent resolves its Anthropic key in priority order: a key set at runtime via the admin \`/settings\` page → \`ANTHROPIC_API_KEY_FILE\` (0600, survives restart) → \`ANTHROPIC_API_KEY\` (frozen at process start). So an operator can set/rotate the key from the UI with no redeploy. Two deploy requirements for this to persist: (1) declare \`ANTHROPIC_API_KEY_FILE\` in \`apps/<name>/wip-app.yaml\` pointing at a **writable, persistent mount** (otherwise a UI-set key reverts on restart); (2) the \`/settings\` config endpoint is admin-gated via \`ADMIN_GROUPS\` (default \`wip-admins\`) — open only in dev mode (no \`OIDC_ISSUER\`). The key is a secret: never put it in a WIP document, and the server returns only configured/source/last-4, never the value.
+
 ## Client Libraries
 
 For Phase 4 (app building), use @wip/client, @wip/react, and @wip/proxy:

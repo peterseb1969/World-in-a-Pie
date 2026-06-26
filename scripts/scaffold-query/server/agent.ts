@@ -3,7 +3,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import Anthropic from '@anthropic-ai/sdk'
-import { readFileSync } from 'fs'
+import { readFileSync, writeFileSync, chmodSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -35,7 +35,6 @@ const env = () => ({
   MCP_PYTHON: process.env.MCP_PYTHON || '',
   MCP_CWD: process.env.MCP_CWD || '',
   MCP_MODULE: process.env.MCP_MODULE || 'wip_mcp',
-  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
   CLAUDE_MODEL: process.env.CLAUDE_MODEL || 'claude-haiku-4-5',
   WIP_NAMESPACE: process.env.WIP_NAMESPACE || '',
   // CASE-312 reopen: HTTP/SSE transports need to carry the API key on every
@@ -46,6 +45,98 @@ const env = () => ({
   MAX_TURNS: parseInt(process.env.MAX_TURNS || '15'),
   SESSION_TTL_MS: parseInt(process.env.SESSION_TTL_MINUTES || '30') * 60_000,
 })
+
+// ---------- Anthropic key resolution (CASE-508 / CASE-509) ----------
+// process.env is frozen at process start, so an env-only key can't be rotated
+// without a redeploy. Resolve in priority order so the key is settable in a
+// running app: runtime override (set via the admin /api/config endpoint) → key
+// file (ANTHROPIC_API_KEY_FILE, mirroring the WIP apiKeyFile pattern, CASE-495)
+// → env. The key is a secret — it is never written to a WIP document and never
+// returned to a caller (only configured/source/last-4 are exposed).
+//
+// Multi-replica note: runtimeKeyOverride is per-process. With ANTHROPIC_API_KEY_FILE
+// on a SHARED persistent volume, other replicas pick up a rotated key via
+// keyFromFile() on their next resolve (the file is read fresh each call). Without
+// a shared file a UI-set key applies only to the replica that served the POST
+// until restart — so declare ANTHROPIC_API_KEY_FILE on a persistent mount
+// (see .env.example and the wip-app.yaml guidance in CLAUDE.md).
+let runtimeKeyOverride: string | null = null
+
+function keyFromFile(): string {
+  const f = process.env.ANTHROPIC_API_KEY_FILE
+  if (!f) return ''
+  try {
+    return readFileSync(f, 'utf-8').trim()
+  } catch {
+    return ''
+  }
+}
+
+function anthropicKey(): string {
+  return runtimeKeyOverride || keyFromFile() || process.env.ANTHROPIC_API_KEY || ''
+}
+
+function keySource(): 'override' | 'file' | 'env' | 'none' {
+  if (runtimeKeyOverride) return 'override'
+  if (keyFromFile()) return 'file'
+  if (process.env.ANTHROPIC_API_KEY) return 'env'
+  return 'none'
+}
+
+// Masked status only — the key value is never returned to a caller.
+export function getKeyStatus() {
+  const key = anthropicKey()
+  return {
+    configured: !!key,
+    source: keySource(),
+    last4: key ? key.slice(-4) : null,
+    agentReady: mcpClient !== null,
+  }
+}
+
+// Cheap liveness probe — confirm a key actually authenticates before accepting it.
+export async function validateKey(key: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const probe = new Anthropic({ apiKey: key })
+    await probe.messages.create({
+      model: env().CLAUDE_MODEL,
+      max_tokens: 1,
+      messages: [{ role: 'user', content: 'ping' }],
+    })
+    return { ok: true }
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'validation failed' }
+  }
+}
+
+// Set the key in the running app. Updates the in-memory override and, when
+// persist is set and ANTHROPIC_API_KEY_FILE is configured, writes the key file
+// 0600 so it survives a restart (and is picked up by file-resolve). If the agent
+// was never initialised (no key at boot), connect it now so /api/ask comes alive.
+export async function setAnthropicKey(
+  key: string,
+  opts: { persist?: boolean } = {},
+): Promise<ReturnType<typeof getKeyStatus> & { persisted: boolean }> {
+  runtimeKeyOverride = key
+  let persisted = false
+  const f = process.env.ANTHROPIC_API_KEY_FILE
+  if (opts.persist && f) {
+    writeFileSync(f, key, { mode: 0o600 })
+    // writeFileSync's mode only applies when CREATING the file; an existing key
+    // file keeps its prior perms. chmod explicitly so a rotation always lands at
+    // 0600 regardless of how the file got there (CASE-509 hardening).
+    chmodSync(f, 0o600)
+    persisted = true
+  }
+  if (!mcpClient) {
+    try {
+      await initAgent()
+    } catch (err) {
+      console.warn('[agent] initAgent after key set failed:', (err as Error).message)
+    }
+  }
+  return { ...getKeyStatus(), persisted }
+}
 
 // Only expose read/query tools — no create, delete, or admin tools
 const ALLOWED_TOOLS = new Set([
@@ -143,8 +234,8 @@ function createTransport() {
 }
 
 export async function initAgent() {
-  if (!env().ANTHROPIC_API_KEY) {
-    console.warn('⚠ ANTHROPIC_API_KEY not set — /api/ask will be unavailable')
+  if (!anthropicKey()) {
+    console.warn('⚠ No Anthropic key (env/file/override) — /api/ask unavailable until one is set via /settings')
     return
   }
 
@@ -224,7 +315,7 @@ export async function ask(
   session.messages.push({ role: 'user', content: question })
 
   const e = env()
-  const anthropic = new Anthropic({ apiKey: e.ANTHROPIC_API_KEY })
+  const anthropic = new Anthropic({ apiKey: anthropicKey() })
   let totalToolCalls = 0
 
   for (let turn = 0; turn < e.MAX_TURNS; turn++) {
