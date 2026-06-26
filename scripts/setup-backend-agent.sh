@@ -1008,6 +1008,7 @@ cat > "$WIP_ROOT/.claude/settings.json" << 'EOF'
       "Bash(podman:*)",
       "Bash(docker:*)",
       "Bash(wip-deploy:*)",
+      "Bash(kbc:*)",
       "Bash(curl:*)",
       "Bash(cd:*)",
       "Bash(echo:*)",
