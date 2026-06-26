@@ -62,6 +62,7 @@ class TestExtendsSynonymResolution:
                     "value": "EXT_CHILD",
                     "label": "Child via aliased extends",
                     "extends": "EXT_PARENT_ALIAS",
+                    "extends_version": 1,
                     "fields": [{"name": "child_field", "label": "Child", "type": "string"}],
                 }],
             )
@@ -96,6 +97,7 @@ class TestExtendsSynonymResolution:
                     "value": "EXT_CHILD_FALLTHROUGH",
                     "label": "Child via value extends",
                     "extends": "EXT_PARENT_FALLTHROUGH",  # the parent's value
+                    "extends_version": 1,
                     "fields": [{"name": "child_field", "label": "Child", "type": "string"}],
                 }],
             )

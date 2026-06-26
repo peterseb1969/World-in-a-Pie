@@ -72,6 +72,7 @@ async def test_draft_template_skips_reference_validation(client: AsyncClient, au
         "label": "Draft Bad Extends",
         "status": "draft",
         "extends": "NONEXISTENT_PARENT",
+        "extends_version": 1,
         "fields": [
             {
                 "name": "field1",
@@ -226,6 +227,7 @@ async def test_activate_cascading_two_drafts(client: AsyncClient, auth_headers: 
                 "label": "Address",
                 "type": "object",
                 "template_ref": "CASCADE_B",
+                "template_ref_version": 1,
             },
         ],
     })
@@ -274,6 +276,7 @@ async def test_activate_cascading_with_extends(client: AsyncClient, auth_headers
         "label": "Cascade Child",
         "status": "draft",
         "extends": "CASCADE_PARENT",
+        "extends_version": 1,
         "fields": [
             {"name": "child_field", "label": "Child Field", "type": "string"},
         ],
@@ -321,6 +324,7 @@ async def test_activate_cascading_does_not_reactivate_already_active(
                 "label": "Nested",
                 "type": "object",
                 "template_ref": active_id,
+                "template_ref_version": 1,
             },
         ],
     })
@@ -407,6 +411,7 @@ async def test_activate_dry_run_cascading(client: AsyncClient, auth_headers: dic
                 "label": "Ref",
                 "type": "object",
                 "template_ref": "DRYRUN_B",
+                "template_ref_version": 1,
             },
         ],
     })
@@ -540,6 +545,7 @@ async def test_activate_fails_with_invalid_template_ref(
                 "label": "Nested",
                 "type": "object",
                 "template_ref": "NONEXISTENT_TEMPLATE",
+                "template_ref_version": 1,
             },
         ],
     })
@@ -598,6 +604,7 @@ async def test_activate_all_or_nothing_on_cascading_failure(
                 "label": "Ref",
                 "type": "object",
                 "template_ref": "AON_B",
+                "template_ref_version": 1,
             },
         ],
     })
@@ -635,6 +642,7 @@ async def test_activate_fails_with_invalid_extends_reference(
         "label": "Activate Bad Extends",
         "status": "draft",
         "extends": "NONEXISTENT_PARENT",
+        "extends_version": 1,
         "fields": [
             {"name": "field1", "label": "Field 1", "type": "string"},
         ],

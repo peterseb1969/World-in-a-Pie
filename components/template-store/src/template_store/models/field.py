@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class FieldType(str, Enum):
@@ -149,6 +149,16 @@ class FieldDefinition(BaseModel):
         default=None,
         description="Canonical template_id for nested template (resolved from value at creation)"
     )
+    # The pinned version of the nested template. Mandatory whenever template_ref
+    # is set (enforced at template create/activate/update). Nested-object data is
+    # validated against this exact (template_ref, template_ref_version) pair —
+    # never "latest" — so a parent document never strands when the nested
+    # template ships a new, incompatible version (CASE-493). Immutable per
+    # template version; re-point by authoring a new version of this template.
+    template_ref_version: int | None = Field(
+        default=None,
+        description="Pinned version of the nested template (mandatory when template_ref is set)"
+    )
 
     # For type=reference: unified reference configuration
     reference_type: ReferenceType | None = Field(
@@ -190,6 +200,12 @@ class FieldDefinition(BaseModel):
     array_template_ref: str | None = Field(
         default=None,
         description="Canonical template_id for array item template (resolved from value at creation)"
+    )
+    # Pinned version of the array-item template. Mandatory whenever
+    # array_template_ref is set (same rationale as template_ref_version — CASE-493).
+    array_template_ref_version: int | None = Field(
+        default=None,
+        description="Pinned version of the array-item template (mandatory when array_template_ref is set)"
     )
     array_file_config: FileFieldConfig | None = Field(
         default=None,
@@ -241,3 +257,28 @@ class FieldDefinition(BaseModel):
         default_factory=dict,
         description="Additional field metadata"
     )
+
+    @model_validator(mode="after")
+    def _require_pinned_nested_ref_versions(self) -> "FieldDefinition":
+        """A nested template reference MUST pin an explicit version (CASE-493).
+
+        Schema references never resolve to "latest" — a parent document
+        validated against a floating nested schema can silently strand when
+        that schema ships an incompatible new version. Enforced here so no
+        write path (create, bulk, update, activation) can persist a nested
+        ref without a pinned version. Existence of the pinned (template_id,
+        version) pair is checked separately at the service layer (it needs a
+        DB lookup); this guard only enforces presence.
+        """
+        if self.template_ref and self.template_ref_version is None:
+            raise ValueError(
+                f"template_ref_version is required for field '{self.name}': a "
+                "nested template reference must pin an explicit version (CASE-493)"
+            )
+        if self.array_template_ref and self.array_template_ref_version is None:
+            raise ValueError(
+                f"array_template_ref_version is required for field '{self.name}': "
+                "an array-item template reference must pin an explicit version "
+                "(CASE-493)"
+            )
+        return self
