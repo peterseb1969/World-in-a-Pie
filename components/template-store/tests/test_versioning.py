@@ -377,9 +377,12 @@ async def test_pinned_version_inheritance_uses_correct_version(
 
 
 @pytest.mark.asyncio
-async def test_unpinned_inherits_latest_version(client: AsyncClient, auth_headers: dict):
-    """Test that without extends_version, the child inherits from the
-    latest active parent version."""
+async def test_unpinned_extends_is_rejected(client: AsyncClient, auth_headers: dict):
+    """CASE-493: extends_version is mandatory. The old "unpinned extends
+    inherits the latest parent version" fallback was removed — schema
+    inheritance must pin an explicit parent version, so a child declaring
+    `extends` without `extends_version` is rejected at creation rather than
+    silently floating to latest."""
     parent_id = await _create_one_id(client, auth_headers, {
         "namespace": "wip",
         "value": "UNPINNED_PARENT",
@@ -389,38 +392,27 @@ async def test_unpinned_inherits_latest_version(client: AsyncClient, auth_header
         ],
     })
 
-    # Create child without extends_version (unpinned)
-    child_id = await _create_one_id(client, auth_headers, {
-        "namespace": "wip",
-        "value": "UNPINNED_CHILD",
-        "label": "Unpinned Child",
-        "extends": parent_id,
-        "fields": [
-            {"name": "child_field", "label": "Child Field", "type": "string"},
-        ],
-    })
-
-    # Create parent version 2
-    await _update_template(client, auth_headers, parent_id, {
-        "label": "Unpinned Parent v2",
-        "fields": [
-            {"name": "field_a", "label": "Field A", "type": "string"},
-            {"name": "field_b", "label": "Field B (v2)", "type": "string"},
-        ],
-    })
-
-    # Get resolved child -- should inherit from latest parent (v2)
-    resp = await client.get(
-        f"/api/template-store/templates/{child_id}",
+    # Attempt to create a child WITHOUT extends_version — must be rejected.
+    # POST /templates is bulk-first (accepts a list, always 200, per-item status).
+    resp = await client.post(
+        "/api/template-store/templates",
         headers=auth_headers,
+        json=[{
+            "namespace": "wip",
+            "value": "UNPINNED_CHILD",
+            "label": "Unpinned Child",
+            "extends": parent_id,
+            "fields": [
+                {"name": "child_field", "label": "Child Field", "type": "string"},
+            ],
+        }],
     )
     assert resp.status_code == 200
     data = resp.json()
-    field_names = [f["name"] for f in data["fields"]]
-    assert "field_a" in field_names      # From parent v2
-    assert "field_b" in field_names      # From parent v2 (new field)
-    assert "child_field" in field_names  # Child's own field
-    assert len(data["fields"]) == 3
+    assert data["succeeded"] == 0
+    item = data["results"][0]
+    assert item["status"] == "error"
+    assert "extends_version" in (item.get("error") or "")
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +438,7 @@ async def test_cascade_to_children(client: AsyncClient, auth_headers: dict):
         "value": "CASCADE_CHILD_1",
         "label": "Cascade Child 1",
         "extends": parent_id,
+        "extends_version": 1,
         "fields": [
             {"name": "c1_field", "label": "C1 Field", "type": "string"},
         ],
@@ -456,6 +449,7 @@ async def test_cascade_to_children(client: AsyncClient, auth_headers: dict):
         "value": "CASCADE_CHILD_2",
         "label": "Cascade Child 2",
         "extends": parent_id,
+        "extends_version": 1,
         "fields": [
             {"name": "c2_field", "label": "C2 Field", "type": "string"},
         ],
@@ -544,12 +538,13 @@ async def test_cascade_already_pointing_to_latest(client: AsyncClient, auth_head
         ],
     })
 
-    # Create child extending the parent
+    # Create child extending the parent (pinned to v1)
     await _create_one_id(client, auth_headers, {
         "namespace": "wip",
         "value": "CASCADE_NOOP_CHILD",
         "label": "Cascade Noop Child",
         "extends": parent_id,
+        "extends_version": 1,
         "fields": [
             {"name": "c_field", "label": "C Field", "type": "string"},
         ],

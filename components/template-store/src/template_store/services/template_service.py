@@ -340,6 +340,16 @@ class TemplateService:
             except EntityNotFoundError as e:
                 raise ValueError(str(e)) from e
 
+        # CASE-493: every schema reference (extends + nested template refs) must
+        # pin an explicit version. Presence is enforced on all paths (nested via
+        # the FieldDefinition model validator, extends here); existence of the
+        # pinned (template_id, version) pairs is checked on non-draft writes —
+        # drafts re-check at activation, when their referents must exist.
+        await TemplateService._validate_pinned_versions(
+            request.fields, request.extends, request.extends_version,
+            check_existence=not is_draft,
+        )
+
         # Validate cross-namespace references (isolation mode check) — skip for drafts
         if not is_draft and parent_namespace:
             try:
@@ -1094,6 +1104,19 @@ class TemplateService:
             except EntityNotFoundError as e:
                 raise ValueError(str(e)) from e
 
+        # CASE-493: enforce mandatory, pinned versions on the merged schema
+        # references (extends + nested template refs). extends_value is the
+        # resolved canonical id of the (possibly unchanged) parent; the merged
+        # extends_version falls back to the original when not being changed.
+        new_extends_version = (
+            request.extends_version if request.extends_version is not None
+            else original.extends_version
+        )
+        await TemplateService._validate_pinned_versions(
+            new_fields, extends_value, new_extends_version,
+            check_existence=original.status != "draft",
+        )
+
         # Validate full_text_indexed constraints against the merged final
         # state — fields may add/remove the flag, reporting.sync_enabled
         # may flip; both can break the invariant.
@@ -1599,6 +1622,26 @@ class TemplateService:
                     ))
                     continue
 
+            # CASE-493: enforce mandatory pinned versions (presence). Nested-ref
+            # template existence is already guaranteed by normalize above; full
+            # version existence for non-draft bulk is deferred to keep bulk's
+            # lighter contract (draft bulk re-checks every pin — incl. version —
+            # at activation, and a stale pin degrades to a document-validation
+            # warning, never a strand). Presence is the load-bearing guarantee.
+            try:
+                await TemplateService._validate_pinned_versions(
+                    template_req.fields, template_req.extends,
+                    template_req.extends_version, check_existence=False,
+                )
+            except ValueError as e:
+                results.append(BulkResultItem(
+                    index=i,
+                    status="error",
+                    value=template_req.value,
+                    error=str(e)
+                ))
+                continue
+
             # Create template document
             template = Template(
                 template_id=template_id,
@@ -1965,6 +2008,11 @@ class TemplateService:
                     description=child.description,
                     version=new_version,
                     extends=template_id,  # Point to new parent
+                    # CASE-493: re-pin the child to the parent's NEW version.
+                    # Cascade IS the explicit re-pin operation — the new child
+                    # version inherits from this exact parent version, never
+                    # "latest".
+                    extends_version=parent.version,
                     identity_fields=child.identity_fields,
                     fields=child.fields,  # Preserve child's own fields
                     rules=child.rules,
@@ -2113,6 +2161,26 @@ class TemplateService:
         # Build lookups for the activation set
         set_ids = {t.template_id for t in activation_set}
         set_values = {t.value for t in activation_set}
+        # CASE-493: version-aware membership for pinned-ref existence — a pinned
+        # (ref, version) is satisfied by a co-activating template only if that
+        # template carries the pinned version.
+        set_pinned = (
+            {(t.template_id, t.version) for t in activation_set}
+            | {(t.value, t.version) for t in activation_set}
+        )
+
+        async def _pinned_version_exists(ref: str, version: int) -> bool:
+            """A pinned (ref, version) is satisfiable iff it is in the activation
+            set at that version, or a stored template has that (template_id,
+            version). ref may be a canonical id or a value."""
+            if (ref, version) in set_pinned:
+                return True
+            if await Template.find_one({"template_id": ref, "version": version}):
+                return True
+            resolved = await TemplateService._find_template_by_ref(ref, namespace)
+            return bool(resolved) and await Template.find_one(
+                {"template_id": resolved.template_id, "version": version}
+            ) is not None
 
         errors = []
         warnings = []
@@ -2145,6 +2213,20 @@ class TemplateService:
                             code="invalid_reference",
                             message=f"Parent template '{template.extends}' is {parent.status}, not active"
                         ))
+
+                # CASE-493: extends must pin an existing parent version.
+                if template.extends_version is None:
+                    errors.append(ValidationError(
+                        field=f"{prefix}extends_version",
+                        code="invalid_reference",
+                        message="extends_version is required when 'extends' is set (CASE-493)"
+                    ))
+                elif not await _pinned_version_exists(template.extends, template.extends_version):
+                    errors.append(ValidationError(
+                        field=f"{prefix}extends_version",
+                        code="invalid_reference",
+                        message=f"Parent template '{template.extends}' has no version {template.extends_version}"
+                    ))
 
             # Check fields
             for field in template.fields:
@@ -2204,6 +2286,13 @@ class TemplateService:
                                 code="invalid_reference",
                                 message=f"Template '{field.template_ref}' is {ref_tpl.status}, not active"
                             ))
+                    # CASE-493: the nested ref must pin an existing version.
+                    if not await _pinned_version_exists(field.template_ref, field.template_ref_version):
+                        errors.append(ValidationError(
+                            field=f"{prefix}fields.{field.name}.template_ref_version",
+                            code="invalid_reference",
+                            message=f"Nested template '{field.template_ref}' has no version {field.template_ref_version}"
+                        ))
 
                 if field.array_template_ref:
                     in_set = field.array_template_ref in set_ids or field.array_template_ref in set_values
@@ -2223,6 +2312,13 @@ class TemplateService:
                                 code="invalid_reference",
                                 message=f"Template '{field.array_template_ref}' is {ref_tpl.status}, not active"
                             ))
+                    # CASE-493: the array-item ref must pin an existing version.
+                    if not await _pinned_version_exists(field.array_template_ref, field.array_template_ref_version):
+                        errors.append(ValidationError(
+                            field=f"{prefix}fields.{field.name}.array_template_ref_version",
+                            code="invalid_reference",
+                            message=f"Array-item template '{field.array_template_ref}' has no version {field.array_template_ref_version}"
+                        ))
 
                 # Reference type fields
                 if field.type.value == "reference":
@@ -2597,6 +2693,76 @@ class TemplateService:
                 field.array_terminology_ref = _resolve_term(field.array_terminology_ref)
             if field.target_terminologies:
                 field.target_terminologies = [_resolve_term(r) for r in field.target_terminologies]
+
+    @staticmethod
+    async def _validate_pinned_versions(
+        fields: list,
+        extends: str | None,
+        extends_version: int | None,
+        *,
+        check_existence: bool,
+    ) -> None:
+        """Enforce mandatory, pinned versions on every schema reference (CASE-493).
+
+        Schema references — template inheritance (``extends``) and nested-object
+        / array template refs — must each name an explicit version. "Latest" is
+        not a permitted resolution for a schema reference: a parent document
+        validated against a floating nested (or parent) schema can silently
+        strand when that schema ships an incompatible new version.
+
+        Two checks:
+        - **Presence** (always): the version is set whenever the ref is set.
+          Nested-ref presence is also guarded by FieldDefinition's model
+          validator; ``extends_version`` presence is enforced here because it
+          lives on the template, not a field.
+        - **Existence** (``check_existence``): the pinned ``(template_id,
+          version)`` pair actually exists. Skipped for draft writes — a draft
+          may legitimately reference a not-yet-activated template; existence is
+          re-checked at activation, when the referent must exist.
+
+        Expects ``extends`` and the fields' refs to already be normalized to
+        canonical template_ids (existence queries by template_id).
+        """
+        # Presence — extends_version (nested-ref presence is enforced on the
+        # FieldDefinition model itself).
+        if extends and extends_version is None:
+            raise ValueError(
+                "extends_version is required when a template declares 'extends': "
+                "schema inheritance must pin an explicit parent version (CASE-493)"
+            )
+
+        if not check_existence:
+            return
+
+        async def _pinned_exists(template_id: str, version: int) -> bool:
+            return await Template.find_one(
+                {"template_id": template_id, "version": version}
+            ) is not None
+
+        if extends and extends_version is not None and not await _pinned_exists(extends, extends_version):
+            raise ValueError(
+                f"Parent template '{extends}' has no version {extends_version} "
+                "(extends_version must pin an existing parent version — CASE-493)"
+            )
+
+        for field in fields:
+            if (
+                field.template_ref and field.template_ref_version is not None
+                and not await _pinned_exists(field.template_ref, field.template_ref_version)
+            ):
+                raise ValueError(
+                    f"Field '{field.name}': nested template '{field.template_ref}' "
+                    f"has no version {field.template_ref_version} (CASE-493)"
+                )
+            if (
+                field.array_template_ref and field.array_template_ref_version is not None
+                and not await _pinned_exists(field.array_template_ref, field.array_template_ref_version)
+            ):
+                raise ValueError(
+                    f"Field '{field.name}': array-item template "
+                    f"'{field.array_template_ref}' has no version "
+                    f"{field.array_template_ref_version} (CASE-493)"
+                )
 
     @staticmethod
     async def _validate_field_references(fields: list, namespace: str) -> list[str]:

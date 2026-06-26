@@ -33,6 +33,7 @@ async def test_create_template_with_extends(client: AsyncClient, auth_headers: d
             "value": "CHILD",
             "label": "Child Template",
             "extends": parent_id,
+            "extends_version": 1,
             "fields": [
                 {"name": "child_field", "label": "Child Field", "type": "string"}
             ]
@@ -81,6 +82,7 @@ async def test_get_template_with_inheritance_resolved(client: AsyncClient, auth_
             "value": "RESOLVE_CHILD",
             "label": "Resolve Child",
             "extends": parent_id,
+            "extends_version": 1,
             "fields": [
                 {"name": "child_only", "label": "Child Only", "type": "string"}
             ]
@@ -134,6 +136,7 @@ async def test_get_template_raw(client: AsyncClient, auth_headers: dict):
             "value": "RAW_CHILD",
             "label": "Raw Child",
             "extends": parent_id,
+            "extends_version": 1,
             "fields": [
                 {"name": "child_field", "label": "Child Field", "type": "string"}
             ]
@@ -188,6 +191,7 @@ async def test_field_override(client: AsyncClient, auth_headers: dict):
             "value": "OVERRIDE_CHILD",
             "label": "Override Child",
             "extends": parent_id,
+            "extends_version": 1,
             "fields": [
                 {
                     "name": "common_field",
@@ -249,6 +253,7 @@ async def test_rules_merged(client: AsyncClient, auth_headers: dict):
             "value": "RULES_CHILD",
             "label": "Rules Child",
             "extends": parent_id,
+            "extends_version": 1,
             "fields": [
                 {"name": "field_c", "label": "Field C", "type": "string"}
             ],
@@ -305,6 +310,7 @@ async def test_child_identity_fields_override(client: AsyncClient, auth_headers:
             "value": "ID_CHILD",
             "label": "ID Child",
             "extends": parent_id,
+            "extends_version": 1,
             "identity_fields": ["child_id"],
             "fields": [
                 {"name": "child_id", "label": "Child ID", "type": "string"}
@@ -334,7 +340,8 @@ async def test_create_with_invalid_extends(client: AsyncClient, auth_headers: di
             "namespace": "wip",
             "value": "INVALID_EXTENDS",
             "label": "Invalid Extends",
-            "extends": "0190c000-0000-7000-0000-000999999999"
+            "extends": "0190c000-0000-7000-0000-000999999999",
+            "extends_version": 1
         }]
     )
     assert response.status_code == 200
@@ -358,12 +365,12 @@ async def test_get_children(client: AsyncClient, auth_headers: dict):
     await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json=[{"namespace": "wip", "value": "CHILDREN_CHILD_1", "label": "Child 1", "extends": parent_id}]
+        json=[{"namespace": "wip", "value": "CHILDREN_CHILD_1", "label": "Child 1", "extends": parent_id, "extends_version": 1}]
     )
     await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json=[{"namespace": "wip", "value": "CHILDREN_CHILD_2", "label": "Child 2", "extends": parent_id}]
+        json=[{"namespace": "wip", "value": "CHILDREN_CHILD_2", "label": "Child 2", "extends": parent_id, "extends_version": 1}]
     )
 
     # Get children
@@ -390,14 +397,14 @@ async def test_get_descendants(client: AsyncClient, auth_headers: dict):
     parent_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json=[{"namespace": "wip", "value": "MIDDLE_PARENT", "label": "Parent", "extends": grandparent_id}]
+        json=[{"namespace": "wip", "value": "MIDDLE_PARENT", "label": "Parent", "extends": grandparent_id, "extends_version": 1}]
     )
     parent_id = parent_response.json()["results"][0]["id"]
 
     await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json=[{"namespace": "wip", "value": "GRANDCHILD", "label": "Grandchild", "extends": parent_id}]
+        json=[{"namespace": "wip", "value": "GRANDCHILD", "label": "Grandchild", "extends": parent_id, "extends_version": 1}]
     )
 
     # Get descendants of grandparent
@@ -425,7 +432,7 @@ async def test_delete_template_with_children_fails(client: AsyncClient, auth_hea
     await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json=[{"namespace": "wip", "value": "DELETE_CHILD", "label": "Delete Child", "extends": parent_id}]
+        json=[{"namespace": "wip", "value": "DELETE_CHILD", "label": "Delete Child", "extends": parent_id, "extends_version": 1}]
     )
 
     # Try to delete parent - should fail
@@ -465,6 +472,7 @@ async def test_multi_level_inheritance(client: AsyncClient, auth_headers: dict):
             "value": "LEVEL2",
             "label": "Level 2",
             "extends": level1_id,
+            "extends_version": 1,
             "fields": [{"name": "field2", "label": "Field 2", "type": "string"}]
         }]
     )
@@ -478,6 +486,7 @@ async def test_multi_level_inheritance(client: AsyncClient, auth_headers: dict):
             "value": "LEVEL3",
             "label": "Level 3",
             "extends": level2_id,
+            "extends_version": 1,
             "fields": [{"name": "field3", "label": "Field 3", "type": "string"}]
         }]
     )

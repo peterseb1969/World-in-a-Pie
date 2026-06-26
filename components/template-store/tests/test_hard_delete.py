@@ -27,6 +27,7 @@ async def _create_template(client, auth_headers, value, label, fields=None, name
     }
     if extends:
         payload["extends"] = extends
+        payload["extends_version"] = 1
     response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
