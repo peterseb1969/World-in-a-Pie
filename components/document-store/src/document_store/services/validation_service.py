@@ -715,14 +715,21 @@ class ValidationService:
             )
             return
 
-        # If template_ref is specified, fetch and validate against that template.
-        # template_ref is a specific template_id (immutable), so use the
-        # permanently cached get_template_resolved() path.
+        # If template_ref is specified, validate against that template at its
+        # PINNED version (CASE-493). template_ref_version is mandatory on the
+        # template schema, so nested data is always validated against an exact
+        # (template_id, version) pair — resolved via the permanent (immutable)
+        # cache, never the 5s "latest" path. This is what stops a parent
+        # document from stranding on PATCH when the nested template later ships
+        # a new, incompatible version.
         template_ref = field.get("template_ref")
         if template_ref:
+            template_ref_version = field.get("template_ref_version")
             try:
                 client = get_template_store_client()
-                nested_template = await client.get_template_resolved(template_ref)
+                nested_template = await client.get_template_resolved(
+                    template_ref, version=template_ref_version
+                )
                 if nested_template:
                     await self._validate_fields(
                         value, nested_template, result, prefix=f"{field_path}."
@@ -773,15 +780,24 @@ class ValidationService:
                 else:
                     template_ref = field.get("array_template_ref")
                     if template_ref:
+                        # CASE-493: validate against the PINNED version, same as
+                        # the object axis. array_template_ref_version is
+                        # mandatory on the schema.
+                        template_ref_version = field.get("array_template_ref_version")
                         try:
                             client = get_template_store_client()
-                            item_template = await client.get_template_resolved(template_ref)
+                            item_template = await client.get_template_resolved(
+                                template_ref, version=template_ref_version
+                            )
                             if item_template:
                                 await self._validate_fields(
                                     item, item_template, result, prefix=f"{item_path}."
                                 )
                         except TemplateStoreError:
-                            pass
+                            result.add_warning(
+                                f"Could not validate array-item template "
+                                f"'{template_ref}' for field '{item_path}'"
+                            )
 
             elif item_type == "string":
                 if not isinstance(item, str):
