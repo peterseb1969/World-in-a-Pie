@@ -614,8 +614,19 @@ var DocumentStoreService = class extends BaseService {
   async listDocuments(params) {
     return this.get("/documents", params);
   }
-  async getDocument(id, version) {
-    return this.get(`/documents/${id}`, version !== void 0 ? { version } : void 0);
+  /**
+   * Fetch a document by ID (or any synonym/value the Registry resolves).
+   *
+   * `namespace` (CASE-457): under a MULTI-namespace key (e.g. the install admin
+   * key), a value-form `id` has no namespace context to resolve against — pass
+   * `namespace` to scope it. Maps to the `?namespace=` query param the endpoint
+   * accepts. Single-namespace keys derive it automatically and can omit it.
+   */
+  async getDocument(id, version, namespace) {
+    const params = {};
+    if (version !== void 0) params.version = version;
+    if (namespace !== void 0) params.namespace = namespace;
+    return this.get(`/documents/${id}`, Object.keys(params).length ? params : void 0);
   }
   async createDocument(data) {
     return this.bulkWriteOne("/documents", data);
@@ -697,11 +708,24 @@ var DocumentStoreService = class extends BaseService {
   async getLatestDocument(id) {
     return this.get(`/documents/${id}/latest`);
   }
-  async getDocumentByIdentity(identityHash, includeInactive) {
-    return this.get(`/documents/by-identity/${identityHash}`, includeInactive !== void 0 ? { include_inactive: includeInactive } : void 0);
+  async getDocumentByIdentity(identityHash, includeInactive, namespace) {
+    const params = {};
+    if (includeInactive !== void 0) params.include_inactive = includeInactive;
+    if (namespace !== void 0) params.namespace = namespace;
+    return this.get(`/documents/by-identity/${identityHash}`, Object.keys(params).length ? params : void 0);
   }
-  async queryDocuments(body) {
-    return this.post("/documents/query", body);
+  /**
+   * Query documents by template + filters (POST /documents/query).
+   *
+   * `namespace` (CASE-457): the read fails SILENTLY (total: 0, no error pre-fix)
+   * when a value-form `template_id`/`template_value` can't resolve for lack of
+   * namespace context — i.e. a MULTI-namespace key (the install admin key) with
+   * no scope. Pass `namespace` to supply it. It maps to the `?namespace=` QUERY
+   * PARAM, NOT the body — `namespace` in the JSON body is rejected
+   * `extra_forbidden` (StrictModel). Single-namespace keys derive it and can omit.
+   */
+  async queryDocuments(body, namespace) {
+    return this.post("/documents/query", body, namespace !== void 0 ? { namespace } : void 0);
   }
   // ---- Relationship-graph queries (Phase 4 / CASE-296) ----
   /**

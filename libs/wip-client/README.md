@@ -511,6 +511,17 @@ const results = await client.documents.queryDocuments({
 
 **Available filter operators:** `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `nin`, `exists`, `regex`.
 
+**Scoping reads to a namespace (CASE-457).** Under a **multi-namespace key** (e.g. the install admin key), a value-form `template_id` / `template_value` has no namespace context to resolve against — the query then returns an explicit 422 (a loud failure since CASE-457; it used to be a silent `total: 0`). Pass the namespace as the second argument; it rides the `?namespace=` query param (it cannot go in the body — that is rejected `extra_forbidden`):
+
+```typescript
+const results = await client.documents.queryDocuments(
+  { template_value: 'PATIENT_RECORD', filters: [] },
+  'my-namespace',
+)
+```
+
+`getDocument(id, version?, namespace?)` and `getDocumentByIdentity(hash, includeInactive?, namespace?)` take the same optional trailing argument. A **single-namespace key** derives the namespace automatically, so you can omit it.
+
 ### Table View & CSV Export
 
 ```typescript

@@ -1269,7 +1269,15 @@ interface BackupProgressMessage {
 declare class DocumentStoreService extends BaseService {
     constructor(transport: FetchTransport);
     listDocuments(params?: DocumentQueryParams): Promise<DocumentListResponse>;
-    getDocument(id: string, version?: number): Promise<Document>;
+    /**
+     * Fetch a document by ID (or any synonym/value the Registry resolves).
+     *
+     * `namespace` (CASE-457): under a MULTI-namespace key (e.g. the install admin
+     * key), a value-form `id` has no namespace context to resolve against — pass
+     * `namespace` to scope it. Maps to the `?namespace=` query param the endpoint
+     * accepts. Single-namespace keys derive it automatically and can omit it.
+     */
+    getDocument(id: string, version?: number, namespace?: string): Promise<Document>;
     createDocument(data: CreateDocumentRequest): Promise<BulkResultItem>;
     createDocuments(data: CreateDocumentRequest[]): Promise<BulkResponse>;
     /**
@@ -1317,8 +1325,18 @@ declare class DocumentStoreService extends BaseService {
         max_cross_product?: number;
     }): Promise<Blob>;
     getLatestDocument(id: string): Promise<Document>;
-    getDocumentByIdentity(identityHash: string, includeInactive?: boolean): Promise<Document>;
-    queryDocuments(body: DocumentQueryRequest): Promise<DocumentListResponse>;
+    getDocumentByIdentity(identityHash: string, includeInactive?: boolean, namespace?: string): Promise<Document>;
+    /**
+     * Query documents by template + filters (POST /documents/query).
+     *
+     * `namespace` (CASE-457): the read fails SILENTLY (total: 0, no error pre-fix)
+     * when a value-form `template_id`/`template_value` can't resolve for lack of
+     * namespace context — i.e. a MULTI-namespace key (the install admin key) with
+     * no scope. Pass `namespace` to supply it. It maps to the `?namespace=` QUERY
+     * PARAM, NOT the body — `namespace` in the JSON body is rejected
+     * `extra_forbidden` (StrictModel). Single-namespace keys derive it and can omit.
+     */
+    queryDocuments(body: DocumentQueryRequest, namespace?: string): Promise<DocumentListResponse>;
     /**
      * List relationship documents touching a document.
      *
