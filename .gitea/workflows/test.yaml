@@ -54,6 +54,19 @@ jobs:
             echo "No Python files changed"
           fi
 
+  # Vendored client-lib tarball version consistency (CASE-500)
+  vendored-tarballs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Self-test the guard, then check the tarballs
+        run: |
+          # --self-test proves the guard still catches the failure modes (so it
+          # can't silently rot), then the real run gates this push.
+          scripts/check-tarball-consistency.sh --self-test
+          scripts/check-tarball-consistency.sh
+
   # Dependency vulnerability check
   security-audit:
     runs-on: ubuntu-latest

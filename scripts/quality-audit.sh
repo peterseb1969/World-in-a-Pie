@@ -527,8 +527,24 @@ else
     warn "Tier-2 purity: VIOLATIONS — see $RAW_DIR/tier2-purity.log ($(step_time $STEP_START))"
 fi
 
-# ─── Step 15: Generate report ────────────────────────────────────────
-info "Step 15: Generating report..."
+# ─── Step 15: Vendored-tarball consistency (CASE-500) ────────────────
+info "Step 15: Vendored-tarball consistency..."
+STEP_START=$(date +%s)
+
+# Guards that every @wip/* lib's tracked tarball matches its package.json
+# version (committed + correct internally). A bumped package.json/dist with a
+# stale/un-committed .tgz silently ships old code to apps re-vendoring it.
+TARBALL_OK=true
+if "$SCRIPT_DIR/check-tarball-consistency.sh" > "$RAW_DIR/tarball-consistency.log" 2>&1; then
+    ok "Vendored tarballs: consistent ($(step_time $STEP_START))"
+else
+    TARBALL_OK=false
+    fail "Vendored tarballs: MISMATCH — see $RAW_DIR/tarball-consistency.log ($(step_time $STEP_START))"
+    cat "$RAW_DIR/tarball-consistency.log"
+fi
+
+# ─── Step 16: Generate report ────────────────────────────────────────
+info "Step 16: Generating report..."
 STEP_START=$(date +%s)
 
 MODE="full"
@@ -549,6 +565,14 @@ fi
 python3 "$SCRIPT_DIR/quality-audit-report.py" "${REPORT_ARGS[@]}" 2>&1
 
 ok "Report generated ($(step_time $STEP_START))"
+
+# Vendored-tarball mismatch is a hard gate in CI (CASE-500): it is a binary
+# correctness fault, not a baseline-counted dimension, so it fails the audit
+# directly rather than through quality-audit-report.py's baseline comparison.
+if $CI_MODE && [ "$TARBALL_OK" = false ]; then
+    fail "Vendored-tarball consistency failed — failing audit (--ci). See Step 15."
+    exit 1
+fi
 
 # ─── Summary ─────────────────────────────────────────────────────────
 TOTAL_ELAPSED=$(( $(date +%s) - TOTAL_START ))
