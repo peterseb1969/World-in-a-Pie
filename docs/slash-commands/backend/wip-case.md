@@ -19,12 +19,14 @@ backend by construction — do not reproduce its content here.
      "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/apps/kb/server-api/kb-client/install" | sh
    ```
 
-**`read` short-circuit (no playbook load):**
+**`read` short-circuit:**
 
-If `$ARGUMENTS` starts with `read ` followed by a number (optionally with `--brief`):
+If `$ARGUMENTS` starts with `read ` followed by a case number — optionally followed by read selectors and/or `--brief`:
 
-1. ```bash
-   bash ~/.cache/wip-kb-client/kb-client.sh case-fetch.py case <N>
+1. Run `case-fetch.py case <N>`, **forwarding any read selectors the user passed** (do NOT silently drop them — that returns the case body when the user asked for a response). Do NOT treat the flag list below as the source of truth: the served playbook's `/wip-case read` section (`~/.cache/wip-kb-client/case-workflow.md`) is authoritative and version-matched to the instance — consult it for any selector you don't recognize, so new read forms work with zero stub change. Forward real `--flags` verbatim; map a bare shortcut to its flag per the playbook's documented forms. Current forms: bare `read <n>` → `case <n>` (default `view=both` = body + full thread, no playbook load needed); `read <n> responses` → `--view responses`; `read <n> case` → `--view case`; `read <n> latest` → `--response latest`; `read <n> <seq>` → `--response <seq>`; `--format json` for the raw payload. `--brief` is a STUB-only flag (skip the assessment in step 3) — strip it before building the case-fetch command.
+
+   ```bash
+   bash ~/.cache/wip-kb-client/kb-client.sh case-fetch.py case <N> [selectors…]
    ```
 2. Present the fetched case to the user.
 3. **If `--brief` was passed:** STOP here (raw read only). Otherwise continue to the assessment (the default).
