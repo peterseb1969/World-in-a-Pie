@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import HomePage from './pages/HomePage'
+import SettingsPage from './pages/SettingsPage'
 import AskBar from './components/AskBar'
 
 // Path-prefix-ready for k8s/ingress (CASE-370): without this basename, React
@@ -36,6 +37,10 @@ export default function App() {
     <BrowserRouter basename={BASENAME}>
       <Routes>
         <Route path="/" element={<HomePage />} />
+        {/* Admin-only runtime config — set/rotate the Anthropic key (CASE-509).
+            The server gates /api/config with requireAdmin; non-admins see a
+            "forbidden" message rather than the form. */}
+        <Route path="/settings" element={<SettingsPage />} />
       </Routes>
       <AskBar />
       <BuildStamp />

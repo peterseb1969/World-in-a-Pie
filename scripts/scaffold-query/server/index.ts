@@ -3,7 +3,8 @@ import express from 'express'
 import cors from 'cors'
 import session from 'express-session'
 import { initAgent, ask } from './agent.js'
-import { initAuth, requireAuth, handleCallback, handleLogout } from './auth.js'
+import { initAuth, requireAuth, requireAdmin, handleCallback, handleLogout } from './auth.js'
+import configRoutes from './config.routes.js'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -61,6 +62,10 @@ router.post('/api/ask', async (req, res) => {
     res.status(500).json({ error: err.message || 'Internal error' })
   }
 })
+
+// --- Runtime config (admin-only): set/rotate the Anthropic key without a
+// redeploy (CASE-509). requireAdmin gates on ADMIN_GROUPS; open in dev mode. ---
+router.use('/api/config', requireAdmin(), configRoutes)
 
 // --- User info (for authenticated apps) ---
 router.get('/api/me', (req, res) => {
