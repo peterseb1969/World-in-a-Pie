@@ -1030,7 +1030,16 @@ cat > "$WIP_ROOT/.claude/settings.json" << 'EOF'
       "mcp__wip__describe_data_model",
       "mcp__wip__lookup_entry",
       "mcp__wip__validate_*",
-      "mcp__wip__export_*"
+      "mcp__wip__export_*",
+      "mcp__wip__run_report_query",
+      "mcp__wip-kb__get_*",
+      "mcp__wip-kb__list_*",
+      "mcp__wip-kb__query_*",
+      "mcp__wip-kb__run_report_query",
+      "mcp__wip-kb__search",
+      "mcp__wip-kb__lookup_entry",
+      "mcp__wip-kb__traverse_documents",
+      "mcp__wip-kb__describe_data_model"
     ],
     "ask": [
       "Bash(wip-deploy nuke:*)",
