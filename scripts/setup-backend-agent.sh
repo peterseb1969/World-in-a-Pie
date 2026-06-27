@@ -734,12 +734,10 @@ Do not `pip install` new packages into the venv without approval — `.venv` is 
 | `/wip-status` | Service health + data state |
 | `/wip-understand <component>` | Deep-dive into a component or library |
 | `/wip-test` | Run component tests |
-| `/wip-quality` | Run quality audit |
-| `/wip-review-changes` | Analyze uncommitted work |
-| `/wip-pre-commit` | CI-equivalent checks |
+| `/wip-check` | Mechanical checks: lint/type/test/security — \`--changed\` gate or \`--all\` audit |
+| `/wip-review-changes` | Analyze uncommitted work — the judgment pass (conventions, design, missing tests) |
 | `/wip-report` | Capture fireside chat or trigger session summary |
 | `/wip-lesson` | Capture a lesson into structured memory |
-| `/wip-doc-review` | Run a documentation audit on a target file or directory |
 | `/wip-deploy redeploy|install|verify` | Routinized deployment with mandatory pre-flight |
 <!--TIER3-->
 | `/wip-case file|list|read|respond|implement|close|comment` | Cross-agent case management |
@@ -852,7 +850,7 @@ Full rule at `feedback_push_to_gitea.md`.
 
 **Branching:** work on `develop`. `main` is the stable branch — tagged releases only. PRs go to `main` when ready.
 
-**CI:** Gitea Actions via `act_runner` on `wip-pi.local`. Workflow at `.gitea/workflows/test.yaml`. Run `/wip-pre-commit` locally before pushing.
+**CI:** Gitea Actions via `act_runner` on `wip-pi.local`. Workflow at `.gitea/workflows/test.yaml`. Run `/wip-check` locally before pushing.
 
 ---
 
