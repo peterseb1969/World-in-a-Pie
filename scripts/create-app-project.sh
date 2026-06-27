@@ -61,6 +61,7 @@ APP_PREFIX=""
 PRESET="standard"
 REFRESH_MODE=false
 FORCE_CLAUDE_MD=false
+WITH_BOOTSTRAP=false
 # Tier-3 (KB) opt-in — CASE-463. Tier 2 (WIP-only) is the default.
 KB_URL=""
 KB_KEY_FILE=""
@@ -86,6 +87,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --force-claude-md)
             FORCE_CLAUDE_MD=true
+            shift
+            ;;
+        --with-bootstrap)
+            WITH_BOOTSTRAP=true
             shift
             ;;
         --kb)
@@ -116,6 +121,11 @@ while [[ $# -gt 0 ]]; do
             echo "              fresh render to CLAUDE.md.refresh instead (CASE-418)."
             echo "  --force-claude-md   With --refresh: overwrite an existing CLAUDE.md outright"
             echo "              instead of writing CLAUDE.md.refresh. App-authored content is lost."
+            echo "  --with-bootstrap    With --refresh: retrofit the genesis bootstrap templates"
+            echo "              (templates/bootstrap/*.template) for an app that predates them."
+            echo "              Seeds only when templates/bootstrap/ is absent — never resurrects"
+            echo "              a dir a built app deleted per the genesis banner. No-op on create"
+            echo "              (create always seeds them)."
             echo "  --kb        KB instance URL — makes the repo tier 3 (KB-backed collaboration,"
             echo "              CASE-463). Default is tier 2: WIP-only, zero KB plumbing emitted."
             echo "  --kb-key    Path to the KB API key file (default: ~/.wip-deploy/kb/secrets/api-key)"
@@ -620,29 +630,31 @@ else
     echo "   Warning: docs/design/ontology-support.md not found, skipping"
 fi
 
-# --- Copy bootstrap templates (new projects only) ---
-
-if ! $REFRESH_MODE; then
-    BOOTSTRAP_SRC="$WIP_ROOT/apps/templates/bootstrap"
-    if [ -d "$BOOTSTRAP_SRC" ]; then
-        echo ""
-        echo "   Copying bootstrap templates..."
-        # Genesis-copy provenance stamp (CASE-415). These three files are
-        # one-time Phase-1 STARTING POINTS — the APP-YAC builds
-        # server/lib/bootstrap.ts from them by hand, then they are vestigial.
-        # A frozen, unmarked copy invites the grep-it-as-canonical misread
-        # that produced CASE-414. Stamp each SPAWNED copy with its source SHA,
-        # a "not canonical" warning, and a delete-after-use instruction. The
-        # canonical source in WIP_ROOT is never touched. `|| echo unknown`
-        # keeps the SHA capture from dying under set -euo pipefail (CASE-460).
-        STAMP_SHA="$(git -C "$WIP_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-        STAMP_DATE="$(date '+%Y-%m-%d')"
-        mkdir -p "$APP_DIR/templates/bootstrap"
-        for tpl in bootstrap.server.ts.template bootstrap.routes.ts.template BootstrapGate.tsx.template; do
-            if [ -f "$BOOTSTRAP_SRC/$tpl" ]; then
-                dest="$APP_DIR/templates/bootstrap/$tpl"
-                {
-                    cat <<BANNER
+# --- Bootstrap templates (genesis copies, CASE-415) ---
+# Genesis-copy provenance stamp (CASE-415). These three files are one-time
+# Phase-1 STARTING POINTS — the APP-YAC builds server/lib/bootstrap.ts from them
+# by hand, then they are vestigial. A frozen, unmarked copy invites the
+# grep-it-as-canonical misread that produced CASE-414. Stamp each SPAWNED copy
+# with its source SHA, a "not canonical" warning, and a delete-after-use
+# instruction. The canonical source in WIP_ROOT is never touched. `|| echo
+# unknown` keeps the SHA capture from dying under set -euo pipefail (CASE-460).
+seed_bootstrap_templates() {
+    local BOOTSTRAP_SRC="$WIP_ROOT/apps/templates/bootstrap"
+    if [ ! -d "$BOOTSTRAP_SRC" ]; then
+        echo "   Warning: $BOOTSTRAP_SRC not found, skipping bootstrap templates"
+        return
+    fi
+    echo ""
+    echo "   Copying bootstrap templates..."
+    local STAMP_SHA STAMP_DATE tpl dest
+    STAMP_SHA="$(git -C "$WIP_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    STAMP_DATE="$(date '+%Y-%m-%d')"
+    mkdir -p "$APP_DIR/templates/bootstrap"
+    for tpl in bootstrap.server.ts.template bootstrap.routes.ts.template BootstrapGate.tsx.template; do
+        if [ -f "$BOOTSTRAP_SRC/$tpl" ]; then
+            dest="$APP_DIR/templates/bootstrap/$tpl"
+            {
+                cat <<BANNER
 // ============================================================================
 // GENESIS COPY (CASE-415) — not canonical, not live. One-time Phase-1 start.
 //   Source: World-in-a-Pie@${STAMP_SHA}, spawned ${STAMP_DATE}.
@@ -652,15 +664,32 @@ if ! $REFRESH_MODE; then
 //   After you build server/lib/bootstrap.ts from this, DELETE templates/bootstrap/.
 // ============================================================================
 BANNER
-                    cat "$BOOTSTRAP_SRC/$tpl"
-                } > "$dest"
-                echo "     templates/bootstrap/$tpl (genesis-stamped)"
-            else
-                echo "     Warning: $tpl not found in $BOOTSTRAP_SRC, skipping"
-            fi
-        done
+                cat "$BOOTSTRAP_SRC/$tpl"
+            } > "$dest"
+            echo "     templates/bootstrap/$tpl (genesis-stamped)"
+        else
+            echo "     Warning: $tpl not found in $BOOTSTRAP_SRC, skipping"
+        fi
+    done
+}
+
+# Create always seeds the genesis templates. --refresh seeds them ONLY with
+# --with-bootstrap AND only when templates/bootstrap/ is absent: a deliberate
+# retrofit for apps that predate the templates (the refreshed CLAUDE.md tells the
+# YAC to read templates/bootstrap/*.template, but plain --refresh never shipped
+# them). Never clobber an existing dir — a mature app that built bootstrap.ts and
+# deleted templates/bootstrap/ per the genesis banner must NOT have it resurrected;
+# that is why retrofit is opt-in, not automatic-on-absence.
+if ! $REFRESH_MODE; then
+    seed_bootstrap_templates
+elif $WITH_BOOTSTRAP; then
+    if [ -d "$APP_DIR/templates/bootstrap" ]; then
+        echo "   --with-bootstrap: templates/bootstrap/ already present — left as-is."
+        echo "     (A built app that removed it per the genesis banner should not have it"
+        echo "      resurrected; delete the dir first if you want fresh genesis copies.)"
     else
-        echo "   Warning: $BOOTSTRAP_SRC not found, skipping bootstrap templates"
+        echo "   --with-bootstrap: retrofitting genesis bootstrap templates (app predates them)..."
+        seed_bootstrap_templates
     fi
 fi
 
