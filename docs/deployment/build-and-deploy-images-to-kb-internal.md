@@ -108,8 +108,15 @@ bash scripts/build-release.sh --registry ghcr.io/peterseb1969 \
 held the old pod so there was no outage, but it had to be rolled back. Don't.)
 
 ```bash
-# Verify the manifest is actually in GHCR before rolling (Route B example):
-podman manifest inspect ghcr.io/peterseb1969/template-store:20260627a >/dev/null && echo OK
+# Verify the tag is actually in GHCR before rolling.
+# Preferred — skopeo reads the registry directly (no pull, no daemon) and works for
+# BOTH routes (single-arch image OR multi-arch list):
+skopeo inspect docker://ghcr.io/peterseb1969/template-store:<tag> >/dev/null && echo OK
+# Without skopeo, the check differs by route:
+#   Route A (multi-arch LIST):   podman manifest inspect …/template-store:<tag> >/dev/null && echo OK
+#   Route B (single-arch IMAGE): `podman manifest inspect` FAILS here (it's for lists,
+#     not a single-arch image — a false "missing"); pull instead:
+#     podman pull --quiet …/template-store:<tag> >/dev/null && echo OK
 
 # Roll each backend deployment to the new tag (all 8, or just the changed subset).
 for svc in registry def-store template-store document-store reporting-sync \
