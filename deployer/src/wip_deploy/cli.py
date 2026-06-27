@@ -2267,6 +2267,105 @@ def app_deploy(
     )
 
 
+@app.command()
+def redeploy(
+    services: Annotated[
+        list[str] | None,
+        typer.Argument(
+            help=(
+                "Optional subset of services to recreate (e.g. 'registry "
+                "def-store'). Default: re-up the whole install and let "
+                "compose recreate only the services whose rendered config "
+                "actually changed. Compose/dev only; rejected on k8s."
+            ),
+        ),
+    ] = None,
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Re-render an existing install from its saved spec, recreating only what changed.
+
+    The missing middle between `rebuild` (recreate, no re-render — can't
+    pick up a deployer renderer/spec change) and `install` (full
+    re-render from CLI flags — must re-specify --preset/modules/apps,
+    whole-stack blast radius). `redeploy` reuses the install's persisted
+    `deployment.deployer-state` spec, RE-RENDERS it (so deployer
+    renderer/spec changes take effect — e.g. CASE-523's
+    WATCHFILES_FORCE_POLLING env injection), then re-applies through the
+    same lifecycle as `install` (`compose up -d`; on a dev target it also
+    rebuilds the bind-mount image) — recreating only the services whose
+    rendered config actually changed. Untouched containers keep running
+    (CASE-528).
+
+    Pass service names to scope the apply to a subset (compose/dev only;
+    a k8s `kubectl apply` is already incremental, so a service list is
+    rejected there).
+
+    Examples:
+
+      # Activate a deployer renderer change on an existing dev install
+      wip-deploy redeploy --name wip-local
+
+      # Re-render but recreate only two backend services
+      wip-deploy redeploy registry def-store --name wip-local
+    """
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+
+    scope = [s.strip() for s in (services or []) if s.strip()]
+    if scope:
+        if deployment.spec.target == "k8s":
+            typer.echo(
+                "error: a service list is compose/dev only — on k8s "
+                "`kubectl apply` is already incremental. Re-run "
+                "`wip-deploy redeploy` without service names.",
+                err=True,
+            )
+            raise typer.Exit(2)
+        # Validate against the currently-rendered compose service set so a
+        # typo fails cleanly instead of as an opaque `compose up` error.
+        # (The re-render below regenerates this file; the saved spec is
+        # unchanged here, so its service set is authoritative for this
+        # install.)
+        from wip_deploy.apply import _services_in_compose
+
+        compose_file = target_dir / "docker-compose.yaml"
+        known = (
+            _services_in_compose(compose_file) if compose_file.is_file() else set()
+        )
+        unknown = [s for s in scope if known and s not in known]
+        if unknown:
+            typer.echo(
+                f"error: unknown service(s): {', '.join(sorted(set(unknown)))}. "
+                f"Known: {', '.join(sorted(known)) or '(none)'}",
+                err=True,
+            )
+            raise typer.Exit(2)
+
+    label = (
+        f"Redeployed {', '.join(scope)} on {resolved_name}"
+        if scope
+        else f"Redeployed {resolved_name} (re-rendered; recreated changed services)"
+    )
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        label,
+        services_scope=scope or None,
+        repo_root=repo_root,
+    )
+
+
 @app.command("add-module")
 def add_module(
     module_name: Annotated[
