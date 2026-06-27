@@ -35,7 +35,7 @@ Capture a lesson learned as a first-class `LESSON` record in the KB, so future a
 
 3. **Write it** through the served client (the gateway mints `lesson_number` + the `LESSON-<n>` synonym):
    ```bash
-   bash ~/.cache/wip-kb-client/kb-client.sh kb-write.py LESSON lesson.md
+   kbc kb-write.py LESSON lesson.md
    # -> created LESSON-<n> (<document_id>)
    ```
    Run from the project root (where `.claude/kb.json` lives). `kb-write.py --list` shows all writable types if you need to confirm the surface. Do not guess the endpoint or fall back to retired mechanisms (the old `lessons.md` append, `add-to-kb.py`) — the served `kb-write.py` is the version-matched write surface.

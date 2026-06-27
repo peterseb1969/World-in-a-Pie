@@ -26,7 +26,7 @@ If `$ARGUMENTS` starts with `read ` followed by a case number — optionally fol
 1. Run `case-fetch.py case <N>`, **forwarding any read selectors the user passed** (do NOT silently drop them — that returns the case body when the user asked for a response). Do NOT treat the flag list below as the source of truth: the served playbook's `/wip-case read` section (`~/.cache/wip-kb-client/case-workflow.md`) is authoritative and version-matched to the instance — consult it for any selector you don't recognize, so new read forms work with zero stub change. Forward real `--flags` verbatim; map a bare shortcut to its flag per the playbook's documented forms. Current forms: bare `read <n>` → `case <n>` (default `view=both` = body + full thread, no playbook load needed); `read <n> responses` → `--view responses`; `read <n> case` → `--view case`; `read <n> latest` → `--response latest`; `read <n> <seq>` → `--response <seq>`; `--format json` for the raw payload. `--brief` is a STUB-only flag (skip the assessment in step 3) — strip it before building the case-fetch command.
 
    ```bash
-   bash ~/.cache/wip-kb-client/kb-client.sh case-fetch.py case <N> [selectors…]
+   kbc case-fetch.py case <N> [selectors…]
    ```
 2. Present the fetched case to the user.
 3. **If `--brief` was passed:** STOP here (raw read only). Otherwise continue to the assessment (the default).
@@ -54,7 +54,7 @@ If `$ARGUMENTS` starts with `list`:
 
 1. Extract any filter args after `list` (e.g., `list --status open` → `--status open`). Supported flags: `--status open,responded,closed,implemented`, `--filed-by <session-id>`, `--limit N` (default 50, cap 100), `--format table|json`.
 2. ```bash
-   bash ~/.cache/wip-kb-client/kb-client.sh case-fetch.py list <filter args>
+   kbc case-fetch.py list <filter args>
    ```
 3. Present the output as-is. STOP. Exit 0 with an empty table is normal (zero matches); exit 2 is transport error — report verbatim and stop.
 
