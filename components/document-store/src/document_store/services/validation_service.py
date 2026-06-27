@@ -1525,7 +1525,8 @@ class ValidationService:
                     return None
                 # Skip to template verification below
                 return await self._verify_ref_template_and_build_result(
-                    doc, target_templates, result, field_path, version_strategy
+                    doc, target_templates, result, field_path, version_strategy,
+                    namespace=namespace,
                 )
 
         # Determine lookup method based on value format
@@ -1592,7 +1593,8 @@ class ValidationService:
             return None
 
         return await self._verify_ref_template_and_build_result(
-            doc, target_templates, result, field_path, version_strategy
+            doc, target_templates, result, field_path, version_strategy,
+            namespace=namespace,
         )
 
     async def _verify_ref_template_and_build_result(
@@ -1601,7 +1603,8 @@ class ValidationService:
         target_templates: list[str],
         result: "ValidationResult",
         field_path: str,
-        version_strategy: str = "latest"
+        version_strategy: str = "latest",
+        namespace: str | None = None,
     ) -> dict[str, Any] | None:
         """Verify referenced document's template and build the resolved result."""
         from ..models.document import DocumentStatus
@@ -1630,16 +1633,41 @@ class ValidationService:
                         )
                         return None
                 else:
-                    # latest: resolve stored IDs to family codes, match by code
-                    allowed_codes = set()
-                    for tpl_id in target_templates:
-                        tpl = await client.get_template(template_id=tpl_id)
-                        if tpl:
-                            allowed_codes.add(tpl.get("value"))
-                    if doc_template.get("value") not in allowed_codes:
+                    # latest: resolve every allowed endpoint to its canonical
+                    # template_id via the Registry, then match the referenced
+                    # doc's template_id by canonical id. value-form, UUID, and
+                    # any synonym resolve identically — References-Must-Resolve
+                    # (CASE-525; docs/design/synonym-resolution-gaps.md). The old
+                    # code called get_template(template_id=entry) namespace-free
+                    # and matched by .value, which 404s on a namespace-scoped
+                    # value-form endpoint → empty family → every edge rejected
+                    # (the add_edge_type_endpoints widen stores endpoints
+                    # value-form). Resolving here closes the gap regardless of the
+                    # stored form, instead of forcing the widen to avoid synonyms.
+                    from .registry_client import RegistryError, get_registry_client
+                    registry = get_registry_client()
+                    allowed_ids: set[str] = set()
+                    for entry in target_templates:
+                        rid = None
+                        try:
+                            rid = await registry.resolve_identifier(
+                                namespace, "templates", entry
+                            )
+                        except RegistryError:
+                            rid = None
+                        if rid:
+                            allowed_ids.add(rid)
+                        elif self._is_uuid7(entry):
+                            # already a canonical id (or Registry briefly
+                            # unavailable) — honour it directly, never drop it.
+                            allowed_ids.add(entry)
+                    if doc.template_id not in allowed_ids:
+                        expected = doc_template.get("value") or doc.template_id
+                        # Report the DECLARED endpoints (human-readable, the form
+                        # the edge type declares) rather than resolved UUIDs.
                         result.add_error(
                             code="invalid_reference_template",
-                            message=f"Referenced document uses template '{doc_template.get('value')}', expected family of {list(allowed_codes)}",
+                            message=f"Referenced document uses template '{expected}', expected family of {list(target_templates)}",
                             field=field_path
                         )
                         return None
