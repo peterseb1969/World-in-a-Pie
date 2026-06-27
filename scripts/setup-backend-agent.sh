@@ -314,21 +314,36 @@ echo "2. Generating .mcp.json..."
 API_KEY=""
 API_KEY_SOURCE=""
 if [[ "$TARGET" == "local" ]]; then
-    # 1. Prefer wip-deploy v2 secrets/api-key (authoritative for v2 installs).
-    #    If multiple installs exist, take the first match (alphabetical).
-    for secrets_file in "$HOME/.wip-deploy"/*/secrets/api-key; do
-        if [ -f "$secrets_file" ]; then
-            API_KEY=$(tr -d '[:space:]' < "$secrets_file" 2>/dev/null)
-            [ -n "$API_KEY" ] && API_KEY_SOURCE="$secrets_file"
-            break
+    # 1. Prefer the RUNNING wip-deploy install (CASE-521): detect it from a live
+    #    WIP container's compose working_dir label — the install path itself.
+    #    Container names are service-named, not install-named, so a name guess is
+    #    unreliable; the working_dir label is. Without this, the alphabetical glob
+    #    below picks the wrong install on a multi-install box and bakes a
+    #    401-causing key into .mcp.json.
+    if command -v podman >/dev/null 2>&1; then
+        _wip_dirs="$(podman ps --format '{{index .Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null | grep '/.wip-deploy/' | sort -u)"
+        if [ "$(printf '%s\n' "$_wip_dirs" | grep -c .)" -eq 1 ] && [ -f "$_wip_dirs/secrets/api-key" ]; then
+            API_KEY=$(tr -d '[:space:]' < "$_wip_dirs/secrets/api-key" 2>/dev/null)
+            [ -n "$API_KEY" ] && API_KEY_SOURCE="$_wip_dirs/secrets/api-key (running install)"
         fi
-    done
-    # 2. Fall back to legacy .env (pre-v2 setup-wip.sh path).
+    fi
+    # 2. Else any wip-deploy v2 secrets/api-key — first match (alphabetical).
+    #    Last resort among installs when none is detectably running.
+    if [ -z "$API_KEY" ]; then
+        for secrets_file in "$HOME/.wip-deploy"/*/secrets/api-key; do
+            if [ -f "$secrets_file" ]; then
+                API_KEY=$(tr -d '[:space:]' < "$secrets_file" 2>/dev/null)
+                [ -n "$API_KEY" ] && API_KEY_SOURCE="$secrets_file"
+                break
+            fi
+        done
+    fi
+    # 3. Fall back to legacy .env (pre-v2 setup-wip.sh path).
     if [ -z "$API_KEY" ] && [ -f "$WIP_ROOT/.env" ]; then
         API_KEY=$(grep "^API_KEY=" "$WIP_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)
         [ -n "$API_KEY" ] && API_KEY_SOURCE="$WIP_ROOT/.env"
     fi
-    # 3. Dev default (won't authenticate against a real install; dev fixture only).
+    # 4. Dev default (won't authenticate against a real install; dev fixture only).
     if [ -z "$API_KEY" ]; then
         API_KEY="dev_master_key_for_testing"
         API_KEY_SOURCE="dev default (no install detected)"
