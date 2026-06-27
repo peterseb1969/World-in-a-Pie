@@ -701,17 +701,42 @@ else
     echo "4. Generating .mcp.json..."
 fi
 
-# Determine the API-key secrets file
+# Determine the API-key secrets file (CASE-520).
 # The MCP server reads its key from WIP_API_KEY_FILE at startup, so key rotation
 # in wip-deploy automatically propagates without re-running this script. The MCP
 # server needs a privileged key (wip-admins or wip-services) because it operates
 # across namespaces; app runtime code should use a namespace-scoped key instead.
-# Default points at the local-dev deployment. For other deployments, edit the
-# generated .mcp.json or set WIP_API_KEY_FILE_OVERRIDE before running the script.
-WIP_API_KEY_FILE="${WIP_API_KEY_FILE_OVERRIDE:-$HOME/.wip-deploy/wip-dev-local/secrets/api-key}"
+# This single value flows into .mcp.json, .env, and CLAUDE.md, so resolve it once.
+# Resolution priority — avoids the dead-path whack-a-mole of a hardcoded install
+# name (CASE-520: a literal 'wip-dev-local' pointed at a nonexistent install, so
+# every --refresh re-injected a 401-causing key path):
+#   1. WIP_API_KEY_FILE_OVERRIDE — explicit escape hatch.
+#   2. --refresh: PRESERVE a readable key file already in the app's .mcp.json
+#      (mirrors the WIP_BASE_URL preserve block below — stops --refresh clobbering
+#      a known-good path on every run).
+#   3. Detect the RUNNING wip-deploy install from a live WIP container's compose
+#      working_dir label (the install path itself; container names are
+#      service-named, not install-named, so a name guess is unreliable).
+#   4. Literal local-dev default, last resort.
+WIP_API_KEY_FILE="${WIP_API_KEY_FILE_OVERRIDE:-}"
+if [ -z "$WIP_API_KEY_FILE" ] && $REFRESH_MODE && [ -f "$APP_DIR/.mcp.json" ]; then
+    _existing_key="$(python3 -c "import json; print(json.load(open('$APP_DIR/.mcp.json'))['mcpServers']['wip']['env'].get('WIP_API_KEY_FILE',''))" 2>/dev/null || true)"
+    if [ -n "$_existing_key" ] && [ -f "$_existing_key" ]; then
+        WIP_API_KEY_FILE="$_existing_key"
+        echo "   Preserving existing .mcp.json key file: $WIP_API_KEY_FILE"
+    fi
+fi
+if [ -z "$WIP_API_KEY_FILE" ] && command -v podman >/dev/null 2>&1; then
+    _wip_dirs="$(podman ps --format '{{index .Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null | grep '/.wip-deploy/' | sort -u)"
+    if [ "$(printf '%s\n' "$_wip_dirs" | grep -c .)" -eq 1 ] && [ -f "$_wip_dirs/secrets/api-key" ]; then
+        WIP_API_KEY_FILE="$_wip_dirs/secrets/api-key"
+        echo "   Detected running WIP install: $WIP_API_KEY_FILE"
+    fi
+fi
+WIP_API_KEY_FILE="${WIP_API_KEY_FILE:-$HOME/.wip-deploy/wip-local/secrets/api-key}"
 if [ ! -f "$WIP_API_KEY_FILE" ]; then
-    echo "   Warning: $WIP_API_KEY_FILE does not exist."
-    echo "            Deploy wip-dev-local (or set WIP_API_KEY_FILE_OVERRIDE) before using MCP."
+    echo "   Warning: $WIP_API_KEY_FILE does not exist (no running WIP install detected)."
+    echo "            Deploy a WIP install or set WIP_API_KEY_FILE_OVERRIDE before using MCP."
 fi
 
 # Determine Python path
