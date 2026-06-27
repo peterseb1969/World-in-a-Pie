@@ -178,6 +178,19 @@ class TestRouterCaddyfile:
             f"got {mcp_count} matches"
         )
 
+    def test_api_fallthrough_404_guard_emitted(
+        self, compose_deployment: Deployment, real_discovery: Discovery
+    ) -> None:
+        """CASE-513: the router has no catch-all and serves raw X-API-Key
+        callers, so an unmatched /api/* path would hit Caddy's default
+        empty-200. The terminal guard 404s it, sitting after the per-route
+        service handles (longest-match keeps /api/<svc>/* winning)."""
+        caddyfile = self._render(compose_deployment, real_discovery)
+        assert "handle /api/* {" in caddyfile
+        guard_at = caddyfile.index("handle /api/* {")
+        assert "respond 404" in caddyfile[guard_at : guard_at + 80]
+        assert guard_at > caddyfile.index("handle /api/registry/*")
+
     def test_api_routes_emit_only_trailing_handle(
         self, compose_deployment: Deployment, real_discovery: Discovery
     ) -> None:
