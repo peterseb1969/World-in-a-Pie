@@ -245,6 +245,30 @@ export function useReactivateTemplate(
   })
 }
 
+export function useAddEdgeTypeEndpoints(
+  options?: Omit<
+    UseMutationOptions<
+      Template,
+      Error,
+      { id: string; namespace: string; addSourceTemplates?: string[]; addTargetTemplates?: string[] }
+    >,
+    'mutationFn'
+  >,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ id, ...opts }: { id: string; namespace: string; addSourceTemplates?: string[]; addTargetTemplates?: string[] }) =>
+      client.templates.addEdgeTypeEndpoints(id, opts),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.templates.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
 // ============================================================================
 // DOCUMENT HOOKS
 // ============================================================================

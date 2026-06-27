@@ -603,6 +603,28 @@ var TemplateStoreService = class extends BaseService {
   async cascadeTemplate(id) {
     return this.post(`/templates/${id}/cascade`);
   }
+  // ---- Edge-type endpoints ----
+  /**
+   * Additively widen an edge type's allowed endpoint set (CASE-515).
+   *
+   * Adds source and/or target endpoint templates to an existing relationship
+   * template (PoNIF #7) in place, preserving every existing edge — the
+   * supported alternative to the delete+recreate that would strand them.
+   * Endpoints are append-only: this only ADDS (removal stays unsupported).
+   * Each new endpoint must be a real template; idempotent on already-allowed
+   * endpoints. No reindex / reporting migration — the relationship indexes and
+   * reporting columns are generic.
+   */
+  async addEdgeTypeEndpoints(id, options) {
+    return this.post(
+      `/templates/${id}/endpoints`,
+      {
+        add_source_templates: options.addSourceTemplates ?? [],
+        add_target_templates: options.addTargetTemplates ?? []
+      },
+      { namespace: options.namespace }
+    );
+  }
 };
 
 // src/services/document-store.ts

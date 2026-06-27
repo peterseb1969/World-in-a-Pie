@@ -284,6 +284,25 @@ describe('Service classes via createWipClient', () => {
       expect(options.method).toBe('POST')
     })
 
+    it('addEdgeTypeEndpoints POSTs the additions to /endpoints with namespace query (CASE-515)', async () => {
+      mockJsonResponse({ template_id: '0190c000-0000-7000-0000-000000000002', value: 'REFERENCES', version: 1, status: 'active', usage: 'relationship' })
+
+      const result = await client.templates.addEdgeTypeEndpoints(
+        '0190c000-0000-7000-0000-000000000002',
+        { namespace: 'kb', addTargetTemplates: ['YAC_MEMORY'] },
+      )
+
+      expect(result.usage).toBe('relationship')
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/template-store/templates/0190c000-0000-7000-0000-000000000002/endpoints')
+      expect(url).toContain('namespace=kb')
+      expect(options.method).toBe('POST')
+      expect(JSON.parse(options.body)).toEqual({
+        add_source_templates: [],
+        add_target_templates: ['YAC_MEMORY'],
+      })
+    })
+
     it('getTemplateVersions fetches all versions by value', async () => {
       mockJsonResponse({ items: [{ version: 1 }, { version: 2 }], total: 2, page: 1, page_size: 50, pages: 1 })
 
