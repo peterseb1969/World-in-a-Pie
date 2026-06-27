@@ -519,15 +519,7 @@ cat > "$APP_DIR/.claude/settings.json" << 'EOF'
       "mcp__wip__lookup_entry",
       "mcp__wip__validate_*",
       "mcp__wip__export_*",
-      "mcp__wip__run_report_query",
-      "mcp__wip-kb__get_*",
-      "mcp__wip-kb__list_*",
-      "mcp__wip-kb__query_*",
-      "mcp__wip-kb__run_report_query",
-      "mcp__wip-kb__search",
-      "mcp__wip-kb__lookup_entry",
-      "mcp__wip-kb__traverse_documents",
-      "mcp__wip-kb__describe_data_model"
+      "mcp__wip__run_report_query"
     ],
     "ask": [
       "Bash(wip-deploy nuke:*)",
@@ -600,11 +592,15 @@ echo "   Written: .claude/hooks/post-compact-reanchor.sh (SessionStart/compact r
 if [ -d "$WIP_ROOT/docs/playbooks/app-builder" ]; then
     mkdir -p "$APP_DIR/docs/playbooks"
     cp "$WIP_ROOT/docs/playbooks/app-builder/"*.md "$APP_DIR/docs/playbooks/" 2>/dev/null || true
-    # The per-clone case-workflow.md copy lane (CASE-440 Defect-2 band-aid) is
-    # retired (CASE-463): the served bundle owns the playbook and the /wip-case
-    # stub reads it from ~/.cache/wip-kb-client/ — version-matched to the
-    # client by construction. Remove stale copies from existing clones.
-    rm -f "$APP_DIR/docs/playbooks/case-workflow.md"
+    # NOTE (CASE-522): we no longer delete docs/playbooks/case-workflow.md here.
+    # The per-clone copy lane it once removed (CASE-440/463) is retired — the
+    # /wip-case stub reads the served bundle at ~/.cache/wip-kb-client/ — so a
+    # leftover copy is harmless in a normal app (nothing reads it). But WIP-KB
+    # HOSTS the kb served bundle and serves THIS path as a load-bearing source
+    # (server/kb-client.routes.ts PLAYBOOK_PATH), so deleting it on every
+    # --refresh broke the served playbook. The scaffold can't tell a stale copy
+    # from a served source, and preserving it is harmless for the former and
+    # mandatory for the latter — so we preserve.
     PLAYBOOK_COUNT=$(find "$APP_DIR/docs/playbooks/" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
     echo "   Copied: $PLAYBOOK_COUNT playbook(s) to docs/playbooks/"
 else
