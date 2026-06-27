@@ -2,12 +2,17 @@
 #
 # Create a new WIP app project directory with all required files.
 #
-# Usage:
-#   ./scripts/create-app-project.sh /path/to/my-new-app [--name "My App"]
-#   ./scripts/create-app-project.sh /path/to/my-new-app --preset query [--name "My App"]
-#   ./scripts/create-app-project.sh --refresh /path/to/cloned-app
+# Usage (one auto-detecting command — CASE-535):
+#   ./scripts/create-app-project.sh /path/to/dir [--kb <url>] [--name "My App"] [--prefix APP-<X>] [--preset query]
 #
-# This script:
+#   The directory state selects the behavior — you don't pick a mode:
+#     • empty/new dir → CREATE: full scaffold + git init (steps 1-8 below).
+#     • populated dir → SET UP IN PLACE: refresh everything propagatable from the
+#       gene pool without disturbing the app's CLAUDE.md or working tree.
+#     • --kb <url>    → TIER 3: fold KB enablement into the same run (no separate
+#       step); without it the repo stays tier 2. An existing kb.json is preserved.
+#
+# Create does:
 #   1. Creates the directory structure
 #   2. Copies slash commands from docs/slash-commands/app-builder/
 #   3. Copies reference docs (AI-Assisted-Development.md, WIP_PoNIFs.md, WIP_DevGuardrails.md,
@@ -18,18 +23,15 @@
 #   7. Generates a starter CLAUDE.md
 #   8. Initialises a git repo
 #
-# --refresh mode (for cloned/existing apps):
-#   Refreshes everything propagatable from the gene pool: slash commands,
-#   slash-command playbooks, reference docs (AI-Assisted-Development, PoNIFs,
-#   DevGuardrails, wip-guide, technology-stack, ui-guidance, ontology-support),
-#   client libraries (tarballs + READMEs), wip-toolkit wheel, and regenerates
-#   .mcp.json with the current WIP installation path.
-#   Does NOT touch: CLAUDE.md (would clobber app-specific customisation —
-#   regenerate manually if needed), .claude/settings.local.json (never
-#   touched — the committed .claude/settings.json baseline is regenerated
-#   instead, CASE-446), bootstrap templates, or git state. Use to bring an
-#   existing app repo up to date with the current gene pool without disturbing
-#   its CLAUDE.md or working tree.
+# Set-up-in-place (populated dir) refreshes everything propagatable from the gene
+#   pool: slash commands, slash-command playbooks, reference docs, client
+#   libraries (tarballs + READMEs), wip-toolkit wheel, and regenerates .mcp.json
+#   with the current WIP installation path. It is idempotent.
+#   Does NOT touch: CLAUDE.md (would clobber app-specific customisation — a fresh
+#   render is written to CLAUDE.md.refresh unless --force-claude-md),
+#   .claude/settings.local.json (never touched — the committed
+#   .claude/settings.json baseline is regenerated instead, CASE-446), bootstrap
+#   templates, or git state.
 #
 # The generated .mcp.json uses WIP_API_KEY_FILE instead of a hardcoded key,
 # so API key rotation in WIP automatically applies to all apps.
@@ -59,13 +61,14 @@ APP_DIR=""
 APP_NAME=""
 APP_PREFIX=""
 PRESET="standard"
+# REFRESH_MODE is AUTO-DETECTED below from the directory state (CASE-535), not
+# a user flag: populated dir → set up in place (true); empty/new dir → create.
 REFRESH_MODE=false
 FORCE_CLAUDE_MD=false
 WITH_BOOTSTRAP=false
 # Tier-3 (KB) opt-in — CASE-463. Tier 2 (WIP-only) is the default.
 KB_URL=""
 KB_KEY_FILE=""
-ENABLE_KB_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -80,10 +83,6 @@ while [[ $# -gt 0 ]]; do
         --prefix)
             APP_PREFIX="$2"
             shift 2
-            ;;
-        --refresh)
-            REFRESH_MODE=true
-            shift
             ;;
         --force-claude-md)
             FORCE_CLAUDE_MD=true
@@ -101,37 +100,35 @@ while [[ $# -gt 0 ]]; do
             KB_KEY_FILE="$2"
             shift 2
             ;;
-        --enable-kb)
-            ENABLE_KB_MODE=true
-            shift
-            ;;
         -h|--help)
-            echo "Usage: $0 <app-directory> --prefix APP-<X> [--name \"App Name\"] [--preset standard|query]"
-            echo "       $0 --refresh <existing-app-directory> [--prefix APP-<X>]"
+            echo "Usage: $0 <directory> [--kb <url>] [--name \"App Name\"] [--prefix APP-<X>] [--preset standard|query]"
             echo ""
-            echo "Creates a new WIP app project with all required files."
+            echo "Sets up a WIP app project in <directory>. Auto-detects what to do (CASE-535):"
+            echo "  • empty/new directory → create a fresh app (git init + full scaffold)"
+            echo "  • populated directory → set up the existing checkout in place (idempotent;"
+            echo "                          preserves CLAUDE.md and your working tree)"
+            echo ""
+            echo "There are no separate 'create' / 'refresh' / 'enable-kb' modes to choose —"
+            echo "the one intent ('make this checkout a working YAC') is detected from the directory."
             echo ""
             echo "Options:"
+            echo "  --kb <url>  Make the repo tier 3 (KB-backed collaboration, CASE-463) — the"
+            echo "              explicit tier-3 opt-in. Writes .claude/kb.json, installs the served"
+            echo "              KB client, drops the /wip-case stub, registers the role. Scheme is"
+            echo "              optional (https:// assumed). Without --kb (and no existing kb.json)"
+            echo "              the repo stays tier 2 (WIP-only); an existing kb.json is preserved."
+            echo "  --kb-key    Path to the KB API key file (default: ~/.wip-deploy/kb/secrets/api-key)"
             echo "  --name      Display name for the app (default: derived from directory name)"
             echo "  --prefix    Session-role prefix (APP-KB, APP-RC, ...). Written to .claude/.session-role"
             echo "              so /wip-setup and /wip-wake mint <PREFIX>-YYYYMMDD-HHMMSS session IDs (CASE-389)."
             echo "  --preset    Project preset: 'standard' (default) or 'query' (NL query app)"
-            echo "  --refresh   Refresh machine-specific files (.mcp.json, libs) in an existing app."
-            echo "              Also regenerates CLAUDE.md when missing; when present, writes a"
-            echo "              fresh render to CLAUDE.md.refresh instead (CASE-418)."
-            echo "  --force-claude-md   With --refresh: overwrite an existing CLAUDE.md outright"
-            echo "              instead of writing CLAUDE.md.refresh. App-authored content is lost."
-            echo "  --with-bootstrap    With --refresh: retrofit the genesis bootstrap templates"
+            echo "  --force-claude-md   Overwrite an existing CLAUDE.md outright instead of writing"
+            echo "              CLAUDE.md.refresh. App-authored content is lost."
+            echo "  --with-bootstrap    Retrofit the genesis bootstrap templates"
             echo "              (templates/bootstrap/*.template) for an app that predates them."
             echo "              Seeds only when templates/bootstrap/ is absent — never resurrects"
-            echo "              a dir a built app deleted per the genesis banner. No-op on create"
+            echo "              a dir a built app deleted per the genesis banner. No-op on fresh create"
             echo "              (create always seeds them)."
-            echo "  --kb        KB instance URL — makes the repo tier 3 (KB-backed collaboration,"
-            echo "              CASE-463). Default is tier 2: WIP-only, zero KB plumbing emitted."
-            echo "  --kb-key    Path to the KB API key file (default: ~/.wip-deploy/kb/secrets/api-key)"
-            echo "  --enable-kb Retrofit tier 3 onto an existing repo: writes .claude/kb.json,"
-            echo "              installs the served KB client, drops the /wip-case stub. Idempotent."
-            echo "              Usage: $0 --enable-kb <app-directory> --kb <url> [--kb-key <path>]"
             echo "  -h          Show this help"
             exit 0
             ;;
@@ -143,8 +140,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$APP_DIR" ]; then
-    echo "Error: App directory path is required."
-    echo "Usage: $0 <app-directory> [--name \"App Name\"] [--preset standard|query]"
+    echo "Error: directory path is required."
+    echo "Usage: $0 <directory> [--kb <url>] [--name \"App Name\"] [--prefix APP-<X>] [--preset standard|query]"
     exit 1
 fi
 
@@ -156,13 +153,33 @@ fi
 # Resolve to absolute path
 APP_DIR="$(cd "$(dirname "$APP_DIR")" 2>/dev/null && pwd)/$(basename "$APP_DIR")" || APP_DIR="$(pwd)/$APP_DIR"
 
+# --- Normalize --kb URL scheme (CASE-531) ---
+# A scheme-less --kb (e.g. `kb.internal`) makes curl default to http, hit a 308
+# redirect, and pipe the redirect HTML into `sh`. Assume https when no scheme.
+if [ -n "$KB_URL" ] && [[ "$KB_URL" != *"://"* ]]; then
+    KB_URL="https://$KB_URL"
+fi
+
+# --- Auto-detect setup-in-place vs create (CASE-535) ---
+# The one user intent ("make this checkout a working YAC") is read from the
+# directory, not chosen via a flag: a populated dir is set up in place
+# (idempotent; preserves CLAUDE.md + working tree); an empty/new dir is created.
+# This is the very check that used to ERROR on a non-empty dir — now it switches.
+if [ -d "$APP_DIR" ] && [ -n "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
+    REFRESH_MODE=true
+fi
+
 # --- Tier resolution (CASE-463) ---
-# Tier 2 (WIP-only) is the default; tier 3 (KB-backed collaboration) is
-# explicit, declared by .claude/kb.json — written ONLY by --kb / --enable-kb,
-# never by --refresh (the tier is user intent, not generated content; it
-# deliberately does NOT live in settings.json, which is regenerated every
-# run). The config file is the single fact every tier-conditional step tests.
+# Tier 2 (WIP-only) is the default; tier 3 (KB-backed collaboration) is explicit,
+# declared by .claude/kb.json. KB_OPT_IN captures the EXPLICIT tier-3 intent —
+# `--kb` passed on this run — which is what drives provisioning (a tier
+# transition: tier-2→tier-3, or a fresh tier-3 create). TIER3 is the resulting
+# tier STATE (kb.json present OR --kb given) and gates emitted content. The tier
+# is user intent, not generated content; it deliberately does NOT live in
+# settings.json, which is regenerated every run.
 KB_CONFIG="$APP_DIR/.claude/kb.json"
+KB_OPT_IN=false
+[ -n "$KB_URL" ] && KB_OPT_IN=true
 TIER3=false
 [ -f "$KB_CONFIG" ] && TIER3=true
 [ -n "$KB_URL" ] && TIER3=true
@@ -233,7 +250,7 @@ KBEOF
             elif printf '%s' "$SR_RESP" | grep -q 'already exists'; then
                 echo "   SESSION_ROLE term $ROLE_PREFIX already present — ok"
             elif [ "$SR_RESP" = '{}' ]; then
-                echo "   KB unreachable — register $ROLE_PREFIX in SESSION_ROLE later (rerun --enable-kb online)"
+                echo "   KB unreachable — register $ROLE_PREFIX in SESSION_ROLE later (re-run with --kb online)"
             else
                 echo "   SESSION_ROLE registration: unexpected response for $ROLE_PREFIX — $SR_RESP"
             fi
@@ -245,20 +262,9 @@ KBEOF
     fi
 }
 
-if $ENABLE_KB_MODE; then
-    echo "Enabling tier 3 (KB) on existing repo: $APP_DIR"
-    if [ ! -d "$APP_DIR" ]; then
-        echo "Error: $APP_DIR does not exist — --enable-kb retrofits an existing repo."
-        exit 1
-    fi
-    enable_kb
-    echo "Done. Re-run --refresh to regenerate CLAUDE.md with the tier-3 sections."
-    exit 0
-fi
-
 # --- Resolve app metadata (CASE-418) ---
-# Refresh mode NEVER derives metadata from the directory name — that produced
-# 'Dev ns: dev-.' on a `--refresh .` run. Resolution order: persisted
+# Set-up-in-place NEVER derives metadata from the directory name — that produced
+# 'Dev ns: dev-.' on an in-place run of '.'. Resolution order: persisted
 # .claude/.app-meta -> explicit --name -> backfill from the existing
 # CLAUDE.md title -> hard error.
 
@@ -284,7 +290,7 @@ if $REFRESH_MODE; then
         # namespaces that are NOT dev-<slug>, e.g. WIP-DnD's `dnd`).
         APP_NAME="$(sed -n 's/^# //p' "$APP_DIR/CLAUDE.md" | head -1)"
         if [ -z "$APP_NAME" ]; then
-            echo "Error: --refresh could not derive the app name from $APP_DIR/CLAUDE.md."
+            echo "Error: could not derive the app name from $APP_DIR/CLAUDE.md."
             echo "       Re-run with --name \"App Name\"."
             exit 1
         fi
@@ -301,7 +307,7 @@ if $REFRESH_MODE; then
             # namespace that is NOT dev-<slug> (e.g. a live one); silently
             # defaulting would pin the wrong namespace into durable state.
             # Fail with the same remediation as the no-CLAUDE.md path.
-            echo "Error: --refresh found $APP_DIR/CLAUDE.md but could not parse a"
+            echo "Error: found $APP_DIR/CLAUDE.md but could not parse a"
             echo "       namespace from a '## Dev Namespace' section (the heading"
             echo "       may have drifted, e.g. '## Namespace'). Refusing to guess —"
             echo "       this app may use a non-dev-<slug> namespace."
@@ -311,15 +317,15 @@ if $REFRESH_MODE; then
         fi
         META_SOURCE="CLAUDE.md backfill"
     else
-        echo "Error: --refresh cannot resolve app metadata: no .claude/.app-meta,"
+        echo "Error: cannot resolve app metadata for in-place setup: no .claude/.app-meta,"
         echo "       no --name, and no existing CLAUDE.md to derive from."
         echo "       Re-run with --name \"App Name\" (CASE-418)."
         exit 1
     fi
 fi
 
-# Derive app name from directory if not provided (create mode only — refresh
-# resolved it above or exited)
+# Derive app name from directory if not provided (create path only — in-place
+# setup resolved it above or exited)
 if [ -z "$APP_NAME" ]; then
     APP_NAME="$(basename "$APP_DIR" | sed 's/[-_]/ /g' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1')"
 fi
@@ -354,20 +360,15 @@ echo ""
 # --- Check prerequisites ---
 
 if $REFRESH_MODE; then
-    if [ ! -d "$APP_DIR" ]; then
-        echo "Error: $APP_DIR does not exist. Use --refresh on an existing app directory."
-        exit 1
-    fi
+    # Set-up-in-place: the dir is non-empty by construction (that's what selected
+    # this path). A missing CLAUDE.md just means it isn't a WIP app yet — warn,
+    # don't refuse; we still set it up in place.
     if [ ! -f "$APP_DIR/CLAUDE.md" ]; then
-        echo "Warning: $APP_DIR/CLAUDE.md not found — this may not be a WIP app project."
+        echo "Warning: $APP_DIR/CLAUDE.md not found — setting up an existing directory in place."
     fi
 else
-    if [ -d "$APP_DIR" ] && [ "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
-        echo "Error: $APP_DIR already exists and is not empty."
-        echo "Choose a new directory or remove the existing one."
-        exit 1
-    fi
-
+    # Create path: the dir is empty/absent by construction (a non-empty dir would
+    # have selected set-up-in-place above — that old error is now the switch).
     if [ ! -d "$WIP_ROOT/docs/slash-commands/app-builder" ]; then
         echo "Error: $WIP_ROOT/docs/slash-commands/app-builder/ not found."
         echo "Run this script from the WIP project root."
@@ -403,14 +404,16 @@ if ! $TIER3; then
 fi
 echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
 
-# --- Tier-3 provisioning (CASE-463, CASE-517) ---
-# Provisioning (kb.json write, served-client install, SESSION_ROLE POST) runs at
-# tier TRANSITIONS only — a fresh create-with-kb or explicit --enable-kb — never on
-# a plain --refresh. A refresh is offline file-propagation: the /wip-case stub is
-# already re-copied above (no enable_kb needed), the served client self-refreshes
-# on next use (digest-gated), and kb.json must not be rewritten by --refresh (:151).
-# Tier-2 runs skip this entirely.
-if $TIER3 && ! $REFRESH_MODE; then
+# --- Tier-3 provisioning (CASE-463, CASE-517, CASE-535) ---
+# Provisioning (kb.json write, served-client install, SESSION_ROLE POST) runs on
+# the explicit tier-3 opt-in only — KB_OPT_IN, i.e. `--kb` passed on this run.
+# That covers both a fresh create-with-kb AND retrofitting tier-3 onto a populated
+# tier-2 checkout (the old --enable-kb, now folded into the one flow — CASE-532).
+# A set-up-in-place run WITHOUT --kb is offline file-propagation: the /wip-case
+# stub is already re-copied above, the served client self-refreshes on next use
+# (digest-gated), and a pre-existing kb.json must not be rewritten. Tier-2 runs
+# (no --kb, no kb.json) skip this entirely.
+if $KB_OPT_IN; then
     enable_kb
 fi
 
@@ -428,12 +431,12 @@ else
 fi
 
 # --- Persist app metadata (CASE-418) ---
-# Sibling to .session-role, but committed (per-app, not per-machine): --refresh
+# Sibling to .session-role, but committed (per-app, not per-machine): in-place setup
 # reads it to regenerate CLAUDE.md with correct metadata instead of deriving
 # from the directory name. Rewritten every run from the resolved values.
 mkdir -p "$APP_DIR/.claude"
 cat > "$APP_META_FILE" << META_EOF
-# Generated by create-app-project.sh (CASE-418). Read by --refresh to
+# Generated by create-app-project.sh (CASE-418). Read on set-up-in-place to
 # regenerate CLAUDE.md. Edit deliberately if the app's metadata changes.
 APP_NAME="$APP_NAME"
 APP_SLUG="$APP_SLUG"
@@ -445,7 +448,7 @@ echo "   Wrote: .claude/.app-meta ($APP_NAME / $DEV_NAMESPACE)"
 # --- Generate committed .claude/settings.json baseline (CASE-446) ---
 # Replaces the old create-time-only settings.local.json seed (CASE-169 +
 # CASE-385). This file is 100% scaffold-owned and REGENERATED ON EVERY RUN
-# (create AND --refresh) — do not hand-edit; machine-/operator-specific
+# (create AND set-up-in-place) — do not hand-edit; machine-/operator-specific
 # rules belong in .claude/settings.local.json (no longer touched here).
 # One unified baseline for BE + APP repos: the old per-role 31-pattern
 # sets had already drifted (node/npm vs python) — the union ships to both.
@@ -598,7 +601,7 @@ if [ -d "$WIP_ROOT/docs/playbooks/app-builder" ]; then
     # leftover copy is harmless in a normal app (nothing reads it). But WIP-KB
     # HOSTS the kb served bundle and serves THIS path as a load-bearing source
     # (server/kb-client.routes.ts PLAYBOOK_PATH), so deleting it on every
-    # --refresh broke the served playbook. The scaffold can't tell a stale copy
+    # set-up-in-place broke the served playbook. The scaffold can't tell a stale copy
     # from a served source, and preserving it is harmless for the former and
     # mandatory for the latter — so we preserve.
     PLAYBOOK_COUNT=$(find "$APP_DIR/docs/playbooks/" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
@@ -669,10 +672,10 @@ BANNER
     done
 }
 
-# Create always seeds the genesis templates. --refresh seeds them ONLY with
+# Create always seeds the genesis templates. Set-up-in-place seeds them ONLY with
 # --with-bootstrap AND only when templates/bootstrap/ is absent: a deliberate
 # retrofit for apps that predate the templates (the refreshed CLAUDE.md tells the
-# YAC to read templates/bootstrap/*.template, but plain --refresh never shipped
+# YAC to read templates/bootstrap/*.template, but a plain set-up-in-place never shipped
 # them). Never clobber an existing dir — a mature app that built bootstrap.ts and
 # deleted templates/bootstrap/ per the genesis banner must NOT have it resurrected;
 # that is why retrofit is opt-in, not automatic-on-absence.
@@ -705,10 +708,10 @@ fi
 # This single value flows into .mcp.json, .env, and CLAUDE.md, so resolve it once.
 # Resolution priority — avoids the dead-path whack-a-mole of a hardcoded install
 # name (CASE-520: a literal 'wip-dev-local' pointed at a nonexistent install, so
-# every --refresh re-injected a 401-causing key path):
+# every set-up-in-place re-injected a 401-causing key path):
 #   1. WIP_API_KEY_FILE_OVERRIDE — explicit escape hatch.
-#   2. --refresh: PRESERVE a readable key file already in the app's .mcp.json
-#      (mirrors the WIP_BASE_URL preserve block below — stops --refresh clobbering
+#   2. set-up-in-place: PRESERVE a readable key file already in the app's .mcp.json
+#      (mirrors the WIP_BASE_URL preserve block below — stops set-up-in-place clobbering
 #      a known-good path on every run).
 #   3. Detect the RUNNING wip-deploy install from a live WIP container's compose
 #      working_dir label (the install path itself; container names are
@@ -723,7 +726,11 @@ if [ -z "$WIP_API_KEY_FILE" ] && $REFRESH_MODE && [ -f "$APP_DIR/.mcp.json" ]; t
     fi
 fi
 if [ -z "$WIP_API_KEY_FILE" ] && command -v podman >/dev/null 2>&1; then
-    _wip_dirs="$(podman ps --format '{{index .Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null | grep '/.wip-deploy/' | sort -u)"
+    # `|| true`: grep exits 1 when NO running container is a wip-deploy install.
+    # Under `set -euo pipefail` that 1 propagates through the command
+    # substitution and kills the script AT THIS ASSIGNMENT — before .mcp.json
+    # and .env are ever written (CASE-534). The empty result is handled below.
+    _wip_dirs="$(podman ps --format '{{index .Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null | grep '/.wip-deploy/' | sort -u || true)"
     if [ "$(printf '%s\n' "$_wip_dirs" | grep -c .)" -eq 1 ] && [ -f "$_wip_dirs/secrets/api-key" ]; then
         WIP_API_KEY_FILE="$_wip_dirs/secrets/api-key"
         echo "   Detected running WIP install: $WIP_API_KEY_FILE"
@@ -743,7 +750,7 @@ if [ ! -f "$PYTHON_PATH" ]; then
 fi
 
 # Target base URL for the WIP services (CASE-516). Default is the local Caddy.
-# On --refresh, PRESERVE a deliberate non-localhost target already in .mcp.json
+# On set-up-in-place, PRESERVE a deliberate non-localhost target already in .mcp.json
 # instead of clobbering it back to localhost — an earlier refresh silently reset
 # APP-KB's hand-set kb.internal target. Override with WIP_BASE_URL_OVERRIDE.
 WIP_BASE_URL="${WIP_BASE_URL_OVERRIDE:-}"
@@ -878,7 +885,7 @@ copy_tarball() {
         echo "   ERROR: $(basename "$tarball") already exists in the app with different content."
         echo "   The library's content changed without a version bump (CASE-442: versioned"
         echo "   tarballs are immutable). Bump the version in the lib's package.json,"
-        echo "   npm pack, commit the new tarball, then re-run --refresh."
+        echo "   npm pack, commit the new tarball, then re-run this script."
         exit 1
     fi
 
@@ -935,7 +942,7 @@ if $REFRESH_MODE && [ -f "$APP_DIR/package.json" ] && command -v npm &>/dev/null
                     echo "   ERROR: $tb_name — lockfile integrity does not match the shipped file."
                     echo "   The library's content changed without a version bump (CASE-442:"
                     echo "   versioned tarballs are immutable). Bump the version in the lib's"
-                    echo "   package.json, npm pack, commit the new tarball, then re-run --refresh."
+                    echo "   package.json, npm pack, commit the new tarball, then re-run this script."
                     exit 1
                 fi
             done
@@ -1501,7 +1508,7 @@ if [ -f "$APP_DIR/.env" ]; then
 fi
 
 # Ensure the session sentinels are gitignored (CASE-389). .session-id is
-# per-session/ephemeral; .session-role is regenerated by --prefix / --refresh.
+# per-session/ephemeral; .session-role is regenerated by --prefix / a re-run.
 # Neither should ever be committed.
 for _ign in '.claude/.session-id' '.claude/.session-role' '.claude/settings.local.json'; do
     if [ ! -f "$APP_DIR/.gitignore" ]; then
@@ -1554,23 +1561,28 @@ if [ ${#MISSING_LIBS[@]} -gt 0 ]; then
     echo ""
 fi
 
+# First command keyed on session STATE, not create-vs-setup (CASE-532 #1): a
+# freshly-set-up checkout has no .claude/.session-id, so /wip-wake would
+# correctly refuse — /wip-setup is the right entry. /wip-wake is only for
+# continuing an existing session (after /clear or a compaction reset).
+if [ -f "$APP_DIR/.claude/.session-id" ]; then
+    FIRST_CMD="/wip-wake     # Continue: roll the prior session over + recover context"
+else
+    FIRST_CMD="/wip-setup    # First run: mint a session ID + load baseline context"
+fi
+
+echo "Next steps:"
+echo "  cd $APP_DIR"
+echo "  claude          # Launch Claude Code"
+echo "  $FIRST_CMD"
+if ! $REFRESH_MODE; then
+    echo "  /wip-explore    # Then start Phase 1 (explore the domain)"
+fi
+echo ""
+echo "Verify MCP connection:"
+echo "  In Claude Code, run /mcp — you should see 94 tools and 5 resources."
 if $REFRESH_MODE; then
-    echo "Next steps:"
-    echo "  cd $APP_DIR"
-    echo "  claude          # Launch Claude Code"
-    echo "  /wip-wake         # Recover context from existing code and docs"
-    echo ""
-    echo "Verify MCP connection:"
-    echo "  In Claude Code, run /mcp — you should see 94 tools and 5 resources."
     echo ""
     echo "Note: .mcp.json has been regenerated with paths for this machine."
     echo "      Add it to .gitignore if you don't want to commit machine-specific paths."
-else
-    echo "Next steps:"
-    echo "  cd $APP_DIR"
-    echo "  claude          # Launch Claude Code"
-    echo "  /wip-explore        # Start Phase 1"
-    echo ""
-    echo "Verify MCP connection:"
-    echo "  In Claude Code, run /mcp — you should see 94 tools and 5 resources."
 fi
