@@ -656,7 +656,7 @@ The architecture is **spec → config_gen → per-target renderers.** The spec (
 
 Code changes on disk reach running containers through one of three paths, each cheap to slow. Pick the smallest one that covers your edit.
 
-**Source-only edit, dev mode (the common case)** — `podman restart wip-<svc>`. wip-deploy v2 dev mode bind-mounts every backend service's `src/` into the container read-only. A restart re-imports the modules and picks up the new code in ~3 s. No rebuild needed.
+**Source-only edit, dev mode (the common case)** — `podman restart wip-<svc>`. wip-deploy v2 dev mode bind-mounts every backend service's `src/` into the container read-only. A restart re-imports the modules and picks up the new code in ~3 s. No rebuild needed. (With CASE-523, dev stacks rendered by `wip-deploy install --target dev` inject `WATCHFILES_FORCE_POLLING=1`, so uvicorn `--reload` polls the bind mount and hot-reloads edits in ~1-2 s — the manual restart becomes a fallback. Stacks rendered *before* that fix still need the restart until re-rendered.)
 
 **Dockerfile or `requirements.txt` edit** — `wip-deploy rebuild <svc>`. Reads the rendered `~/.wip-deploy/<name>/docker-compose.yaml` and runs `compose up -d --build --force-recreate <svc>` for that service only. Polls for healthy by default; pass `--no-wait` to skip. Multiple services: `wip-deploy rebuild registry def-store`.
 
@@ -668,6 +668,8 @@ Canonical sequence for "I just shipped a fix, verify it works":
 1. `podman restart wip-<svc>` — or `wip-deploy rebuild <svc>` if Dockerfile/requirements changed
 2. `/wip-status` — confirm the service is healthy
 3. **Run the actual code path the fix touches** — not just the health endpoint. See §4.2.
+
+**"Is my fix actually running?" — the stale-process signature (CASE-523).** Before concluding "the wrong image is deployed" or "it went to k8s, not localhost," check the cheap discriminator: is the symbol present **on disk** in the mounted clone but **absent from the running process** (`podman exec wip-<svc>` probing the service's internal port directly, bypassing Caddy), and does the **process start time predate the file's mtime**? That's a stale process — `podman restart wip-<svc>`; do not invent a deploy gap. (Exactly the misdiagnosis CASE-523 documents — pre-fix, native inotify never crossed the macOS podman bind mount, so `--reload` silently never fired.)
 
 ---
 
