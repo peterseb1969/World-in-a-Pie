@@ -807,6 +807,22 @@ declare class TemplateStoreService extends BaseService {
         namespace: string;
     }): Promise<Template>;
     cascadeTemplate(id: string): Promise<CascadeResponse>;
+    /**
+     * Additively widen an edge type's allowed endpoint set (CASE-515).
+     *
+     * Adds source and/or target endpoint templates to an existing relationship
+     * template (PoNIF #7) in place, preserving every existing edge — the
+     * supported alternative to the delete+recreate that would strand them.
+     * Endpoints are append-only: this only ADDS (removal stays unsupported).
+     * Each new endpoint must be a real template; idempotent on already-allowed
+     * endpoints. No reindex / reporting migration — the relationship indexes and
+     * reporting columns are generic.
+     */
+    addEdgeTypeEndpoints(id: string, options: {
+        namespace: string;
+        addSourceTemplates?: string[];
+        addTargetTemplates?: string[];
+    }): Promise<Template>;
 }
 
 type DocumentStatus = 'active' | 'inactive' | 'archived';

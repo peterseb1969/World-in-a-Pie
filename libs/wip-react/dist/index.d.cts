@@ -324,6 +324,17 @@ declare function useReactivateTemplate(options?: Omit<UseMutationOptions<Templat
     version: number;
     namespace: string;
 }, unknown>;
+declare function useAddEdgeTypeEndpoints(options?: Omit<UseMutationOptions<Template, Error, {
+    id: string;
+    namespace: string;
+    addSourceTemplates?: string[];
+    addTargetTemplates?: string[];
+}>, 'mutationFn'>): _tanstack_react_query.UseMutationResult<Template, Error, {
+    id: string;
+    namespace: string;
+    addSourceTemplates?: string[];
+    addTargetTemplates?: string[];
+}, unknown>;
 declare function useCreateDocument(options?: Omit<UseMutationOptions<BulkResultItem, Error, CreateDocumentRequest>, 'mutationFn'>): _tanstack_react_query.UseMutationResult<BulkResultItem, Error, CreateDocumentRequest, unknown>;
 declare function useCreateDocuments(options?: Omit<UseMutationOptions<BulkResponse, Error, CreateDocumentRequest[]>, 'mutationFn'>): _tanstack_react_query.UseMutationResult<BulkResponse, Error, CreateDocumentRequest[], unknown>;
 /**
@@ -552,4 +563,4 @@ declare function useBulkImport<T>(options: UseBulkImportOptions<T>): {
     mutateAsync: _tanstack_react_query.UseMutateAsyncFunction<BulkImportProgress, Error, T[], unknown>;
 };
 
-export { STALE_TIMES, WipFooter, type WipFooterProps, WipProvider, type WipProviderProps, useActivateTemplate, useActivity, useAddSynonym, useArchiveDocument, useArchiveNamespace, useBatchJob, useBatchJobs, useBulkImport, useCancelBatchJob, useClearCompletedJobs, useCreateDocument, useCreateDocuments, useCreateNamespace, useCreateTemplate, useCreateTerm, useCreateTermRelations, useCreateTerminology, useDeactivateEntry, useDeleteDocument, useDeleteFile, useDeleteFiles, useDeleteNamespace, useDeleteTemplate, useDeleteTerm, useDeleteTermRelations, useDeleteTerminology, useDeprecateTerm, useDocument, useDocumentRelationships, useDocumentVersions, useDocuments, useDownloadUrl, useFile, useFiles, useFormSchema, useHardDeleteFile, useIntegrityCheck, useMergeEntries, useNamespaces, useQueryDocuments, useReactivateTemplate, useRegistrySearch, useRemoveSynonym, useReportQuery, useRestoreNamespace, useSyncStatus, useTemplate, useTemplateByValue, useTemplates, useTerm, useTerminologies, useTerminology, useTerms, useTraverseDocuments, useTriggerBatchSync, useTriggerBatchSyncAll, useTriggerTermRelationSync, useTriggerTermSync, useTriggerTerminologySync, useUpdateDocument, useUpdateDocuments, useUpdateFileMetadata, useUpdateNamespace, useUpdateTemplate, useUpdateTerm, useUpdateTerminology, useUploadFile, useWipClient, wipKeys };
+export { STALE_TIMES, WipFooter, type WipFooterProps, WipProvider, type WipProviderProps, useActivateTemplate, useActivity, useAddEdgeTypeEndpoints, useAddSynonym, useArchiveDocument, useArchiveNamespace, useBatchJob, useBatchJobs, useBulkImport, useCancelBatchJob, useClearCompletedJobs, useCreateDocument, useCreateDocuments, useCreateNamespace, useCreateTemplate, useCreateTerm, useCreateTermRelations, useCreateTerminology, useDeactivateEntry, useDeleteDocument, useDeleteFile, useDeleteFiles, useDeleteNamespace, useDeleteTemplate, useDeleteTerm, useDeleteTermRelations, useDeleteTerminology, useDeprecateTerm, useDocument, useDocumentRelationships, useDocumentVersions, useDocuments, useDownloadUrl, useFile, useFiles, useFormSchema, useHardDeleteFile, useIntegrityCheck, useMergeEntries, useNamespaces, useQueryDocuments, useReactivateTemplate, useRegistrySearch, useRemoveSynonym, useReportQuery, useRestoreNamespace, useSyncStatus, useTemplate, useTemplateByValue, useTemplates, useTerm, useTerminologies, useTerminology, useTerms, useTraverseDocuments, useTriggerBatchSync, useTriggerBatchSyncAll, useTriggerTermRelationSync, useTriggerTermSync, useTriggerTerminologySync, useUpdateDocument, useUpdateDocuments, useUpdateFileMetadata, useUpdateNamespace, useUpdateTemplate, useUpdateTerm, useUpdateTerminology, useUploadFile, useWipClient, wipKeys };

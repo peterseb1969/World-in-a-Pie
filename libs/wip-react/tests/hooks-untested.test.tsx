@@ -85,6 +85,7 @@ import {
   useDeleteTemplate,
   useActivateTemplate,
   useReactivateTemplate,
+  useAddEdgeTypeEndpoints,
   useCreateDocuments,
   useArchiveDocument,
   useDeleteFile,
@@ -117,6 +118,7 @@ function createMockClient() {
       deleteTemplate: vi.fn().mockResolvedValue({ entity_id: 'tpl1', status: 'deleted' }),
       activateTemplate: vi.fn().mockResolvedValue({ template_id: 'tpl1', activated: true }),
       reactivateTemplate: vi.fn().mockResolvedValue({ template_id: 'tpl1', version: 3, status: 'active' }),
+      addEdgeTypeEndpoints: vi.fn().mockResolvedValue({ template_id: 'tpl1', version: 1, usage: 'relationship' }),
     },
     documents: {
       createDocuments: vi.fn().mockResolvedValue({ results: [], total: 0, succeeded: 0, failed: 0 }),
@@ -758,6 +760,24 @@ describe('useReactivateTemplate', () => {
 
     expect(mockClient.templates.reactivateTemplate).toHaveBeenCalledWith('tpl1', 3, {
       namespace: 'kb',
+    })
+  })
+})
+
+describe('useAddEdgeTypeEndpoints', () => {
+  it('calls templates.addEdgeTypeEndpoints with id and the endpoint additions', async () => {
+    const mockClient = createMockClient()
+    const { Wrapper } = createWrapper(mockClient)
+    const { result } = renderHook(() => useAddEdgeTypeEndpoints(), { wrapper: Wrapper })
+
+    await act(async () => {
+      result.current.mutate({ id: 'tpl1', namespace: 'kb', addTargetTemplates: ['YAC_MEMORY'] })
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(mockClient.templates.addEdgeTypeEndpoints).toHaveBeenCalledWith('tpl1', {
+      namespace: 'kb',
+      addTargetTemplates: ['YAC_MEMORY'],
     })
   })
 })

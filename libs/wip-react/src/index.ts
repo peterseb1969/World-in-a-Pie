@@ -57,6 +57,7 @@ export {
   useDeleteTemplate,
   useActivateTemplate,
   useReactivateTemplate,
+  useAddEdgeTypeEndpoints,
   // Documents
   useCreateDocument,
   useCreateDocuments,

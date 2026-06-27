@@ -597,6 +597,19 @@ function useReactivateTemplate(options) {
     }
   });
 }
+function useAddEdgeTypeEndpoints(options) {
+  const { onSuccess, ...restOptions } = options ?? {};
+  const client = useWipClient();
+  const queryClient = reactQuery.useQueryClient();
+  return reactQuery.useMutation({
+    ...restOptions,
+    mutationFn: ({ id, ...opts }) => client.templates.addEdgeTypeEndpoints(id, opts),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.templates.all });
+      onSuccess?.(...args);
+    }
+  });
+}
 function useCreateDocument(options) {
   const { onSuccess, ...restOptions } = options ?? {};
   const client = useWipClient();
@@ -932,6 +945,7 @@ exports.WipFooter = WipFooter;
 exports.WipProvider = WipProvider;
 exports.useActivateTemplate = useActivateTemplate;
 exports.useActivity = useActivity;
+exports.useAddEdgeTypeEndpoints = useAddEdgeTypeEndpoints;
 exports.useAddSynonym = useAddSynonym;
 exports.useArchiveDocument = useArchiveDocument;
 exports.useArchiveNamespace = useArchiveNamespace;
