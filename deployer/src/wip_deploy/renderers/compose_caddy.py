@@ -14,6 +14,7 @@ from __future__ import annotations
 from io import StringIO
 
 from wip_deploy.config_gen.caddy import CaddyConfig
+from wip_deploy.renderers.caddy_common import write_api_fallthrough_404
 
 
 def render_caddyfile(cfg: CaddyConfig) -> str:
@@ -68,6 +69,13 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
             # Catch-all route — render last, outside the loop below.
             continue
         _write_route(out, route, cfg)
+
+    # Terminal /api/* guard (CASE-513): a stale aggregate path that matches
+    # no /api/<service>/* route 404s loudly instead of falling to Caddy's
+    # default empty-200. Less specific than every service handle, so Caddy's
+    # longest-match never lets it shadow a live route; emitted before the
+    # catch-all so /api paths never reach an SPA catch-all either.
+    write_api_fallthrough_404(out)
 
     # Catch-all route (path "/") goes last.
     for route in sorted_routes:

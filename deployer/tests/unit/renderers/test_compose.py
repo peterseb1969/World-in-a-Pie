@@ -210,6 +210,25 @@ class TestComposeYaml:
         # And non-strip routes still use `handle /path/*`.
         assert "handle /api/document-store/* {" in caddyfile
 
+    def test_api_fallthrough_404_guard_emitted(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-513: a stale aggregate /api path (no /api/<svc>/* route) must
+        404, not fall through to Caddy's default empty-200 (CLAUDE.md §14).
+        The guard is emitted even on a backend-only install (no `/` catch-all),
+        and sits AFTER the service handles so Caddy's longest-match keeps
+        /api/<svc>/* winning over the less-specific /api/* guard."""
+        d = _minimal_compose()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        assert "handle /api/* {" in caddyfile
+        guard_at = caddyfile.index("handle /api/* {")
+        assert "respond 404" in caddyfile[guard_at : guard_at + 80]
+        # Less specific than the service handles — must be emitted after them.
+        assert guard_at > caddyfile.index("handle /api/document-store/* {")
+
     def test_root_redirect_block_emitted_with_app(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
