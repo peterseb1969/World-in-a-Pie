@@ -933,11 +933,14 @@ if ! $TIER3; then
 fi
 echo "   Copied: $(find "$WIP_ROOT/.claude/commands/" -maxdepth 1 -name '*.md' -type f | wc -l | tr -d ' ') commands"
 
-# --- Tier-3 provisioning (CASE-463) ---
-# Create with --kb, or any run on a clone whose .claude/kb.json exists:
-# (re)write the config, refresh the served client (digest-gated), keep the
-# /wip-case stub current. Tier-2 runs skip this entirely.
-if $TIER3; then
+# --- Tier-3 provisioning (CASE-463, CASE-517) ---
+# Provisioning (kb.json write, served-client install, SESSION_ROLE POST) runs at
+# tier TRANSITIONS only — a fresh setup-with-kb or explicit --enable-kb — never on
+# a plain --refresh. A refresh is offline file-propagation: the /wip-case stub is
+# already re-copied above (no enable_kb needed), the served client self-refreshes
+# on next use (digest-gated), and kb.json must not be rewritten by --refresh (:138).
+# Tier-2 runs skip this entirely.
+if $TIER3 && ! $REFRESH_MODE; then
     enable_kb
 fi
 

@@ -393,11 +393,14 @@ if ! $TIER3; then
 fi
 echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
 
-# --- Tier-3 provisioning (CASE-463) ---
-# Create with --kb, or any run on a repo whose .claude/kb.json exists:
-# (re)write the config, refresh the served client (digest-gated), keep the
-# /wip-case stub current. Tier-2 runs skip this entirely.
-if $TIER3; then
+# --- Tier-3 provisioning (CASE-463, CASE-517) ---
+# Provisioning (kb.json write, served-client install, SESSION_ROLE POST) runs at
+# tier TRANSITIONS only — a fresh create-with-kb or explicit --enable-kb — never on
+# a plain --refresh. A refresh is offline file-propagation: the /wip-case stub is
+# already re-copied above (no enable_kb needed), the served client self-refreshes
+# on next use (digest-gated), and kb.json must not be rewritten by --refresh (:151).
+# Tier-2 runs skip this entirely.
+if $TIER3 && ! $REFRESH_MODE; then
     enable_kb
 fi
 
@@ -689,6 +692,17 @@ if [ ! -f "$PYTHON_PATH" ]; then
     echo "   Warning: $WIP_ROOT/.venv/bin/python not found, using: $PYTHON_PATH"
 fi
 
+# Target base URL for the WIP services (CASE-516). Default is the local Caddy.
+# On --refresh, PRESERVE a deliberate non-localhost target already in .mcp.json
+# instead of clobbering it back to localhost — an earlier refresh silently reset
+# APP-KB's hand-set kb.internal target. Override with WIP_BASE_URL_OVERRIDE.
+WIP_BASE_URL="${WIP_BASE_URL_OVERRIDE:-}"
+if [ -z "$WIP_BASE_URL" ] && $REFRESH_MODE && [ -f "$APP_DIR/.mcp.json" ]; then
+    WIP_BASE_URL="$(python3 -c "import json; print(json.load(open('$APP_DIR/.mcp.json'))['mcpServers']['wip']['env'].get('REGISTRY_URL',''))" 2>/dev/null || true)"
+    [ -n "$WIP_BASE_URL" ] && echo "   Preserving existing .mcp.json target: $WIP_BASE_URL"
+fi
+WIP_BASE_URL="${WIP_BASE_URL:-https://localhost:8443}"
+
 cat > "$APP_DIR/.mcp.json" << EOF
 {
   "mcpServers": {
@@ -698,11 +712,11 @@ cat > "$APP_DIR/.mcp.json" << EOF
       "args": ["-m", "wip_mcp.server"],
       "env": {
         "WIP_API_KEY_FILE": "$WIP_API_KEY_FILE",
-        "REGISTRY_URL": "https://localhost:8443",
-        "DEF_STORE_URL": "https://localhost:8443",
-        "TEMPLATE_STORE_URL": "https://localhost:8443",
-        "DOCUMENT_STORE_URL": "https://localhost:8443",
-        "REPORTING_SYNC_URL": "https://localhost:8443",
+        "REGISTRY_URL": "$WIP_BASE_URL",
+        "DEF_STORE_URL": "$WIP_BASE_URL",
+        "TEMPLATE_STORE_URL": "$WIP_BASE_URL",
+        "DOCUMENT_STORE_URL": "$WIP_BASE_URL",
+        "REPORTING_SYNC_URL": "$WIP_BASE_URL",
         "WIP_VERIFY_TLS": "false"
       }
     }
