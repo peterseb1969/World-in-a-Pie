@@ -504,6 +504,8 @@ interface FieldDefinition {
     default_value?: unknown;
     terminology_ref?: string;
     template_ref?: string;
+    /** Pinned version of template_ref. Backend (CASE-493) requires this when template_ref is set. */
+    template_ref_version?: number;
     reference_type?: ReferenceType;
     target_templates?: string[];
     target_terminologies?: string[];
@@ -512,6 +514,8 @@ interface FieldDefinition {
     array_item_type?: FieldType;
     array_terminology_ref?: string;
     array_template_ref?: string;
+    /** Pinned version of array_template_ref. Backend (CASE-493) requires this when array_template_ref is set. */
+    array_template_ref_version?: number;
     array_file_config?: FileFieldConfig;
     validation?: FieldValidation;
     semantic_type?: SemanticType;
