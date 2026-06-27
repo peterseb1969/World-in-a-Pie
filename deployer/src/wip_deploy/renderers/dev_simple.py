@@ -450,11 +450,19 @@ def _dev_service_block(
     if any(isinstance(v, SecretRef) for v in env.merged().values()):
         block["env_file"] = [".env"]
 
-    # Dev: if the command is uvicorn-based, append --reload for hot reload.
+    # Dev: if the command is uvicorn-based, append --reload for hot reload AND
+    # force the reload watcher to poll (CASE-523). uvicorn --reload's watcher
+    # (watchfiles) uses native inotify by default, which does NOT propagate across
+    # the macOS podman virtiofs/9p bind mount — so --reload is a silent no-op there
+    # (edits land on disk but the running process never reloads, manufacturing
+    # "the fix isn't deployed" misdiagnoses). WATCHFILES_FORCE_POLLING is the
+    # backend analogue of the apps' CHOKIDAR_USEPOLLING.
     cmd = _command_for(owner)
     if cmd:
-        if cmd[0] == "uvicorn" and "--reload" not in cmd:
-            cmd = [*cmd, "--reload"]
+        if cmd[0] == "uvicorn":
+            if "--reload" not in cmd:
+                cmd = [*cmd, "--reload"]
+            block.setdefault("environment", {})["WATCHFILES_FORCE_POLLING"] = "1"
         # See compose.py for the entrypoint/command split rationale:
         # compose's `command:` only overrides CMD, so full argv needs to
         # go to `entrypoint:` to replace the image's ENTRYPOINT.

@@ -564,6 +564,25 @@ class TestHotReload:
         assert mcp["entrypoint"] == ["python"]
         assert "--reload" not in mcp["command"]
 
+    def test_uvicorn_service_forces_watchfiles_polling(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-523: uvicorn --reload services get WATCHFILES_FORCE_POLLING=1 so the
+        reload watcher polls across the macOS podman bind mount — native inotify
+        doesn't propagate, which otherwise makes --reload a silent no-op."""
+        doc = self._compose_doc(tmp_path, real_discovery)
+        reg = doc["services"]["registry"]
+        assert reg["environment"]["WATCHFILES_FORCE_POLLING"] == "1"
+
+    def test_non_uvicorn_service_no_watchfiles_polling(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """The polling var is scoped to the uvicorn path — dex (dex serve) and
+        mcp-server (python -m) don't get it."""
+        doc = self._compose_doc(tmp_path, real_discovery)
+        dex = doc["services"]["dex"]
+        assert "WATCHFILES_FORCE_POLLING" not in dex.get("environment", {})
+
 
 # ────────────────────────────────────────────────────────────────────
 # Target validation
