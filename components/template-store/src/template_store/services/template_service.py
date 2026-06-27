@@ -1438,21 +1438,52 @@ class TemplateService:
         except EntityNotFoundError as e:
             raise ValueError(str(e)) from e
 
-        # Union into the existing (already-canonical) lists, order-stable, deduped.
-        def _union(existing: list[str] | None, additions: dict[str, str]) -> list[str]:
+        # Union into the existing lists, order-stable, with Registry-resolved
+        # dedup (CASE-515 defect, response #4). The stored lists may hold
+        # VALUE-form entries — REFERENCES ships "CASE_RECORD", … not UUIDs (create
+        # stores source/target_templates as submitted) — so comparing a
+        # resolved-canonical addition against the raw stored strings never matches,
+        # and an already-allowed endpoint gets appended a second time in the other
+        # form (the value↔UUID duplicate APP-KB hit). Resolve BOTH sides to
+        # canonical IDs before comparing: the universal "value≡UUID≡synonym at
+        # every reference-comparison site" rule (CASE-406) this site had missed.
+        async def _canonical(entry: str) -> str:
+            # Stored entries are real templates; fall back to the raw string if a
+            # historical entry no longer resolves — never drop it (data loss).
+            try:
+                return await resolve_entity_id(
+                    entry, "template", ns, bypass_cache=True
+                )
+            except EntityNotFoundError:
+                return entry
+
+        async def _value_form(canonical: str) -> str:
+            # Append new endpoints in value-form to match the seed convention and
+            # keep the list human-readable (response #4). value is stable across
+            # the template's versions.
+            row = await Template.find(
+                {"template_id": canonical}
+            ).limit(1).to_list()
+            return row[0].value if row else canonical
+
+        async def _widen(
+            existing: list[str] | None, additions: dict[str, str]
+        ) -> list[str]:
             out = list(existing or [])
-            seen = set(out)
-            for raw in additions:
-                canonical = additions[raw]
-                if canonical not in seen:
-                    out.append(canonical)
-                    seen.add(canonical)
+            seen: set[str] = set()
+            for entry in out:
+                seen.add(await _canonical(entry))
+            for canonical in additions.values():
+                if canonical in seen:
+                    continue
+                out.append(await _value_form(canonical))
+                seen.add(canonical)
             return out
 
-        new_source = _union(template.source_templates, resolved_source)
-        new_target = _union(template.target_templates, resolved_target)
+        new_source = await _widen(template.source_templates, resolved_source)
+        new_target = await _widen(template.target_templates, resolved_target)
 
-        # Idempotent: nothing new to add.
+        # Idempotent: every requested endpoint already present (in any form).
         if (new_source == list(template.source_templates or [])
                 and new_target == list(template.target_templates or [])):
             return template
