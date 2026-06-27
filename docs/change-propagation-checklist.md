@@ -39,7 +39,6 @@ Not every change touches every layer — use judgement. But review the full list
 ## Scripts
 
 - [ ] **`scripts/seed_comprehensive.py`** — seed data should exercise new features
-- [ ] **`scripts/dev-delete.py`** — delete logic should handle new fields/behaviors
 - [ ] **`deployer/`** — if new infrastructure, env vars, routes, or component manifests are needed (canonical deployer per CLAUDE.md §6; replaces the retired `setup.sh` / `setup-wip.sh` paths)
 - [ ] **Other scripts** — `import_testdata.py`, `import_obo_graph.py`, etc. if relevant
 
@@ -71,5 +70,5 @@ Not every change touches every layer — use judgement. But review the full list
 | MCP server | `server.py` | Add parameter to create/update tools |
 | WIP-Toolkit | `restore.py`, `fresh.py` | Add to import payload mapping |
 | Console UI | Form, List, Detail views | Checkbox/tag/info display |
-| Scripts | `seed_comprehensive.py`, `dev-delete.py` | Exercise the new field |
+| Scripts | `seed_comprehensive.py` | Exercise the new field |
 | Tests | Component + reporting-sync tests | Cover new behavior |
