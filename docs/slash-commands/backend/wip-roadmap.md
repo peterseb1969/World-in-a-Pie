@@ -10,7 +10,7 @@ Cross-agent cases ARE the backlog. List the open ones:
 
 ```bash
 test -f .claude/kb.json && \
-  bash ~/.cache/wip-kb-client/kb-client.sh case-fetch.py list --status open \
+  kbc case-fetch.py list --status open \
   || echo "(tier-2 repo, no KB — the backlog view starts at step 2)"
 ```
 
