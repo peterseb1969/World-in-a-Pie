@@ -1,4 +1,4 @@
-Analyze uncommitted work for correctness and convention compliance.
+Analyze uncommitted work for correctness and convention compliance. This is the **judgment** pass — reasoning about the diff (conventions, design, missing tests) that a linter can't catch. For the **mechanical** checks (ruff/shellcheck/mypy/tests/security gate), run `/wip-check` — don't re-run those here.
 
 ### Steps
 
@@ -38,11 +38,8 @@ git diff --cached        # Staged changes
 #### 4. Check for missing tests
 For each new or modified function/endpoint, check if corresponding tests exist in `tests/`. Suggest test cases for uncovered code.
 
-#### 5. Flag CI risks
-Identify anything that would likely fail in CI:
-- Ruff violations in Python files
-- Missing type annotations that mypy would catch
-- Shell scripts without proper quoting
+#### 5. Flag diff-level risks a linter won't catch
+The mechanical CI checks (ruff / mypy / shellcheck / tests) are `/wip-check`'s job — run that for the gate. Here, flag only what tooling misses: a change that passes lint but breaks a *contract* (e.g. a new single-entity write endpoint, a missing auth decorator, a bulk-first violation), or a logic/design risk in the diff.
 
 #### 6. Report
 ```

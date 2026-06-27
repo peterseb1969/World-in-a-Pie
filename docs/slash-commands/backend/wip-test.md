@@ -55,5 +55,5 @@ If any tests fail, show the failure output and suggest fixes. Do not propose sou
 ### Notes
 
 - Some component tests require MongoDB to be running (integration tests). Run `/wip-status` first if you suspect infrastructure issues.
-- The CI equivalent runs via `.gitea/workflows/test.yaml` on `wip-pi.local` — use `/wip-pre-commit` to run an equivalent locally before pushing.
+- The CI equivalent runs via `.gitea/workflows/test.yaml` on `wip-pi.local` — use `/wip-check` to run an equivalent locally before pushing.
 - Pass `pytest` flags via `./scripts/wip-test.sh <component> -- -x` to stop at the first failure or `./scripts/wip-test.sh <component> -- -k "test_name"` to run one specific test.
