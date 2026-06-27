@@ -645,9 +645,12 @@ Trap: You see a template with two `reference_type: document` fields and assume
 Rule: Check `template.usage` before reasoning about a template's lifecycle.
       Schemas with `usage: 'relationship'` are edge types — different
       validation, different query endpoints, different reporting columns.
-      `usage` is immutable after creation. See also PoNIF #8 — edge types
-      can opt out of versioning entirely via `versioned: false`, an
-      exception to PoNIF #2.
+      `usage` is immutable after creation. The allowed-endpoint set
+      (source_templates / target_templates) is append-only, NOT frozen:
+      widen it with `add_edge_type_endpoints` (additive, in-place,
+      edge-preserving) instead of delete+recreate. Removal stays unsupported.
+      See also PoNIF #8 — edge types can opt out of versioning entirely via
+      `versioned: false`, an exception to PoNIF #2.
 
 ## 8. `versioned: false` — Updates Overwrite In Place
 Direct exception to PoNIF #2. PoNIF #2 says every update creates a new
@@ -2272,6 +2275,46 @@ async def reactivate_template(
 
 
 @mcp.tool()
+async def add_edge_type_endpoints(
+    template_id: str,
+    add_source_templates: list[str] | None = None,
+    add_target_templates: list[str] | None = None,
+    namespace: str | None = None,
+) -> str:
+    """Additively widen an edge type's allowed endpoint set — add new source
+    and/or target templates to an existing relationship template (PoNIF #7)
+    WITHOUT the delete+recreate that would strand its existing edges.
+
+    Endpoints are **append-only**: this only ADDS allowed endpoint templates,
+    never removes (removal is the edge-stranding direction). The change is
+    applied in place (no new version), preserves every existing edge, is
+    idempotent, and each new endpoint must be a real template. No reindex or
+    reporting migration is needed — the relationship indexes and reporting
+    columns are generic.
+
+    Use this instead of recreating an edge type when you need a new doc type to
+    participate in an existing relationship (e.g. add a new template to the
+    allowed targets of a generic citation edge).
+
+    Args:
+        template_id: The edge type — template ID, value code, or synonym.
+        add_source_templates: Template values/IDs to add to the allowed sources.
+        add_target_templates: Template values/IDs to add to the allowed targets.
+        namespace: Namespace scope.
+    """
+    try:
+        data = await get_client().add_edge_type_endpoints(
+            template_id=template_id,
+            add_source_templates=add_source_templates,
+            add_target_templates=add_target_templates,
+            namespace=namespace,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def get_template_dependencies(template_id: str, namespace: str | None = None) -> str:
     """Show what depends on a template: child templates and documents.
 
@@ -3854,6 +3897,7 @@ WRITE_TOOLS = frozenset({
     "activate_template",
     "deactivate_template",
     "reactivate_template",
+    "add_edge_type_endpoints",
     # Documents
     "create_document",
     "create_documents_bulk",

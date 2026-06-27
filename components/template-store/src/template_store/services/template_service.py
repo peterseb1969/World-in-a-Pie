@@ -1355,6 +1355,133 @@ class TemplateService:
         return template
 
     @staticmethod
+    async def add_edge_type_endpoints(
+        template_id: str,
+        add_source_templates: list[str] | None = None,
+        add_target_templates: list[str] | None = None,
+        namespace: str | None = None,
+    ) -> "Template":
+        """Additively widen an edge type's allowed endpoint set (CASE-515).
+
+        An edge type's endpoints — the template-level ``source_templates`` /
+        ``target_templates``, mirror-locked to the ``source_ref`` / ``target_ref``
+        field ``target_templates`` — are otherwise frozen. The only previous way
+        to add a legal endpoint was delete+recreate, which strands every existing
+        edge. This op adds endpoint template(s) IN PLACE on the latest active
+        version, preserving every existing edge:
+
+        - **Additive-only.** The resulting set is a superset of the current one;
+          this op never removes (removal is the non-monotonic, edge-stranding
+          direction, and is out of scope — endpoints are append-only).
+        - **Referential integrity preserved.** Each new endpoint resolves through
+          the Registry (``bypass_cache=True`` — write path, CASE-56) and must be a
+          real template, exactly like the create path.
+        - **Monotonic & cheap.** Widening can never invalidate an existing edge
+          (its endpoints stay in the superset), so there is no per-edge
+          revalidation, no reindex (the relationship Mongo indexes are generic on
+          ``data.source_ref`` / ``data.target_ref``), and no reporting schema
+          change (``source_ref_id`` / ``target_ref_id`` are generic columns).
+        - **Idempotent.** Adding an already-allowed endpoint is a no-op.
+
+        Raises:
+            ValueError: no active relationship template found, the template is not
+                a relationship template, or a new endpoint template doesn't exist.
+        """
+        add_source = list(add_source_templates or [])
+        add_target = list(add_target_templates or [])
+        if not add_source and not add_target:
+            raise ValueError(
+                "add_edge_type_endpoints requires add_source_templates and/or "
+                "add_target_templates"
+            )
+
+        # Resolve the edge type to its latest ACTIVE version — that is the version
+        # new edges resolve against. Accept a canonical id or a value/synonym.
+        resolved_id = template_id
+        with contextlib.suppress(EntityNotFoundError):
+            resolved_id = await resolve_entity_id(
+                template_id, "template", namespace or "wip"
+            )
+        template = await Template.find(
+            {"template_id": resolved_id, "status": "active"}
+        ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
+        template = template[0] if template else None
+        if not template:
+            by_value = await Template.find(
+                {"value": template_id, "status": "active"}
+            ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
+            template = by_value[0] if by_value else None
+        if not template:
+            raise ValueError(
+                f"No active template found for '{template_id}'"
+            )
+
+        if template.usage != TemplateUsage.RELATIONSHIP:
+            raise ValueError(
+                f"Template '{template.value}' is usage='{template.usage.value}', "
+                "not 'relationship'. Endpoint widening only applies to edge types."
+            )
+
+        # Resolve the new endpoints to canonical IDs (existence-checked). This is a
+        # write path — bypass the resolver cache so a stale entry can't pin a dead
+        # ID into the endpoint list (CASE-56).
+        ns = template.namespace
+        try:
+            resolved_source = (
+                await resolve_entity_ids(add_source, "template", ns, bypass_cache=True)
+                if add_source else {}
+            )
+            resolved_target = (
+                await resolve_entity_ids(add_target, "template", ns, bypass_cache=True)
+                if add_target else {}
+            )
+        except EntityNotFoundError as e:
+            raise ValueError(str(e)) from e
+
+        # Union into the existing (already-canonical) lists, order-stable, deduped.
+        def _union(existing: list[str] | None, additions: dict[str, str]) -> list[str]:
+            out = list(existing or [])
+            seen = set(out)
+            for raw in additions:
+                canonical = additions[raw]
+                if canonical not in seen:
+                    out.append(canonical)
+                    seen.add(canonical)
+            return out
+
+        new_source = _union(template.source_templates, resolved_source)
+        new_target = _union(template.target_templates, resolved_target)
+
+        # Idempotent: nothing new to add.
+        if (new_source == list(template.source_templates or [])
+                and new_target == list(template.target_templates or [])):
+            return template
+
+        # Mutate in place — both the template-level lists AND the mirror-locked
+        # source_ref / target_ref field target_templates, keeping the shape
+        # invariant (_validate_relationship_template_shape) intact.
+        template.source_templates = new_source
+        template.target_templates = new_target
+        for field in template.fields:
+            if field.name == "source_ref":
+                field.target_templates = list(new_source)
+            elif field.name == "target_ref":
+                field.target_templates = list(new_target)
+
+        actor = get_identity_string()
+        template.updated_at = datetime.now(UTC)
+        template.updated_by = actor
+        await template.save()
+
+        await publish_template_event(
+            EventType.TEMPLATE_UPDATED,
+            TemplateService._template_to_event_payload(template),
+            changed_by=actor,
+        )
+
+        return template
+
+    @staticmethod
     async def get_namespace_template_stamp(namespace: str) -> str:
         """Cheap change-detection stamp over all templates in a namespace (CASE-490).
 

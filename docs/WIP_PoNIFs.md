@@ -154,7 +154,7 @@ An entity can have multiple WIP IDs. This is not a bug or an edge case — it's 
 The contract that makes an edge type *be* an edge type:
 
 - `usage: "relationship"` (immutable after creation)
-- non-empty `source_templates` and `target_templates` lists declaring which templates can sit at each endpoint
+- non-empty `source_templates` and `target_templates` lists declaring which templates can sit at each endpoint. These are **append-only**, not frozen: widen the allowed-endpoint set with `add_edge_type_endpoints` (or `POST /templates/{id}/endpoints`) — an additive, in-place, edge-preserving op — rather than the delete+recreate that would strand existing edges. Removal stays unsupported (it would orphan edges). No reindex or reporting migration is needed; the relationship indexes and `source_ref_id`/`target_ref_id` columns are generic.
 - two reference fields named **exactly** `source_ref` and `target_ref` (template-store enforces the names)
 
 The motivation comes from a class of data that fits nowhere else cleanly: properties that belong to the *interaction* between two documents. An experiment uses bevacizumab — but the quantity, the role (treatment vs. control), the lot number — none of those belong to the experiment, and none belong to bevacizumab. They belong to *how* the experiment uses bevacizumab. An edge type holds them.
