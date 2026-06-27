@@ -158,8 +158,12 @@ Pre-flight output is a single punch-list block:
 # Build + push (or skip-build if --no-build flag)
 scripts/build-release.sh --registry gitea.internal:3000/peter --tag <new-pin> --push --insecure [<service>]
 
-# Redeploy
-wip-deploy install --name <current-name> [other flags from current install]
+# Redeploy — reuses the install's saved deployment.deployer-state, so there is
+# no need to re-specify --preset/modules/apps/flags. Re-renders (picks up the
+# manifest pin bumps above + any deployer renderer/spec change) and recreates
+# only what changed (CASE-528). Omit <service> for a full re-render; name a
+# service to scope the recreate (compose/dev only — k8s apply is incremental).
+wip-deploy redeploy [<service>] --name <current-name>
 ```
 
 ### Smoke (mandatory)
