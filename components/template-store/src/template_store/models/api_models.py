@@ -175,6 +175,19 @@ class UpdateTemplateRequest(StrictModel):
     )
 
 
+class AddEndpointsRequest(StrictModel):
+    """Request to additively widen an edge type's allowed endpoint set (CASE-515)."""
+
+    add_source_templates: list[str] = Field(
+        default_factory=list,
+        description="Endpoint template values/IDs to ADD to source_templates (additive-only)",
+    )
+    add_target_templates: list[str] = Field(
+        default_factory=list,
+        description="Endpoint template values/IDs to ADD to target_templates (additive-only)",
+    )
+
+
 class TemplateResponse(BaseModel):
     """Response containing template details."""
 

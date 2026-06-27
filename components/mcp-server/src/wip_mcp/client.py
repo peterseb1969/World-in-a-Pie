@@ -925,6 +925,23 @@ class WipClient:
             version=version,
         )
 
+    async def add_edge_type_endpoints(
+        self,
+        template_id: str,
+        add_source_templates: list[str] | None = None,
+        add_target_templates: list[str] | None = None,
+        namespace: str | None = None,
+    ) -> dict:
+        return await self._post(
+            self.template_store_url,
+            f"/api/template-store/templates/{template_id}/endpoints",
+            json={
+                "add_source_templates": add_source_templates or [],
+                "add_target_templates": add_target_templates or [],
+            },
+            namespace=namespace or self.default_namespace,
+        )
+
     async def get_template_versions(self, template_id: str) -> dict:
         return await self._get(
             self.template_store_url,

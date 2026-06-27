@@ -14,6 +14,7 @@ from wip_auth import (
 
 from ..models.api_models import (
     ActivateTemplateResponse,
+    AddEndpointsRequest,
     BulkResponse,
     BulkResultItem,
     CascadeResponse,
@@ -601,6 +602,38 @@ async def cascade_template(template_id: str, namespace: str | None = Query(None,
         raise HTTPException(status_code=404, detail=str(e)) from e
     except RegistryError as e:
         raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
+
+
+@router.post("/{template_id}/endpoints", response_model=TemplateResponse)
+async def add_edge_type_endpoints(
+    template_id: str,
+    request: AddEndpointsRequest,
+    namespace: str = Query(..., description="Namespace for the edge type"),
+):
+    """
+    Additively widen an edge type's allowed endpoint set (CASE-515).
+
+    Adds source/target endpoint template(s) to an existing relationship template
+    IN PLACE, preserving every existing edge. Additive-only — it never removes
+    (endpoints are append-only); each new endpoint must be a real template;
+    idempotent. The frozen-endpoints invariant becomes "no in-place removal",
+    not "no change" (see PoNIF #7). No reindex / reporting migration — the
+    relationship indexes and reporting columns are generic.
+    """
+    identity = require_current_identity()
+    await check_namespace_permission(identity, namespace, "write")
+
+    template_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
+
+    try:
+        return await TemplateService.add_edge_type_endpoints(
+            template_id=template_id,
+            add_source_templates=request.add_source_templates,
+            add_target_templates=request.add_target_templates,
+            namespace=namespace,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/{template_id}/children", response_model=TemplateListResponse)
