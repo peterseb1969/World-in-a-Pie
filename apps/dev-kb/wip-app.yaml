@@ -33,10 +33,13 @@ spec:
       - {name: PORT, source: {literal: "3012"}}
       - {name: APP_BASE_PATH, source: {literal: /apps/dev-kb}}
       - {name: NODE_ENV, source: {literal: production}}
-      # Parallel-instance namespaces (CASE-518). Server corpus + client
-      # corpus/library — set explicitly so this instance writes/reads its own
-      # data, not the canonical kb namespace.
+      # Parallel-instance namespaces (CASE-518). Server corpus + library and
+      # client corpus/library — set explicitly so this instance writes/reads its
+      # own data, not the canonical kb namespace. KB_LIBRARY_NAMESPACE is
+      # bootstrap-only (seeds the library on a fresh deploy); a running deploy is
+      # unaffected since the namespaces already exist.
       - {name: WIP_NAMESPACE, source: {literal: kb-libdev}}
+      - {name: KB_LIBRARY_NAMESPACE, source: {literal: library}}
       - {name: VITE_KB_NAMESPACE, source: {literal: kb-libdev}}
       - {name: VITE_LIBRARY_NAMESPACE, source: {literal: library}}
     optional:
