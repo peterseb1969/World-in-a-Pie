@@ -1076,7 +1076,24 @@ async def aggregated_integrity_check(
 
 
 @router.post("/search", response_model=SearchResponse)
-async def unified_search(request: SearchRequest) -> SearchResponse:
+async def unified_search(
+    request: SearchRequest,
+    namespace: str | None = Query(
+        default=None,
+        description=(
+            "Scope results to this namespace. Accepted as a URL query param "
+            "(matching the /sync routes); overrides request.namespace when "
+            "both are given (CASE-541). The body field still works."
+        ),
+    ),
+    status: str | None = Query(
+        default=None, description="Filter by status. Overrides request.status."
+    ),
+    template: str | None = Query(
+        default=None,
+        description="Restrict document search to one template (by value). Overrides request.template.",
+    ),
+) -> SearchResponse:
     """Unified search across all WIP entity types with per-type pagination.
 
     Searches terminologies, terms, templates, documents, and files in
@@ -1092,12 +1109,29 @@ async def unified_search(request: SearchRequest) -> SearchResponse:
             - page: Page number (default 1)
             - page_size: Items per type (default 50, max 100)
             - limit: DEPRECATED alias for page_size when page=1
+        namespace/status/template: optional URL query params. CASE-541 — these
+            filters previously lived ONLY on the request body, so a
+            `?namespace=X` URL param was silently dropped by FastAPI and the
+            search ran un-scoped (global, across every namespace's doc_* rows).
+            Accepting them as query params (consistent with the /sync routes)
+            makes URL-scoped search work; an explicit query param wins over the
+            same field in the body (the URL is the per-request override).
 
     Returns:
         SearchResponse with per-type paginated buckets keyed by entity type.
     """
     if not state.search_service:
         raise HTTPException(status_code=503, detail="Search service not available")
+
+    overrides: dict[str, Any] = {}
+    if namespace is not None:
+        overrides["namespace"] = namespace
+    if status is not None:
+        overrides["status"] = status
+    if template is not None:
+        overrides["template"] = template
+    if overrides:
+        request = request.model_copy(update=overrides)
 
     return await state.search_service.search(request)
 

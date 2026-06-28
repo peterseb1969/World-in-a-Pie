@@ -20,6 +20,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
 from reporting_sync.search_service import (
@@ -475,3 +476,70 @@ async def test_no_postgres_pool_falls_back_to_rest():
     svc._search_documents_rest_fallback = fake_rest_fallback  # type: ignore[method-assign]
     await svc._search_documents("term", None, None)
     assert called["n"] == 1
+
+
+# =========================================================================
+# CASE-541 — /search namespace scoping accepts URL query params
+# =========================================================================
+
+
+@pytest.fixture
+def captured_search_service():
+    """Patch state.search_service with a mock that captures the SearchRequest
+    reaching .search() and returns an empty SearchResponse."""
+    from reporting_sync.main import state
+    from reporting_sync.search_service import SearchResponse
+
+    captured: dict[str, SearchRequest] = {}
+
+    async def _capture(req: SearchRequest) -> SearchResponse:
+        captured["request"] = req
+        return SearchResponse(query=req.query, results={}, total=0)
+
+    svc = MagicMock()
+    svc.search = AsyncMock(side_effect=_capture)
+    original = state.search_service
+    state.search_service = svc
+    yield captured
+    state.search_service = original
+
+
+async def _post_search(params: str, body: dict) -> SearchRequest:
+    """POST /search with the given query string + JSON body; the caller's
+    captured_search_service fixture records the resulting SearchRequest."""
+    from reporting_sync.main import app
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(f"/api/reporting-sync/search{params}", json=body)
+    assert resp.status_code == 200, resp.text
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_search_namespace_query_param_scopes(captured_search_service):
+    """CASE-541: ?namespace=X (URL) reaches the search service, not dropped."""
+    await _post_search("?namespace=kb-libdev", {"query": "document"})
+    assert captured_search_service["request"].namespace == "kb-libdev"
+
+
+@pytest.mark.asyncio
+async def test_search_namespace_query_param_overrides_body(captured_search_service):
+    """An explicit ?namespace= query param wins over the body field."""
+    await _post_search(
+        "?namespace=kb-libdev", {"query": "document", "namespace": "library"}
+    )
+    assert captured_search_service["request"].namespace == "kb-libdev"
+
+
+@pytest.mark.asyncio
+async def test_search_namespace_from_body_still_works(captured_search_service):
+    """Back-compat: with no query param, the body namespace is honoured."""
+    await _post_search("", {"query": "document", "namespace": "library"})
+    assert captured_search_service["request"].namespace == "library"
+
+
+@pytest.mark.asyncio
+async def test_search_no_namespace_anywhere_stays_unscoped(captured_search_service):
+    """No query param and no body field → namespace stays None (global)."""
+    await _post_search("", {"query": "document"})
+    assert captured_search_service["request"].namespace is None
