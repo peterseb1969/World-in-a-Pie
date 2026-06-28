@@ -730,7 +730,11 @@ if [ -z "$WIP_API_KEY_FILE" ] && command -v podman >/dev/null 2>&1; then
     # Under `set -euo pipefail` that 1 propagates through the command
     # substitution and kills the script AT THIS ASSIGNMENT — before .mcp.json
     # and .env are ever written (CASE-534). The empty result is handled below.
-    _wip_dirs="$(podman ps --format '{{index .Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null | grep '/.wip-deploy/' | sort -u || true)"
+    # CASE-539: parse working_dir out of the `{{.Labels}}` STRING. podman 6.0.0
+    # exposes `podman ps` `.Labels` as a comma-joined string, not a map, so the
+    # old `{{index .Labels "…"}}` returned empty for every container — silently
+    # defeating the running-install detection. (`podman inspect` is still a map.)
+    _wip_dirs="$(podman ps --format '{{.Labels}}' 2>/dev/null | grep -o 'com\.docker\.compose\.project\.working_dir=[^,]*' | cut -d= -f2- | grep '/\.wip-deploy/' | sort -u || true)"
     if [ "$(printf '%s\n' "$_wip_dirs" | grep -c .)" -eq 1 ] && [ -f "$_wip_dirs/secrets/api-key" ]; then
         WIP_API_KEY_FILE="$_wip_dirs/secrets/api-key"
         echo "   Detected running WIP install: $WIP_API_KEY_FILE"

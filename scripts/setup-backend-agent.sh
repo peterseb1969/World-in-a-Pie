@@ -2,9 +2,15 @@
 #
 # Set up a cloned WIP repo for a backend coding agent.
 #
-# Usage:
-#   ./scripts/setup-backend-agent.sh [--target local|ssh|http] [--host HOST] [--cert CERT_PATH]
-#   ./scripts/setup-backend-agent.sh --refresh [--target local|ssh|http] [--host HOST] [--cert CERT_PATH]
+# Usage (one auto-detecting command — CASE-537):
+#   ./scripts/setup-backend-agent.sh [--target local|ssh|http] [--host HOST] [--cert CERT_PATH] [--kb <url>]
+#
+#   No mode flag — the clone state selects the behavior:
+#     • fresh clone (no .mcp.json / .venv) → SET UP: venv, .mcp.json, CLAUDE.md, commands.
+#     • already set up                     → RE-SYNC: regenerate the same surfaces (idempotent).
+#     • --kb <url>                         → TIER 3: fold KB enablement into the same run (no
+#                                            separate step); without it the clone stays tier 2.
+#                                            An existing .claude/kb.json is preserved.
 #
 # This script:
 #   1. Sets up Python venv with a compatible Python (3.11-3.13)
@@ -16,20 +22,20 @@
 #       on every run (CASE-446); .claude/settings.local.json is never touched
 #   5. Verifies MCP connectivity (local target only)
 #
-# --refresh mode (for existing BE-YAC clones):
+# Re-sync (an already-set-up clone, auto-detected — no flag):
 #   Re-syncs the propagatable surfaces from the gene pool: slash commands
 #   in .claude/commands/, regenerates CLAUDE.md from the current heredoc,
 #   regenerates .mcp.json with current arguments, and re-runs the idempotent
 #   wip_mcp install so dependency changes pick up. Preserves: venv (recreates
 #   only if missing), .claude/settings.local.json (never touched; the
 #   committed .claude/settings.json baseline is regenerated — CASE-446).
-#   Use after a `git pull` brings new docs/slash-commands/backend/*.md or
+#   Run it after a `git pull` brings new docs/slash-commands/backend/*.md or
 #   heredoc changes — those don't propagate to .claude/commands/* automatically
 #   because that directory is generated, not git-tracked.
-#   Once --refresh re-copies them, a running session picks up the new slash
-#   commands automatically — Claude Code live-detects .claude/commands/ edits and
-#   re-reads on the next invocation (no /clear). CLAUDE.md and .mcp.json changes,
-#   by contrast, take effect only on a next session start.
+#   A running session picks up re-copied slash commands automatically — Claude
+#   Code live-detects .claude/commands/ edits and re-reads on the next invocation
+#   (no /clear). CLAUDE.md and .mcp.json changes, by contrast, take effect only
+#   on a next session start.
 #
 
 set -euo pipefail
@@ -56,11 +62,14 @@ fi
 TARGET="local"
 HOST=""
 CERT_PATH=""
+# REFRESH_MODE is AUTO-DETECTED below from the clone state (CASE-537), not a
+# user flag: already-set-up clone (has .mcp.json) → re-sync (true); fresh clone
+# → first setup (false). It drives messaging only — every behavioral gate keys
+# on KB_OPT_IN / .claude/.session-id.
 REFRESH_MODE=false
 # Tier-3 (KB) opt-in — CASE-463. Tier 2 (WIP-only) is the default.
 KB_URL=""
 KB_KEY_FILE=""
-ENABLE_KB_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -76,10 +85,6 @@ while [[ $# -gt 0 ]]; do
             CERT_PATH="$2"
             shift 2
             ;;
-        --refresh)
-            REFRESH_MODE=true
-            shift
-            ;;
         --kb)
             KB_URL="$2"
             shift 2
@@ -88,16 +93,11 @@ while [[ $# -gt 0 ]]; do
             KB_KEY_FILE="$2"
             shift 2
             ;;
-        --enable-kb)
-            ENABLE_KB_MODE=true
-            shift
-            ;;
         -h|--help)
-            echo "Usage: $0 [--target local|ssh|http] [--host HOST] [--cert CERT_PATH]"
-            echo "       $0 --refresh [--target local|ssh|http] [--host HOST] [--cert CERT_PATH]"
-            echo "       $0 --enable-kb --kb <url> [--kb-key <path>]"
+            echo "Usage: $0 [--target local|ssh|http] [--host HOST] [--cert CERT_PATH] [--kb <url>]"
             echo ""
-            echo "Set up a WIP repo for a backend coding agent."
+            echo "Set up a WIP repo for a backend coding agent. One auto-detecting command:"
+            echo "a fresh clone is set up; an already-set-up clone is re-synced (idempotent)."
             echo ""
             echo "Targets:"
             echo "  local   MCP via stdio to local venv (default)"
@@ -107,14 +107,12 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --host HOST       Remote hostname (required for ssh/http)"
             echo "  --cert CERT_PATH  TLS cert for self-signed HTTPS (auto-detects from data/secrets/)"
-            echo "  --refresh         Re-sync gene-pool surfaces (slash commands, CLAUDE.md, .mcp.json)"
-            echo "                    in an existing BE-YAC clone. Preserves venv + settings.local.json;"
-            echo "                    regenerates the committed .claude/settings.json baseline (CASE-446)."
             echo "  --kb URL          KB instance URL — makes this clone tier 3 (KB-backed collaboration,"
-            echo "                    CASE-463). Default is tier 2: WIP-only, no KB plumbing emitted."
+            echo "                    CASE-463) and folds enablement into this run: writes .claude/kb.json,"
+            echo "                    installs the served KB client, drops the /wip-case stub. Idempotent;"
+            echo "                    an existing kb.json is preserved. Default is tier 2: WIP-only, no KB."
+            echo "                    Scheme optional (kb.internal → https://kb.internal)."
             echo "  --kb-key PATH     KB API key file (default: ~/.wip-deploy/kb/secrets/api-key)"
-            echo "  --enable-kb       Retrofit tier 3 onto this clone: writes .claude/kb.json, installs"
-            echo "                    the served KB client, drops the /wip-case stub. Idempotent."
             echo "  -h, --help        Show this help"
             exit 0
             ;;
@@ -132,13 +130,35 @@ if [[ "$TARGET" == "ssh" || "$TARGET" == "http" ]] && [[ -z "$HOST" ]]; then
     exit 1
 fi
 
+# --- Normalize --kb URL scheme (CASE-531) ---
+# A scheme-less --kb (e.g. `kb.internal`) makes curl default to http, hit a 308
+# redirect, and pipe the redirect HTML into `sh`. Assume https when no scheme.
+if [ -n "$KB_URL" ] && [[ "$KB_URL" != *"://"* ]]; then
+    KB_URL="https://$KB_URL"
+fi
+
+# --- Auto-detect re-sync vs first setup (CASE-537) ---
+# The backend scaffold runs in situ on WIP_ROOT (no target-dir arg), so the
+# switch is "has this clone already been set up as a BE-YAC", read from a prior
+# generated artifact rather than a flag. .mcp.json is the signal: it is written
+# ONLY by step 2 of this script, so its presence means a prior setup ran here.
+# (Deliberately NOT .venv — a spawn-helper can pre-create .venv before first
+# setup, per the wip_mcp note below, so .venv does not imply "already set up".)
+if [ -f "$WIP_ROOT/.mcp.json" ]; then
+    REFRESH_MODE=true
+fi
+
 # --- Tier resolution (CASE-463) ---
-# Tier 2 (WIP-only) is the default; tier 3 (KB-backed collaboration) is
-# explicit, declared by .claude/kb.json — written ONLY by --kb / --enable-kb,
-# never by --refresh (the tier is user intent; it deliberately does NOT live
-# in settings.json, which is regenerated every run). The config file is the
-# single fact every tier-conditional step tests.
+# Tier 2 (WIP-only) is the default; tier 3 (KB-backed collaboration) is explicit,
+# declared by .claude/kb.json. KB_OPT_IN captures the EXPLICIT tier-3 intent —
+# `--kb` passed on this run — which is what drives provisioning (a tier
+# transition: tier-2→tier-3, or a re-affirmed tier-3). TIER3 is the resulting
+# tier STATE (kb.json present OR --kb given) and gates emitted content. The tier
+# is user intent, not generated content; it deliberately does NOT live in
+# settings.json, which is regenerated every run.
 KB_CONFIG="$WIP_ROOT/.claude/kb.json"
+KB_OPT_IN=false
+[ -n "$KB_URL" ] && KB_OPT_IN=true
 TIER3=false
 [ -f "$KB_CONFIG" ] && TIER3=true
 [ -n "$KB_URL" ] && TIER3=true
@@ -181,13 +201,6 @@ KBEOF
         echo "         store (transition) — the write-gateway (CASE-464) will make it optional."
     fi
 }
-
-if $ENABLE_KB_MODE; then
-    echo "Enabling tier 3 (KB) on this clone: $WIP_ROOT"
-    enable_kb
-    echo "Done. Re-run --refresh to regenerate CLAUDE.md with the tier-3 sections."
-    exit 0
-fi
 
 if $REFRESH_MODE; then
     echo "Refreshing backend agent environment:"
@@ -320,8 +333,13 @@ if [[ "$TARGET" == "local" ]]; then
     #    unreliable; the working_dir label is. Without this, the alphabetical glob
     #    below picks the wrong install on a multi-install box and bakes a
     #    401-causing key into .mcp.json.
+    # CASE-539: parse working_dir out of the `{{.Labels}}` STRING. podman 6.0.0
+    #    exposes `podman ps` `.Labels` as a comma-joined string, not a map, so the
+    #    old `{{index .Labels "…"}}` returned empty for every container — silently
+    #    defeating this detection (and `|| true` is required: under `set -euo
+    #    pipefail` the empty-grep exit 1 would otherwise abort the whole script).
     if command -v podman >/dev/null 2>&1; then
-        _wip_dirs="$(podman ps --format '{{index .Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null | grep '/.wip-deploy/' | sort -u)"
+        _wip_dirs="$(podman ps --format '{{.Labels}}' 2>/dev/null | grep -o 'com\.docker\.compose\.project\.working_dir=[^,]*' | cut -d= -f2- | grep '/\.wip-deploy/' | sort -u || true)"
         if [ "$(printf '%s\n' "$_wip_dirs" | grep -c .)" -eq 1 ] && [ -f "$_wip_dirs/secrets/api-key" ]; then
             API_KEY=$(tr -d '[:space:]' < "$_wip_dirs/secrets/api-key" 2>/dev/null)
             [ -n "$API_KEY" ] && API_KEY_SOURCE="$_wip_dirs/secrets/api-key (running install)"
@@ -825,7 +843,7 @@ Seconds precision (`HHMMSS`) is deliberate — it eliminates the same-minute col
 
 When you hit a bug, missing feature, or platform gap another YAC needs to handle: file a case via `/wip-case`.
 
-**Tier check:** cross-agent cases are enabled when `.claude/kb.json` exists (tier 3). If it's absent, this is a tier-2 repo — cases are not enabled; tell Peter (enable with the scaffold's `--enable-kb`). This is the same signal the `/wip-case` stub checks; do not gate on a `yac-discussions/` directory.
+**Tier check:** cross-agent cases are enabled when `.claude/kb.json` exists (tier 3). If it's absent, this is a tier-2 repo — cases are not enabled; tell Peter (enable by re-running the scaffold with `--kb <url>`). This is the same signal the `/wip-case` stub checks; do not gate on a `yac-discussions/` directory.
 
 The `/wip-case` command lives at `.claude/commands/wip-case.md`. Peter symlinks it into participating projects.
 
@@ -950,14 +968,14 @@ if ! $TIER3; then
 fi
 echo "   Copied: $(find "$WIP_ROOT/.claude/commands/" -maxdepth 1 -name '*.md' -type f | wc -l | tr -d ' ') commands"
 
-# --- Tier-3 provisioning (CASE-463, CASE-517) ---
-# Provisioning (kb.json write, served-client install, SESSION_ROLE POST) runs at
-# tier TRANSITIONS only — a fresh setup-with-kb or explicit --enable-kb — never on
-# a plain --refresh. A refresh is offline file-propagation: the /wip-case stub is
-# already re-copied above (no enable_kb needed), the served client self-refreshes
-# on next use (digest-gated), and kb.json must not be rewritten by --refresh (:138).
-# Tier-2 runs skip this entirely.
-if $TIER3 && ! $REFRESH_MODE; then
+# --- Tier-3 provisioning (CASE-463, CASE-517, CASE-537) ---
+# Provisioning (kb.json write, served-client install, /wip-case stub) runs only
+# when --kb is passed (KB_OPT_IN) — a tier transition (tier-2→tier-3) or a
+# re-affirmed tier-3. A re-sync WITHOUT --kb is offline file-propagation: the
+# /wip-case stub is already re-copied above when tier-3, the served client
+# self-refreshes on next use (digest-gated), and an existing kb.json must not be
+# rewritten (it's user intent, not generated content). Tier-2 runs skip this.
+if $KB_OPT_IN; then
     enable_kb
 fi
 
@@ -1092,6 +1110,15 @@ fi
 # --- Done ---
 
 echo ""
+# First command keyed on session STATE, not setup-vs-resync (CASE-532 #1): a
+# clone with no .claude/.session-id has never minted a session, so /wip-wake
+# would correctly refuse — /wip-setup is the right entry. /wip-wake is only for
+# continuing an existing session (after /clear or a compaction reset).
+if [ -f "$WIP_ROOT/.claude/.session-id" ]; then
+    FIRST_CMD="/wip-wake          # Continue: roll the prior session over + recover context"
+else
+    FIRST_CMD="/wip-setup         # First run: mint a session ID + load baseline context"
+fi
 if $REFRESH_MODE; then
     echo "Done! Backend agent environment refreshed."
     echo ""
@@ -1100,9 +1127,9 @@ if $REFRESH_MODE; then
     echo "or restart). CLAUDE.md and .mcp.json changes do need a next session start."
 else
     echo "Done! Backend agent is configured."
-    echo ""
-    echo "Next steps:"
-    echo "  claude"
-    echo "  /wip-setup         # first-run environment checks"
 fi
+echo ""
+echo "Next steps:"
+echo "  claude"
+echo "  $FIRST_CMD"
 echo ""
