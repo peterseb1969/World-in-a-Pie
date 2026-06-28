@@ -1,0 +1,63 @@
+api_version: wip.dev/v1
+kind: App
+metadata:
+  name: dev-kb
+  category: optional
+  description: |
+    WIP Knowledge Base — PARALLEL lib-dev instance, deployed alongside the
+    canonical `wip-kb` app for testing. Same WIP-KB codebase, but sourced from
+    the lib-dev branch checkout (/Users/peter/Development/dev-KB) and pointed at
+    its OWN namespaces (corpus `kb-libdev`, library `library`) so it shares the
+    backend with `wip-kb` without colliding on data. Routes under /apps/dev-kb
+    to keep /apps/kb on the canonical instance.
+
+spec:
+  image:
+    name: dev-kb
+    # Distinct image/container name (wip-dev-kb) so it never clobbers the
+    # canonical wip-kb image/container. Dev target with --app-source builds
+    # from the checkout's Dockerfile.dev and bind-mounts source.
+    tag: dev
+
+  ports:
+    - {name: http, container_port: 3012}
+    # Vite dev-server (CASE-375). Used only when --app-source is active; the
+    # dev_simple renderer routes /apps/dev-kb/* to this port. Same internal
+    # port as wip-kb is fine — separate container.
+    - {name: dev, container_port: 5173}
+
+  env:
+    required:
+      - {name: WIP_BASE_URL, source: {from_component: router}}
+      - {name: WIP_API_KEY, source: {from_secret: api-key}}
+      - {name: PORT, source: {literal: "3012"}}
+      - {name: APP_BASE_PATH, source: {literal: /apps/dev-kb}}
+      - {name: NODE_ENV, source: {literal: production}}
+      # Parallel-instance namespaces (CASE-518). Server corpus + client
+      # corpus/library — set explicitly so this instance writes/reads its own
+      # data, not the canonical kb namespace.
+      - {name: WIP_NAMESPACE, source: {literal: kb-libdev}}
+      - {name: VITE_KB_NAMESPACE, source: {literal: kb-libdev}}
+      - {name: VITE_LIBRARY_NAMESPACE, source: {literal: library}}
+    optional:
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+      - {name: MCP_URL, source: {literal: "http://wip-mcp-server:8007/mcp"}}
+
+  routes:
+    # Mirror wip-kb's auth exemptions for the served kb-client + write-gateway,
+    # rebased under /apps/dev-kb (longest-prefix wins over the auth'd /apps/dev-kb).
+    - {path: /apps/dev-kb/server-api/kb-client, auth_required: false}
+    - {path: /apps/dev-kb/server-api/kb, auth_required: false}
+    - {path: /apps/dev-kb, auth_required: true}
+
+  depends_on: [document-store]
+
+  healthcheck:
+    endpoint: /apps/dev-kb/api/health
+    probe: auto
+    start_period_seconds: 15
+
+app_metadata:
+  display_name: WIP KB (lib-dev)
+  route_prefix: /apps/dev-kb
+  ui_only: false
