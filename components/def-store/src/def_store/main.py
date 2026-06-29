@@ -16,6 +16,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import (
     RejectUnknownQueryParamsMiddleware,
+    build_metadata,
     check_production_security,
     init_beanie_with_retry,
     retry_async,
@@ -235,6 +236,8 @@ async def root():
     return {
         "service": "WIP Def-Store",
         "version": "0.2.0",
+        # CASE-526: uniform build-provenance block (sha/built_at/image_tag).
+        "build": build_metadata("0.2.0"),
         "documentation": "/docs",
         "health": "/health",
     }

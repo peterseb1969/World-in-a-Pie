@@ -24,6 +24,7 @@ Configuration via environment variables:
 For more details, see the README.md.
 """
 
+from .build_info import build_metadata
 from .config import (
     AuthConfig,
     get_auth_config,
@@ -51,6 +52,7 @@ from .identity import (
     reset_current_identity,
     set_current_identity,
 )
+from .key_sync import KeySyncService
 from .middleware import AuthMiddleware, create_auth_middleware
 from .models import APIKeyRecord, AuthResult, UserIdentity
 from .permissions import (
@@ -78,7 +80,6 @@ from .resolve import (
     resolve_entity_id,
     resolve_entity_ids,
 )
-from .key_sync import KeySyncService
 from .security import check_production_security
 from .startup import init_beanie_with_retry, retry_async
 
@@ -87,6 +88,7 @@ __version__ = "0.4.0"
 __all__ = [
     "APIKeyProvider",
     "APIKeyRecord",
+    "build_metadata",
     # Config
     "AuthConfig",
     # Middleware

@@ -197,6 +197,20 @@ run_build() {
 BUILT_IMAGES=()
 FAILED=()
 
+# ── Build provenance (CASE-526) ─────────────────────────────────
+# Stamp every image with the git SHA, a UTC build timestamp, and the image tag
+# via --build-arg (consumed by each Dockerfile's ARG/ENV/LABEL). Surfaced on
+# each service's root `build` block + as OCI labels. Always non-empty, so the
+# "${arr[@]}" expansion is bash-3.2 / set -u safe.
+GIT_SHA="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
+BUILD_STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+BUILD_ARGS=(
+    --build-arg "WIP_BUILD_SHA=${GIT_SHA}"
+    --build-arg "WIP_BUILD_STAMP=${BUILD_STAMP}"
+    --build-arg "WIP_IMAGE_TAG=${TAG}"
+)
+log_info "Build provenance: sha=${GIT_SHA} stamp=${BUILD_STAMP} tag=${TAG}"
+
 # ── Services requiring wip-auth ─────────────────────────────────
 # document-store also needs wip-toolkit (backup engine imports it)
 AUTH_SERVICES=(registry def-store template-store document-store reporting-sync)
@@ -261,7 +275,7 @@ build_python_with_libs() {
     ' "$dockerfile" > "$patched"
     mv "$patched" "$dockerfile"
 
-    if run_build "$img" "$tmpdir"; then
+    if run_build "$img" "$tmpdir" "${BUILD_ARGS[@]}"; then
         BUILT_IMAGES+=("$img")
         log_info "  ${svc}: OK"
     else
@@ -279,7 +293,7 @@ build_python_plain() {
 
     log_step "Building ${img}"
 
-    if run_build "$img" "$svc_dir"; then
+    if run_build "$img" "$svc_dir" "${BUILD_ARGS[@]}"; then
         BUILT_IMAGES+=("$img")
         log_info "  ${svc}: OK"
     else
