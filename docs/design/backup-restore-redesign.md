@@ -8,6 +8,78 @@ approach; this doc replaces the *data model* of backup and restore after
 CASE-23 Phase 3 failed on the clintrial smoke test for reasons rooted in
 the approach itself.
 
+---
+
+## ⚠️ v3 — Multi-namespace archives (CASE-542, 2026-06-29)
+
+**This supersedes the single-namespace dump format described in the rest of this
+document.** The sections below (Dump format, Manifest, restore modes) describe the
+original v1.0/v2.0 *single-namespace* archive. As of CASE-542 the archive format is
+**v3 multi-namespace** and the engines speak **only v3**.
+
+### What changed
+
+- **One archive can carry N namespaces.** Backup takes a list of namespaces (or
+  `all`), restore replays every namespace in the archive. For whole-instance
+  DR/migration and grouped-app moves.
+- **Layout** — entity JSONL moved under a per-namespace subtree; blobs stayed flat:
+  ```
+  v2.0 (flat):   manifest.json   <entity>.jsonl                blobs/<file_id>
+  v3:            manifest.json   namespaces/<ns>/<entity>.jsonl  blobs/<file_id>
+  ```
+  Blobs are flat because `file_id`s are globally-unique UUID7 — no cross-namespace
+  collision, and blob I/O stays namespace-agnostic (zero blob regression).
+- **Manifest** gains `format_version: "3.0"`, a `namespaces: list[NamespaceEntry]`
+  (per-namespace prefix + config + counts), and a `namespace_prefixes()` helper. The
+  top-level `counts` is the aggregate; the old single-namespace `namespace` field is
+  mirrored only when the archive carries exactly one namespace.
+
+### Backup
+
+```
+POST /api/document-store/backup/namespaces/{namespace}/backup
+  body: { "namespaces": ["a","b"], "all_namespaces": false, "include_files": true, … }
+```
+- `{namespace}` (URL) is the anchor; `namespaces` adds an explicit set alongside it;
+  `all_namespaces: true` backs up **every** registry namespace, including `wip`.
+- Admin permission is required on **every** namespace in the resolved set.
+- A single-namespace backup produces a 1-namespace v3 archive (not a v2.0 one).
+
+### Restore
+
+- **Identity-only:** each namespace in the archive restores to **itself**, and each
+  target must be **empty** (the precondition is checked across all targets before any
+  write). Cross-namespace **remap** (Registry canonical-ID re-mint) is out of scope —
+  the identity_hash itself is namespace-independent (PoNIF #3); the hard part is
+  re-namespacing Registry entries, deferred.
+- A **single-namespace** archive may still be redirected to an explicit
+  `target_namespace` (the pre-existing behaviour); a multi-namespace archive rejects a
+  target override.
+
+### ⚠️ Migrating old archives — `convert_archive`
+
+**The v3 restore engine cannot read a pre-v3 (v2.0 flat) archive.** Any archive made
+before CASE-542 (or by the legacy toolkit CLI before it shipped v3) must be converted
+once:
+
+```
+python -m wip_toolkit.convert_archive OLD.zip NEW.zip
+```
+
+One-way v2.0 → v3 (a 1-namespace v3 archive). It rewrites the entity JSONL under
+`namespaces/<ns>/` and carries blobs through flat; it refuses an already-v3 input.
+**If you have stored backups from before 2026-06-29, convert them before you rely on
+a restore.** (See also `WIP-Toolkit/README.md`.)
+
+### Cleanup / follow-ups
+
+- The dead loopback-toolkit export/import REST runners were retired with CASE-542
+  (CASE-544). The live REST backup/restore path is the direct-Mongo engine only.
+- **CASE-545** — the toolkit CLI's *inspect* commands are not yet multi-namespace-aware
+  (they error on an N-namespace archive); single-namespace inspect works.
+
+---
+
 **Prerequisites:**
 - **CASE-31** (Registry edge index) — not a blocker for this design, but
   enables a much cleaner closure phase. This doc specifies a workaround
