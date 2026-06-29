@@ -42,10 +42,6 @@ from pathlib import Path
 from typing import Any, cast
 
 import httpx as _httpx
-from wip_toolkit.client import WIPClient
-from wip_toolkit.config import WIPConfig
-from wip_toolkit.export.exporter import run_export
-from wip_toolkit.import_.importer import run_import
 from wip_toolkit.models import ProgressEvent
 
 from ..models.backup_job import BackupJob, BackupJobKind, BackupJobStatus
@@ -168,9 +164,9 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
         job.percent = 100.0
         job.completed_at = datetime.now(UTC)
         # Populate archive_size from disk if the archive file exists.
-        # This is the first opportunity after run_export() has finalized
+        # This is the first opportunity after the backup engine has finalized
         # the ZIP; the API layer set archive_path at job creation but
-        # cannot know the size until the worker thread writes the file.
+        # cannot know the size until the worker writes the file.
         if job.archive_path:
             with contextlib.suppress(OSError):
                 job.archive_size = Path(job.archive_path).stat().st_size
@@ -369,172 +365,6 @@ async def wait_for_job(job_id: str, timeout: float | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Loopback toolkit client + runner factories (CASE-23 Phase 3 STEP 4)
-#
-# Guardrail 1: this module is the single import chokepoint for ``wip_toolkit``.
-# ``api/backup.py`` (STEP 5) must never ``import wip_toolkit`` directly — it
-# calls these factories instead.
-# ---------------------------------------------------------------------------
-
-
-def _loopback_service_urls() -> dict[str, str] | None:
-    """Return per-service base URLs for container-mode loopback, or None.
-
-    Document-store can run in two shapes:
-
-    * **Host / bare metal**: every WIP service is reachable at
-      ``http://localhost:{port}`` for the default SERVICE_PORTS. The default
-      :class:`WIPConfig` (``host="localhost"``) works as-is, so this function
-      returns ``None`` and ``_loopback_config()`` skips the override.
-    * **Container (podman compose)**: each service has its own hostname in
-      the network (``wip-registry``, ``wip-def-store``, …). A single "host"
-      is not enough; we need per-service URL overrides.
-
-    Container mode is detected by the presence of ``REGISTRY_URL`` in the
-    environment — document-store's compose file sets it. The other service
-    URLs are derived from env vars when available, falling back to the
-    conventional in-network hostnames. This keeps unit tests (which run in
-    a venv with no container env) on the localhost path.
-    """
-    registry_url = os.getenv("REGISTRY_URL")
-    if not registry_url:
-        return None
-    return {
-        "registry": registry_url,
-        "def-store": os.getenv("DEF_STORE_URL", "http://wip-def-store:8002"),
-        "template-store": os.getenv(
-            "TEMPLATE_STORE_URL", "http://wip-template-store:8003"
-        ),
-        "document-store": os.getenv(
-            "DOCUMENT_STORE_URL", "http://wip-document-store:8004"
-        ),
-        "reporting-sync": os.getenv(
-            "REPORTING_SYNC_URL", "http://wip-reporting-sync:8005"
-        ),
-        "ingest-gateway": os.getenv(
-            "INGEST_GATEWAY_URL", "http://wip-ingest-gateway:8006"
-        ),
-    }
-
-
-def _loopback_config(api_key: str | None = None) -> WIPConfig:
-    """Build a :class:`WIPConfig` that points the toolkit at local services.
-
-    Document-store runs inside the same network as Registry / Def-Store /
-    Template-Store. On a host deployment they share ``localhost``; inside a
-    podman compose network each has its own hostname. :func:`_loopback_service_urls`
-    returns a per-service URL override for container mode, or None for host mode.
-
-    The API key defaults to the ambient ``WIP_AUTH_LEGACY_API_KEY`` (the same
-    env var the rest of document-store uses for its outbound service calls).
-
-    Args:
-        api_key: Override the API key. Defaults to the env var.
-
-    Returns:
-        A fully-resolved :class:`WIPConfig` ready to hand to :class:`WIPClient`.
-
-    Raises:
-        RuntimeError: If no API key is provided and the env var is unset.
-    """
-    resolved = api_key or os.getenv("WIP_AUTH_LEGACY_API_KEY")
-    if not resolved:
-        raise RuntimeError(
-            "WIP_AUTH_LEGACY_API_KEY is not set; cannot build loopback WIPConfig"
-        )
-    return WIPConfig(
-        host="localhost",
-        proxy=False,
-        api_key=resolved,
-        verify_ssl=False,  # http loopback — TLS not in the path
-        verbose=False,
-        service_urls=_loopback_service_urls(),
-        # Backups run inherently slow queries (bulk listing, closure
-        # computation over large namespaces). 10 minutes per HTTP call
-        # is generous but still a real backstop against hangs.
-        request_timeout_seconds=600.0,
-    )
-
-
-def make_backup_runner(
-    namespace: str,
-    archive_path: str | Path,
-    options: dict[str, Any] | None = None,
-    *,
-    api_key: str | None = None,
-) -> ToolkitRunner:
-    """Build a :data:`ToolkitRunner` that exports ``namespace`` to ``archive_path``.
-
-    The returned callable runs :func:`wip_toolkit.export.exporter.run_export`
-    synchronously inside the worker thread supplied by :func:`start_job`. All
-    supported :func:`run_export` keyword options pass through ``options``
-    (e.g. ``include_files``, ``latest_only``, ``skip_documents``).
-
-    Guardrail 1: this factory exists so ``api/backup.py`` can construct a
-    runner without importing the toolkit itself.
-    """
-    opts = dict(options or {})
-    config = _loopback_config(api_key)
-    # Co-locate scratch storage with the final archive volume so a single
-    # operator-controlled directory bounds *all* backup-related disk usage
-    # (CASE-29). Same env var the API endpoint reads at api/backup.py:79.
-    backup_dir = os.getenv("WIP_BACKUP_DIR", "/tmp/wip-backups")
-    Path(backup_dir).mkdir(parents=True, exist_ok=True)
-
-    def runner(progress_callback: Callable[[ProgressEvent], None]) -> Any:
-        with WIPClient(config) as client:
-            return run_export(
-                client,
-                namespace,
-                archive_path,
-                progress_callback=progress_callback,
-                non_interactive=True,
-                tmp_dir=backup_dir,
-                **opts,
-            )
-
-    return runner
-
-
-def make_restore_runner(
-    archive_path: str | Path,
-    options: dict[str, Any] | None = None,
-    *,
-    api_key: str | None = None,
-) -> ToolkitRunner:
-    """Build a :data:`ToolkitRunner` that imports ``archive_path``.
-
-    The returned callable runs :func:`wip_toolkit.import_.importer.run_import`
-    synchronously inside the worker thread supplied by :func:`start_job`. All
-    supported :func:`run_import` keyword options pass through ``options``
-    (e.g. ``mode``, ``target_namespace``, ``register_synonyms``, ``dry_run``).
-
-    Guardrail 1: this factory exists so ``api/backup.py`` can construct a
-    runner without importing the toolkit itself.
-    """
-    opts = dict(options or {})
-    config = _loopback_config(api_key)
-    # See CASE-29 note above on make_backup_runner. ArchiveReader doesn't
-    # currently use a scratch dir, but threading this kwarg keeps the two
-    # runners symmetric and future-proofs the wiring.
-    backup_dir = os.getenv("WIP_BACKUP_DIR", "/tmp/wip-backups")
-    Path(backup_dir).mkdir(parents=True, exist_ok=True)
-
-    def runner(progress_callback: Callable[[ProgressEvent], None]) -> Any:
-        with WIPClient(config) as client:
-            return run_import(
-                client,
-                archive_path,
-                progress_callback=progress_callback,
-                non_interactive=True,
-                tmp_dir=backup_dir,
-                **opts,
-            )
-
-    return runner
-
-
-# ---------------------------------------------------------------------------
 # Direct engine factories (CASE-23 redesign)
 #
 # These produce AsyncRunner callables that use DirectBackupEngine /
@@ -542,12 +372,27 @@ def make_restore_runner(
 # ---------------------------------------------------------------------------
 
 
+async def list_all_namespaces() -> list[str]:
+    """Every namespace prefix the registry knows (CASE-542 'all' backup).
+
+    Reads the registry's ``namespaces`` collection directly via the shared
+    motor client (document-store shares the MongoDB instance). Includes 'wip'.
+    """
+    db_name = os.getenv("REGISTRY_DATABASE_NAME", "wip_registry")
+    client = cast(Any, BackupJob.get_motor_collection().database.client)
+    prefixes = await client[db_name]["namespaces"].distinct("prefix")
+    return sorted(p for p in prefixes if p)
+
+
 def make_direct_backup_runner(
-    namespace: str,
+    namespaces: str | list[str],
     archive_path: str | Path,
     options: dict[str, Any] | None = None,
 ) -> AsyncRunner:
-    """Build an :data:`AsyncRunner` that backs up ``namespace`` via direct Mongo reads."""
+    """Build an :data:`AsyncRunner` that backs up one or more namespaces via
+    direct Mongo reads (CASE-542). A bare string is accepted for back-compat
+    and treated as a single-element list."""
+    ns_list = [namespaces] if isinstance(namespaces, str) else list(namespaces)
     opts = dict(options or {})
     backup_dir = os.getenv("WIP_BACKUP_DIR", "/tmp/wip-backups")
     Path(backup_dir).mkdir(parents=True, exist_ok=True)
@@ -560,7 +405,7 @@ def make_direct_backup_runner(
         storage = get_file_storage_client() if is_file_storage_enabled() else None
         engine = DirectBackupEngine(mongo_client, storage, progress_callback)
         await engine.run_backup(
-            namespace,
+            ns_list,
             Path(archive_path),
             include_files=opts.get("include_files", False),
             include_inactive=opts.get("include_inactive", False),

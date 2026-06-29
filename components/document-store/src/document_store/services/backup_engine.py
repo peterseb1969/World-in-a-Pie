@@ -26,6 +26,7 @@ from wip_toolkit.models import (
     EntityCounts,
     Manifest,
     NamespaceConfig,
+    NamespaceEntry,
     ProgressEvent,
 )
 
@@ -100,7 +101,7 @@ class DirectBackupEngine:
 
     async def run_backup(
         self,
-        namespace: str,
+        namespaces: str | list[str],
         archive_path: Path,
         *,
         include_files: bool = False,
@@ -109,63 +110,100 @@ class DirectBackupEngine:
         latest_only: bool = False,
         tmp_dir: Path | None = None,
     ) -> None:
-        """Run the full backup pipeline for *namespace*."""
-        self._emit("start", f"Starting backup of namespace '{namespace}'", percent=0)
+        """Run the full backup pipeline over one or more namespaces (CASE-542).
 
-        # Pre-count entities for percent calculation
-        counts_map = await self._pre_count(namespace, include_inactive, skip_documents)
-        total_entities = sum(counts_map.values())
+        Each namespace is read independently and written to its own
+        ``namespaces/<prefix>/`` subtree of the v3 archive; the manifest carries
+        a per-namespace entry plus the aggregate counts. A single-element list
+        (or a bare string, accepted for ergonomics) produces a 1-namespace v3
+        archive.
+        """
+        if isinstance(namespaces, str):
+            namespaces = [namespaces]
+        if not namespaces:
+            raise BackupEngineError("run_backup requires at least one namespace")
+
+        self._emit(
+            "start",
+            f"Starting backup of {len(namespaces)} namespace(s): {', '.join(namespaces)}",
+            percent=0,
+        )
+
+        # Pre-count entities across all namespaces for percent calculation
+        per_ns_counts: dict[str, dict[str, int]] = {}
+        for ns in namespaces:
+            per_ns_counts[ns] = await self._pre_count(ns, include_inactive, skip_documents)
+        total_entities = sum(sum(c.values()) for c in per_ns_counts.values())
 
         writer = ArchiveWriter(archive_path, tmp_dir=tmp_dir)
         processed = 0
 
         try:
-            for entity_type in BACKUP_ENTITY_ORDER:
-                if skip_documents and entity_type == "documents":
-                    continue
+            for ns in namespaces:
+                for entity_type in BACKUP_ENTITY_ORDER:
+                    if skip_documents and entity_type == "documents":
+                        continue
 
-                db_name, coll_name = COLLECTION_MAP[entity_type]
-                collection = self._mongo[db_name][coll_name]
+                    db_name, coll_name = COLLECTION_MAP[entity_type]
+                    collection = self._mongo[db_name][coll_name]
 
-                query = self._build_query(namespace, include_inactive)
+                    query = self._build_query(ns, include_inactive)
 
-                phase_name = f"phase_{entity_type}"
-                expected = counts_map.get(entity_type, 0)
-                self._emit(
-                    phase_name,
-                    f"Reading {entity_type} ({expected} expected)",
-                    percent=self._pct(processed, total_entities),
+                    phase_name = f"phase_{entity_type}"
+                    expected = per_ns_counts[ns].get(entity_type, 0)
+                    self._emit(
+                        phase_name,
+                        f"[{ns}] Reading {entity_type} ({expected} expected)",
+                        percent=self._pct(processed, total_entities),
+                    )
+
+                    count = 0
+                    async for doc in collection.find(query):
+                        doc.pop("_id", None)
+                        writer.add_entity(entity_type, doc, namespace=ns)
+                        count += 1
+                        processed += 1
+                        if count % 5000 == 0:
+                            self._emit(
+                                phase_name,
+                                f"[{ns}] {entity_type}: {count}/{expected}",
+                                percent=self._pct(processed, total_entities),
+                                current=count,
+                                total=expected,
+                            )
+
+                    logger.info("Backed up %d %s for namespace %s", count, entity_type, ns)
+
+                # Blobs (per namespace; file_ids are globally unique so the
+                # archive's flat blobs/ dir never collides across namespaces)
+                if include_files and self._storage:
+                    await self._backup_blobs(writer, ns, archive_path, processed, total_entities)
+
+            # Build manifest: one entry per namespace + aggregate counts
+            ns_entries: list[NamespaceEntry] = []
+            agg: dict[str, int] = {et: 0 for et in BACKUP_ENTITY_ORDER}
+            for ns in namespaces:
+                counts = EntityCounts(
+                    **{et: writer.entity_count(et, namespace=ns) for et in BACKUP_ENTITY_ORDER}
                 )
+                ns_entries.append(
+                    NamespaceEntry(
+                        prefix=ns,
+                        namespace_config=await self._read_namespace_config(ns),
+                        counts=counts,
+                    )
+                )
+                for et in BACKUP_ENTITY_ORDER:
+                    agg[et] += writer.entity_count(et, namespace=ns)
 
-                count = 0
-                async for doc in collection.find(query):
-                    doc.pop("_id", None)
-                    writer.add_entity(entity_type, doc)
-                    count += 1
-                    processed += 1
-                    if count % 5000 == 0:
-                        self._emit(
-                            phase_name,
-                            f"{entity_type}: {count}/{expected}",
-                            percent=self._pct(processed, total_entities),
-                            current=count,
-                            total=expected,
-                        )
-
-                logger.info("Backed up %d %s for namespace %s", count, entity_type, namespace)
-
-            # Blobs
-            if include_files and self._storage:
-                await self._backup_blobs(writer, namespace, archive_path, processed, total_entities)
-
-            # Build manifest
-            ns_config = await self._read_namespace_config(namespace)
+            single = len(namespaces) == 1
             manifest = Manifest(
-                format_version="2.0",
+                format_version="3.0",
                 exported_at=datetime.now(UTC),
                 source_host=socket.gethostname(),
-                namespace=namespace,
-                namespace_config=ns_config,
+                namespaces=ns_entries,
+                namespace=namespaces[0] if single else "",
+                namespace_config=ns_entries[0].namespace_config if single else None,
                 source_install={
                     "schema_version": "1.4",
                     "hash_version": 1,
@@ -173,15 +211,7 @@ class DirectBackupEngine:
                 include_inactive=include_inactive,
                 include_files=include_files,
                 include_all_versions=not latest_only,
-                counts=EntityCounts(
-                    terminologies=writer.entity_count("terminologies"),
-                    terms=writer.entity_count("terms"),
-                    term_relations=writer.entity_count("term_relations"),
-                    templates=writer.entity_count("templates"),
-                    documents=writer.entity_count("documents"),
-                    files=writer.entity_count("files"),
-                    registry_entries=writer.entity_count("registry_entries"),
-                ),
+                counts=EntityCounts(**agg),
             )
 
             self._emit("phase_finalize", "Writing archive", percent=95)
@@ -330,21 +360,43 @@ class DirectRestoreEngine:
         skip_files: bool = False,
         batch_size: int = 500,
     ) -> None:
-        """Run the full restore pipeline."""
-        self._emit("start", f"Starting restore into namespace '{target_namespace}'", percent=0)
+        """Run the full restore pipeline over every namespace in the archive.
 
+        Identity-only restore (CASE-542): each namespace restores to itself and
+        its target must be empty. A *single*-namespace archive may still be
+        redirected to an explicit ``target_namespace`` (the pre-existing
+        single-namespace behaviour); a multi-namespace archive rejects a target
+        override — cross-namespace remap (Registry re-mint) is out of scope.
+        """
         with ArchiveReader(archive_path) as reader:
             manifest = reader.read_manifest()
+            source_namespaces = manifest.namespace_prefixes() or reader.list_namespaces()
+            if not source_namespaces:
+                raise RestoreEngineError("Archive contains no namespaces to restore")
 
-            # Phase 1: Validate — target namespace must be empty
-            self._emit("phase_validate", "Checking target namespace is empty", percent=2)
-            await self._check_namespace_empty(target_namespace)
+            if len(source_namespaces) == 1 and target_namespace:
+                targets = [(source_namespaces[0], target_namespace)]
+            else:
+                if target_namespace:
+                    raise RestoreEngineError(
+                        "target_namespace override is only supported for a "
+                        "single-namespace archive; a multi-namespace archive "
+                        "restores each namespace to itself."
+                    )
+                targets = [(ns, ns) for ns in source_namespaces]
 
-            # Phase 2: Upsert namespace from manifest config
-            self._emit("phase_namespace", "Creating/updating namespace", percent=5)
-            await self._upsert_namespace(target_namespace, manifest)
+            self._emit(
+                "start",
+                f"Starting restore of {len(targets)} namespace(s)",
+                percent=0,
+            )
 
-            # Phase 3: Bulk insert each entity type
+            # Phase 1: validate ALL targets empty before writing anything
+            self._emit("phase_validate", "Checking target namespaces are empty", percent=2)
+            for _src, tgt in targets:
+                await self._check_namespace_empty(tgt)
+
+            entry_by_prefix = {e.prefix: e for e in manifest.namespaces}
             restore_order = [
                 "terminologies",
                 "terms",
@@ -354,65 +406,69 @@ class DirectRestoreEngine:
                 "files",
                 "registry_entries",
             ]
-
-            # Count total for progress
-            total = sum(
-                getattr(manifest.counts, et, 0)
-                for et in [
-                    "terminologies", "terms", "term_relations",
-                    "templates", "documents", "files", "registry_entries",
-                ]
-            )
+            total = sum(getattr(manifest.counts, et, 0) for et in restore_order)
             processed = 0
 
-            for entity_type in restore_order:
-                if skip_documents and entity_type == "documents":
-                    continue
-                if skip_files and entity_type == "files":
-                    continue
+            for src, tgt in targets:
+                entry = entry_by_prefix.get(src)
+                ns_config = entry.namespace_config if entry else manifest.namespace_config
 
-                db_name, coll_name = COLLECTION_MAP[entity_type]
-                collection = self._mongo[db_name][coll_name]
-
-                expected = getattr(manifest.counts, entity_type, 0)
-                phase_name = f"phase_{entity_type}"
                 self._emit(
-                    phase_name,
-                    f"Restoring {entity_type} ({expected} expected)",
+                    "phase_namespace",
+                    f"Creating/updating namespace '{tgt}'",
                     percent=self._pct(processed, total),
                 )
+                await self._upsert_namespace(tgt, ns_config)
 
-                batch: list[dict[str, Any]] = []
-                count = 0
+                for entity_type in restore_order:
+                    if skip_documents and entity_type == "documents":
+                        continue
+                    if skip_files and entity_type == "files":
+                        continue
 
-                for entity in reader.read_entities(entity_type):
-                    entity.pop("_id", None)  # Strip MongoDB internal ID
-                    batch.append(entity)
+                    db_name, coll_name = COLLECTION_MAP[entity_type]
+                    collection = self._mongo[db_name][coll_name]
 
-                    if len(batch) >= batch_size:
+                    expected = getattr(entry.counts, entity_type, 0) if entry else 0
+                    phase_name = f"phase_{entity_type}"
+                    self._emit(
+                        phase_name,
+                        f"[{tgt}] Restoring {entity_type} ({expected} expected)",
+                        percent=self._pct(processed, total),
+                    )
+
+                    batch: list[dict[str, Any]] = []
+                    count = 0
+
+                    for entity in reader.read_entities(entity_type, namespace=src):
+                        entity.pop("_id", None)  # Strip MongoDB internal ID
+                        batch.append(entity)
+
+                        if len(batch) >= batch_size:
+                            await self._insert_batch(collection, batch, entity_type)
+                            count += len(batch)
+                            processed += len(batch)
+                            batch = []
+                            if count % 5000 == 0:
+                                self._emit(
+                                    phase_name,
+                                    f"[{tgt}] {entity_type}: {count}/{expected}",
+                                    percent=self._pct(processed, total),
+                                    current=count,
+                                    total=expected,
+                                )
+
+                    if batch:
                         await self._insert_batch(collection, batch, entity_type)
                         count += len(batch)
                         processed += len(batch)
-                        batch = []
-                        if count % 5000 == 0:
-                            self._emit(
-                                phase_name,
-                                f"{entity_type}: {count}/{expected}",
-                                percent=self._pct(processed, total),
-                                current=count,
-                                total=expected,
-                            )
 
-                if batch:
-                    await self._insert_batch(collection, batch, entity_type)
-                    count += len(batch)
-                    processed += len(batch)
+                    logger.info("Restored %d %s into namespace %s", count, entity_type, tgt)
 
-                logger.info("Restored %d %s into namespace %s", count, entity_type, target_namespace)
-
-            # Phase 4: Blobs
+            # Blobs are flat (namespace-agnostic, globally-unique file_ids) — restore
+            # the whole archive's blob set once after all namespaces are in.
             if not skip_files and self._storage:
-                await self._restore_blobs(reader, target_namespace)
+                await self._restore_blobs(reader, targets[0][1])
 
         self._emit("complete", "Restore complete", percent=100)
 
@@ -433,16 +489,18 @@ class DirectRestoreEngine:
                 "Restore requires an empty namespace."
             )
 
-    async def _upsert_namespace(self, namespace: str, manifest: Manifest) -> None:
+    async def _upsert_namespace(
+        self, namespace: str, ns_config: NamespaceConfig | None
+    ) -> None:
         """Upsert the namespace via Registry HTTP PUT."""
         import httpx
 
         body: dict[str, Any] = {}
-        if manifest.namespace_config:
-            body["description"] = manifest.namespace_config.description
-            body["isolation_mode"] = manifest.namespace_config.isolation_mode
-            if manifest.namespace_config.id_config:
-                body["id_config"] = manifest.namespace_config.id_config
+        if ns_config:
+            body["description"] = ns_config.description
+            body["isolation_mode"] = ns_config.isolation_mode
+            if ns_config.id_config:
+                body["id_config"] = ns_config.id_config
 
         url = f"{self._registry_url}/api/registry/namespaces/{namespace}"
         async with httpx.AsyncClient(timeout=30.0) as client:

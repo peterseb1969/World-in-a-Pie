@@ -52,7 +52,7 @@ from beanie.odm.enums import SortDirection
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
-from wip_auth import UserIdentity, check_namespace_permission, get_current_identity, require_api_key
+from wip_auth import UserIdentity, check_namespace_permission, require_api_key
 
 from ..models.backup_job import (
     BackupJob,
@@ -102,8 +102,26 @@ async def start_backup(
     request: BackupRequest,
     identity: UserIdentity = Depends(require_api_key),
 ) -> BackupJobSnapshot:
-    """Kick off a namespace backup. Returns the initial job snapshot (202)."""
-    await check_namespace_permission(identity, namespace, "admin")
+    """Kick off a backup of one or more namespaces (CASE-542).
+
+    The URL ``{namespace}`` is the anchor. ``all_namespaces`` backs up every
+    registry namespace; ``namespaces`` adds an explicit set alongside the
+    anchor. Admin permission is required on every namespace in the resolved set.
+    """
+    # Resolve the namespace set.
+    if request.all_namespaces:
+        ns_list = await backup_service.list_all_namespaces()
+    elif request.namespaces:
+        ns_list = list(dict.fromkeys([namespace, *request.namespaces]))
+    else:
+        ns_list = [namespace]
+
+    if not ns_list:
+        raise HTTPException(status_code=400, detail="No namespaces resolved to back up.")
+
+    # Admin on every namespace in the set (the anchor was implied by the URL).
+    for ns in ns_list:
+        await check_namespace_permission(identity, ns, "admin")
 
     job_id = f"bkp-{uuid.uuid4().hex[:16]}"
     archive_path = _archive_path_for(job_id)
@@ -113,6 +131,7 @@ async def start_backup(
         job_id=job_id,
         kind=BackupJobKind.BACKUP,
         namespace=namespace,
+        namespaces=ns_list,
         archive_path=str(archive_path),
         options=options,
         created_by=identity.identity_string if hasattr(identity, "identity_string") else str(identity),
@@ -120,7 +139,7 @@ async def start_backup(
     await job.insert()
 
     runner = backup_service.make_direct_backup_runner(
-        namespace=namespace,
+        namespaces=ns_list,
         archive_path=archive_path,
         options=options,
     )
@@ -193,20 +212,27 @@ async def start_restore(
 
     archive_size = archive_path.stat().st_size
 
-    # In restore mode, read the source namespace from the archive manifest.
-    # The URL namespace is used for auth only — the archive is authoritative.
+    # In restore mode the archive manifest is authoritative for which
+    # namespaces get written (CASE-542: an archive may carry several). The URL
+    # namespace is only the auth anchor. Read the prefixes inside the try (a
+    # bad/old archive falls through to the URL namespace); run the per-namespace
+    # permission checks OUTSIDE it so a 403/404 is never swallowed.
     if mode == "restore":
+        prefixes: list[str] = []
         try:
             from wip_toolkit.archive import ArchiveReader
             with ArchiveReader(archive_path) as reader:
-                manifest = reader.read_manifest()
-                if manifest.namespace:
-                    effective_target = manifest.namespace
-                    # Re-check permission on the actual target namespace
-                    await check_namespace_permission(identity, effective_target, "admin")
+                prefixes = reader.read_manifest().namespace_prefixes()
         except Exception as exc:
             logger.warning("Could not read manifest from archive: %s", exc)
-            # Fall through with the URL-derived namespace
+
+        if prefixes:
+            # Admin on every namespace the restore will write.
+            for ns in prefixes:
+                await check_namespace_permission(identity, ns, "admin")
+            # Single-namespace archive → that namespace is the target. Multi →
+            # each restores to itself; leave target empty so the engine loops.
+            effective_target = prefixes[0] if len(prefixes) == 1 else ""
 
     options = {
         "mode": mode,
@@ -222,7 +248,7 @@ async def start_restore(
     job = BackupJob(
         job_id=job_id,
         kind=BackupJobKind.RESTORE,
-        namespace=effective_target,
+        namespace=effective_target or namespace,
         archive_path=str(archive_path),
         archive_size=archive_size,
         options=options,

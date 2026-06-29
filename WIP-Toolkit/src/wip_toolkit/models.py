@@ -43,12 +43,36 @@ class EntityCounts(BaseModel):
         )
 
 
+class NamespaceEntry(BaseModel):
+    """One namespace's slice of a multi-namespace (v3) archive.
+
+    A v3 archive carries a list of these on the manifest; each maps to a
+    ``namespaces/<prefix>/`` subtree of JSONL files. Per-namespace config and
+    counts live here (the top-level manifest ``counts`` is the aggregate).
+    """
+    prefix: str
+    namespace_config: NamespaceConfig | None = None
+    counts: EntityCounts = Field(default_factory=EntityCounts)
+
+
 class Manifest(BaseModel):
-    """Archive manifest describing the export."""
-    format_version: str = "2.0"
+    """Archive manifest describing the export.
+
+    **Format v3 (CASE-542)** is multi-namespace: one archive can carry N
+    namespaces, each under a ``namespaces/<prefix>/`` subtree, listed in
+    ``namespaces``. The top-level ``counts`` is the aggregate across all of
+    them; ``namespace``/``namespace_config`` are retained only as a
+    single-namespace convenience (set to the sole namespace when N==1, else
+    left empty). A v2.0 (flat, single-namespace) archive is converted to v3 by
+    ``wip_toolkit.convert_archive`` before the engines read it.
+    """
+    format_version: str = "3.0"
     tool_version: str = "0.5.0"
     exported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     source_host: str = ""
+    # v3: the authoritative list of namespaces in this archive.
+    namespaces: list[NamespaceEntry] = Field(default_factory=list)
+    # Single-namespace convenience (mirrors namespaces[0] when len==1).
     namespace: str = ""
     namespace_config: NamespaceConfig | None = None
     source_install: dict[str, Any] | None = None
@@ -57,6 +81,17 @@ class Manifest(BaseModel):
     include_all_versions: bool = False
     closure: ClosureInfo = Field(default_factory=ClosureInfo)
     counts: EntityCounts = Field(default_factory=EntityCounts)
+
+    def namespace_prefixes(self) -> list[str]:
+        """The namespaces carried by this archive.
+
+        Reads the v3 ``namespaces`` list; falls back to the single-namespace
+        ``namespace`` field for a converted/legacy-shaped manifest where the
+        list wasn't populated.
+        """
+        if self.namespaces:
+            return [n.prefix for n in self.namespaces]
+        return [self.namespace] if self.namespace else []
 
 
 class ExportStats(BaseModel):

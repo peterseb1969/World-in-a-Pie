@@ -31,6 +31,7 @@ from ..models import (
     ExportStats,
     Manifest,
     NamespaceConfig,
+    NamespaceEntry,
     ProgressEvent,
 )
 from .closure import compute_closure
@@ -239,7 +240,11 @@ def run_export(
 
     # Phase 1a: Write small entities to archive
     console.print("\n[bold cyan]Phase 1:[/bold cyan] Writing entities to archive")
-    writer = ArchiveWriter(output_path, tmp_dir=tmp_dir)
+    # v3 (CASE-542): single-namespace exporter writes a 1-namespace v3 archive
+    # via the default_namespace convenience — the add_entity calls below stay
+    # unchanged. Migrating this legacy path to explicit multi-namespace is a
+    # tracked follow-up.
+    writer = ArchiveWriter(output_path, tmp_dir=tmp_dir, default_namespace=namespace)
 
     for entity in terminologies:
         writer.add_entity("terminologies", entity)
@@ -359,6 +364,11 @@ def run_export(
     ))
     manifest = Manifest(
         source_host=client.config.host,
+        namespaces=[
+            NamespaceEntry(
+                prefix=namespace, namespace_config=ns_config, counts=counts
+            )
+        ],
         namespace=namespace,
         namespace_config=ns_config,
         include_inactive=include_inactive,
