@@ -60,7 +60,14 @@ class BackupJob(BeanieDocument):
     )
     namespace: str = Field(
         ...,
-        description="Source namespace for backup, target namespace for restore"
+        description="Primary namespace (the URL anchor). For a multi-namespace "
+                    "backup this is the first of `namespaces`; for restore it is "
+                    "the target."
+    )
+    namespaces: list[str] = Field(
+        default_factory=list,
+        description="CASE-542: all namespaces this backup job spans (1 for a "
+                    "single-namespace backup). Empty on restore jobs.",
     )
 
     # Lifecycle
@@ -188,11 +195,26 @@ class BackupProgressMessage(BaseModel):
 class BackupRequest(BaseModel):
     """Request body for POST /backup/namespaces/{namespace}/backup.
 
-    All fields map to keyword arguments of the underlying toolkit
-    :func:`run_export` call; the factory in ``backup_service`` forwards this
-    dict as ``**options``.
+    Most fields map to keyword arguments of the underlying backup engine; the
+    factory in ``backup_service`` forwards this dict as ``options``. The
+    multi-namespace selectors (`namespaces`, `all_namespaces`) are resolved in
+    the endpoint, not forwarded to the engine.
     """
 
+    namespaces: list[str] | None = Field(
+        default=None,
+        description=(
+            "CASE-542: also back up these namespaces into the same archive "
+            "(joined with the URL's {namespace}). Omit for single-namespace."
+        ),
+    )
+    all_namespaces: bool = Field(
+        False,
+        description=(
+            "CASE-542: back up EVERY namespace the registry lists (incl. 'wip') "
+            "into one archive. Overrides `namespaces`/{namespace}."
+        ),
+    )
     include_files: bool = Field(
         False, description="Include file blobs in the archive"
     )
@@ -262,6 +284,7 @@ class BackupJobSnapshot(BaseModel):
     job_id: str
     kind: BackupJobKind
     namespace: str
+    namespaces: list[str] = Field(default_factory=list)
     status: BackupJobStatus
     phase: str | None = None
     percent: float | None = None
@@ -281,6 +304,7 @@ class BackupJobSnapshot(BaseModel):
             job_id=job.job_id,
             kind=job.kind,
             namespace=job.namespace,
+            namespaces=job.namespaces,
             status=job.status,
             phase=job.phase,
             percent=job.percent,

@@ -308,6 +308,38 @@ class TestRunBackupEmptyNamespace:
         assert manifest.counts.documents == 0
 
 
+class TestRunBackupMultiNamespace:
+    """run_backup over a list of namespaces (CASE-542) builds a v3 manifest."""
+
+    @pytest.mark.asyncio
+    async def test_two_namespaces_manifest(self, tmp_path):
+        mongo, _ = _make_mongo_mock(
+            docs_per_collection={},
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER},
+            namespace_config_doc={"prefix": "x", "description": "test"},
+        )
+        events: list[ProgressEvent] = []
+        engine = DirectBackupEngine(mongo, None, _collect_progress(events))
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveWriter"
+        ) as mock_writer_cls:
+            mock_writer = MagicMock()
+            mock_writer.entity_count = MagicMock(return_value=0)
+            mock_writer_cls.return_value = mock_writer
+
+            await engine.run_backup(["alpha", "beta"], tmp_path / "multi.zip")
+
+        manifest = mock_writer.write.call_args[0][0]
+        assert manifest.format_version == "3.0"
+        assert manifest.namespace_prefixes() == ["alpha", "beta"]
+        assert manifest.namespace == ""  # not single → no convenience field
+        # add_entity for the (empty) namespaces would carry the namespace kwarg
+        # if there were rows; here we just assert the per-namespace manifest shape.
+        assert {e.prefix for e in manifest.namespaces} == {"alpha", "beta"}
+        assert events[-1].phase == "complete"
+
+
 class TestRunBackupBasicFlow:
     """run_backup against a namespace with a few entities flows them through to writer."""
 
@@ -446,7 +478,7 @@ class TestUpsertNamespace:
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client_cls.return_value = mock_client
 
-            await engine._upsert_namespace("kb", manifest)
+            await engine._upsert_namespace("kb", manifest.namespace_config)
 
             mock_client.put.assert_awaited_once()
             call_kwargs = mock_client.put.await_args.kwargs
@@ -480,7 +512,7 @@ class TestUpsertNamespace:
             mock_client_cls.return_value = mock_client
 
             with pytest.raises(RestoreEngineError, match="Failed to upsert"):
-                await engine._upsert_namespace("kb", manifest)
+                await engine._upsert_namespace("kb", manifest.namespace_config)
 
 
 class TestInsertBatch:
@@ -537,7 +569,7 @@ class TestRunRestoreBasicFlow:
         # ArchiveReader is used as a context manager
         mock_reader = MagicMock()
         mock_reader.read_manifest = MagicMock(return_value=manifest)
-        mock_reader.read_entities = MagicMock(side_effect=lambda et: {
+        mock_reader.read_entities = MagicMock(side_effect=lambda et, namespace=None: {
             "terminologies": [{"terminology_id": "T1"}, {"terminology_id": "T2"}],
             "terms": [],
             "term_relations": [],

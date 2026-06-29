@@ -119,7 +119,7 @@ async def test_start_backup_creates_job_and_returns_snapshot(
     # Runner factory received the snapshot options; start_async_job was called once.
     assert mk_runner.called
     _, kwargs = mk_runner.call_args
-    assert kwargs["namespace"] == "wip"
+    assert kwargs["namespaces"] == ["wip"]
     assert kwargs["options"]["include_files"] is True
     start_job.assert_awaited_once()
 
