@@ -23,6 +23,7 @@ from fastapi.responses import StreamingResponse
 from nats.js import JetStreamContext
 from pydantic import BaseModel, Field
 
+from wip_auth import build_metadata
 from wip_auth.ratelimit import setup_rate_limiting
 from wip_auth.security import check_production_security
 from wip_auth.startup import retry_async
@@ -1608,6 +1609,8 @@ async def root():
     return {
         "service": settings.service_name,
         "version": __version__,
+        # CASE-526: uniform build-provenance block (sha/built_at/image_tag).
+        "build": build_metadata(__version__),
         "docs": "/api/reporting-sync/docs",
         "health": "/api/reporting-sync/health",
         "status": "/api/reporting-sync/status",
