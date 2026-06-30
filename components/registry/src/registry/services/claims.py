@@ -167,21 +167,72 @@ async def reconcile_orphan_claims() -> dict[str, int]:
     deleted entries, cross-namespace-synonym residue after namespace deletion,
     and orphans left by a claim-insert that succeeded while the subsequent
     entry write failed (no-transaction window).
+
+    Uses batched queries (500 owner IDs per round) instead of per-claim
+    lookups to avoid the N+1 pattern that takes 20+ minutes on slow storage.
     """
+    BATCH_SIZE = 500
+    claims_coll = CompositeKeyClaim.get_motor_collection()
+    entries_coll = RegistryEntry.get_motor_collection()
     summary = {"checked": 0, "orphans_deleted": 0}
-    async for claim in CompositeKeyClaim.find_all():
-        summary["checked"] += 1
-        entry = await RegistryEntry.find_one({"entry_id": claim.owner_entry_id})
-        if entry is None:
-            await _delete_claim(claim)
-            summary["orphans_deleted"] += 1
+
+    batch: list = []
+    async for claim_doc in claims_coll.find():
+        batch.append(claim_doc)
+        if len(batch) < BATCH_SIZE:
             continue
-        if not _entry_backs_claim(entry, claim):
-            await _delete_claim(claim)
-            summary["orphans_deleted"] += 1
+
+        deleted = await _reconcile_batch(batch, entries_coll, claims_coll)
+        summary["checked"] += len(batch)
+        summary["orphans_deleted"] += deleted
+        batch = []
+
+    if batch:
+        deleted = await _reconcile_batch(batch, entries_coll, claims_coll)
+        summary["checked"] += len(batch)
+        summary["orphans_deleted"] += deleted
+
     if summary["orphans_deleted"]:
         logger.info("CASE-427 reconcile: %s", summary)
     return summary
+
+
+async def _reconcile_batch(batch, entries_coll, claims_coll) -> int:
+    """Reconcile one batch of claim docs. Returns count of orphans deleted."""
+    owner_ids = list({doc["owner_entry_id"] for doc in batch})
+    existing = {}
+    async for entry in entries_coll.find(
+        {"entry_id": {"$in": owner_ids}},
+        {"entry_id": 1, "namespace": 1, "entity_type": 1,
+         "primary_composite_key_hash": 1, "synonyms": 1},
+    ):
+        existing[entry["entry_id"]] = entry
+
+    orphan_ids = []
+    for doc in batch:
+        entry = existing.get(doc["owner_entry_id"])
+        if entry is None or not _entry_doc_backs_claim(entry, doc):
+            orphan_ids.append(doc["_id"])
+
+    if orphan_ids:
+        await claims_coll.delete_many({"_id": {"$in": orphan_ids}})
+    return len(orphan_ids)
+
+
+def _entry_doc_backs_claim(entry: dict, claim_doc: dict) -> bool:
+    """Like _entry_backs_claim but operates on raw dicts (no ODM overhead)."""
+    if (
+        entry.get("namespace") == claim_doc["namespace"]
+        and entry.get("entity_type") == claim_doc["entity_type"]
+        and entry.get("primary_composite_key_hash") == claim_doc["composite_key_hash"]
+    ):
+        return True
+    return any(
+        s.get("namespace") == claim_doc["namespace"]
+        and s.get("entity_type") == claim_doc["entity_type"]
+        and s.get("composite_key_hash") == claim_doc["composite_key_hash"]
+        for s in entry.get("synonyms", [])
+    )
 
 
 def _entry_backs_claim(entry: RegistryEntry, claim: CompositeKeyClaim) -> bool:
