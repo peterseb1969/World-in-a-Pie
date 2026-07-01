@@ -10,6 +10,10 @@ For the *why* — design philosophy, theses, use cases — see [Vision](Vision.m
 
 ## 1. Quick Start
 
+> **Prefer a guided, validated walkthrough?** Pick your target:
+> **[single-host — podman + GHCR images](deploy/podman/README.md)** · **[hot-reload dev — local source](deploy/dev/README.md)** · **[Kubernetes](deploy/k8s/README.md)**.
+> Building an app on WIP → **[APP-YAC setup tutorial](app-yac-tutorial.md)**. The commands below are the condensed operator reference underneath those guides.
+
 ### Install (compose)
 
 ```bash
