@@ -207,13 +207,27 @@ KBEOF
     # non-fatal — the cached runner may already exist; recovery is the same
     # one-liner by hand (case-workflow playbook, "The served KB client").
     if [ -f "$KB_KEY_FILE" ]; then
-        if curl -fsSk -H "X-API-Key: $(cat "$KB_KEY_FILE")" \
-            "$KB_URL/apps/kb/server-api/kb-client/install" | sh; then
-            echo "   Served KB client installed/refreshed (~/.cache/wip-kb-client/)"
-        else
-            echo "   WARNING: served-client install failed; run the install one-liner"
-            echo "            from docs/playbooks/case-workflow.md when KB is reachable."
-        fi
+        # Never pipe an un-inspected HTTP response into sh (CASE-557). Fetch the
+        # install script to a temp file, then execute it ONLY on a 2xx status AND
+        # a non-empty body — a redirect/error/HTML body (or a Caddy empty-200 on an
+        # unmatched path) would otherwise run as shell.
+        _kb_install="$(mktemp)"
+        _kb_code="$(curl -sSk -o "$_kb_install" -w '%{http_code}' \
+            -H "X-API-Key: $(cat "$KB_KEY_FILE")" \
+            "$KB_URL/apps/kb/server-api/kb-client/install" 2>/dev/null || echo 000)"
+        case "$_kb_code" in
+            2??)
+                if [ -s "$_kb_install" ] && sh "$_kb_install"; then
+                    echo "   Served KB client installed/refreshed (~/.cache/wip-kb-client/)"
+                else
+                    echo "   WARNING: served-client install returned HTTP $_kb_code but no runnable"
+                    echo "            body; run the install one-liner from docs/playbooks/case-workflow.md."
+                fi ;;
+            *)
+                echo "   WARNING: served-client install skipped (HTTP $_kb_code); run the install"
+                echo "            one-liner from docs/playbooks/case-workflow.md when KB is reachable." ;;
+        esac
+        rm -f "$_kb_install"
     else
         echo "   WARNING: KB key file not found at $KB_KEY_FILE; skipped client install."
     fi
