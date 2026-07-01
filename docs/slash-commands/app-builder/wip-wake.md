@@ -59,7 +59,7 @@ Compaction wipes prior reads. As an APP-YAC, you must reload baseline context as
 - `ReadMcpResourceTool server=wip uri=wip://ponifs` — the eight PoNIFs (#7 Edge Types and #8 `versioned: false` added 2026-04-25). Conventional assumptions cause silent failures.
 - `ReadMcpResourceTool server=wip uri=wip://data-model` — entity shapes in WIP.
 - `ReadMcpResourceTool server=wip uri=wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache, namespace/authorization rules.
-- `Read` `/Users/peter/Development/FR-YAC/papers/wip-deployable-app-contract.md` — what your app must satisfy to ship under `wip-deploy install`. Reload it so deploy-contract drift doesn't creep in across a long build.
+- `Read` `docs/wip-deployable-app-contract.md` — what your app must satisfy to ship under `wip-deploy install` (bundled into this project by the scaffold, in `docs/`). Reload it so deploy-contract drift doesn't creep in across a long build.
 
 Output one line per source confirming it was loaded. This step is non-optional; recovery without baseline context is recovery into the same drift the previous session ended in.
 
