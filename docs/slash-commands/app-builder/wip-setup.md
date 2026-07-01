@@ -57,7 +57,7 @@ After the five environment checks pass, **actually load the baseline context** i
 
 Perform each of the following as concrete tool calls:
 
-- `Read` `/Users/peter/Development/World-in-a-Pie/docs/Vision.md` — WIP's theses and design principles. Every architectural decision traces back here. If any work feels like it might drift toward a specific use case at the expense of WIP's generic engine, this is the correction mechanism.
+- `Read` `docs/Vision.md` — WIP's theses and design principles (bundled into this project by the scaffold, in `docs/`). Every architectural decision traces back here. If any work feels like it might drift toward a specific use case at the expense of WIP's generic engine, this is the correction mechanism.
 - `ReadMcpResourceTool server=wip uri=wip://ponifs` — the six Powerful, Non-Intuitive Features. Conventional assumptions cause silent failures against these.
 - `ReadMcpResourceTool server=wip uri=wip://data-model` — authoritative data model (field types, reference types, templates, terminologies, documents, ontology relations).
 - `ReadMcpResourceTool server=wip uri=wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache TTL, namespace / authorization rules.
