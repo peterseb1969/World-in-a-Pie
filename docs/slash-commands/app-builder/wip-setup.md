@@ -61,7 +61,7 @@ Perform each of the following as concrete tool calls:
 - `ReadMcpResourceTool server=wip uri=wip://ponifs` — the six Powerful, Non-Intuitive Features. Conventional assumptions cause silent failures against these.
 - `ReadMcpResourceTool server=wip uri=wip://data-model` — authoritative data model (field types, reference types, templates, terminologies, documents, ontology relations).
 - `ReadMcpResourceTool server=wip uri=wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache TTL, namespace / authorization rules.
-- `Read` `/Users/peter/Development/FR-YAC/papers/wip-deployable-app-contract.md` — what your app must satisfy to ship under `wip-deploy install`. Synthesizes the May 2026 cross-host + WIP-KB containerization work into a one-page checklist. Mandatory because skipping the contract is a multi-day retrofit; reading it once is a 30-minute scaffold tax.
+- `Read` `docs/wip-deployable-app-contract.md` — what your app must satisfy to ship under `wip-deploy install`. Synthesizes the May 2026 cross-host + WIP-KB containerization work into a one-page checklist. Bundled into this project by the scaffold (in `docs/`). Mandatory because skipping the contract is a multi-day retrofit; reading it once is a 30-minute scaffold tax.
 
 After each call, output one line confirming the source was loaded. Do not summarise the content at this step — the content is now in context where the subsequent work can use it.
 

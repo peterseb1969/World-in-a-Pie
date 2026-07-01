@@ -16,7 +16,8 @@
 #   1. Creates the directory structure
 #   2. Copies slash commands from docs/slash-commands/app-builder/
 #   3. Copies reference docs (AI-Assisted-Development.md, WIP_PoNIFs.md, WIP_DevGuardrails.md,
-#      wip-guide.md, technology-stack.md, ui-guidance.md, ontology-support.md)
+#      wip-guide.md, technology-stack.md, ui-guidance.md, ontology-support.md,
+#      wip-deployable-app-contract.md)
 #   4. Generates .mcp.json pointing to this WIP installation
 #   5. Copies and extracts client library tarballs + READMEs
 #   6. Copies wip-toolkit wheel
@@ -627,7 +628,7 @@ fi
 # --- Copy reference docs (new + refresh) ---
 
 echo "3. Copying reference documentation..."
-for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md wip-guide.md technology-stack.md ui-guidance.md; do
+for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md wip-guide.md technology-stack.md ui-guidance.md wip-deployable-app-contract.md; do
     if [ -f "$WIP_ROOT/docs/$doc" ]; then
         cp "$WIP_ROOT/docs/$doc" "$APP_DIR/docs/"
         echo "   Copied: docs/$doc"
@@ -1234,7 +1235,7 @@ cat >> "$CLAUDE_TARGET" << EOF
 
 ## The wip-deployable app contract
 
-**Read this before scaffolding any app code:** \`FR-YAC/papers/wip-deployable-app-contract.md\`. Four-line summary:
+**Read this before scaffolding any app code:** \`docs/wip-deployable-app-contract.md\` (bundled into this project by the scaffold). Four-line summary:
 
 1. **Source repo** needs \`Dockerfile.dev\` + correct \`vite.config.ts\` (\`server.host: '0.0.0.0'\`, dev proxy targets *your* Express port, not 3001). Client fetches use \`import.meta.env.BASE_URL\`, never bare paths.
 2. **WIP repo \`apps/<name>/wip-app.yaml\`** declares both http and dev ports, \`WIP_BASE_URL\` via \`from_component: router\`, \`APP_BASE_PATH\` literal, and a healthcheck that doesn't depend on WIP being reachable.
@@ -1306,6 +1307,7 @@ Read these before starting:
 - \`docs/technology-stack.md\` — **Canonical** v1 stack (React 19 + TS + Vite + TanStack Query + Tailwind 3 + Inter); required @wip/* libraries; forbidden choices. Read before any architecture call.
 - \`docs/ui-guidance.md\` — **Canonical** v1 visual anchor: brand palette tokens (primary/accent/success/danger), typography hierarchy (text-2xl page titles, NOT text-3xl), component shapes (cards, modals, tinted callouts), accessibility floor. \`tailwind.config.js\` ships pre-extended with these tokens — use the named classes (\`bg-primary\`, \`text-text-muted\`), not inline hex.
 - \`docs/ontology-support.md\` — Term relations, polyhierarchy, typed relations, traversal queries
+- \`docs/wip-deployable-app-contract.md\` — what your app must satisfy to ship under \`wip-deploy install\` (Dockerfile.dev, vite.config, \`apps/<name>/wip-app.yaml\` ports, WIP-independent healthcheck). Read before scaffolding.
 - \`templates/bootstrap/*.template\` — Bootstrap pattern starting points (see "Namespace Bootstrap on Launch" above)
 
 ## Key Identity Concepts
