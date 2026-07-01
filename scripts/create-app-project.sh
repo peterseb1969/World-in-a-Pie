@@ -15,9 +15,9 @@
 # Create does:
 #   1. Creates the directory structure
 #   2. Copies slash commands from docs/slash-commands/app-builder/
-#   3. Copies reference docs (AI-Assisted-Development.md, WIP_PoNIFs.md, WIP_DevGuardrails.md,
-#      wip-guide.md, technology-stack.md, ui-guidance.md, ontology-support.md,
-#      wip-deployable-app-contract.md)
+#   3. Copies reference docs (Vision.md, AI-Assisted-Development.md, WIP_PoNIFs.md,
+#      WIP_DevGuardrails.md, wip-guide.md, technology-stack.md, ui-guidance.md,
+#      ontology-support.md, wip-deployable-app-contract.md)
 #   4. Generates .mcp.json pointing to this WIP installation
 #   5. Copies and extracts client library tarballs + READMEs
 #   6. Copies wip-toolkit wheel
@@ -628,7 +628,7 @@ fi
 # --- Copy reference docs (new + refresh) ---
 
 echo "3. Copying reference documentation..."
-for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md wip-guide.md technology-stack.md ui-guidance.md wip-deployable-app-contract.md; do
+for doc in Vision.md AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md wip-guide.md technology-stack.md ui-guidance.md wip-deployable-app-contract.md; do
     if [ -f "$WIP_ROOT/docs/$doc" ]; then
         cp "$WIP_ROOT/docs/$doc" "$APP_DIR/docs/"
         echo "   Copied: docs/$doc"
@@ -1300,6 +1300,7 @@ Read each template's header comment, fill in the TODO markers (namespace, app ti
 ## Reference Documentation
 
 Read these before starting:
+- \`docs/Vision.md\` — WIP's theses and design principles; the drift-correction mechanism when work bends toward a use case at the expense of the generic engine. Read first.
 - \`docs/AI-Assisted-Development.md\` — 4-phase process, data model design guide, PoNIFs quick reference
 - \`docs/WIP_PoNIFs.md\` — Full guide to WIP's 8 non-intuitive behaviours
 - \`docs/WIP_DevGuardrails.md\` — UI stack, app skeleton, testing conventions
