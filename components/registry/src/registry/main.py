@@ -118,19 +118,11 @@ async def lifespan(app: FastAPI):
     # entries; only deletes dangling claims (deleted entries, cross-namespace
     # synonym residue, no-transaction write-failure orphans). The destructive
     # backfill is a separate explicit one-shot, not run here.
-    # Runs as a background task so it doesn't block startup — on slow storage
-    # backends (e.g. Portworx) the N+1 query pattern can take 20+ minutes.
-    import asyncio
     from .services.claims import reconcile_orphan_claims
-
-    async def _background_reconcile():
-        try:
-            result = await reconcile_orphan_claims()
-            print(f"Background orphan-claim reconciliation complete: {result}")
-        except Exception as e:
-            print(f"WARNING: Background orphan-claim reconciliation failed: {e}")
-
-    asyncio.create_task(_background_reconcile())
+    try:
+        await reconcile_orphan_claims()
+    except Exception as e:
+        print(f"WARNING: Failed to reconcile orphan claims: {e}")
 
     # Initialize auth service
     if settings.MASTER_API_KEY:
