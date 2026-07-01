@@ -6,7 +6,7 @@ format defined here.
 
 ## Archive format — v3 (multi-namespace)
 
-As of **CASE-542** the archive is **v3** and carries one or more namespaces:
+The archive is **v3** and carries one or more namespaces:
 
 ```
 my-archive.zip
@@ -64,7 +64,7 @@ wip import <archive.zip> [--target-namespace <ns>] …
 ```
 
 The CLI is single-namespace per invocation; it produces/consumes a 1-namespace v3
-archive. (Multi-namespace CLI *inspect* is not yet implemented — CASE-545.)
+archive. (Multi-namespace CLI *inspect* is not yet implemented.)
 
 ## Key modules
 

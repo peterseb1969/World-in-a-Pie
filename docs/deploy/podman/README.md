@@ -9,8 +9,8 @@ Stand up World-In-a-Pie on **one machine**, using the **published container imag
 > **🤖 AI agent?** Skip to [**Agent instructions**](#agent-instructions) — it walks you through asking the user what they want and bringing it up for them.
 
 > **Other deployment styles have their own guides:**
-> - Hot-reload **dev** (bind-mounted source): `docs/deploy/dev/README.md` *(coming)*
-> - **Kubernetes**: `docs/deploy/k8s/README.md` *(coming)*
+> - Hot-reload **dev** (bind-mounted source): **[dev deployment guide](../dev/README.md)**
+> - **Kubernetes**: [k8s guide](../k8s/README.md)
 
 ---
 

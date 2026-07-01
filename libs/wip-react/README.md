@@ -162,7 +162,7 @@ function MyComponent() {
 
 ## Components
 
-### `<WipFooter>` (CASE-308)
+### `<WipFooter>`
 
 Brand-attribution footer. Drop into any WIP app's root layout to render a small "Built on WIP" mark with the embedded logo.
 
@@ -630,7 +630,7 @@ const { data } = useActivity(params, { refetchInterval: 10_000 }) // poll every 
 // Provider & client access
 export { WipProvider, useWipClient, type WipProviderProps }
 
-// Brand-attribution component (CASE-308)
+// Brand-attribution component
 export { WipFooter, type WipFooterProps }
 
 // Cache management

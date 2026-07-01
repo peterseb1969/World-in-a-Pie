@@ -18,7 +18,7 @@
 > The AI agents building WIP keep their own working memory in **WIP-KB** — a knowledge-base app built *on top of* WIP (cross-agent cases, session history, design decisions, lessons). So WIP is developed *through* an app that runs on WIP: the platform's agentic memory both proves the model and is essential to the work.
 
 > ### ▶ Try it in ~5 minutes
-> **[Single-host quickstart → podman + public GHCR images](docs/deploy/podman/README.md)** — one command brings up the backend **and** the React Console UI on your machine. (Hot-reload dev and Kubernetes guides are coming alongside it.)
+> **[Single-host quickstart → podman + public GHCR images](docs/deploy/podman/README.md)** — one command brings up the backend **and** the React Console UI on your machine. (There's also a [hot-reload dev guide](docs/deploy/dev/README.md) and a [Kubernetes guide](docs/deploy/k8s/README.md).)
 
 ---
 
@@ -94,7 +94,8 @@ Eight WIP services (Auth-Gateway + the seven above), fronted by Caddy, over stan
 |---|---|
 | **Run WIP on one machine, fast** | **[Single-host quickstart (podman + GHCR)](docs/deploy/podman/README.md)** ← start here |
 | Full operator reference (deploy, auth, networking, storage, security) | [WIP Guide](docs/wip-guide.md) |
-| Hot-reload development / Kubernetes | *dev & k8s deploy guides — coming* |
+| Develop WIP or an app (hot-reload) | [Dev deployment guide](docs/deploy/dev/README.md) |
+| Deploy to Kubernetes | [Kubernetes guide](docs/deploy/k8s/README.md) |
 
 **Set up an AI agent** (WIP supports two roles — working *on* WIP, and building apps *on top of* it):
 
