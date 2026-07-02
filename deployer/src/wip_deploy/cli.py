@@ -3572,7 +3572,54 @@ def _assemble(
             typer.echo(f"  - {err}", err=True)
         raise typer.Exit(1)
 
+    _warn_unmatched_tag_overrides(deployment, discovery.components, discovery.apps)
+
     return deployment, discovery.components, discovery.apps
+
+
+def _warn_unmatched_tag_overrides(
+    deployment: Deployment, components: list[Component], apps_list: list[App]
+) -> None:
+    """CASE-556: image_ref() looks overrides up per rendered owner
+    (`tag_overrides.get(owner.metadata.name)`), so an `--image-tag` key that
+    matches no enabled component/app is never consulted — the service silently
+    renders at the base `--tag`, deploying a different version than intended.
+    Warn (stderr, CASE-366) with the enabled names so the drop is visible."""
+    overrides = deployment.spec.images.tag_overrides
+    if not overrides:
+        return
+    enabled_app_names = {ref.name for ref in deployment.spec.apps if ref.enabled}
+    valid_names = {
+        c.metadata.name for c in components if is_component_active(c, deployment)
+    } | enabled_app_names
+    unmatched = sorted(set(overrides) - valid_names)
+    if not unmatched:
+        return
+    declared = {c.metadata.name for c in components} | {
+        a.metadata.name for a in apps_list
+    }
+    for key in unmatched:
+        hint = (
+            " (declared but not enabled in this install — forgot --app/--add?)"
+            if key in declared
+            else ""
+        )
+        typer.echo(
+            typer.style(
+                f"⚠ --image-tag {key!r} matches no enabled component/app{hint}; "
+                f"override ignored — the service renders at the base tag.",
+                fg=typer.colors.YELLOW,
+            ),
+            err=True,
+        )
+    typer.echo(
+        typer.style(
+            f"  valid --image-tag keys for this install: "
+            f"{', '.join(sorted(valid_names))}",
+            fg=typer.colors.YELLOW,
+        ),
+        err=True,
+    )
 
 
 def _validate_or_exit(
