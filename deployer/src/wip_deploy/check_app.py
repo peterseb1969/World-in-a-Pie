@@ -150,13 +150,16 @@ def find_manifest_for_source(
 
     pkg_norm = _normalize(pkg_name)
 
+    def _exact(candidate: str) -> bool:
+        return bool(candidate) and _normalize(candidate) == pkg_norm
+
     def _match(candidate: str) -> bool:
         if not candidate:
             return False
         c = _normalize(candidate)
         return c == pkg_norm or c in pkg_norm or pkg_norm in c
 
-    candidates: list[tuple[Path, str]] = []
+    candidates: list[tuple[Path, str, bool]] = []
     for m in sorted(apps_dir.glob("*/wip-app.yaml")):
         try:
             data = yaml.safe_load(m.read_text())
@@ -169,15 +172,28 @@ def find_manifest_for_source(
         meta_name = (data.get("metadata") or {}).get("name", "")
         dir_name = m.parent.name
         if _match(dir_name) or _match(meta_name) or _match(image_name):
-            candidates.append((m, meta_name or dir_name))
+            exact = _exact(dir_name) or _exact(meta_name) or _exact(image_name)
+            candidates.append((m, meta_name or dir_name, exact))
+
+    # CASE-562: an exact normalized match outranks substring matches. A
+    # parallel-instance manifest (dev-kb, <x>-staging) keeps its
+    # distinguishing prefix/suffix through normalization, so it can only
+    # ever be a substring match against the base package name — the
+    # canonical manifest wins the tie deterministically. Multiple exact
+    # matches remain a loud ambiguity.
+    exact_candidates = [c for c in candidates if c[2]]
+    if len(exact_candidates) == 1:
+        m, name, _ = exact_candidates[0]
+        return m, name, None
 
     if len(candidates) == 1:
-        m, name = candidates[0]
+        m, name, _ = candidates[0]
         return m, name, None
     if len(candidates) > 1:
+        pool = exact_candidates or candidates
         return None, None, (
             f"ambiguous: package name {pkg_name!r} matches multiple "
-            f"app manifests ({', '.join(str(c[0]) for c in candidates)})"
+            f"app manifests ({', '.join(str(c[0]) for c in pool)})"
         )
     return None, None, (
         f"no app manifest found for package {pkg_name!r}. Either "
@@ -430,10 +446,9 @@ def check_app_deployability(
     `package.json` name. `repo_root` defaults to the discovered WIP repo
     root (via `find_repo_root`)."""
     source_dir = source_dir.expanduser().resolve()
-    if repo_root is None:
-        repo_root = find_repo_root()
-    else:
-        repo_root = repo_root.expanduser().resolve()
+    repo_root = (
+        find_repo_root() if repo_root is None else repo_root.expanduser().resolve()
+    )
 
     if not source_dir.is_dir():
         return CheckReport(
