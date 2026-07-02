@@ -623,3 +623,27 @@ def test_raise_for_status_with_body_passthrough_on_success() -> None:
     request = httpx.Request("GET", "https://example.test/api/x")
     response = httpx.Response(200, content='{"ok": true}', request=request)
     _raise_for_status_with_body(response)  # must not raise
+
+
+# =========================================================================
+# CASE-568 follow-on: search_registry must hit the route that exists
+# =========================================================================
+#
+# search_registry GET'd /api/registry/search — a path with no GET route
+# (the /search router has only the three POST endpoints) — so the MCP
+# tool 404'd on every call since it shipped. Unified search lives under
+# the entries router: /api/registry/entries/search.
+
+
+@pytest.mark.asyncio
+async def test_search_registry_uses_entries_search_route() -> None:
+    """search_registry must GET /api/registry/entries/search (unified
+    search) — not the nonexistent /api/registry/search."""
+    client = _make_client(registry_url="https://h:8443")
+    mock_http = _capture_urls_mock()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.search_registry(query="widget")
+    called_url = mock_http.get.call_args.args[0]
+    assert called_url == "https://h:8443/api/registry/entries/search", called_url
+    params = mock_http.get.call_args.kwargs.get("params", {})
+    assert params.get("q") == "widget", params

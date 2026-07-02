@@ -385,9 +385,12 @@ class WipClient:
         page: int = 1,
         page_size: int = 20,
     ) -> dict:
+        # CASE-568 follow-on: unified search lives under the entries router —
+        # /api/registry/entries/search. The old "/api/registry/search" path
+        # has no GET route and 404'd on every call.
         return await self._get(
             self.registry_url,
-            "/api/registry/search",
+            "/api/registry/entries/search",
             q=query,
             namespace=namespace,
             entity_type=entity_type,
