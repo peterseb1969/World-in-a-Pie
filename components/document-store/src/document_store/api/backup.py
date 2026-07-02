@@ -26,15 +26,18 @@ Endpoints
     only).
 * ``GET  /backup/jobs``
     List recent jobs, optionally filtered by namespace and/or status.
+* ``DELETE /backup/jobs/{job_id}``
+    Delete a terminal job record (and its archive file, for backups).
 
-Single-worker caveat
---------------------
-The in-process :mod:`asyncio.Queue` used for live SSE streaming is local to
-the uvicorn worker that started the job. If document-store runs with
-multiple workers, the SSE endpoint must hit the same worker that handled
-POST /backup (session affinity). The persisted ``BackupJob`` MongoDB record
-is the durable source of truth, so GET /jobs/{job_id} (polling) works from
-any worker.
+Multi-worker note
+-----------------
+The in-process :mod:`asyncio.Queue` in
+:mod:`document_store.services.backup_service` is a worker-thread → event-loop
+bridge whose consumer task persists each progress event onto the ``BackupJob``
+MongoDB record; it is local to the uvicorn worker that started the job and is
+never read by any HTTP endpoint. Both GET /jobs/{job_id} and the SSE stream
+read the persisted record (the SSE generator polls it every 500ms), so every
+endpoint here works from any worker — no session affinity required.
 """
 
 from __future__ import annotations
@@ -170,7 +173,7 @@ async def start_restore(
     register_synonyms: bool = Form(False),
     skip_documents: bool = Form(False),
     skip_files: bool = Form(False),
-    batch_size: int = Form(50),
+    batch_size: int = Form(50, ge=1, le=500),
     continue_on_error: bool = Form(False),
     dry_run: bool = Form(False),
     identity: UserIdentity = Depends(require_api_key),

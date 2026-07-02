@@ -52,7 +52,7 @@ class BackupJob(BeanieDocument):
     # Identity
     job_id: str = Field(
         ...,
-        description="Globally unique job ID (UUID4)"
+        description="Globally unique job ID: 'bkp-' (backup) or 'rst-' (restore) prefix + 16 hex chars (UUID4-derived)"
     )
     kind: BackupJobKind = Field(
         ...,
@@ -242,40 +242,11 @@ class BackupRequest(BaseModel):
     )
 
 
-class RestoreRequest(BaseModel):
-    """Parameters accompanying a multipart restore upload.
-
-    These fields are expected as form fields alongside the ``archive`` file.
-    They map to keyword arguments of :func:`run_import`.
-    """
-
-    mode: str = Field(
-        "restore",
-        description="'restore' (preserve IDs) or 'fresh' (generate new IDs)",
-    )
-    target_namespace: str | None = Field(
-        default=None,
-        description="Override target namespace (defaults to the archive's source namespace)",
-    )
-    register_synonyms: bool = Field(
-        False,
-        description="Register original IDs as synonyms of the new IDs (fresh mode)",
-    )
-    skip_documents: bool = Field(
-        False, description="Skip restoring documents (definitions only)"
-    )
-    skip_files: bool = Field(
-        False, description="Skip restoring file blobs"
-    )
-    batch_size: int = Field(
-        50, ge=1, le=500, description="Restore batch size"
-    )
-    continue_on_error: bool = Field(
-        False, description="Continue past per-item errors"
-    )
-    dry_run: bool = Field(
-        False, description="Walk the import without applying changes"
-    )
+# NOTE: restore's multipart form fields are bound directly as Form(...)
+# parameters on `start_restore` (api/backup.py) — deliberately no request
+# model here. A previous `RestoreRequest` model existed but was never wired
+# to the route, so its declared bounds were unenforced prose (CASE-564); the
+# one meaningful bound (batch_size 1..500) lives on the Form declaration.
 
 
 class BackupJobSnapshot(BaseModel):
