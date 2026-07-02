@@ -1068,7 +1068,7 @@ var RegistryService = class extends BaseService {
   }
   async searchEntries(term, options) {
     const resp = await this.post(
-      "/entries/search/by-term",
+      "/search/by-term",
       [{
         term,
         restrict_to_namespaces: options?.namespaces,

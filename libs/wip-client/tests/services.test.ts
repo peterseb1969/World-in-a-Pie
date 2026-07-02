@@ -1120,7 +1120,10 @@ describe('Service classes via createWipClient', () => {
 
       expect(result).toHaveLength(2)
       const [url, options] = fetchMock.mock.calls[0]
-      expect(url).toContain('/api/registry/entries/search/by-term')
+      // CASE-568 follow-on: the real route has no /entries segment. The old
+      // assertion pinned the wrong path — a mocked test verifying a 404.
+      expect(url).toContain('/api/registry/search/by-term')
+      expect(url).not.toContain('/entries/search/by-term')
       expect(options.method).toBe('POST')
     })
 
