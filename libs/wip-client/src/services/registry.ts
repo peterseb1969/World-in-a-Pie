@@ -109,8 +109,11 @@ export class RegistryService extends BaseService {
     entityTypes?: string[]
     includeInactive?: boolean
   }): Promise<RegistryLookupResponse[]> {
+    // CASE-568 follow-on: the route is /api/registry/search/by-term — under
+    // the search router, NOT /entries. The old '/entries/search/by-term'
+    // path 404'd on every call.
     const resp = await this.post<{ results: Array<{ results: Array<Record<string, unknown>> }> }>(
-      '/entries/search/by-term',
+      '/search/by-term',
       [{
         term,
         restrict_to_namespaces: options?.namespaces,
