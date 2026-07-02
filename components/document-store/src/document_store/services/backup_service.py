@@ -210,8 +210,9 @@ async def start_job(
             a progress_callback and is expected to call it at phase
             boundaries. Exceptions bubble out and become FAILED status.
         on_event: Optional async hook called (on the loop thread) for every
-            event as it is persisted — used by the SSE endpoint to forward
-            events to subscribers.
+            event as it is persisted. Currently unused — the SSE endpoint
+            polls the persisted record instead of subscribing; kept as an
+            extension point.
 
     Returns:
         The asyncio.Task that consumes the queue. The task completes when

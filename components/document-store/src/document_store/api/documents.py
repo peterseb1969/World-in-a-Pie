@@ -54,7 +54,7 @@ async def create_documents(
     continue_on_error: bool = Query(True, description="Continue processing if an item fails"),
     identity: UserIdentity = Depends(require_api_key)
 ):
-    """Create or update documents. Namespace is read from each item (default: "wip").
+    """Create or update documents. Namespace is read from each item (required, no default).
 
     Template IDs accept both canonical UUIDs and human-readable values
     (e.g., "PATIENT" instead of "019..."). Values are resolved via Registry synonyms.
@@ -543,6 +543,19 @@ async def delete_documents(
     results = []
     for i, item in enumerate(items):
         try:
+            # `force` is file-delete semantics (override the referenced-file
+            # guard). Document deletion has no reference gate to override —
+            # soft-delete keeps existing references resolving — so a caller
+            # setting it here is misinformed; reject loudly rather than
+            # silently ignoring a validated field (CASE-561).
+            if item.force:
+                results.append(BulkResultItem(
+                    index=i, status="error", id=item.id,
+                    error="'force' is not supported on document deletion; "
+                          "it applies to file deletion only",
+                    error_code="force_unsupported",
+                ))
+                continue
             doc = await service.get_document(item.id)
             if not doc:
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))

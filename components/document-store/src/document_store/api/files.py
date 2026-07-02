@@ -2,8 +2,8 @@
 
 import asyncio
 import math
-from beanie.odm.enums import SortDirection
 
+from beanie.odm.enums import SortDirection
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field
 from wip_auth import (
     UserIdentity,
     check_namespace_permission,
-    get_current_identity,
     resolve_accessible_namespaces,
     resolve_namespace_filter,
 )
@@ -429,7 +428,7 @@ async def get_file_documents(
         items.append(FileDocumentRef(
             document_id=doc.document_id,
             template_id=doc.template_id,
-            template_value=None,  # Could be populated from document.template_value
+            template_value=doc.template_value,
             field_path=", ".join(field_paths) if field_paths else "unknown",
             status=doc.status.value if hasattr(doc.status, 'value') else doc.status,
             created_at=doc.created_at.isoformat() if doc.created_at else None,
@@ -487,8 +486,9 @@ async def hard_delete_file(
     description="""
 List files that are not referenced by any active document.
 
-Useful for cleanup operations. By default, only returns orphans older than 24 hours
-to allow time for documents to be created after file upload.
+Useful for cleanup operations. By default returns all orphans
+(older_than_hours=0); pass older_than_hours=N to exclude recent uploads
+and allow time for documents to be created after file upload.
     """,
     dependencies=[Depends(require_file_storage)]
 )

@@ -11,12 +11,12 @@ Use cases:
 
 from enum import StrEnum
 from itertools import product
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
-from wip_auth import UserIdentity, check_namespace_permission, get_current_identity
+from wip_auth import UserIdentity, check_namespace_permission
 
 from ..models.document import Document, DocumentStatus
 from ..services.template_store_client import get_template_store_client
@@ -68,9 +68,9 @@ class TableViewResponse(BaseModel):
     page: int
     page_size: int
     pages: int
-    array_handling: str = Field(
+    array_handling: Literal["flattened", "json", "none"] = Field(
         ...,
-        description="How arrays were handled: 'flattened' or 'json'"
+        description="How arrays were handled: 'flattened', 'json', or 'none' (no arrays in the result set)"
     )
 
 
@@ -166,7 +166,8 @@ def _flatten_document(
     Flatten a document into one or more rows.
 
     Returns:
-        Tuple of (rows, array_handling) where array_handling is 'flattened' or 'json'
+        Tuple of (rows, array_handling) where array_handling is 'flattened',
+        'json', or 'none' (document contains no arrays)
     """
     data = doc.data
 
