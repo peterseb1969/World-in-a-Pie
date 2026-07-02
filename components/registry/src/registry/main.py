@@ -31,7 +31,6 @@ from .models.entry import RegistryEntry
 from .models.grant import NamespaceGrant
 from .models.id_counter import IdCounter
 from .models.namespace import Namespace
-from .services.auth import AuthService
 
 
 # Application configuration
@@ -124,10 +123,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"WARNING: Failed to reconcile orphan claims: {e}")
 
-    # Initialize auth service
+    # CASE-568: authentication is enforced by the wip-auth middleware
+    # (setup_auth below) — the legacy AuthService.initialize call was a
+    # documented no-op and its "initialized" message overstated what
+    # happened. Only the key's presence is worth reporting here.
     if settings.MASTER_API_KEY:
-        AuthService.initialize(master_key=settings.MASTER_API_KEY)
-        print("Auth service initialized with master key.")
+        print("MASTER_API_KEY present (auth enforced by wip-auth middleware).")
     else:
         print("WARNING: No MASTER_API_KEY set. Auth may not work correctly.")
 
@@ -191,7 +192,9 @@ The Registry service provides centralized identity management for the WIP ecosys
 
 ### Authentication
 
-All endpoints require API key authentication via the `X-API-Key` header.
+All endpoints require API key authentication via the `X-API-Key` header,
+except the public probe and docs routes (`/`, `/health`, `/ready`,
+`/api/registry/health`, `/docs`, `/redoc`, `/openapi.json`).
 
 Admin operations (namespace management) require elevated privileges.
     """,

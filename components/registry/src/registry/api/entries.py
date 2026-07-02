@@ -2,6 +2,7 @@
 
 import logging
 import math
+import re
 from datetime import UTC, datetime
 from typing import cast
 
@@ -117,10 +118,12 @@ async def browse_entries(
         query["status"] = status
 
     if q:
-        q_stripped = q.strip()
+        # CASE-568: q is a literal search string, not a regex — escape it
+        # (same as unified_search below).
+        escaped_q = re.escape(q.strip())
         query["$or"] = [
-            {"entry_id": {"$regex": q_stripped, "$options": "i"}},
-            {"search_values": {"$regex": q_stripped, "$options": "i"}},
+            {"entry_id": {"$regex": escaped_q, "$options": "i"}},
+            {"search_values": {"$regex": escaped_q, "$options": "i"}},
         ]
 
     total = await RegistryEntry.find(query).count()
@@ -169,8 +172,6 @@ async def unified_search(
     Unified search across entry IDs, additional IDs, and all composite key values
     (primary + synonyms). Returns rich results with match context and resolution paths.
     """
-    import re
-
     q_stripped = q.strip()
     escaped_q = re.escape(q_stripped)
 
@@ -358,9 +359,14 @@ async def register_keys(
             identity_hashes.append(None)
             hashes.append("")  # Empty composite key = no dedup
 
-    # Phase 2: Batch check for existing entries (by hash and by entry_id)
+    # Phase 2: Batch check for existing entries (by hash and by entry_id).
+    # CASE-567: the map is keyed by (namespace, entity_type, key_hash) — a
+    # synonym owns its key under the synonym's OWN namespace/entity_type
+    # (which may differ from its parent entry's), exactly as lookup_by_keys'
+    # $elemMatch treats it. Flattening by hash alone let a cross-namespace
+    # synonym slip past dedup and mint a second live owner for its key.
     dedup_hashes = [h for h in hashes if h]
-    existing_by_hash = {}
+    existing_by_hash: dict[tuple[str, str, str], RegistryEntry] = {}
     if dedup_hashes:
         existing_entries = await RegistryEntry.find({
             "$or": [
@@ -370,9 +376,13 @@ async def register_keys(
         }).to_list()
 
         for entry in existing_entries:
-            existing_by_hash[entry.primary_composite_key_hash] = entry
+            existing_by_hash[
+                (entry.namespace, entry.entity_type, entry.primary_composite_key_hash)
+            ] = entry
             for syn in entry.synonyms:
-                existing_by_hash[syn.composite_key_hash] = entry
+                existing_by_hash[
+                    (syn.namespace, syn.entity_type, syn.composite_key_hash)
+                ] = entry
 
     # Also check for existing entries by entry_id (for restore/migration)
     provided_ids = [item.entry_id for item in items if item.entry_id]
@@ -387,7 +397,11 @@ async def register_keys(
     # Phase 3: Build entries to insert
     entries_to_insert: list[RegistryEntry] = []
     insert_indices: list[int] = []
-    seen_in_batch: dict[str, str] = {}  # key_hash → entry_id
+    # CASE-567: keyed by (namespace, entity_type, key_hash) — the same key
+    # under two entity types is two entities (namespace_entity_keyhash_
+    # unique_idx). The namespace element is defense-in-depth: Phase 0a
+    # already rejects mixed-namespace batches.
+    seen_in_batch: dict[tuple[str, str, str], str] = {}
 
     for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes, strict=False)):
         try:
@@ -427,14 +441,15 @@ async def register_keys(
                 error_count += 1
                 continue
 
-            # Check if exists by composite key hash (dedup) — scoped to namespace+entity_type
+            # Check if exists by composite key hash (dedup) — scoped to
+            # namespace+entity_type via the map key (CASE-567): a synonym
+            # match hits under the synonym's own namespace, not its parent
+            # entry's.
             if key_hash:
-                existing = existing_by_hash.get(key_hash)
-                if (
-                    existing
-                    and existing.namespace == item.namespace
-                    and existing.entity_type == item.entity_type
-                ):
+                existing = existing_by_hash.get(
+                    (item.namespace, item.entity_type, key_hash)
+                )
+                if existing:
                     results[i] = RegisterKeyResponse(
                         input_index=i,
                         status="already_exists",
@@ -446,9 +461,11 @@ async def register_keys(
                     exists_count += 1
                     continue
 
-                # Intra-batch dedup: second item with same hash gets already_exists
-                if key_hash in seen_in_batch:
-                    first_entry_id = seen_in_batch[key_hash]
+                # Intra-batch dedup: second item with the same key in the
+                # same namespace+entity_type gets already_exists
+                batch_key = (item.namespace, item.entity_type, key_hash)
+                if batch_key in seen_in_batch:
+                    first_entry_id = seen_in_batch[batch_key]
                     results[i] = RegisterKeyResponse(
                         input_index=i,
                         status="already_exists",
@@ -498,7 +515,7 @@ async def register_keys(
             entries_to_insert.append(entry)
             insert_indices.append(i)
             if key_hash:
-                seen_in_batch[key_hash] = entry_id
+                seen_in_batch[(item.namespace, item.entity_type, key_hash)] = entry_id
 
         except Exception as e:
             results[i] = RegisterKeyResponse(
