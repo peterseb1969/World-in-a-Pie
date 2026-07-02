@@ -4,7 +4,6 @@ These tests do not require MongoDB or the API -- they test the
 hash computation logic in isolation.
 """
 
-import pytest
 
 from registry.services.hash import HashService
 
@@ -147,53 +146,6 @@ class TestNestedDictHashing:
         assert h_bool != h_str
 
 
-class TestValueNormalization:
-    """Test the normalize_value static method."""
-
-    def test_normalize_none(self):
-        """None normalizes to empty string."""
-        assert HashService.normalize_value(None) == ""
-
-    def test_normalize_bool_true(self):
-        """True normalizes to 'true'."""
-        assert HashService.normalize_value(True) == "true"
-
-    def test_normalize_bool_false(self):
-        """False normalizes to 'false'."""
-        assert HashService.normalize_value(False) == "false"
-
-    def test_normalize_int(self):
-        """Integers normalize to their string representation."""
-        assert HashService.normalize_value(42) == "42"
-        assert HashService.normalize_value(0) == "0"
-        assert HashService.normalize_value(-7) == "-7"
-
-    def test_normalize_float(self):
-        """Floats normalize to their string representation."""
-        assert HashService.normalize_value(3.14) == "3.14"
-
-    def test_normalize_string_strips_and_lowercases(self):
-        """Strings are stripped and lowercased."""
-        assert HashService.normalize_value("  Hello World  ") == "hello world"
-        assert HashService.normalize_value("UPPER") == "upper"
-        assert HashService.normalize_value("already_lower") == "already_lower"
-
-    def test_normalize_empty_string(self):
-        """Empty string normalizes to empty string."""
-        assert HashService.normalize_value("") == ""
-        assert HashService.normalize_value("   ") == ""
-
-    def test_normalize_list(self):
-        """Lists normalize to sorted JSON."""
-        result = HashService.normalize_value([3, 1, 2])
-        assert result == "[3,1,2]"  # JSON serialized, not sorted (list order preserved)
-
-    def test_normalize_dict(self):
-        """Dicts normalize to JSON with sorted keys."""
-        result = HashService.normalize_value({"b": 2, "a": 1})
-        assert result == '{"a":1,"b":2}'
-
-
 class TestEmptyKeyHash:
     """Test hashing of empty and minimal composite keys."""
 
@@ -287,47 +239,6 @@ class TestHashVerification:
 
         extended_key = {"product_id": "PROD-001", "extra": "field"}
         assert HashService.verify_hash(extended_key, expected) is False
-
-
-class TestComputeFieldHash:
-    """Test the compute_field_hash method."""
-
-    def test_field_hash_deterministic(self):
-        """compute_field_hash is deterministic."""
-        h1 = HashService.compute_field_hash("email", "john@example.com")
-        h2 = HashService.compute_field_hash("email", "john@example.com")
-        assert h1 == h2
-
-    def test_different_fields_different_hash(self):
-        """Different field names produce different hashes even with the same value."""
-        h1 = HashService.compute_field_hash("email", "john@example.com")
-        h2 = HashService.compute_field_hash("username", "john@example.com")
-        assert h1 != h2
-
-    def test_field_hash_is_sha256(self):
-        """compute_field_hash produces a valid SHA-256 hex digest."""
-        h = HashService.compute_field_hash("key", "value")
-        assert len(h) == 64
-        assert all(c in "0123456789abcdef" for c in h)
-
-    def test_field_hash_normalizes_string_value(self):
-        """compute_field_hash normalizes string values (strip + lowercase)."""
-        h1 = HashService.compute_field_hash("name", "  Alice  ")
-        h2 = HashService.compute_field_hash("name", "alice")
-        assert h1 == h2
-
-    def test_field_hash_normalizes_none(self):
-        """compute_field_hash handles None values."""
-        h = HashService.compute_field_hash("field", None)
-        assert isinstance(h, str)
-        assert len(h) == 64
-
-    def test_field_hash_normalizes_bool(self):
-        """compute_field_hash normalizes boolean values."""
-        h_true = HashService.compute_field_hash("active", True)
-        h_str = HashService.compute_field_hash("active", "true")
-        # After normalization, True -> "true" and "true" -> "true", so hashes should match
-        assert h_true == h_str
 
 
 class TestSortDictRecursive:

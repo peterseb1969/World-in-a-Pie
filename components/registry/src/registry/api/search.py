@@ -3,6 +3,8 @@
 
 from fastapi import APIRouter, Body, Depends
 
+from wip_auth import UserIdentity
+
 from ..models.api_models import (
     SearchBulkResponse,
     SearchByTermItem,
@@ -11,8 +13,6 @@ from ..models.api_models import (
     SearchResult,
 )
 from ..models.entry import RegistryEntry
-from wip_auth import UserIdentity
-
 from ..services.auth import require_api_key
 from ..services.search import SearchService
 
@@ -86,22 +86,17 @@ async def search_by_term(
 
     for i, item in enumerate(items):
         try:
-            try:
-                query = SearchService.build_text_search_query(
-                    term=item.term,
-                    restrict_to_namespaces=item.restrict_to_namespaces,
-                    restrict_to_entity_types=item.restrict_to_entity_types,
-                    include_inactive=item.include_inactive
-                )
-                entries = await RegistryEntry.find(query).to_list()
-            except Exception:
-                query = SearchService.build_regex_search_query(
-                    term=item.term,
-                    restrict_to_namespaces=item.restrict_to_namespaces,
-                    restrict_to_entity_types=item.restrict_to_entity_types,
-                    include_inactive=item.include_inactive
-                )
-                entries = await RegistryEntry.find(query).to_list()
+            # CASE-568: regex search is the primary (and only) path. The old
+            # $text attempt always threw — no text index is declared on
+            # RegistryEntry — so every call paid a guaranteed-failing query
+            # before this fallback served the actual result.
+            query = SearchService.build_regex_search_query(
+                term=item.term,
+                restrict_to_namespaces=item.restrict_to_namespaces,
+                restrict_to_entity_types=item.restrict_to_entity_types,
+                include_inactive=item.include_inactive
+            )
+            entries = await RegistryEntry.find(query).to_list()
 
             search_results = []
             for entry in entries:

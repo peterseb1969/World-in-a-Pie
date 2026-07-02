@@ -48,35 +48,10 @@ class HashService:
         else:
             return obj
 
-    @staticmethod
-    def normalize_value(value: Any) -> str:
-        """
-        Normalize a value to a consistent string representation.
-
-        Useful for individual field comparisons.
-        """
-        if value is None:
-            return ""
-        elif isinstance(value, bool):
-            return "true" if value else "false"
-        elif isinstance(value, (int, float)):
-            return str(value)
-        elif isinstance(value, str):
-            return value.strip().lower()
-        elif isinstance(value, (list, dict)):
-            return json.dumps(value, sort_keys=True, separators=(',', ':'))
-        else:
-            return str(value)
-
-    @staticmethod
-    def compute_field_hash(field_name: str, field_value: Any) -> str:
-        """
-        Compute a hash for a single field-value pair.
-
-        Useful for indexing individual fields for search.
-        """
-        normalized = f"{field_name}={HashService.normalize_value(field_value)}"
-        return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+    # CASE-568: normalize_value + compute_field_hash removed — no production
+    # callers, and their case-insensitive normalization disagreed with the
+    # live compute_composite_key_hash (exact-value, case-sensitive). Reviving
+    # them would have silently hashed differently than every stored key.
 
     @staticmethod
     def verify_hash(composite_key: dict[str, Any], expected_hash: str) -> bool:
