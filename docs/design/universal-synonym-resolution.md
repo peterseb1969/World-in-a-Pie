@@ -428,6 +428,43 @@ terminology = await mcp.get_terminology("STATUS")
 template = await mcp.get_template("PATIENT")
 ```
 
+### Cross-namespace references with a namespace qualifier (CASE-540/589)
+
+Resolution is deterministic about namespaces — there is no fallback search:
+
+- **Bare value** → resolves in the caller's own namespace, always.
+  `"PATIENT"` from namespace `clinic` means `clinic`'s PATIENT, full stop.
+- **`NS:VALUE`** → explicit cross-namespace reference for templates,
+  terminologies, and documents. `"kb-libdev:BOOTSTRAP_RECORD"` resolves to
+  the canonical ID of `BOOTSTRAP_RECORD` in namespace `kb-libdev`.
+- **`NS:TERMINOLOGY:VALUE`** → the term analogue (three parts).
+
+The qualifier's namespace goes **into the hashed composite key** — one
+Registry lookup, no candidate-set probing, no shadowing. This is the
+supported way to declare template reference fields against a sibling
+namespace **by name** instead of pinning a foreign UUID:
+
+```json
+{
+  "name": "record", "type": "reference", "reference_type": "document",
+  "target_templates": ["kb-libdev:BOOTSTRAP_RECORD"]
+}
+```
+
+The template-store normalizes the qualified value to the foreign canonical
+ID at create time (write-path resolves bypass the cache per CASE-56).
+Readability, idempotent cross-namespace bootstrap, and delete+recreate
+resilience all follow — the reference re-resolves by name where a pinned
+UUID would silently dangle. Live-verified end-to-end in CASE-540;
+regression-pinned in `libs/wip-auth/tests/test_resolve.py`
+(TestBuildCompositeKey) and
+`components/template-store/tests/test_case_589.py`.
+
+Namespace **isolation** is a separate concern: which namespaces a caller
+may reference is governed by `isolation_mode` + `allowed_external_refs`
+(enforcement gaps tracked in CASE-566). The qualifier only makes the
+reference explicit; it grants nothing.
+
 ---
 
 ## Performance Considerations
