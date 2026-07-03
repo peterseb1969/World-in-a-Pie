@@ -176,6 +176,13 @@ run_build() {
     local plat
     IFS=',' read -ra plat_list <<< "$PLATFORMS"
     for plat in "${plat_list[@]}"; do
+        # Trim surrounding whitespace: "linux/amd64, linux/arm64" (comma+space,
+        # the natural way to type the list) otherwise yields " linux/arm64",
+        # which the builder rejects with "invalid platform syntax" — every
+        # multi-arch GH run typed with a space failed instantly on this.
+        plat="${plat#"${plat%%[![:space:]]*}"}"
+        plat="${plat%"${plat##*[![:space:]]}"}"
+        [[ -z "$plat" ]] && continue
         log_info "  Building ${plat}"
         if ! $BUILDER build --platform "$plat" --manifest "$img" ${extra[@]+"${extra[@]}"} "$context"; then
             log_error "  Build failed for platform ${plat}"

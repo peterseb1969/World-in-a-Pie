@@ -1,40 +1,44 @@
-name: Build & Push Images (x86)
+name: Build & Push Images
 
-# Manually triggered: Actions tab -> "Build & Push Images (x86)" -> Run workflow.
+# Manually triggered: Actions tab -> "Build & Push Images" -> Run workflow.
 # Builds all 8 WIP service images via scripts/build-release.sh (wip-auth /
 # WIP-Toolkit baked in) and pushes them to GHCR as
 # ghcr.io/<owner>/<service>:<tag>.
 #
-# Tag convention: version tags (e.g. 1.2.0) are write-once — never re-push an
-# existing version, bump instead. An empty tag input falls back to sha-<short>.
+# Architecture: one NATIVE job per arch (amd64 on ubuntu-latest, arm64 on
+# GitHub's native arm runner ubuntu-24.04-arm — free for public repos), each
+# pushing <tag>-<arch>, then a stitch job welds the per-arch images into one
+# multi-arch index under the bare <tag> via `docker buildx imagetools create`
+# (manifest-only, no rebuild). No QEMU anywhere. The stitch job only runs if
+# BOTH arch builds succeed, so a bare <tag> is never a half-index, and both
+# halves are always built from the same commit.
 #
-# Platforms: default is native amd64 (fast path, docker builder). Setting the
-# platforms input to e.g. "linux/amd64,linux/arm64" switches to podman +
-# QEMU emulation — build-release.sh's --platforms path uses podman manifest
-# commands, which plain docker does not support. Emulated arm64 builds are
-# slow (expect 2-3x per emulated arch).
+# This replaced the single-job QEMU path: it was slow (2-3x per emulated
+# arch) and its platform parsing choked on "linux/amd64, linux/arm64"
+# (comma+space) until build-release.sh learned to trim — but native-per-arch
+# is the better shape regardless. App repos should copy this pattern for
+# their own image builds.
+#
+# Tag convention: version tags (e.g. 1.2.0, 20260703a) are write-once —
+# never re-push an existing version, bump instead. An empty tag input falls
+# back to sha-<short>. The per-arch tags (<tag>-amd64, <tag>-arm64) are
+# provenance; deploys pin the bare <tag>.
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Image tag (e.g. 1.2.0). Leave empty for sha-<short-commit>.'
+        description: 'Image tag (e.g. 20260703a). Leave empty for sha-<short-commit>.'
         required: false
         default: ''
-      platforms:
-        description: 'Comma-separated platforms. Default native amd64; e.g. linux/amd64,linux/arm64 for multi-arch (QEMU, slow).'
-        required: false
-        default: 'linux/amd64'
 
 jobs:
-  build-and-push:
+  resolve-tag:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
-
       - name: Resolve image tag
         id: tag
         run: |
@@ -43,40 +47,68 @@ jobs:
             TAG="sha-$(git rev-parse --short HEAD)"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Building with tag: $TAG"
+          echo "Building with tag: $TAG (arch images: $TAG-amd64, $TAG-arm64)"
 
-      - name: Set up QEMU (multi-arch only)
-        if: inputs.platforms != 'linux/amd64'
-        uses: docker/setup-qemu-action@v3
+  build:
+    needs: resolve-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Ensure podman is available (multi-arch only)
-        if: inputs.platforms != 'linux/amd64'
+      - name: Build and push all images (${{ matrix.arch }}, native)
         run: |
-          if ! command -v podman >/dev/null; then
-            sudo apt-get update && sudo apt-get install -y podman
-          fi
-          podman --version
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          bash scripts/build-release.sh \
+            --registry "ghcr.io/${{ github.repository_owner }}" \
+            --tag "${{ needs.resolve-tag.outputs.tag }}-${{ matrix.arch }}" \
+            --push \
+            --builder docker
 
-      - name: Build and push all images
+  stitch:
+    # Runs only if BOTH arch builds succeeded — a bare <tag> is never a
+    # half-index, and both halves come from this run's single commit.
+    needs: [resolve-tag, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Stitch per-arch images into multi-arch tags
         run: |
-          PLATFORMS="${{ inputs.platforms }}"
-          if [ "$PLATFORMS" = "linux/amd64" ]; then
-            # Native fast path: docker builder, per-image push.
-            echo "${{ secrets.GITHUB_TOKEN }}" | \
-              docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-            bash scripts/build-release.sh \
-              --registry "ghcr.io/${{ github.repository_owner }}" \
-              --tag "${{ steps.tag.outputs.tag }}" \
-              --push \
-              --builder docker
-          else
-            # Multi-arch path: podman manifest lists + QEMU emulation.
-            echo "${{ secrets.GITHUB_TOKEN }}" | \
-              podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-            bash scripts/build-release.sh \
-              --registry "ghcr.io/${{ github.repository_owner }}" \
-              --tag "${{ steps.tag.outputs.tag }}" \
-              --platforms "$PLATFORMS" \
-              --push \
-              --builder podman
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          TAG="${{ needs.resolve-tag.outputs.tag }}"
+          OWNER="ghcr.io/${{ github.repository_owner }}"
+          # Service list mirrors AUTH_SERVICES + PLAIN_SERVICES in
+          # scripts/build-release.sh — update both together.
+          FAILED=""
+          for svc in registry def-store template-store document-store \
+                     reporting-sync ingest-gateway mcp-server auth-gateway; do
+            echo "::group::$svc"
+            if docker buildx imagetools create \
+                 -t "$OWNER/$svc:$TAG" \
+                 "$OWNER/$svc:$TAG-amd64" \
+                 "$OWNER/$svc:$TAG-arm64"; then
+              docker buildx imagetools inspect "$OWNER/$svc:$TAG" | head -20
+            else
+              FAILED="$FAILED $svc"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$FAILED" ]; then
+            echo "::error::Stitch failed for:$FAILED"
+            exit 1
           fi
+          echo "Done: $TAG is a multi-arch index (amd64+arm64) for all 8 services."
