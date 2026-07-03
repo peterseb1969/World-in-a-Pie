@@ -2,7 +2,7 @@
 
 **Scope:** how to *drive* wip-deploy — install lifecycle, the verbs, dev-target
 mechanics, recovery. The app-side *contract* (what an app must satisfy to be
-deployable) lives in `FR-YAC/papers/wip-deployable-app-contract.md`; the
+deployable) lives in `docs/wip-deployable-app-contract.md`; the
 APP-YAC self-deploy loop lives in `docs/playbooks/app-builder/wip-deploy-app.md`.
 The `/wip-deploy` slash command (CASE-298) is the routinized
 pre-flight→operate→smoke recipe for deploys against shared targets; this
