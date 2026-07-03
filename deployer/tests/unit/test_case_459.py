@@ -113,7 +113,10 @@ class TestWrongCwdFailsLoud:
         result = _roll(["--install-dir", str(install_dir)])
 
         assert result.exit_code == 1
-        assert "no .git directory found" in result.output
+        # CASE-555 reworded the marker miss: shape check first, .git
+        # fallback, overrides named.
+        assert "could not locate the WIP repo root" in result.output
+        assert "--repo-root" in result.output
 
 
 class TestDurableAnchors:

@@ -47,15 +47,33 @@ class Discovery:
 
 
 def find_repo_root(start: Path | None = None) -> Path:
-    """Walk up from `start` (default: cwd) looking for a .git directory.
+    """Walk up from `start` (default: cwd) looking for the WIP repo root.
 
-    Raises FileNotFoundError if no .git directory is found.
+    The primary marker is the repo *shape* — an ancestor holding both
+    `components/` and `deployer/` — which is exactly what `discover()`
+    needs and ships with every copy of the source, git or not (release
+    tarballs, `git archive` exports). `.git` is kept as a fallback so a
+    plain clone still resolves even if the shape dirs are missing. The
+    shape pass runs to completion before the `.git` pass so a nested
+    unrelated git checkout inside the WIP tree can't shadow the root
+    (CASE-555).
+
+    Raises FileNotFoundError naming the overrides when neither marker
+    is found.
     """
     p = (start or Path.cwd()).resolve()
-    for ancestor in [p, *p.parents]:
+    ancestors = [p, *p.parents]
+    for ancestor in ancestors:
+        if (ancestor / "components").is_dir() and (ancestor / "deployer").is_dir():
+            return ancestor
+    for ancestor in ancestors:
         if (ancestor / ".git").exists():
             return ancestor
-    raise FileNotFoundError(f"no .git directory found above {p}")
+    raise FileNotFoundError(
+        f"could not locate the WIP repo root above {p} "
+        f"(looked for components/ + deployer/, then .git); "
+        f"pass --repo-root or set WIP_REPO_ROOT"
+    )
 
 
 def discover(repo_root: Path) -> Discovery:
