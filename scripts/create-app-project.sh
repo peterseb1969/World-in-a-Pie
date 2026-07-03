@@ -161,6 +161,28 @@ if [ -n "$KB_URL" ] && [[ "$KB_URL" != *"://"* ]]; then
     KB_URL="https://$KB_URL"
 fi
 
+# --- MCP pre-flight: the WIP venv must be able to run wip_mcp (CASE-558) ---
+# The generated .mcp.json runs `$WIP_ROOT/.venv/bin/python -m wip_mcp.server`,
+# but wip_mcp is provisioned into that venv by setup-backend-agent.sh, not by
+# this script. Scaffolding an app against an unprovisioned clone used to emit
+# a config that looks fine and dies at connect time (ModuleNotFoundError →
+# MCP error -32000). Fail loud here, before anything is generated.
+# Deliberately verify-only, no auto-install: the clone's venv belongs to the
+# backend scaffold; this script stays out of it (Peter's call, fail loud).
+MCP_PYTHON="$WIP_ROOT/.venv/bin/python"
+if [ ! -x "$MCP_PYTHON" ]; then
+    echo "Error: $MCP_PYTHON not found — this WIP clone has no venv, so the generated .mcp.json could not start the MCP server (error -32000)." >&2
+    echo "  Fix: run scripts/setup-backend-agent.sh on this clone first (it creates the venv and installs wip_mcp)." >&2
+    exit 1
+fi
+if ! "$MCP_PYTHON" -c "import wip_mcp" 2>/dev/null; then
+    echo "Error: $MCP_PYTHON cannot import wip_mcp — the generated .mcp.json would die at connect time (MCP error -32000)." >&2
+    echo "  The clone's venv is provisioned by the backend scaffold, not this script. Fix (either):" >&2
+    echo "    cd $WIP_ROOT && .venv/bin/pip install -e components/mcp-server/" >&2
+    echo "    or run scripts/setup-backend-agent.sh on this clone" >&2
+    exit 1
+fi
+
 # --- Auto-detect setup-in-place vs create (CASE-535) ---
 # The one user intent ("make this checkout a working YAC") is read from the
 # directory, not chosen via a flag: a populated dir is set up in place
@@ -731,7 +753,10 @@ fi
 #   3. Detect the RUNNING wip-deploy install from a live WIP container's compose
 #      working_dir label (the install path itself; container names are
 #      service-named, not install-named, so a name guess is unreliable).
-#   4. Literal local-dev default, last resort.
+#   4. Nothing resolved → HARD ERROR (CASE-558). There is no literal default:
+#      the old ~/.wip-deploy/wip-local fallback is a dead path for
+#      deploy-guide installs (--name wip), and a stale path written here
+#      passes generation only to 401/ENOENT at connect time.
 WIP_API_KEY_FILE="${WIP_API_KEY_FILE_OVERRIDE:-}"
 if [ -z "$WIP_API_KEY_FILE" ] && $REFRESH_MODE && [ -f "$APP_DIR/.mcp.json" ]; then
     _existing_key="$(python3 -c "import json; print(json.load(open('$APP_DIR/.mcp.json'))['mcpServers']['wip']['env'].get('WIP_API_KEY_FILE',''))" 2>/dev/null || true)"
@@ -755,18 +780,24 @@ if [ -z "$WIP_API_KEY_FILE" ] && command -v podman >/dev/null 2>&1; then
         echo "   Detected running WIP install: $WIP_API_KEY_FILE"
     fi
 fi
-WIP_API_KEY_FILE="${WIP_API_KEY_FILE:-$HOME/.wip-deploy/wip-local/secrets/api-key}"
+if [ -z "$WIP_API_KEY_FILE" ]; then
+    echo "Error: could not resolve the WIP API key file — no WIP_API_KEY_FILE_OVERRIDE, no preserved .mcp.json path, and no (single) running WIP install detected (CASE-558)." >&2
+    echo "  Fix (either):" >&2
+    echo "    deploy a WIP install first (wip-deploy install ... --name wip), then re-run" >&2
+    echo "    or WIP_API_KEY_FILE_OVERRIDE=\$HOME/.wip-deploy/<name>/secrets/api-key $0 ..." >&2
+    exit 1
+fi
 if [ ! -f "$WIP_API_KEY_FILE" ]; then
-    echo "   Warning: $WIP_API_KEY_FILE does not exist (no running WIP install detected)."
-    echo "            Deploy a WIP install or set WIP_API_KEY_FILE_OVERRIDE before using MCP."
+    # Only reachable via WIP_API_KEY_FILE_OVERRIDE — the preserve and
+    # auto-detect steps both check existence. Keep the explicit escape
+    # hatch usable for pre-provisioning, but say so.
+    echo "   Warning: $WIP_API_KEY_FILE does not exist yet (override accepted as-is)."
 fi
 
-# Determine Python path
-PYTHON_PATH="$WIP_ROOT/.venv/bin/python"
-if [ ! -f "$PYTHON_PATH" ]; then
-    PYTHON_PATH="$(which python3 2>/dev/null || which python 2>/dev/null || echo "python")"
-    echo "   Warning: $WIP_ROOT/.venv/bin/python not found, using: $PYTHON_PATH"
-fi
+# Python path: the MCP pre-flight (CASE-558) already guaranteed this
+# interpreter exists and imports wip_mcp. No system-python fallback — a
+# python without wip_mcp is exactly the -32000 the pre-flight exists to stop.
+PYTHON_PATH="$MCP_PYTHON"
 
 # Target base URL for the WIP services (CASE-516). Default is the local Caddy.
 # On set-up-in-place, PRESERVE a deliberate non-localhost target already in .mcp.json
