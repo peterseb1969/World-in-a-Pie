@@ -715,11 +715,11 @@ You will be replaced. This session — every correction Peter makes, every insig
 - A `/wip-lesson` entry (structured, for future gene pool review)
 - A memory file via the memory system (cross-session discipline within the same agent project)
 - A session-report *Dead Ends* section (for the next YAC continuing this work)
-- **Suggest** an addition or modification to the canonical CLAUDE.md source if the lesson is universal. The canonical source is the heredoc in `scripts/setup-backend-agent.sh`, or the staging file `templates/claude-md-additions.md` in FR-YAC. Do **not** edit the local generated `CLAUDE.md` — it will be overwritten the next time the setup script runs. Flag the suggestion; Peter approves.
+- **Suggest** an addition or modification to the canonical CLAUDE.md source if the lesson is universal. The canonical source is the heredoc in `scripts/setup-backend-agent.sh`. Do **not** edit the local generated `CLAUDE.md` — it will be overwritten the next time the setup script runs. Flag the suggestion; Peter approves.
 
 **Read when you start.** The next agent — *you, next time* — recovers state from persistent artifacts, not from `cmd --help`. At session start:
 - Read this file fully
-- Read the latest session report in `/Users/peter/Development/FR-YAC/reports/BE-YAC-*` (match your prefix)
+- Read the latest session report in `reports/BE-YAC-*` (match your prefix)
 - Read `git status --short` and diff any uncommitted files
 <!--TIER3-->
 - Read any open cases via `/wip-case list`

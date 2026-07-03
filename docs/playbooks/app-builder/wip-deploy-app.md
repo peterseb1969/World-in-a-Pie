@@ -4,10 +4,10 @@
 included, what runtime the dev install gives me, how the hot-reload loop
 works, how to debug my container. The *contract* your app must satisfy
 (Dockerfile.dev shape, vite binding, base-path rules, platform invariants)
-is owned by `FR-YAC/papers/wip-deployable-app-contract.md` — read that
-first when building; read this when deploying. Operator-side lifecycle
-(installs, nuke, recovery) is `docs/playbooks/wip-deploy-be.md` in
-World-in-a-Pie.
+is owned by `docs/wip-deployable-app-contract.md` (bundled into this project
+by the scaffold) — read that first when building; read this when deploying.
+Operator-side lifecycle (installs, nuke, recovery) is
+`docs/playbooks/wip-deploy-be.md` in World-in-a-Pie.
 
 *Provenance: distilled from the 2026-06-11/12 sessions that hot-wired all
 seven apps (CASE-451/455/457/458). Every command and env var shown was
