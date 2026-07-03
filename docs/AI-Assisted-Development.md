@@ -106,6 +106,8 @@ Use `type: "reference"` whenever one document points to another. **Never use `ty
 
 This gives you: validated references, automatic resolution by business key or synonym, and referential integrity checks.
 
+**Cross-namespace references use an explicit qualifier.** A bare value like `"CUSTOMER"` always resolves in your own namespace. To reference a template (or terminology) that lives in a *sibling* namespace, qualify it: `"target_templates": ["other-ns:CUSTOMER"]` — deterministic, one lookup, no UUID pinning, and the reference survives the foreign namespace being rebuilt. Terms use three parts: `"other-ns:STATUS:approved"`. (Details: WIP repo `docs/design/universal-synonym-resolution.md`, "Cross-namespace references".)
+
 **Creation order matters:** Create templates for referenced entities before templates that reference them (e.g., CUSTOMER before INVOICE). Same for documents.
 
 ### Term Fields — Linking to Vocabularies

@@ -94,6 +94,25 @@ class TestBuildCompositeKey:
         key = _build_composite_key("approved", "term", "wip")
         assert key == {"ns": "wip", "type": "term", "value": "approved"}
 
+    # CASE-589: pin the qualified NS:VALUE form for the entity types that
+    # lacked coverage. The namespace rides inside the hashed composite key —
+    # this is the deterministic cross-namespace reference mechanism
+    # (CASE-540), so its shape is load-bearing for every template that
+    # declares a foreign ref by value.
+    def test_cross_namespace_template(self):
+        key = _build_composite_key("kb-libdev:BOOTSTRAP_RECORD", "template", "library")
+        assert key == {"ns": "kb-libdev", "type": "template", "value": "BOOTSTRAP_RECORD"}
+
+    def test_cross_namespace_document(self):
+        key = _build_composite_key("other:INV-001", "document", "wip")
+        assert key == {"ns": "other", "type": "document", "value": "INV-001"}
+
+    def test_bare_template_value_never_crosses(self):
+        """A bare value must resolve in the caller's own namespace — the
+        anti-guessing-game property (CASE-540)."""
+        key = _build_composite_key("BOOTSTRAP_RECORD", "template", "library")
+        assert key == {"ns": "library", "type": "template", "value": "BOOTSTRAP_RECORD"}
+
 
 # ===========================================================================
 # resolve_entity_id — every ID goes through Registry
