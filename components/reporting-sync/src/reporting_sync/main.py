@@ -278,7 +278,9 @@ async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
     except TimeoutError as e:
         logger.error(f"Def-Store never became healthy: {e}")
         logger.error(
-            "Initial metadata sync skipped; trigger POST /sync/terminologies "
+            "Initial metadata sync skipped; trigger "
+            "POST /api/reporting-sync/sync/batch/terminologies?namespace=<ns> and "
+            "POST /api/reporting-sync/sync/batch/terms?namespace=<ns> "
             "manually once def-store is reachable."
         )
         return
