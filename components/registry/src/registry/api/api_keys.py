@@ -30,7 +30,7 @@ from ..models.api_key import (
     generate_plaintext_key,
 )
 from ..models.grant import NamespaceGrant
-from ..services.auth import require_admin_key, require_api_key
+from ..services.auth import require_admin_key, require_groups
 
 logger = logging.getLogger("registry.api_keys")
 
@@ -248,13 +248,16 @@ async def list_api_keys(
     summary="Sync endpoint for service key polling",
 )
 async def sync_api_keys(
-    identity: UserIdentity = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_groups(["wip-services", "wip-admins"])),
 ) -> list[APIKeySyncRecord]:
     """Return enabled runtime keys with hashes for service polling.
 
     Only returns runtime keys — config keys are already loaded by each service.
-    Requires wip-services or wip-admins group (enforced by require_api_key +
-    the caller must be a service key).
+    Requires the wip-services or wip-admins group — enforced by the
+    require_groups dependency above (CASE-594). This endpoint returns
+    key_hash values, so it must never be reachable by an unprivileged
+    key; the legitimate consumer is each service's key-sync poller, which
+    authenticates with its admin/service-scoped Registry key.
     """
     docs = await StoredAPIKey.find(StoredAPIKey.enabled == True).to_list()  # noqa: E712
     return [
