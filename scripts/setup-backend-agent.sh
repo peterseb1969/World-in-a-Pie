@@ -370,12 +370,8 @@ if [[ "$TARGET" == "local" ]]; then
             fi
         done
     fi
-    # 3. Fall back to legacy .env (pre-v2 setup-wip.sh path).
-    if [ -z "$API_KEY" ] && [ -f "$WIP_ROOT/.env" ]; then
-        API_KEY=$(grep "^API_KEY=" "$WIP_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)
-        [ -n "$API_KEY" ] && API_KEY_SOURCE="$WIP_ROOT/.env"
-    fi
-    # 4. Dev default (won't authenticate against a real install; dev fixture only).
+    # 3. Dev default (won't authenticate against a real install; dev fixture only).
+    #    (The pre-v2 repo-root .env fallback was retired — installs own their env.)
     if [ -z "$API_KEY" ]; then
         API_KEY="dev_master_key_for_testing"
         API_KEY_SOURCE="dev default (no install detected)"
@@ -395,8 +391,7 @@ case "$TARGET" in
         # F19 (CASE-287): use WIP_API_KEY_FILE when sourced from a
         # wip-deploy secrets file — that way key rotation in WIP applies
         # automatically without re-running this script. Fall back to
-        # literal WIP_API_KEY for .env-sourced keys (which the file
-        # backend doesn't auto-rotate) and the dev fixture.
+        # literal WIP_API_KEY for the dev fixture (no file to track).
         if [[ "$API_KEY_SOURCE" == "$HOME/.wip-deploy/"*/secrets/api-key ]]; then
             KEY_ENV_LINE='"WIP_API_KEY_FILE": "'"$API_KEY_SOURCE"'"'
         else
@@ -522,7 +517,7 @@ You are **BE-YAC** — a backend agent working on World In a Pie (WIP), a univer
 
 ## 1. Start Here — Run `/wip-setup` First
 
-**Every session starts with `/wip-setup`.** It performs environment checks (venv, MCP deps, `.env`, container runtime, running containers, MCP connectivity) **and** loads mandatory baseline context into the current session. The reading is part of the command, not a separate step you do manually.
+**Every session starts with `/wip-setup`.** It performs environment checks (venv, MCP deps, attached wip-deploy install, container runtime, running containers, MCP connectivity) **and** loads mandatory baseline context into the current session. The reading is part of the command, not a separate step you do manually.
 
 `/wip-setup` performs these reads as concrete tool calls on your behalf:
 
@@ -909,7 +904,7 @@ Full rule at `feedback_push_to_gitea.md`.
 - **Caddy: `handle` vs `handle_path` is deliberate.** `handle` preserves the request path to the backend. `handle_path` strips the matched prefix. Services that mount at a path (most WIP services under `/api/<svc>`) need `handle`. Services that serve at their own root under a public prefix (e.g., MinIO under `/minio/`) need `handle_path`. Picking the wrong one produces silent routing errors.
 - **Caddy defaults to 200 + empty body on unmatched paths.** This bites health checks: a client probing an unroutable path gets `200 + ""` and parses it as valid JSON. Always ensure health endpoints are explicitly routed, and never treat "got 200" as "service is up" without content validation.
 - **Beanie pinned to `<2.0`.** Beanie 2.0+ changes `init_beanie()` signature and breaks MongoDB initialization. Do not upgrade without testing. Full rule at `feedback_beanie_pin.md`.
-- **Container recreate vs restart** — after `.env` changes: `podman-compose down && up -d`, not `restart`.
+- **Container recreate vs restart** — after changing an install's env/secrets (`~/.wip-deploy/<name>/.env`, `secrets/`): `wip-deploy redeploy` (or compose down && up -d), not `restart` — restart does not re-read env.
 - **Only reference Dex as OIDC provider** — not Authelia, Authentik, or Zitadel. Full rule at `feedback_oidc_provider.md`.
 
 ---
