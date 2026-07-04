@@ -104,6 +104,23 @@ export interface RegistryEntryFull {
   updated_by: string | null
 }
 
+/**
+ * A single hit from POST /api/registry/search/by-term (CASE-572).
+ *
+ * Distinct from RegistryLookupResponse: the by-term route returns
+ * `registry_id`/`matched_in`, not `entry_id`/`matched_via`.
+ */
+export interface RegistryByTermHit {
+  registry_id: string
+  namespace: string
+  entity_type: string
+  matched_in: 'primary' | 'synonym'
+  matched_namespace: string
+  matched_entity_type: string
+  matched_composite_key: Record<string, unknown>
+  all_synonyms: RegistrySynonym[]
+}
+
 export interface RegistryLookupResponse {
   input_index: number
   status: string

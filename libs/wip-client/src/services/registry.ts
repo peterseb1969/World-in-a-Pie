@@ -6,6 +6,7 @@ import type {
   UpdateNamespaceRequest,
   RegistryEntryListResponse,
   RegistryLookupResponse,
+  RegistryByTermHit,
   RegistryEntryFull,
   RegistryBrowseParams,
   RegistrySearchResponse,
@@ -104,24 +105,35 @@ export class RegistryService extends BaseService {
     return resp.results[0]
   }
 
+  /**
+   * Free-text search across composite key values (CASE-572, breaking in 0.28.0).
+   *
+   * Returns `{ hits, total }`: `total` is the full server-side match count
+   * even when `limit` bounds the returned hits. `limit` requires a backend
+   * that accepts it (registry rejects unknown fields with 422 — ships
+   * together with this client change).
+   */
   async searchEntries(term: string, options?: {
     namespaces?: string[]
     entityTypes?: string[]
     includeInactive?: boolean
-  }): Promise<RegistryLookupResponse[]> {
+    limit?: number
+  }): Promise<{ hits: RegistryByTermHit[]; total: number }> {
     // CASE-568 follow-on: the route is /api/registry/search/by-term — under
     // the search router, NOT /entries. The old '/entries/search/by-term'
     // path 404'd on every call.
-    const resp = await this.post<{ results: Array<{ results: Array<Record<string, unknown>> }> }>(
+    const resp = await this.post<{ results: Array<{ results: RegistryByTermHit[]; total_matches: number }> }>(
       '/search/by-term',
       [{
         term,
         restrict_to_namespaces: options?.namespaces,
         restrict_to_entity_types: options?.entityTypes,
         include_inactive: options?.includeInactive ?? false,
+        ...(options?.limit !== undefined ? { limit: options.limit } : {}),
       }],
     )
-    return (resp.results[0]?.results ?? []) as unknown as RegistryLookupResponse[]
+    const first = resp.results[0]
+    return { hits: first?.results ?? [], total: first?.total_matches ?? 0 }
   }
 
   async unifiedSearch(params: RegistrySearchParams): Promise<RegistrySearchResponse> {
