@@ -68,7 +68,7 @@ class FileService:
             filename: Original filename
             content_type: MIME type
             metadata: Optional metadata (description, tags, category, etc.)
-            namespace: Namespace for the file (default: wip)
+            namespace: Namespace for the file (required — no default)
 
         Returns:
             FileResponse with file details

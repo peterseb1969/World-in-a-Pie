@@ -365,7 +365,7 @@ class DocumentService:
 
         Args:
             request: Document creation request
-            namespace: Namespace for the document (default: wip)
+            namespace: Namespace for the document (required — no default)
 
         Returns:
             Tuple of (response, error_message)
