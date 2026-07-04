@@ -96,7 +96,13 @@ async def search_by_term(
                 restrict_to_entity_types=item.restrict_to_entity_types,
                 include_inactive=item.include_inactive
             )
-            entries = await RegistryEntry.find(query).to_list()
+            # CASE-572: count before limiting so total_matches is the true
+            # match count even when the fetch is bounded.
+            total = await RegistryEntry.find(query).count()
+            find_query = RegistryEntry.find(query)
+            if item.limit is not None:
+                find_query = find_query.limit(item.limit)
+            entries = await find_query.to_list()
 
             search_results = []
             for entry in entries:
@@ -138,7 +144,7 @@ async def search_by_term(
             results.append(SearchResponse(
                 input_index=i,
                 results=search_results,
-                total_matches=len(search_results),
+                total_matches=total,
             ))
 
         except Exception:
