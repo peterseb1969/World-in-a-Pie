@@ -462,6 +462,11 @@ class SearchByTermItem(StrictModel):
         description="Only search in these entity types (None = all)"
     )
     include_inactive: bool = Field(default=False)
+    limit: int | None = Field(
+        default=None,
+        ge=1,
+        description="Max hits to return (None = all); total_matches still reports the full count"
+    )
 
 
 class SearchResult(BaseModel):

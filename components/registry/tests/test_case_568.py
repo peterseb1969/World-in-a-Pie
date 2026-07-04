@@ -94,3 +94,56 @@ class TestSearchByTermRegexPath:
             "SearchTarget-568" in str(r["matched_composite_key"])
             for r in result["results"]
         )
+
+
+class TestSearchByTermLimit:
+    """CASE-572 — by-term accepts a limit; total_matches stays the full count."""
+
+    @pytest.mark.asyncio
+    async def test_limit_bounds_results_total_reports_all(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        await client.post(
+            REGISTER,
+            json=[
+                {
+                    "namespace": "default",
+                    "entity_type": "terms",
+                    "composite_key": {"value": f"LimitTarget-572-{n}"},
+                }
+                for n in range(3)
+            ],
+            headers=auth_headers,
+        )
+
+        limited = await client.post(
+            "/api/registry/search/by-term",
+            json=[{"term": "limittarget-572", "limit": 2}],
+            headers=auth_headers,
+        )
+        assert limited.status_code == 200
+        result = limited.json()["results"][0]
+        assert len(result["results"]) == 2
+        assert result["total_matches"] == 3
+
+        unlimited = await client.post(
+            "/api/registry/search/by-term",
+            json=[{"term": "limittarget-572"}],
+            headers=auth_headers,
+        )
+        assert unlimited.status_code == 200
+        result = unlimited.json()["results"][0]
+        assert len(result["results"]) == 3
+        assert result["total_matches"] == 3
+
+    @pytest.mark.asyncio
+    async def test_limit_zero_rejected(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """limit has ge=1 — 0 is a validation error, not 'no results'."""
+        response = await client.post(
+            "/api/registry/search/by-term",
+            json=[{"term": "anything", "limit": 0}],
+            headers=auth_headers,
+        )
+        assert response.status_code == 422
