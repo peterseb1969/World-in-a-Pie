@@ -1108,23 +1108,46 @@ describe('Service classes via createWipClient', () => {
       expect(url).toContain('/api/registry/entries/E-001')
     })
 
-    it('searchEntries sends POST and unwraps nested results', async () => {
+    it('searchEntries returns hits + total and threads limit (CASE-572)', async () => {
       mockJsonResponse({
-        results: [{ results: [{ entry_id: 'E-001' }, { entry_id: 'E-002' }] }],
+        results: [{
+          results: [
+            { registry_id: 'E-001', matched_in: 'primary' },
+            { registry_id: 'E-002', matched_in: 'synonym' },
+          ],
+          total_matches: 9124,
+        }],
       })
 
       const result = await client.registry.searchEntries('test', {
         namespaces: ['wip-terms'],
         entityTypes: ['term'],
+        limit: 2,
       })
 
-      expect(result).toHaveLength(2)
+      expect(result.hits).toHaveLength(2)
+      expect(result.hits[0].registry_id).toBe('E-001')
+      expect(result.total).toBe(9124)
       const [url, options] = fetchMock.mock.calls[0]
       // CASE-568 follow-on: the real route has no /entries segment. The old
       // assertion pinned the wrong path — a mocked test verifying a 404.
       expect(url).toContain('/api/registry/search/by-term')
       expect(url).not.toContain('/entries/search/by-term')
       expect(options.method).toBe('POST')
+      const body = JSON.parse(options.body)
+      expect(body[0].limit).toBe(2)
+    })
+
+    it('searchEntries omits limit from the body when not given (strict backend model)', async () => {
+      mockJsonResponse({ results: [{ results: [], total_matches: 0 }] })
+
+      const result = await client.registry.searchEntries('nohit')
+
+      expect(result.hits).toEqual([])
+      expect(result.total).toBe(0)
+      const [, options] = fetchMock.mock.calls[0]
+      const body = JSON.parse(options.body)
+      expect('limit' in body[0]).toBe(false)
     })
 
     it('unifiedSearch sends GET with params', async () => {

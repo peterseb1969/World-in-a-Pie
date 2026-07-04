@@ -1064,6 +1064,14 @@ var RegistryService = class extends BaseService {
     );
     return resp.results[0];
   }
+  /**
+   * Free-text search across composite key values (CASE-572, breaking in 0.28.0).
+   *
+   * Returns `{ hits, total }`: `total` is the full server-side match count
+   * even when `limit` bounds the returned hits. `limit` requires a backend
+   * that accepts it (registry rejects unknown fields with 422 — ships
+   * together with this client change).
+   */
   async searchEntries(term, options) {
     const resp = await this.post(
       "/search/by-term",
@@ -1071,10 +1079,12 @@ var RegistryService = class extends BaseService {
         term,
         restrict_to_namespaces: options?.namespaces,
         restrict_to_entity_types: options?.entityTypes,
-        include_inactive: options?.includeInactive ?? false
+        include_inactive: options?.includeInactive ?? false,
+        ...options?.limit !== void 0 ? { limit: options.limit } : {}
       }]
     );
-    return resp.results[0]?.results ?? [];
+    const first = resp.results[0];
+    return { hits: first?.results ?? [], total: first?.total_matches ?? 0 };
   }
   async unifiedSearch(params) {
     return this.get("/entries/search", params);
