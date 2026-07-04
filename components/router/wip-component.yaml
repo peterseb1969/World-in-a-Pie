@@ -30,10 +30,11 @@ spec:
   # until config_files generalization lands).
   command: [caddy, run, --config, /etc/caddy/Caddyfile, --adapter, caddyfile]
 
-  # The router has no `/` handler — Caddy returns 404 for unmatched
-  # paths. That's fine as a liveness signal (the listener is up), but
-  # the stock HTTP probe treats non-2xx as failure. Use a command-style
-  # probe that accepts any HTTP response code.
+  # The router has no `/` handler — bare `/` falls through to Caddy's
+  # default: an empty 200 (the /api/* fallthrough-404 guard doesn't
+  # cover it; see caddy_common.write_api_fallthrough_404). Fine as a
+  # liveness signal (the listener is up), and the probe doesn't care
+  # about the status anyway: it accepts any 3-digit HTTP code.
   healthcheck:
     command: ["sh", "-c", "curl -fsS -o /dev/null -w '%{http_code}' http://localhost:8080/ | grep -qE '^[0-9]{3}$'"]
     start_period_seconds: 5
