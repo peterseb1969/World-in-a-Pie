@@ -4,26 +4,25 @@ First-run session-identity mint, environment check, guided setup, and **mandator
 
 ### Step 0 — Session pre-flight (read-only; the mint runs *after* the checks)
 
-`/wip-setup` decides this session's identity here but **does not write it yet** — the mint is deferred until the environment checks pass, so a failed precheck never strands an `active` session that would then block the very re-run the failure message tells you to do. Identity is a **local-first** contract: the sentinel file `.claude/.session-id` is the single source of truth for "who am I"; kb is a derived mirror that catches up later. Control-flow decisions here read local files only — never query kb (it may be unreachable).
+`/wip-setup` decides this session's identity here but **does not write it yet** — the mint is deferred until the environment checks pass, so a failed precheck never strands an `active` session that would then block the very re-run the failure message tells you to do. Identity is a **local-first** contract: the sentinel file `.claude/.session-id` is the single source of truth for "who am I"; kb is a derived mirror that catches up later.
 
-1. **Precondition** — ensure the project-local staging dir exists: `mkdir -p reports`. Sessions stage to `reports/<session-id>/` **inside this repo** (never a shared FR-YAC checkout); the durable record is the kb mirror (tier-3, written via `kb-write.py SESSION`). No external clone is required, and tier-2 (no-KB) repos keep their full session history locally here.
+The pre-flight is the same state machine as the mint, run read-only — ONE call, not hand-walked file reads (CASE-604):
 
-2. **Read the role** — `cat "$CLAUDE_PROJECT_DIR/.claude/.session-role"` (fall back to `$PWD/.claude/.session-role` if `$CLAUDE_PROJECT_DIR` is unset). This file is written at scaffold time — `BE-YAC` by `setup-backend-agent.sh`, `APP-<X>` by `create-app-project.sh --prefix`. If it's missing, stop and tell the operator to re-run the setup script with `--refresh`; do **not** guess the role.
+```bash
+python3 .claude/scripts/wake-rollover.py --fresh --dry-run
+```
 
-3. **Check for an existing session** — read `$CLAUDE_PROJECT_DIR/.claude/.session-id` and decide the continuation mode (the mint below acts on it):
-   - **Absent** → clean fresh start; the mint will create a session with no `continues_from`.
-   - **Present** → read `<prior-id>` from it, then read the `status:` field from `reports/<prior-id>/session.md` frontmatter (local read — do NOT query kb):
-     - `status: closed` → the operator deliberately ended the prior session; the mint will overwrite the old sentinel and set **no** `continues_from` (discontinuous restart).
-     - `status: active` (or any non-closed / missing) → **stop here**; refuse to rotate identity silently:
-       > Error: active session `<prior-id>` found at `.claude/.session-id`. Run `/wip-wake` to start a new linked session, or `/wip-report session-end` first, then `/wip-setup` for a clean discontinuous restart.
+- **exit 0** → identity is mintable (clean fresh start, or discontinuous restart over a closed prior). Ignore the previewed IDs — the real mint below re-computes. Proceed to the checks.
+- **exit 5** → an **active** session holds the sentinel; **stop** and relay the script's message (run `/wip-wake` for a linked session, or `/wip-report session-end` first).
+- **exit 4** → `.claude/.session-role` is missing; **stop** and tell the operator to re-run the scaffold with `--refresh`. Do **not** guess the role.
 
-**Step 0 writes nothing** — it only reads the role and the sentinel and decides the continuation mode. If it didn't stop at step 3, proceed to the checks; the session is **minted only after they pass** (below).
+Step 0 writes nothing (`--dry-run` is a pure read). If it exited 0, proceed to the checks; the session is **minted only after they pass** (below).
 
 ### Checks (in order)
 
 1. **Python venv** — `.venv/bin/python --version`. If missing or broken, offer to create/recreate.
 2. **MCP server deps** — `PYTHONPATH=components/mcp-server/src .venv/bin/python -c "import wip_mcp"`. If import fails, offer `pip install -e components/mcp-server/`.
-3. **`.env` file** — `test -f .env`. If missing, point at `wip-deploy install --preset standard --target compose --hostname localhost` (see `wip-deploy examples` for the full surface) and `docs/development-guide.md` for preset options. If present, report key settings (WIP_HOSTNAME, WIP_AUTH_MODE, preset).
+3. **Attached install** — a repo-root `.env` is NOT a thing (retired setup.sh-era artifact; never check for it, never generate it — everything lives in `~/.wip-deploy/<name>/`). Instead, enumerate real installs: `ls -d ~/.wip-deploy/*/deployment.deployer-state 2>/dev/null`. **Zero** → this machine has no WIP install; surface the one operator question — provision one? (`wip-deploy install --preset standard --target dev`, see `docs/deploy/`) — and STOP. **One** → this session is attached to it; report its name. **Several** → ask the operator which install this session works against (parallel YACs on one machine are normal), then report the pick. Subsequent checks (containers, MCP) are read against that install.
 4. **Container runtime** — `command -v podman || command -v docker`. If neither, suggest `brew install podman` (Mac) or Docker.
 5. **WIP containers running** — `podman ps` (or `docker ps`) filtered to `wip-` prefix. If none, point at `wip-deploy install` (fresh) or `wip-deploy restart` (existing install). If some, list and flag any expected-but-missing services.
 6. **MCP connectivity** — call `get_wip_status` via MCP tools. If MCP tools aren't available, suggest restarting Claude Code and checking `.mcp.json`. If the call fails, suggest checking containers.
