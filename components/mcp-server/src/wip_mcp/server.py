@@ -186,8 +186,12 @@ For a spreadsheet-like view: get_table_view(template_value).
 For CSV export: export_table_csv(template_value).
 
 ## Soft Delete — Inactive Means Retired, Not Deleted
-Entities are never hard-deleted, only set to status: "inactive".
-(Exception: files support hard-delete to reclaim storage.)
+By default entities are never hard-deleted, only set to status: "inactive"
+(namespace deletion_mode: "retain"). A namespace configured with
+deletion_mode: "full" accepts hard_delete=true on delete operations for
+PERMANENT removal — see the deletion_mode safety guards in the Idempotent
+Bootstrap section above. Independent exceptions regardless of deletion_mode:
+binary files (reclaim storage) and terms in mutable terminologies.
 
 Retired entities are invisible to new data but always resolve for existing data.
 A document referencing term "ACTIVE" will always resolve, even if "ACTIVE" was
@@ -525,6 +529,17 @@ always resolves for EXISTING references. "Inactive" means "retired", not
 Trap: You deactivate a term and expect documents using it to fail. They don't.
 Rule: Never treat inactive as deleted. Inactive entities are invisible to new
       data but always visible to existing data.
+
+Default, not absolute (CASE-576): "nothing ever dies" is the platform
+DEFAULT (namespace deletion_mode: "retain"), not a physical law. A
+namespace explicitly flipped to deletion_mode: "full" (guarded: the "wip"
+namespace refuses it; retain->full requires confirm_enable_deletion=true)
+accepts hard_delete=true on delete operations across the stores — the
+record is PERMANENTLY removed, and existing references to it will NOT
+resolve. Trap addendum: in a "full"-mode namespace, do not assume an old
+reference still resolves — it may be gone for real. Independent smaller
+deviations: mutable-terminology terms and binary files are hard-deletable
+regardless of deletion_mode.
 
 ## 2. Template Versioning — Update Does NOT Replace
 Updating a template creates a new version. The OLD version stays active.
