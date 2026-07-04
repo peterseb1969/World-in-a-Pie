@@ -441,6 +441,13 @@ if ! $TIER3; then
 fi
 echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
 
+# Deterministic session-rollover script (CASE-604) — Step A of /wip-wake and
+# /wip-setup's mint runs as a script, not prose. Vendored beside the commands;
+# a --refresh re-copies it, same as the command set.
+mkdir -p "$APP_DIR/.claude/scripts"
+cp "$WIP_ROOT/agent-scripts/src/wake_rollover.py" "$APP_DIR/.claude/scripts/wake-rollover.py"
+echo "   Copied: .claude/scripts/wake-rollover.py (session rollover, CASE-604)"
+
 # --- Tier-3 provisioning (CASE-463, CASE-517, CASE-535) ---
 # Provisioning (kb.json write, served-client install, SESSION_ROLE POST) runs on
 # the explicit tier-3 opt-in only — KB_OPT_IN, i.e. `--kb` passed on this run.

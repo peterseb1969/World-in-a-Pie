@@ -82,7 +82,7 @@ _component_deps() {
         reporting-sync)
             echo "postgres nats"
             ;;
-        mcp-server|wip-auth|deployer)
+        mcp-server|wip-auth|deployer|agent-scripts)
             echo ""
             ;;
         *)
@@ -195,7 +195,7 @@ if [[ $# -lt 1 ]]; then
     echo "Components: registry, def-store, template-store, document-store," >&2
     echo "            reporting-sync, ingest-gateway, mcp-server" >&2
     echo "Libraries:  wip-auth" >&2
-    echo "Tools:      deployer" >&2
+    echo "Tools:      deployer, agent-scripts" >&2
     echo "Special:    all (run everything)" >&2
     exit 1
 fi
@@ -207,7 +207,7 @@ shift
 
 PYTHON_COMPONENTS=(registry def-store template-store document-store reporting-sync ingest-gateway mcp-server)
 PYTHON_LIBS=(wip-auth)
-PYTHON_TOOLS=(deployer)
+PYTHON_TOOLS=(deployer agent-scripts)
 
 run_python_tests() {
     local name="$1"

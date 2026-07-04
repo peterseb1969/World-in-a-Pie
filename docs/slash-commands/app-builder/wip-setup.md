@@ -29,25 +29,15 @@ First-run session-identity mint, environment check, guided setup, and **mandator
 
 ### Step 5 — Mint the session (only after all checks pass)
 
-The environment is verified, so now write identity. A failed check above left **no** session behind — deferring the mint to here is the fix for the strand-on-failed-precheck bug: the "fix it and re-run `/wip-setup`" instruction works as written.
+The environment is verified, so now write identity. A failed check above left **no** session behind — deferring the mint to here is the fix for the strand-on-failed-precheck bug: the "fix it and re-run `/wip-setup`" instruction works as written. The mint is a deterministic state machine, so it runs as a script, not hand-walked (CASE-604):
 
-1. **Mint** — `ID="$(cat "$CLAUDE_PROJECT_DIR/.claude/.session-role")-$(date '+%Y%m%d-%H%M%S')"`. Seconds precision; the suffix is two hyphen-separated tokens (`YYYYMMDD-HHMMSS`) — this is what eliminates the same-minute collision class.
+```bash
+python3 .claude/scripts/wake-rollover.py --fresh
+```
 
-2. **Write the sentinel atomically** — write `$ID` as a single line (no trailing content) to a temp file under `.claude/`, then `mv` it over `.claude/.session-id`. Truncate-in-place is not atomic; use tempfile + `mv`.
+It re-enforces Step 0's decision at write time (sentinel absent → clean fresh start, no `continues_from`; prior `status: closed` → discontinuous restart, sentinel overwritten, no `continues_from`; prior still active → refuses and points at `/wip-wake`), mints `<ROLE>-<YYYYMMDD-HHMMSS>` (seconds precision — eliminates the same-minute collision class), creates `reports/<ID>/session.md` with `status: active` frontmatter, atomically swaps the sentinel, and mirrors the session to kb (tier-gated: skipped silently without `.claude/kb.json`; unreachable kb warns and continues — local state is authoritative). Stdout contract: `PRIOR_ID=-` (or the closed prior on a discontinuous restart) and `NEW_ID=<ID>`.
 
-3. **Create the report dir** — `mkdir "reports/$ID"` (plain `mkdir`, **not** `-p`; with seconds precision a collision is near-zero, and if `mkdir` fails because the dir exists, surface it and let the operator retry). Write the initial `reports/$ID/session.md` with this frontmatter:
-   ```yaml
-   ---
-   session_id: <ID>
-   role: <ROLE>
-   started_at: <the ID's YYYYMMDD-HHMMSS as a naive datetime, YYYY-MM-DDTHH:MM:SS, NO timezone suffix>
-   status: active
-   ---
-   ```
-   `continues_from` and `ended_at` are absent — `/wip-setup` never sets them (that's `/wip-wake`'s and `/wip-report session-end`'s job). Add a short body stub (task list, phase) as work begins.
-
-4. **Mirror to kb (tier 3 only, warn-and-continue)** — **Tier gate:** kb mirrors run only in tier-3 repos — if `.claude/kb.json` is absent, skip this step silently and continue (tier-2 solo mode is by design; nothing to warn about). Otherwise ensure the served KB client is present, then write the SESSION record through it (the gateway upserts by `session_id`): `test -f ~/.cache/wip-kb-client/kb-client.sh || curl -fsSk -H "X-API-Key: $(cat "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')")" "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/apps/kb/server-api/kb-client/install" | sh; kbc kb-write.py SESSION reports/$ID/session.md`. If kb is unreachable, log to stderr and **PROCEED** — local state is authoritative; the mirror retries at the next `/wip-wake` or `/wip-report session-end`:
-   > Warning: kb mirror failed for `<ID>`; SESSION record not yet in kb. Will retry at next `/wip-wake`, `/wip-report session-end`, or manually via `kbc kb-write.py SESSION reports/<ID>/session.md`.
+If the mirror warns because the served KB client is missing (`~/.cache/wip-kb-client/kb-client.sh`), install it via the one-liner in the `/wip-case` pre-flight, then retry manually: `kbc kb-write.py SESSION reports/<ID>/session.md`. Add a short body stub (task list, phase) to `session.md` as work begins.
 
 After the mint, `.claude/.session-id` is the canonical identity for every subsequent `/wip-case`, `/wip-report`, and commit attribution.
 
