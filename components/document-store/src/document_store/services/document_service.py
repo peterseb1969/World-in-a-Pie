@@ -394,6 +394,7 @@ class DocumentService:
                 template_namespace=namespace,
                 term_references=validation_result.term_references,
                 file_references=validation_result.file_references,
+                document_references=validation_result.references,
             )
         except ReferenceValidationError as e:
             return None, f"Cross-namespace reference violation: {e.violations}"
@@ -3151,6 +3152,7 @@ class DocumentService:
                     template_namespace=current.namespace,
                     term_references=validation_result.term_references,
                     file_references=validation_result.file_references,
+                    document_references=validation_result.references,
                 )
             except ReferenceValidationError as exc:
                 raise PatchError(

@@ -61,6 +61,7 @@ class ReferenceValidator:
         template_namespace: str,
         term_references: list[dict[str, Any]] | None = None,
         file_references: list[dict[str, Any]] | None = None,
+        document_references: list[dict[str, Any]] | None = None,
     ) -> None:
         """
         Validate that all references in a document comply with isolation rules.
@@ -70,6 +71,10 @@ class ReferenceValidator:
             template_namespace: Namespace of the referenced template
             term_references: List of term reference objects
             file_references: List of file reference objects
+            document_references: List of resolved reference objects
+                (ValidationResult.references shape); entries whose
+                reference_type is "document" are checked against the
+                isolation rules via their resolved namespace (CASE-566)
 
         Raises:
             ReferenceValidationError: If any references violate isolation rules
@@ -131,6 +136,31 @@ class ReferenceValidator:
                         "type": "file",
                         "namespace": file_ns,
                         "message": f"File namespace '{file_ns}' is not accessible from '{document_namespace}' namespace",
+                    })
+
+        # Check document references (CASE-566). The resolution layer is
+        # deliberately namespace-unscoped for UUID-form lookups; enforcing
+        # here, post-resolution, lets the violation name the foreign
+        # namespace instead of masquerading as not_found — and keeps
+        # allowed cross-namespace references working with one lookup.
+        if document_references:
+            doc_namespaces = set()
+            for ref in document_references:
+                if ref.get("reference_type") != "document":
+                    continue
+                doc_ns = (ref.get("resolved") or {}).get("namespace")
+                if doc_ns:
+                    doc_namespaces.add(doc_ns)
+
+            for doc_ns in doc_namespaces:
+                if (
+                    doc_ns != document_namespace
+                    and not self._is_allowed_reference(doc_ns, namespace_info, is_strict)
+                ):
+                    violations.append({
+                        "type": "document",
+                        "namespace": doc_ns,
+                        "message": f"Document namespace '{doc_ns}' is not accessible from '{document_namespace}' namespace",
                     })
 
         if violations:
