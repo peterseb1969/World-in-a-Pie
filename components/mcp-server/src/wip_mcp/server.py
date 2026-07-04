@@ -575,10 +575,9 @@ Moving a cohort forward (CASE-491): the corollary handles ADDITIVE changes
       identity-changing move is a FORK (create new docs), not a migrate, and is
       rejected.
 
-v2 caveat: v2's template-ID redesign (Day 29 fireside on template ID
-      management, FR-YAC reports / docs/design/v2-index.md) is planning to
-      make template_id version-specific and route logical identity through
-      (namespace, template_value). The corollary HOLDS in both v1 and v2
+v2 caveat: the planned v2 template-ID redesign (docs/design/v2-index.md)
+      is planning to make template_id version-specific and route logical
+      identity through (namespace, template_value). The corollary HOLDS in both v1 and v2
       — identity stays stable across schema updates by design — but the
       mechanism changes. Code that names template_id as the canonical
       handle will need a rename pass when v2 lands.
