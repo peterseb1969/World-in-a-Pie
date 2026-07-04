@@ -428,7 +428,7 @@ Configuration for which schemas map to which tools lives in `tools.yaml`.
 ### Error Handling
 
 All errors are caught and returned as formatted strings (not exceptions). The AI receives:
-- `WIP error: <message>` for bulk item failures (`BulkError`)
+- `WIP error [<error_code>]: <message>` for bulk item failures (`BulkError`); the machine-readable `error_code` is included so callers can branch on the code, not the message string (falls back to `WIP error: <message>` when the backend supplied no code)
 - `Error: <message>` for transport/connectivity errors
 
 ---

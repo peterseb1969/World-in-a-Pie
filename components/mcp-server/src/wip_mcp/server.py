@@ -56,6 +56,8 @@ def get_client() -> WipClient:
 def _error(e: Exception) -> str:
     """Format an exception for MCP tool output."""
     if isinstance(e, BulkError):
+        if e.error_code:
+            return f"WIP error [{e.error_code}]: {e.error}"
         return f"WIP error: {e.error}"
     return f"Error: {e}"
 

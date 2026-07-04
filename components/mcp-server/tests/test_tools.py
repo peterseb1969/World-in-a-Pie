@@ -589,3 +589,30 @@ async def test_upsert_namespace_forwards_confirm_enable_deletion():
 
     call_kwargs = mock.upsert_namespace.call_args.kwargs
     assert call_kwargs["confirm_enable_deletion"] is True
+
+
+# =========================================================================
+# CASE-584: _error() must surface error_code
+# =========================================================================
+
+from wip_mcp.client import BulkError  # noqa: E402
+from wip_mcp.server import _error  # noqa: E402
+
+
+def test_error_includes_error_code():
+    """CASE-584: single-item tools must surface the machine-readable
+    error_code, per wip://conventions ("branch on the code, not the
+    message string")."""
+    e = BulkError("Identity fields cannot be changed", error_code="identity_field_change")
+    assert _error(e) == "WIP error [identity_field_change]: Identity fields cannot be changed"
+
+
+def test_error_without_error_code_keeps_plain_format():
+    """A BulkError with no error_code keeps the original format."""
+    e = BulkError("something went wrong")
+    assert _error(e) == "WIP error: something went wrong"
+
+
+def test_error_non_bulk_exception():
+    """Non-BulkError exceptions keep the generic format."""
+    assert _error(ValueError("boom")) == "Error: boom"
