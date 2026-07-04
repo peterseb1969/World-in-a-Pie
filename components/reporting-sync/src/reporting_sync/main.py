@@ -686,7 +686,7 @@ async def trigger_terminology_sync(
     Batch sync all terminologies from Def-Store to PostgreSQL.
 
     Args:
-        namespace: Namespace to sync (default: wip)
+        namespace: Namespace to sync (required — no default)
         page_size: Page size for API fetches (default: 100)
     """
     if not state.batch_sync_service:
@@ -715,7 +715,7 @@ async def trigger_term_sync(
     Iterates through all terminologies and fetches their terms.
 
     Args:
-        namespace: Namespace to sync (default: wip)
+        namespace: Namespace to sync (required — no default)
         page_size: Page size for API fetches (default: 100)
     """
     if not state.batch_sync_service:
@@ -745,7 +745,7 @@ async def trigger_term_relation_sync(
     and upserts them into the term_relations table.
 
     Args:
-        namespace: Namespace to sync (default: wip)
+        namespace: Namespace to sync (required — no default)
         page_size: Page size for API fetches (default: 100)
     """
     if not state.batch_sync_service:

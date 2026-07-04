@@ -58,7 +58,7 @@ async def create_templates(
     Create one or more templates.
 
     Each template is registered with the Registry service to get a unique ID.
-    Namespace is specified per item (default: "wip").
+    Namespace is specified per item (required — no default).
     For single items, uses direct creation. For multiple items, uses batch path.
     """
     if on_conflict not in ("error", "validate"):

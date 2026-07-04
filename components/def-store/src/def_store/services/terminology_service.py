@@ -150,7 +150,7 @@ class TerminologyService:
 
         Args:
             request: Creation request
-            namespace: Namespace for the terminology (default: wip)
+            namespace: Namespace for the terminology (required — no default)
 
         Returns:
             Created terminology

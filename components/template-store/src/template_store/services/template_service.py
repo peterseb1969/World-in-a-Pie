@@ -257,7 +257,7 @@ class TemplateService:
 
         Args:
             request: Creation request
-            namespace: Namespace for the template (default: wip)
+            namespace: Namespace for the template (required — no default)
 
         Returns:
             Created template

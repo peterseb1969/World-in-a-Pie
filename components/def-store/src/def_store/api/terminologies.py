@@ -52,7 +52,7 @@ async def create_terminologies(
     Create one or more terminologies (controlled vocabularies).
 
     Each terminology will be registered with the Registry service to get
-    a unique ID. Namespace is specified per item (default: "wip").
+    a unique ID. Namespace is specified per item (required — no default).
     """
     if on_conflict not in ("error", "validate"):
         raise HTTPException(
