@@ -168,8 +168,7 @@ def test_matrix_sources_exist_in_repo():
     for rel in (
         "scaffold/templates/claude-md/backend.md",
         "scaffold/templates/claude-md/app.md",
-        "scaffold/templates/settings/backend.json",
-        "scaffold/templates/settings/app.json",
+        "scaffold/templates/settings/settings.json",
         "scaffold/templates/hooks/post-compact-reanchor.sh",
         "agent-scripts/src/wake_rollover.py",
         "docs/slash-commands/backend",
@@ -409,3 +408,28 @@ def test_toolkit_wheel_copies(tmp_path):
     run_surfaces([toolkit_surface(str(whl))],
                  Context(wip_root=REPO_ROOT, target_root=app))
     assert (app / "libs/wip_toolkit-0.5.0-py3-none-any.whl").read_bytes() == whl.read_bytes()
+
+
+# --- settings + hook parity --------------------------------------------------
+
+def test_settings_one_baseline_both_roles(tmp_path):
+    b, a = tmp_path / "b", tmp_path / "a"
+    run_surfaces(backend_surfaces(), _ctx(b, tier3=True))
+    run_surfaces(
+        [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "settings"],
+        Context(wip_root=REPO_ROOT, target_root=a),
+    )
+    assert (b / ".claude/settings.json").read_bytes() == (a / ".claude/settings.json").read_bytes(), (
+        "the two roles must ship the SAME settings baseline — per-role copies drift"
+    )
+    import json as j
+    parsed = j.loads((b / ".claude/settings.json").read_text())
+    assert "hooks" in parsed, "the post-compact hook registration ships in the baseline"
+    assert any("wip-kb" in x for x in parsed["permissions"]["allow"])
+
+
+def test_backend_gets_post_compact_hook(tmp_path):
+    run_surfaces(backend_surfaces(), _ctx(tmp_path))
+    hook = tmp_path / ".claude/hooks/post-compact-reanchor.sh"
+    assert hook.exists(), "backend hook gap was accidental — parity is deliberate"
+    assert os.stat(hook).st_mode & stat.S_IXUSR

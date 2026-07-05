@@ -125,6 +125,16 @@ def run_backend_scenario(tmp: Path, *, tier3: bool, refresh: bool) -> dict:
         ["git", "clone", "-q", "--branch", "develop", str(REPO_ROOT), str(clone)],
         check=True, capture_output=True,
     )
+    # git clone ships COMMITTED develop — a gate run before committing would
+    # silently validate old code against old fixtures (a tautology; exactly
+    # that hid a backend delta once). Overlay the WORKING TREE's
+    # scaffold-relevant paths so the gate always tests what is about to be
+    # committed. App scenarios don't need this: they run the scripts from
+    # REPO_ROOT directly.
+    for rel in ("scripts", "scaffold/src", "scaffold/templates", "agent-scripts"):
+        src, dst = REPO_ROOT / rel, clone / rel
+        shutil.rmtree(dst, ignore_errors=True)
+        shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
     # Symlink the provisioned venv: the script sees .venv/bin/python and an
     # importable wip_mcp, so it neither creates a venv nor pip-installs
     # (protects the REAL venv behind the symlink).
@@ -162,6 +172,7 @@ def snapshot_tree_backend(clone: Path, roots: dict[str, str]) -> dict:
         ".claude/settings.json",
         ".claude/.session-role",
         ".claude/kb.json",
+        ".claude/hooks/post-compact-reanchor.sh",
     ]
     files: dict[str, str] = {}
     for s in surfaces:
