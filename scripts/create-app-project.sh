@@ -592,28 +592,10 @@ if [ -z "$WIP_BASE_URL" ] && $REFRESH_MODE && [ -f "$APP_DIR/.mcp.json" ]; then
 fi
 WIP_BASE_URL="${WIP_BASE_URL:-https://localhost:8443}"
 
-cat > "$APP_DIR/.mcp.json" << EOF
-{
-  "mcpServers": {
-    "wip": {
-      "type": "stdio",
-      "command": "$PYTHON_PATH",
-      "args": ["-m", "wip_mcp.server"],
-      "env": {
-        "WIP_API_KEY_FILE": "$WIP_API_KEY_FILE",
-        "REGISTRY_URL": "$WIP_BASE_URL",
-        "DEF_STORE_URL": "$WIP_BASE_URL",
-        "TEMPLATE_STORE_URL": "$WIP_BASE_URL",
-        "DOCUMENT_STORE_URL": "$WIP_BASE_URL",
-        "REPORTING_SYNC_URL": "$WIP_BASE_URL",
-        "WIP_VERIFY_TLS": "false"
-      }
-    }
-  }
-}
-EOF
-echo "   Written: .mcp.json"
-echo "   API key source: $WIP_API_KEY_FILE"
+# .mcp.json is an engine surface (shared writer with the backend scaffold —
+# the two heredocs were drifting independently). Written by the wip_scaffold
+# call further down via the --mcp-* flags.
+echo "   .mcp.json: engine surface (key source: $WIP_API_KEY_FILE)"
 
 # --- Copy client libraries ---
 
@@ -984,7 +966,9 @@ PYTHONPATH="$WIP_ROOT/scaffold/src${PYTHONPATH:+:$PYTHONPATH}" \
     --wip-root "$WIP_ROOT" --app-dir "$APP_DIR" \
     --app-name "$APP_NAME" --app-slug "$APP_SLUG" \
     --dev-namespace "$DEV_NAMESPACE" --key-file "$WIP_API_KEY_FILE" \
-    --preset "$PRESET" --role-prefix "$APP_PREFIX" $ENGINE_FLAGS
+    --preset "$PRESET" --role-prefix "$APP_PREFIX" \
+    --mcp-python "$PYTHON_PATH" --mcp-base-url "$WIP_BASE_URL" \
+    --mcp-key-file "$WIP_API_KEY_FILE" $ENGINE_FLAGS
 
 # --- Git init + gitignore sentinels (new projects only) ---
 if ! $REFRESH_MODE; then

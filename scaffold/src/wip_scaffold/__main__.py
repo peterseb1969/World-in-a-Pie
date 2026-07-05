@@ -21,7 +21,16 @@ import sys
 from pathlib import Path
 
 from .engine import Context, run_surfaces
-from .surfaces import app_surfaces, backend_surfaces
+from .surfaces import app_surfaces, backend_surfaces, mcp_json_surface
+
+
+def _add_mcp_args(parser) -> None:
+    # Present => the engine writes .mcp.json; absent (remote backend
+    # transports) => the wrapper writes its own shape and skips this.
+    parser.add_argument("--mcp-python", default="")
+    parser.add_argument("--mcp-base-url", default="")
+    parser.add_argument("--mcp-key-file", default="")
+    parser.add_argument("--mcp-key", default="")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -32,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--wip-root", required=True, type=Path)
     b.add_argument("--tier3", action="store_true")
     b.add_argument("--dry-run", action="store_true")
+    _add_mcp_args(b)
 
     a = sub.add_parser("app")
     a.add_argument("--wip-root", required=True, type=Path)
@@ -46,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--refresh", action="store_true")
     a.add_argument("--force-claude-md", action="store_true")
     a.add_argument("--dry-run", action="store_true")
+    _add_mcp_args(a)
 
     args = parser.parse_args(argv)
 
@@ -57,6 +68,9 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
         )
         surfaces = backend_surfaces()
+        if args.mcp_python:
+            surfaces.insert(0, mcp_json_surface(
+                args.mcp_python, args.mcp_base_url, args.mcp_key_file, args.mcp_key))
     else:
         ctx = Context(
             wip_root=args.wip_root.resolve(),
@@ -81,6 +95,9 @@ def main(argv: list[str] | None = None) -> int:
                 "PRESET": args.preset,
             }
         )
+        if args.mcp_python:
+            surfaces.insert(0, mcp_json_surface(
+                args.mcp_python, args.mcp_base_url, args.mcp_key_file, args.mcp_key))
 
     log = run_surfaces(surfaces, ctx)
     for line in log:

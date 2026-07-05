@@ -386,42 +386,21 @@ else
     fi
 fi
 
+MCP_FLAGS=""
 case "$TARGET" in
     local)
-        # F19 (CASE-287): use WIP_API_KEY_FILE when sourced from a
-        # wip-deploy secrets file — that way key rotation in WIP applies
-        # automatically without re-running this script. Fall back to
-        # literal WIP_API_KEY for the dev fixture (no file to track).
+        # The engine writes .mcp.json (shared writer with the app scaffold).
+        # A key FILE is preferred when sourced from a wip-deploy secrets file
+        # — rotation then applies without re-running this script; the literal
+        # key covers only the no-install dev fixture. Base URL assumes WIP
+        # via Caddy on https://localhost:8443 (the wip-deploy install shape);
+        # edit after generation for direct-to-service setups.
         if [[ "$API_KEY_SOURCE" == "$HOME/.wip-deploy/"*/secrets/api-key ]]; then
-            KEY_ENV_LINE='"WIP_API_KEY_FILE": "'"$API_KEY_SOURCE"'"'
+            MCP_FLAGS="--mcp-python $VENV_PYTHON --mcp-base-url https://localhost:8443 --mcp-key-file $API_KEY_SOURCE"
         else
-            KEY_ENV_LINE='"WIP_API_KEY": "'"$API_KEY"'"'
+            MCP_FLAGS="--mcp-python $VENV_PYTHON --mcp-base-url https://localhost:8443 --mcp-key $API_KEY"
         fi
-        # Defaults assume WIP is reachable via Caddy on https://localhost:8443
-        # (the shape wip-deploy install --target dev|compose produces). For
-        # direct-to-service setups (services on 8001-8005 unroot'd), edit the
-        # URLs after generation or run without WIP_VERIFY_TLS.
-        cat > "$WIP_ROOT/.mcp.json" << EOF
-{
-  "mcpServers": {
-    "wip": {
-      "type": "stdio",
-      "command": "$VENV_PYTHON",
-      "args": ["-m", "wip_mcp.server"],
-      "env": {
-        $KEY_ENV_LINE,
-        "REGISTRY_URL": "https://localhost:8443",
-        "DEF_STORE_URL": "https://localhost:8443",
-        "TEMPLATE_STORE_URL": "https://localhost:8443",
-        "DOCUMENT_STORE_URL": "https://localhost:8443",
-        "REPORTING_SYNC_URL": "https://localhost:8443",
-        "WIP_VERIFY_TLS": "false"
-      }
-    }
-  }
-}
-EOF
-        echo "   Written: .mcp.json (stdio, local — $VENV_PYTHON, Caddy-routed on :8443)"
+        echo "   .mcp.json: engine surface (stdio, local — $VENV_PYTHON, Caddy-routed on :8443)"
         ;;
 
     ssh)
@@ -513,9 +492,9 @@ esac
 echo "3. Rendering content surfaces (engine)..."
 TIER_FLAG=""
 if $TIER3; then TIER_FLAG="--tier3"; fi
-# shellcheck disable=SC2086  # TIER_FLAG is deliberately word-split (empty or one flag)
+# shellcheck disable=SC2086  # TIER_FLAG/MCP_FLAGS are deliberately word-split
 PYTHONPATH="$WIP_ROOT/scaffold/src${PYTHONPATH:+:$PYTHONPATH}" \
-    "$VENV_PYTHON" -m wip_scaffold backend --wip-root "$WIP_ROOT" $TIER_FLAG
+    "$VENV_PYTHON" -m wip_scaffold backend --wip-root "$WIP_ROOT" $TIER_FLAG $MCP_FLAGS
 echo "   Written: CLAUDE.md (tier $($TIER3 && echo 3 || echo 2))"
 
 # --- Tier-3 provisioning (CASE-463, CASE-517, CASE-537) ---
