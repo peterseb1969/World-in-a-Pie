@@ -21,7 +21,13 @@ import sys
 from pathlib import Path
 
 from .engine import Context, run_surfaces
-from .surfaces import app_surfaces, backend_surfaces, mcp_json_surface
+from .surfaces import (
+    app_surfaces,
+    backend_surfaces,
+    bootstrap_surface,
+    env_surface,
+    mcp_json_surface,
+)
 
 
 def _add_mcp_args(parser) -> None:
@@ -56,6 +62,8 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--refresh", action="store_true")
     a.add_argument("--force-claude-md", action="store_true")
     a.add_argument("--dry-run", action="store_true")
+    a.add_argument("--seed-bootstrap", action="store_true")
+    a.add_argument("--write-env", action="store_true")
     _add_mcp_args(a)
 
     args = parser.parse_args(argv)
@@ -98,6 +106,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.mcp_python:
             surfaces.insert(0, mcp_json_surface(
                 args.mcp_python, args.mcp_base_url, args.mcp_key_file, args.mcp_key))
+        if args.seed_bootstrap:
+            surfaces.append(bootstrap_surface())
+        if args.write_env:
+            surfaces.append(env_surface(args.key_file))
 
     log = run_surfaces(surfaces, ctx)
     for line in log:

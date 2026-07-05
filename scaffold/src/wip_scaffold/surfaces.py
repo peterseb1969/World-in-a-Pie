@@ -95,6 +95,89 @@ def mcp_json_surface(
     )
 
 
+BOOTSTRAP_TEMPLATES = [
+    "bootstrap.server.ts.template",
+    "bootstrap.routes.ts.template",
+    "BootstrapGate.tsx.template",
+]
+
+
+def bootstrap_surface() -> Surface:
+    """Genesis copies of the bootstrap starting points, each stamped with a
+    banner naming the source commit and a delete-after-use instruction — an
+    unmarked frozen copy invites grepping it as canonical scaffold behavior
+    (that misread has shipped fixes against long-drifted code). The wrapper
+    decides WHEN to seed (create: always; refresh: only on explicit retrofit
+    of a dir that is absent — never resurrect a deliberately deleted one);
+    this surface only knows HOW. The emitted banner text reproduces the
+    legacy scripts byte-for-byte (golden-pinned output)."""
+
+    def produce(ctx: Context) -> dict[str, bytes]:
+        import datetime
+        import subprocess
+
+        src_dir = ctx.wip_root / "apps/templates/bootstrap"
+        if not src_dir.is_dir():
+            ctx.notes.append(f"Warning: {src_dir} not found, skipping bootstrap templates")
+            return {}
+        try:
+            sha = subprocess.run(
+                ["git", "-C", str(ctx.wip_root), "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=15,
+            ).stdout.strip() or "unknown"
+        except Exception:
+            sha = "unknown"
+        date = datetime.date.today().isoformat()
+        banner = f"""// ============================================================================
+// GENESIS COPY (CASE-415) — not canonical, not live. One-time Phase-1 start.
+//   Source: World-in-a-Pie@{sha}, spawned {date}.
+//   Canonical scaffold: World-in-a-Pie/apps/templates/bootstrap/ — this frozen
+//   copy WILL drift from it. NEVER grep this dir as evidence of platform or
+//   scaffold behavior (an agent once did, and shipped fixes against long-drifted code).
+//   After you build server/lib/bootstrap.ts from this, DELETE templates/bootstrap/.
+// ============================================================================
+"""
+        out: dict[str, bytes] = {}
+        for name in BOOTSTRAP_TEMPLATES:
+            src = src_dir / name
+            if src.is_file():
+                out[f"templates/bootstrap/{name}"] = banner.encode() + src.read_bytes()
+            else:
+                ctx.notes.append(f"Warning: {name} not found in {src_dir}, skipping")
+        return out
+
+    return Surface(
+        name="bootstrap-templates",
+        policy=Policy.REGENERATE,
+        rationale="genesis-stamped one-time starting points; the wrapper gates when, the banner stops canonical-misreads",
+        produce=produce,
+    )
+
+
+def env_surface(key_file: str) -> Surface:
+    """Create-time .env pointing the runtime at the live secrets FILE, not a
+    baked plaintext key — a baked key strands the fleet the moment the
+    deploy key rotates; a file path makes rotation a restart-only event.
+    The emitted text reproduces the legacy script byte-for-byte
+    (golden-pinned output, citation predates the no-citations rule)."""
+    body = f"""# Runtime key SOURCE — the live wip-deploy secrets file (CASE-495).
+# Resolved at app startup (like the MCP server's WIP_API_KEY_FILE), so a key
+# rotation or target-redeploy is picked up on restart rather than baked stale
+# here. This is the deployment's admin/proxy key and spans all namespaces — a
+# cross-namespace console uses it as-is. A data-model app that wants a
+# least-privilege, namespace-scoped key can provision one (POST
+# /api/registry/api-keys with "namespaces" + "grant_permission") and repoint
+# WIP_API_KEY_FILE below at its own secrets file.
+WIP_API_KEY_FILE={key_file}
+"""
+    return Surface(
+        name="env",
+        policy=Policy.REGENERATE,
+        rationale="key FILE over baked plaintext so rotation is a restart, not a fleet-wide re-scaffold; create-time only (wrapper-gated)",
+        produce=lambda ctx: {".env": body.encode()},
+    )
+
+
 # --- backend matrix ----------------------------------------------------------
 
 def backend_surfaces() -> list[Surface]:
