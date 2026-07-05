@@ -296,7 +296,7 @@ else
     pip install --upgrade pip setuptools -q 2>/dev/null || true
 
     # Install test dependencies
-    pip install pytest ruff mypy -q 2>/dev/null || true
+    pip install pytest ruff mypy build -q 2>/dev/null || true
 
     echo "   Venv created"
 fi

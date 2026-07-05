@@ -433,3 +433,18 @@ def test_backend_gets_post_compact_hook(tmp_path):
     hook = tmp_path / ".claude/hooks/post-compact-reanchor.sh"
     assert hook.exists(), "backend hook gap was accidental — parity is deliberate"
     assert os.stat(hook).st_mode & stat.S_IXUSR
+
+
+def test_toolkit_wheel_wipes_stale_versions(tmp_path):
+    from wip_scaffold.surfaces import toolkit_surface
+
+    whl = tmp_path / "wip_toolkit-0.6.0-py3-none-any.whl"
+    whl.write_bytes(b"PK\x03\x04new")
+    app = tmp_path / "app"
+    (app / "libs").mkdir(parents=True)
+    stale = app / "libs/wip_toolkit-0.2.3-py3-none-any.whl"
+    stale.write_bytes(b"PK\x03\x04old")
+    run_surfaces([toolkit_surface(str(whl))],
+                 Context(wip_root=REPO_ROOT, target_root=app))
+    assert not stale.exists(), "stale wheels accumulate otherwise (0.2.3 + 0.5.0 seen in the wild)"
+    assert (app / "libs/wip_toolkit-0.6.0-py3-none-any.whl").exists()
