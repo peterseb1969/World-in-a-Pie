@@ -25,10 +25,14 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 
-from .config import settings
+from .config import check_production_security, settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("auth_gateway")
+
+# Refuse to start in prod with the forgeable default session secret —
+# before the SessionMiddleware below is ever constructed with it.
+check_production_security()
 
 app = FastAPI(title="WIP Auth Gateway", version="0.1.0")
 

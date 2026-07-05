@@ -82,7 +82,7 @@ _component_deps() {
         reporting-sync)
             echo "postgres nats"
             ;;
-        mcp-server|wip-auth|deployer|agent-scripts|scaffold)
+        mcp-server|wip-auth|deployer|agent-scripts|scaffold|auth-gateway)
             echo ""
             ;;
         *)
@@ -205,7 +205,7 @@ shift
 
 # --- Resolve component to directory ---
 
-PYTHON_COMPONENTS=(registry def-store template-store document-store reporting-sync ingest-gateway mcp-server)
+PYTHON_COMPONENTS=(registry def-store template-store document-store reporting-sync ingest-gateway mcp-server auth-gateway)
 PYTHON_LIBS=(wip-auth)
 PYTHON_TOOLS=(deployer agent-scripts scaffold)
 
