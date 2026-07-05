@@ -225,3 +225,32 @@ def test_session_role_warns_when_absent_and_no_prefix(tmp_path):
     run_surfaces(surfaces, ctx)
     assert not (tmp_path / ".claude/.session-role").exists()
     assert any("WARNING" in n for n in ctx.notes)
+
+
+# --- mcp-json surface --------------------------------------------------------
+
+def test_mcp_json_key_file_variant(tmp_path):
+    from wip_scaffold.surfaces import mcp_json_surface
+
+    s = mcp_json_surface("/venv/bin/python", "https://localhost:8443",
+                         key_file="/secrets/api-key")
+    run_surfaces([s], _ctx(tmp_path))
+    text = (tmp_path / ".mcp.json").read_text()
+    assert '"WIP_API_KEY_FILE": "/secrets/api-key",' in text
+    assert '"WIP_API_KEY"' not in text.replace("WIP_API_KEY_FILE", "")
+    assert text.count('"https://localhost:8443"') == 5
+    assert text.endswith("}\n")
+    import json as j
+    parsed = j.loads(text)
+    assert parsed["mcpServers"]["wip"]["command"] == "/venv/bin/python"
+
+
+def test_mcp_json_literal_key_variant(tmp_path):
+    from wip_scaffold.surfaces import mcp_json_surface
+
+    s = mcp_json_surface("/venv/bin/python", "https://localhost:8443",
+                         key_literal="dev_master_key_for_testing")
+    run_surfaces([s], _ctx(tmp_path))
+    text = (tmp_path / ".mcp.json").read_text()
+    assert '"WIP_API_KEY": "dev_master_key_for_testing",' in text
+    assert "WIP_API_KEY_FILE" not in text

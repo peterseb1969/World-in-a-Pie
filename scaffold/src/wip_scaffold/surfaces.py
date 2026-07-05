@@ -55,6 +55,46 @@ def _session_role(ctx: Context) -> dict[str, bytes]:
     return {}
 
 
+def mcp_json_surface(
+    python_path: str, base_url: str, key_file: str = "", key_literal: str = ""
+) -> Surface:
+    """Shared .mcp.json writer for both roles (the two bash heredocs had the
+    same shape and were drifting apart independently). A key FILE is
+    preferred — rotation then applies without re-running the scaffold; a
+    literal key exists only for the no-install dev fixture. The remote
+    (ssh/http) backend transports write different shapes and stay in bash;
+    they simply don't request this surface."""
+    key_line = (
+        f'"WIP_API_KEY_FILE": "{key_file}"' if key_file
+        else f'"WIP_API_KEY": "{key_literal}"'
+    )
+    body = f"""{{
+  "mcpServers": {{
+    "wip": {{
+      "type": "stdio",
+      "command": "{python_path}",
+      "args": ["-m", "wip_mcp.server"],
+      "env": {{
+        {key_line},
+        "REGISTRY_URL": "{base_url}",
+        "DEF_STORE_URL": "{base_url}",
+        "TEMPLATE_STORE_URL": "{base_url}",
+        "DOCUMENT_STORE_URL": "{base_url}",
+        "REPORTING_SYNC_URL": "{base_url}",
+        "WIP_VERIFY_TLS": "false"
+      }}
+    }}
+  }}
+}}
+"""
+    return Surface(
+        name="mcp-json",
+        policy=Policy.REGENERATE,
+        rationale="one writer for both roles ends the two-heredoc drift; key file over literal so rotation needs no re-scaffold",
+        produce=lambda ctx: {".mcp.json": body.encode()},
+    )
+
+
 # --- backend matrix ----------------------------------------------------------
 
 def backend_surfaces() -> list[Surface]:
