@@ -10,6 +10,8 @@ against the same _is_allowed_reference rules as every other kind.
 Pure unit tests — the namespace cache is pre-seeded, no Registry HTTP.
 """
 
+import time
+
 import pytest
 
 from document_store.services.reference_validator import (
@@ -20,10 +22,13 @@ from document_store.services.reference_validator import (
 
 def _validator(namespace: str, isolation_mode: str, allowed: list[str] | None = None):
     v = ReferenceValidator(registry_url="http://unused.invalid", api_key="test")
-    v._namespace_cache[namespace] = {
-        "isolation_mode": isolation_mode,
-        "allowed_external_refs": allowed or [],
-    }
+    v._namespace_cache[namespace] = (
+        time.monotonic(),
+        {
+            "isolation_mode": isolation_mode,
+            "allowed_external_refs": allowed or [],
+        },
+    )
     return v
 
 

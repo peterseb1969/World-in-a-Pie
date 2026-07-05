@@ -300,6 +300,12 @@ Template changes may take up to 5 seconds to propagate (cache TTL on "latest"
 resolution). Lookups by explicit version are cached permanently (immutable).
 If a template update seems to have no effect, wait or pass the explicit version.
 
+## Namespace-Config Cache
+Namespace isolation config (isolation_mode, allowed_external_refs) read during
+reference validation is cached with the same 5-second TTL. After changing a
+namespace's allow-list, a retried write may still be rejected for up to 5
+seconds — wait and retry, no service restart needed (CASE-607).
+
 ## Pagination
 Default page_size: 50, max: 100. List responses include a `pages` field
 (computed as ceil(total / page_size)).
