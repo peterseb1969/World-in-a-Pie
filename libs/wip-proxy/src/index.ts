@@ -113,5 +113,7 @@ export function resolveApiKey(options: WipProxyOptions): string {
 }
 
 export { WIP_API_PREFIXES } from './api-proxy.js'
+export { appConfigHandler } from './app-config.js'
+export type { AppConfigEntries } from './app-config.js'
 export type { WipProxyOptions as WipProxyConfig }
 export type { ApiProxyOptions, FileProxyOptions }
