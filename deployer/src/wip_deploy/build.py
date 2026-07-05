@@ -39,6 +39,10 @@ class BuildInputs:
 
     # Target + network
     target: str = "compose"
+    # Security posture (dev|prod) — arms the services' WIP_VARIANT-keyed
+    # production-safety guards. Explicit operator intent only; never
+    # derived from target.
+    variant: str = "dev"
     hostname: str = "wip.local"
     tls: str = "internal"
     # None → target-aware defaults: 443 for k8s (nginx-ingress LoadBalancer),
@@ -158,6 +162,7 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
 
     # Target + platform
     spec_dict["target"] = inputs.target
+    spec_dict["variant"] = inputs.variant
     spec_dict["platform"] = _build_platform(inputs)
 
     # Network. Target-aware port defaults when not explicitly set:

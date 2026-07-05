@@ -92,6 +92,7 @@ wip-deploy install \
 - `--name wip` — names the install; its files live in `~/.wip-deploy/wip/` (rendered compose, config, **secrets**, saved spec).
 - `--hostname localhost` — simplest and always works *on the host itself*. See the note below for reaching it by a real hostname.
 - TLS is **self-signed by default** — no flag needed.
+- **Production install?** Add `--variant prod`. It injects `WIP_VARIANT=prod` into every backend service, arming their startup guards: a service finding a known-default secret (the documented dev API key, the placeholder session secret) refuses to start instead of running forgeable. Defaults to `dev`; the setting persists in the install's saved spec, so redeploys keep it.
 
 First run pulls all images, so give it a few minutes.
 

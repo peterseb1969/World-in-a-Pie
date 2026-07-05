@@ -10,6 +10,7 @@ from wip_deploy.config_gen.spec_context import (
     SpecContextAuth,
     SpecContextFeatures,
     SpecContextNetwork,
+    SpecContextSecurity,
 )
 from wip_deploy.discovery import Discovery
 from wip_deploy.spec import Deployment
@@ -98,6 +99,7 @@ class TestResolveFromSpec:
                 files_enabled="true",
                 file_storage_public_endpoint="https://h/minio",
             ),
+            security=SpecContextSecurity(variant="dev"),
         )
 
     def test_nested_path(self) -> None:
@@ -105,6 +107,7 @@ class TestResolveFromSpec:
         assert resolve_from_spec("auth.issuer_url_public", ctx) == "pub"
         assert resolve_from_spec("network.hostname", ctx) == "h"
         assert resolve_from_spec("features.files_enabled", ctx) == "true"
+        assert resolve_from_spec("security.variant", ctx) == "dev"
 
     def test_missing_path_raises_keyerror(self) -> None:
         ctx = self._simple_ctx()

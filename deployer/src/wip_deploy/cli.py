@@ -114,6 +114,19 @@ def _target_opt() -> typer.models.OptionInfo:
     return typer.Option("--target", "-t", help="Deployment target: compose | k8s | dev.")
 
 
+def _variant_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--variant",
+        help=(
+            "Security posture: dev | prod. 'prod' injects WIP_VARIANT=prod, "
+            "arming the services' production-safety guards (refuse to start "
+            "on known-default secrets). Explicit operator intent — never "
+            "derived from --target. Persists in the install's state; "
+            "redeploy/rebuild keep it."
+        ),
+    )
+
+
 def _hostname_opt() -> typer.models.OptionInfo:
     return typer.Option(
         "--hostname",
@@ -490,6 +503,7 @@ def _resolve_namespace(
 def validate(
     preset: Annotated[str, _preset_opt()] = "standard",
     target: Annotated[str, _target_opt()] = "compose",
+    variant: Annotated[str, _variant_opt()] = "dev",
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -535,6 +549,7 @@ def validate(
     deployment, components, apps_list = _assemble(
         preset=preset,
         target=target,
+        variant=variant,
         hostname=hostname,
         tls=tls,
         https_port=https_port,
@@ -609,6 +624,7 @@ def validate(
 def show_spec(
     preset: Annotated[str, _preset_opt()] = "standard",
     target: Annotated[str, _target_opt()] = "compose",
+    variant: Annotated[str, _variant_opt()] = "dev",
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -656,6 +672,7 @@ def show_spec(
     deployment, _components, _apps = _assemble(
         preset=preset,
         target=target,
+        variant=variant,
         hostname=hostname,
         tls=tls,
         https_port=https_port,
@@ -703,6 +720,7 @@ def show_spec(
 def render(
     preset: Annotated[str, _preset_opt()] = "standard",
     target: Annotated[str, _target_opt()] = "compose",
+    variant: Annotated[str, _variant_opt()] = "dev",
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -754,6 +772,7 @@ def render(
     deployment, components, apps_list = _assemble(
         preset=preset,
         target=target,
+        variant=variant,
         hostname=hostname,
         tls=tls,
         https_port=https_port,
@@ -820,6 +839,7 @@ def render(
 def install(
     preset: Annotated[str, _preset_opt()] = "standard",
     target: Annotated[str, _target_opt()] = "compose",
+    variant: Annotated[str, _variant_opt()] = "dev",
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -920,6 +940,7 @@ def install(
     deployment, components, apps_list = _assemble(
         preset=preset,
         target=target,
+        variant=variant,
         hostname=hostname,
         tls=tls,
         https_port=https_port,
@@ -3378,6 +3399,7 @@ def _assemble(
     *,
     preset: str,
     target: str,
+    variant: str,
     hostname: str,
     tls: str,
     https_port: int | None,
@@ -3478,6 +3500,7 @@ def _assemble(
         name=name,
         preset=preset,
         target=target,
+        variant=variant,
         hostname=hostname,
         tls=tls,
         https_port=https_port,

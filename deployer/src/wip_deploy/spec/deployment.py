@@ -26,6 +26,12 @@ from wip_deploy.spec._base import WIPModel
 
 Target = Literal["compose", "k8s", "dev"]
 
+# Security posture, NOT topology: arms the services' production-safety
+# guards (WIP_VARIANT=prod refuses to start on known-default secrets).
+# Deliberately never derived from target — compose/k8s are routinely
+# local-dev shapes; only explicit operator intent may assert prod.
+Variant = Literal["dev", "prod"]
+
 
 class DeploymentMetadata(WIPModel):
     name: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9-]*$")
@@ -325,6 +331,7 @@ class ApplySpec(WIPModel):
 
 class DeploymentSpec(WIPModel):
     target: Target
+    variant: Variant = "dev"
     modules: ModulesSpec = Field(default_factory=ModulesSpec)
     apps: list[AppRef] = Field(default_factory=list)
     auth: AuthSpec
