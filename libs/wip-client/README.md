@@ -31,12 +31,14 @@ Templates define `identity_fields` (e.g., `["email"]`). When you create a docume
 // First call: creates version 1
 await client.documents.createDocument({
   template_id: 'PATIENT_RECORD',
+  namespace: 'wip',
   data: { email: 'jane@example.com', name: 'Jane' },
 })
 
 // Second call with same email: creates version 2 of the SAME document (NOT a new document)
 await client.documents.createDocument({
   template_id: 'PATIENT_RECORD',
+  namespace: 'wip',
   data: { email: 'jane@example.com', name: 'Jane Doe' },  // name changed
 })
 ```
@@ -63,7 +65,7 @@ const docs = await client.documents.listDocuments({
 
 ### Soft Delete: Nothing Is Really Deleted
 
-All delete operations set `status: "inactive"` — records remain in the database. The only exception is `files.hardDeleteFile()` which permanently removes the file from MinIO storage.
+All delete operations default to setting `status: "inactive"` — records remain in the database. The exceptions are opt-in: `files.hardDeleteFile()` permanently removes the file from MinIO storage, and `deleteDocument` / `deleteTemplate` / `deleteTerminology` / `deleteTerm` accept a `hardDelete` option (subject to the namespace's `deletion_mode` and, for terms, the terminology's `mutable` flag).
 
 ### Retry Behavior
 
@@ -88,6 +90,7 @@ const terminologies = await client.defStore.listTerminologies({ status: 'active'
 const result = await client.defStore.createTerminology({
   value: 'GENDER',
   label: 'Gender',
+  namespace: 'wip',
 })
 console.log(result.id) // UUID7
 
@@ -95,7 +98,7 @@ console.log(result.id) // UUID7
 const bulkResult = await client.defStore.createTerms('GENDER', [
   { value: 'MALE', label: 'Male' },
   { value: 'FEMALE', label: 'Female' },
-])
+], { namespace: 'wip' })
 console.log(bulkResult.succeeded) // 2
 ```
 
@@ -195,13 +198,14 @@ const result = await client.defStore.createTerminology({
   value: 'COUNTRY',
   label: 'Country',
   description: 'ISO 3166 countries',
+  namespace: 'wip',
 })
 // result: { index: 0, status: "created", id: "...", value: "COUNTRY" }
 
 // Bulk create (returns BulkResponse)
 const bulk = await client.defStore.createTerminologies([
-  { value: 'GENDER', label: 'Gender' },
-  { value: 'SALUTATION', label: 'Salutation' },
+  { value: 'GENDER', label: 'Gender', namespace: 'wip' },
+  { value: 'SALUTATION', label: 'Salutation', namespace: 'wip' },
 ])
 
 // Update
@@ -230,10 +234,11 @@ await client.defStore.createTerm('COUNTRY', {
   value: 'US',
   label: 'United States',
   aliases: ['USA', 'U.S.A.'],
-})
+}, { namespace: 'wip' })
 
 // Bulk create terms with tuning options
 const bulk = await client.defStore.createTerms('COUNTRY', terms, {
+  namespace: 'wip',
   batch_size: 1000,             // items per batch (default: server-side)
   registry_batch_size: 50,      // registry calls per sub-batch
 })
@@ -304,37 +309,39 @@ const ontology = await client.defStore.importOntology(oboGraphJson, {
 // ontology.terms.created, ontology.relationships.created, ontology.elapsed_seconds
 ```
 
-### Ontology Relationships
+### Ontology Term Relations
+
+Term-ontology edges are "relations" (`relation_type`); document-to-document edges are "relationships" — different APIs, deliberately distinct names.
 
 ```typescript
-// List relationships for a term
-const rels = await client.defStore.listRelationships({
+// List relations for a term
+const rels = await client.defStore.listTermRelations({
   term_id: 'ALZHEIMERS_DISEASE',
   direction: 'outgoing',        // 'incoming', 'outgoing', or 'both'
-  relationship_type: 'is_a',
+  relation_type: 'is_a',
 })
 
-// List all relationships across all terminologies
-const allRels = await client.defStore.listAllRelationships({
-  relationship_type: 'is_a',
+// List all relations across all terminologies
+const allRels = await client.defStore.listAllTermRelations({
+  relation_type: 'is_a',
   status: 'active',
   page: 1,
   page_size: 50,
 })
 
-// Create relationships
-await client.defStore.createRelationships([
-  { source_term_id: 'ALZHEIMERS_DISEASE', target_term_id: 'NEUROLOGY', relationship_type: 'is_a' },
-])
+// Create relations (bulk-first; namespace is required)
+await client.defStore.createTermRelations([
+  { source_term_id: 'ALZHEIMERS_DISEASE', target_term_id: 'NEUROLOGY', relation_type: 'is_a' },
+], 'wip')
 
 // Traversal
 const ancestors = await client.defStore.getAncestors('ALZHEIMERS_DISEASE', {
-  relationship_type: 'is_a',
+  relation_type: 'is_a',
   max_depth: 10,
 })
 const descendants = await client.defStore.getDescendants('NEUROLOGY', { max_depth: 3 })
-const parents = await client.defStore.getParents('ALZHEIMERS_DISEASE')
-const children = await client.defStore.getChildren('NEUROLOGY')
+const parents = await client.defStore.getParents('ALZHEIMERS_DISEASE', 'wip')
+const children = await client.defStore.getChildren('NEUROLOGY', 'wip')
 ```
 
 ---
@@ -367,12 +374,13 @@ const v2 = await client.templates.getTemplateByValueAndVersion('PATIENT_RECORD',
 
 // Raw variants (without resolving inheritance)
 const raw = await client.templates.getTemplateRaw('PATIENT_RECORD')
-const rawByValue = await client.templates.getTemplateByValueRaw('PATIENT_RECORD')
+const rawByValue = await client.templates.getTemplateByValueRaw('PATIENT_RECORD', 'wip')
 
 // Create a template
 await client.templates.createTemplate({
   value: 'LAB_RESULT',
   label: 'Lab Result',
+  namespace: 'wip',
   identity_fields: ['patient_email', 'test_date'],
   fields: [
     { name: 'patient_email', label: 'Patient Email', type: 'string',
@@ -411,11 +419,12 @@ const allDescendants = await client.templates.getDescendants('BASE_RECORD')
 await client.templates.createTemplate({
   value: 'DRAFT_TPL',
   label: 'Draft',
+  namespace: 'wip',
   status: 'draft',              // skip reference validation
   fields: [/* ... */],
 })
-await client.templates.activateTemplate('DRAFT_TPL', { dry_run: true })  // preview
-await client.templates.activateTemplate('DRAFT_TPL')                     // activate
+await client.templates.activateTemplate('DRAFT_TPL', { namespace: 'wip', dry_run: true })  // preview
+await client.templates.activateTemplate('DRAFT_TPL', { namespace: 'wip' })                 // activate
 ```
 
 ### Field Types
@@ -635,9 +644,11 @@ const results = await client.registry.unifiedSearch({
   namespaces: ['wip'],
   entity_types: ['documents'],
 })
-const searchResults = await client.registry.searchEntries('patient record', {
+// Breaking in 0.28.0: returns { hits, total } (RegistryByTermHit[]), adds limit
+const { hits, total } = await client.registry.searchEntries('patient record', {
   namespaces: ['wip'],
   entityTypes: ['documents'],
+  limit: 20,
 })
 
 // Synonyms: map multiple keys to the same entity
@@ -724,7 +735,7 @@ All errors extend `WipError`:
 | Error Class | HTTP Status | When |
 |-------------|------------|------|
 | `WipNotFoundError` | 404 | Entity doesn't exist |
-| `WipValidationError` | 400, 422 | Invalid request data |
+| `WipValidationError` | 400, 422 | Invalid request data (note: `err.statusCode` always reads 422, even when the server returned 400) |
 | `WipConflictError` | 409 | Conflict (rare — most conflicts are per-item in BulkResponse) |
 | `WipAuthError` | 401, 403 | Bad/missing credentials or insufficient permissions |
 | `WipServerError` | 5xx | Server-side error |
@@ -899,9 +910,10 @@ import type {
 
   // Registry
   Namespace, RegistryEntryFull, RegistryLookupResponse, RegistrySearchResponse,
+  RegistryByTermHit,
 
   // Ontology
-  Relationship, TraversalResponse,
+  TermRelation, TermRelationListResponse, CreateTermRelationRequest, TraversalResponse,
 
   // Reporting
   IntegrityCheckResult, SearchResponse, ActivityResponse,
