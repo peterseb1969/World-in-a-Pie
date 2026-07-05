@@ -35,8 +35,8 @@ Modes
                    `## Session Summary — auto-closed by /wip-wake (<ts>)`;
                    then mirror the closed prior to kb.
               4. Mint `<ROLE>-<YYYYMMDD-HHMMSS>` (ROLE from
-                 `.claude/.session-role`; missing -> exit 4, re-run your
-                 scaffold with --refresh). Seconds precision is deliberate —
+                 `.claude/.session-role`; missing -> exit 4 with the
+                 re-scaffold remediation). Seconds precision is deliberate —
                  it removes the same-minute collision class.
               5. `mkdir reports/<NEW>` (plain, not -p; collision -> re-mint,
                  up to 3 attempts) + write fresh frontmatter with
@@ -305,8 +305,12 @@ def read_role(root: Path) -> str:
     p = root / ".claude" / ".session-role"
     if not p.exists() or not p.read_text().strip():
         print(
-            "Error: .claude/.session-role is missing. Re-run your scaffold "
-            "with --refresh, then retry.",
+            "Error: .claude/.session-role is missing (gitignored — fresh "
+            "checkouts never have it). Fix: backend clone -> re-run "
+            "scripts/setup-backend-agent.sh; app repo -> re-run "
+            "scripts/create-app-project.sh <app-dir> --prefix APP-<X> "
+            "(repos whose .app-meta records ROLE_PREFIX self-heal without "
+            "--prefix). Then retry.",
             file=sys.stderr,
         )
         sys.exit(EXIT_NO_ROLE)

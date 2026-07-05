@@ -162,7 +162,11 @@ class TestWakeHardStops:
         (root / ".claude" / ".session-role").unlink()
         res = run(root)
         assert res.returncode == 4
-        assert "--refresh" in res.stderr
+        # The remediation must name the real re-scaffold commands — the old
+        # message pointed at a --refresh flag that no script accepts.
+        assert ".session-role is missing" in res.stderr
+        assert "--prefix APP-<X>" in res.stderr
+        assert "--refresh" not in res.stderr
 
 
 class TestKbBehaviour:
