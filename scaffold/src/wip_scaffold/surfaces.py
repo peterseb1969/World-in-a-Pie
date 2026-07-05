@@ -335,7 +335,8 @@ def toolkit_surface(wheel_path: str) -> Surface:
     return Surface(
         name="toolkit-wheel",
         policy=Policy.REGENERATE,
-        rationale="ship the built wheel into the app's libs/; the build itself is a wrapper action",
+        rationale="ship the built wheel into the app's libs/, wiping stale versions so pip install libs/*.whl resolves to one file; the build itself is a wrapper action",
+        wipe_glob="libs/wip_toolkit-*.whl",
         produce=lambda ctx: {
             f"libs/{Path(wheel_path).name}": Path(wheel_path).read_bytes()
         },
