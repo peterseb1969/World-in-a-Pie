@@ -47,6 +47,20 @@ router.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
 })
 
+// --- Runtime app config (CASE-551): the single source of truth for
+// client-visible per-deployment values. The SPA fetches this at boot
+// (src/lib/app-config.ts) instead of baking VITE_* vars into the bundle —
+// a build-time bake and the server's runtime env drift silently.
+// Allowlist only: never spread process.env here (it holds API keys), and
+// never include secrets — this JSON is served to every browser. Apps that
+// vendor @wip/proxy can use its appConfigHandler at this same path.
+router.get('/api/app-config', (_req, res) => {
+  res.set('Cache-Control', 'no-store')
+  res.json({
+    namespace: process.env.WIP_NAMESPACE || null,
+  })
+})
+
 // --- Ask endpoint ---
 router.post('/api/ask', async (req, res) => {
   const { question, sessionId } = req.body
