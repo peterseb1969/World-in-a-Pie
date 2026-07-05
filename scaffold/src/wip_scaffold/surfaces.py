@@ -178,6 +178,92 @@ WIP_API_KEY_FILE={key_file}
     )
 
 
+QUERY_SCAFFOLD_ROOT_FILES = [
+    "package.json",
+    "tsconfig.json",
+    "vite.config.ts",
+    "tailwind.config.js",
+    "postcss.config.js",
+    "index.html",
+    ".env.example",
+    "Dockerfile",
+    "Dockerfile.dev",
+    ".dockerignore",
+]
+
+
+def query_scaffold_surfaces(app_name: str, app_slug: str, dev_namespace: str) -> list[Surface]:
+    """NL-query preset starting files (create-only; the wrapper gates when).
+    A curated subset is copied — package-lock.json and any future strays in
+    the scaffold dir are deliberately NOT shipped. Placeholder substitution
+    happens during the copy (SCAFFOLD_APP_SLUG/NAME, the WIP clone path and
+    the dev namespace in .env.example) — in-process string replacement, so
+    no sed -i flavor dependency. The dev entrypoint keeps its exec bit via
+    its own surface."""
+
+    def produce(ctx: Context) -> dict[str, bytes]:
+        src_root = ctx.wip_root / "scripts/scaffold-query"
+        if not src_root.is_dir():
+            raise FileNotFoundError(f"scaffold template directory not found: {src_root}")
+        subs = {
+            "SCAFFOLD_APP_SLUG": app_slug,
+            "SCAFFOLD_APP_NAME": app_name,
+        }
+        out: dict[str, bytes] = {}
+        for sub_dir in ("server", "src"):
+            for f in sorted((src_root / sub_dir).rglob("*")):
+                if f.is_file():
+                    out[str(f.relative_to(src_root))] = f.read_bytes()
+        for name in QUERY_SCAFFOLD_ROOT_FILES:
+            out[name] = (src_root / name).read_bytes()
+        out[".github/workflows/build.yaml"] = (
+            src_root / ".github/workflows/build.yaml"
+        ).read_bytes()
+
+        for name in ("package.json", ".github/workflows/build.yaml"):
+            text = out[name].decode()
+            out[name] = text.replace("SCAFFOLD_APP_SLUG", app_slug).encode()
+        out["index.html"] = out["index.html"].decode().replace(
+            "SCAFFOLD_APP_NAME", app_name).encode()
+        env_example = out[".env.example"].decode()
+        env_example = env_example.replace("/path/to/WorldInPie", str(ctx.wip_root))
+        env_example = env_example.replace(
+            "# WIP_NAMESPACE=myapp", f"WIP_NAMESPACE={dev_namespace}")
+        out[".env.example"] = env_example.encode()
+
+        # .gitignore merge: scaffold additions append to whatever the app
+        # already has (create mode normally has none).
+        existing = ctx.target_root / ".gitignore"
+        scaffold_ignore = (src_root / ".gitignore").read_bytes()
+        if existing.is_file():
+            out[".gitignore"] = existing.read_bytes() + scaffold_ignore
+        else:
+            out[".gitignore"] = scaffold_ignore
+        return out
+
+    def produce_entrypoint(ctx: Context) -> dict[str, bytes]:
+        src_root = ctx.wip_root / "scripts/scaffold-query"
+        return {
+            "docker-entrypoint-dev.sh": (src_root / "docker-entrypoint-dev.sh").read_bytes()
+        }
+
+    return [
+        Surface(
+            name="query-scaffold",
+            policy=Policy.REGENERATE,
+            rationale="curated create-time copy with in-process placeholder substitution — no sed -i flavor dependency, no accidental strays",
+            produce=produce,
+        ),
+        Surface(
+            name="query-entrypoint",
+            policy=Policy.REGENERATE,
+            rationale="dev entrypoint must stay executable; exec bit is a surface property",
+            executable=True,
+            produce=produce_entrypoint,
+        ),
+    ]
+
+
 # --- backend matrix ----------------------------------------------------------
 
 def backend_surfaces() -> list[Surface]:

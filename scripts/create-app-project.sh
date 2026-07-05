@@ -772,65 +772,19 @@ else
     echo "            cd $WIP_ROOT/WIP-Toolkit && $WIP_ROOT/.venv/bin/python -m build . --wheel"
 fi
 
-# --- Copy query scaffold files (--preset query only, new projects only) ---
-
+# --- Query scaffold (--preset query only, new projects only) ---
+# Engine surfaces: a curated copy (package-lock.json and strays deliberately
+# excluded) with in-process placeholder substitution — the sed -i calls that
+# made this script macOS-only are gone. The wrapper keeps the create+preset
+# gate; the .env.example namespace value is substituted during the copy.
+QUERY_FLAG=""
 if ! $REFRESH_MODE && [ "$PRESET" = "query" ]; then
-    SCAFFOLD_DIR="$WIP_ROOT/scripts/scaffold-query"
-    if [ ! -d "$SCAFFOLD_DIR" ]; then
-        echo "Error: Scaffold template directory not found: $SCAFFOLD_DIR"
+    if [ ! -d "$WIP_ROOT/scripts/scaffold-query" ]; then
+        echo "Error: Scaffold template directory not found: $WIP_ROOT/scripts/scaffold-query"
         exit 1
     fi
-
-    echo "7. Copying NL query scaffold..."
-
-    # Copy scaffold structure
-    cp -r "$SCAFFOLD_DIR/server" "$APP_DIR/"
-    cp -r "$SCAFFOLD_DIR/src" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/package.json" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/tsconfig.json" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/vite.config.ts" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/tailwind.config.js" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/postcss.config.js" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/index.html" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/.env.example" "$APP_DIR/"
-    # k8s-ready from day 1 (CASE-370): the production Dockerfile, the
-    # Dockerfile.dev (wip-deploy --app-source dev flow) + its entrypoint, and
-    # .dockerignore are root-level files that `cp -r src` doesn't catch.
-    cp "$SCAFFOLD_DIR/Dockerfile" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/Dockerfile.dev" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/docker-entrypoint-dev.sh" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/.dockerignore" "$APP_DIR/"
-    # Scaffold-owned CI workflow (CASE-489): a single template so cross-cutting
-    # CI changes are one edit, not an N-repo sweep. Templates the proven shape
-    # as-is (arch/runner behaviour unchanged — the arm64 regression is a
-    # separate concern, not entangled here).
-    mkdir -p "$APP_DIR/.github/workflows"
-    cp "$SCAFFOLD_DIR/.github/workflows/build.yaml" "$APP_DIR/.github/workflows/"
-    cp "$SCAFFOLD_DIR/.gitignore" "$APP_DIR/.gitignore.scaffold"
-
-    # Merge .gitignore (scaffold additions)
-    if [ -f "$APP_DIR/.gitignore" ]; then
-        cat "$APP_DIR/.gitignore.scaffold" >> "$APP_DIR/.gitignore"
-    else
-        mv "$APP_DIR/.gitignore.scaffold" "$APP_DIR/.gitignore"
-    fi
-    rm -f "$APP_DIR/.gitignore.scaffold"
-
-    # Replace placeholders
-    sed -i '' "s/SCAFFOLD_APP_SLUG/$APP_SLUG/g" "$APP_DIR/package.json"
-    sed -i '' "s/SCAFFOLD_APP_NAME/$APP_NAME/g" "$APP_DIR/index.html"
-    sed -i '' "s/SCAFFOLD_APP_SLUG/$APP_SLUG/g" "$APP_DIR/.github/workflows/build.yaml"
-
-    # Update .env.example with actual paths
-    sed -i '' "s|/path/to/WorldInPie|$WIP_ROOT|g" "$APP_DIR/.env.example"
-
-    echo "   Copied: server/ (agent.ts, index.ts, prompts/)"
-    echo "   Copied: src/ (App.tsx, AskBar.tsx, HomePage.tsx, vite-env.d.ts)"
-    echo "   Copied: package.json, tsconfig.json, vite.config.ts, tailwind, .env.example"
-    echo "   Copied: Dockerfile, Dockerfile.dev, docker-entrypoint-dev.sh, .dockerignore (k8s-ready from day 1 — CASE-370)"
-    echo "   Copied: .github/workflows/build.yaml (scaffold-owned CI — CASE-489)"
-    echo "   App slug: $APP_SLUG"
-
+    echo "7. NL query scaffold: engine surface (slug: $APP_SLUG)"
+    QUERY_FLAG="--query-scaffold"
     STEP_OFFSET=1
 else
     STEP_OFFSET=0
@@ -864,11 +818,8 @@ if ! $REFRESH_MODE; then
         echo "   HTTP $NS_RESPONSE — namespace may already exist (ok)"
     fi
 
-    # Set WIP_NAMESPACE in .env.example if query preset
-    if [ "$PRESET" = "query" ] && [ -f "$APP_DIR/.env.example" ]; then
-        sed -i '' "s|# WIP_NAMESPACE=myapp|WIP_NAMESPACE=$DEV_NAMESPACE|" "$APP_DIR/.env.example"
-        echo "   Set WIP_NAMESPACE=$DEV_NAMESPACE in .env.example"
-    fi
+    # (.env.example's WIP_NAMESPACE is substituted by the engine's
+    # query-scaffold surface during the copy — no post-hoc sed.)
 
     # .env is an engine surface (create-time only — this block only runs on
     # create): points the runtime at the live secrets FILE, never a baked
@@ -910,7 +861,7 @@ PYTHONPATH="$WIP_ROOT/scaffold/src${PYTHONPATH:+:$PYTHONPATH}" \
     --preset "$PRESET" --role-prefix "$APP_PREFIX" \
     --mcp-python "$PYTHON_PATH" --mcp-base-url "$WIP_BASE_URL" \
     --mcp-key-file "$WIP_API_KEY_FILE" \
-    $SEED_BOOTSTRAP_FLAG $WRITE_ENV_FLAG $ENGINE_FLAGS
+    $QUERY_FLAG $SEED_BOOTSTRAP_FLAG $WRITE_ENV_FLAG $ENGINE_FLAGS
 
 # --- Git init + gitignore sentinels (new projects only) ---
 if ! $REFRESH_MODE; then
