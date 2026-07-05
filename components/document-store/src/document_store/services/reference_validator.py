@@ -8,11 +8,20 @@ all references in a document comply with the isolation rules.
 
 import logging
 import os
+import time
 from typing import Any, cast
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Staleness window for cached namespace config (isolation_mode,
+# allowed_external_refs). Mirrors the template cache's 5 s TTL
+# (wip://conventions): namespace-config changes take effect within this
+# window without a service restart. The 404-negative expires on the same
+# clock, so a namespace created after being first probed becomes visible
+# too (CASE-607).
+NAMESPACE_CACHE_TTL_SECONDS = 5.0
 
 
 class ReferenceValidationError(Exception):
@@ -29,12 +38,13 @@ class ReferenceValidator:
     def __init__(self, registry_url: str | None = None, api_key: str | None = None):
         self.registry_url = registry_url or os.getenv("REGISTRY_URL", "http://localhost:8001")
         self.api_key = cast(str, api_key or os.getenv("WIP_AUTH_LEGACY_API_KEY", ""))
-        self._namespace_cache: dict[str, dict[str, Any]] = {}
+        self._namespace_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     async def _get_namespace(self, namespace: str) -> dict[str, Any] | None:
-        """Get namespace info by namespace prefix."""
-        if namespace in self._namespace_cache:
-            return self._namespace_cache[namespace]
+        """Get namespace info by namespace prefix (cached, TTL-bounded)."""
+        cached = self._namespace_cache.get(namespace)
+        if cached is not None and (time.monotonic() - cached[0]) < NAMESPACE_CACHE_TTL_SECONDS:
+            return cached[1]
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -44,12 +54,13 @@ class ReferenceValidator:
                 )
                 if response.status_code == 200:
                     ns_data = response.json()
-                    self._namespace_cache[namespace] = ns_data
+                    self._namespace_cache[namespace] = (time.monotonic(), ns_data)
                     return cast(dict[str, Any] | None, ns_data)
                 elif response.status_code == 404:
                     # No namespace found - allow all references (open by default)
-                    self._namespace_cache[namespace] = {"isolation_mode": "open"}
-                    return self._namespace_cache[namespace]
+                    ns_data = {"isolation_mode": "open"}
+                    self._namespace_cache[namespace] = (time.monotonic(), ns_data)
+                    return ns_data
         except Exception as e:
             logger.warning(f"Failed to fetch namespace '{namespace}': {e}")
 
