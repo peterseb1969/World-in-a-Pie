@@ -264,6 +264,79 @@ def query_scaffold_surfaces(app_name: str, app_slug: str, dev_namespace: str) ->
     ]
 
 
+def client_lib_surface(lib: str, tarball_path: str) -> Surface:
+    """One vendored client library: validate, immutability-check, wipe stale
+    versions, copy, extract README — the file-surface half of distribution.
+    Building/rebuilding a tarball is an npm ACTION and stays in the wrapper.
+
+    Versioned tarballs are immutable: the same filename must always mean the
+    same bytes, because the app's package-lock.json records a content hash
+    against the `file:` spec — same-name-different-content silently
+    re-points a version at new bytes and `npm ci` then fails with
+    EINTEGRITY. That violation is fatal here, never papered over."""
+
+    def produce(ctx: Context) -> dict[str, bytes]:
+        import tarfile
+
+        src = Path(tarball_path)
+        data = src.read_bytes()
+
+        # Belt on top of the wrapper's pre-validation: a tarball with no
+        # compiled dist/*.js means npm pack ran without npm run build.
+        with tarfile.open(src, "r:gz") as tf:
+            names = tf.getnames()
+            if not any(n.startswith("package/dist/") and n.endswith(".js") for n in names):
+                ctx.notes.append(
+                    f"ERROR: {src.name} contains no compiled JS in dist/ — skipped. "
+                    f"Fix: npm run build && npm pack in libs/wip-{lib}."
+                )
+                return {}
+            readme: bytes | None = None
+            try:
+                member = tf.extractfile("package/README.md")
+                readme = member.read() if member else None
+            except KeyError:
+                readme = None
+
+        dest = ctx.target_root / "libs" / src.name
+        if dest.is_file() and dest.read_bytes() != data:
+            raise RuntimeError(
+                f"{src.name} already exists in the app with different content. "
+                f"The library's content changed without a version bump (versioned "
+                f"tarballs are immutable — the lockfile pins a content hash per "
+                f"filename). Bump the version in the lib's package.json, npm pack, "
+                f"commit the new tarball, then re-run this script."
+            )
+
+        out: dict[str, bytes] = {f"libs/{src.name}": data}
+        if readme is not None:
+            out[f"libs/wip-{lib}-README.md"] = readme
+        else:
+            ctx.notes.append(f"Copied: {src.name} (README extraction failed)")
+        return out
+
+    return Surface(
+        name=f"lib-{lib}",
+        policy=Policy.REGENERATE,
+        rationale="stale versioned tarballs are wiped so the app's libs/*.tgz install glob resolves to exactly one file; same-name-different-content is fatal (lockfile pins content hashes)",
+        wipe_glob=f"libs/wip-{lib}-*.tgz",
+        produce=produce,
+    )
+
+
+def toolkit_surface(wheel_path: str) -> Surface:
+    """Vendored wip-toolkit wheel copy. Building the wheel is an action the
+    wrapper owns; this only ships an existing artifact."""
+    return Surface(
+        name="toolkit-wheel",
+        policy=Policy.REGENERATE,
+        rationale="ship the built wheel into the app's libs/; the build itself is a wrapper action",
+        produce=lambda ctx: {
+            f"libs/{Path(wheel_path).name}": Path(wheel_path).read_bytes()
+        },
+    )
+
+
 # --- backend matrix ----------------------------------------------------------
 
 def backend_surfaces() -> list[Surface]:
