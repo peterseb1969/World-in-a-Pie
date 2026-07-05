@@ -110,7 +110,7 @@ The core design artifact. Every generated/copied artifact, its owner, and its li
 | `.claude/.session-role` | both | BE: rewrite every run; APP: `--prefix` or preserve+warn | CASE-389 |
 | `.claude/.session-id` | both | never written by scaffold (minted by /wip-setup) | local-first identity contract |
 | `.claude/.app-meta` | APP | rewrite every run from resolved values | CASE-418 resolution chain |
-| `docs/` reference docs | APP | recopy every run (hardcoded 9-doc list) | list should be data, not code |
+| `docs/` reference docs | APP | recopy every run | list lives as a named, tested Python constant (`APP_REFERENCE_DOCS`) — resolved per open question 1's lean (Python data over an external config layer) after the CASE-614 review flagged the original "data, not code" phrasing as unmet; an external manifest waits for a non-code consumer |
 | `docs/playbooks/*.md` | APP | recopy; **never delete** `case-workflow.md` | CASE-522 (WIP-KB serves it) |
 | `templates/bootstrap/*` | APP | create: always; refresh: `--with-bootstrap` AND absent | genesis banner + SHA stamp (CASE-415); never resurrect |
 | `libs/*.tgz` + READMEs | APP | recopy; version-named, immutable content | CASE-441/442; integrity check on refresh |
