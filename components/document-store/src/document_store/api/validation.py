@@ -64,7 +64,7 @@ async def validate_document(
     response_model=BulkValidationResponse,
     summary="Validate multiple documents against one template without saving",
     description="""
-Validate a batch of documents against a single template, without saving (CASE-419).
+Validate a batch of documents against a single template, without saving.
 
 Bulk, side-effect-free counterpart to `/validate` — the dry-run validator that
 finally got the array form the rest of the write surface already has. All items

@@ -418,8 +418,7 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                           'include '
                                                                                           'in '
                                                                                           'peer/header '
-                                                                                          'projections '
-                                                                                          '(CASE-343). '
+                                                                                          'projections. '
                                                                                           'Bare '
                                                                                           'names → '
                                                                                           'data.<name>; '
@@ -1583,7 +1582,7 @@ namespace (string, REQUIRED): Namespace for the template
 extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version (None = always use latest active parent version)
 identity_fields (array of string): Fields that form the composite identity key
-header_fields (array of string): Fields to include in peer/header projections (CASE-343). Bare names → data.<name>; metadata.custom.<name> paths allowed. Empty → projection falls back to identity_fields.
+header_fields (array of string): Fields to include in peer/header projections. Bare names → data.<name>; metadata.custom.<name> paths allowed. Empty → projection falls back to identity_fields.
 usage (enum): One of: entity, reference, relationship. How a template's documents are intended to be used.
 
 - entity (default): full document lifecycle, the v1.x behaviour.
@@ -1701,7 +1700,7 @@ namespace (string, REQUIRED): Namespace for the template
 extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version (None = always use latest active parent version)
 identity_fields (array of string): Fields that form the composite identity key
-header_fields (array of string): Fields to include in peer/header projections (CASE-343). Bare names → data.<name>; metadata.custom.<name> paths allowed. Empty → projection falls back to identity_fields.
+header_fields (array of string): Fields to include in peer/header projections. Bare names → data.<name>; metadata.custom.<name> paths allowed. Empty → projection falls back to identity_fields.
 usage (enum): One of: entity, reference, relationship. How a template's documents are intended to be used.
 
 - entity (default): full document lifecycle, the v1.x behaviour.
@@ -1934,7 +1933,7 @@ Supports any file type. Returns file_id for use in document file fields.
 Tags are comma-separated (e.g., "receipt,2024,tax").""",
     'validate_documents': """Validate many documents against one template without saving. Returns per-item results.
 
-Bulk, side-effect-free dry run (CASE-419). Prefer this over repeated
+Bulk, side-effect-free dry run. Prefer this over repeated
 validate_document calls when checking a whole dataset — one call instead
 of one per row. All items validate against a single template_id/namespace;
 the template is warmed into cache once. Returns {"results": [...]} in input

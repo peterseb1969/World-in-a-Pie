@@ -254,7 +254,7 @@ async def sync_api_keys(
 
     Only returns runtime keys — config keys are already loaded by each service.
     Requires the wip-services or wip-admins group — enforced by the
-    require_groups dependency above (CASE-594). This endpoint returns
+    require_groups dependency above. This endpoint returns
     key_hash values, so it must never be reachable by an unprivileged
     key; the legitimate consumer is each service's key-sync poller, which
     authenticates with its admin/service-scoped Registry key.

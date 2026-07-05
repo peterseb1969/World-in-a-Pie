@@ -66,7 +66,7 @@ class BackupJob(BeanieDocument):
     )
     namespaces: list[str] = Field(
         default_factory=list,
-        description="CASE-542: all namespaces this backup job spans (1 for a "
+        description="All namespaces this backup job spans (1 for a "
                     "single-namespace backup). Empty on restore jobs.",
     )
 
@@ -204,14 +204,14 @@ class BackupRequest(BaseModel):
     namespaces: list[str] | None = Field(
         default=None,
         description=(
-            "CASE-542: also back up these namespaces into the same archive "
+            "Also back up these namespaces into the same archive "
             "(joined with the URL's {namespace}). Omit for single-namespace."
         ),
     )
     all_namespaces: bool = Field(
         False,
         description=(
-            "CASE-542: back up EVERY namespace the registry lists (incl. 'wip') "
+            "Back up EVERY namespace the registry lists (incl. 'wip') "
             "into one archive. Overrides `namespaces`/{namespace}."
         ),
     )

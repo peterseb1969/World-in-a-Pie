@@ -155,7 +155,7 @@ class Template(Document):
     header_fields: list[str] = Field(
         default_factory=list,
         description=(
-            "Fields to include in peer/header projections (CASE-343). "
+            "Fields to include in peer/header projections. "
             "Bare names → data.<name>; metadata.custom.<name> paths "
             "allowed. Empty → projection falls back to identity_fields."
         )

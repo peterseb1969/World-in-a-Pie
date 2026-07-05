@@ -138,7 +138,7 @@ class RegisterKeyItem(StrictModel):
     )
     skip_identity_value_synonym: bool = Field(
         default=False,
-        description="CASE-430: still compute/inject identity_hash from "
+        description="Still compute/inject identity_hash from "
                     "identity_values, but do NOT create the raw-values synonym. "
                     "Set by document-store for relationship/edge types, whose "
                     "identity_values {source_ref, target_ref} omit the template "

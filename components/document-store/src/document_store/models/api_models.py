@@ -177,7 +177,7 @@ class DocumentListResponse(BaseModel):
 # ============================================================================
 
 class PeerProjection(BaseModel):
-    """Compact projection of a peer entity document for ?include=peers (CASE-303, extended CASE-343).
+    """Compact projection of a peer entity document for ?include=peers.
 
     The relationships endpoint returns edge documents (relationship templates).
     When ?include=peers is set, each item gains a peer field carrying the
@@ -186,7 +186,7 @@ class PeerProjection(BaseModel):
     relationship sidebar without an N+1 fetch.
 
     Field set is determined by the peer template's `header_fields`
-    declaration (CASE-343), falling back to `identity_fields`, and finally
+    declaration, falling back to `identity_fields`, and finally
     to {title, doc_status} for templates with neither. `header_fields`
     may reference data paths (bare names → data.<name>) or audit paths
     (metadata.custom.<name>), so both `data` and `metadata` are surfaced
@@ -215,7 +215,7 @@ class PeerProjection(BaseModel):
 
 
 class RelationshipItem(DocumentResponse):
-    """Edge document with optional peer projection (CASE-303).
+    """Edge document with optional peer projection.
 
     When the caller passes ?include=peers, each item carries either:
       - peer: a PeerProjection of the entity at the OTHER end of the edge
@@ -573,7 +573,7 @@ class ValidationResponse(BaseModel):
 
 
 class BulkValidationRequest(StrictModel):
-    """Request to validate multiple documents against ONE template (CASE-419).
+    """Request to validate multiple documents against ONE template.
 
     Single-template-per-call: every item validates against the same
     `template_id` in the same `namespace`. The dry-run validator has no write
@@ -601,7 +601,7 @@ class BulkValidationRequest(StrictModel):
 
 
 class BulkValidationResponse(BaseModel):
-    """Per-item validation results, in input order (CASE-419).
+    """Per-item validation results, in input order.
 
     Each element is a full ``ValidationResponse`` — a document being invalid is
     reported via that item's ``valid: false`` + ``errors``, not as a batch-level

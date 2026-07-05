@@ -65,8 +65,8 @@ async def create_terms(
     on_conflict: str = Query(
         "error",
         description=(
-            "Duplicate handling on the single-item path (CASE-465 "
-            "idempotent bootstrap): 'error' (default) fails the item with "
+            "Duplicate handling on the single-item path (idempotent "
+            "bootstrap): 'error' (default) fails the item with "
             "error_code='already_exists'; 'validate' returns "
             "status='unchanged' for an identical re-create and "
             "error_code='incompatible_config' when the existing term "
