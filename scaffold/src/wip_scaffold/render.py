@@ -1,4 +1,4 @@
-"""Template rendering: token substitution + tier filtering (CASE-612).
+"""Template rendering: token substitution + tier filtering.
 
 Byte-compatible with the bash it replaces:
 - Token substitution is literal string replacement (the old unquoted-heredoc

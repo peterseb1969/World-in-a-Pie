@@ -1,6 +1,6 @@
-"""The surface engine (CASE-612, migration step 3).
+"""The surface engine (docs/design/scaffold-revamp.md, migration step 3).
 
-Discipline baseline per CASE-604 (`wake_rollover.py`) and the design doc
+Discipline baseline per `wake_rollover.py` (the sibling multi-surface engine) and the design doc
 (docs/design/scaffold-revamp.md §"Engine discipline baseline"):
 - every write is ATOMIC (tempfile in the destination dir + os.replace)
 - runs are IDEMPOTENT (same inputs → same tree, safe to re-run)
@@ -15,9 +15,11 @@ policy — the per-surface policy matrix from the design doc, as code:
                   existing file (warn when neither exists)
 - RENDER_REFRESH  create-only for the real target; when the target exists
                   on a refresh, render to a `.refresh` sidecar instead
-                  (unless force) — the app CLAUDE.md contract (CASE-418)
+                  (unless force) — app CLAUDE.md is generated-then-customised;
+                  a silent overwrite would destroy app-authored content
 
-Stdlib only — zero third-party deps (design constraint, CASE-610 gap 2).
+Stdlib only — zero third-party deps, so the engine can never be blocked
+by venv drift or a dependency pin.
 """
 
 from __future__ import annotations
@@ -64,7 +66,7 @@ class Surface:
     name: str
     policy: Policy
     produce: Callable[[Context], dict[str, bytes]]
-    case_refs: str = ""
+    rationale: str = ""
     wipe_glob: str | None = None
     executable: bool = False
 
@@ -106,7 +108,7 @@ def run_surfaces(surfaces: list[Surface], ctx: Context) -> list[str]:
                 if target.exists():
                     redirected[rel + ".refresh"] = data
                     ctx.notes.append(
-                        f"NOTICE (CASE-418): existing {rel} left untouched — fresh "
+                        f"NOTICE: existing {rel} left untouched (app-authored content) — fresh "
                         f"render written to {rel}.refresh; merge then delete it, or "
                         f"re-run with --force-claude-md to overwrite."
                     )
