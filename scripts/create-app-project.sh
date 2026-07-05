@@ -736,24 +736,27 @@ if ! $REFRESH_MODE; then
     STEP_OFFSET=$((STEP_OFFSET + 1))
 
     # Best-effort — WIP may not be running. Non-fatal.
-    # ACTIVE_KEY is the admin key content from the wip-deploy secrets file.
-    # (Its assignment was dropped in 4e39dde's .mcp.json rework while the two
-    # uses below survived — under `set -u` that aborted every fresh create at
-    # this step. Empty/missing file degrades to the non-fatal HTTP branches.)
+    # PUT is the platform's documented idempotent upsert: creates on
+    # missing with platform defaults, updates supplied fields when
+    # existing, always 200 — re-running a create against a half-built
+    # instance needs no exists-check dance. (The legacy POST returned
+    # non-200 on collision, hence the old 'may already exist' guesswork.)
+    # ACTIVE_KEY is the admin key content from the wip-deploy secrets
+    # file; empty/missing degrades to the non-fatal HTTP branches.
     ACTIVE_KEY=$(cat "$WIP_API_KEY_FILE" 2>/dev/null || true)
     NS_RESPONSE=$(curl -k -s -o /dev/null -w "%{http_code}" \
-        -X POST "https://localhost:8443/api/registry/namespaces" \
+        -X PUT "https://localhost:8443/api/registry/namespaces/$DEV_NAMESPACE" \
         -H "X-API-Key: $ACTIVE_KEY" \
         -H "Content-Type: application/json" \
-        -d "{\"prefix\": \"$DEV_NAMESPACE\", \"description\": \"$APP_NAME (dev)\"}" \
+        -d "{\"description\": \"$APP_NAME (dev)\"}" \
         2>/dev/null || echo "000")
 
     if [ "$NS_RESPONSE" = "200" ]; then
-        echo "   Created namespace: $DEV_NAMESPACE"
+        echo "   Namespace upserted: $DEV_NAMESPACE"
     elif [ "$NS_RESPONSE" = "000" ]; then
         echo "   WIP not reachable — APP-YAC will create the namespace on first run"
     else
-        echo "   HTTP $NS_RESPONSE — namespace may already exist (ok)"
+        echo "   HTTP $NS_RESPONSE — unexpected for an idempotent upsert; check the key/instance"
     fi
 
     # (.env.example's WIP_NAMESPACE is substituted by the engine's
