@@ -288,6 +288,29 @@ jobs:
           . .venv/bin/activate
           pytest deployer/tests/unit/ -v --tb=short
 
+  # Scaffold engine (CASE-612). Unit tests only — the golden-snapshot
+  # tests are opt-in (WIP_GOLDEN=1, need podman + a running install +
+  # BSD sed) and skip themselves here.
+  test-scaffold:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install pytest
+        run: |
+          . .venv/bin/activate
+          pip install pytest
+
+      - name: Run tests
+        run: |
+          . .venv/bin/activate
+          cd scaffold && PYTHONPATH=src pytest tests/ -v --tb=short
+
   # WIP-Toolkit
   test-wip-toolkit:
     runs-on: ubuntu-latest

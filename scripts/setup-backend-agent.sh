@@ -503,51 +503,20 @@ EOF
         ;;
 esac
 
-# --- 3. Generate CLAUDE.md ---
+# --- 3+4. Content surfaces via the engine (CASE-612 step 3) ---
+# CLAUDE.md (render + tier filter), slash commands (wipe + tier gate),
+# wake-rollover, settings baseline, and .session-role now run through
+# wip_scaffold's surface matrix — one implementation shared with the app
+# scaffold, CASE-604 discipline (atomic writes, idempotent, --dry-run).
+# Surface policies and CASE provenance live in scaffold/src/wip_scaffold/.
 
-echo "3. Generating CLAUDE.md..."
-# Content lives in scaffold/templates/claude-md/backend.md (CASE-612 step 2).
-# The __WIP_ROOT__ substitution and TIER3 filter below operate on the copy.
-cp "$WIP_ROOT/scaffold/templates/claude-md/backend.md" "$WIP_ROOT/CLAUDE.md"
-
-# Substitute __WIP_ROOT__ placeholders with the actual absolute path
-sed -i.bak "s|__WIP_ROOT__|$WIP_ROOT|g" "$WIP_ROOT/CLAUDE.md" && rm -f "$WIP_ROOT/CLAUDE.md.bak"
-
-# --- Tier filter (CASE-463) ---
-# <!--TIER3--> ... <!--/TIER3--> regions in the heredoc are KB-collaboration
-# content. Tier 3 keeps the content (markers stripped); tier 2 drops the
-# regions. Markers never reach the emitted file.
-if $TIER3; then
-    sed -i.bak '/^<!--TIER3-->$/d;/^<!--\/TIER3-->$/d' "$WIP_ROOT/CLAUDE.md"
-else
-    sed -i.bak '/^<!--TIER3-->$/,/^<!--\/TIER3-->$/d' "$WIP_ROOT/CLAUDE.md"
-fi
-rm -f "$WIP_ROOT/CLAUDE.md.bak"
-
+echo "3. Rendering content surfaces (engine)..."
+TIER_FLAG=""
+if $TIER3; then TIER_FLAG="--tier3"; fi
+# shellcheck disable=SC2086  # TIER_FLAG is deliberately word-split (empty or one flag)
+PYTHONPATH="$WIP_ROOT/scaffold/src${PYTHONPATH:+:$PYTHONPATH}" \
+    "$VENV_PYTHON" -m wip_scaffold backend --wip-root "$WIP_ROOT" $TIER_FLAG
 echo "   Written: CLAUDE.md (tier $($TIER3 && echo 3 || echo 2))"
-
-# --- 4. Copy backend slash commands ---
-
-echo "4. Copying backend slash commands..."
-mkdir -p "$WIP_ROOT/.claude/commands"
-
-# Remove any existing commands (from a previous setup)
-rm -f "$WIP_ROOT/.claude/commands/"*.md 2>/dev/null || true
-
-cp "$WIP_ROOT/docs/slash-commands/backend/"*.md "$WIP_ROOT/.claude/commands/"
-if ! $TIER3; then
-    # Tier 2: /wip-case is KB-backed collaboration — a tier-3 artifact (CASE-463).
-    rm -f "$WIP_ROOT/.claude/commands/wip-case.md"
-    echo "   Tier 2 (no KB): /wip-case stub omitted"
-fi
-echo "   Copied: $(find "$WIP_ROOT/.claude/commands/" -maxdepth 1 -name '*.md' -type f | wc -l | tr -d ' ') commands"
-
-# Deterministic session-rollover script (CASE-604) — Step A of /wip-wake and
-# /wip-setup's mint runs as a script, not prose. Vendored beside the commands;
-# a --refresh re-copies it, same as the command set.
-mkdir -p "$WIP_ROOT/.claude/scripts"
-cp "$WIP_ROOT/agent-scripts/src/wake_rollover.py" "$WIP_ROOT/.claude/scripts/wake-rollover.py"
-echo "   Copied: .claude/scripts/wake-rollover.py (session rollover, CASE-604)"
 
 # --- Tier-3 provisioning (CASE-463, CASE-517, CASE-537) ---
 # Provisioning (kb.json write, served-client install, /wip-case stub) runs only
@@ -560,37 +529,10 @@ if $KB_OPT_IN; then
     enable_kb
 fi
 
-# --- Session role marker (CASE-389) ---
-# /wip-setup and /wip-wake read this to mint <ROLE>-YYYYMMDD-HHMMSS session IDs.
-# Backend's role is fixed; written/refreshed every run. (.claude/ is gitignored;
-# .session-id itself is minted by /wip-setup, not here.)
-printf 'BE-YAC\n' > "$WIP_ROOT/.claude/.session-role"
-echo "   Wrote: .claude/.session-role (BE-YAC)"
-
-# --- 4b. Generate committed .claude/settings.json baseline (CASE-446) ---
-# Replaces the old create-time-only settings.local.json seed (CASE-169 +
-# CASE-385): that file is gitignored and was written only if missing, so
-# allowlist improvements never reached existing repos and every clone
-# re-paid the approval tax (1,126 accumulated local rules measured across
-# 8 repos, 2026-06-11).
-#
-# This file is 100% scaffold-owned and REGENERATED ON EVERY RUN — do not
-# hand-edit it; machine-/operator-specific rules belong in
-# .claude/settings.local.json (which this script no longer touches).
-# Permission scopes merge at runtime, so existing local files keep working.
-#
-# Shape verified against code.claude.com/docs/en/permissions.md
-# (2026-06-12): evaluation order is deny > ask > allow regardless of rule
-# specificity, so the destructive-verb `ask` entries below reliably gate
-# the broad allows. MCP partial-name wildcards (mcp__wip__get_*) are valid.
-# find:* deliberately omitted (find -exec/-delete are destructive). git
-# WRITE verbs deliberately omitted (commit/push/add/reset/branch -D stay
-# human-gated); read-only git subcommands (log/status/diff/show/rev-parse/
-# ls-files/blame) are allowed below — no destructive form.
-
-# Content lives in scaffold/templates/settings/backend.json (CASE-612 step 2)
-cp "$WIP_ROOT/scaffold/templates/settings/backend.json" "$WIP_ROOT/.claude/settings.json"
-echo "   Written: .claude/settings.json (committed baseline — regenerated every run, CASE-446)"
+# Session role (CASE-389) + settings baseline (CASE-446: scaffold-owned,
+# regenerated every run; settings.local.json never touched — the full
+# rationale lives on the surface entries in wip_scaffold/surfaces.py)
+# are engine surfaces above.
 
 # --- 5. Verify MCP connectivity (local only) ---
 
