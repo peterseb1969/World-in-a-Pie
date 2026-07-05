@@ -460,10 +460,23 @@ regression-pinned in `libs/wip-auth/tests/test_resolve.py`
 (TestBuildCompositeKey) and
 `components/template-store/tests/test_case_589.py`.
 
+**Document reference values** (the data in a `reference_type: document`
+field) accept the same qualified form (CASE-608): a bare value resolves in
+the document's own namespace, `NS:VALUE` resolves in the named namespace.
+The split is shared code (`wip_auth.split_qualified_value`) — one
+definition of the form, used by both the schema-reference resolve layer
+and document-store's value-form doc-ref resolution. `hash:<identity_hash>`
+references keep their existing meaning (checked before the qualifier
+parse). Note the split is purely syntactic: a document identity value that
+itself contains a colon must be referenced by UUID or `hash:` form, or
+qualified explicitly (`ownns:the:value`).
+
 Namespace **isolation** is a separate concern: which namespaces a caller
 may reference is governed by `isolation_mode` + `allowed_external_refs`
-(enforcement gaps tracked in CASE-566). The qualifier only makes the
-reference explicit; it grants nothing.
+(enforcement shipped for doc refs in CASE-566). The qualifier only makes
+the reference explicit; it grants nothing — a qualified reference into an
+undeclared namespace fails with `reference_violation`, naming the
+namespace, rather than `not_found`.
 
 ---
 

@@ -15,6 +15,7 @@ from wip_auth.resolve import (
     clear_resolution_cache,
     resolve_entity_id,
     resolve_entity_ids,
+    split_qualified_value,
 )
 
 
@@ -336,3 +337,38 @@ class TestResolveEntityIds:
             await resolve_entity_ids(
                 ["00000000-0000-0000-0000-000000000000"], "template", "wip"
             )
+
+
+# ===========================================================================
+# split_qualified_value — the shared NS:VALUE parser (CASE-608 extraction)
+# ===========================================================================
+
+
+class TestSplitQualifiedValue:
+    """The single definition of the non-term qualified reference form.
+
+    _build_composite_key delegates its non-term branch here, so these pins
+    also guard the CASE-589 semantics: bare never crosses, first colon
+    wins, purely syntactic (no namespace-existence check).
+    """
+
+    def test_bare_value(self):
+        assert split_qualified_value("PERSON") == (None, "PERSON")
+
+    def test_qualified_value(self):
+        assert split_qualified_value("kb:DOC-1") == ("kb", "DOC-1")
+
+    def test_first_colon_wins(self):
+        assert split_qualified_value("ns:a:b") == ("ns", "a:b")
+
+    def test_empty_prefix_preserved(self):
+        # ":x" keeps the empty prefix — callers decide whether an empty
+        # namespace falls back (document-store treats it as bare).
+        assert split_qualified_value(":x") == ("", "x")
+
+    def test_delegation_parity_with_composite_key(self):
+        # The composite-key builder and the public helper must never drift.
+        for raw in ("PERSON", "kb:DOC-1", "ns:a:b"):
+            ns, value = split_qualified_value(raw)
+            key = _build_composite_key(raw, "document", "callerns")
+            assert key == {"ns": ns if ns is not None else "callerns", "type": "document", "value": value}

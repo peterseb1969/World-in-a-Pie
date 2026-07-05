@@ -7,6 +7,8 @@ import time
 from datetime import date, datetime
 from typing import Any, ClassVar, cast
 
+from wip_auth import split_qualified_value
+
 from .def_store_client import DefStoreError, get_def_store_client
 from .identity_service import IdentityService
 from .template_store_client import TemplateStoreError, get_template_store_client
@@ -1546,7 +1548,16 @@ class ValidationService:
                 doc = await self._resolve_via_registry(value, namespace, "documents")
             else:
                 # Registry lookup — resolve any identifier (synonym, composite key value, etc.)
-                doc = await self._resolve_via_registry(value, namespace, "documents")
+                # Qualified form: explicit NS:VALUE resolves in the named
+                # namespace (same syntax the resolve layer uses for schema
+                # references); bare values never cross. The resolved reference
+                # still passes the namespace-isolation check downstream, so a
+                # qualified ref into an undeclared namespace surfaces as
+                # reference_violation, not not_found.
+                ref_ns, ref_value = split_qualified_value(value)
+                doc = await self._resolve_via_registry(
+                    ref_value, ref_ns or namespace, "documents"
+                )
 
                 if not doc:
                     # CASE-435: the Registry didn't resolve this string reference.

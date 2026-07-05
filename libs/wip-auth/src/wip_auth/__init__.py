@@ -79,6 +79,7 @@ from .resolve import (
     clear_resolution_cache,
     resolve_entity_id,
     resolve_entity_ids,
+    split_qualified_value,
 )
 from .security import check_production_security
 from .startup import init_beanie_with_retry, retry_async
@@ -141,6 +142,7 @@ __all__ = [
     "resolve_entity_ids",
     "resolve_or_404",
     "resolve_permission",
+    "split_qualified_value",
     "set_auth_config",
     "set_current_identity",
     # Setup
