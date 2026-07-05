@@ -778,6 +778,15 @@ if ! $REFRESH_MODE; then
     STEP_OFFSET=$((STEP_OFFSET + 1))
     WRITE_ENV_FLAG="--write-env"
 fi
+# Fresh-checkout self-heal, same class as .session-role: .env is gitignored,
+# so a fresh clone never has it and /wip-setup's key checks dead-end. Its
+# content is entirely machine-derived (a key-file pointer, nothing
+# app-authored), so a refresh recreates it when ABSENT — but never touches
+# an existing one, which may carry an operator's least-privilege key path.
+if $REFRESH_MODE && [ ! -f "$APP_DIR/.env" ]; then
+    echo "   .env absent (fresh checkout) — recreating the key-file pointer (engine surface)..."
+    WRITE_ENV_FLAG="--write-env"
+fi
 WRITE_ENV_FLAG="${WRITE_ENV_FLAG:-}"
 
 # --- Content surfaces via the engine (CASE-612 step 3) ---
