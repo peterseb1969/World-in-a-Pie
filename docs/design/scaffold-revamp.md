@@ -1,12 +1,14 @@
 # Agent Scaffold Revamp — Design
 
-**Status:** Analysis complete; target architecture proposed. No implementation yet.
+**Status:** Analysis complete; target architecture proposed; reviewed by FRanC (CASE-610) and amended per the agreed resolutions. No implementation yet.
 **Last updated:** 2026-07-05
 **Author:** Peter + BE-YAC (BE-YAC-20260704-112016)
 **See also:**
 - `scripts/setup-backend-agent.sh` — current backend scaffold (1,151 lines)
 - `scripts/create-app-project.sh` — current app scaffold (1,647 lines)
 - `docs/design/wip-deploy-v2.md` — the architectural precedent (spec → config_gen → renderers)
+- CASE-610 — FRanC's gap review; CASE-610#1 — the gap resolutions folded into this revision
+- `agent-scripts/src/wake_rollover.py` (CASE-604) — the engine-discipline precedent this design adopts as baseline
 
 ## Context
 
@@ -142,10 +144,14 @@ One renderer handles the two things the heredocs did: placeholder substitution (
 ### 2. One engine, two thin entry points
 A single implementation of the shared logic; `setup-backend-agent.sh` and `create-app-project.sh` remain as entry points (names and CLIs unchanged) but shrink to argument parsing + a role declaration.
 
-**Language: Python.** Rationale: (a) the deployer precedent — spec/config_gen/renderers is already the house idiom; (b) every machine that runs the scaffold has a venv by construction (the backend scaffold makes one, and the app scaffold's CASE-558 pre-flight already requires it); (c) the hairiest current logic — tarball integrity, lockfile sha512 cross-checks, JSON read/patch, label parsing — is one-liner territory in Python and incident-prone in bash/sed/node-inline; (d) it becomes unit-testable under `wip-test.sh` like the deployer (the current scripts have zero tests). Bootstrap ordering note: the backend scaffold's step 1 (venv creation) must stay shell — a thin `setup-backend-agent.sh` creates the venv if missing, then hands off to the Python engine for everything else.
+**Language: Python.** Rationale: (a) the deployer precedent — spec/config_gen/renderers is already the house idiom; (b) **the engine always executes on the WIP clone's venv — target dirs are pure write destinations and never need Python provisioning.** Both scripts run from the WIP clone (`WIP_ROOT` resolved from script location); the backend scaffold creates the venv, and the app scaffold's CASE-558 pre-flight hard-errors unless `$WIP_ROOT/.venv/bin/python` imports `wip_mcp` *before anything is generated*. So `$WIP_ROOT/.venv/bin/python -m wip_scaffold …` is guaranteed runnable at every invocation, for both roles (CASE-610 gap 2 — the earlier wording here invited a misreading that app projects would need their own venv; they don't, nothing Python lands in the target dir); (c) the hairiest current logic — tarball integrity, lockfile sha512 cross-checks, JSON read/patch, label parsing — is one-liner territory in Python and incident-prone in bash/sed/node-inline; (d) it becomes unit-testable under `wip-test.sh` like the deployer (the current scripts have zero tests). Bootstrap ordering note: the backend scaffold's step 1 (venv creation) must stay shell — a thin `setup-backend-agent.sh` creates the venv if missing, then hands off to the Python engine for everything else.
+
+**Zero third-party dependencies.** The engine is stdlib-only (same constraint `wake_rollover.py` already satisfies) — it can never be blocked by venv drift or a dependency pin, and it stays runnable on any half-provisioned clone whose venv at least exists.
+
+**Engine discipline baseline (CASE-604).** `agent-scripts/src/wake_rollover.py` shipped the closest sibling pattern in this codebase: an ordered multi-surface engine with atomic writes (tempfile + rename), idempotence, and a *designed, tested* `--dry-run` mode. That discipline is this engine's baseline contract, not an emergent property: every surface write is atomic, every run is idempotent, and `--dry-run` (print what each surface would do, touch nothing) is a first-class mode with its own tests — not a byproduct of the matrix loop. The engine also eventually absorbs wake-rollover's own vendoring story: the `.claude/scripts/wake-rollover.py` copy both scaffolds perform today is just another row in the surface matrix.
 
 ### 3. The matrix as code
-The surface-policy table above becomes the engine's declarative core — a list of surface entries `{name, source, dest, roles, policy, tier, case_refs}` with policy ∈ {`regenerate`, `preserve`, `create_only`, `render_refresh`, `opt_in`, `never_touch`}. The engine is one loop over the matrix; per-surface special logic (tarball validation, meta resolution) hangs off entries as handlers. `--dry-run` falls out for free: print what each surface would do.
+The surface-policy table above becomes the engine's declarative core — a list of surface entries `{name, source, dest, roles, policy, tier, case_refs}` with policy ∈ {`regenerate`, `preserve`, `create_only`, `render_refresh`, `opt_in`, `never_touch`}. The engine is one loop over the matrix; per-surface special logic (tarball validation, meta resolution) hangs off entries as handlers. `--dry-run` is a first-class designed mode per the CASE-604 baseline above — print what each surface would do, touch nothing, with its own tests.
 
 ### 4. Guards as named, tested units
 Branch guard, MCP pre-flight, safe-remote-install (CASE-557), running-install detection (CASE-521/539), tarball immutability (CASE-442) — each becomes a function with its CASE reference in the docstring and a unit test pinning the incident behavior. The test suite replaces "grep the comments" as the carrier of institutional memory.
@@ -160,15 +166,43 @@ Branch guard, MCP pre-flight, safe-remote-install (CASE-557), running-install de
 
 ## Migration plan
 
-Incremental, each step shippable and verifiable against the current scripts' output:
+Incremental, each step shippable and verifiable against the current scripts' output. Effort sizing per step (CASE-610 gap 6): overall **L**, but decomposed so it sequences against other in-flight work — each step is independently shippable, and pausing after any step leaves the current scripts fully functional.
 
-1. **Golden snapshot** — capture current output of both scripts (fresh create + refresh, tier 2 + tier 3) as fixture trees. This is the regression net for everything after.
-2. **Extract templates** — move heredoc content to `scaffold/templates/`; scripts `cat`/render them instead of inlining. Pure mechanical move; snapshots must stay byte-identical (modulo the escaping-regime fixes, reviewed by diff).
-3. **Build the Python engine** with the surface matrix + renderer + guards, under `wip-test.sh scaffold` unit tests; entry-point scripts delegate surface-by-surface until nothing bash-side remains but the venv bootstrap and arg forwarding.
-4. **Apply the deliberate unifications** (settings baseline, fail-loud keys, PUT upsert, hook parity) as separate reviewed commits — never bundled with mechanical moves.
-5. **Retire the old bodies**; update CLAUDE.md §8's "canonical source is the heredoc" pointer to the template files.
+1. **Golden snapshot** — **S**. Capture current output of both scripts as fixture trees, against this enumerated coverage matrix (CASE-610 gap 1):
+   - **Backend:** `{local, ssh, http} × {create, refresh} × {tier2, tier3}` = 12 fixtures. If open question 3 resolves to dropping ssh/http, this collapses to 4 — resolve OQ3 *before* building fixtures.
+   - **App:** `{create, refresh} × {tier2, tier3} × {standard, query}` = 8 fixtures, plus targeted single-purpose fixtures for the independent modifier flags (`--prefix`, `--force-claude-md`, `--with-bootstrap`) — deliberately NOT a full cross-product (they're non-interacting switches; crossing them is fixture noise, and unrepresented branch interactions are exactly what the explain-every-delta gate exists to catch).
+   This is the regression net for everything after.
+2. **Extract templates** — **M**. Move heredoc content to `scaffold/templates/`; scripts `cat`/render them instead of inlining. Pure mechanical move; snapshots must stay byte-identical (modulo the escaping-regime fixes, reviewed by diff).
+3. **Build the Python engine** — **L** (the bulk). Surface matrix + renderer + guards, under `wip-test.sh scaffold` unit tests; entry-point scripts delegate surface-by-surface until nothing bash-side remains but the venv bootstrap and arg forwarding. **Ships with a `test-scaffold` CI job** cloned from `test-deployer`'s shape (venv → install → pytest) in `.gitea/workflows/test.yaml` — verified absent today (CASE-610 gap 4); the job lands in the same commit as the first engine tests, or the tests don't count as a regression net.
+4. **Apply the deliberate unifications** — **S–M** each, as separate reviewed commits — never bundled with mechanical moves.
+5. **Retire the old bodies** — **S**. Update CLAUDE.md §8's "canonical source is the heredoc" pointer to the template files. **Cutover validation:** run `--refresh` against one real old-format clone per role (a WIP-TC clone + one live app repo) before cutover is declared done (CASE-610 gap 5).
 
 Validation gate for each step: re-run against a scratch clone and a scratch app dir; diff against the golden snapshots; explain every delta.
+
+## Already-scaffolded repos (CASE-610 gap 5)
+
+The fleet's existing clones (WIP-TC01–04, react-console, wip-aa, …) all carry heredoc-era `CLAUDE.md` / `settings.json`. No migration tooling is needed — the per-surface policies already define refresh-against-old-state, because `regenerate` surfaces (BE CLAUDE.md, settings.json, commands, `.mcp.json`) **never read what they overwrite**. The two exceptions that do read prior state are format-agnostic by construction: the `.mcp.json` preserve fields (CASE-516/520) parse plain JSON, and the CASE-418 `.app-meta` backfill chain was built precisely for pre-`.app-meta` clones. `render_refresh` (app CLAUDE.md) writes a sidecar and touches nothing. This is a stated-and-reasoned assumption, not a verified fact — hence the step-5 real-clone validation bullet above.
+
+## Downstream gene-pool consumers (CASE-610 gap 7)
+
+Consumers of scaffold-vendored artifacts beyond the two roles this doc covers:
+
+- **FR-YAC's vendored `wake_rollover.py`** — a manual, unwatched copy today (no propagation script exists for FR-YAC). Once vendoring is matrix-driven, FR-YAC should become a listed vendoring destination; re-syncing FR-YAC's copies is FRanC's row in the ownership table below.
+- **`templates/claude-md-additions.md` proposal workflow** — gets strictly *better* under the revamp: once CLAUDE.md content is a real markdown template file, a proposed addition is an ordinary reviewable diff against that file instead of prose describing a heredoc edit. The workflow itself is unchanged (FRanC proposes, Peter approves, BE-YAC lands).
+
+## Ownership (ratified via CASE-610)
+
+| Piece | Owner |
+|---|---|
+| Engine, matrix mechanism, renderer, guards + tests, migration execution | BE-YAC |
+| `docs/slash-commands/*` **content** | FRanC (commit authority — established precedent) |
+| Slash-command **copying mechanics** | BE-YAC — a surface-matrix row executed by the engine; splitting the engine loop by file-type ownership would recreate the dual-implementation problem. Changes to a row's copying *semantics* (e.g. the CASE-522 never-delete rule) get FRanC sign-off on that row |
+| `CLAUDE.md` template content | BE-YAC — FRanC's role stays proposal-only via `templates/claude-md-additions.md` |
+| Institutional-memory completeness of the surface-policy matrix | FRanC reviews before cutover; BE-YAC owns the artifact |
+| Re-syncing FR-YAC's own vendored copies | FRanC |
+| `enable_kb` SESSION_ROLE registration moving server-side (open question 4) | APP-KB, if pursued — severable into its own case; the engine ports the existing curl behavior as-is until then |
+| SSH/HTTP transport keep-or-drop (open question 3) | Peter |
+| Overall sizing/sequencing against other in-flight work | Peter |
 
 ## Open questions
 
