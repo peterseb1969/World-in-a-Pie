@@ -77,6 +77,24 @@ def _looks_like_uuid(raw_id: str) -> bool:
 
 
 
+def split_qualified_value(raw_id: str) -> tuple[str | None, str]:
+    """Split a qualified reference value into (namespace, value).
+
+    The platform's cross-namespace value form for non-term entities:
+    bare ``VALUE`` never crosses namespaces (returns ``(None, raw_id)``);
+    explicit ``NS:VALUE`` names the namespace to resolve in. The split is
+    purely syntactic — first colon wins, no existence check — so callers
+    get deterministic resolution independent of namespace lifecycle.
+
+    Terms use a 2/3-part form instead (``TERMINOLOGY:VALUE`` /
+    ``NS:TERMINOLOGY:VALUE``) — do not use this helper for terms.
+    """
+    if ":" in raw_id:
+        ns_prefix, value = raw_id.split(":", 1)
+        return ns_prefix, value
+    return None, raw_id
+
+
 def _build_composite_key(
     raw_id: str,
     entity_type: str,
@@ -122,12 +140,12 @@ def _build_composite_key(
         else:
             return {"ns": namespace, "type": "term", "value": raw_id}
     else:
-        if ":" in raw_id:
+        ns_prefix, value = split_qualified_value(raw_id)
+        if ns_prefix is not None:
             # NS:VALUE — cross-namespace
-            ns_prefix, value = raw_id.split(":", 1)
             return {"ns": ns_prefix, "type": entity_type, "value": value}
         # Bare value — own namespace
-        return {"ns": namespace, "type": entity_type, "value": raw_id}
+        return {"ns": namespace, "type": entity_type, "value": value}
 
 
 def _build_resolve_payload(
