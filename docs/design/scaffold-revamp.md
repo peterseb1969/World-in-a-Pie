@@ -153,6 +153,10 @@ A single implementation of the shared logic; `setup-backend-agent.sh` and `creat
 ### 3. The matrix as code
 The surface-policy table above becomes the engine's declarative core — a list of surface entries `{name, source, dest, roles, policy, tier, case_refs}` with policy ∈ {`regenerate`, `preserve`, `create_only`, `render_refresh`, `opt_in`, `never_touch`}. The engine is one loop over the matrix; per-surface special logic (tarball validation, meta resolution) hangs off entries as handlers. `--dry-run` is a first-class designed mode per the CASE-604 baseline above — print what each surface would do, touch nothing, with its own tests.
 
+### 3b. Actions stay in bash (ratified, closes step 3's scope question)
+
+The engine's contract is **files with policies** — every surface is a pure function from resolved inputs to file contents, which is what makes atomic writes, dry-run, idempotence, and golden-gating possible. **Actions** — operations with external side effects or interactivity — stay in the wrapper scripts permanently: `enable_kb` (network provisioning), the dev-namespace POST, `git init`, npm builds/rebuilds, the lockfile sync (`npm install`), the toolkit wheel build, and the backend's remote-transport prompts. The boundary rule for every future surface: *if it can't be expressed as "write these bytes to these paths under this policy," it's an action and belongs in the wrapper.* Distribution artifacts illustrate the split: building a tarball or wheel is a wrapper action; validating, immutability-checking, wiping stale versions, copying, and README-extraction are engine surfaces. Ratified by Peter, 2026-07-05 — "step 3 complete" therefore means **all file surfaces migrated**, which the tarball/toolkit family finishes.
+
 ### 4. Guards as named, tested units
 Branch guard, MCP pre-flight, safe-remote-install (CASE-557), running-install detection (CASE-521/539), tarball immutability (CASE-442) — each becomes a function with its CASE reference in the docstring and a unit test pinning the incident behavior. The test suite replaces "grep the comments" as the carrier of institutional memory.
 

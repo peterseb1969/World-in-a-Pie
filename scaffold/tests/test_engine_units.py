@@ -320,3 +320,92 @@ def test_query_scaffold_gitignore_merges_existing(tmp_path):
     text = (tmp_path / ".gitignore").read_text()
     assert text.startswith("existing-line\n")
     assert len(text) > len("existing-line\n"), "scaffold additions must be appended"
+
+
+# --- client-lib + toolkit surfaces -------------------------------------------
+
+def _make_tgz(path: Path, with_dist: bool, readme: bytes | None = b"# README"):
+    import io
+    import tarfile
+
+    def add(tf, name, data):
+        info = tarfile.TarInfo(name)
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+
+    with tarfile.open(path, "w:gz") as tf:
+        add(tf, "package/package.json", b"{}")
+        if with_dist:
+            add(tf, "package/dist/index.js", b"module.exports={}")
+        if readme is not None:
+            add(tf, "package/README.md", readme)
+
+
+def test_client_lib_copies_and_extracts_readme(tmp_path):
+    from wip_scaffold.surfaces import client_lib_surface
+
+    tgz = tmp_path / "src" / "wip-client-1.2.3.tgz"
+    tgz.parent.mkdir()
+    _make_tgz(tgz, with_dist=True)
+    app = tmp_path / "app"
+    run_surfaces([client_lib_surface("client", str(tgz))],
+                 Context(wip_root=REPO_ROOT, target_root=app))
+    assert (app / "libs/wip-client-1.2.3.tgz").read_bytes() == tgz.read_bytes()
+    assert (app / "libs/wip-client-README.md").read_bytes() == b"# README"
+
+
+def test_client_lib_wipes_stale_versions(tmp_path):
+    from wip_scaffold.surfaces import client_lib_surface
+
+    tgz = tmp_path / "wip-client-2.0.0.tgz"
+    _make_tgz(tgz, with_dist=True)
+    app = tmp_path / "app"
+    (app / "libs").mkdir(parents=True)
+    stale = app / "libs/wip-client-1.9.0.tgz"
+    _make_tgz(stale, with_dist=True)
+    other = app / "libs/wip-react-0.1.0.tgz"
+    _make_tgz(other, with_dist=True)
+    run_surfaces([client_lib_surface("client", str(tgz))],
+                 Context(wip_root=REPO_ROOT, target_root=app))
+    assert not stale.exists(), "stale same-lib version must be wiped (install glob ambiguity)"
+    assert other.exists(), "other libs' tarballs are not this surface's business"
+    assert (app / "libs/wip-client-2.0.0.tgz").exists()
+
+
+def test_client_lib_immutability_violation_is_fatal(tmp_path):
+    from wip_scaffold.surfaces import client_lib_surface
+
+    tgz = tmp_path / "wip-client-1.0.0.tgz"
+    _make_tgz(tgz, with_dist=True)
+    app = tmp_path / "app"
+    (app / "libs").mkdir(parents=True)
+    conflicting = app / "libs/wip-client-1.0.0.tgz"
+    _make_tgz(conflicting, with_dist=True, readme=b"different bytes inside")
+    with pytest.raises(RuntimeError, match="different content"):
+        run_surfaces([client_lib_surface("client", str(tgz))],
+                     Context(wip_root=REPO_ROOT, target_root=app))
+    # Fatal BEFORE any mutation: the conflicting file must be untouched.
+    assert conflicting.exists()
+
+
+def test_client_lib_invalid_dist_skips_with_note(tmp_path):
+    from wip_scaffold.surfaces import client_lib_surface
+
+    tgz = tmp_path / "wip-client-1.0.0.tgz"
+    _make_tgz(tgz, with_dist=False)
+    app = tmp_path / "app"
+    ctx = Context(wip_root=REPO_ROOT, target_root=app)
+    run_surfaces([client_lib_surface("client", str(tgz))], ctx)
+    assert not (app / "libs/wip-client-1.0.0.tgz").exists()
+    assert any("no compiled JS" in n for n in ctx.notes)
+
+
+def test_toolkit_wheel_copies(tmp_path):
+    from wip_scaffold.surfaces import toolkit_surface
+
+    whl = tmp_path / "wip_toolkit-0.5.0-py3-none-any.whl"
+    whl.write_bytes(b"PK\x03\x04fakewheel")
+    app = tmp_path / "app"
+    run_surfaces([toolkit_surface(str(whl))],
+                 Context(wip_root=REPO_ROOT, target_root=app))
+    assert (app / "libs/wip_toolkit-0.5.0-py3-none-any.whl").read_bytes() == whl.read_bytes()

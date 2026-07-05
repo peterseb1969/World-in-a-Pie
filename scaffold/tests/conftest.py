@@ -41,13 +41,8 @@ def pytest_collection_modifyitems(config, items):
 
 
 def _check_prereqs() -> None:
-    # BSD sed: create-app-project.sh uses `sed -i ''` (macOS-only until
-    # migration step 4 fixes it). GNU sed would corrupt the scratch output.
+    # (The BSD-sed requirement is gone: the query-preset migration removed
+    # every `sed -i` from create-app-project.sh, so golden runs no longer
+    # depend on a sed flavor.)
     if shutil.which("podman") is None:
         pytest.exit("WIP_GOLDEN=1 requires podman (running-install key detection)", 1)
-    sed_help = os.popen("sed --version 2>/dev/null").read()
-    if "GNU" in sed_help:
-        pytest.exit(
-            "WIP_GOLDEN=1 requires BSD sed (create-app-project.sh uses `sed -i ''`; "
-            "the portability fix is migration step 4)", 1
-        )

@@ -25,9 +25,11 @@ from .surfaces import (
     app_surfaces,
     backend_surfaces,
     bootstrap_surface,
+    client_lib_surface,
     env_surface,
     mcp_json_surface,
     query_scaffold_surfaces,
+    toolkit_surface,
 )
 
 
@@ -65,6 +67,10 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--dry-run", action="store_true")
     a.add_argument("--seed-bootstrap", action="store_true")
     a.add_argument("--query-scaffold", action="store_true")
+    a.add_argument("--lib-client", default="")
+    a.add_argument("--lib-react", default="")
+    a.add_argument("--lib-proxy", default="")
+    a.add_argument("--toolkit-wheel", default="")
     a.add_argument("--write-env", action="store_true")
     _add_mcp_args(a)
 
@@ -111,6 +117,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.query_scaffold:
             surfaces = query_scaffold_surfaces(
                 args.app_name, args.app_slug, args.dev_namespace) + surfaces
+        for lib, path in (("client", args.lib_client), ("react", args.lib_react),
+                          ("proxy", args.lib_proxy)):
+            if path:
+                surfaces.append(client_lib_surface(lib, path))
+        if args.toolkit_wheel:
+            surfaces.append(toolkit_surface(args.toolkit_wheel))
         if args.seed_bootstrap:
             surfaces.append(bootstrap_surface())
         if args.write_env:
