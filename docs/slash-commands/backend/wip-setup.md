@@ -14,7 +14,7 @@ python3 .claude/scripts/wake-rollover.py --fresh --dry-run
 
 - **exit 0** → identity is mintable (clean fresh start, or discontinuous restart over a closed prior). Ignore the previewed IDs — the real mint below re-computes. Proceed to the checks.
 - **exit 5** → an **active** session holds the sentinel; **stop** and relay the script's message (run `/wip-wake` for a linked session, or `/wip-report session-end` first).
-- **exit 4** → `.claude/.session-role` is missing; **stop** and tell the operator to re-run the scaffold with `--refresh`. Do **not** guess the role.
+- **exit 4** → `.claude/.session-role` is missing (gitignored — fresh checkouts never have it); **stop** and tell the operator to re-run `scripts/setup-backend-agent.sh` on this clone. There is NO `--refresh` flag — the scaffolds auto-detect mode. Do **not** guess the role.
 
 Step 0 writes nothing (`--dry-run` is a pure read). If it exited 0, proceed to the checks; the session is **minted only after they pass** (below).
 
