@@ -1,11 +1,16 @@
 """The surface matrix — content-family surfaces for both roles.
 
-Step-3 phase 1 ports the CONTENT-PROPAGATION family: CLAUDE.md, settings,
+All file surfaces live here: content propagation (CLAUDE.md, settings,
 commands, playbooks, reference docs, hook, wake-rollover, session-role,
-app-meta. Environment surfaces (.mcp.json, venv), distribution surfaces
-(tarballs, wheel, bootstrap templates, query preset), and network actions
-(enable_kb, namespace) remain in the bash wrappers for now — they migrate
-in later phases, one gated commit at a time.
+app-meta), .mcp.json, distribution (client-lib tarballs, toolkit wheel,
+bootstrap templates, query preset), and .env. ACTIONS — anything with an
+external side effect (venv bootstrap, enable_kb, the namespace upsert,
+npm/wheel builds, the lockfile sync, git init) — stay in the bash
+wrappers permanently; the boundary rule is in the design doc §3b: if it
+can't be expressed as "write these bytes under this policy", it's an
+action. Create-only surfaces (bootstrap, query preset, .env) are
+REGENERATE here; their create-only semantics are enforced at the wrapper
+call site, which passes their flags only on create.
 
 Every entry carries a substantive rationale — the incident lesson written
 out, not a ticket number — and the unit tests pin each policy's behavior
