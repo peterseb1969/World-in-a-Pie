@@ -334,9 +334,13 @@ class TemplateService:
         # Normalize all field references to canonical IDs — skip for drafts.
         # Normalization implicitly validates (raises EntityNotFoundError for invalid refs),
         # which is converted to ValueError for the API boundary.
+        resolved_template_ids: list[str] = []
+        resolved_terminology_ids: list[str] = []
         if not is_draft:
             try:
-                await TemplateService._normalize_field_references(request.fields, namespace)
+                resolved_template_ids, resolved_terminology_ids = (
+                    await TemplateService._normalize_field_references(request.fields, namespace)
+                )
             except EntityNotFoundError as e:
                 raise ValueError(str(e)) from e
 
@@ -350,16 +354,16 @@ class TemplateService:
             check_existence=not is_draft,
         )
 
-        # Validate cross-namespace references (isolation mode check) — skip for drafts
-        if not is_draft and parent_namespace:
-            try:
-                validator = get_reference_validator()
-                await validator.validate_template_references(
-                    template_namespace=namespace,
-                    extends_template_namespace=parent_namespace,
-                )
-            except ReferenceValidationError as e:
-                raise ValueError(f"Cross-namespace reference violation: {e.violations}") from e
+        # Validate cross-namespace references (isolation mode check) over ALL
+        # resolved schema refs — extends AND field-level template/terminology
+        # refs, not just the parent — skip for drafts (re-checked at activation)
+        if not is_draft:
+            await TemplateService._check_reference_isolation(
+                namespace,
+                template_ids=resolved_template_ids,
+                terminology_ids=resolved_terminology_ids,
+                extends_namespace=parent_namespace,
+            )
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -1099,11 +1103,24 @@ class TemplateService:
 
         # Normalize field references to canonical IDs (same as create_template)
         new_fields = request.fields if request.fields is not None else original.fields
+        updated_template_ids: list[str] = []
+        updated_terminology_ids: list[str] = []
         if request.fields is not None:
             try:
-                await TemplateService._normalize_field_references(new_fields, original.namespace)
+                updated_template_ids, updated_terminology_ids = (
+                    await TemplateService._normalize_field_references(new_fields, original.namespace)
+                )
             except EntityNotFoundError as e:
                 raise ValueError(str(e)) from e
+
+        # Isolation check over the updated refs + the (possibly unchanged)
+        # parent — same boundary as create; extends_value is canonical here
+        await TemplateService._check_reference_isolation(
+            original.namespace,
+            template_ids=updated_template_ids,
+            terminology_ids=updated_terminology_ids,
+            extends_template_id=extends_value,
+        )
 
         # CASE-493: enforce mandatory, pinned versions on the merged schema
         # references (extends + nested template refs). extends_value is the
@@ -1769,8 +1786,21 @@ class TemplateService:
             # Normalize field references to canonical IDs — skip for drafts
             if not is_draft:
                 try:
-                    await TemplateService._normalize_field_references(
-                        template_req.fields, namespace
+                    bulk_template_ids, bulk_terminology_ids = (
+                        await TemplateService._normalize_field_references(
+                            template_req.fields, namespace
+                        )
+                    )
+                    # Isolation check over the resolved field refs. extends is
+                    # NOT covered here: the bulk path stores it unresolved
+                    # (pins are presence-checked with check_existence=False),
+                    # so there is no canonical parent ID to look up — a
+                    # pre-existing looseness of the bulk contract, not a new
+                    # exemption.
+                    await TemplateService._check_reference_isolation(
+                        namespace,
+                        template_ids=bulk_template_ids,
+                        terminology_ids=bulk_terminology_ids,
                     )
                 except (ValueError, EntityNotFoundError) as e:
                     results.append(BulkResultItem(
@@ -2629,10 +2659,12 @@ class TemplateService:
         activation_statuses = ["active", "reserved"]
         try:
             for t in activation_set:
-                await TemplateService._normalize_field_references(
-                    t.fields, namespace,
-                    known_templates=known_templates,
-                    include_statuses=activation_statuses,
+                act_template_ids, act_terminology_ids = (
+                    await TemplateService._normalize_field_references(
+                        t.fields, namespace,
+                        known_templates=known_templates,
+                        include_statuses=activation_statuses,
+                    )
                 )
                 # Also resolve extends (known_templates checked first, then Registry)
                 if t.extends and t.extends in known_templates:
@@ -2642,6 +2674,17 @@ class TemplateService:
                         t.extends, "template", namespace,
                         include_statuses=activation_statuses,
                     )
+                # Isolation check — drafts skipped it at create; activation is
+                # where their coverage lands. Activation-set members are
+                # same-namespace by construction and pass trivially; external
+                # refs are checked. (Reserved-status externals are invisible
+                # to the namespace lookup and thus skipped — active-only route.)
+                await TemplateService._check_reference_isolation(
+                    namespace,
+                    template_ids=act_template_ids,
+                    terminology_ids=act_terminology_ids,
+                    extends_template_id=t.extends,
+                )
         except EntityNotFoundError as e:
             raise ValueError(str(e)) from e
 
@@ -2768,7 +2811,7 @@ class TemplateService:
         namespace: str,
         known_templates: dict[str, str] | None = None,
         include_statuses: list[str] | None = None,
-    ) -> None:
+    ) -> tuple[list[str], list[str]]:
         """
         Normalize all reference fields to canonical IDs via batch Registry resolution.
 
@@ -2783,6 +2826,11 @@ class TemplateService:
                 (entries found here skip the Registry call)
             include_statuses: Status filter for resolution (e.g. ["active", "reserved"]
                 during activation). Default: active only.
+
+        Returns:
+            (template_ids, terminology_ids) — the canonical IDs applied to the
+            fields, deduplicated. Feed these to _check_reference_isolation so
+            every resolved schema reference passes the namespace boundary.
         """
         # Phase 1: Collect all refs (skip known_templates hits — those are
         # resolved within the activation set without a Registry call)
@@ -2839,19 +2887,68 @@ class TemplateService:
             return resolved_terminologies[ref]
 
         # Phase 3: Apply resolved IDs back to fields
+        applied_template_ids: set[str] = set()
+        applied_terminology_ids: set[str] = set()
         for field in fields:
             if field.target_templates:
                 field.target_templates = [_resolve_tpl(r) for r in field.target_templates]
+                applied_template_ids.update(field.target_templates)
             if field.template_ref:
                 field.template_ref = _resolve_tpl(field.template_ref)
+                applied_template_ids.add(field.template_ref)
             if field.array_template_ref:
                 field.array_template_ref = _resolve_tpl(field.array_template_ref)
+                applied_template_ids.add(field.array_template_ref)
             if field.terminology_ref:
                 field.terminology_ref = _resolve_term(field.terminology_ref)
+                applied_terminology_ids.add(field.terminology_ref)
             if field.array_terminology_ref:
                 field.array_terminology_ref = _resolve_term(field.array_terminology_ref)
+                applied_terminology_ids.add(field.array_terminology_ref)
             if field.target_terminologies:
                 field.target_terminologies = [_resolve_term(r) for r in field.target_terminologies]
+                applied_terminology_ids.update(field.target_terminologies)
+
+        return sorted(applied_template_ids), sorted(applied_terminology_ids)
+
+    @staticmethod
+    async def _check_reference_isolation(
+        namespace: str,
+        template_ids: list[str],
+        terminology_ids: list[str],
+        extends_namespace: str | None = None,
+        extends_template_id: str | None = None,
+    ) -> None:
+        """Enforce namespace isolation over ALL resolved schema references.
+
+        Fetches each referenced entity's owning namespace in one bulk Registry
+        lookup, then runs the strict/open + allowed_external_refs rules. Pass
+        extends_namespace when the caller already knows it (single create),
+        or extends_template_id to have it looked up with the rest (update /
+        activation). IDs the lookup can't see (inactive/reserved) are skipped —
+        the lookup route filters to active entries.
+
+        Raises ValueError (API-boundary convention) on a violation.
+        """
+        ids = set(template_ids) | set(terminology_ids)
+        if extends_namespace is None and extends_template_id:
+            ids.add(extends_template_id)
+        ns_map = (
+            await get_registry_client().lookup_entry_namespaces(sorted(ids))
+            if ids else {}
+        )
+        if extends_namespace is None and extends_template_id:
+            extends_namespace = ns_map.get(extends_template_id)
+        try:
+            validator = get_reference_validator()
+            await validator.validate_template_references(
+                template_namespace=namespace,
+                extends_template_namespace=extends_namespace,
+                terminology_namespaces=[ns_map[i] for i in terminology_ids if i in ns_map],
+                template_ref_namespaces=[ns_map[i] for i in template_ids if i in ns_map],
+            )
+        except ReferenceValidationError as e:
+            raise ValueError(f"Cross-namespace reference violation: {e.violations}") from e
 
     @staticmethod
     async def _validate_pinned_versions(

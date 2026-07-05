@@ -92,6 +92,7 @@ class ReferenceValidator:
         template_namespace: str,
         extends_template_namespace: str | None = None,
         terminology_namespaces: list[str] | None = None,
+        template_ref_namespaces: list[str] | None = None,
     ) -> None:
         """
         Validate that template references comply with isolation rules.
@@ -100,6 +101,8 @@ class ReferenceValidator:
             template_namespace: Namespace of the template being created/updated
             extends_template_namespace: Namespace of parent template (if any)
             terminology_namespaces: List of terminology namespaces referenced
+            template_ref_namespaces: Namespaces of referenced templates
+                (template_ref / array_template_ref / target_templates)
 
         Raises:
             ReferenceValidationError: If any references violate isolation rules
@@ -130,6 +133,18 @@ class ReferenceValidator:
                             "type": "terminology",
                             "namespace": term_ns,
                             "message": f"Terminology namespace '{term_ns}' is not accessible from '{template_namespace}' namespace",
+                        })
+
+        # Check template references (template_ref / array_template_ref /
+        # target_templates)
+        if template_ref_namespaces:
+            for tpl_ns in set(template_ref_namespaces):
+                if tpl_ns != template_namespace:
+                    if not self._is_allowed_reference(tpl_ns, ns_data, is_strict):
+                        violations.append({
+                            "type": "template",
+                            "namespace": tpl_ns,
+                            "message": f"Template namespace '{tpl_ns}' is not accessible from '{template_namespace}' namespace",
                         })
 
         if violations:
