@@ -284,3 +284,39 @@ def test_env_surface_points_at_key_file(tmp_path):
     text = (tmp_path / ".env").read_text()
     assert text.rstrip().endswith("WIP_API_KEY_FILE=/secrets/api-key")
     assert "WIP_API_KEY=" not in text.replace("WIP_API_KEY_FILE=", "")
+
+
+# --- query scaffold surfaces -------------------------------------------------
+
+def test_query_scaffold_substitutions_and_curation(tmp_path):
+    from wip_scaffold.surfaces import query_scaffold_surfaces
+
+    ctx = _ctx(tmp_path)
+    run_surfaces(query_scaffold_surfaces("My App", "my-app", "dev-my-app"), ctx)
+
+    assert "my-app" in (tmp_path / "package.json").read_text()
+    assert "SCAFFOLD_APP_SLUG" not in (tmp_path / "package.json").read_text()
+    assert "My App" in (tmp_path / "index.html").read_text()
+    assert "my-app" in (tmp_path / ".github/workflows/build.yaml").read_text()
+    env_ex = (tmp_path / ".env.example").read_text()
+    assert "WIP_NAMESPACE=dev-my-app" in env_ex
+    assert "/path/to/WorldInPie" not in env_ex
+    assert str(REPO_ROOT) in env_ex
+    # Curation: the scaffold dir's package-lock.json is deliberately NOT shipped.
+    assert not (tmp_path / "package-lock.json").exists()
+    # Structure landed.
+    assert (tmp_path / "server").is_dir() and (tmp_path / "src").is_dir()
+    assert (tmp_path / ".gitignore").is_file()
+    # Entrypoint executable.
+    mode = os.stat(tmp_path / "docker-entrypoint-dev.sh").st_mode
+    assert mode & stat.S_IXUSR
+
+
+def test_query_scaffold_gitignore_merges_existing(tmp_path):
+    from wip_scaffold.surfaces import query_scaffold_surfaces
+
+    (tmp_path / ".gitignore").write_text("existing-line\n")
+    run_surfaces(query_scaffold_surfaces("X", "x", "dev-x"), _ctx(tmp_path))
+    text = (tmp_path / ".gitignore").read_text()
+    assert text.startswith("existing-line\n")
+    assert len(text) > len("existing-line\n"), "scaffold additions must be appended"

@@ -27,6 +27,7 @@ from .surfaces import (
     bootstrap_surface,
     env_surface,
     mcp_json_surface,
+    query_scaffold_surfaces,
 )
 
 
@@ -63,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--force-claude-md", action="store_true")
     a.add_argument("--dry-run", action="store_true")
     a.add_argument("--seed-bootstrap", action="store_true")
+    a.add_argument("--query-scaffold", action="store_true")
     a.add_argument("--write-env", action="store_true")
     _add_mcp_args(a)
 
@@ -106,6 +108,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.mcp_python:
             surfaces.insert(0, mcp_json_surface(
                 args.mcp_python, args.mcp_base_url, args.mcp_key_file, args.mcp_key))
+        if args.query_scaffold:
+            surfaces = query_scaffold_surfaces(
+                args.app_name, args.app_slug, args.dev_namespace) + surfaces
         if args.seed_bootstrap:
             surfaces.append(bootstrap_surface())
         if args.write_env:
