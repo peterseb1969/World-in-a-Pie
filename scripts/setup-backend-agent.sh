@@ -339,6 +339,7 @@ echo "2. Generating .mcp.json..."
 # because it operates across namespaces. Non-privileged keys without explicit namespace
 # scoping will get no access.
 API_KEY=""
+API_KEY_FILE=""
 API_KEY_SOURCE=""
 if [[ "$TARGET" == "local" ]]; then
     # 1. Prefer the RUNNING wip-deploy install (CASE-521): detect it from a live
@@ -356,7 +357,15 @@ if [[ "$TARGET" == "local" ]]; then
         _wip_dirs="$(podman ps --format '{{.Labels}}' 2>/dev/null | grep -o 'com\.docker\.compose\.project\.working_dir=[^,]*' | cut -d= -f2- | grep '/\.wip-deploy/' | sort -u || true)"
         if [ "$(printf '%s\n' "$_wip_dirs" | grep -c .)" -eq 1 ] && [ -f "$_wip_dirs/secrets/api-key" ]; then
             API_KEY=$(tr -d '[:space:]' < "$_wip_dirs/secrets/api-key" 2>/dev/null)
-            [ -n "$API_KEY" ] && API_KEY_SOURCE="$_wip_dirs/secrets/api-key (running install)"
+            if [ -n "$API_KEY" ]; then
+                # Keep the FILE PATH separate from the display string: the
+                # " (running install)" suffix on the old single variable
+                # defeated the key-file glob check, silently baking a
+                # LITERAL key into .mcp.json for exactly the rung where
+                # rotation-safety matters most.
+                API_KEY_FILE="$_wip_dirs/secrets/api-key"
+                API_KEY_SOURCE="$API_KEY_FILE (running install)"
+            fi
         fi
     fi
     # 2. Else any wip-deploy v2 secrets/api-key — first match (alphabetical).
@@ -365,16 +374,26 @@ if [[ "$TARGET" == "local" ]]; then
         for secrets_file in "$HOME/.wip-deploy"/*/secrets/api-key; do
             if [ -f "$secrets_file" ]; then
                 API_KEY=$(tr -d '[:space:]' < "$secrets_file" 2>/dev/null)
-                [ -n "$API_KEY" ] && API_KEY_SOURCE="$secrets_file"
+                if [ -n "$API_KEY" ]; then
+                    API_KEY_FILE="$secrets_file"
+                    API_KEY_SOURCE="$secrets_file"
+                fi
                 break
             fi
         done
     fi
-    # 3. Dev default (won't authenticate against a real install; dev fixture only).
-    #    (The pre-v2 repo-root .env fallback was retired — installs own their env.)
+    # 3. Nothing resolved → HARD ERROR. The retired silent fallback
+    #    ('dev_master_key_for_testing') could not authenticate against any
+    #    real install — it passed generation only to 401 at connect time,
+    #    the exact stale-config failure the app scaffold already fails
+    #    loud on. A key baked here must be one that can work.
     if [ -z "$API_KEY" ]; then
-        API_KEY="dev_master_key_for_testing"
-        API_KEY_SOURCE="dev default (no install detected)"
+        echo "Error: could not resolve a WIP API key — no running install detected and no ~/.wip-deploy/*/secrets/api-key found." >&2
+        echo "  A generated .mcp.json would look fine and 401 at connect time." >&2
+        echo "  Fix (either):" >&2
+        echo "    deploy a WIP install first (wip-deploy install ... ), then re-run" >&2
+        echo "    or place a valid key at ~/.wip-deploy/<name>/secrets/api-key" >&2
+        exit 1
     fi
     echo "   API key: sourced from $API_KEY_SOURCE (${#API_KEY} chars)"
 else
@@ -390,16 +409,13 @@ MCP_FLAGS=""
 case "$TARGET" in
     local)
         # The engine writes .mcp.json (shared writer with the app scaffold).
-        # A key FILE is preferred when sourced from a wip-deploy secrets file
-        # — rotation then applies without re-running this script; the literal
-        # key covers only the no-install dev fixture. Base URL assumes WIP
-        # via Caddy on https://localhost:8443 (the wip-deploy install shape);
-        # edit after generation for direct-to-service setups.
-        if [[ "$API_KEY_SOURCE" == "$HOME/.wip-deploy/"*/secrets/api-key ]]; then
-            MCP_FLAGS="--mcp-python $VENV_PYTHON --mcp-base-url https://localhost:8443 --mcp-key-file $API_KEY_SOURCE"
-        else
-            MCP_FLAGS="--mcp-python $VENV_PYTHON --mcp-base-url https://localhost:8443 --mcp-key $API_KEY"
-        fi
+        # Always a key FILE: both resolution rungs above yield a wip-deploy
+        # secrets file, so rotation applies without re-running this script.
+        # (The literal-key variant retired with the silent dev fallback.)
+        # Base URL assumes WIP via Caddy on https://localhost:8443 (the
+        # wip-deploy install shape); edit after generation for
+        # direct-to-service setups.
+        MCP_FLAGS="--mcp-python $VENV_PYTHON --mcp-base-url https://localhost:8443 --mcp-key-file $API_KEY_FILE"
         echo "   .mcp.json: engine surface (stdio, local — $VENV_PYTHON, Caddy-routed on :8443)"
         ;;
 
