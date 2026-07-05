@@ -56,6 +56,15 @@ class SpecContextFeatures:
 
 
 @dataclass(frozen=True)
+class SpecContextSecurity:
+    # "dev" | "prod" — the deployment's declared security posture,
+    # injected as WIP_VARIANT so the services' production-safety guards
+    # (refuse-to-start on known-default secrets) arm exactly when the
+    # operator asserted prod. String for direct env injection.
+    variant: str
+
+
+@dataclass(frozen=True)
 class SpecContext:
     """All spec-derived computed values. Flat section-nested layout
     matches the dotted paths used in manifests (`auth.issuer_url_public`,
@@ -64,6 +73,7 @@ class SpecContext:
     network: SpecContextNetwork
     auth: SpecContextAuth
     features: SpecContextFeatures
+    security: SpecContextSecurity
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -76,7 +86,8 @@ def make_spec_context(
     net = _compute_network(deployment)
     auth = _compute_auth(deployment)
     features = _compute_features(deployment, components)
-    return SpecContext(network=net, auth=auth, features=features)
+    security = SpecContextSecurity(variant=deployment.spec.variant)
+    return SpecContext(network=net, auth=auth, features=features, security=security)
 
 
 def resolve_from_spec(path: str, ctx: SpecContext) -> str:

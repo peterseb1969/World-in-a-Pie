@@ -47,6 +47,9 @@ spec:
       - {name: API_KEY, source: {from_secret: api-key}}
       - {name: WIP_HOSTNAME, source: {from_spec: network.hostname}}
       - {name: CALLBACK_URL, source: {from_spec: auth.callback_url}}
+      # Security posture — arms the gateway's default-session-secret
+      # startup guard. From the deployment's --variant.
+      - {name: WIP_VARIANT, source: {from_spec: security.variant}}
 
   depends_on: [dex]
 
