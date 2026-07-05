@@ -369,9 +369,20 @@ def backend_surfaces() -> list[Surface]:
         Surface(
             name="settings",
             policy=Policy.REGENERATE,
-            rationale="scaffold-owned, regenerated every run so allowlist improvements reach every clone; settings.local.json is operator-owned and never touched",
+            rationale="ONE baseline for both roles — the old per-role pair drifted apart; scaffold-owned, regenerated every run; settings.local.json is operator-owned and never touched",
             produce=lambda ctx: {
-                ".claude/settings.json": _template(ctx, "settings/backend.json").encode()
+                ".claude/settings.json": _template(ctx, "settings/settings.json").encode()
+            },
+        ),
+        Surface(
+            name="hook",
+            policy=Policy.REGENERATE,
+            rationale="compaction evicts the baseline reading exactly when drift starts; the re-anchor now fires for BOTH roles — the backend gap was accidental, not designed",
+            executable=True,
+            produce=lambda ctx: {
+                ".claude/hooks/post-compact-reanchor.sh": _template(
+                    ctx, "hooks/post-compact-reanchor.sh"
+                ).encode()
             },
         ),
         Surface(
@@ -474,9 +485,9 @@ def app_surfaces(app_meta: dict[str, str]) -> list[Surface]:
         Surface(
             name="settings",
             policy=Policy.REGENERATE,
-            rationale="scaffold-owned, regenerated every run; settings.local.json never touched",
+            rationale="ONE baseline for both roles — the old per-role pair drifted apart; settings.local.json never touched",
             produce=lambda ctx: {
-                ".claude/settings.json": _template(ctx, "settings/app.json").encode()
+                ".claude/settings.json": _template(ctx, "settings/settings.json").encode()
             },
         ),
         Surface(
