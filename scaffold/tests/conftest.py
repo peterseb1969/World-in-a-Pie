@@ -1,4 +1,4 @@
-"""Gate for the golden-snapshot tests (CASE-612).
+"""Gate for the golden-snapshot tests.
 
 Golden runs execute the real scaffold scripts against scratch clones/dirs.
 They need a very specific local environment (see golden_lib docstring), so

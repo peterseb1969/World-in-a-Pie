@@ -1,4 +1,4 @@
-"""Golden-snapshot harness for the scaffold scripts (CASE-612, migration step 1).
+"""Golden-snapshot harness for the scaffold scripts (migration step 1).
 
 Runs the REAL scripts (`setup-backend-agent.sh`, `create-app-project.sh`)
 against scratch environments, collects the generated surfaces into a
@@ -12,7 +12,7 @@ Environment requirements (why these tests are opt-in, see conftest.py):
   portability bug the revamp fixes; until step 4 the golden runs need BSD).
 - A single running wip-deploy install (podman) — both scripts detect the
   API key from live container labels; without one the backend script falls
-  back nondeterministically and the app script hard-errors (CASE-558).
+  back nondeterministically and the app script hard-errors by design.
 - This clone on `develop` with a provisioned .venv (wip_mcp importable) —
   backend scratch clones symlink to it so no pip install runs.
 
@@ -26,7 +26,7 @@ Determinism notes:
   dev-golden-* namespace behind, which is harmless and idempotent across
   re-captures (the script treats non-200 as "may already exist (ok)").
 - Machine-specific values are normalized: WIP_ROOT, $HOME, the app target
-  dir, and the genesis-banner SHA/date stamps (CASE-415).
+  dir, and the genesis-banner SHA/date stamps.
 """
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ def _normalize(text: str, roots: dict[str, str]) -> str:
     for token, value in roots.items():
         if value:
             text = text.replace(value, token)
-    # Genesis banner stamps (CASE-415): SHA + spawn date vary per capture.
+    # Genesis banner stamps: SHA + spawn date vary per capture.
     text = re.sub(
         r"World-in-a-Pie@[0-9a-f]+, spawned \d{4}-\d{2}-\d{2}",
         "World-in-a-Pie@__SHA__, spawned __DATE__",
@@ -235,8 +235,9 @@ def _cleanup_namespace(prefix: str) -> None:
 
 
 def _detect_key_file() -> str | None:
-    """Same detection the scripts use: single running install's working_dir
-    label (CASE-521/539)."""
+    """Same detection the scripts use: the single running install's
+    compose working_dir label (container names are service-named, so a
+    name guess is unreliable; the label is the install path itself)."""
     try:
         out = subprocess.run(
             ["podman", "ps", "--format", "{{.Labels}}"],

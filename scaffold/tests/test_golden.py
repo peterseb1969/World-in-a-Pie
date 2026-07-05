@@ -1,8 +1,8 @@
-"""Golden-snapshot tests over the scaffold scripts (CASE-612, step 1).
+"""Golden-snapshot tests over the scaffold scripts (migration step 1).
 
-Coverage matrix per docs/design/scaffold-revamp.md (post-CASE-610):
+Coverage matrix per docs/design/scaffold-revamp.md:
 - backend: local x {create, refresh} x {tier2, tier3}   (4 — ssh/http are
-  ported by inspection per the OQ3 resolution recorded in CASE-612)
+  ported by inspection per the open-question-3 resolution in the design doc)
 - app:     {create, refresh} x {tier2, tier3} x {standard} + create x query
   (query x refresh / query x tier3 excluded: the preset only affects
   create-time file copies, refresh never re-copies preset files, and tier

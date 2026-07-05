@@ -1,9 +1,9 @@
-"""Unit tests for the surface engine (CASE-612, step 3).
+"""Unit tests for the surface engine.
 
 Pure — no podman, no network, no scratch clones; these run in CI
 unconditionally (unlike the WIP_GOLDEN-gated snapshot tests). Each policy
-test pins the incident behavior its CASE reference records, so the *why*
-survives refactors (design doc, Problem #6).
+test pins the incident behavior that motivated it, written out in the
+test itself, so the *why* survives refactors.
 """
 
 from __future__ import annotations
@@ -124,14 +124,15 @@ def test_render_refresh_create_writes_target(tmp_path):
 
 
 def test_render_refresh_existing_writes_sidecar(tmp_path):
-    # CASE-418: app-authored CLAUDE.md is sacred on refresh.
+    # App-authored CLAUDE.md is sacred on refresh — a silent overwrite
+    # would destroy customisation; the render goes to a sidecar instead.
     (tmp_path / "CLAUDE.md").write_text("app-authored")
     s = _surface(policy=Policy.RENDER_REFRESH, files={"CLAUDE.md": b"gen"})
     ctx = _ctx(tmp_path, refresh=True)
     run_surfaces([s], ctx)
     assert (tmp_path / "CLAUDE.md").read_text() == "app-authored"
     assert (tmp_path / "CLAUDE.md.refresh").read_bytes() == b"gen"
-    assert any("CASE-418" in n for n in ctx.notes)
+    assert any(".refresh" in n for n in ctx.notes)
 
 
 def test_render_refresh_force_overwrites(tmp_path):
@@ -153,12 +154,12 @@ def test_render_refresh_missing_target_on_refresh_writes_target(tmp_path):
 
 # --- matrix sanity -----------------------------------------------------------
 
-def test_matrix_names_unique_and_case_annotated():
+def test_matrix_names_unique_and_rationale_present():
     for surfaces in (backend_surfaces(), app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"})):
         names = [s.name for s in surfaces]
         assert len(names) == len(set(names))
         for s in surfaces:
-            assert s.case_refs, f"surface {s.name} lacks CASE provenance"
+            assert s.rationale, f"surface {s.name} lacks a rationale"
 
 
 def test_matrix_sources_exist_in_repo():
@@ -197,8 +198,8 @@ def test_backend_tier3_includes_wip_case_command(tmp_path):
 
 
 def test_app_playbooks_never_wipe(tmp_path):
-    # CASE-522: a pre-existing docs/playbooks/case-workflow.md (WIP-KB's
-    # served source) must survive a refresh even if the gene pool no
+    # A pre-existing docs/playbooks/case-workflow.md may be WIP-KB's
+    # SERVED source — it must survive a refresh even if the gene pool no
     # longer ships a file of that name.
     (tmp_path / "docs/playbooks").mkdir(parents=True)
     sentinel = tmp_path / "docs/playbooks/case-workflow.md"

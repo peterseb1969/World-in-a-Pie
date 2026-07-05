@@ -1,4 +1,4 @@
-"""CLI for the surface engine (CASE-612).
+"""CLI for the surface engine.
 
 Called by the bash entry points, which keep argument parsing, mode
 detection, guards, and the not-yet-migrated surfaces:
