@@ -77,5 +77,18 @@
       "Bash(docker system prune:*)",
       "Bash(npm publish:*)"
     ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/post-compact-reanchor.sh"
+          }
+        ]
+      }
+    ]
   }
 }
