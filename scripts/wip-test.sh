@@ -209,6 +209,30 @@ PYTHON_COMPONENTS=(registry def-store template-store document-store reporting-sy
 PYTHON_LIBS=(wip-auth)
 PYTHON_TOOLS=(deployer agent-scripts scaffold)
 
+# One-time-per-component test-dep provisioning, mirroring the CI recipe
+# (.gitea/workflows/test.yaml: component requirements + registry's for
+# transport injection + pytest-asyncio httpx). The scaffold's venv seeds
+# only pytest/ruff/mypy, so a fresh clone's first component-test run used
+# to die on ModuleNotFoundError until someone replayed the CI install by
+# hand. A marker under .venv/ makes re-runs free; delete the markers (or
+# the venv) to force re-provisioning.
+_ensure_component_test_deps() {
+    local name="$1" dir="$2"
+    [[ "$dir" == "$REPO_ROOT/components/"* ]] || return 0
+    local marker="$REPO_ROOT/.venv/.wip-test-deps-$name"
+    [[ -f "$marker" ]] && return 0
+    echo "  Provisioning $name test deps (CI recipe, one-time)..."
+    if (cd "$dir" && pip install -q -r requirements.txt) \
+        && (cd "$REPO_ROOT/components/registry" && pip install -q -r requirements.txt) \
+        && pip install -q pytest-asyncio httpx; then
+        touch "$marker"
+    else
+        echo "  WARNING: test-dep provisioning failed — imports may error below." >&2
+        echo "           Manual recipe: pip install -r $dir/requirements.txt \\" >&2
+        echo "             -r components/registry/requirements.txt pytest-asyncio httpx" >&2
+    fi
+}
+
 run_python_tests() {
     local name="$1"
     shift
@@ -231,6 +255,8 @@ run_python_tests() {
         echo "ERROR: No tests/ directory in $dir" >&2
         return 1
     fi
+
+    _ensure_component_test_deps "$name" "$dir"
 
     # Detect whether the caller already provided a positional pytest
     # target (file, dir, or nodeid). If so, skip the implicit `tests/`
