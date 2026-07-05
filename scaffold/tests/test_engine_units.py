@@ -448,3 +448,20 @@ def test_toolkit_wheel_wipes_stale_versions(tmp_path):
                  Context(wip_root=REPO_ROOT, target_root=app))
     assert not stale.exists(), "stale wheels accumulate otherwise (0.2.3 + 0.5.0 seen in the wild)"
     assert (app / "libs/wip_toolkit-0.6.0-py3-none-any.whl").exists()
+
+
+def test_app_meta_records_role_prefix(tmp_path):
+    # .session-role is gitignored; the committed .app-meta must carry the
+    # prefix or fresh checkouts dead-end at the identity pre-flight.
+    surfaces = [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "app-meta"]
+    ctx = _ctx(tmp_path, role_prefix="APP-XY")
+    run_surfaces(surfaces, ctx)
+    assert 'ROLE_PREFIX="APP-XY"' in (tmp_path / ".claude/.app-meta").read_text()
+
+
+def test_app_meta_role_prefix_falls_back_to_local_file(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/.session-role").write_text("APP-LOCAL\n")
+    surfaces = [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "app-meta"]
+    run_surfaces(surfaces, _ctx(tmp_path, role_prefix=""))
+    assert 'ROLE_PREFIX="APP-LOCAL"' in (tmp_path / ".claude/.app-meta").read_text()

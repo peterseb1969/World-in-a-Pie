@@ -789,6 +789,16 @@ echo "$STEP_NUM. Rendering content surfaces (engine)..."
 else
 echo "Rendering content surfaces (engine; metadata: $META_SOURCE)..."
 fi
+# Fresh-checkout self-heal: .session-role is gitignored, so a brand-new
+# clone never has it — but the committed .app-meta records ROLE_PREFIX
+# (written by the engine on every run). Precedence: --prefix > existing
+# local file > .app-meta. Without this, a fresh checkout dead-ends at
+# /wip-setup's identity pre-flight until someone re-runs with --prefix.
+if [ -z "$APP_PREFIX" ] && [ ! -f "$APP_DIR/.claude/.session-role" ]; then
+    APP_PREFIX="$(meta_get ROLE_PREFIX || true)"
+    [ -n "$APP_PREFIX" ] && echo "   Role prefix restored from .app-meta: $APP_PREFIX"
+fi
+
 ENGINE_FLAGS=""
 if $TIER3; then ENGINE_FLAGS="$ENGINE_FLAGS --tier3"; fi
 if $REFRESH_MODE; then ENGINE_FLAGS="$ENGINE_FLAGS --refresh"; fi
