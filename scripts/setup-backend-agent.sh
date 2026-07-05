@@ -24,13 +24,13 @@
 #
 # Re-sync (an already-set-up clone, auto-detected — no flag):
 #   Re-syncs the propagatable surfaces from the gene pool: slash commands
-#   in .claude/commands/, regenerates CLAUDE.md from the current heredoc,
+#   in .claude/commands/, regenerates CLAUDE.md from its template
 #   regenerates .mcp.json with current arguments, and re-runs the idempotent
 #   wip_mcp install so dependency changes pick up. Preserves: venv (recreates
 #   only if missing), .claude/settings.local.json (never touched; the
 #   committed .claude/settings.json baseline is regenerated — CASE-446).
 #   Run it after a `git pull` brings new docs/slash-commands/backend/*.md or
-#   heredoc changes — those don't propagate to .claude/commands/* automatically
+#   scaffold/templates/ changes — those don't propagate automatically
 #   because that directory is generated, not git-tracked.
 #   A running session picks up re-copied slash commands automatically — Claude
 #   Code live-detects .claude/commands/ edits and re-reads on the next invocation

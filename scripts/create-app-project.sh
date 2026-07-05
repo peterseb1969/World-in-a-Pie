@@ -668,7 +668,7 @@ fi
 #
 # (CASE-286: dev-delete.py copy removed 2026-05-08. The legacy script bypassed
 # the WIP API and wrote directly to MongoDB; superseded by `mcp__wip__delete_namespace`
-# which the heredoc already prescribes. Apps no longer get the orphan tool in
+# which the CLAUDE.md template already prescribes. Apps no longer get the orphan tool in
 # their tools/ directory.)
 
 if $REFRESH_MODE; then
