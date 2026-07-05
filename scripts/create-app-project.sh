@@ -133,6 +133,14 @@ while [[ $# -gt 0 ]]; do
             echo "  -h          Show this help"
             exit 0
             ;;
+        --*)
+            # A mistyped/unknown flag must never silently become the target
+            # dir — an agent once suggested a nonexistent --refresh, which
+            # this branch would have scaffolded into a './--refresh' dir.
+            echo "Unknown option: $1"
+            echo "Run $0 --help for usage."
+            exit 1
+            ;;
         *)
             APP_DIR="$1"
             shift

@@ -15,7 +15,7 @@ PRIOR_ID=<prior-id>
 NEW_ID=<NEW_ID>
 ```
 
-**Do not re-implement the rollover by hand** — the full state machine (every edge case: missing sentinel, missing prior dir + the legacy shared-path transition note, malformed frontmatter regeneration, collision retry, partial-failure convergence) lives in the script's docstring and its test suite (`agent-scripts/`, `./scripts/wip-test.sh agent-scripts`). On a non-zero exit, read the script's error message: missing sentinel → run `/wip-setup`; missing `reports/<prior-id>/` → resolve per the message (never fabricate state); missing `.session-role` → re-run your scaffold with `--refresh`.
+**Do not re-implement the rollover by hand** — the full state machine (every edge case: missing sentinel, missing prior dir + the legacy shared-path transition note, malformed frontmatter regeneration, collision retry, partial-failure convergence) lives in the script's docstring and its test suite (`agent-scripts/`, `./scripts/wip-test.sh agent-scripts`). On a non-zero exit, read the script's error message: missing sentinel → run `/wip-setup`; missing `reports/<prior-id>/` → resolve per the message (never fabricate state); missing `.session-role` → re-run `scripts/setup-backend-agent.sh` on this clone (there is NO `--refresh` flag; the scaffolds auto-detect mode).
 
 After Step A, `.claude/.session-id` holds `<NEW_ID>`. Every **write** from here on goes to the new session's dir; the continuity **reads** in Step B target the **prior** session's reports (use the `PRIOR_ID` the script printed).
 
