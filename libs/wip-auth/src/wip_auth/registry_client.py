@@ -352,6 +352,35 @@ class RegistryClientBase:
                 return cast("str | None", results[0].get("entry_id"))
             return None
 
+    async def lookup_entry_namespaces(
+        self,
+        entry_ids: list[str],
+    ) -> dict[str, str]:
+        """Bulk-fetch each entry's owning namespace via
+        POST /api/registry/entries/lookup/by-id.
+
+        Returns entry_id -> namespace for the entries that were found
+        (active only — the route's status filter); missing/inactive IDs
+        are simply absent from the result. Used by isolation enforcement,
+        which needs each resolved reference's namespace, not another
+        resolution.
+        """
+        if not entry_ids:
+            return {}
+        async with self._make_client() as client:
+            response = await client.post(
+                f"{self.base_url}/api/registry/entries/lookup/by-id",
+                headers=self._get_headers(),
+                json=[{"entry_id": eid} for eid in entry_ids],
+            )
+            if response.status_code != 200:
+                return {}
+            namespaces: dict[str, str] = {}
+            for r in response.json().get("results", []):
+                if r.get("status") == "found" and r.get("entry_id") and r.get("namespace"):
+                    namespaces[r["entry_id"]] = r["namespace"]
+            return namespaces
+
     async def hard_delete_entry(
         self,
         entry_id: str,
