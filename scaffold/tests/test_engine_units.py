@@ -254,3 +254,33 @@ def test_mcp_json_literal_key_variant(tmp_path):
     text = (tmp_path / ".mcp.json").read_text()
     assert '"WIP_API_KEY": "dev_master_key_for_testing",' in text
     assert "WIP_API_KEY_FILE" not in text
+
+
+# --- bootstrap + env surfaces ------------------------------------------------
+
+def test_bootstrap_surface_stamps_banner(tmp_path):
+    from wip_scaffold.surfaces import BOOTSTRAP_TEMPLATES, bootstrap_surface
+
+    run_surfaces([bootstrap_surface()], _ctx(tmp_path))
+    for name in BOOTSTRAP_TEMPLATES:
+        dest = tmp_path / "templates/bootstrap" / name
+        assert dest.exists(), name
+        text = dest.read_text()
+        assert text.startswith("// ====="), "banner must lead the file"
+        assert "GENESIS COPY" in text
+        assert "DELETE templates/bootstrap/" in text
+        # Stamp present: source commit + spawn date on the banner line.
+        import re
+        assert re.search(r"World-in-a-Pie@[0-9a-f]+, spawned \d{4}-\d{2}-\d{2}", text)
+        # Original template content follows the banner.
+        src = (REPO_ROOT / "apps/templates/bootstrap" / name).read_text()
+        assert text.endswith(src)
+
+
+def test_env_surface_points_at_key_file(tmp_path):
+    from wip_scaffold.surfaces import env_surface
+
+    run_surfaces([env_surface("/secrets/api-key")], _ctx(tmp_path))
+    text = (tmp_path / ".env").read_text()
+    assert text.rstrip().endswith("WIP_API_KEY_FILE=/secrets/api-key")
+    assert "WIP_API_KEY=" not in text.replace("WIP_API_KEY_FILE=", "")

@@ -448,58 +448,17 @@ fi
 # rendered in the wip_scaffold call further down. Their policies and the
 # full per-surface rationale live in scaffold/src/wip_scaffold/surfaces.py.
 
-# --- Bootstrap templates (genesis copies, CASE-415) ---
-# Genesis-copy provenance stamp (CASE-415). These three files are one-time
-# Phase-1 STARTING POINTS — the APP-YAC builds server/lib/bootstrap.ts from them
-# by hand, then they are vestigial. A frozen, unmarked copy invites the
-# grep-it-as-canonical misread that produced CASE-414. Stamp each SPAWNED copy
-# with its source SHA, a "not canonical" warning, and a delete-after-use
-# instruction. The canonical source in WIP_ROOT is never touched. `|| echo
-# unknown` keeps the SHA capture from dying under set -euo pipefail (CASE-460).
-seed_bootstrap_templates() {
-    local BOOTSTRAP_SRC="$WIP_ROOT/apps/templates/bootstrap"
-    if [ ! -d "$BOOTSTRAP_SRC" ]; then
-        echo "   Warning: $BOOTSTRAP_SRC not found, skipping bootstrap templates"
-        return
-    fi
-    echo ""
-    echo "   Copying bootstrap templates..."
-    local STAMP_SHA STAMP_DATE tpl dest
-    STAMP_SHA="$(git -C "$WIP_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-    STAMP_DATE="$(date '+%Y-%m-%d')"
-    mkdir -p "$APP_DIR/templates/bootstrap"
-    for tpl in bootstrap.server.ts.template bootstrap.routes.ts.template BootstrapGate.tsx.template; do
-        if [ -f "$BOOTSTRAP_SRC/$tpl" ]; then
-            dest="$APP_DIR/templates/bootstrap/$tpl"
-            {
-                cat <<BANNER
-// ============================================================================
-// GENESIS COPY (CASE-415) — not canonical, not live. One-time Phase-1 start.
-//   Source: World-in-a-Pie@${STAMP_SHA}, spawned ${STAMP_DATE}.
-//   Canonical scaffold: World-in-a-Pie/apps/templates/bootstrap/ — this frozen
-//   copy WILL drift from it. NEVER grep this dir as evidence of platform or
-//   scaffold behavior (an agent once did, and shipped fixes against long-drifted code).
-//   After you build server/lib/bootstrap.ts from this, DELETE templates/bootstrap/.
-// ============================================================================
-BANNER
-                cat "$BOOTSTRAP_SRC/$tpl"
-            } > "$dest"
-            echo "     templates/bootstrap/$tpl (genesis-stamped)"
-        else
-            echo "     Warning: $tpl not found in $BOOTSTRAP_SRC, skipping"
-        fi
-    done
-}
-
-# Create always seeds the genesis templates. Set-up-in-place seeds them ONLY with
-# --with-bootstrap AND only when templates/bootstrap/ is absent: a deliberate
-# retrofit for apps that predate the templates (the refreshed CLAUDE.md tells the
-# YAC to read templates/bootstrap/*.template, but a plain set-up-in-place never shipped
-# them). Never clobber an existing dir — a mature app that built bootstrap.ts and
-# deleted templates/bootstrap/ per the genesis banner must NOT have it resurrected;
-# that is why retrofit is opt-in, not automatic-on-absence.
+# --- Bootstrap templates (genesis copies) ---
+# The engine's bootstrap-templates surface stamps each copy with source SHA,
+# a not-canonical warning, and a delete-after-use instruction. This wrapper
+# keeps the WHEN: create always seeds; set-up-in-place seeds ONLY with
+# --with-bootstrap AND only when templates/bootstrap/ is absent — a mature
+# app that built bootstrap.ts and deleted the dir per the genesis banner
+# must NOT have it resurrected, so retrofit is opt-in, never
+# automatic-on-absence.
+SEED_BOOTSTRAP_FLAG=""
 if ! $REFRESH_MODE; then
-    seed_bootstrap_templates
+    SEED_BOOTSTRAP_FLAG="--seed-bootstrap"
 elif $WITH_BOOTSTRAP; then
     if [ -d "$APP_DIR/templates/bootstrap" ]; then
         echo "   --with-bootstrap: templates/bootstrap/ already present — left as-is."
@@ -507,7 +466,7 @@ elif $WITH_BOOTSTRAP; then
         echo "      resurrected; delete the dir first if you want fresh genesis copies.)"
     else
         echo "   --with-bootstrap: retrofitting genesis bootstrap templates (app predates them)..."
-        seed_bootstrap_templates
+        SEED_BOOTSTRAP_FLAG="--seed-bootstrap"
     fi
 fi
 
@@ -911,33 +870,15 @@ if ! $REFRESH_MODE; then
         echo "   Set WIP_NAMESPACE=$DEV_NAMESPACE in .env.example"
     fi
 
-    # --- Runtime key source: the live wip-deploy secrets file (CASE-495) ---
-    # Point .env at the SAME live file the MCP config uses ($WIP_API_KEY_FILE),
-    # rather than provisioning a namespace-scoped key and baking its plaintext
-    # into .env. A baked key goes stale the moment the deploy key rotates or
-    # the target redeploys — which stranded the whole fleet. Reading the file
-    # at app startup (the @wip/proxy `apiKeyFile` option does this) makes a
-    # rotation a non-event: just restart. The deploy key is an admin/proxy key
-    # spanning all namespaces — what a cross-namespace console needs as-is; a
-    # data-model app wanting least-privilege can provision its own scoped key
-    # and repoint WIP_API_KEY_FILE at it (Peter's call, CASE-495).
+    # .env is an engine surface (create-time only — this block only runs on
+    # create): points the runtime at the live secrets FILE, never a baked
+    # plaintext key, so rotation is a restart instead of a stranded fleet.
     STEP_NUM=$((7 + STEP_OFFSET))
-    echo "$STEP_NUM. Pointing .env runtime key at the wip-deploy secrets file..."
+    echo "$STEP_NUM. Pointing .env runtime key at the wip-deploy secrets file (engine surface)..."
     STEP_OFFSET=$((STEP_OFFSET + 1))
-
-    cat > "$APP_DIR/.env" << ENVEOF
-# Runtime key SOURCE — the live wip-deploy secrets file (CASE-495).
-# Resolved at app startup (like the MCP server's WIP_API_KEY_FILE), so a key
-# rotation or target-redeploy is picked up on restart rather than baked stale
-# here. This is the deployment's admin/proxy key and spans all namespaces — a
-# cross-namespace console uses it as-is. A data-model app that wants a
-# least-privilege, namespace-scoped key can provision one (POST
-# /api/registry/api-keys with "namespaces" + "grant_permission") and repoint
-# WIP_API_KEY_FILE below at its own secrets file.
-WIP_API_KEY_FILE=$WIP_API_KEY_FILE
-ENVEOF
-    echo "   Written: .env (WIP_API_KEY_FILE -> $WIP_API_KEY_FILE)"
+    WRITE_ENV_FLAG="--write-env"
 fi
+WRITE_ENV_FLAG="${WRITE_ENV_FLAG:-}"
 
 # --- Content surfaces via the engine (CASE-612 step 3) ---
 # Slash commands (wipe + tier gate), wake-rollover, .session-role,
@@ -968,7 +909,8 @@ PYTHONPATH="$WIP_ROOT/scaffold/src${PYTHONPATH:+:$PYTHONPATH}" \
     --dev-namespace "$DEV_NAMESPACE" --key-file "$WIP_API_KEY_FILE" \
     --preset "$PRESET" --role-prefix "$APP_PREFIX" \
     --mcp-python "$PYTHON_PATH" --mcp-base-url "$WIP_BASE_URL" \
-    --mcp-key-file "$WIP_API_KEY_FILE" $ENGINE_FLAGS
+    --mcp-key-file "$WIP_API_KEY_FILE" \
+    $SEED_BOOTSTRAP_FLAG $WRITE_ENV_FLAG $ENGINE_FLAGS
 
 # --- Git init + gitignore sentinels (new projects only) ---
 if ! $REFRESH_MODE; then
