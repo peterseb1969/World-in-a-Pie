@@ -476,7 +476,7 @@ router.add_api_route(
 async def get_sync_status() -> SyncStatus:
     """Get current sync worker status.
 
-    CASE-52: refresh the connection flags from live state on every call.
+    Refreshes the connection flags from live state on every call.
     The lifespan startup sets them once; NATS callbacks (if connected
     to a client that fires them) update on disconnect/reconnect; this
     endpoint is the final authority that a caller sees reality, not a
@@ -1086,7 +1086,7 @@ async def unified_search(
         description=(
             "Scope results to this namespace. Accepted as a URL query param "
             "(matching the /sync routes); overrides request.namespace when "
-            "both are given (CASE-541). The body field still works."
+            "both are given. The body field still works."
         ),
     ),
     status: str | None = Query(
@@ -1101,7 +1101,7 @@ async def unified_search(
 
     Searches terminologies, terms, templates, documents, and files in
     parallel. Each entity type returns its own pagination envelope
-    (CASE-329) — see `wip://conventions` for the platform pagination
+    — see `wip://conventions` for the platform pagination
     contract.
 
     Args:
@@ -1112,7 +1112,7 @@ async def unified_search(
             - page: Page number (default 1)
             - page_size: Items per type (default 50, max 100)
             - limit: DEPRECATED alias for page_size when page=1
-        namespace/status/template: optional URL query params. CASE-541 — these
+        namespace/status/template: optional URL query params — these
             filters previously lived ONLY on the request body, so a
             `?namespace=X` URL param was silently dropped by FastAPI and the
             search ran un-scoped (global, across every namespace's doc_* rows).

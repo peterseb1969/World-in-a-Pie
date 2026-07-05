@@ -66,7 +66,7 @@ class APIKeyCreateRequest(BaseModel):
     grant_permission: Literal["read", "write", "admin"] | None = Field(
         default=None,
         description=(
-            "CASE-450: when set, create a namespace grant at this level for "
+            "When set, create a namespace grant at this level for "
             "the new key (subject = key name) on each namespace in "
             "`namespaces`. Requires `namespaces` to be set. Without it, a "
             "scoped key can read its namespaces but not write — the grant "
@@ -96,7 +96,7 @@ class APIKeyCreatedResponse(APIKeyResponse):
     plaintext_key: str = Field(description="The plaintext key (shown once, not stored)")
     granted_namespaces: list[str] | None = Field(
         default=None,
-        description="Namespaces a grant was created on (CASE-450 grant_permission)",
+        description="Namespaces a grant was created on (grant_permission)",
     )
 
 

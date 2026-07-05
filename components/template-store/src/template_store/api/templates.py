@@ -152,7 +152,7 @@ async def list_templates(
 async def get_namespace_template_stamp(
     namespace: str = Query(..., description="Namespace to stamp"),
 ):
-    """Change-detection stamp for all templates in a namespace (CASE-490).
+    """Change-detection stamp for all templates in a namespace.
 
     Returns ``{"namespace": ..., "stamp": "<count>:<max_updated_at>"}`` — a
     single cheap value a template-caching consumer (e.g. document-store) polls
@@ -302,7 +302,7 @@ async def get_template_by_value_and_version(
     version: int,
     namespace: str | None = Query(
         default=None,
-        description="Namespace to disambiguate the value (omit to search all). CASE-497.",
+        description="Namespace to disambiguate the value (omit to search all).",
     ),
 ):
     """
@@ -312,7 +312,7 @@ async def get_template_by_value_and_version(
         value: Template value
         version: Version number
         namespace: Restrict to this namespace — a value is unique only within a
-            namespace, so omitting it is ambiguous (CASE-497). Omit to search all.
+            namespace, so omitting it is ambiguous. Omit to search all.
 
     Returns the template with inheritance resolved.
     """
@@ -330,7 +330,7 @@ async def get_template_by_value_and_version(
 @router.get("/{template_id}/versions", response_model=TemplateListResponse)
 async def get_template_versions_by_id(template_id: str):
     """
-    Get all versions of a template by its template_id (CASE-497).
+    Get all versions of a template by its template_id.
 
     A template_id is globally unique and stable across versions, so no namespace
     is needed — the cleanest call when the caller already holds the id. Returns
@@ -560,7 +560,7 @@ async def reactivate_template(
     """
     Reactivate a soft-deleted (inactive) template version.
 
-    The symmetric inverse of deactivate (CASE-490): restores a specific
+    The symmetric inverse of deactivate: restores a specific
     inactive version to active so documents pinned to it can be updated
     again. `version` is required — reactivate targets a known frozen version,
     there is no "latest" default (and `/activate` is draft-only, so it cannot
@@ -616,7 +616,7 @@ async def add_edge_type_endpoints(
     namespace: str = Query(..., description="Namespace for the edge type"),
 ):
     """
-    Additively widen an edge type's allowed endpoint set (CASE-515).
+    Additively widen an edge type's allowed endpoint set.
 
     Adds source/target endpoint template(s) to an existing relationship template
     IN PLACE, preserving every existing edge. Additive-only — it never removes

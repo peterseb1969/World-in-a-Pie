@@ -105,7 +105,7 @@ async def start_backup(
     request: BackupRequest,
     identity: UserIdentity = Depends(require_api_key),
 ) -> BackupJobSnapshot:
-    """Kick off a backup of one or more namespaces (CASE-542).
+    """Kick off a backup of one or more namespaces.
 
     The URL ``{namespace}`` is the anchor. ``all_namespaces`` backs up every
     registry namespace; ``namespaces`` adds an explicit set alongside the

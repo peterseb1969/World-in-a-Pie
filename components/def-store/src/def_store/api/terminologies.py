@@ -39,7 +39,7 @@ async def create_terminologies(
     on_conflict: str = Query(
         "error",
         description=(
-            "Duplicate handling (CASE-465 idempotent bootstrap): 'error' "
+            "Duplicate handling (idempotent bootstrap): 'error' "
             "(default) fails the item with error_code='already_exists'; "
             "'validate' returns status='unchanged' for an identical "
             "re-create and error_code='incompatible_config' with the "

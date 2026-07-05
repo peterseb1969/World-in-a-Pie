@@ -2,7 +2,7 @@ Roll the current session over into a fresh, linked one and recover context. Use 
 
 ### Step A — Roll the session over (deterministic — run the script)
 
-Identity is **local-first**: `.claude/.session-id` is the single source of truth; kb is a derived mirror. Step A is a fully mechanical state machine, so it is executed by a script, not hand-walked step by step (CASE-604). Run it once:
+Identity is **local-first**: `.claude/.session-id` is the single source of truth; kb is a derived mirror. Step A is a fully mechanical state machine, so it is executed by a script, not hand-walked step by step. Run it once:
 
 ```bash
 python3 .claude/scripts/wake-rollover.py

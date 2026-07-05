@@ -108,7 +108,7 @@ tools:
   validate_documents:
     description: "Validate many documents against one template without saving. Returns per-item results."
     notes: |
-      Bulk, side-effect-free dry run (CASE-419). Prefer this over repeated
+      Bulk, side-effect-free dry run. Prefer this over repeated
       validate_document calls when checking a whole dataset — one call instead
       of one per row. All items validate against a single template_id/namespace;
       the template is warmed into cache once. Returns {"results": [...]} in input

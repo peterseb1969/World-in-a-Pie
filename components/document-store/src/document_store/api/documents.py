@@ -175,7 +175,7 @@ async def patch_documents(
     summary="Migrate documents to a newer template version",
     description="""
 Re-pin every active document currently on `from_version` to `to_version`
-(CASE-491). The "move" half of the template-version lifecycle.
+The "move" half of the template-version lifecycle.
 
 Each document's existing data is re-validated against the TARGET version
 (which must be active; the source may be inactive/frozen). On apply a new
@@ -428,7 +428,7 @@ Backed by Mongo indexes on (template_id, data.source_ref) and
 (template_id, data.target_ref) created lazily on first relationship-
 document write.
 
-Pass `?include=peers` (CASE-303) to embed a compact peer projection on
+Pass `?include=peers` to embed a compact peer projection on
 each item — the entity at the OTHER end of the edge — avoiding an N+1
 fetch for relationship-sidebar rendering. Default response shape is
 unchanged when `include` is absent or does not contain `peers`.
@@ -445,7 +445,7 @@ async def get_document_relationships(
     page_size: int = Query(50, ge=1, le=500),
     include: str | None = Query(
         None,
-        description="Comma-separated optional inclusions. Currently supports: 'peers' (embed a compact peer projection on each item, CASE-303).",
+        description="Comma-separated optional inclusions. Currently supports: 'peers' (embed a compact peer projection on each item).",
     ),
     identity: UserIdentity = Depends(require_api_key),
 ):

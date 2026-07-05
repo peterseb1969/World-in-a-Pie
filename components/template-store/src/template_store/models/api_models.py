@@ -71,7 +71,7 @@ class CreateTemplateRequest(StrictModel):
     header_fields: list[str] = Field(
         default_factory=list,
         description=(
-            "Fields to include in peer/header projections (CASE-343). "
+            "Fields to include in peer/header projections. "
             "Bare names → data.<name>; metadata.custom.<name> paths allowed. "
             "Empty → projection falls back to identity_fields."
         )
@@ -151,7 +151,7 @@ class UpdateTemplateRequest(StrictModel):
     )
     header_fields: list[str] | None = Field(
         default=None,
-        description="Update peer-projection fields (CASE-343)"
+        description="Update peer-projection fields"
     )
     fields: list[FieldDefinition] | None = Field(
         default=None,
@@ -176,7 +176,7 @@ class UpdateTemplateRequest(StrictModel):
 
 
 class AddEndpointsRequest(StrictModel):
-    """Request to additively widen an edge type's allowed endpoint set (CASE-515)."""
+    """Request to additively widen an edge type's allowed endpoint set."""
 
     add_source_templates: list[str] = Field(
         default_factory=list,

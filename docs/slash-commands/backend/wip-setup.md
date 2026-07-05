@@ -6,7 +6,7 @@ First-run session-identity mint, environment check, guided setup, and **mandator
 
 `/wip-setup` decides this session's identity here but **does not write it yet** — the mint is deferred until the environment checks pass, so a failed precheck never strands an `active` session that would then block the very re-run the failure message tells you to do. Identity is a **local-first** contract: the sentinel file `.claude/.session-id` is the single source of truth for "who am I"; kb is a derived mirror that catches up later.
 
-The pre-flight is the same state machine as the mint, run read-only — ONE call, not hand-walked file reads (CASE-604):
+The pre-flight is the same state machine as the mint, run read-only — ONE call, not hand-walked file reads:
 
 ```bash
 python3 .claude/scripts/wake-rollover.py --fresh --dry-run
@@ -29,7 +29,7 @@ Step 0 writes nothing (`--dry-run` is a pure read). If it exited 0, proceed to t
 
 ### Step 6 — Mint the session (only after all checks pass)
 
-The environment is verified, so now write identity. A failed check above left **no** session behind — deferring the mint to here is the fix for the strand-on-failed-precheck bug: the "fix it and re-run `/wip-setup`" instruction works as written. The mint is a deterministic state machine, so it runs as a script, not hand-walked (CASE-604):
+The environment is verified, so now write identity. A failed check above left **no** session behind — deferring the mint to here is the fix for the strand-on-failed-precheck bug: the "fix it and re-run `/wip-setup`" instruction works as written. The mint is a deterministic state machine, so it runs as a script, not hand-walked:
 
 ```bash
 python3 .claude/scripts/wake-rollover.py --fresh

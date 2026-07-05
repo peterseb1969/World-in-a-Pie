@@ -54,7 +54,7 @@ class SearchResult(BaseModel):
 
 
 class SearchTypeResults(BaseModel):
-    """Per-type paginated bucket (CASE-329).
+    """Per-type paginated bucket.
 
     Each entity type the search visited gets its own envelope so consumers
     can paginate per type (e.g., "give me page 2 of document hits without
@@ -72,7 +72,7 @@ class SearchTypeResults(BaseModel):
 class SearchResponse(BaseModel):
     """Response from unified search.
 
-    Post-CASE-329 the response groups results per entity type, each with
+    The response groups results per entity type, each with
     its own pagination envelope (see `SearchTypeResults`). The legacy
     flat `results: list` + `counts: dict` shape was removed at the same
     time. Consumers wanting "all hits across types" iterate the values
@@ -109,7 +109,7 @@ class SearchRequest(StrictModel):
     entity type the search visits is paginated independently; the same
     `page`/`page_size` is applied to every type. The legacy `limit`
     parameter is accepted as a deprecation-window alias for `page_size`
-    (CASE-329) — set either `limit` OR `page_size`, never both.
+    — set either `limit` OR `page_size`, never both.
     """
 
     query: str = Field(..., min_length=1, description="Search string")
@@ -172,7 +172,7 @@ class SearchRequest(StrictModel):
         ge=1,
         le=100,
         description=(
-            "DEPRECATED (CASE-329): alias for `page_size` when `page` is 1. "
+            "DEPRECATED: alias for `page_size` when `page` is 1. "
             "Pass `page_size` instead. Will be removed in a future release."
         ),
     )

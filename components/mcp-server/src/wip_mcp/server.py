@@ -98,7 +98,7 @@ Semantics:
   you get error_code `append_only`. Its documents have only a surrogate
   document_id, not a logical identity; PATCH operates on logical entities. The
   error carries remediation: create a new document, or declare identity_fields
-  on the template (CASE-478).
+  on the template.
 - `if_match=N` is optional per-item optimistic concurrency control: if the
   current version != N, you get error_code `concurrency_conflict`.
 - template_version and identity_hash are preserved — the new version validates
@@ -118,8 +118,7 @@ When to PATCH vs create_document:
 These endpoints exist so an app can provision its namespace, templates, and
 vocabularies against a fresh WIP instance and re-run the same script repeatedly
 without ugly GET → 404 → POST dances or silent schema drift. A bootstrap that
-died mid-run (network blip, seed bug) is recovered by simply running it again
-(CASE-465).
+died mid-run (network blip, seed bug) is recovered by simply running it again.
 
 ### Namespace upsert: PUT /api/registry/namespaces/{prefix}
 PUT is an upsert — creates the namespace on missing using platform defaults
@@ -156,11 +155,11 @@ template-level source_templates / target_templates on relationship templates)
 resolve through Registry before being compared. Value-form, UUID-form, and
 any other registered synonym for the same entity are equivalent at this
 comparison site — the diff checker will not flag a value↔UUID mismatch as
-`modified_existing`. This is the universal rule (CASE-406, Vision.md
+`modified_existing`. This is the universal rule (Vision.md
 §"References Must Resolve"): synonyms work identically to canonical IDs
 everywhere the platform compares references.
 
-### Terminology / term create with conflict validation (CASE-465)
+### Terminology / term create with conflict validation
 POST /terminologies and single-item POST /terminologies/{id}/terms accept the
 same on_conflict parameter (also exposed on the create_terminology,
 create_terminologies_bulk, and create_terms MCP tools):
@@ -218,7 +217,7 @@ Templates define identity_fields. WIP hashes those fields to decide:
 same hash = new version (update), different hash = new document (create).
 The same create_document tool handles both — it's an upsert.
 
-- Zero identity fields = every submission creates a new document (append-only, no update path: create always appends AND PATCH is rejected with `append_only` — CASE-478)
+- Zero identity fields = every submission creates a new document (append-only, no update path: create always appends AND PATCH is rejected with `append_only`)
 - Too many identity fields = corrections create duplicates instead of versions
 - Never add timestamps or per-run data to identity fields — it makes every
   hash unique, creating duplicates instead of versions
@@ -392,7 +391,7 @@ A document is an instance of a template — a filled-in form.
 - Terms are resolved: you submit the value, WIP stores both value and term_id
 - Versioned: same identity → same document_id, new version
 - identity_fields (defined on template) control what makes a document "the same"
-- Zero identity fields = append-only (every POST creates a new document; PATCH is rejected with `append_only` — CASE-478)
+- Zero identity fields = append-only (every POST creates a new document; PATCH is rejected with `append_only`)
 
 ## Files
 Binary files stored in MinIO, referenced by documents.
@@ -458,7 +457,7 @@ Map your domain onto WIP primitives:
 5. Define identity_fields for deduplication — choose carefully:
    - Too few → unrelated entities collide into one document
    - Too many → corrections create duplicates instead of versions
-   - Zero → append-only, no update path: create appends, PATCH is rejected (`append_only`) — fine for event logs; such templates are always versioned:true (CASE-478)
+   - Zero → append-only, no update path: create appends, PATCH is rejected (`append_only`) — fine for event logs; such templates are always versioned:true
    - NEVER include timestamps or per-run data in identity fields
    - Avoid timestamps in non-identity fields too — they trigger unnecessary
      version updates on otherwise unchanged documents
@@ -536,7 +535,7 @@ Trap: You deactivate a term and expect documents using it to fail. They don't.
 Rule: Never treat inactive as deleted. Inactive entities are invisible to new
       data but always visible to existing data.
 
-Default, not absolute (CASE-576): "nothing ever dies" is the platform
+Default, not absolute: "nothing ever dies" is the platform
 DEFAULT (namespace deletion_mode: "retain"), not a physical law. A
 namespace explicitly flipped to deletion_mode: "full" (guarded: the "wip"
 namespace refuses it; retain->full requires confirm_enable_deletion=true)
@@ -567,7 +566,7 @@ Corollary: Existing documents survive template updates unchanged. The
       (new doc version, populated new field) rather than a CREATE — no
       data migration step needed, just a backfill pass.
 
-Moving a cohort forward (CASE-491): the corollary handles ADDITIVE changes
+Moving a cohort forward: the corollary handles ADDITIVE changes
       for free (existing docs stay valid on their pinned version). When you need
       to actively re-pin existing documents to a newer version, use the
       `migrate_documents` tool / `POST /documents/migrate` — a validated,
@@ -598,7 +597,7 @@ Trap: Adding a timestamp to document data makes every hash unique — you get
       create new documents instead of new versions. Zero identity fields means
       every submission creates a new document — append-only, NO update path at
       all: the create/upsert path always appends, AND PATCH-by-document_id is
-      rejected with error_code `append_only` (CASE-478). A document_id is a
+      rejected with error_code `append_only`. A document_id is a
       surrogate row handle, not a logical identity; PATCH operates on logical
       entities, so an identity-less doc cannot be patched. To change such data,
       create a new document; to make a template updatable, declare
@@ -614,10 +613,10 @@ What's NOT in the identity hash:
   different namespaces is two different entities.
 
 Adding a field to `identity_fields` IS breaking: every existing doc would
-hash differently on next write, creating parallel orphan docs (CASE-316 /
-317 / 318 family — same shape: an external loader computed identity from
-fields the template didn't declare, hashes collided to empty, 213 of 214
-records silently dropped). Adding a field to `data.*` that is NOT in
+hash differently on next write, creating parallel orphan docs (a recurring
+real-world shape: an external loader computed identity from fields the
+template didn't declare, hashes collided to empty, and 213 of 214 records
+were silently dropped). Adding a field to `data.*` that is NOT in
 identity_fields is non-breaking — see PoNIF #2's corollary; existing docs
 just receive the new field's value on next backfill.
 
@@ -683,7 +682,7 @@ payload, the previous data is gone. Used for relationships where the edge
 identity matters but its history doesn't (e.g. "monster has spell"). The
 flag is immutable after creation.
 
-Invariant (CASE-478): `versioned: false` REQUIRES non-empty identity_fields.
+Invariant: `versioned: false` REQUIRES non-empty identity_fields.
 Overwrite-in-place means "re-address the same entity and replace it" — you
 cannot re-address a thing with no identity. `versioned: false` + empty
 identity_fields is rejected at template create AND update (the update check
@@ -1159,7 +1158,7 @@ async def create_api_key(
         grant_permission: 'read' | 'write' | 'admin' — also create a namespace
             grant for the key on each scoped namespace (requires namespaces).
             Without it a scoped key can READ its namespaces but not WRITE;
-            for app provisioning you almost always want 'write' (CASE-450).
+            for app provisioning you almost always want 'write'.
     """
     try:
         data = await get_client().create_api_key(
@@ -1387,7 +1386,7 @@ async def create_terminology(
         on_conflict: 'error' (default) fails on an existing value with
             error_code='already_exists'; 'validate' makes the call idempotent —
             identical re-create returns status='unchanged' with the existing ID,
-            config drift returns error_code='incompatible_config' (CASE-465).
+            config drift returns error_code='incompatible_config'.
     """
     try:
         client = get_client()
@@ -1418,7 +1417,7 @@ async def create_terminologies_bulk(
         on_conflict: 'error' (default) fails existing values with
             error_code='already_exists'; 'validate' makes re-runs idempotent —
             identical items come back status='unchanged', config drift comes
-            back error_code='incompatible_config' (CASE-465). Check per-item
+            back error_code='incompatible_config'. Check per-item
             results[i].status either way.
     """
     try:
@@ -1575,7 +1574,7 @@ async def create_terms(
             existing value with error_code='already_exists'; 'validate' makes
             the call idempotent — identical re-create returns
             status='unchanged', config drift returns
-            error_code='incompatible_config' (CASE-465). Multi-term calls
+            error_code='incompatible_config'. Multi-term calls
             skip duplicates regardless (status='skipped').
 
     Example:
@@ -1937,7 +1936,7 @@ async def create_template(template: dict, namespace: str | None = None) -> str:
             - identity_fields: List of field names for deduplication.
               Choose carefully — see wip://conventions for pitfalls.
             - header_fields: List of fields to surface in peer/header
-              projections (CASE-343). Bare names target data.<name>;
+              projections. Bare names target data.<name>;
               `metadata.custom.<name>` paths also allowed. Empty →
               projection falls back to identity_fields.
             - status: 'active' (default) or 'draft' (skip validation).
@@ -2192,7 +2191,7 @@ async def update_template(
             - description: New description
             - fields: Complete field list (replaces all fields — include unchanged ones too)
             - identity_fields: Updated identity fields
-            - header_fields: Updated peer-projection fields (CASE-343).
+            - header_fields: Updated peer-projection fields.
               Bare names target data.<name>; `metadata.custom.<name>`
               paths allowed. Empty → projection falls back to
               identity_fields.
@@ -2485,7 +2484,7 @@ async def validate_documents(
     namespace: str | None = None,
     template_version: int | None = None,
 ) -> str:
-    """Validate multiple documents against ONE template without saving (CASE-419).
+    """Validate multiple documents against ONE template without saving.
 
     Bulk, side-effect-free counterpart to validate_document — validate a whole
     dataset as a dry run in a single call instead of one request per row. All
@@ -3047,7 +3046,7 @@ async def search(
     table — apps don't have to think about it.
 
     The response groups hits per entity type, each with its own
-    pagination envelope (CASE-329). See `wip://conventions` for the
+    pagination envelope. See `wip://conventions` for the
     platform pagination contract; each type has `items`, `total`,
     `page`, `page_size`, `pages`. Same `page`/`page_size` applies to
     every type.
@@ -3059,8 +3058,8 @@ async def search(
         types: Filter by entity type: 'terminology', 'term', 'template',
             'document', 'file'. Omit to search all types.
         namespace: Filter by namespace. Omit to search all namespaces.
-        page: Page number (1-indexed). Default 1. (CASE-329)
-        page_size: Items per type. Default 20, cap 100. (CASE-329)
+        page: Page number (1-indexed). Default 1.
+        page_size: Items per type. Default 20, cap 100.
         template: Restrict document search to a single template (by
             value, e.g. 'LESSON'). Other entity-type searches ignore
             this filter.
@@ -3653,9 +3652,9 @@ async def start_backup(
     the .zip.
 
     WARNING — v1.0 limitation: include_files=true is unsafe on namespaces with
-    non-trivial file content (CASE-28: ArchiveWriter buffers all blob bytes in
-    RAM and will OOM the document-store container). Leave it false until
-    CASE-28 lands.
+    non-trivial file content: the archive writer buffers all blob bytes in
+    RAM and will OOM the document-store container. Leave it false until a
+    streaming archive path ships.
 
     Args:
         namespace: Source namespace (uses WIP_MCP_DEFAULT_NAMESPACE if unset).
