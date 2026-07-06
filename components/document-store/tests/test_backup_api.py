@@ -1,9 +1,8 @@
 """Tests for the backup/restore REST endpoints (CASE-23 Phase 3 STEP 5).
 
-These tests mock ``backup_service.start_job`` so no worker thread actually
-runs the toolkit; the async/sync bridge itself is covered by
-``test_backup_service.py`` and the loopback factories by
-``test_backup_loopback.py``. The focus here is endpoint wiring:
+These tests mock ``backup_service.start_async_job`` so no engine actually
+runs; the job pipeline itself is covered by ``test_backup_service.py``.
+The focus here is endpoint wiring:
 
 * request parsing and validation
 * BackupJob record creation + archive path bookkeeping
@@ -99,7 +98,7 @@ async def test_start_backup_creates_job_and_returns_snapshot(
         patch(
             "document_store.api.backup.backup_service.start_async_job",
             new=AsyncMock(return_value=fake_task),
-        ) as start_job,
+        ) as start_async_job,
     ):
         resp = await client.post(
             "/api/document-store/backup/namespaces/wip/backup",
@@ -121,7 +120,7 @@ async def test_start_backup_creates_job_and_returns_snapshot(
     _, kwargs = mk_runner.call_args
     assert kwargs["namespaces"] == ["wip"]
     assert kwargs["options"]["include_files"] is True
-    start_job.assert_awaited_once()
+    start_async_job.assert_awaited_once()
 
     # The BackupJob was persisted.
     stored = await BackupJob.find_one(BackupJob.job_id == body["job_id"])
