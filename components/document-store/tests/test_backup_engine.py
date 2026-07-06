@@ -454,7 +454,7 @@ class TestUpsertNamespace:
             registry_api_key="test-key",
         )
         manifest = Manifest(
-            format_version="2.0",
+            format_version="3.0",
             namespace="kb",
             namespace_config=NamespaceConfig(
                 prefix="kb",
@@ -494,7 +494,7 @@ class TestUpsertNamespace:
         mongo, _ = _make_mongo_mock()
         engine = DirectRestoreEngine(mongo, None, lambda _: None)
         manifest = Manifest(
-            format_version="2.0",
+            format_version="3.0",
             namespace="kb",
             namespace_config=NamespaceConfig(prefix="kb"),
             counts=EntityCounts(),
@@ -560,7 +560,7 @@ class TestRunRestoreBasicFlow:
 
         # Build manifest the reader will return
         manifest = Manifest(
-            format_version="2.0",
+            format_version="3.0",
             namespace="kb",
             namespace_config=NamespaceConfig(prefix="kb", isolation_mode="open"),
             counts=EntityCounts(terminologies=2, documents=3),
@@ -612,7 +612,7 @@ class TestRunRestoreBasicFlow:
         engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
 
         manifest = Manifest(
-            format_version="2.0",
+            format_version="3.0",
             namespace="kb",
             namespace_config=NamespaceConfig(prefix="kb"),
             counts=EntityCounts(),

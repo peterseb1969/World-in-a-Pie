@@ -222,12 +222,32 @@ async def start_restore(
     # permission checks OUTSIDE it so a 403/404 is never swallowed.
     if mode == "restore":
         prefixes: list[str] = []
+        manifest = None
         try:
             from wip_toolkit.archive import ArchiveReader
             with ArchiveReader(archive_path) as reader:
-                prefixes = reader.read_manifest().namespace_prefixes()
+                manifest = reader.read_manifest()
         except Exception as exc:
             logger.warning("Could not read manifest from archive: %s", exc)
+
+        # A pre-v3 archive is flat (no namespaces/ subtree), so the restore
+        # loop would read nothing, create the namespace, and report success —
+        # an empty namespace with no error. Reject it synchronously here,
+        # before any job or namespace exists. This must NOT live inside the
+        # try above: only an *unreadable* manifest falls through (the engine
+        # fails on it later); a readable non-v3 manifest is a caller error.
+        if manifest is not None:
+            if not manifest.format_version.startswith("3"):
+                archive_path.unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Archive is format v{manifest.format_version} — this "
+                        "endpoint restores v3 archives. Convert it first: "
+                        "python -m wip_toolkit convert-archive <src> <dst>"
+                    ),
+                )
+            prefixes = manifest.namespace_prefixes()
 
         if prefixes:
             # Admin on every namespace the restore will write.

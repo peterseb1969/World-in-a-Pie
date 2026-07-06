@@ -370,6 +370,28 @@ class DirectRestoreEngine:
         """
         with ArchiveReader(archive_path) as reader:
             manifest = reader.read_manifest()
+
+            # Belt behind the endpoint's synchronous 400: a pre-v3 archive is
+            # flat, so every namespaces/<ns>/<entity>.jsonl read below would
+            # find nothing and the job would complete "successfully" having
+            # restored zero entities into a freshly created namespace. Fail
+            # loud instead, for any caller that bypasses the endpoint.
+            if not manifest.format_version.startswith("3"):
+                raise RestoreEngineError(
+                    f"Archive is format v{manifest.format_version} — the restore "
+                    "engine reads the v3 layout. Convert it first: "
+                    "python -m wip_toolkit convert-archive <src> <dst>"
+                )
+            # A manifest may *claim* 3.x yet carry no namespaces/ subtree
+            # (hand-assembled or truncated zip). namespace_prefixes() can be
+            # non-empty from the manifest alone, so check the actual layout —
+            # otherwise the same silent zero-entity restore happens.
+            if not reader.list_namespaces():
+                raise RestoreEngineError(
+                    "Archive manifest claims v3 but the zip has no namespaces/ "
+                    "tree — malformed archive, nothing to restore"
+                )
+
             source_namespaces = manifest.namespace_prefixes() or reader.list_namespaces()
             if not source_namespaces:
                 raise RestoreEngineError("Archive contains no namespaces to restore")
