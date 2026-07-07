@@ -51,6 +51,7 @@ from ..services.auth import require_api_key
 from ..services.claims import claim_entry_keys
 from ..services.hash import HashService
 from ..services.id_generator import IdGeneratorService
+from .grants import resolve_accessible_namespaces
 
 logger = logging.getLogger("registry.entries")
 
@@ -110,8 +111,21 @@ async def browse_entries(
     """Browse registry entries with pagination and optional filters."""
     query: dict = {}
 
+    # Scope the listing to namespaces the caller may read. Enumeration is
+    # grant-gated (unlike cross-namespace reference resolution, which stays
+    # open) — a key must not list a namespace's entry inventory without a
+    # grant on it. An explicit foreign namespace returns an empty page rather
+    # than 404, preserving pagination shape while leaking nothing.
+    accessible = await resolve_accessible_namespaces(identity)
     if namespace:
+        if accessible is not None and namespace not in accessible:
+            return BrowseEntriesResponse(
+                items=[], total=0, page=page, page_size=page_size, pages=0
+            )
         query["namespace"] = namespace
+    elif accessible is not None:
+        query["namespace"] = {"$in": accessible}
+
     if entity_type:
         query["entity_type"] = entity_type
     if status:
@@ -183,8 +197,23 @@ async def unified_search(
 
     query: dict = {"$or": or_conditions}
 
+    # Same namespace-scoping as browse_entries: this is enumeration, so it is
+    # grant-gated. Reference resolution (lookup_by_ids / _keys, resolve_synonyms)
+    # stays cross-namespace by design; unified search does not.
+    accessible = await resolve_accessible_namespaces(identity)
     if namespace:
+        if accessible is not None and namespace not in accessible:
+            return UnifiedSearchResponse(
+                query=q_stripped,
+                items=[],
+                total=0,
+                page=page,
+                page_size=page_size,
+            )
         query["namespace"] = namespace
+    elif accessible is not None:
+        query["namespace"] = {"$in": accessible}
+
     if entity_type:
         query["entity_type"] = entity_type
     if status:

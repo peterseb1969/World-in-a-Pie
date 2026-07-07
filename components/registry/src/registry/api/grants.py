@@ -184,6 +184,29 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     return best
 
 
+async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | None:
+    """Namespaces a directly-calling identity may read, or None for superadmin.
+
+    None means "no restriction" (superadmin) — callers should apply no
+    namespace filter. A concrete list (possibly empty) means "restrict reads
+    to exactly these prefixes." Used by the registry's own enumeration
+    endpoints to scope listings to the caller's grants, the same way the
+    stores scope their listings via wip_auth.permissions. This is the
+    in-process twin of the service-to-service ``/my/accessible-namespaces``
+    endpoint: the identity is already the direct caller here, so there is no
+    synthetic-identity reconstruction and no HTTP self-call.
+    """
+    if _is_superadmin(identity):
+        return None
+
+    all_ns = await Namespace.find({"status": "active"}).to_list()
+    return [
+        ns.prefix
+        for ns in all_ns
+        if await _resolve_permission(identity, ns.prefix) != "none"
+    ]
+
+
 # =============================================================================
 # Grant management (requires admin on the namespace)
 # =============================================================================

@@ -126,6 +126,42 @@ Seven API-boundary gaps were closed in a single pass. These were the "stragglers
 
 ---
 
+## Enumeration vs Resolution: two different namespace axes
+
+Namespace access in WIP is gated on **two independent axes**, and conflating them
+causes both over- and under-scoping. Keep them distinct:
+
+- **Reference resolution** (canonical ID / synonym / value → entity) is gated by
+  **isolation** — a namespace's `isolation_mode` + `allowed_external_refs`, plus the
+  always-shared `wip` namespace. Resolution crosses namespaces *by design*: a document
+  in namespace `app-a` legitimately references a term in `wip` with no grant on `wip`
+  (Vision §"References Must Resolve"). The Registry's resolution endpoints
+  (`/entries/lookup/by-id`, `/entries/lookup/by-keys`, `/entries/resolve`,
+  `/synonyms/*`) are therefore intentionally not grant-scoped. Isolation for
+  *references* is enforced at the stores' `ReferenceValidator` (see the document-store
+  fix that closed the UUID-form bypass).
+
+- **Enumeration / listing** (browse the inventory of a namespace, search across it) is
+  gated by **grants** — you need a read grant (or the api-key's namespace scope) to list
+  a namespace's entries. This is the convention "you need a grant to *list* a
+  namespace's data, but not to reference its terms."
+
+The gap fixed under CASE-580: the Registry's own enumeration endpoints —
+`GET /api/registry/entries` (browse) and `GET /api/registry/entries/search` (unified
+search) — applied **no** namespace filter, so a namespace-scoped, non-privileged
+api-key could enumerate every namespace's entry inventory. They now resolve the caller's
+accessible namespaces via `registry.api.grants.resolve_accessible_namespaces` (superadmin
+→ no filter; scoped caller → `namespace $in accessible`) and constrain the query; an
+explicit foreign namespace returns an empty page rather than leaking rows.
+
+**Do not "fix" the resolution endpoints the same way** — grant-scoping
+`/entries/lookup/*` or `/synonyms/*` would break cross-namespace reference resolution,
+which is a guarantee, not a gap. `POST /search/by-fields` is a targeted value→entry
+resolution primitive and stays on the resolution (isolation) axis, not the enumeration
+one.
+
+---
+
 ## The Core Gap: Template-Store Internal Resolution
 
 `_resolve_to_terminology_id()` and `_resolve_to_template_id()` are called during:
