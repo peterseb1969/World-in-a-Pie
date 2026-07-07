@@ -49,7 +49,7 @@ WIP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # fresh BE-YAC on pre-v2 setup.md and cost a 30-minute false alarm.
 
 CURRENT_BRANCH="$(git -C "$WIP_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
-if [[ "$CURRENT_BRANCH" != "develop" && -z "${ALLOW_NON_DEVELOP:-}" ]]; then
+if [[ "$CURRENT_BRANCH" != "develop" && "$CURRENT_BRANCH" != "tutorial" && -z "${ALLOW_NON_DEVELOP:-}" ]]; then
     echo "Error: clone is on '$CURRENT_BRANCH' branch, not 'develop'." >&2
     echo "  Canonical BE-YAC work lives on develop." >&2
     echo "  Fix: cd $WIP_ROOT && git checkout develop && git pull" >&2
