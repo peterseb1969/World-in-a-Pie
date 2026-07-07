@@ -118,6 +118,42 @@ describe('FetchTransport', () => {
     expect(options.headers['X-API-Key']).toBe('test-key')
   })
 
+  it('caches a cacheable provider — getHeaders called once across requests (CASE-569)', async () => {
+    const getHeaders = vi.fn(() => ({ 'X-API-Key': 'k' }))
+    const authedTransport = new FetchTransport({
+      baseUrl: 'http://localhost:8001',
+      auth: { getHeaders, cacheable: true },
+      retry: { maxRetries: 0 },
+    })
+
+    fetchMock.mockResolvedValue(new Response('{}', { status: 200 }))
+    await authedTransport.request('GET', '/api/a')
+    await authedTransport.request('GET', '/api/b')
+    await authedTransport.request('GET', '/api/c')
+
+    expect(getHeaders).toHaveBeenCalledTimes(1)
+  })
+
+  it('does NOT cache a non-cacheable provider — getHeaders called per request (CASE-569)', async () => {
+    // Simulates OidcAuthProvider: cacheable omitted, token rotates each call.
+    let n = 0
+    const getHeaders = vi.fn(async () => ({ Authorization: `Bearer token-${++n}` }))
+    const authedTransport = new FetchTransport({
+      baseUrl: 'http://localhost:8001',
+      auth: { getHeaders },
+      retry: { maxRetries: 0 },
+    })
+
+    fetchMock.mockResolvedValue(new Response('{}', { status: 200 }))
+    await authedTransport.request('GET', '/api/a')
+    await authedTransport.request('GET', '/api/b')
+
+    expect(getHeaders).toHaveBeenCalledTimes(2)
+    // Second request carries the refreshed token, not a pinned stale one.
+    const [, opts2] = fetchMock.mock.calls[1]
+    expect(opts2.headers['Authorization']).toBe('Bearer token-2')
+  })
+
   it('calls onAuthError on 401', async () => {
     const onAuthError = vi.fn()
     const authedTransport = new FetchTransport({
@@ -170,23 +206,23 @@ describe('FetchTransport', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('uses window.location.origin when baseUrl is empty string', () => {
+  it('uses window.location.origin when baseUrl is empty string', async () => {
     vi.stubGlobal('window', { location: { origin: 'https://wip.local:8443' } })
     const t = new FetchTransport({ baseUrl: '' })
     // Verify by making a request — the URL should use the origin
     fetchMock.mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }))
-    t.request('GET', '/api/test')
+    await t.request('GET', '/api/test')
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining('https://wip.local:8443/api/test'),
       expect.any(Object),
     )
   })
 
-  it('resolves relative baseUrl against window.location.origin', () => {
+  it('resolves relative baseUrl against window.location.origin', async () => {
     vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } })
     const t = new FetchTransport({ baseUrl: '/wip', retry: { maxRetries: 0 } })
     fetchMock.mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }))
-    t.request('GET', '/api/document-store/documents')
+    await t.request('GET', '/api/document-store/documents')
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost:5173/wip/api/document-store/documents',
       expect.any(Object),

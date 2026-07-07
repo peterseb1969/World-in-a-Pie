@@ -68,6 +68,22 @@ export class FetchTransport {
     this.cachedAuthHeaders = null
   }
 
+  /**
+   * Resolve auth headers for one request. Providers that opt into caching
+   * (`cacheable`, e.g. a static API key) are fetched once and reused until a
+   * 401/403 or setAuth() clears the cache; non-cacheable providers (OIDC,
+   * whose bearer the consumer callback rotates) are re-fetched every request
+   * so an expired token never pins a stale header (CASE-569).
+   */
+  private async resolveAuthHeaders(): Promise<Record<string, string>> {
+    if (!this.auth) return {}
+    if (!this.auth.cacheable) return this.auth.getHeaders()
+    if (!this.cachedAuthHeaders) {
+      this.cachedAuthHeaders = await this.auth.getHeaders()
+    }
+    return this.cachedAuthHeaders
+  }
+
   async request<T>(
     method: string,
     path: string,
@@ -84,13 +100,7 @@ export class FetchTransport {
       ...options?.headers,
     }
 
-    // Add auth headers (cache for synchronous providers to avoid async overhead)
-    if (this.auth) {
-      if (!this.cachedAuthHeaders) {
-        this.cachedAuthHeaders = await this.auth.getHeaders()
-      }
-      Object.assign(headers, this.cachedAuthHeaders)
-    }
+    Object.assign(headers, await this.resolveAuthHeaders())
 
     // Set content-type for JSON bodies
     if (options?.body !== undefined && !(options.body instanceof FormData)) {
@@ -216,12 +226,7 @@ export class FetchTransport {
     const url = this.buildUrl(path, options?.params)
     const headers: Record<string, string> = { ...options?.headers }
 
-    if (this.auth) {
-      if (!this.cachedAuthHeaders) {
-        this.cachedAuthHeaders = await this.auth.getHeaders()
-      }
-      Object.assign(headers, this.cachedAuthHeaders)
-    }
+    Object.assign(headers, await this.resolveAuthHeaders())
 
     const response = await fetch(url, {
       method,

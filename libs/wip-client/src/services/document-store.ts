@@ -304,9 +304,12 @@ export class DocumentStoreService extends BaseService {
    * Restore a namespace from an uploaded archive. The archive is streamed
    * to disk on the server, so multi-GB uploads do not buffer in memory.
    *
-   * **Mode gotcha:** `mode: 'restore'` writes back into the archive's source
-   * namespace and ignores `target_namespace`. Use `mode: 'fresh'` when
-   * restoring into a different namespace.
+   * **Mode gotcha (CASE-569):** omitting `mode` defers to the server default
+   * `'restore'`, which writes back into the archive's source namespace
+   * (a single-namespace archive honours `target_namespace`; a multi-namespace
+   * one restores each to itself). `'fresh'` is not yet implemented server-side
+   * — the backend 400s on it. Pass `mode: 'restore'` explicitly when the
+   * namespace outcome matters; see `RestoreOptions`.
    */
   async startRestore(
     namespace: string,

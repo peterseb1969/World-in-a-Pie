@@ -13,6 +13,14 @@ export type BackupJobKind = 'backup' | 'restore'
 
 export type BackupJobStatus = 'pending' | 'running' | 'complete' | 'failed'
 
+/**
+ * Restore mode. `'restore'` is the only mode the server implements today: it
+ * writes back into the archive's source namespace. `'fresh'` is RESERVED —
+ * the backend currently rejects it with 400 "Fresh mode is not yet
+ * implemented" (document-store `api/backup.py`); the new-ID / honour-
+ * `target_namespace` path it names does not exist yet. Kept in the union for
+ * forward-compat, but do not send it (CASE-569).
+ */
 export type RestoreMode = 'restore' | 'fresh'
 
 /**
@@ -62,10 +70,17 @@ export interface BackupRequest {
 /**
  * Form fields accompanying a multipart restore upload.
  *
- * **Mode gotcha:** `mode: 'restore'` ignores `target_namespace` and writes
- * back into the archive's source namespace. Use `mode: 'fresh'` (the default
- * here) when restoring into a *new* namespace — that path generates new IDs
- * and honours `target_namespace`.
+ * **Mode gotcha (CASE-569):** omitting `mode` sends nothing on the wire, so
+ * the server default applies — and that default is `'restore'`, which writes
+ * back into the archive's **source** namespace. A single-namespace archive
+ * may be redirected with `target_namespace`; a multi-namespace archive
+ * restores each namespace to itself and rejects a target override. So a
+ * caller who sets `target_namespace`, omits `mode`, and expects a
+ * fresh-namespace restore lands in the archive's original namespace instead —
+ * the surprising direction, with no error. `'fresh'` is NOT yet implemented
+ * (the backend 400s on it); there is no mode that remaps to a new namespace
+ * with new IDs today. Pass `mode: 'restore'` explicitly when the namespace
+ * outcome matters.
  */
 export interface RestoreOptions {
   mode?: RestoreMode

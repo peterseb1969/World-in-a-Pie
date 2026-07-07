@@ -88,17 +88,27 @@ var FetchTransport = class {
     this.auth = auth;
     this.cachedAuthHeaders = null;
   }
+  /**
+   * Resolve auth headers for one request. Providers that opt into caching
+   * (`cacheable`, e.g. a static API key) are fetched once and reused until a
+   * 401/403 or setAuth() clears the cache; non-cacheable providers (OIDC,
+   * whose bearer the consumer callback rotates) are re-fetched every request
+   * so an expired token never pins a stale header (CASE-569).
+   */
+  async resolveAuthHeaders() {
+    if (!this.auth) return {};
+    if (!this.auth.cacheable) return this.auth.getHeaders();
+    if (!this.cachedAuthHeaders) {
+      this.cachedAuthHeaders = await this.auth.getHeaders();
+    }
+    return this.cachedAuthHeaders;
+  }
   async request(method, path, options) {
     const url = this.buildUrl(path, options?.params);
     const headers = {
       ...options?.headers
     };
-    if (this.auth) {
-      if (!this.cachedAuthHeaders) {
-        this.cachedAuthHeaders = await this.auth.getHeaders();
-      }
-      Object.assign(headers, this.cachedAuthHeaders);
-    }
+    Object.assign(headers, await this.resolveAuthHeaders());
     if (options?.body !== void 0 && !(options.body instanceof FormData)) {
       headers["Content-Type"] = "application/json";
     }
@@ -194,12 +204,7 @@ var FetchTransport = class {
   async stream(method, path, options) {
     const url = this.buildUrl(path, options?.params);
     const headers = { ...options?.headers };
-    if (this.auth) {
-      if (!this.cachedAuthHeaders) {
-        this.cachedAuthHeaders = await this.auth.getHeaders();
-      }
-      Object.assign(headers, this.cachedAuthHeaders);
-    }
+    Object.assign(headers, await this.resolveAuthHeaders());
     const response = await fetch(url, {
       method,
       headers,
@@ -281,6 +286,9 @@ var FetchTransport = class {
 var ApiKeyAuthProvider = class {
   constructor(apiKey) {
     this.apiKey = apiKey;
+    // The key is static — safe (and cheap) for the transport to cache. Rotation
+    // goes through setApiKey + the transport's setAuth, which clears the cache.
+    this.cacheable = true;
   }
   getHeaders() {
     return { "X-API-Key": this.apiKey };
@@ -831,9 +839,12 @@ var DocumentStoreService = class extends BaseService {
    * Restore a namespace from an uploaded archive. The archive is streamed
    * to disk on the server, so multi-GB uploads do not buffer in memory.
    *
-   * **Mode gotcha:** `mode: 'restore'` writes back into the archive's source
-   * namespace and ignores `target_namespace`. Use `mode: 'fresh'` when
-   * restoring into a different namespace.
+   * **Mode gotcha (CASE-569):** omitting `mode` defers to the server default
+   * `'restore'`, which writes back into the archive's source namespace
+   * (a single-namespace archive honours `target_namespace`; a multi-namespace
+   * one restores each to itself). `'fresh'` is not yet implemented server-side
+   * — the backend 400s on it. Pass `mode: 'restore'` explicitly when the
+   * namespace outcome matters; see `RestoreOptions`.
    */
   async startRestore(namespace, archive, options = {}, filename = "archive.zip") {
     const form = new FormData();

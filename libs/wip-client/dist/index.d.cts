@@ -1,5 +1,6 @@
 declare class ApiKeyAuthProvider implements AuthProvider {
     private apiKey;
+    readonly cacheable = true;
     constructor(apiKey: string);
     getHeaders(): Record<string, string>;
     setApiKey(key: string): void;
@@ -18,6 +19,14 @@ declare class OidcAuthProvider implements AuthProvider {
 /** Auth provider interface — implementations supply headers for each request. */
 interface AuthProvider {
     getHeaders(): Record<string, string> | Promise<Record<string, string>>;
+    /**
+     * Whether the transport may cache this provider's headers across requests.
+     * Static credentials (API keys) set this true; rotating credentials that
+     * the transport must re-fetch every request (OIDC bearer tokens, which the
+     * consumer's callback refreshes) leave it false/undefined so an expiring
+     * token never pins a stale header (CASE-569).
+     */
+    cacheable?: boolean;
 }
 
 interface FetchTransportConfig {
@@ -41,6 +50,14 @@ declare class FetchTransport {
     private cachedAuthHeaders;
     constructor(config: FetchTransportConfig);
     setAuth(auth: AuthProvider | undefined): void;
+    /**
+     * Resolve auth headers for one request. Providers that opt into caching
+     * (`cacheable`, e.g. a static API key) are fetched once and reused until a
+     * 401/403 or setAuth() clears the cache; non-cacheable providers (OIDC,
+     * whose bearer the consumer callback rotates) are re-fetched every request
+     * so an expired token never pins a stale header (CASE-569).
+     */
+    private resolveAuthHeaders;
     request<T>(method: string, path: string, options?: {
         body?: unknown;
         params?: Record<string, unknown>;
@@ -1198,6 +1215,14 @@ interface DocumentTraverseParams {
  */
 type BackupJobKind = 'backup' | 'restore';
 type BackupJobStatus = 'pending' | 'running' | 'complete' | 'failed';
+/**
+ * Restore mode. `'restore'` is the only mode the server implements today: it
+ * writes back into the archive's source namespace. `'fresh'` is RESERVED —
+ * the backend currently rejects it with 400 "Fresh mode is not yet
+ * implemented" (document-store `api/backup.py`); the new-ID / honour-
+ * `target_namespace` path it names does not exist yet. Kept in the union for
+ * forward-compat, but do not send it (CASE-569).
+ */
 type RestoreMode = 'restore' | 'fresh';
 /**
  * Persistent snapshot of a backup or restore job. Returned by every backup
@@ -1244,10 +1269,17 @@ interface BackupRequest {
 /**
  * Form fields accompanying a multipart restore upload.
  *
- * **Mode gotcha:** `mode: 'restore'` ignores `target_namespace` and writes
- * back into the archive's source namespace. Use `mode: 'fresh'` (the default
- * here) when restoring into a *new* namespace — that path generates new IDs
- * and honours `target_namespace`.
+ * **Mode gotcha (CASE-569):** omitting `mode` sends nothing on the wire, so
+ * the server default applies — and that default is `'restore'`, which writes
+ * back into the archive's **source** namespace. A single-namespace archive
+ * may be redirected with `target_namespace`; a multi-namespace archive
+ * restores each namespace to itself and rejects a target override. So a
+ * caller who sets `target_namespace`, omits `mode`, and expects a
+ * fresh-namespace restore lands in the archive's original namespace instead —
+ * the surprising direction, with no error. `'fresh'` is NOT yet implemented
+ * (the backend 400s on it); there is no mode that remaps to a new namespace
+ * with new IDs today. Pass `mode: 'restore'` explicitly when the namespace
+ * outcome matters.
  */
 interface RestoreOptions {
     mode?: RestoreMode;
@@ -1400,9 +1432,12 @@ declare class DocumentStoreService extends BaseService {
      * Restore a namespace from an uploaded archive. The archive is streamed
      * to disk on the server, so multi-GB uploads do not buffer in memory.
      *
-     * **Mode gotcha:** `mode: 'restore'` writes back into the archive's source
-     * namespace and ignores `target_namespace`. Use `mode: 'fresh'` when
-     * restoring into a different namespace.
+     * **Mode gotcha (CASE-569):** omitting `mode` defers to the server default
+     * `'restore'`, which writes back into the archive's source namespace
+     * (a single-namespace archive honours `target_namespace`; a multi-namespace
+     * one restores each to itself). `'fresh'` is not yet implemented server-side
+     * — the backend 400s on it. Pass `mode: 'restore'` explicitly when the
+     * namespace outcome matters; see `RestoreOptions`.
      */
     startRestore(namespace: string, archive: Blob | File, options?: RestoreOptions, filename?: string): Promise<BackupJobSnapshot>;
     /** Get the latest persisted snapshot for a backup or restore job. */

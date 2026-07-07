@@ -156,7 +156,7 @@ client.setAuth(new OidcAuthProvider(() => oidcManager.getAccessToken()))
 
 The `OidcAuthProvider` takes a callback, not a static token. It calls your function on every request, so token refresh is handled by your OIDC library. The provider has **zero OIDC dependencies** — bring your own library (oidc-client-ts, Auth0, etc.).
 
-API key auth headers are cached internally for performance. OIDC headers call the callback fresh each time.
+API key auth headers are cached internally for performance (the key is static; the cache clears on a 401/403 or `setAuth()`). OIDC headers call your `getToken` callback fresh on every request, so a token your OIDC library rotates is always current — the transport never pins a stale bearer.
 
 ---
 
