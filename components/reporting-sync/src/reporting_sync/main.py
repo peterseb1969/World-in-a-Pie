@@ -23,7 +23,7 @@ from fastapi.responses import StreamingResponse
 from nats.js import JetStreamContext
 from pydantic import BaseModel, Field
 
-from wip_auth import build_metadata
+from wip_auth import build_metadata, declare_api_key_security
 from wip_auth.ratelimit import setup_rate_limiting
 from wip_auth.security import check_production_security
 from wip_auth.startup import retry_async
@@ -1623,6 +1623,11 @@ async def root():
 
 
 app.include_router(router)
+
+# Declare the X-API-Key requirement in the OpenAPI contract — runtime
+# Depends() enforcement emits nothing into the schema, and a client
+# generated from an auth-silent schema would not send a key.
+declare_api_key_security(app)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import (
+    declare_api_key_security,
     RejectUnknownQueryParamsMiddleware,
     build_metadata,
     check_production_security,
@@ -291,31 +292,10 @@ app.add_middleware(
 app.include_router(api_router)
 
 
-def _openapi_with_security():
-    """Declare the X-API-Key requirement in the OpenAPI contract (CASE-564).
-
-    Every route enforces the key at runtime via Depends(require_api_key);
-    without this declaration the generated schema understates auth and a
-    client generated from it would not send a key."""
-    if app.openapi_schema:
-        return app.openapi_schema
-    from fastapi.openapi.utils import get_openapi
-
-    schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
-    )
-    schema.setdefault("components", {})["securitySchemes"] = {
-        "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
-    }
-    schema["security"] = [{"ApiKeyAuth": []}]
-    app.openapi_schema = schema
-    return schema
-
-
-app.openapi = _openapi_with_security
+# Declare the X-API-Key requirement in the OpenAPI contract — the shared
+# wip_auth helper replaces this service's original inline override so all
+# five service schemas use one implementation and cannot drift.
+declare_api_key_security(app)
 
 
 # Root endpoint

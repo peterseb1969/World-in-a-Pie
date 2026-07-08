@@ -218,9 +218,22 @@ PYTHON_TOOLS=(deployer agent-scripts scaffold)
 # the venv) to force re-provisioning.
 _ensure_component_test_deps() {
     local name="$1" dir="$2"
-    [[ "$dir" == "$REPO_ROOT/components/"* ]] || return 0
     local marker="$REPO_ROOT/.venv/.wip-test-deps-$name"
     [[ -f "$marker" ]] && return 0
+    # wip-auth is a lib with its own CI recipe: the [dev] extra (carries
+    # pytest-httpx for the registry-client mocks) + registry deps for the
+    # transport-injection tests.
+    if [[ "$name" == "wip-auth" ]]; then
+        echo "  Provisioning wip-auth test deps (CI recipe, one-time)..."
+        if pip install -q -e "$REPO_ROOT/libs/wip-auth[dev]" \
+            && (grep -v '^\-e' "$REPO_ROOT/components/registry/requirements.txt" | pip install -q -r /dev/stdin); then
+            touch "$marker"
+        else
+            echo "  WARNING: wip-auth test-dep provisioning failed — imports may error below." >&2
+        fi
+        return 0
+    fi
+    [[ "$dir" == "$REPO_ROOT/components/"* ]] || return 0
     echo "  Provisioning $name test deps (CI recipe, one-time)..."
     if (cd "$dir" && pip install -q -r requirements.txt) \
         && (cd "$REPO_ROOT/components/registry" && pip install -q -r requirements.txt) \

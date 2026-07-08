@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import (
+    declare_api_key_security,
     APIKeyProvider,
     APIKeyRecord,
     build_metadata,
@@ -225,6 +226,11 @@ app.add_middleware(
 
 # Include API router
 app.include_router(api_router)
+
+# Declare the X-API-Key requirement in the OpenAPI contract — runtime
+# Depends() enforcement emits nothing into the schema, and a client
+# generated from an auth-silent schema would not send a key.
+declare_api_key_security(app)
 
 
 # Root endpoint

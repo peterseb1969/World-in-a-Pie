@@ -81,6 +81,7 @@ from .resolve import (
     resolve_entity_ids,
     split_qualified_value,
 )
+from .openapi import declare_api_key_security
 from .security import check_production_security
 from .startup import init_beanie_with_retry, retry_async
 
@@ -88,6 +89,7 @@ __version__ = "0.4.0"
 
 __all__ = [
     "APIKeyProvider",
+    "declare_api_key_security",
     "APIKeyRecord",
     "build_metadata",
     # Config
