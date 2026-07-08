@@ -360,8 +360,14 @@ For document references, set template_ref to constrain which template's document
 - multiple: allow multiple files; max_files sets the limit
 
 ### Array Field Configuration
-- array_item_type: string, number, object, or term
-- array_terminology_ref / array_template_ref for typed array items
+- array_item_type: string, number, integer, boolean, date, datetime, term, object, or reference
+- array_terminology_ref / array_template_ref for typed array items (term / object)
+- For array_item_type "reference", the field carries its reference config in the
+  field's own reference_type / target_templates / target_terminologies /
+  version_strategy slots (the same slots a single reference field uses), and each
+  array item is existence-checked exactly like a single reference. reference_type
+  is mandatory for an array of references — without it the items would not be
+  validated.
 
 ### Other Field Properties
 - Use "mandatory: true" (NOT "required") for required fields

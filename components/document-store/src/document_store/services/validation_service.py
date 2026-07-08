@@ -825,6 +825,36 @@ class ValidationService:
                         field=item_path
                     )
 
+            elif item_type == "reference":
+                # CASE-550: array-of-references reuse the field's top-level
+                # reference_type slot (the collector reads it there and queues
+                # each item for Stage-5 existence resolution). Mirror the
+                # single-reference Stage-3 type check (_validate_reference):
+                # document refs accept a string or composite dict, the others a
+                # string. reference_type is guaranteed present on templates
+                # authored after the template-store guard; a grandfathered
+                # template may carry None, in which case the per-item type
+                # constraint is skipped (existing soft-link data keeps
+                # validating) — existence resolution still runs when a real
+                # reference_type is present.
+                reference_type = field.get("reference_type")
+                if reference_type == "document":
+                    if not isinstance(item, (str, dict)):
+                        result.add_error(
+                            code="invalid_type",
+                            message=f"Item at '{item_path}' must be a string or object (document reference)",
+                            field=item_path
+                        )
+                elif (
+                    reference_type in ("term", "terminology", "template")
+                    and not isinstance(item, str)
+                ):
+                    result.add_error(
+                        code="invalid_type",
+                        message=f"Item at '{item_path}' must be a string ({reference_type} reference)",
+                        field=item_path
+                    )
+
     # ========================================================================
     # Semantic Type Validators
     # ========================================================================
