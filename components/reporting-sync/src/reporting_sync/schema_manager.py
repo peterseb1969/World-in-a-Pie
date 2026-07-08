@@ -367,8 +367,15 @@ CREATE INDEX IF NOT EXISTS "{table_name}_namespace_idx" ON {qualified}(namespace
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_template_id_idx" ON {qualified}(namespace, template_id);
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx" ON {qualified}(namespace, status);
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_identity_hash_idx" ON {qualified}(namespace, identity_hash);
-CREATE INDEX IF NOT EXISTS "{table_name}_ns_created_at_idx" ON {qualified}(namespace, created_at);
 """
+
+        # The created_at index only exists when metadata columns do — otherwise
+        # it references a column that was excluded (include_metadata=False).
+        if include_metadata:
+            ddl += (
+                f'CREATE INDEX IF NOT EXISTS "{table_name}_ns_created_at_idx" '
+                f"ON {qualified}(namespace, created_at);\n"
+            )
 
         # Partial unique index only applies to latest_only strategy
         # (all_versions tables store multiple versions per document_id).

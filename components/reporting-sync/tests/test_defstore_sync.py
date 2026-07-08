@@ -47,10 +47,12 @@ def worker(mock_pool):
     w = SyncWorker(nc, js, pool, status)
     w.schema_manager.table_exists = AsyncMock(return_value=False)
     w.schema_manager.create_table = AsyncMock(return_value="CREATE TABLE ...")
-    w.schema_manager.ensure_table_for_template = AsyncMock(return_value="doc_person")
-    w.schema_manager.ensure_terminologies_table = AsyncMock(return_value="terminologies")
-    w.schema_manager.ensure_terms_table = AsyncMock(return_value="terms")
-    w.schema_manager.ensure_term_relations_table = AsyncMock(return_value="term_relations")
+    # ensure_* now return the schema-qualified reference (CASE-628), which the
+    # worker interpolates verbatim into its SQL.
+    w.schema_manager.ensure_table_for_template = AsyncMock(return_value='"wip"."doc_person"')
+    w.schema_manager.ensure_terminologies_table = AsyncMock(return_value='"wip"."terminologies"')
+    w.schema_manager.ensure_terms_table = AsyncMock(return_value='"wip"."terms"')
+    w.schema_manager.ensure_term_relations_table = AsyncMock(return_value='"wip"."term_relations"')
     w.schema_manager.update_table_schema = AsyncMock(return_value=[])
     return w
 
@@ -600,10 +602,10 @@ class TestSchemaManagerTables:
         conn.fetchval = AsyncMock(return_value=False)  # table doesn't exist
         sm = SchemaManager(pool)
 
-        result = await sm.ensure_terminologies_table()
+        result = await sm.ensure_terminologies_table("wip")
 
-        assert result == "terminologies"
-        conn.execute.assert_awaited_once()
+        assert result == '"wip"."terminologies"'
+        assert conn.execute.await_count == 2  # CREATE SCHEMA + CREATE TABLE
         ddl = conn.execute.call_args[0][0]
         assert "CREATE TABLE" in ddl
         assert '"terminology_id"' in ddl
@@ -619,10 +621,10 @@ class TestSchemaManagerTables:
         conn.fetchval = AsyncMock(return_value=False)
         sm = SchemaManager(pool)
 
-        result = await sm.ensure_terms_table()
+        result = await sm.ensure_terms_table("wip")
 
-        assert result == "terms"
-        conn.execute.assert_awaited_once()
+        assert result == '"wip"."terms"'
+        assert conn.execute.await_count == 2  # CREATE SCHEMA + CREATE TABLE
         ddl = conn.execute.call_args[0][0]
         assert "CREATE TABLE" in ddl
         assert '"term_id"' in ddl
@@ -638,10 +640,10 @@ class TestSchemaManagerTables:
         conn.fetchval = AsyncMock(return_value=False)
         sm = SchemaManager(pool)
 
-        result = await sm.ensure_term_relations_table()
+        result = await sm.ensure_term_relations_table("wip")
 
-        assert result == "term_relations"
-        conn.execute.assert_awaited_once()
+        assert result == '"wip"."term_relations"'
+        assert conn.execute.await_count == 2  # CREATE SCHEMA + CREATE TABLE
         ddl = conn.execute.call_args[0][0]
         assert "CREATE TABLE" in ddl
         assert '"source_term_id"' in ddl
@@ -658,10 +660,10 @@ class TestSchemaManagerTables:
         conn.fetchval = AsyncMock(return_value=True)  # table exists
         sm = SchemaManager(pool)
 
-        result = await sm.ensure_terminologies_table()
+        result = await sm.ensure_terminologies_table("wip")
 
-        assert result == "terminologies"
-        conn.execute.assert_not_awaited()
+        assert result == '"wip"."terminologies"'
+        assert not any("CREATE TABLE" in str(c.args[0]) for c in conn.execute.call_args_list)
 
     @pytest.mark.asyncio
     async def test_ensure_terms_table_skips_if_exists(self, mock_pool):
@@ -672,10 +674,10 @@ class TestSchemaManagerTables:
         conn.fetchval = AsyncMock(return_value=True)
         sm = SchemaManager(pool)
 
-        result = await sm.ensure_terms_table()
+        result = await sm.ensure_terms_table("wip")
 
-        assert result == "terms"
-        conn.execute.assert_not_awaited()
+        assert result == '"wip"."terms"'
+        assert not any("CREATE TABLE" in str(c.args[0]) for c in conn.execute.call_args_list)
 
     @pytest.mark.asyncio
     async def test_ensure_relations_table_skips_if_exists(self, mock_pool):
@@ -686,7 +688,7 @@ class TestSchemaManagerTables:
         conn.fetchval = AsyncMock(return_value=True)
         sm = SchemaManager(pool)
 
-        result = await sm.ensure_term_relations_table()
+        result = await sm.ensure_term_relations_table("wip")
 
-        assert result == "term_relations"
-        conn.execute.assert_not_awaited()
+        assert result == '"wip"."term_relations"'
+        assert not any("CREATE TABLE" in str(c.args[0]) for c in conn.execute.call_args_list)

@@ -134,12 +134,14 @@ class _RecordingConn:
 
     async def _dispatch(self, sql: str, *params):
         self.executed_sql.append((sql, params))
-        # Table discovery query (info_schema.tables)
+        # Table discovery query (info_schema.tables). CASE-628: the query now
+        # selects table_schema too and scans across namespace schemas — canned
+        # tables all live in the "wip" schema here.
         if "information_schema.tables" in sql:
-            return [{"table_name": t} for t in self.tables]
-        # Column discovery query
+            return [{"table_schema": "wip", "table_name": t} for t in self.tables]
+        # Column discovery query — params are now (schema, table).
         if "information_schema.columns" in sql:
-            tname = params[0]
+            tname = params[1]
             return [
                 {"column_name": n, "data_type": t}
                 for n, t in self.columns.get(tname, [])

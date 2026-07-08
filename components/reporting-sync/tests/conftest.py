@@ -156,12 +156,37 @@ requires_pipeline = pytest.mark.skipif(
 async def pg_pool():
     """Create a real asyncpg pool for integration tests.
 
-    Drops all user tables before each test for isolation.
+    Drops all user tables before each test for isolation. Under
+    schema-per-namespace (CASE-628) each namespace is its own PostgreSQL
+    schema, so isolation must also drop the non-system schemas — otherwise a
+    namespace schema created by one test leaks into the next.
     """
     pool = await asyncpg.create_pool(POSTGRES_TEST_URI, min_size=1, max_size=5)
 
-    # Clean all tables before each test
+    await _clean_database(pool)
+
+    yield pool
+
+    await pool.close()
+
+
+async def _clean_database(pool: asyncpg.Pool) -> None:
+    """Drop every non-system schema (CASCADE) and all public tables."""
     async with pool.acquire() as conn:
+        # Drop namespace schemas created by the code under test.
+        schemas = await conn.fetch(
+            """
+            SELECT nspname FROM pg_namespace
+            WHERE nspname NOT IN
+                ('public', 'pg_catalog', 'information_schema', 'pg_toast')
+              AND nspname NOT LIKE 'pg_temp_%'
+              AND nspname NOT LIKE 'pg_toast_temp_%'
+            """
+        )
+        for row in schemas:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{row["nspname"]}" CASCADE')
+
+        # Drop anything left in public (bookkeeping tables + any legacy tables).
         tables = await conn.fetch(
             """
             SELECT table_name FROM information_schema.tables
@@ -170,10 +195,6 @@ async def pg_pool():
         )
         for row in tables:
             await conn.execute(f'DROP TABLE IF EXISTS "{row["table_name"]}" CASCADE')
-
-    yield pool
-
-    await pool.close()
 
 
 @pytest_asyncio.fixture
