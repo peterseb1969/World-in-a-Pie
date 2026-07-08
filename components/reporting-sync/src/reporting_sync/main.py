@@ -421,6 +421,7 @@ app = FastAPI(
     description="Syncs documents from MongoDB to PostgreSQL for reporting",
     version=__version__,
     lifespan=lifespan,
+    docs_url="/docs",
 )
 
 # Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
@@ -1613,7 +1614,11 @@ async def root():
         "version": __version__,
         # CASE-526: uniform build-provenance block (sha/built_at/image_tag).
         "build": build_metadata(__version__),
-        "docs": "/api/reporting-sync/docs",
+        # Docs are served at the unprefixed FastAPI default, reachable only
+        # when addressing the service directly — the platform-wide pattern
+        # for all five services. The Caddy route for this service preserves
+        # the /api/reporting-sync prefix, so a prefixed docs path would 404.
+        "docs": "/docs",
         "health": "/api/reporting-sync/health",
         "status": "/api/reporting-sync/status",
         "integrity": "/api/reporting-sync/health/integrity",
