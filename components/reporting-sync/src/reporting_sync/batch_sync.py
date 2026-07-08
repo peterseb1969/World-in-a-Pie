@@ -741,21 +741,31 @@ class BatchSyncService:
 
     async def batch_sync_term_relations(
         self,
-        namespace: str,
+        namespace: str | None = None,
         page_size: int = 100,
     ) -> dict:
         """
         Batch sync all term-relations from Def-Store to PostgreSQL.
 
         Uses the /ontology/term-relations/all endpoint for efficient pagination
-        across all term_relations (no per-term iteration needed).
+        across all term_relations (no per-term iteration needed). With an
+        explicit namespace, syncs that namespace only; without one, syncs
+        relations across all accessible namespaces — the startup/rebuild path,
+        where relations must be backfilled for every namespace or a rebuilt
+        reporting database silently loses them.
 
         Returns:
             Dict with sync results (synced, failed, total)
         """
-        # This method is scoped to a single namespace, so one table in that
-        # namespace's schema (CASE-628).
-        table_name = await self.schema_manager.ensure_term_relations_table(namespace)
+        # Rows route to their own namespace's schema (CASE-628). An explicit
+        # namespace ensures its table eagerly (so the table exists for SQL
+        # readers even when there are zero relations); the namespace-less
+        # sweep ensures tables lazily per namespace seen.
+        ns_tables: dict[str, str] = {}
+        if namespace:
+            ns_tables[namespace] = await self.schema_manager.ensure_term_relations_table(
+                namespace
+            )
         synced = 0
         failed = 0
 
@@ -764,13 +774,12 @@ class BatchSyncService:
                 page = 1
 
                 while True:
+                    params: dict = {"page": page, "page_size": page_size}
+                    if namespace:
+                        params["namespace"] = namespace
                     resp = await client.get(
                         f"{settings.def_store_url}/api/def-store/ontology/term-relations/all",
-                        params={
-                            "namespace": namespace,
-                            "page": page,
-                            "page_size": page_size,
-                        },
+                        params=params,
                         headers={"X-API-Key": settings.api_key},
                     )
                     if resp.status_code != 200:
@@ -783,8 +792,15 @@ class BatchSyncService:
                     if not items:
                         break
 
+                    for rel in items:
+                        ns = rel.get("namespace") or namespace or "wip"
+                        if ns not in ns_tables:
+                            ns_tables[ns] = await self.schema_manager.ensure_term_relations_table(ns)
+
                     async with self.pool.acquire() as conn:
                         for rel in items:
+                            ns = rel.get("namespace") or namespace or "wip"
+                            table_name = ns_tables[ns]
                             try:
                                 await conn.execute(
                                     f"""
@@ -801,7 +817,7 @@ class BatchSyncService:
                                         "target_term_value" = EXCLUDED."target_term_value",
                                         "metadata" = EXCLUDED."metadata"
                                     """,
-                                    rel.get("namespace", namespace),
+                                    ns,
                                     rel["source_term_id"],
                                     rel["target_term_id"],
                                     rel["relation_type"],

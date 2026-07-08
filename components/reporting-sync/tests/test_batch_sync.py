@@ -516,3 +516,81 @@ class TestBatchSyncRelations:
 
         assert result["synced"] == 0
         conn.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_namespaceless_sync_routes_rows_per_namespace(self, service, mock_pool):
+        """Without a namespace, relations from different namespaces land in
+        their own namespace's table and the def-store request carries no
+        namespace filter (the startup/rebuild backfill path)."""
+        _pool, conn = mock_pool
+        service.schema_manager.ensure_term_relations_table = AsyncMock(
+            side_effect=lambda ns: f'"{ns}"."term_relations"'
+        )
+
+        rel_wip = dict(SAMPLE_RELATIONSHIP)
+        rel_ct = dict(SAMPLE_RELATIONSHIP, namespace="clintrial")
+
+        with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=_make_api_response([rel_wip, rel_ct]))
+            mock_client_cls.return_value = mock_client
+
+            result = await service.batch_sync_term_relations()
+
+        assert result["synced"] == 2
+        request_params = mock_client.get.call_args.kwargs["params"]
+        assert "namespace" not in request_params
+        ensured = {c.args[0] for c in service.schema_manager.ensure_term_relations_table.call_args_list}
+        assert ensured == {"wip", "clintrial"}
+        insert_targets = [c.args[0] for c in conn.execute.call_args_list]
+        assert any('"wip"."term_relations"' in sql for sql in insert_targets)
+        assert any('"clintrial"."term_relations"' in sql for sql in insert_targets)
+
+    @pytest.mark.asyncio
+    async def test_explicit_namespace_ensures_table_even_when_empty(self, service, mock_pool):
+        """An explicit-namespace sync ensures the table before fetching, so
+        SQL readers see an empty table rather than relation-does-not-exist
+        when the namespace has no relations."""
+        _pool, _conn = mock_pool
+
+        with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=_make_api_response([]))
+            mock_client_cls.return_value = mock_client
+
+            result = await service.batch_sync_term_relations(namespace="clintrial")
+
+        assert result["synced"] == 0
+        service.schema_manager.ensure_term_relations_table.assert_awaited_once_with("clintrial")
+
+
+# =========================================================================
+# _initial_metadata_sync (startup backfill)
+# =========================================================================
+
+
+class TestInitialMetadataSync:
+    """The startup metadata sync must backfill term relations too: they
+    otherwise sync only on live NATS events, so a rebuilt reporting database
+    silently loses all historical relations."""
+
+    @pytest.mark.asyncio
+    async def test_startup_sync_includes_term_relations(self):
+        from reporting_sync.main import _initial_metadata_sync
+
+        batch_service = MagicMock()
+        batch_service.batch_sync_terminologies = AsyncMock(return_value={"synced": 1})
+        batch_service.batch_sync_terms = AsyncMock(return_value={"synced": 1})
+        batch_service.batch_sync_term_relations = AsyncMock(return_value={"synced": 1})
+
+        with patch("reporting_sync.main.retry_async", new=AsyncMock()):
+            await _initial_metadata_sync(batch_service)
+
+        batch_service.batch_sync_terminologies.assert_awaited_once()
+        batch_service.batch_sync_terms.assert_awaited_once()
+        # No namespace argument: the backfill must sweep ALL namespaces.
+        batch_service.batch_sync_term_relations.assert_awaited_once_with()

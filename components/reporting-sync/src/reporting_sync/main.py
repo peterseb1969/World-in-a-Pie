@@ -260,11 +260,12 @@ async def init_postgres_schema(pool: asyncpg.Pool) -> None:
 async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
     """Background: wait for def-store to be healthy, then batch-sync metadata.
 
-    `batch_sync_terminologies` and `batch_sync_terms` swallow connection
-    errors internally and return empty results — a single attempt against
-    a not-yet-ready def-store silently yields 0-row tables. Polling
-    def-store's /health first and only then calling the batch syncs
-    makes them succeed on the first attempt rather than silently fail.
+    The batch syncs (`batch_sync_terminologies`, `batch_sync_terms`,
+    `batch_sync_term_relations`) swallow connection errors internally and
+    return empty results — a single attempt against a not-yet-ready
+    def-store silently yields 0-row tables. Polling def-store's /health
+    first and only then calling the batch syncs makes them succeed on the
+    first attempt rather than silently fail.
     """
     async def _verify_def_store_ready() -> None:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -287,8 +288,9 @@ async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
         logger.error(f"Def-Store never became healthy: {e}")
         logger.error(
             "Initial metadata sync skipped; trigger "
-            "POST /api/reporting-sync/sync/batch/terminologies?namespace=<ns> and "
-            "POST /api/reporting-sync/sync/batch/terms?namespace=<ns> "
+            "POST /api/reporting-sync/sync/batch/terminologies?namespace=<ns>, "
+            "POST /api/reporting-sync/sync/batch/terms?namespace=<ns>, and "
+            "POST /api/reporting-sync/sync/batch/term_relations?namespace=<ns> "
             "manually once def-store is reachable."
         )
         return
@@ -298,8 +300,14 @@ async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
         logger.info(f"Initial terminology sync: {t_result}")
         t_result = await batch_sync_service.batch_sync_terms()
         logger.info(f"Initial term sync: {t_result}")
+        # Term relations must be part of the startup backfill: they only
+        # otherwise sync on live NATS events, so a rebuilt reporting database
+        # (fresh Postgres + re-sync) would silently lose all historical
+        # relations until the next relation write.
+        t_result = await batch_sync_service.batch_sync_term_relations()
+        logger.info(f"Initial term-relation sync: {t_result}")
     except Exception as e:
-        logger.error(f"Initial terminology/term sync failed: {e}")
+        logger.error(f"Initial metadata sync failed: {e}")
 
 
 @asynccontextmanager
