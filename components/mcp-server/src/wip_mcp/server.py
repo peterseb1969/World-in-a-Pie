@@ -178,8 +178,11 @@ duplicate is reactivated). 'unchanged'/'skipped' count as succeeded.
 Two primary query tools:
 - query_by_template(template_value, field_filters) — the most common way to
   query documents. Filters on field values, auto-resolves template_value to ID.
-- run_report_query(sql) — raw SQL against PostgreSQL reporting tables (doc_*).
-  Use for cross-template JOINs, aggregations, and complex analytics.
+- run_report_query(sql, namespace=...) — raw SQL against the PostgreSQL reporting
+  tables. Each namespace is its own PostgreSQL schema; a table is
+  "<namespace>"."doc_<value>". Pass namespace so unqualified names like doc_patient
+  resolve in that schema, or schema-qualify for cross-namespace queries. Use for
+  cross-template JOINs, aggregations, and complex analytics.
 
 For a spreadsheet-like view: get_table_view(template_value).
 For CSV export: export_table_csv(template_value).
@@ -283,7 +286,8 @@ When to use: If a terminology has natural parent-child or part-whole structure
 model it with ontology relations rather than flat term lists.
 
 ## Reporting & Aggregation (PostgreSQL)
-WIP syncs document data to PostgreSQL tables (one per template: doc_*).
+WIP syncs document data to PostgreSQL tables, one per template inside each
+namespace's own schema ("<namespace>"."doc_<value>").
 This enables SQL queries for aggregation, cross-template JOINs, and analytics
 that the document API does not support.
 
@@ -768,8 +772,10 @@ You **cannot** create, modify, or delete anything. All tools are read-only.
 - Term field values are UPPERCASE (e.g., "BEAST", "EVOCATION").
 - Reference fields store entity IDs — use `get_document` to resolve them to full details.
 - For aggregations, cross-template JOINs, or analytics, use `run_report_query` with SQL.
-  - Table names: `doc_{{template_value}}` in lowercase (e.g., `doc_patient`, `doc_bank_transaction`).
-  - Use `list_report_tables` to discover available tables and columns.
+  - Each namespace is its own PostgreSQL schema; a table is `"<namespace>"."doc_<value>"`.
+    Pass `namespace=` to `run_report_query` so unqualified names like `doc_patient`
+    resolve in that schema, or schema-qualify for cross-namespace queries.
+  - Use `list_report_tables` to discover tables (with their namespace) and columns.
 - Only return latest versions of documents unless the user asks about version history.
 
 ## Available Data Model
@@ -911,7 +917,11 @@ async def _build_data_model_markdown(namespace: str | None = None) -> str:
     lines.append("- Term field values are UPPERCASE (e.g., creature_type: \"BEAST\").")
     lines.append("- Reference fields store entity IDs — use `get_document` to resolve.")
     lines.append("- Use `run_report_query` for SQL aggregations, JOINs, and analytics.")
-    lines.append("- Table names in PostgreSQL: `doc_{template_value}` (lowercase).")
+    lines.append(
+        "- PostgreSQL tables live per-namespace: `\"<namespace>\".\"doc_<value>\"`. "
+        "Pass `namespace=` to `run_report_query` (unqualified names resolve in that "
+        "schema) or schema-qualify."
+    )
 
     return "\n".join(lines)
 
@@ -3404,6 +3414,7 @@ async def run_report_query(
     sql: str,
     params: list | None = None,
     max_rows: int = 1000,
+    namespace: str | None = None,
 ) -> str:
     """Execute a read-only SQL query against the PostgreSQL reporting database.
 
@@ -3412,18 +3423,23 @@ async def run_report_query(
 
     Args:
         sql: SQL SELECT query. Must be read-only (no INSERT/UPDATE/DELETE/DROP).
-            Table names: doc_{template_value} (e.g., doc_patient, doc_bank_transaction).
-            Term fields have two columns: {field} (value) and {field}_term_id.
-            Use list_report_tables() first to discover available tables and columns.
+            Each namespace is its own PostgreSQL schema; a table is
+            "<namespace>"."doc_<value>". Term fields have two columns:
+            {field} (value) and {field}_term_id. Use list_report_tables() first
+            to discover tables (with their namespace) and columns.
         params: Optional list of parameter values for $1, $2, etc. placeholders.
         max_rows: Maximum rows to return (default 1000).
+        namespace: When set, the query runs with the search_path pointed at that
+            namespace's schema, so unqualified names like doc_patient resolve
+            there. Omit and schema-qualify for cross-namespace queries.
 
     Example:
-        run_report_query("SELECT name, country FROM doc_patient WHERE country = $1", ["CH"])
+        run_report_query("SELECT name, country FROM doc_patient WHERE country = $1",
+                         ["CH"], namespace="clinic-a")
     """
     try:
         data = await get_client().run_report_query(
-            sql=sql, params=params, max_rows=max_rows
+            sql=sql, params=params, max_rows=max_rows, namespace=namespace
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

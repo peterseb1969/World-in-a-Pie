@@ -630,28 +630,30 @@ class SearchService:
 
         try:
             async with self.postgres_pool.acquire() as conn:
-                # 1. Discover doc_* tables (optionally restricted to one).
+                # 1. Discover doc_* tables across namespace schemas (CASE-628).
+                #    Each WIP namespace is its own schema; a search with no
+                #    namespace filter spans them all, a namespace filter narrows
+                #    to that one schema.
+                filters = [
+                    "table_type = 'BASE TABLE'",
+                    "table_schema NOT IN ('public', 'pg_catalog', 'information_schema', 'pg_toast')",
+                ]
+                disc_params: list[Any] = []
+                if namespace:
+                    disc_params.append(namespace)
+                    filters.append(f"table_schema = ${len(disc_params)}")
                 if template:
-                    safe_value = template.lower()
-                    tables = await conn.fetch(
-                        """
-                        SELECT table_name
-                        FROM information_schema.tables
-                        WHERE table_schema = 'public'
-                          AND table_type = 'BASE TABLE'
-                          AND table_name = $1
-                        """,
-                        f"doc_{safe_value}",
-                    )
+                    disc_params.append(f"doc_{template.lower()}")
+                    filters.append(f"table_name = ${len(disc_params)}")
                 else:
-                    tables = await conn.fetch("""
-                        SELECT table_name
-                        FROM information_schema.tables
-                        WHERE table_schema = 'public'
-                          AND table_type = 'BASE TABLE'
-                          AND table_name LIKE 'doc_%'
-                        ORDER BY table_name
-                    """)
+                    filters.append("table_name LIKE 'doc_%'")
+
+                tables = await conn.fetch(
+                    "SELECT table_schema, table_name FROM information_schema.tables "
+                    f"WHERE {' AND '.join(filters)} "
+                    "ORDER BY table_schema, table_name",
+                    *disc_params,
+                )
 
                 if not tables:
                     return []
@@ -661,6 +663,7 @@ class SearchService:
                 for tbl_row in tables:
                     if len(results) >= MAX_RESULTS_PER_TYPE:
                         break
+                    schema = tbl_row["table_schema"]
                     tname = tbl_row["table_name"]
                     remaining = MAX_RESULTS_PER_TYPE - len(results)
 
@@ -669,8 +672,9 @@ class SearchService:
                         """
                         SELECT column_name, data_type
                         FROM information_schema.columns
-                        WHERE table_schema = 'public' AND table_name = $1
+                        WHERE table_schema = $1 AND table_name = $2
                         """,
+                        schema,
                         tname,
                     )
                     all_cols = [
@@ -694,7 +698,7 @@ class SearchService:
                     try:
                         if use_fts:
                             rows = await self._fts_query(
-                                conn, tname, tsv_cols, query, namespace,
+                                conn, schema, tname, tsv_cols, query, namespace,
                                 include_inactive, snippet_format, remaining,
                             )
                             for row in rows:
@@ -711,7 +715,7 @@ class SearchService:
                                 ))
                         else:
                             rows = await self._substring_query(
-                                conn, tname, text_cols, query, namespace,
+                                conn, schema, tname, text_cols, query, namespace,
                                 include_inactive, remaining,
                             )
                             for row in rows:
@@ -748,6 +752,7 @@ class SearchService:
     async def _fts_query(
         self,
         conn: asyncpg.Connection,
+        schema: str,
         tname: str,
         tsv_cols: list[str],
         query: str,
@@ -806,7 +811,7 @@ class SearchService:
                     q.query,
                     '{headline_options}'
                 ) AS snippet
-            FROM "{tname}" d, q
+            FROM "{schema}"."{tname}" d, q
             WHERE ({or_clause}){status_clause}{ns_clause}
             ORDER BY score DESC
             LIMIT {limit_param}
@@ -817,6 +822,7 @@ class SearchService:
     async def _substring_query(
         self,
         conn: asyncpg.Connection,
+        schema: str,
         tname: str,
         text_cols: list[str],
         query: str,
@@ -852,7 +858,7 @@ class SearchService:
                 {id_expr} AS doc_id,
                 status AS status,
                 NULL::timestamp AS updated_at
-            FROM "{tname}"
+            FROM "{schema}"."{tname}"
             WHERE ({or_clauses}){status_clause}{ns_clause}
             LIMIT {limit_param}
         """
@@ -1162,28 +1168,30 @@ class SearchService:
 
         try:
             async with self.postgres_pool.acquire() as conn:
-                # Get all document tables
+                # Get all document tables across every namespace schema (CASE-628).
                 tables = await conn.fetch("""
-                    SELECT table_name
+                    SELECT table_schema, table_name
                     FROM information_schema.tables
-                    WHERE table_schema = 'public'
+                    WHERE table_schema NOT IN
+                        ('public', 'pg_catalog', 'information_schema', 'pg_toast')
                     AND table_name LIKE 'doc_%'
                 """)
 
                 documents: list[DocumentReference] = []
 
                 for table_row in tables:
+                    schema = table_row["table_schema"]
                     table_name = table_row["table_name"]
 
                     # Check if table has term_references_json column
                     has_column = await conn.fetchval("""
                         SELECT EXISTS (
                             SELECT 1 FROM information_schema.columns
-                            WHERE table_schema = 'public'
-                            AND table_name = $1
+                            WHERE table_schema = $1
+                            AND table_name = $2
                             AND column_name = 'term_references_json'
                         )
-                    """, table_name)
+                    """, schema, table_name)
 
                     if not has_column:
                         continue
@@ -1197,7 +1205,7 @@ class SearchService:
                             status,
                             created_at,
                             term_references_json
-                        FROM "{table_name}"
+                        FROM "{schema}"."{table_name}"
                         WHERE term_references_json::text LIKE $1
                         LIMIT $2
                     """, f'%"{term_id}"%', limit - len(documents))
@@ -2158,17 +2166,20 @@ class SearchService:
                         # This is a simplified approach - in production you'd want
                         # to track term references in a dedicated table
                         tables = await conn.fetch("""
-                            SELECT tablename FROM pg_tables
-                            WHERE schemaname = 'public' AND tablename LIKE 'doc_%'
+                            SELECT schemaname, tablename FROM pg_tables
+                            WHERE schemaname NOT IN
+                                ('public', 'pg_catalog', 'information_schema', 'pg_toast')
+                              AND tablename LIKE 'doc_%'
                         """)
 
                         for table in tables:
+                            schema = table["schemaname"]
                             table_name = table["tablename"]
                             # Check if term_references_json column exists
                             try:
                                 rows = await conn.fetch(f"""
                                     SELECT document_id, template_id, status
-                                    FROM {table_name}
+                                    FROM "{schema}"."{table_name}"
                                     WHERE term_references_json::text LIKE $1
                                     LIMIT $2
                                 """, f'%"{term_id}"%', limit)

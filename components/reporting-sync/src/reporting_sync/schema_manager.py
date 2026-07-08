@@ -45,16 +45,71 @@ SEMANTIC_TYPE_MAPPING: dict[SemanticType, str] = {
 
 
 class SchemaManager:
-    """Manages PostgreSQL schema for reporting tables."""
+    """Manages PostgreSQL schema for reporting tables.
+
+    Each WIP namespace maps to its own PostgreSQL schema (CASE-628). A
+    namespace's reporting tables live inside its schema with natural,
+    unqualified names — ``doc_<value>`` for documents and the fixed metadata
+    tables (``terminologies``/``terms``/``templates``/``term_relations``) — so
+    two namespaces that define the same template value get two distinct tables
+    (``"clinicA".doc_patient`` vs ``"clinicB".doc_patient``) instead of
+    silently sharing one. Namespace deletion is ``DROP SCHEMA CASCADE``.
+    """
 
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
 
+    @staticmethod
+    def _safe_ident(name: str) -> str:
+        """Validate a value destined for a quoted SQL identifier.
+
+        PostgreSQL identifiers are interpolated into DDL by name (they cannot
+        be bound as parameters), so a namespace prefix or template value that
+        contained a double-quote could break out of the quoting. Namespaces and
+        template values are otherwise unconstrained (prefixes legitimately
+        contain hyphens, e.g. ``customer-abc``), so we quote rather than
+        restrict — but reject the one class that quoting can't contain, and
+        enforce Postgres's 63-byte identifier limit so a silent truncation
+        can't collide two names.
+        """
+        if '"' in name or "\x00" in name:
+            raise ValueError(f"Unsafe SQL identifier: {name!r}")
+        if len(name.encode("utf-8")) > 63:
+            raise ValueError(
+                f"Identifier exceeds PostgreSQL's 63-byte limit: {name!r}"
+            )
+        return name
+
+    def schema_for(self, namespace: str) -> str:
+        """The PostgreSQL schema name for a WIP namespace (validated)."""
+        return self._safe_ident(namespace)
+
     def get_table_name(self, template_value: str, config: ReportingConfig | None = None) -> str:
-        """Get the PostgreSQL table name for a template."""
+        """Get the bare (unqualified) table name for a template.
+
+        This is the name *within* the namespace schema — ``doc_<value>`` by
+        default, or the template's optional ``ReportingConfig.table_name``
+        cosmetic override. Namespace isolation comes from the schema, not the
+        table name, so this no longer carries the namespace.
+        """
         if config and config.table_name:
-            return config.table_name
-        return f"doc_{template_value.lower()}"
+            return self._safe_ident(config.table_name)
+        return self._safe_ident(f"doc_{template_value.lower()}")
+
+    def qualified_name(
+        self,
+        namespace: str,
+        template_value: str,
+        config: ReportingConfig | None = None,
+    ) -> str:
+        """Schema-qualified, quote-safe table reference for use in SQL.
+
+        e.g. ``"clinicA"."doc_patient"``. Callers building SQL by hand should
+        use this rather than constructing the name.
+        """
+        schema = self.schema_for(namespace)
+        table = self.get_table_name(template_value, config)
+        return f'"{schema}"."{table}"'
 
     def _generate_column_ddl(
         self,
@@ -188,6 +243,7 @@ class SchemaManager:
 
     def generate_create_table_ddl(
         self,
+        namespace: str,
         template_value: str,
         template_version: int,
         fields: list[TemplateField],
@@ -213,6 +269,7 @@ class SchemaManager:
         the same doc still work.
         """
         table_name = self.get_table_name(template_value, config)
+        qualified = self.qualified_name(namespace, template_value, config)
         include_metadata = config.include_metadata if config else True
         strategy = config.sync_strategy if config else SyncStrategy.LATEST_ONLY
 
@@ -296,17 +353,21 @@ class SchemaManager:
         if strategy == SyncStrategy.ALL_VERSIONS:
             column_defs += ",\n    PRIMARY KEY (document_id, version)"
 
+        # Table references are schema-qualified ({qualified}, e.g.
+        # "clinicA"."doc_patient"); index NAMES stay bare ("{table_name}_...")
+        # — Postgres places an index in its table's schema automatically, and
+        # two namespace schemas may each hold an index of the same name.
         ddl = f"""
-CREATE TABLE IF NOT EXISTS "{table_name}" (
+CREATE TABLE IF NOT EXISTS {qualified} (
     {column_defs}
 );
 
 -- Indexes
-CREATE INDEX IF NOT EXISTS "{table_name}_namespace_idx" ON "{table_name}"(namespace);
-CREATE INDEX IF NOT EXISTS "{table_name}_ns_template_id_idx" ON "{table_name}"(namespace, template_id);
-CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx" ON "{table_name}"(namespace, status);
-CREATE INDEX IF NOT EXISTS "{table_name}_ns_identity_hash_idx" ON "{table_name}"(namespace, identity_hash);
-CREATE INDEX IF NOT EXISTS "{table_name}_ns_created_at_idx" ON "{table_name}"(namespace, created_at);
+CREATE INDEX IF NOT EXISTS "{table_name}_namespace_idx" ON {qualified}(namespace);
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_template_id_idx" ON {qualified}(namespace, template_id);
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx" ON {qualified}(namespace, status);
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_identity_hash_idx" ON {qualified}(namespace, identity_hash);
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_created_at_idx" ON {qualified}(namespace, created_at);
 """
 
         # Partial unique index only applies to latest_only strategy
@@ -320,14 +381,14 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_created_at_idx" ON "{table_name}"(na
             ddl += f"""
 -- Partial unique index for active documents by identity within namespace
 CREATE UNIQUE INDEX IF NOT EXISTS "{table_name}_ns_active_identity_idx"
-ON "{table_name}"(namespace, identity_hash) WHERE status = 'active';
+ON {qualified}(namespace, identity_hash) WHERE status = 'active';
 """
 
         if usage == "relationship":
             ddl += f"""
 -- Relationship endpoint indexes (Phase 7) for SQL JOINs against doc_<endpoint>
-CREATE INDEX IF NOT EXISTS "{table_name}_source_ref_id_idx" ON "{table_name}"(source_ref_id);
-CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(target_ref_id);
+CREATE INDEX IF NOT EXISTS "{table_name}_source_ref_id_idx" ON {qualified}(source_ref_id);
+CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(target_ref_id);
 """
 
         # Full-text-search GIN indexes — one per indexed field. The
@@ -336,40 +397,50 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(ta
         for base_col in full_text_base_cols:
             ddl += (
                 f'\nCREATE INDEX IF NOT EXISTS "{table_name}_{base_col}_tsv_idx" '
-                f'ON "{table_name}" USING GIN ("{base_col}_tsv");\n'
+                f'ON {qualified} USING GIN ("{base_col}_tsv");\n'
             )
 
         return ddl.strip()
 
-    async def table_exists(self, table_name: str) -> bool:
-        """Check if a table exists."""
+    async def ensure_schema(self, namespace: str) -> str:
+        """Create the namespace's PostgreSQL schema if absent. Returns its name."""
+        schema = self.schema_for(namespace)
+        async with self.pool.acquire() as conn:
+            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+        return schema
+
+    async def table_exists(self, schema: str, table_name: str) -> bool:
+        """Check if a table exists in the given namespace schema."""
         async with self.pool.acquire() as conn:
             return cast(bool, await conn.fetchval(
                 """
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables
-                    WHERE table_schema = 'public'
-                    AND table_name = $1
+                    WHERE table_schema = $1
+                    AND table_name = $2
                 )
                 """,
+                schema,
                 table_name,
             ))
 
-    async def get_existing_columns(self, table_name: str) -> set[str]:
-        """Get set of existing column names for a table."""
+    async def get_existing_columns(self, schema: str, table_name: str) -> set[str]:
+        """Get set of existing column names for a table in a namespace schema."""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT column_name
                 FROM information_schema.columns
-                WHERE table_schema = 'public' AND table_name = $1
+                WHERE table_schema = $1 AND table_name = $2
                 """,
+                schema,
                 table_name,
             )
             return {row["column_name"] for row in rows}
 
     async def create_table(
         self,
+        namespace: str,
         template_value: str,
         template_version: int,
         fields: list[TemplateField],
@@ -377,35 +448,41 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(ta
         usage: str = "entity",
         identity_fields: list[str] | None = None,
     ) -> str:
-        """Create a table for a template."""
+        """Create a table for a template in the namespace's schema."""
+        schema = await self.ensure_schema(namespace)
         ddl = self.generate_create_table_ddl(
-            template_value, template_version, fields, config,
+            namespace, template_value, template_version, fields, config,
             usage=usage, identity_fields=identity_fields,
         )
         table_name = self.get_table_name(template_value, config)
 
-        logger.info(f"Creating table {table_name} for template {template_value}")
+        logger.info(f'Creating table "{schema}"."{table_name}" for template {template_value}')
 
         async with self.pool.acquire() as conn:
             await conn.execute(ddl)
 
-            # Record the migration
+            # Record the migration. Keyed on (namespace, template_value,
+            # version): template_value is unique only per namespace, so the key
+            # must include the namespace or two namespaces' migrations collide.
             await conn.execute(
                 """
-                INSERT INTO _wip_schema_migrations (template_value, template_version, migration_sql)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (template_value, template_version) DO NOTHING
+                INSERT INTO _wip_schema_migrations
+                    (namespace, template_value, template_version, migration_sql)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (namespace, template_value, template_version) DO NOTHING
                 """,
+                namespace,
                 template_value,
                 template_version,
                 ddl,
             )
 
-        logger.info(f"Table {table_name} created successfully")
+        logger.info(f'Table "{schema}"."{table_name}" created successfully')
         return ddl
 
     async def update_table_schema(
         self,
+        namespace: str,
         template_value: str,
         template_version: int,
         fields: list[TemplateField],
@@ -424,16 +501,18 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(ta
         was always emitted), drop the now-broken index so identity-less
         sync can land docs.
         """
+        schema = self.schema_for(namespace)
         table_name = self.get_table_name(template_value, config)
+        qualified = self.qualified_name(namespace, template_value, config)
 
-        if not await self.table_exists(table_name):
+        if not await self.table_exists(schema, table_name):
             await self.create_table(
-                template_value, template_version, fields, config,
+                namespace, template_value, template_version, fields, config,
                 usage=usage, identity_fields=identity_fields,
             )
             return [f"Created table {table_name}"]
 
-        existing_columns = await self.get_existing_columns(table_name)
+        existing_columns = await self.get_existing_columns(schema, table_name)
         migrations = []
 
         async with self.pool.acquire() as conn:
@@ -447,16 +526,17 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(ta
                     """
                     SELECT EXISTS (
                         SELECT 1 FROM pg_indexes
-                        WHERE schemaname = 'public'
-                          AND tablename = $1
-                          AND indexname = $2
+                        WHERE schemaname = $1
+                          AND tablename = $2
+                          AND indexname = $3
                     )
                     """,
+                    schema,
                     table_name,
                     idx_name,
                 )
                 if idx_exists:
-                    drop_sql = f'DROP INDEX IF EXISTS "{idx_name}"'
+                    drop_sql = f'DROP INDEX IF EXISTS "{schema}"."{idx_name}"'
                     await conn.execute(drop_sql)
                     migrations.append(drop_sql)
                     logger.info(
@@ -470,12 +550,12 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(ta
             if usage == "relationship":
                 for col in ("source_ref_id", "target_ref_id"):
                     if col not in existing_columns:
-                        alter_sql = f'ALTER TABLE "{table_name}" ADD COLUMN "{col}" TEXT'
+                        alter_sql = f'ALTER TABLE {qualified} ADD COLUMN "{col}" TEXT'
                         await conn.execute(alter_sql)
                         migrations.append(alter_sql)
                         idx_sql = (
                             f'CREATE INDEX IF NOT EXISTS '
-                            f'"{table_name}_{col}_idx" ON "{table_name}"({col})'
+                            f'"{table_name}_{col}_idx" ON {qualified}({col})'
                         )
                         await conn.execute(idx_sql)
                         migrations.append(idx_sql)
@@ -491,7 +571,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(ta
                     if col_name not in existing_columns:
                         # Remove PRIMARY KEY, NOT NULL constraints for ALTER TABLE ADD COLUMN
                         clean_type = col_type.replace(" PRIMARY KEY", "").replace(" NOT NULL", "")
-                        alter_sql = f'ALTER TABLE "{table_name}" ADD COLUMN "{col_name}" {clean_type}'
+                        alter_sql = f'ALTER TABLE {qualified} ADD COLUMN "{col_name}" {clean_type}'
 
                         logger.info(f"Adding column {col_name} to {table_name}")
                         await conn.execute(alter_sql)
@@ -508,7 +588,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(ta
                     for fts_col, fts_type in self._full_text_columns(base_col):
                         if fts_col not in existing_columns:
                             alter_sql = (
-                                f'ALTER TABLE "{table_name}" '
+                                f'ALTER TABLE {qualified} '
                                 f'ADD COLUMN "{fts_col}" {fts_type}'
                             )
                             logger.info(f"Adding FTS column {fts_col} to {table_name}")
@@ -516,23 +596,26 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(ta
                             migrations.append(alter_sql)
                     idx_sql = (
                         f'CREATE INDEX IF NOT EXISTS '
-                        f'"{table_name}_{base_col}_tsv_idx" ON "{table_name}" '
+                        f'"{table_name}_{base_col}_tsv_idx" ON {qualified} '
                         f'USING GIN ("{base_col}_tsv")'
                     )
                     await conn.execute(idx_sql)
                     migrations.append(idx_sql)
 
             if migrations:
-                # Record the migration
+                # Record the migration (keyed on namespace + template_value +
+                # version — see create_table).
                 migration_sql = ";\n".join(migrations)
                 await conn.execute(
                     """
-                    INSERT INTO _wip_schema_migrations (template_value, template_version, migration_sql)
-                    VALUES ($1, $2, $3)
-                    ON CONFLICT (template_value, template_version) DO UPDATE
-                    SET migration_sql = _wip_schema_migrations.migration_sql || E'\n' || $3,
+                    INSERT INTO _wip_schema_migrations
+                        (namespace, template_value, template_version, migration_sql)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (namespace, template_value, template_version) DO UPDATE
+                    SET migration_sql = _wip_schema_migrations.migration_sql || E'\n' || $4,
                         applied_at = NOW()
                     """,
+                    namespace,
                     template_value,
                     template_version,
                     migration_sql,
@@ -540,22 +623,24 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(ta
 
         return migrations
 
-    async def ensure_terminologies_table(self) -> str:
+    async def ensure_terminologies_table(self, namespace: str) -> str:
         """
-        Ensure the terminologies table exists in PostgreSQL.
+        Ensure the terminologies table exists in the namespace's schema.
 
         Fixed-schema table for syncing terminologies from the Def-Store.
 
         Returns:
-            Table name ('terminologies')
+            The schema-qualified table reference ("<ns>"."terminologies").
         """
+        schema = await self.ensure_schema(namespace)
         table_name = "terminologies"
+        qualified = f'"{schema}"."{table_name}"'
 
-        if await self.table_exists(table_name):
-            return table_name
+        if await self.table_exists(schema, table_name):
+            return qualified
 
         ddl = f"""
-CREATE TABLE IF NOT EXISTS "{table_name}" (
+CREATE TABLE IF NOT EXISTS {qualified} (
     "terminology_id" TEXT NOT NULL,
     "namespace" VARCHAR(255) NOT NULL DEFAULT 'wip',
     "value" TEXT NOT NULL,
@@ -575,33 +660,35 @@ CREATE TABLE IF NOT EXISTS "{table_name}" (
 );
 
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_value_idx"
-  ON "{table_name}"("namespace", "value");
+  ON {qualified}("namespace", "value");
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx"
-  ON "{table_name}"("namespace", "status");
+  ON {qualified}("namespace", "status");
 """
 
         async with self.pool.acquire() as conn:
             await conn.execute(ddl)
 
-        logger.info(f"Created {table_name} table")
-        return table_name
+        logger.info(f"Created {qualified} table")
+        return qualified
 
-    async def ensure_templates_table(self) -> str:
+    async def ensure_templates_table(self, namespace: str) -> str:
         """
-        Ensure the templates metadata table exists in PostgreSQL.
+        Ensure the templates metadata table exists in the namespace's schema.
 
         Fixed-schema table for syncing template status from the Template-Store.
 
         Returns:
-            Table name ('templates')
+            The schema-qualified table reference ("<ns>"."templates").
         """
+        schema = await self.ensure_schema(namespace)
         table_name = "templates"
+        qualified = f'"{schema}"."{table_name}"'
 
-        if await self.table_exists(table_name):
-            return table_name
+        if await self.table_exists(schema, table_name):
+            return qualified
 
         ddl = f"""
-CREATE TABLE IF NOT EXISTS "{table_name}" (
+CREATE TABLE IF NOT EXISTS {qualified} (
     "template_id" TEXT NOT NULL,
     "namespace" VARCHAR(255) NOT NULL DEFAULT 'wip',
     "value" TEXT NOT NULL,
@@ -619,33 +706,35 @@ CREATE TABLE IF NOT EXISTS "{table_name}" (
 );
 
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_value_idx"
-  ON "{table_name}"("namespace", "value");
+  ON {qualified}("namespace", "value");
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx"
-  ON "{table_name}"("namespace", "status");
+  ON {qualified}("namespace", "status");
 """
 
         async with self.pool.acquire() as conn:
             await conn.execute(ddl)
 
-        logger.info(f"Created {table_name} table")
-        return table_name
+        logger.info(f"Created {qualified} table")
+        return qualified
 
-    async def ensure_terms_table(self) -> str:
+    async def ensure_terms_table(self, namespace: str) -> str:
         """
-        Ensure the terms table exists in PostgreSQL.
+        Ensure the terms table exists in the namespace's schema.
 
         Fixed-schema table for syncing terms from the Def-Store.
 
         Returns:
-            Table name ('terms')
+            The schema-qualified table reference ("<ns>"."terms").
         """
+        schema = await self.ensure_schema(namespace)
         table_name = "terms"
+        qualified = f'"{schema}"."{table_name}"'
 
-        if await self.table_exists(table_name):
-            return table_name
+        if await self.table_exists(schema, table_name):
+            return qualified
 
         ddl = f"""
-CREATE TABLE IF NOT EXISTS "{table_name}" (
+CREATE TABLE IF NOT EXISTS {qualified} (
     "term_id" TEXT NOT NULL,
     "namespace" VARCHAR(255) NOT NULL DEFAULT 'wip',
     "terminology_id" TEXT NOT NULL,
@@ -667,38 +756,40 @@ CREATE TABLE IF NOT EXISTS "{table_name}" (
 );
 
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_terminology_idx"
-  ON "{table_name}"("namespace", "terminology_id");
+  ON {qualified}("namespace", "terminology_id");
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_value_idx"
-  ON "{table_name}"("namespace", "value");
+  ON {qualified}("namespace", "value");
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx"
-  ON "{table_name}"("namespace", "status");
+  ON {qualified}("namespace", "status");
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_parent_idx"
-  ON "{table_name}"("namespace", "parent_term_id");
+  ON {qualified}("namespace", "parent_term_id");
 """
 
         async with self.pool.acquire() as conn:
             await conn.execute(ddl)
 
-        logger.info(f"Created {table_name} table")
-        return table_name
+        logger.info(f"Created {qualified} table")
+        return qualified
 
-    async def ensure_term_relations_table(self) -> str:
+    async def ensure_term_relations_table(self, namespace: str) -> str:
         """
-        Ensure the term_relations table exists in PostgreSQL.
+        Ensure the term_relations table exists in the namespace's schema.
 
         This is a fixed-schema table (not template-driven) for syncing
         ontology term-relations from the Def-Store.
 
         Returns:
-            Table name ('term_relations')
+            The schema-qualified table reference ("<ns>"."term_relations").
         """
+        schema = await self.ensure_schema(namespace)
         table_name = "term_relations"
+        qualified = f'"{schema}"."{table_name}"'
 
-        if await self.table_exists(table_name):
-            return table_name
+        if await self.table_exists(schema, table_name):
+            return qualified
 
         ddl = f"""
-CREATE TABLE IF NOT EXISTS "{table_name}" (
+CREATE TABLE IF NOT EXISTS {qualified} (
     "namespace" VARCHAR(255) NOT NULL DEFAULT 'wip',
     "source_term_id" TEXT NOT NULL,
     "target_term_id" TEXT NOT NULL,
@@ -716,35 +807,41 @@ CREATE TABLE IF NOT EXISTS "{table_name}" (
 
 -- Indexes for efficient traversal queries
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_source_type_idx"
-  ON "{table_name}"("namespace", "source_term_id", "relation_type");
+  ON {qualified}("namespace", "source_term_id", "relation_type");
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_type_idx"
-  ON "{table_name}"("namespace", "target_term_id", "relation_type");
+  ON {qualified}("namespace", "target_term_id", "relation_type");
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx"
-  ON "{table_name}"("namespace", "status");
+  ON {qualified}("namespace", "status");
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_source_terminology_idx"
-  ON "{table_name}"("namespace", "source_terminology_id");
+  ON {qualified}("namespace", "source_terminology_id");
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
-  ON "{table_name}"("namespace", "target_terminology_id");
+  ON {qualified}("namespace", "target_terminology_id");
 """
 
         async with self.pool.acquire() as conn:
             await conn.execute(ddl)
 
-        logger.info(f"Created {table_name} table")
-        return table_name
+        logger.info(f"Created {qualified} table")
+        return qualified
 
     async def ensure_table_for_template(
         self,
+        namespace: str,
         template: dict[str, Any],
     ) -> str:
         """
-        Ensure a table exists for a template, creating or updating as needed.
+        Ensure a table exists for a template in a namespace's schema.
+
+        The table lives in the schema of the *document's* namespace (passed in),
+        not the template's — a template shared from another namespace still
+        materialises one reporting table per namespace whose documents use it.
 
         Args:
+            namespace: The document's namespace (→ its PostgreSQL schema).
             template: Full template definition from Template Store
 
         Returns:
-            Table name
+            Table name (bare, within the namespace schema)
         """
         template_value = template["value"]
         template_version = template.get("version", 1)
@@ -790,22 +887,25 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
             logger.info(f"Sync disabled for template {template_value}, skipping table creation")
             return ""
 
+        schema = self.schema_for(namespace)
         table_name = self.get_table_name(template_value, config)
 
         usage = template.get("usage", "entity")
         identity_fields = template.get("identity_fields") or []
 
-        if await self.table_exists(table_name):
+        if await self.table_exists(schema, table_name):
             migrations = await self.update_table_schema(
-                template_value, template_version, fields, config,
+                namespace, template_value, template_version, fields, config,
                 usage=usage, identity_fields=identity_fields,
             )
             if migrations:
                 logger.info(f"Updated table {table_name} with {len(migrations)} new columns")
         else:
             await self.create_table(
-                template_value, template_version, fields, config,
+                namespace, template_value, template_version, fields, config,
                 usage=usage, identity_fields=identity_fields,
             )
 
-        return table_name
+        # Return the schema-qualified reference ("<ns>"."<table>") so callers
+        # build SQL against it directly, without re-deriving the schema.
+        return self.qualified_name(namespace, template_value, config)

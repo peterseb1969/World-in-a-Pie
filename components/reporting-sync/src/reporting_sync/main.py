@@ -42,6 +42,7 @@ from .models import (
     MetricsResponse,
     SyncStatus,
 )
+from .schema_manager import SchemaManager
 from .search_service import (
     ActivityResponse,
     EntityReferencesResponse,
@@ -224,25 +225,32 @@ async def connect_postgres() -> asyncpg.Pool:
 async def init_postgres_schema(pool: asyncpg.Pool) -> None:
     """Initialize PostgreSQL schema (migration tracking table, etc.)."""
     async with pool.acquire() as conn:
-        # Create schema migrations tracking table
+        # Create schema migrations tracking table. Keyed on
+        # (namespace, template_value, version): template_value is unique only
+        # per namespace (CASE-628), so the namespace is part of the key.
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS _wip_schema_migrations (
+                namespace VARCHAR(255) NOT NULL DEFAULT 'wip',
                 template_value TEXT NOT NULL,
                 template_version INTEGER NOT NULL,
                 migration_sql TEXT NOT NULL,
                 applied_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                PRIMARY KEY (template_value, template_version)
+                PRIMARY KEY (namespace, template_value, template_version)
             )
         """)
 
-        # Create sync status tracking table
+        # Create sync status tracking table. Keyed on (namespace,
+        # template_value) — template_value is unique only per namespace
+        # (CASE-628).
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS _wip_sync_status (
-                template_value TEXT PRIMARY KEY,
+                namespace VARCHAR(255) NOT NULL DEFAULT 'wip',
+                template_value TEXT NOT NULL,
                 last_sync_at TIMESTAMP WITH TIME ZONE,
                 documents_synced BIGINT DEFAULT 0,
                 last_error TEXT,
-                last_error_at TIMESTAMP WITH TIME ZONE
+                last_error_at TIMESTAMP WITH TIME ZONE,
+                PRIMARY KEY (namespace, template_value)
             )
         """)
 
@@ -323,16 +331,10 @@ async def lifespan(app: FastAPI):
         )
         state.sync_status.connected_to_postgres = True
 
-        # Initialize schema
+        # Initialize schema (bookkeeping tables only). Per-namespace metadata
+        # and document tables are created lazily inside each namespace's schema
+        # on first sync (CASE-628) — there is no global pre-creation.
         await init_postgres_schema(state.postgres_pool)
-
-        # Ensure metadata tables exist
-        from .schema_manager import SchemaManager
-        sm = SchemaManager(state.postgres_pool)
-        await sm.ensure_terminologies_table()
-        await sm.ensure_terms_table()
-        await sm.ensure_templates_table()
-        await sm.ensure_term_relations_table()
     except Exception as e:
         logger.error(f"Failed to connect to PostgreSQL: {e}")
         state.sync_status.connected_to_postgres = False
@@ -621,13 +623,66 @@ async def test_alerts() -> dict[str, Any]:
     }
 
 
+@router.get("/table-name")
+async def resolve_table_name(namespace: str, template_value: str) -> dict[str, Any]:
+    """Resolve the reporting table for a (namespace, template_value) (CASE-628).
+
+    Under schema-per-namespace the physical table is
+    ``"<namespace>"."doc_<value>"``. Consumers building raw ``run_report_query``
+    SQL should resolve the name here rather than construct it. ``exists``
+    reports whether the table has been materialised yet (it is created lazily on
+    first sync).
+
+    (A template's optional ``reporting.table_name`` cosmetic override is not
+    reflected here yet — this returns the default ``doc_<value>`` form.)
+    """
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+    sm = SchemaManager(state.postgres_pool)
+    try:
+        schema = sm.schema_for(namespace)
+        table_name = sm.get_table_name(template_value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    async with state.postgres_pool.acquire() as conn:
+        exists = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_schema = $1 AND table_name = $2
+            )
+            """,
+            schema,
+            table_name,
+        )
+
+    return {
+        "namespace": namespace,
+        "template_value": template_value,
+        "schema": schema,
+        "table_name": table_name,
+        "qualified_name": sm.qualified_name(namespace, template_value),
+        "exists": exists,
+    }
+
+
 @router.get("/schema/{template_value}")
-async def get_schema(template_value: str) -> dict[str, Any]:
-    """Get the PostgreSQL schema for a template."""
+async def get_schema(template_value: str, namespace: str) -> dict[str, Any]:
+    """Get the PostgreSQL schema (columns) for a template in a namespace.
+
+    ``namespace`` is required (CASE-628): the table lives in that namespace's
+    schema, and the same template_value can exist in several namespaces.
+    """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
-    table_name = f"doc_{template_value.lower()}"
+    sm = SchemaManager(state.postgres_pool)
+    try:
+        schema = sm.schema_for(namespace)
+        table_name = sm.get_table_name(template_value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     async with state.postgres_pool.acquire() as conn:
         # Check if table exists
@@ -635,17 +690,18 @@ async def get_schema(template_value: str) -> dict[str, Any]:
             """
             SELECT EXISTS (
                 SELECT FROM information_schema.tables
-                WHERE table_schema = 'public'
-                AND table_name = $1
+                WHERE table_schema = $1
+                AND table_name = $2
             )
             """,
+            schema,
             table_name,
         )
 
         if not exists:
             raise HTTPException(
                 status_code=404,
-                detail=f"Table {table_name} does not exist",
+                detail=f'Table "{schema}"."{table_name}" does not exist',
             )
 
         # Get column information
@@ -653,18 +709,24 @@ async def get_schema(template_value: str) -> dict[str, Any]:
             """
             SELECT column_name, data_type, is_nullable, column_default
             FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = $1
+            WHERE table_schema = $1 AND table_name = $2
             ORDER BY ordinal_position
             """,
+            schema,
             table_name,
         )
 
         # Get row count
-        row_count = await conn.fetchval(f'SELECT COUNT(*) FROM "{table_name}"')
+        row_count = await conn.fetchval(
+            f'SELECT COUNT(*) FROM "{schema}"."{table_name}"'
+        )
 
         return {
+            "namespace": namespace,
             "template_value": template_value,
+            "schema": schema,
             "table_name": table_name,
+            "qualified_name": f'"{schema}"."{table_name}"',
             "columns": [
                 {
                     "name": col["column_name"],
@@ -1277,14 +1339,22 @@ async def get_referenced_by(
 # =============================================================================
 
 
+# PostgreSQL schemas that are never WIP namespaces.
+_SYSTEM_SCHEMAS = ("public", "pg_catalog", "information_schema", "pg_toast")
+
+
 @router.get("/tables")
 async def list_tables(
-    table_name: str | None = Query(default=None, description="Return full column detail for a specific table"),
+    namespace: str | None = Query(default=None, description="Restrict to one namespace's schema"),
+    table_name: str | None = Query(default=None, description="Return full column detail for a specific (bare) table name"),
 ):
-    """List available reporting tables.
+    """List available reporting tables across all namespace schemas (CASE-628).
 
-    Without table_name: returns table names, row counts, and column counts (summary).
-    With table_name: returns full column detail (name, type, nullable) for that table.
+    Each WIP namespace is its own PostgreSQL schema; this enumerates the
+    reporting tables in every namespace schema and returns, per table, its
+    owning ``namespace``, the ``template_value`` it reports (for ``doc_*``
+    tables), row count, and columns. Filter by ``namespace`` and/or bare
+    ``table_name``.
     """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
@@ -1293,51 +1363,51 @@ async def list_tables(
     allowed_exact = {"terminologies", "terms", "term_relations"}
 
     async with state.postgres_pool.acquire() as conn:
-        # Get all base tables in public schema
+        # Base tables across every non-system schema (each is a namespace).
         raw_tables = await conn.fetch(
-            """
-            SELECT table_name
+            f"""
+            SELECT table_schema, table_name
             FROM information_schema.tables
-            WHERE table_schema = 'public'
+            WHERE table_schema NOT IN {_SYSTEM_SCHEMAS}
               AND table_type = 'BASE TABLE'
-            ORDER BY table_name
+            ORDER BY table_schema, table_name
             """
         )
 
         tables = []
         for row in raw_tables:
+            schema = row["table_schema"]
             tname = row["table_name"]
             if not (tname.startswith(allowed_prefixes) or tname in allowed_exact):
                 continue
-
-            # If filtering by table_name, skip non-matching tables
+            if namespace and schema != namespace:
+                continue
             if table_name and tname != table_name:
                 continue
 
-            # Get columns
             columns = await conn.fetch(
                 """
                 SELECT column_name, data_type, is_nullable
                 FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = $1
+                WHERE table_schema = $1
+                  AND table_name = $2
                 ORDER BY ordinal_position
                 """,
+                schema,
                 tname,
             )
 
-            # Get row count
-            count = await conn.fetchval(
-                f'SELECT COUNT(*) FROM "{tname}"'
-            )
+            count = await conn.fetchval(f'SELECT COUNT(*) FROM "{schema}"."{tname}"')
 
             entry: dict = {
+                "namespace": schema,
                 "name": tname,
+                "template_value": tname[len("doc_"):] if tname.startswith("doc_") else None,
+                "qualified_name": f'"{schema}"."{tname}"',
                 "row_count": count,
             }
 
             if table_name:
-                # Detail mode: include full column info
                 entry["columns"] = [
                     {
                         "name": c["column_name"],
@@ -1347,7 +1417,6 @@ async def list_tables(
                     for c in columns
                 ]
             else:
-                # Summary mode: just column count
                 entry["column_count"] = len(columns)
 
             tables.append(entry)
@@ -1365,6 +1434,14 @@ class ReportQuery(BaseModel):
     params: list[Any] = []
     timeout_seconds: int = Field(default=30, ge=1, le=300)
     max_rows: int = Field(default=1000, ge=1, le=50000)
+    namespace: str | None = Field(
+        default=None,
+        description=(
+            "When set, the query runs with search_path = this namespace's schema "
+            "(CASE-628), so unqualified table names like `doc_patient` resolve "
+            "there. Omit for cross-namespace queries and schema-qualify instead."
+        ),
+    )
 
 
 # Pattern matching dangerous SQL keywords at word boundaries
@@ -1388,11 +1465,23 @@ async def execute_query(body: ReportQuery):
             "INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, and REVOKE are prohibited.",
         )
 
+    # Resolve the namespace search_path schema (CASE-628), validating it as a
+    # safe identifier before interpolation.
+    search_path_schema: str | None = None
+    if body.namespace:
+        try:
+            search_path_schema = SchemaManager(state.postgres_pool).schema_for(body.namespace)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
     # Build wrapped query with row limit
     wrapped_sql = f"SELECT * FROM ({body.sql}) _q LIMIT {body.max_rows + 1}"
 
     # Build positional parameter references
     params = body.params
+
+    async def _run(conn: asyncpg.Connection) -> list:
+        return await conn.fetch(wrapped_sql, *params)
 
     try:
         assert state.postgres_pool is not None  # narrowed by postgres_ok check above
@@ -1403,7 +1492,16 @@ async def execute_query(body: ReportQuery):
             )
             await conn.execute("SET default_transaction_read_only = on")
 
-            rows = await conn.fetch(wrapped_sql, *params)
+            if search_path_schema:
+                # SET LOCAL inside a transaction auto-resets on commit, so the
+                # search_path never leaks back to the pooled connection.
+                async with conn.transaction():
+                    await conn.execute(
+                        f'SET LOCAL search_path = "{search_path_schema}", public'
+                    )
+                    rows = await _run(conn)
+            else:
+                rows = await _run(conn)
 
             # Detect truncation
             truncated = len(rows) > body.max_rows
@@ -1475,11 +1573,16 @@ async def _stream_csv(conn: asyncpg.Connection, sql: str, params: list[Any]):
 
 @router.get("/export/csv")
 async def export_table_csv(
-    table: str = Query(description="Table name to export (e.g. doc_patient)"),
+    namespace: str = Query(description="Namespace (PostgreSQL schema) the table lives in"),
+    table: str = Query(description="Bare table name to export (e.g. doc_patient)"),
     timeout_seconds: int = Query(default=120, ge=1, le=600),
     filename: str | None = Query(default=None, description="Download filename"),
 ):
-    """Export a full reporting table as streaming CSV."""
+    """Export a full reporting table as streaming CSV.
+
+    ``namespace`` is required (CASE-628): the table lives in that namespace's
+    schema.
+    """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
@@ -1490,14 +1593,22 @@ async def export_table_csv(
             "Only doc_* tables and metadata tables (terminologies, terms, term_relations) are allowed.",
         )
 
-    download_name = filename or f"{table}.csv"
+    # Validate both identifiers before interpolation.
+    try:
+        schema = SchemaManager(state.postgres_pool).schema_for(namespace)
+        SchemaManager._safe_ident(table)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    qualified = f'"{schema}"."{table}"'
+    download_name = filename or f"{namespace}_{table}.csv"
 
     async def generate():
         assert state.postgres_pool is not None
         async with state.postgres_pool.acquire() as conn:
             await conn.execute(f"SET statement_timeout = {timeout_seconds * 1000}")
             await conn.execute("SET default_transaction_read_only = on")
-            async for chunk in _stream_csv(conn, f'SELECT * FROM "{table}"', []):
+            async for chunk in _stream_csv(conn, f'SELECT * FROM {qualified}', []):
                 yield chunk
 
     return StreamingResponse(
@@ -1546,8 +1657,10 @@ async def export_query_csv(body: CsvExportQuery):
 async def delete_namespace(prefix: str):
     """Delete all reporting data for a namespace.
 
-    Removes rows from all doc_* tables, metadata tables (terminologies, terms,
-    term_relations, templates), and sync status where namespace matches.
+    CASE-628: each namespace is a PostgreSQL schema, so removal is a single
+    ``DROP SCHEMA "<prefix>" CASCADE`` — every doc_* and metadata table inside
+    it (and their indexes) goes atomically. The namespace's rows in the shared
+    bookkeeping tables are cleared too.
 
     Called by Registry during namespace deletion.
     """
@@ -1557,53 +1670,26 @@ async def delete_namespace(prefix: str):
     if not prefix or not prefix.strip():
         raise HTTPException(status_code=400, detail="Namespace prefix is required")
 
-    total_deleted = 0
+    # Validate the prefix as a safe SQL identifier before interpolating it into
+    # DROP SCHEMA (identifiers cannot be parameterised).
+    try:
+        schema = SchemaManager(state.postgres_pool).schema_for(prefix)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     async with state.postgres_pool.acquire() as conn:
-        # Find all doc_* tables
-        doc_tables = await conn.fetch(
-            """
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'public'
-              AND table_type = 'BASE TABLE'
-              AND table_name LIKE 'doc_%'
-            ORDER BY table_name
-            """
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        # Clear the namespace's rows from the shared bookkeeping tables (these
+        # live in public, keyed by namespace — see init_postgres_schema).
+        await conn.execute(
+            "DELETE FROM _wip_schema_migrations WHERE namespace = $1", prefix
+        )
+        await conn.execute(
+            "DELETE FROM _wip_sync_status WHERE namespace = $1", prefix
         )
 
-        # Delete from each doc_* table
-        for row in doc_tables:
-            table_name = row["table_name"]
-            result = await conn.execute(
-                f'DELETE FROM "{table_name}" WHERE namespace = $1', prefix
-            )
-            count = int(result.split()[-1])  # "DELETE N"
-            if count > 0:
-                logger.info(
-                    f"Deleted {count} rows from {table_name} for namespace {prefix}"
-                )
-            total_deleted += count
-
-        # Delete from metadata tables
-        for table_name in ("terminologies", "templates", "terms", "term_relations"):
-            try:
-                result = await conn.execute(
-                    f'DELETE FROM "{table_name}" WHERE namespace = $1', prefix
-                )
-                count = int(result.split()[-1])
-                if count > 0:
-                    logger.info(
-                        f"Deleted {count} rows from {table_name} for namespace {prefix}"
-                    )
-                total_deleted += count
-            except asyncpg.UndefinedTableError:
-                pass  # Table doesn't exist yet — nothing to clean
-
-    logger.info(
-        f"Namespace {prefix} cleanup complete: {total_deleted} total rows deleted"
-    )
-    return {"total_deleted": total_deleted}
+    logger.info(f"Namespace {prefix} reporting schema dropped ({schema})")
+    return {"namespace": prefix, "dropped_schema": schema, "total_deleted": None}
 
 
 @router.get("/")
