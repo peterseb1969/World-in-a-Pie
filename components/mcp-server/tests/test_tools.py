@@ -162,9 +162,7 @@ async def test_list_report_tables():
     """list_report_tables returns table info."""
     mock = _mock_client()
     mock.list_report_tables.return_value = {
-        "tables": [
-            {"name": "doc_patient", "columns": [{"name": "id", "type": "text"}], "row_count": 10}
-        ]
+        "tables": [{"name": "doc_patient", "columns": [{"name": "id", "type": "text"}], "row_count": 10}]
     }
 
     with patch("wip_mcp.server.get_client", return_value=mock):
@@ -199,6 +197,32 @@ async def test_run_report_query():
         sql="SELECT name, country FROM doc_patient WHERE country = $1",
         params=["CH"],
         max_rows=1000,
+        namespace=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_report_query_forwards_namespace():
+    """A namespace argument reaches the client (per-namespace search_path)."""
+    mock = _mock_client()
+    mock.run_report_query.return_value = {
+        "columns": ["name"],
+        "rows": [{"name": "Alice"}],
+        "row_count": 1,
+        "truncated": False,
+    }
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await run_report_query(
+            sql="SELECT name FROM doc_patient",
+            namespace="clinic-a",
+        )
+
+    mock.run_report_query.assert_awaited_once_with(
+        sql="SELECT name FROM doc_patient",
+        params=None,
+        max_rows=1000,
+        namespace="clinic-a",
     )
 
 

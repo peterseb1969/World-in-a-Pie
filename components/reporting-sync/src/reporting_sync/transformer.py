@@ -532,7 +532,10 @@ class DocumentTransformer:
         Generate an UPSERT SQL statement for a row.
 
         Args:
-            table_name: Target PostgreSQL table
+            table_name: Target PostgreSQL table — the schema-qualified,
+                quote-safe reference (e.g. ``"clinicA"."doc_patient"``) as
+                returned by ``SchemaManager.qualified_name`` / the ensure_*
+                helpers. Interpolated verbatim; not re-quoted here.
             row: Flattened row dictionary
             strategy: "latest_only" (upsert) or "all_versions" (insert)
 
@@ -556,16 +559,16 @@ class DocumentTransformer:
             update_clause = ", ".join(update_cols)
 
             sql = f"""
-                INSERT INTO "{table_name}" ({', '.join(quoted_columns)})
+                INSERT INTO {table_name} ({', '.join(quoted_columns)})
                 VALUES ({', '.join(placeholders)})
                 ON CONFLICT (document_id)
                 DO UPDATE SET {update_clause}
-                WHERE "{table_name}".version < EXCLUDED.version
+                WHERE {table_name}.version < EXCLUDED.version
             """
         else:
             # INSERT for all_versions strategy — composite PK (document_id, version)
             sql = f"""
-                INSERT INTO "{table_name}" ({', '.join(quoted_columns)})
+                INSERT INTO {table_name} ({', '.join(quoted_columns)})
                 VALUES ({', '.join(placeholders)})
                 ON CONFLICT (document_id, version) DO NOTHING
             """

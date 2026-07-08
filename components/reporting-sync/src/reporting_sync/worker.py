@@ -121,8 +121,13 @@ class SyncWorker:
             metrics.record_event_skipped(template_value, "sync_disabled")
             return True  # Not an error, just skipped
 
+        # The reporting table lives in the schema of the document's namespace
+        # (CASE-628). ensure_table_for_template returns the schema-qualified
+        # reference ("<ns>"."<table>") for building SQL directly.
+        namespace = document.get("namespace") or "wip"
+
         # Ensure table exists
-        table_name = await self.schema_manager.ensure_table_for_template(template)
+        table_name = await self.schema_manager.ensure_table_for_template(namespace, template)
         if not table_name:
             metrics.record_event_skipped(template_value, "table_creation_skipped")
             return True  # Sync disabled
@@ -146,12 +151,12 @@ class SyncWorker:
                     target_version = document.get("version")
                     if target_version is not None:
                         await conn.execute(
-                            f'DELETE FROM "{table_name}" WHERE document_id = $1 AND version = $2',
+                            f'DELETE FROM {table_name} WHERE document_id = $1 AND version = $2',
                             document_id, target_version,
                         )
                     else:
                         await conn.execute(
-                            f'DELETE FROM "{table_name}" WHERE document_id = $1',
+                            f'DELETE FROM {table_name} WHERE document_id = $1',
                             document_id,
                         )
                 latency_ms = (time.perf_counter() - start_time) * 1000
@@ -162,7 +167,7 @@ class SyncWorker:
             new_status = "archived" if event_type == EventType.DOCUMENT_ARCHIVED.value else "deleted"
             async with self.pool.acquire() as conn:
                 await conn.execute(
-                    f'UPDATE "{table_name}" SET status = $1 WHERE document_id = $2',
+                    f'UPDATE {table_name} SET status = $1 WHERE document_id = $2',
                     new_status,
                     document_id,
                 )
@@ -224,12 +229,17 @@ class SyncWorker:
 
         config = self._get_reporting_config(template)
 
+        # A template event ensures the reporting table in the template's own
+        # namespace schema (CASE-628); documents from other namespaces
+        # materialise their own table lazily on their doc events.
+        namespace = template.get("namespace") or "wip"
+
         if not config.sync_enabled:
             logger.info(f"Sync disabled for template {template_value}, skipping schema update")
             # Still sync template metadata even if doc sync is disabled
         else:
             # Create or update document table
-            table_name = await self.schema_manager.ensure_table_for_template(template)
+            table_name = await self.schema_manager.ensure_table_for_template(namespace, template)
             if table_name and table_name not in self._managed_tables:
                 self._managed_tables.add(table_name)
                 self.status.tables_managed = len(self._managed_tables)
@@ -237,8 +247,7 @@ class SyncWorker:
 
         # Sync template metadata to templates table
         if template_id:
-            namespace = template["namespace"]
-            meta_table = await self.schema_manager.ensure_templates_table()
+            meta_table = await self.schema_manager.ensure_templates_table(namespace)
 
             try:
                 async with self.pool.acquire() as conn:
@@ -248,18 +257,18 @@ class SyncWorker:
                             target_version = template.get("version")
                             if target_version is not None:
                                 await conn.execute(
-                                    f'DELETE FROM "{meta_table}" WHERE "namespace" = $1 AND "template_id" = $2 AND "version" = $3',
+                                    f'DELETE FROM {meta_table} WHERE "namespace" = $1 AND "template_id" = $2 AND "version" = $3',
                                     namespace, template_id, target_version,
                                 )
                             else:
                                 await conn.execute(
-                                    f'DELETE FROM "{meta_table}" WHERE "namespace" = $1 AND "template_id" = $2',
+                                    f'DELETE FROM {meta_table} WHERE "namespace" = $1 AND "template_id" = $2',
                                     namespace, template_id,
                                 )
                         else:
                             await conn.execute(
                                 f"""
-                                UPDATE "{meta_table}"
+                                UPDATE {meta_table}
                                 SET "status" = 'inactive',
                                     "updated_at" = NOW(),
                                     "updated_by" = $3
@@ -271,7 +280,7 @@ class SyncWorker:
                     else:
                         await conn.execute(
                             f"""
-                            INSERT INTO "{meta_table}" (
+                            INSERT INTO {meta_table} (
                                 "template_id", "namespace", "value", "label",
                                 "description", "version", "status", "extends",
                                 "extends_version", "created_at", "created_by",
@@ -332,7 +341,7 @@ class SyncWorker:
             logger.warning("Invalid terminology event: missing terminology_id")
             return False
 
-        table_name = await self.schema_manager.ensure_terminologies_table()
+        table_name = await self.schema_manager.ensure_terminologies_table(namespace)
 
         try:
             async with self.pool.acquire() as conn:
@@ -340,14 +349,14 @@ class SyncWorker:
                     if term_data.get("hard_delete"):
                         # Hard delete: remove from terminologies table
                         await conn.execute(
-                            f'DELETE FROM "{table_name}" WHERE "namespace" = $1 AND "terminology_id" = $2',
+                            f'DELETE FROM {table_name} WHERE "namespace" = $1 AND "terminology_id" = $2',
                             namespace, terminology_id,
                         )
                     else:
                         # Soft delete (existing behavior)
                         await conn.execute(
                             f"""
-                            UPDATE "{table_name}"
+                            UPDATE {table_name}
                             SET "status" = 'inactive',
                                 "updated_at" = NOW(),
                                 "updated_by" = $3
@@ -359,7 +368,7 @@ class SyncWorker:
                 else:
                     await conn.execute(
                         f"""
-                        INSERT INTO "{table_name}" (
+                        INSERT INTO {table_name} (
                             "terminology_id", "namespace", "value", "label",
                             "description", "case_sensitive", "allow_multiple",
                             "extensible", "mutable", "status", "term_count",
@@ -424,27 +433,27 @@ class SyncWorker:
             logger.warning("Invalid term event: missing term_id")
             return False
 
-        table_name = await self.schema_manager.ensure_terms_table()
+        table_name = await self.schema_manager.ensure_terms_table(namespace)
 
         try:
             async with self.pool.acquire() as conn:
                 if event_type == "term.deleted":
                     if term_data.get("hard_delete"):
                         # Hard delete: remove from terms and cascade term_relations
-                        rel_table = await self.schema_manager.ensure_term_relations_table()
+                        rel_table = await self.schema_manager.ensure_term_relations_table(namespace)
                         await conn.execute(
-                            f'DELETE FROM "{rel_table}" WHERE "namespace" = $1 AND ("source_term_id" = $2 OR "target_term_id" = $2)',
+                            f'DELETE FROM {rel_table} WHERE "namespace" = $1 AND ("source_term_id" = $2 OR "target_term_id" = $2)',
                             namespace, term_id,
                         )
                         await conn.execute(
-                            f'DELETE FROM "{table_name}" WHERE "namespace" = $1 AND "term_id" = $2',
+                            f'DELETE FROM {table_name} WHERE "namespace" = $1 AND "term_id" = $2',
                             namespace, term_id,
                         )
                     else:
                         # Soft delete (existing behavior)
                         await conn.execute(
                             f"""
-                            UPDATE "{table_name}"
+                            UPDATE {table_name}
                             SET "status" = 'inactive',
                                 "updated_at" = NOW(),
                                 "updated_by" = $3
@@ -456,7 +465,7 @@ class SyncWorker:
                 elif event_type == "term.deprecated":
                     await conn.execute(
                         f"""
-                        UPDATE "{table_name}"
+                        UPDATE {table_name}
                         SET "status" = 'deprecated',
                             "deprecated_reason" = $3,
                             "replaced_by_term_id" = $4,
@@ -475,7 +484,7 @@ class SyncWorker:
                     # Upsert for create/update
                     await conn.execute(
                         f"""
-                        INSERT INTO "{table_name}" (
+                        INSERT INTO {table_name} (
                             "term_id", "namespace", "terminology_id",
                             "terminology_value", "value", "aliases",
                             "label", "description", "sort_order",
@@ -546,7 +555,7 @@ class SyncWorker:
             return False
 
         # Ensure table exists
-        table_name = await self.schema_manager.ensure_term_relations_table()
+        table_name = await self.schema_manager.ensure_term_relations_table(namespace)
 
         try:
             async with self.pool.acquire() as conn:
@@ -555,7 +564,7 @@ class SyncWorker:
                         # Hard delete: remove from table
                         await conn.execute(
                             f"""
-                            DELETE FROM "{table_name}"
+                            DELETE FROM {table_name}
                             WHERE "namespace" = $1
                               AND "source_term_id" = $2
                               AND "target_term_id" = $3
@@ -567,7 +576,7 @@ class SyncWorker:
                         # Soft delete (existing behavior)
                         await conn.execute(
                             f"""
-                            UPDATE "{table_name}"
+                            UPDATE {table_name}
                             SET "status" = 'inactive'
                             WHERE "namespace" = $1
                               AND "source_term_id" = $2
@@ -580,7 +589,7 @@ class SyncWorker:
                     # Upsert for create/reactivate
                     await conn.execute(
                         f"""
-                        INSERT INTO "{table_name}" (
+                        INSERT INTO {table_name} (
                             "namespace", "source_term_id", "target_term_id",
                             "relation_type", "source_term_value", "target_term_value",
                             "source_terminology_id", "target_terminology_id",

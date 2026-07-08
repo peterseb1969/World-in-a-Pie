@@ -20,12 +20,10 @@ import pytest
 from reporting_sync.models import (
     FieldType,
     ReportingConfig,
-    SyncStrategy,
     TemplateField,
 )
 from reporting_sync.schema_manager import SchemaManager
 from reporting_sync.transformer import DocumentTransformer, _strip_md
-
 
 # =========================================================================
 # DDL: CREATE TABLE — tsvector + GIN index
@@ -41,7 +39,7 @@ def test_indexed_string_field_emits_search_and_tsv_columns():
         TemplateField(name="title", type=FieldType.STRING, full_text_indexed=True),
         TemplateField(name="body", type=FieldType.STRING, full_text_indexed=True),
     ]
-    ddl = _sm().generate_create_table_ddl("lesson", 1, fields)
+    ddl = _sm().generate_create_table_ddl("testns", "lesson", 1, fields)
     # Per-field _search column.
     assert '"title_search" TEXT' in ddl
     assert '"body_search" TEXT' in ddl
@@ -55,16 +53,16 @@ def test_indexed_string_field_emits_search_and_tsv_columns():
 
 def test_indexed_field_emits_gin_index():
     fields = [TemplateField(name="body", type=FieldType.STRING, full_text_indexed=True)]
-    ddl = _sm().generate_create_table_ddl("lesson", 1, fields)
+    ddl = _sm().generate_create_table_ddl("testns", "lesson", 1, fields)
     assert (
         'CREATE INDEX IF NOT EXISTS "doc_lesson_body_tsv_idx" '
-        'ON "doc_lesson" USING GIN ("body_tsv")'
+        'ON "testns"."doc_lesson" USING GIN ("body_tsv")'
     ) in ddl
 
 
 def test_non_indexed_string_field_emits_no_search_columns():
     fields = [TemplateField(name="body", type=FieldType.STRING)]
-    ddl = _sm().generate_create_table_ddl("lesson", 1, fields)
+    ddl = _sm().generate_create_table_ddl("testns", "lesson", 1, fields)
     assert "_search" not in ddl
     assert "_tsv" not in ddl
     assert "GIN" not in ddl
@@ -75,7 +73,7 @@ def test_indexed_field_with_system_column_name_gets_data_prefix():
     the data_ prefix applies to FTS columns too so the GIN index name
     matches what the transformer actually writes to."""
     fields = [TemplateField(name="status", type=FieldType.STRING, full_text_indexed=True)]
-    ddl = _sm().generate_create_table_ddl("note", 1, fields)
+    ddl = _sm().generate_create_table_ddl("testns", "note", 1, fields)
     assert '"data_status_search" TEXT' in ddl
     assert '"data_status_tsv" tsvector' in ddl
     assert '"doc_note_data_status_tsv_idx"' in ddl
@@ -87,7 +85,7 @@ def test_mixed_indexed_and_non_indexed_fields():
         TemplateField(name="body", type=FieldType.STRING, full_text_indexed=True),
         TemplateField(name="score", type=FieldType.NUMBER),  # not indexable
     ]
-    ddl = _sm().generate_create_table_ddl("article", 1, fields)
+    ddl = _sm().generate_create_table_ddl("testns", "article", 1, fields)
     # body gets the full set; tags/score do not.
     assert '"body_search" TEXT' in ddl
     assert '"body_tsv" tsvector' in ddl
@@ -105,7 +103,7 @@ def test_indexed_relationship_template_still_gets_fts_columns():
         TemplateField(name="notes", type=FieldType.STRING, full_text_indexed=True),
     ]
     ddl = _sm().generate_create_table_ddl(
-        "rel_note", 1, fields, usage="relationship"
+        "testns", "rel_note", 1, fields, usage="relationship"
     )
     assert '"notes_tsv" tsvector' in ddl
     assert '"doc_rel_note_notes_tsv_idx"' in ddl
@@ -167,7 +165,7 @@ async def test_alter_table_adds_search_tsv_and_index_when_missing(mock_pool_with
 
     sm = SchemaManager(pool)
     fields = [TemplateField(name="body", type=FieldType.STRING, full_text_indexed=True)]
-    migrations = await sm.update_table_schema("lesson", 2, fields)
+    migrations = await sm.update_table_schema("testns", "lesson", 2, fields)
 
     executed = [call.args[0] for call in conn.execute.call_args_list]
     assert any('ADD COLUMN "body_search"' in s for s in executed)
@@ -192,7 +190,7 @@ async def test_alter_table_skips_existing_fts_columns(mock_pool_with_columns):
 
     sm = SchemaManager(pool)
     fields = [TemplateField(name="body", type=FieldType.STRING, full_text_indexed=True)]
-    migrations = await sm.update_table_schema("lesson", 2, fields)
+    await sm.update_table_schema("testns", "lesson", 2, fields)
 
     executed = [call.args[0] for call in conn.execute.call_args_list]
     # No ADD COLUMN for the FTS pair…

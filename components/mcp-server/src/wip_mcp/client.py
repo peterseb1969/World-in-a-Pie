@@ -1606,14 +1606,17 @@ class WipClient:
         params: list | None = None,
         timeout_seconds: int = 30,
         max_rows: int = 1000,
+        namespace: str | None = None,
     ) -> dict:
         """Execute a read-only SQL query against the reporting database."""
-        body = {
+        body: dict = {
             "sql": sql,
             "params": params or [],
             "timeout_seconds": timeout_seconds,
             "max_rows": max_rows,
         }
+        if namespace is not None:
+            body["namespace"] = namespace
         return await self._post(
             self.reporting_sync_url, "/api/reporting-sync/query", json=body
         )

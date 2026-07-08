@@ -250,24 +250,13 @@ class BatchSyncService:
                 job.completed_at = datetime.now(UTC)
                 return
 
-            # Ensure table exists
-            table_name = await self.schema_manager.ensure_table_for_template(template)
-            if not table_name:
-                job.status = BatchSyncStatus.FAILED
-                job.error_message = "Failed to create table"
-                job.completed_at = datetime.now(UTC)
-                return
-
-            # Check if table already has data (unless force)
-            if not force:
-                async with self.pool.acquire() as conn:
-                    count = await conn.fetchval(f'SELECT COUNT(*) FROM "{table_name}"')
-                    if count > 0:
-                        job.status = BatchSyncStatus.COMPLETED
-                        job.documents_synced = count
-                        job.error_message = f"Table already has {count} rows. Use force=true to re-sync."
-                        job.completed_at = datetime.now(UTC)
-                        return
+            # Documents route to their own namespace's schema (CASE-628), so a
+            # single template can fill several tables. Ensure lazily per
+            # namespace as pages stream in. The pre-CASE-628 "skip if the table
+            # already has data unless force" guard is dropped: with lazily
+            # created per-namespace tables there is no single table to probe,
+            # and a rebuild runs with force in practice.
+            ns_tables: dict[str, str] = {}
 
             template_id = template["template_id"]
             transformer = DocumentTransformer(config)
@@ -296,10 +285,22 @@ class BatchSyncService:
 
                 job.current_page = page
 
-                # Process documents in this page
+                # Ensure a table for each namespace present in this page.
+                # ensure_table_for_template uses its own pooled connection, so
+                # do it before holding a connection for the upserts.
+                for document in documents:
+                    ns = document.get("namespace") or "wip"
+                    if ns not in ns_tables:
+                        ns_tables[ns] = await self.schema_manager.ensure_table_for_template(
+                            ns, template
+                        )
+
+                # Process documents in this page, routing each to its schema.
                 async with self.pool.acquire() as conn:
                     for document in documents:
                         try:
+                            ns = document.get("namespace") or "wip"
+                            table_name = ns_tables[ns]
                             rows = transformer.transform(document, template)
                             for row in rows:
                                 sql, values = transformer.generate_upsert_sql(
@@ -409,7 +410,8 @@ class BatchSyncService:
         Returns:
             Dict with sync results (synced, failed, total)
         """
-        table_name = await self.schema_manager.ensure_terminologies_table()
+        # Rows route to their own namespace's schema (CASE-628).
+        ns_tables: dict[str, str] = {}
         synced = 0
         failed = 0
 
@@ -436,12 +438,19 @@ class BatchSyncService:
                     if not items:
                         break
 
+                    # Ensure a table per namespace present in this page.
+                    for t in items:
+                        ns = t.get("namespace") or namespace or "wip"
+                        if ns not in ns_tables:
+                            ns_tables[ns] = await self.schema_manager.ensure_terminologies_table(ns)
+
                     async with self.pool.acquire() as conn:
                         for t in items:
                             try:
+                                table_name = ns_tables[t.get("namespace") or namespace or "wip"]
                                 await conn.execute(
                                     f"""
-                                    INSERT INTO "{table_name}" (
+                                    INSERT INTO {table_name} (
                                         "terminology_id", "namespace", "value", "label",
                                         "description", "case_sensitive", "allow_multiple",
                                         "extensible", "mutable", "status", "term_count",
@@ -504,7 +513,8 @@ class BatchSyncService:
         Returns:
             Dict with sync results (synced, failed, total)
         """
-        table_name = await self.schema_manager.ensure_templates_table()
+        # Rows route to their own namespace's schema (CASE-628).
+        ns_tables: dict[str, str] = {}
         synced = 0
         failed = 0
 
@@ -531,12 +541,19 @@ class BatchSyncService:
                     if not items:
                         break
 
+                    # Ensure a table per namespace present in this page.
+                    for t in items:
+                        ns = t.get("namespace") or namespace or "wip"
+                        if ns not in ns_tables:
+                            ns_tables[ns] = await self.schema_manager.ensure_templates_table(ns)
+
                     async with self.pool.acquire() as conn:
                         for t in items:
                             try:
+                                table_name = ns_tables[t.get("namespace") or namespace or "wip"]
                                 await conn.execute(
                                     f"""
-                                    INSERT INTO "{table_name}" (
+                                    INSERT INTO {table_name} (
                                         "template_id", "namespace", "value", "label",
                                         "description", "version", "status", "extends",
                                         "extends_version", "created_at", "created_by",
@@ -597,7 +614,8 @@ class BatchSyncService:
         Returns:
             Dict with sync results (synced, failed, total)
         """
-        table_name = await self.schema_manager.ensure_terms_table()
+        # Rows route to their own namespace's schema (CASE-628).
+        ns_tables: dict[str, str] = {}
         synced = 0
         failed = 0
 
@@ -648,12 +666,19 @@ class BatchSyncService:
                         if not items:
                             break
 
+                        # Ensure a table per namespace present in this page.
+                        for t in items:
+                            ns = t.get("namespace") or namespace or "wip"
+                            if ns not in ns_tables:
+                                ns_tables[ns] = await self.schema_manager.ensure_terms_table(ns)
+
                         async with self.pool.acquire() as conn:
                             for t in items:
                                 try:
+                                    table_name = ns_tables[t.get("namespace") or namespace or "wip"]
                                     await conn.execute(
                                         f"""
-                                        INSERT INTO "{table_name}" (
+                                        INSERT INTO {table_name} (
                                             "term_id", "namespace", "terminology_id",
                                             "terminology_value", "value", "aliases",
                                             "label", "description", "sort_order",
@@ -728,7 +753,9 @@ class BatchSyncService:
         Returns:
             Dict with sync results (synced, failed, total)
         """
-        table_name = await self.schema_manager.ensure_term_relations_table()
+        # This method is scoped to a single namespace, so one table in that
+        # namespace's schema (CASE-628).
+        table_name = await self.schema_manager.ensure_term_relations_table(namespace)
         synced = 0
         failed = 0
 
@@ -761,7 +788,7 @@ class BatchSyncService:
                             try:
                                 await conn.execute(
                                     f"""
-                                    INSERT INTO "{table_name}" (
+                                    INSERT INTO {table_name} (
                                         "namespace", "source_term_id", "target_term_id",
                                         "relation_type", "source_term_value", "target_term_value",
                                         "source_terminology_id", "target_terminology_id",

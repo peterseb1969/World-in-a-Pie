@@ -57,12 +57,12 @@ async def test_list_tables_summary(http_client: AsyncClient, mock_state):
     conn.fetch = AsyncMock(side_effect=[
         # First call: list all tables
         [
-            {"table_name": "doc_patient"},
-            {"table_name": "doc_bank_transaction"},
-            {"table_name": "terminologies"},
-            {"table_name": "terms"},
-            {"table_name": "term_relations"},
-            {"table_name": "_wip_schema_migrations"},  # should be filtered out
+            {"table_schema": "wip", "table_name": "doc_patient"},
+            {"table_schema": "wip", "table_name": "doc_bank_transaction"},
+            {"table_schema": "wip", "table_name": "terminologies"},
+            {"table_schema": "wip", "table_name": "terms"},
+            {"table_schema": "wip", "table_name": "term_relations"},
+            {"table_schema": "wip", "table_name": "_wip_schema_migrations"},  # should be filtered out
         ],
         # Subsequent calls: columns for each allowed table (5 tables)
         [{"column_name": "id", "data_type": "text", "is_nullable": "NO"}],
@@ -102,8 +102,8 @@ async def test_list_tables_detail(http_client: AsyncClient, mock_state):
     conn.fetch = AsyncMock(side_effect=[
         # First call: list all tables
         [
-            {"table_name": "doc_patient"},
-            {"table_name": "terminologies"},
+            {"table_schema": "wip", "table_name": "doc_patient"},
+            {"table_schema": "wip", "table_name": "terminologies"},
         ],
         # Column detail for doc_patient
         [
@@ -135,7 +135,7 @@ async def test_list_tables_detail_not_found(http_client: AsyncClient, mock_state
     _pool, conn = mock_state
 
     conn.fetch = AsyncMock(side_effect=[
-        [{"table_name": "doc_patient"}],
+        [{"table_schema": "wip", "table_name": "doc_patient"}],
     ])
 
     async with http_client:
@@ -344,7 +344,7 @@ def _setup_csv_mocks(conn, columns, rows):
 
 @pytest.mark.asyncio
 async def test_export_table_csv(http_client: AsyncClient, mock_state):
-    """GET /export/csv?table=doc_patient streams CSV."""
+    """GET /export/csv?namespace=wip&table=doc_patient streams CSV."""
     _pool, conn = mock_state
     _setup_csv_mocks(conn, ["id", "name"], [
         {"id": "1", "name": "Alice"},
@@ -352,7 +352,7 @@ async def test_export_table_csv(http_client: AsyncClient, mock_state):
     ])
 
     async with http_client:
-        response = await http_client.get("/api/reporting-sync/export/csv?table=doc_patient")
+        response = await http_client.get("/api/reporting-sync/export/csv?namespace=wip&table=doc_patient")
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/csv")
@@ -367,7 +367,7 @@ async def test_export_table_csv(http_client: AsyncClient, mock_state):
 async def test_export_table_csv_rejects_disallowed_table(http_client: AsyncClient, mock_state):
     """GET /export/csv with a non-allowed table returns 400."""
     async with http_client:
-        response = await http_client.get("/api/reporting-sync/export/csv?table=_wip_secret")
+        response = await http_client.get("/api/reporting-sync/export/csv?namespace=wip&table=_wip_secret")
     assert response.status_code == 400
     assert "not available" in response.json()["detail"]
 
@@ -379,7 +379,7 @@ async def test_export_table_csv_allows_metadata_tables(http_client: AsyncClient,
     _setup_csv_mocks(conn, ["id"], [{"id": "t1"}])
 
     async with http_client:
-        response = await http_client.get("/api/reporting-sync/export/csv?table=terminologies")
+        response = await http_client.get("/api/reporting-sync/export/csv?namespace=wip&table=terminologies")
 
     assert response.status_code == 200
     assert "terminologies.csv" in response.headers["content-disposition"]
@@ -422,7 +422,7 @@ async def test_export_csv_no_postgres(http_client: AsyncClient):
     state.postgres_pool = None
     try:
         async with http_client:
-            response = await http_client.get("/api/reporting-sync/export/csv?table=doc_patient")
+            response = await http_client.get("/api/reporting-sync/export/csv?namespace=wip&table=doc_patient")
         assert response.status_code == 503
     finally:
         state.postgres_pool = original
