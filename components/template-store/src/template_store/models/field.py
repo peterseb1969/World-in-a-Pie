@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
 class FieldType(str, Enum):
@@ -258,60 +258,11 @@ class FieldDefinition(BaseModel):
         description="Additional field metadata"
     )
 
-    @model_validator(mode="after")
-    def _require_pinned_nested_ref_versions(self) -> "FieldDefinition":
-        """A nested template reference MUST pin an explicit version (CASE-493).
-
-        Schema references never resolve to "latest" — a parent document
-        validated against a floating nested schema can silently strand when
-        that schema ships an incompatible new version. Enforced here so no
-        write path (create, bulk, update, activation) can persist a nested
-        ref without a pinned version. Existence of the pinned (template_id,
-        version) pair is checked separately at the service layer (it needs a
-        DB lookup); this guard only enforces presence.
-        """
-        if self.template_ref and self.template_ref_version is None:
-            raise ValueError(
-                f"template_ref_version is required for field '{self.name}': a "
-                "nested template reference must pin an explicit version (CASE-493)"
-            )
-        if self.array_template_ref and self.array_template_ref_version is None:
-            raise ValueError(
-                f"array_template_ref_version is required for field '{self.name}': "
-                "an array-item template reference must pin an explicit version "
-                "(CASE-493)"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _require_array_reference_type(self) -> "FieldDefinition":
-        """An array of references must declare what it references (CASE-550).
-
-        An ``array_item_type='reference'`` field carries its reference
-        configuration in the field's top-level ``reference_type`` /
-        ``target_templates`` / ``target_terminologies`` / ``version_strategy``
-        slots — the document-store collector reads them from there and queues
-        each item for existence resolution exactly like a single reference.
-        Without ``reference_type`` those queued items carry ``None``, which
-        matches no branch of reference resolution and is dropped silently: a
-        non-existent id validates clean, ``references: []``, no error. That is
-        a referential-integrity guarantee that holds for single references but
-        not array references — the "guardrail that works sometimes" failure.
-
-        Requiring ``reference_type`` here closes it at authoring time. It
-        mirrors the single ``type='reference'`` contract, which already fails
-        loudly on a missing ``reference_type`` at document validation. The
-        guard runs at create and update, so a template that predates it is
-        grandfathered as stored until its next write.
-        """
-        if (
-            self.array_item_type == FieldType.REFERENCE
-            and self.reference_type is None
-        ):
-            raise ValueError(
-                f"reference_type is required for field '{self.name}': an array "
-                "of references (array_item_type='reference') must declare which "
-                "entity type it references, otherwise its items are never "
-                "existence-checked (CASE-550)"
-            )
-        return self
+    # Field-shape authoring invariants (a nested template_ref must pin a
+    # version — CASE-493; an array of references must declare reference_type —
+    # CASE-550) are NOT enforced here. A @model_validator on this class runs on
+    # Beanie hydration of stored Template docs too, which retroactively breaks
+    # reads of templates written before the guard existed (CASE-627/629). The
+    # checks live at the write seam instead:
+    # TemplateService.validate_fields_for_write, called from create/bulk/update.
+    # This model stays permissive so any legally-stored shape always hydrates.

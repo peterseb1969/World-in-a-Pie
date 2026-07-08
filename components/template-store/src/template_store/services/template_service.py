@@ -239,6 +239,57 @@ class TemplateService:
                 "Append-only templates (empty identity_fields) are versioned:true."
             )
 
+    @staticmethod
+    def validate_fields_for_write(fields: list[FieldDefinition]) -> None:
+        """Enforce field-shape authoring invariants at the write seam (CASE-629).
+
+        These checks used to be pydantic @model_validators on FieldDefinition.
+        FieldDefinition is embedded in the Beanie Template document, so Beanie
+        re-ran them on hydration (model_validate of the stored Mongo dict) — a
+        template legally written before a guard existed became unreadable the
+        moment the guard shipped (read endpoints 500 on the stored shape). A
+        write-time authoring rule must not live on the shared persistence
+        model. Enforced here instead: called explicitly from create/bulk/update
+        (never on hydration), so stored history always reconstructs while
+        new/updated definitions are still rejected. Same shape as
+        _validate_versioned_requires_identity (CASE-478); purely declarative,
+        no DB calls. Draft creation runs this too, so a draft can never reach
+        activation carrying a shape these forbid — no separate activation seam
+        is needed.
+
+        Raises ValueError on the first offending field.
+        """
+        for f in fields:
+            # A nested template reference must pin an explicit version: schema
+            # refs never resolve to "latest", so a parent validated against a
+            # floating nested schema strands when that schema ships an
+            # incompatible version (CASE-493).
+            if f.template_ref and f.template_ref_version is None:
+                raise ValueError(
+                    f"template_ref_version is required for field '{f.name}': a "
+                    "nested template reference must pin an explicit version (CASE-493)"
+                )
+            if f.array_template_ref and f.array_template_ref_version is None:
+                raise ValueError(
+                    f"array_template_ref_version is required for field '{f.name}': "
+                    "an array-item template reference must pin an explicit version "
+                    "(CASE-493)"
+                )
+            # An array of references must declare what it references. Without it,
+            # each item is queued for resolution carrying reference_type=None,
+            # matches no resolution branch, and is dropped silently — a bogus id
+            # validates clean with references:[] (CASE-550).
+            if (
+                f.array_item_type == FieldType.REFERENCE
+                and f.reference_type is None
+            ):
+                raise ValueError(
+                    f"reference_type is required for field '{f.name}': an array "
+                    "of references (array_item_type='reference') must declare which "
+                    "entity type it references, otherwise its items are never "
+                    "existence-checked (CASE-550)"
+                )
+
     # =========================================================================
     # TEMPLATE CRUD OPERATIONS
     # =========================================================================
@@ -294,6 +345,7 @@ class TemplateService:
         TemplateService._validate_versioned_requires_identity(
             request.versioned, request.identity_fields
         )
+        TemplateService.validate_fields_for_write(request.fields)
 
         # Check if value already exists within namespace — skip in restore mode
         # (restoring version 2+ of a template will find version 1 already present)
@@ -1164,6 +1216,7 @@ class TemplateService:
         TemplateService._validate_versioned_requires_identity(
             original.versioned, new_identity_fields
         )
+        TemplateService.validate_fields_for_write(new_fields)
 
         # Stable ID: reuse original template_id (no Registry call for updates)
         # Create new template document for this version. usage,
