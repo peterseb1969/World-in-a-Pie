@@ -157,3 +157,45 @@ class TestPerNamespaceSchemas:
         # clinic_a did not get a terms table, clinic_b did not get terminologies.
         assert not await _table_in_schema(pg_pool, "clinic_a", "terms")
         assert not await _table_in_schema(pg_pool, "clinic_b", "terminologies")
+
+
+@requires_postgres
+class TestZeroDocumentMaterialization:
+    """CASE-636 — a batch sync over a zero-document template creates the empty
+    table (real DDL): a freshly bootstrapped namespace must be SQL-queryable,
+    not fail with relation-does-not-exist until its first document."""
+
+    @pytest_asyncio.fixture(autouse=True)
+    async def _init_bookkeeping(self, pg_pool):
+        await init_postgres_schema(pg_pool)
+
+    async def test_batch_sync_zero_docs_creates_empty_table(self, pg_pool):
+        from unittest.mock import AsyncMock
+
+        from reporting_sync.batch_sync import BatchSyncJob, BatchSyncService, BatchSyncStatus
+
+        svc = BatchSyncService(pg_pool)
+        svc._fetch_template_by_value = AsyncMock(
+            return_value={
+                "template_id": "TPL-VAL-1",
+                "value": "val_template",
+                "namespace": "wip-val",
+                "version": 1,
+                "fields": [{"name": "name", "type": "string"}],
+                "identity_fields": ["name"],
+                "reporting": {"sync_enabled": True},
+            }
+        )
+        svc._fetch_documents = AsyncMock(return_value=([], 0))
+
+        job = BatchSyncJob(
+            job_id="t636", template_value="val_template", status=BatchSyncStatus.PENDING
+        )
+        await svc._run_batch_sync(job, force=False, page_size=100)
+
+        assert job.status == BatchSyncStatus.COMPLETED
+        assert await _table_in_schema(pg_pool, "wip-val", "doc_val_template")
+        # And it is actually queryable — empty result, not an error.
+        async with pg_pool.acquire() as conn:
+            count = await conn.fetchval('SELECT COUNT(*) FROM "wip-val"."doc_val_template"')
+        assert count == 0

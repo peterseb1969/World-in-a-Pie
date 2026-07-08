@@ -569,6 +569,47 @@ class TestBatchSyncRelations:
 
 
 # =========================================================================
+# _run_batch_sync — zero-document materialization (CASE-636)
+# =========================================================================
+
+
+class TestBatchSyncZeroDocuments:
+    """A batch sync over a template with zero documents must still create the
+    (empty) table in the template's own namespace: a freshly bootstrapped
+    namespace has to be SQL-queryable — 'no rows yet' is an empty table, not
+    relation-does-not-exist."""
+
+    @pytest.mark.asyncio
+    async def test_zero_documents_still_ensures_template_namespace_table(self, service):
+        from reporting_sync.batch_sync import BatchSyncJob, BatchSyncStatus
+
+        service.schema_manager.ensure_table_for_template = AsyncMock(
+            return_value='"wip-val"."doc_val_template"'
+        )
+        service._fetch_template_by_value = AsyncMock(
+            return_value={
+                "template_id": "TPL-001",
+                "value": "VAL_TEMPLATE",
+                "namespace": "wip-val",
+                "fields": [{"name": "name", "type": "string"}],
+            }
+        )
+        service._fetch_documents = AsyncMock(return_value=([], 0))
+
+        job = BatchSyncJob(
+            job_id="t636", template_value="VAL_TEMPLATE", status=BatchSyncStatus.PENDING
+        )
+        await service._run_batch_sync(job, force=False, page_size=100)
+
+        assert job.status == BatchSyncStatus.COMPLETED
+        assert job.total_documents == 0
+        service.schema_manager.ensure_table_for_template.assert_awaited_once()
+        ns_arg, template_arg = service.schema_manager.ensure_table_for_template.call_args.args
+        assert ns_arg == "wip-val"
+        assert template_arg["value"] == "VAL_TEMPLATE"
+
+
+# =========================================================================
 # _initial_metadata_sync (startup backfill)
 # =========================================================================
 

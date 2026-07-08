@@ -258,6 +258,16 @@ class BatchSyncService:
             # and a rebuild runs with force in practice.
             ns_tables: dict[str, str] = {}
 
+            # Eagerly ensure the table in the template's own namespace even
+            # when there are zero documents: a freshly bootstrapped namespace
+            # (templates, no docs yet) must be SQL-queryable — "no rows yet"
+            # is an empty table, not relation-does-not-exist. Documents from
+            # other namespaces still materialise their tables lazily below.
+            tpl_ns = template.get("namespace") or "wip"
+            tpl_table = await self.schema_manager.ensure_table_for_template(tpl_ns, template)
+            if tpl_table:
+                ns_tables[tpl_ns] = tpl_table
+
             template_id = template["template_id"]
             transformer = DocumentTransformer(config)
             strategy = config.sync_strategy.value
@@ -269,7 +279,10 @@ class BatchSyncService:
             if total == 0:
                 job.status = BatchSyncStatus.COMPLETED
                 job.completed_at = datetime.now(UTC)
-                logger.info(f"No documents to sync for {job.template_value}")
+                logger.info(
+                    f"No documents to sync for {job.template_value} "
+                    f"(table {tpl_table} ensured empty)"
+                )
                 return
 
             logger.info(f"Starting batch sync for {job.template_value}: {total} documents")

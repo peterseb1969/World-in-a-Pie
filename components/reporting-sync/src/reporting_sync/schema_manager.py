@@ -848,7 +848,8 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
             template: Full template definition from Template Store
 
         Returns:
-            Table name (bare, within the namespace schema)
+            The schema-qualified table reference ('"<ns>"."doc_<value>"'),
+            or "" when the template's reporting config disables sync.
         """
         template_value = template["value"]
         template_version = template.get("version", 1)
