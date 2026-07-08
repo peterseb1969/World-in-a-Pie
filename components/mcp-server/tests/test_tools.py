@@ -432,8 +432,9 @@ async def test_create_edge_type_explicit_identity_fields_preserved():
     mock.default_namespace = None
     mock.create_template.return_value = {"template_id": "T", "version": 1}
 
-    fields = _edge_type_fields() + [
-        {"name": "role", "label": "Role", "type": "string"}
+    fields = [
+        *_edge_type_fields(),
+        {"name": "role", "label": "Role", "type": "string"},
     ]
 
     with patch("wip_mcp.server.get_client", return_value=mock):
@@ -616,3 +617,37 @@ def test_error_without_error_code_keeps_plain_format():
 def test_error_non_bulk_exception():
     """Non-BulkError exceptions keep the generic format."""
     assert _error(ValueError("boom")) == "Error: boom"
+
+
+# =========================================================================
+# get_term_hierarchy: relation_type reaches every direction
+# =========================================================================
+
+from wip_mcp.server import get_term_hierarchy  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_get_term_hierarchy_forwards_relation_type_to_children():
+    """The children branch must forward relation_type — dropping it silently
+    returns is_a-only rows while the caller believes their filter applied."""
+    mock = _mock_client()
+    mock.get_term_children.return_value = []
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await get_term_hierarchy("T-1", direction="children", relation_type="part_of")
+
+    call_kwargs = mock.get_term_children.call_args.kwargs
+    assert call_kwargs["relation_type"] == "part_of"
+
+
+@pytest.mark.asyncio
+async def test_get_term_hierarchy_forwards_relation_type_to_parents():
+    """The parents branch must forward relation_type, same as children."""
+    mock = _mock_client()
+    mock.get_term_parents.return_value = []
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await get_term_hierarchy("T-1", direction="parents", relation_type="part_of")
+
+    call_kwargs = mock.get_term_parents.call_args.kwargs
+    assert call_kwargs["relation_type"] == "part_of"

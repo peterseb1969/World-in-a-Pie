@@ -571,6 +571,89 @@ class TestParentsChildren:
         parent_ids = {r["target_term_id"] for r in data}
         assert parent_ids == {p1, p2}
 
+    @pytest.mark.asyncio
+    async def test_children_relation_type_filter(self, client, auth_headers):
+        """relation_type selects which incoming relations count as children."""
+        tid = await create_terminology(client, auth_headers)
+        whole = await create_term(client, auth_headers, tid, "Whole")
+        isa_child = await create_term(client, auth_headers, tid, "IsaChild")
+        part = await create_term(client, auth_headers, tid, "Part")
+        await create_relation(client, auth_headers, isa_child, whole, "is_a")
+        await create_relation(client, auth_headers, part, whole, "part_of")
+
+        resp = await client.get(
+            f"{API}/ontology/terms/{whole}/children",
+            headers=auth_headers,
+            params={"namespace": "wip", "relation_type": "part_of"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["source_term_id"] == part
+        assert data[0]["relation_type"] == "part_of"
+
+        # Default remains is_a-only
+        resp = await client.get(
+            f"{API}/ontology/terms/{whole}/children",
+            headers=auth_headers,
+            params={"namespace": "wip"},
+        )
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["source_term_id"] == isa_child
+
+    @pytest.mark.asyncio
+    async def test_parents_relation_type_filter(self, client, auth_headers):
+        """relation_type selects which outgoing relations count as parents."""
+        tid = await create_terminology(client, auth_headers)
+        p1 = await create_term(client, auth_headers, tid, "IsaParent")
+        p2 = await create_term(client, auth_headers, tid, "Container")
+        child = await create_term(client, auth_headers, tid, "Child")
+        await create_relation(client, auth_headers, child, p1, "is_a")
+        await create_relation(client, auth_headers, child, p2, "part_of")
+
+        resp = await client.get(
+            f"{API}/ontology/terms/{child}/parents",
+            headers=auth_headers,
+            params={"namespace": "wip", "relation_type": "part_of"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["target_term_id"] == p2
+        assert data[0]["relation_type"] == "part_of"
+
+    @pytest.mark.asyncio
+    async def test_non_isa_filter_excludes_parent_term_id_rows(self, client, auth_headers):
+        """parent_term_id links are is_a by construction — a non-is_a filter
+        must not surface them as synthetic rows."""
+        tid = await create_terminology(client, auth_headers)
+        whole = await create_term(client, auth_headers, tid, "Whole")
+        via_parent_id = await create_term(
+            client, auth_headers, tid, "ViaParentId", parent_term_id=whole,
+        )
+        part = await create_term(client, auth_headers, tid, "Part")
+        await create_relation(client, auth_headers, part, whole, "part_of")
+
+        resp = await client.get(
+            f"{API}/ontology/terms/{whole}/children",
+            headers=auth_headers,
+            params={"namespace": "wip", "relation_type": "part_of"},
+        )
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["source_term_id"] == part
+
+        # And the is_a default still surfaces the parent_term_id child
+        resp = await client.get(
+            f"{API}/ontology/terms/{whole}/children",
+            headers=auth_headers,
+            params={"namespace": "wip"},
+        )
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["source_term_id"] == via_parent_id
+
 
 class TestRelationPagination:
     """Tests for pagination on relation list endpoints."""

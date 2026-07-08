@@ -244,19 +244,21 @@ async def get_descendants(
 )
 async def get_parents(
     term_id: str,
+    relation_type: str = Query("is_a", description="Relation type to follow"),
     namespace: str = Query(..., description="Namespace"),
     identity: UserIdentity = Depends(require_api_key),
 ) -> list[TermRelationResponse]:
     """
     Get immediate parents of a term (non-transitive).
 
-    Combines is_a relations and parent_term_id.
+    Follows outgoing relations of the given type. For is_a, also includes
+    the parent_term_id link (backward compatibility).
     """
     await check_namespace_permission(identity, namespace, "read")
 
     term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
-    return await OntologyService.get_parents(term_id, namespace)
+    return await OntologyService.get_parents(term_id, namespace, relation_type=relation_type)
 
 
 @router.get(
@@ -266,16 +268,18 @@ async def get_parents(
 )
 async def get_children(
     term_id: str,
+    relation_type: str = Query("is_a", description="Relation type to follow"),
     namespace: str = Query(..., description="Namespace"),
     identity: UserIdentity = Depends(require_api_key),
 ) -> list[TermRelationResponse]:
     """
     Get immediate children of a term (non-transitive).
 
-    Combines incoming is_a relations and children via parent_term_id.
+    Follows incoming relations of the given type. For is_a, also includes
+    children linked via parent_term_id (backward compatibility).
     """
     await check_namespace_permission(identity, namespace, "read")
 
     term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
-    return await OntologyService.get_children(term_id, namespace)
+    return await OntologyService.get_children(term_id, namespace, relation_type=relation_type)

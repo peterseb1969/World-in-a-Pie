@@ -693,19 +693,27 @@ class WipClient:
     # Def-Store: Ontology
     # ========================================================
 
-    async def get_term_children(self, term_id: str, namespace: str | None = None) -> list[dict]:
+    async def get_term_children(
+        self, term_id: str, relation_type: str | None = None,
+        namespace: str | None = None,
+    ) -> list[dict]:
         # Ontology endpoints return a bare JSON array; _get is typed dict, so
         # cast to the real shape.
         return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/children",
+            relation_type=relation_type,
             namespace=namespace,
         ))
 
-    async def get_term_parents(self, term_id: str, namespace: str | None = None) -> list[dict]:
+    async def get_term_parents(
+        self, term_id: str, relation_type: str | None = None,
+        namespace: str | None = None,
+    ) -> list[dict]:
         return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/parents",
+            relation_type=relation_type,
             namespace=namespace,
         ))
 

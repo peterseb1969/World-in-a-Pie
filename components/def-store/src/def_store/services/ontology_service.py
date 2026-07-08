@@ -458,16 +458,21 @@ class OntologyService:
     async def get_parents(
         term_id: str,
         namespace: str,
+        relation_type: str = "is_a",
     ) -> list[TermRelationResponse]:
-        """Direct parents only: outgoing is_a relations + parent_term_id."""
+        """Direct parents only: outgoing relations of the given type.
+
+        Synthetic rows from a term's parent_term_id (backward compatibility
+        with simple hierarchical terminologies) are is_a by construction, so
+        they are included only when is_a relations were requested.
+        """
         results: list[TermRelationResponse] = []
         seen_targets: set[str] = set()
 
-        # From TermRelation (is_a outgoing)
         rels = await TermRelation.find({
             "namespace": namespace,
             "source_term_id": term_id,
-            "relation_type": "is_a",
+            "relation_type": relation_type,
             "status": "active",
         }).to_list()
 
@@ -475,19 +480,19 @@ class OntologyService:
             results.append(OntologyService._to_term_relation_response(r))
             seen_targets.add(r.target_term_id)
 
-        # From parent_term_id (backward compatibility)
-        term = await Term.find_one({"namespace": namespace, "term_id": term_id})
-        if term and term.parent_term_id and term.parent_term_id not in seen_targets:
-            results.append(TermRelationResponse(
-                namespace=namespace,
-                source_term_id=term_id,
-                target_term_id=term.parent_term_id,
-                relation_type="is_a",
-                relation_value="is_a (parent_term_id)",
-                source_terminology_id=term.terminology_id,
-                status="active",
-                created_at=term.created_at,
-            ))
+        if relation_type == "is_a":
+            term = await Term.find_one({"namespace": namespace, "term_id": term_id})
+            if term and term.parent_term_id and term.parent_term_id not in seen_targets:
+                results.append(TermRelationResponse(
+                    namespace=namespace,
+                    source_term_id=term_id,
+                    target_term_id=term.parent_term_id,
+                    relation_type="is_a",
+                    relation_value="is_a (parent_term_id)",
+                    source_terminology_id=term.terminology_id,
+                    status="active",
+                    created_at=term.created_at,
+                ))
 
         return results
 
@@ -495,16 +500,22 @@ class OntologyService:
     async def get_children(
         term_id: str,
         namespace: str,
+        relation_type: str = "is_a",
     ) -> list[TermRelationResponse]:
-        """Direct children only: incoming is_a relations + children via parent_term_id."""
+        """Direct children only: incoming relations of the given type.
+
+        Synthetic rows from child terms' parent_term_id (backward
+        compatibility with simple hierarchical terminologies) are is_a by
+        construction, so they are included only when is_a relations were
+        requested.
+        """
         results: list[TermRelationResponse] = []
         seen_sources: set[str] = set()
 
-        # From TermRelation (is_a incoming)
         rels = await TermRelation.find({
             "namespace": namespace,
             "target_term_id": term_id,
-            "relation_type": "is_a",
+            "relation_type": relation_type,
             "status": "active",
         }).to_list()
 
@@ -512,25 +523,25 @@ class OntologyService:
             results.append(OntologyService._to_term_relation_response(r))
             seen_sources.add(r.source_term_id)
 
-        # From parent_term_id (backward compatibility)
-        children = await Term.find({
-            "namespace": namespace,
-            "parent_term_id": term_id,
-            "status": "active",
-        }).to_list()
+        if relation_type == "is_a":
+            children = await Term.find({
+                "namespace": namespace,
+                "parent_term_id": term_id,
+                "status": "active",
+            }).to_list()
 
-        for child in children:
-            if child.term_id not in seen_sources:
-                results.append(TermRelationResponse(
-                    namespace=namespace,
-                    source_term_id=child.term_id,
-                    target_term_id=term_id,
-                    relation_type="is_a",
-                    relation_value="is_a (parent_term_id)",
-                    source_terminology_id=child.terminology_id,
-                    status="active",
-                    created_at=child.created_at,
-                ))
+            for child in children:
+                if child.term_id not in seen_sources:
+                    results.append(TermRelationResponse(
+                        namespace=namespace,
+                        source_term_id=child.term_id,
+                        target_term_id=term_id,
+                        relation_type="is_a",
+                        relation_value="is_a (parent_term_id)",
+                        source_terminology_id=child.terminology_id,
+                        status="active",
+                        created_at=child.created_at,
+                    ))
 
         return results
 

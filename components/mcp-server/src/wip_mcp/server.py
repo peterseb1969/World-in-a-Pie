@@ -1720,16 +1720,23 @@ async def get_term_hierarchy(
     Args:
         term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
         direction: One of 'children', 'parents', 'ancestors', 'descendants'.
-        relation_type: Filter by type (is_a, part_of, has_part, etc.). None = all.
-        max_depth: Max traversal depth for ancestors/descendants.
+        relation_type: Relation type to follow (is_a, part_of, has_part, etc.).
+            Defaults to is_a. Exactly one type is followed per call — there is
+            no 'all types' mode; use list_term_relations for unfiltered relations.
+        max_depth: Max traversal depth, for ancestors/descendants only.
+            children/parents are direct neighbors (always depth 1).
         namespace: Namespace to query in. Omit to use server default.
     """
     try:
         client = get_client()
         if direction == "children":
-            data = await client.get_term_children(term_id, namespace=namespace)
+            data = await client.get_term_children(
+                term_id, relation_type=relation_type, namespace=namespace,
+            )
         elif direction == "parents":
-            data = await client.get_term_parents(term_id, namespace=namespace)
+            data = await client.get_term_parents(
+                term_id, relation_type=relation_type, namespace=namespace,
+            )
         elif direction == "ancestors":
             data = await client.get_term_ancestors(
                 term_id,
