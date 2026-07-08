@@ -1,6 +1,8 @@
 """Search API endpoints."""
 
 
+import logging
+
 from fastapi import APIRouter, Body, Depends
 
 from wip_auth import UserIdentity
@@ -15,6 +17,8 @@ from ..models.api_models import (
 from ..models.entry import RegistryEntry
 from ..services.auth import require_api_key
 from ..services.search import SearchService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -64,9 +68,15 @@ async def search_by_fields(
                 total_matches=len(search_results),
             ))
 
-        except Exception:
+        except Exception as e:
+            # Per-item isolation: one bad item must not 500 the whole batch
+            # (bulk-first convention). But the failure has to be visible —
+            # an unlogged empty result makes "search crashed" identical to
+            # "no matches" for both callers and operators.
+            logger.exception("search_by_fields failed for input_index=%d", i)
             results.append(SearchResponse(
-                input_index=i, results=[], total_matches=0,
+                input_index=i, status="error", results=[], total_matches=0,
+                error=str(e),
             ))
 
     return SearchBulkResponse(results=results)
@@ -147,9 +157,12 @@ async def search_by_term(
                 total_matches=total,
             ))
 
-        except Exception:
+        except Exception as e:
+            # Same per-item isolation + visibility contract as search_by_fields.
+            logger.exception("search_by_term failed for input_index=%d", i)
             results.append(SearchResponse(
-                input_index=i, results=[], total_matches=0,
+                input_index=i, status="error", results=[], total_matches=0,
+                error=str(e),
             ))
 
     return SearchBulkResponse(results=results)

@@ -483,11 +483,19 @@ class SearchResult(BaseModel):
 
 
 class SearchResponse(BaseModel):
-    """Response model for a search query."""
+    """Response model for a search query.
+
+    status distinguishes a genuinely empty result set ("ok") from a
+    per-item failure ("error") — without it, a Mongo outage or a bug in
+    the search path is indistinguishable from "0 matches" to every
+    caller. error carries the failure message when status == "error".
+    """
 
     input_index: int
+    status: str = "ok"  # ok, error
     results: list[SearchResult]
     total_matches: int
+    error: str | None = None
 
 
 class SearchBulkResponse(BaseModel):
