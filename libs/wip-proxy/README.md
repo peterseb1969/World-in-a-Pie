@@ -2,6 +2,8 @@
 
 Express middleware for proxying WIP API calls with auth injection and file content streaming.
 
+`express` is a peer dependency: both Express 4 (`^4.17.0`) and Express 5 are supported — the test suite runs against a real install of each major.
+
 ## Usage
 
 ```typescript

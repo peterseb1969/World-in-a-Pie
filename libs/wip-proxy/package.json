@@ -1,6 +1,6 @@
 {
   "name": "@wip/proxy",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "description": "Express middleware for proxying WIP API calls with auth injection and file content streaming",
   "type": "module",
@@ -32,8 +32,9 @@
     "clean": "rm -rf dist"
   },
   "devDependencies": {
-    "@types/express": "^4.17.21",
-    "express": "^4.21.0",
+    "@types/express": "^5.0.0",
+    "express4": "npm:express@^4.21.0",
+    "express5": "npm:express@^5.0.0",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"

@@ -77,7 +77,7 @@ export async function handleApiProxy(
   options: ApiProxyOptions,
 ): Promise<void> {
   // req.url has the path relative to the router mount (includes query string)
-  // For a router.all('/api/def-store/*') handler mounted at '/wip':
+  // For the per-prefix route mounted at '/wip':
   //   request to /wip/api/def-store/terminologies?page=1
   //   → req.url = /api/def-store/terminologies?page=1
   const upstreamPath = applyDefaultNamespace(req.url, options.defaultNamespace)

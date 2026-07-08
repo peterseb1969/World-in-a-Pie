@@ -80,18 +80,31 @@ export function wipProxy(options: WipProxyOptions): Router {
     handleFileContent(req, res, fileOptions)
   })
 
-  // API proxy routes — one handler per service prefix
+  // API proxy routes — one handler per service prefix. Registered as a RegExp
+  // because the two express majors in the peer range disagree on string
+  // wildcard syntax: bare `*` (Express 4 / path-to-regexp 0.1.x) throws at
+  // registration on Express 5 (path-to-regexp 8.x), and the 5-only `/*splat`
+  // form doesn't exist on 4. A RegExp bypasses the string parser on both
+  // majors, and the optional `(/.*)?` tail matches the bare prefix
+  // (e.g. GET /api/def-store) in the same route. Handlers are unaffected:
+  // the upstream path comes from req.url, never from the wildcard capture.
   for (const prefix of WIP_API_PREFIXES) {
-    router.all(`${prefix}/*`, rawBody, (req, res) => {
-      handleApiProxy(req, res, apiOptions)
-    })
-    // Also handle the prefix itself (e.g., GET /api/def-store)
-    router.all(prefix, rawBody, (req, res) => {
+    router.all(prefixPattern(prefix), rawBody, (req, res) => {
       handleApiProxy(req, res, apiOptions)
     })
   }
 
   return router
+}
+
+/**
+ * Anchored match for a service prefix and everything under it:
+ * `/api/def-store`, `/api/def-store/terminologies`, … but NOT
+ * `/api/def-store-evil`. Exported for the route-matching tests.
+ */
+export function prefixPattern(prefix: string): RegExp {
+  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`^${escaped}(/.*)?$`)
 }
 
 /**
