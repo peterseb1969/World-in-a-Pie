@@ -1975,6 +1975,14 @@ interface ReportQueryParams {
     timeout_seconds?: number;
     /** Max rows returned (1-50000, default 1000) */
     max_rows?: number;
+    /**
+     * Namespace whose PostgreSQL schema unqualified table names resolve in.
+     * Each namespace is its own schema (a table is `"<ns>"."doc_<value>"`);
+     * when set, the server runs the query with search_path pointed there, so
+     * `doc_<value>` works unqualified. Omit for cross-namespace queries and
+     * schema-qualify each table in the SQL instead.
+     */
+    namespace?: string;
 }
 interface ReportQueryResult {
     columns: string[];
@@ -2295,10 +2303,18 @@ declare class ReportingSyncService extends BaseService {
     constructor(transport: FetchTransport);
     healthCheck(): Promise<boolean>;
     getSyncStatus(): Promise<SyncStatus>;
-    /** Execute a read-only SQL query against the PostgreSQL reporting database */
+    /**
+     * Execute a read-only SQL query against the PostgreSQL reporting database.
+     *
+     * Reporting tables live in per-namespace PostgreSQL schemas
+     * (`"<ns>"."doc_<value>"`). Pass `namespace` so unqualified table names
+     * resolve in that namespace's schema, or schema-qualify each table in the
+     * SQL for cross-namespace queries.
+     */
     runQuery(sql: string, params?: unknown[], options?: {
         timeout_seconds?: number;
         max_rows?: number;
+        namespace?: string;
     }): Promise<ReportQueryResult>;
     /**
      * Trigger a batch sync for ALL templates with `sync_enabled=true`.

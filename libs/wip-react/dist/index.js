@@ -101,7 +101,10 @@ var wipKeys = {
     integrity: (params) => ["wip", "reporting", "integrity", params],
     activity: (params) => ["wip", "reporting", "activity", params],
     search: (params) => ["wip", "reporting", "search", params],
-    query: (sql, params) => ["wip", "reporting", "query", sql, params],
+    // namespace is part of the key: the same SQL against two namespaces
+    // returns different data (per-namespace PG schemas), so a
+    // namespace-blind key would serve stale cross-namespace cache hits.
+    query: (sql, params, namespace) => ["wip", "reporting", "query", sql, params, namespace],
     syncStatus: () => ["wip", "reporting", "sync-status"],
     batchJobs: () => ["wip", "reporting", "batch-jobs"],
     batchJob: (jobId) => ["wip", "reporting", "batch-jobs", jobId]
@@ -304,12 +307,13 @@ function useRegistrySearch(params, options) {
 var REPORT_QUERY_STALE_TIME = 1e4;
 function useReportQuery(sql, params, options) {
   const client = useWipClient();
-  const { maxRows, timeoutSeconds, ...queryOptions } = options ?? {};
+  const { maxRows, timeoutSeconds, namespace, ...queryOptions } = options ?? {};
   return useQuery({
-    queryKey: wipKeys.reporting.query(sql, params),
+    queryKey: wipKeys.reporting.query(sql, params, namespace),
     queryFn: () => client.reporting.runQuery(sql, params, {
       max_rows: maxRows,
-      timeout_seconds: timeoutSeconds
+      timeout_seconds: timeoutSeconds,
+      namespace
     }),
     staleTime: REPORT_QUERY_STALE_TIME,
     ...queryOptions

@@ -1564,6 +1564,19 @@ describe('Service classes via createWipClient', () => {
       expect(body.params).toEqual([])
       expect(body.timeout_seconds).toBeUndefined()
       expect(body.max_rows).toBeUndefined()
+      expect(body.namespace).toBeUndefined()
+    })
+
+    it('runQuery forwards namespace in the POST body', async () => {
+      mockJsonResponse({ columns: [], rows: [], row_count: 0, truncated: false })
+
+      await client.reporting.runQuery('SELECT * FROM doc_monster', undefined, {
+        namespace: 'dnd-app',
+      })
+
+      const [, options] = fetchMock.mock.calls[0]
+      const body = JSON.parse(options.body)
+      expect(body.namespace).toBe('dnd-app')
     })
 
     it('listTables sends GET without filter', async () => {

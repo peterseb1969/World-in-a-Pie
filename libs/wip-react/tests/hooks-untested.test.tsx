@@ -423,6 +423,7 @@ describe('useReportQuery', () => {
     expect(mockClient.reporting.runQuery).toHaveBeenCalledWith(sql, undefined, {
       max_rows: undefined,
       timeout_seconds: undefined,
+      namespace: undefined,
     })
   })
 
@@ -439,7 +440,32 @@ describe('useReportQuery', () => {
     expect(mockClient.reporting.runQuery).toHaveBeenCalledWith(sql, params, {
       max_rows: 100,
       timeout_seconds: 5,
+      namespace: undefined,
     })
+  })
+
+  it('forwards namespace to runQuery and keys the cache by it', async () => {
+    const { Wrapper } = createWrapper(mockClient)
+    const sql = 'SELECT COUNT(*) FROM doc_x'
+    const { result } = renderHook(
+      () => useReportQuery(sql, undefined, { namespace: 'ns-a' }),
+      { wrapper: Wrapper },
+    )
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(mockClient.reporting.runQuery).toHaveBeenCalledWith(sql, undefined, {
+      max_rows: undefined,
+      timeout_seconds: undefined,
+      namespace: 'ns-a',
+    })
+    // The same SQL against a second namespace must be a distinct cache
+    // entry — namespace is part of the query key.
+    const { result: resultB } = renderHook(
+      () => useReportQuery(sql, undefined, { namespace: 'ns-b' }),
+      { wrapper: Wrapper },
+    )
+    await waitFor(() => expect(resultB.current.isSuccess).toBe(true))
+    expect(mockClient.reporting.runQuery).toHaveBeenCalledTimes(2)
   })
 })
 

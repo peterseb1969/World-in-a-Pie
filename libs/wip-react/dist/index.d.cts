@@ -82,7 +82,7 @@ declare const wipKeys: {
         readonly integrity: (params?: object) => readonly ["wip", "reporting", "integrity", object | undefined];
         readonly activity: (params?: object) => readonly ["wip", "reporting", "activity", object | undefined];
         readonly search: (params?: object) => readonly ["wip", "reporting", "search", object | undefined];
-        readonly query: (sql: string, params?: unknown[]) => readonly ["wip", "reporting", "query", string, unknown[] | undefined];
+        readonly query: (sql: string, params?: unknown[], namespace?: string) => readonly ["wip", "reporting", "query", string, unknown[] | undefined, string | undefined];
         readonly syncStatus: () => readonly ["wip", "reporting", "sync-status"];
         readonly batchJobs: () => readonly ["wip", "reporting", "batch-jobs"];
         readonly batchJob: (jobId: string) => readonly ["wip", "reporting", "batch-jobs", string];
@@ -189,10 +189,21 @@ declare function useRegistrySearch(params: RegistrySearchParams, options?: Omit<
  *   ['BLACKWOOD_MANOR'],
  *   { queryKey: ['cross-refs', 'location', 'BLACKWOOD_MANOR'] }
  * )
+ *
+ * @example
+ * // Unqualified table names resolve in one namespace's PG schema
+ * // (a reporting table is "<ns>"."doc_<value>"); for cross-namespace
+ * // queries omit namespace and schema-qualify each table in the SQL.
+ * const { data } = useReportQuery(
+ *   'SELECT COUNT(*) FROM aa_event',
+ *   undefined,
+ *   { namespace: 'my-app' }
+ * )
  */
 declare function useReportQuery(sql: string, params?: unknown[], options?: Omit<UseQueryOptions<ReportQueryResult>, 'queryFn'> & {
     maxRows?: number;
     timeoutSeconds?: number;
+    namespace?: string;
 }): _tanstack_react_query.UseQueryResult<ReportQueryResult, Error>;
 declare function useIntegrityCheck(params?: {
     template_status?: string;

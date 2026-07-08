@@ -9,6 +9,14 @@ export interface ReportQueryParams {
   timeout_seconds?: number
   /** Max rows returned (1-50000, default 1000) */
   max_rows?: number
+  /**
+   * Namespace whose PostgreSQL schema unqualified table names resolve in.
+   * Each namespace is its own schema (a table is `"<ns>"."doc_<value>"`);
+   * when set, the server runs the query with search_path pointed there, so
+   * `doc_<value>` works unqualified. Omit for cross-namespace queries and
+   * schema-qualify each table in the SQL instead.
+   */
+  namespace?: string
 }
 
 export interface ReportQueryResult {

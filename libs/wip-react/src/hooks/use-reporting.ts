@@ -37,6 +37,16 @@ const REPORT_QUERY_STALE_TIME = 10_000 // 10s — report data is eventually cons
  *   ['BLACKWOOD_MANOR'],
  *   { queryKey: ['cross-refs', 'location', 'BLACKWOOD_MANOR'] }
  * )
+ *
+ * @example
+ * // Unqualified table names resolve in one namespace's PG schema
+ * // (a reporting table is "<ns>"."doc_<value>"); for cross-namespace
+ * // queries omit namespace and schema-qualify each table in the SQL.
+ * const { data } = useReportQuery(
+ *   'SELECT COUNT(*) FROM aa_event',
+ *   undefined,
+ *   { namespace: 'my-app' }
+ * )
  */
 export function useReportQuery(
   sql: string,
@@ -44,15 +54,17 @@ export function useReportQuery(
   options?: Omit<UseQueryOptions<ReportQueryResult>, 'queryFn'> & {
     maxRows?: number
     timeoutSeconds?: number
+    namespace?: string
   },
 ) {
   const client = useWipClient()
-  const { maxRows, timeoutSeconds, ...queryOptions } = options ?? {}
+  const { maxRows, timeoutSeconds, namespace, ...queryOptions } = options ?? {}
   return useQuery<ReportQueryResult>({
-    queryKey: wipKeys.reporting.query(sql, params),
+    queryKey: wipKeys.reporting.query(sql, params, namespace),
     queryFn: () => client.reporting.runQuery(sql, params, {
       max_rows: maxRows,
       timeout_seconds: timeoutSeconds,
+      namespace,
     }),
     staleTime: REPORT_QUERY_STALE_TIME,
     ...queryOptions,

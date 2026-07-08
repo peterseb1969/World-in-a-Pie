@@ -42,11 +42,18 @@ export class ReportingSyncService extends BaseService {
 
   // ── SQL Query Execution ──
 
-  /** Execute a read-only SQL query against the PostgreSQL reporting database */
+  /**
+   * Execute a read-only SQL query against the PostgreSQL reporting database.
+   *
+   * Reporting tables live in per-namespace PostgreSQL schemas
+   * (`"<ns>"."doc_<value>"`). Pass `namespace` so unqualified table names
+   * resolve in that namespace's schema, or schema-qualify each table in the
+   * SQL for cross-namespace queries.
+   */
   async runQuery(
     sql: string,
     params?: unknown[],
-    options?: { timeout_seconds?: number; max_rows?: number },
+    options?: { timeout_seconds?: number; max_rows?: number; namespace?: string },
   ): Promise<ReportQueryResult> {
     const body: ReportQueryParams = {
       sql,
