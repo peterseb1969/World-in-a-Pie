@@ -11,9 +11,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from wip_auth import UserIdentity
 
 from ..models.grant import (
+    GrantBulkResponse,
     GrantCreate,
     GrantResponse,
     GrantRevoke,
+    GrantRevokeBulkResponse,
     MyNamespaceResponse,
     NamespaceGrant,
 )
@@ -233,6 +235,7 @@ async def list_grants(
 
 @router.post(
     "/{prefix}/grants",
+    response_model=GrantBulkResponse,
     summary="Create grants for a namespace (bulk)",
 )
 async def create_grants(
@@ -307,6 +310,7 @@ async def create_grants(
 
 @router.delete(
     "/{prefix}/grants",
+    response_model=GrantRevokeBulkResponse,
     summary="Revoke grants for a namespace (bulk)",
 )
 async def revoke_grants(

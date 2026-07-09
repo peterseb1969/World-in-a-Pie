@@ -11,6 +11,8 @@ from beanie import Document
 from pydantic import BaseModel, Field
 from pymongo import IndexModel
 
+from wip_auth.bulk_models import BulkResponseBase, BulkResultItemBase
+
 
 class NamespaceGrant(Document):
     """A permission grant for a subject on a namespace."""
@@ -71,6 +73,33 @@ class GrantRevoke(BaseModel):
 
     subject: str
     subject_type: Literal["user", "api_key", "group"] = "user"
+
+
+class GrantBulkResultItem(BulkResultItemBase):
+    """Per-item result of a bulk grant create/upsert.
+
+    Inherits the platform-universal envelope key `index` (plus status /
+    error / error_code / details) from the canonical base — the same
+    contract document-store, template-store, and def-store emit.
+    Status values here: created, updated, error.
+    """
+
+    subject: str
+    permission: str | None = None
+
+
+class GrantBulkResponse(BulkResponseBase[GrantBulkResultItem]):
+    """Envelope for the bulk grant-create response."""
+
+
+class GrantRevokeBulkResultItem(BulkResultItemBase):
+    """Per-item result of a bulk grant revoke. Status: revoked, not_found."""
+
+    subject: str
+
+
+class GrantRevokeBulkResponse(BulkResponseBase[GrantRevokeBulkResultItem]):
+    """Envelope for the bulk grant-revoke response."""
 
 
 class GrantResponse(BaseModel):

@@ -258,7 +258,11 @@ class WipClient:
         if result.get("status") == "error":
             raise BulkError(
                 result.get("error", "Unknown error"),
-                index=result.get("index", 0),
+                # "index" is the platform-canonical per-item key (wip_auth
+                # bulk_models); registry's entries/synonyms/search family
+                # spells it "input_index" — accept both so unwrapping works
+                # against every store.
+                index=result.get("index", result.get("input_index", 0)),
                 error_code=result.get("error_code"),
             )
         return result
