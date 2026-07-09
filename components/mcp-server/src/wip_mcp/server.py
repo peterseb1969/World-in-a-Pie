@@ -250,6 +250,15 @@ list or modify a namespace's data, but not to reference its terms.
 
 Reference validation runs at document creation, not template creation.
 
+Relationship (edge) documents are the exception: allowed_external_refs
+governs plain reference fields only. An edge document's source_ref and
+target_ref must resolve within the edge's own namespace — cross-namespace
+edges are rejected with error_code `cross_namespace_relationship`
+regardless of isolation config. To link documents across namespaces, use
+a plain document reference field instead; the trade-off is losing the
+/relationships and /traverse endpoints and the edge reporting columns
+that same-namespace edges get.
+
 ### API Key Namespace Scoping
 Non-privileged API keys MUST have an explicit `namespaces` list. Keys without
 namespace scoping that are not in `wip-admins` or `wip-services` get no access

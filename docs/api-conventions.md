@@ -190,7 +190,7 @@ On `create_document` (or `update_document`) against a `usage: "relationship"` te
 
 | `error_code` (prefix on the error message) | When |
 |---|---|
-| `cross_namespace_relationship` | `source_ref` or `target_ref` resolves to a document in a different namespace than the relationship document. Cross-namespace relationships are deferred to post-v2. |
+| `cross_namespace_relationship` | `source_ref` or `target_ref` resolves to a document in a different namespace than the relationship document. Cross-namespace relationships are deferred to post-v2 — note that `allowed_external_refs` does **not** lift this: it governs plain reference fields only. Model a cross-namespace link as a plain document reference field instead (losing the relationship/traverse endpoints and edge reporting columns). |
 | `archived_relationship_endpoint` | `source_ref` or `target_ref` resolves to a document with `status == "archived"`. Endpoints must be active or inactive. |
 
 These codes are returned as the prefix on the per-item `error` string (not as machine-readable `error_code` fields). Branch on the prefix when the distinction matters.

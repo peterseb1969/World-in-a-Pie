@@ -276,6 +276,8 @@ Edge types version like any other template. A v2 of EXPERIMENT_INPUT can add fie
 
 Source and target must be in the same namespace as the relationship document. Cross-namespace relationships are rejected at write time with `cross_namespace_relationship` error (see Theme 3 in the feature seeds — out of scope for this design).
 
+**Asymmetry with plain reference fields — deliberate, and surprising if undocumented:** a namespace's `allowed_external_refs` (together with the qualified `NS:VALUE` reference form) permits cross-namespace *plain reference fields*, but has **no effect on relationship documents**. Declaring a namespace in `allowed_external_refs` does not make edges into it writable — relationships stay same-namespace regardless of isolation config until the Theme-3 design pass decides cross-namespace edge semantics (does `allowed_external_refs` gate them? how does `/traverse` behave across isolation boundaries? do the edge reporting columns cross namespaces?). Until then, a cross-namespace link is modelled as a plain document reference field on the source document — that works today, at the cost of the `/relationships` + `/traverse` endpoints and the `source_ref_id`/`target_ref_id` reporting columns that same-namespace edges get.
+
 ### Deletion guardrails
 
 Feature seeds Apr-21 Theme on deletion guardrails extends to relationships: if a document has inbound relationship documents pointing at it, hard-delete is blocked (force override accepted). The check is already the right pattern for terms and templates; extending it to documents-as-relationship-targets is additive.
