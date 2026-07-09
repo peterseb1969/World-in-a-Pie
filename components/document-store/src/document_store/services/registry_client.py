@@ -146,7 +146,7 @@ class RegistryClient(RegistryClientBase):
     ) -> list[dict[str, Any]]:
         """Register synonyms for a registry entry.
 
-        Returns the per-item result list (each {input_index, status,
+        Returns the per-item result list (each {index, status,
         registry_id, error}); status is one of added / already_exists /
         target_not_found / error. The bulk envelope is unwrapped here so callers
         can inspect per-synonym outcomes (CASE-434/436) rather than discarding

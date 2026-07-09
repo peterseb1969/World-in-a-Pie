@@ -539,7 +539,11 @@ class DocumentService:
         failures: list[str] = []
         for res in results:
             status = res.get("status")
-            idx = res.get("input_index", 0)
+            # "index" is the platform-canonical per-item key; "input_index"
+            # is the registry family's pre-rename spelling, kept as fallback
+            # so a mixed-version window (new doc-store, old registry) still
+            # maps results back to their inputs.
+            idx = res.get("index", res.get("input_index", 0))
             syn = synonyms[idx] if isinstance(idx, int) and 0 <= idx < len(synonyms) else {}
             if status == "added":
                 added.append(syn)

@@ -24,9 +24,9 @@ async def test_found_entries_map_to_namespaces(httpx_mock):
         url=f"{BASE}/api/registry/entries/lookup/by-id",
         json={
             "results": [
-                {"input_index": 0, "status": "found", "entry_id": "id-a", "namespace": "ns-a"},
-                {"input_index": 1, "status": "not_found"},
-                {"input_index": 2, "status": "found", "entry_id": "id-c", "namespace": "ns-c"},
+                {"index": 0, "status": "found", "entry_id": "id-a", "namespace": "ns-a"},
+                {"index": 1, "status": "not_found"},
+                {"index": 2, "status": "found", "entry_id": "id-c", "namespace": "ns-c"},
             ]
         },
     )

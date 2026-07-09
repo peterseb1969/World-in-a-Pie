@@ -63,7 +63,7 @@ async def search_by_fields(
                 ))
 
             results.append(SearchResponse(
-                input_index=i,
+                index=i,
                 results=search_results,
                 total_matches=len(search_results),
             ))
@@ -73,9 +73,9 @@ async def search_by_fields(
             # (bulk-first convention). But the failure has to be visible —
             # an unlogged empty result makes "search crashed" identical to
             # "no matches" for both callers and operators.
-            logger.exception("search_by_fields failed for input_index=%d", i)
+            logger.exception("search_by_fields failed for index=%d", i)
             results.append(SearchResponse(
-                input_index=i, status="error", results=[], total_matches=0,
+                index=i, status="error", results=[], total_matches=0,
                 error=str(e),
             ))
 
@@ -152,16 +152,16 @@ async def search_by_term(
                 ))
 
             results.append(SearchResponse(
-                input_index=i,
+                index=i,
                 results=search_results,
                 total_matches=total,
             ))
 
         except Exception as e:
             # Same per-item isolation + visibility contract as search_by_fields.
-            logger.exception("search_by_term failed for input_index=%d", i)
+            logger.exception("search_by_term failed for index=%d", i)
             results.append(SearchResponse(
-                input_index=i, status="error", results=[], total_matches=0,
+                index=i, status="error", results=[], total_matches=0,
                 error=str(e),
             ))
 

@@ -152,7 +152,7 @@ class RegisterKeyItem(StrictModel):
 class RegisterKeyResponse(BaseModel):
     """Response model for a registration operation."""
 
-    input_index: int
+    index: int
     status: str  # created, already_exists, error
     registry_id: str | None = None
     namespace: str | None = None
@@ -221,7 +221,7 @@ class ReserveItem(StrictModel):
 class ReserveItemResponse(BaseModel):
     """Response for a single reserve operation."""
 
-    input_index: int
+    index: int
     status: str  # reserved, already_exists, invalid_format, error
     entry_id: str | None = None
     error: str | None = None
@@ -249,7 +249,7 @@ class ActivateItem(StrictModel):
 class ActivateItemResponse(BaseModel):
     """Response for a single activate operation."""
 
-    input_index: int
+    index: int
     status: str  # activated, not_found, already_active, error
     entry_id: str | None = None
     error: str | None = None
@@ -282,7 +282,7 @@ class AddSynonymItem(StrictModel):
 class AddSynonymResponse(BaseModel):
     """Response model for adding a synonym."""
 
-    input_index: int
+    index: int
     status: str  # added, already_exists, target_not_found, error
     registry_id: str | None = None
     error: str | None = None
@@ -301,7 +301,7 @@ class RemoveSynonymItem(StrictModel):
 class RemoveSynonymResponse(BaseModel):
     """Response model for removing a synonym."""
 
-    input_index: int
+    index: int
     status: str  # removed, not_found, error
     registry_id: str | None = None
     error: str | None = None
@@ -322,7 +322,7 @@ class MergeItem(StrictModel):
 class MergeResponse(BaseModel):
     """Response model for a merge operation."""
 
-    input_index: int
+    index: int
     status: str  # merged, preferred_not_found, deprecated_not_found, error
     preferred_id: str | None = None
     deprecated_id: str | None = None
@@ -355,7 +355,7 @@ class LookupByKeyItem(StrictModel):
 class LookupResponse(BaseModel):
     """Response model for lookups."""
 
-    input_index: int
+    index: int
     status: str  # found, not_found, error
 
     entry_id: str | None = None
@@ -410,7 +410,7 @@ class ResolveItem(StrictModel):
 class ResolveResponse(BaseModel):
     """Response model for a single resolve result."""
 
-    input_index: int
+    index: int
     status: str  # found, not_found, error
     composite_key: dict[str, Any] | None = None
     entry_id: str | None = None
@@ -491,7 +491,7 @@ class SearchResponse(BaseModel):
     caller. error carries the failure message when status == "error".
     """
 
-    input_index: int
+    index: int
     status: str = "ok"  # ok, error
     results: list[SearchResult]
     total_matches: int
@@ -520,7 +520,7 @@ class UpdateEntryItem(StrictModel):
 class UpdateEntryResponse(BaseModel):
     """Response model for an update operation."""
 
-    input_index: int
+    index: int
     status: str  # updated, not_found, error
     registry_id: str | None = None
     error: str | None = None
@@ -553,7 +553,7 @@ class DeleteItem(StrictModel):
 class DeleteResponse(BaseModel):
     """Response model for a delete operation."""
 
-    input_index: int
+    index: int
     status: str  # deactivated, deleted, not_found, error
     registry_id: str | None = None
     error: str | None = None

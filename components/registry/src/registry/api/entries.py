@@ -59,7 +59,7 @@ router = APIRouter()
 
 
 def build_lookup_response(
-    input_index: int,
+    index: int,
     entry: RegistryEntry | None,
     status: str = "found",
     matched_namespace: str | None = None,
@@ -72,13 +72,13 @@ def build_lookup_response(
     """Build a standardized lookup response."""
     if entry is None:
         return LookupResponse(
-            input_index=input_index,
+            index=index,
             status=status,
             error=error
         )
 
     return LookupResponse(
-        input_index=input_index,
+        index=index,
         status=status,
         entry_id=entry.entry_id,
         namespace=entry.namespace,
@@ -437,7 +437,7 @@ async def register_keys(
             # Validate entity_type
             if item.entity_type not in VALID_ENTITY_TYPES:
                 results[i] = RegisterKeyResponse(
-                    input_index=i,
+                    index=i,
                     status="error",
                     error=f"Invalid entity_type: {item.entity_type}"
                 )
@@ -447,7 +447,7 @@ async def register_keys(
             # Validate namespace exists
             if item.namespace in invalid_namespaces:
                 results[i] = RegisterKeyResponse(
-                    input_index=i,
+                    index=i,
                     status="error",
                     error=f"Namespace '{item.namespace}' does not exist or is not active"
                 )
@@ -459,7 +459,7 @@ async def register_keys(
             if item.entry_id and item.entry_id in existing_by_entry_id:
                 existing = existing_by_entry_id[item.entry_id]
                 results[i] = RegisterKeyResponse(
-                    input_index=i,
+                    index=i,
                     status="error",
                     error=(
                         f"entry_id '{item.entry_id}' already exists "
@@ -480,7 +480,7 @@ async def register_keys(
                 )
                 if existing:
                     results[i] = RegisterKeyResponse(
-                        input_index=i,
+                        index=i,
                         status="already_exists",
                         registry_id=existing.entry_id,
                         namespace=existing.namespace,
@@ -496,7 +496,7 @@ async def register_keys(
                 if batch_key in seen_in_batch:
                     first_entry_id = seen_in_batch[batch_key]
                     results[i] = RegisterKeyResponse(
-                        input_index=i,
+                        index=i,
                         status="already_exists",
                         registry_id=first_entry_id,
                         namespace=item.namespace,
@@ -548,7 +548,7 @@ async def register_keys(
 
         except Exception as e:
             results[i] = RegisterKeyResponse(
-                input_index=i,
+                index=i,
                 status="error",
                 error=str(e)
             )
@@ -565,7 +565,7 @@ async def register_keys(
                 # primary uniqueness is already guaranteed by the unique index.
                 await claim_entry_keys(entry)
                 results[idx] = RegisterKeyResponse(
-                    input_index=idx,
+                    index=idx,
                     status="created",
                     registry_id=entry.entry_id,
                     namespace=entry.namespace,
@@ -577,7 +577,7 @@ async def register_keys(
             for _pos, idx in enumerate(insert_indices):
                 if results[idx] is None:
                     results[idx] = RegisterKeyResponse(
-                        input_index=idx,
+                        index=idx,
                         status="error",
                         error=f"Batch insert failed: {e!s}"
                     )
@@ -679,7 +679,7 @@ async def reserve_ids(
         try:
             if item.entity_type not in VALID_ENTITY_TYPES:
                 results.append(ReserveItemResponse(
-                    input_index=i, status="error",
+                    index=i, status="error",
                     error=f"Invalid entity_type: {item.entity_type}"
                 ))
                 error_count += 1
@@ -689,7 +689,7 @@ async def reserve_ids(
             existing = await RegistryEntry.find_one({"entry_id": item.entry_id})
             if existing:
                 results.append(ReserveItemResponse(
-                    input_index=i, status="already_exists", entry_id=item.entry_id
+                    index=i, status="already_exists", entry_id=item.entry_id
                 ))
                 error_count += 1
                 continue
@@ -698,7 +698,7 @@ async def reserve_ids(
             ns = await Namespace.find_one({"prefix": item.namespace, "status": "active"})
             if not ns:
                 results.append(ReserveItemResponse(
-                    input_index=i, status="error", entry_id=item.entry_id,
+                    index=i, status="error", entry_id=item.entry_id,
                     error=f"Namespace '{item.namespace}' does not exist or is not active"
                 ))
                 error_count += 1
@@ -708,7 +708,7 @@ async def reserve_ids(
             config = ns.get_id_algorithm(item.entity_type)
             if not IdFormatValidator.validate(item.entry_id, config):
                 results.append(ReserveItemResponse(
-                    input_index=i, status="invalid_format", entry_id=item.entry_id,
+                    index=i, status="invalid_format", entry_id=item.entry_id,
                     error=f"ID does not match configured format for {item.entity_type}"
                 ))
                 error_count += 1
@@ -733,7 +733,7 @@ async def reserve_ids(
 
         except Exception as e:
             results.append(ReserveItemResponse(
-                input_index=i, status="error", error=str(e)
+                index=i, status="error", error=str(e)
             ))
             error_count += 1
 
@@ -744,14 +744,14 @@ async def reserve_ids(
                 entry = entries_to_insert[pos]
                 await claim_entry_keys(entry)  # CASE-427
                 results[idx] = ReserveItemResponse(
-                    input_index=idx, status="reserved", entry_id=entry.entry_id
+                    index=idx, status="reserved", entry_id=entry.entry_id
                 )
                 reserved_count += 1
         except Exception as e:
             for _pos, idx in enumerate(insert_indices):
                 if results[idx] is None:
                     results[idx] = ReserveItemResponse(
-                        input_index=idx, status="error",
+                        index=idx, status="error",
                         error=f"Batch insert failed: {e!s}"
                     )
                     error_count += 1
@@ -784,20 +784,20 @@ async def activate_entries(
 
             if not entry:
                 results.append(ActivateItemResponse(
-                    input_index=i, status="not_found", entry_id=item.entry_id
+                    index=i, status="not_found", entry_id=item.entry_id
                 ))
                 error_count += 1
                 continue
 
             if entry.status == "active":
                 results.append(ActivateItemResponse(
-                    input_index=i, status="already_active", entry_id=item.entry_id
+                    index=i, status="already_active", entry_id=item.entry_id
                 ))
                 continue
 
             if entry.status != "reserved":
                 results.append(ActivateItemResponse(
-                    input_index=i, status="error", entry_id=item.entry_id,
+                    index=i, status="error", entry_id=item.entry_id,
                     error=f"Cannot activate entry with status '{entry.status}'"
                 ))
                 error_count += 1
@@ -808,13 +808,13 @@ async def activate_entries(
             await entry.save()
 
             results.append(ActivateItemResponse(
-                input_index=i, status="activated", entry_id=item.entry_id
+                index=i, status="activated", entry_id=item.entry_id
             ))
             activated_count += 1
 
         except Exception as e:
             results.append(ActivateItemResponse(
-                input_index=i, status="error", entry_id=item.entry_id, error=str(e)
+                index=i, status="error", entry_id=item.entry_id, error=str(e)
             ))
             error_count += 1
 
@@ -868,7 +868,7 @@ async def lookup_by_ids(
                         matched_via = "composite_key_value"
 
                 if not entry:
-                    results.append(LookupResponse(input_index=i, status="not_found"))
+                    results.append(LookupResponse(index=i, status="not_found"))
                     not_found_count += 1
                     continue
 
@@ -883,13 +883,13 @@ async def lookup_by_ids(
                         source_data = {"error": f"Failed to fetch: {e!s}"}
 
                 results.append(build_lookup_response(
-                    input_index=i, entry=entry,
+                    index=i, entry=entry,
                     matched_via=matched_via, source_data=source_data
                 ))
                 found_count += 1
 
             except Exception as e:
-                results.append(LookupResponse(input_index=i, status="error", error=str(e)))
+                results.append(LookupResponse(index=i, status="error", error=str(e)))
                 error_count += 1
 
     return LookupBulkResponse(
@@ -962,7 +962,7 @@ async def lookup_by_keys(
                 entry = matches[0] if matches else None
 
                 if not entry:
-                    results.append(LookupResponse(input_index=i, status="not_found"))
+                    results.append(LookupResponse(index=i, status="not_found"))
                     not_found_count += 1
                     continue
 
@@ -987,7 +987,7 @@ async def lookup_by_keys(
                         source_data = {"error": f"Failed to fetch: {e!s}"}
 
                 results.append(build_lookup_response(
-                    input_index=i, entry=entry,
+                    index=i, entry=entry,
                     matched_namespace=matched_namespace,
                     matched_entity_type=matched_entity_type,
                     matched_composite_key=matched_composite_key,
@@ -996,7 +996,7 @@ async def lookup_by_keys(
                 found_count += 1
 
             except Exception as e:
-                results.append(LookupResponse(input_index=i, status="error", error=str(e)))
+                results.append(LookupResponse(index=i, status="error", error=str(e)))
                 error_count += 1
 
     return LookupBulkResponse(
@@ -1026,7 +1026,7 @@ async def update_entries(
 
             if not entry:
                 results.append(UpdateEntryResponse(
-                    input_index=i, status="not_found", registry_id=item.entry_id,
+                    index=i, status="not_found", registry_id=item.entry_id,
                 ))
                 continue
 
@@ -1040,12 +1040,12 @@ async def update_entries(
             await entry.save()
 
             results.append(UpdateEntryResponse(
-                input_index=i, status="updated", registry_id=item.entry_id,
+                index=i, status="updated", registry_id=item.entry_id,
             ))
 
         except Exception as e:
             results.append(UpdateEntryResponse(
-                input_index=i, status="error", registry_id=item.entry_id, error=str(e)
+                index=i, status="error", registry_id=item.entry_id, error=str(e)
             ))
 
     return BulkUpdateResponse(
@@ -1077,7 +1077,7 @@ async def delete_entries(
 
             if not entry:
                 results.append(DeleteResponse(
-                    input_index=i, status="not_found", registry_id=item.entry_id,
+                    index=i, status="not_found", registry_id=item.entry_id,
                 ))
                 continue
 
@@ -1104,7 +1104,7 @@ async def delete_entries(
                     if not namespace or namespace.deletion_mode != "full":
                         mode = namespace.deletion_mode if namespace else "unknown"
                         results.append(DeleteResponse(
-                            input_index=i, status="error", registry_id=item.entry_id,
+                            index=i, status="error", registry_id=item.entry_id,
                             error=f"Hard-delete requires namespace deletion_mode='full' (currently '{mode}')",
                         ))
                         continue
@@ -1115,7 +1115,7 @@ async def delete_entries(
                 # only — soft-delete keeps the entry and its key ownership).
                 await CompositeKeyClaim.release_for_owner(entry.entry_id)
                 results.append(DeleteResponse(
-                    input_index=i, status="deleted", registry_id=item.entry_id,
+                    index=i, status="deleted", registry_id=item.entry_id,
                 ))
             else:
                 # Soft-delete: set status to inactive
@@ -1125,12 +1125,12 @@ async def delete_entries(
                 await entry.save()
 
                 results.append(DeleteResponse(
-                    input_index=i, status="deactivated", registry_id=item.entry_id,
+                    index=i, status="deactivated", registry_id=item.entry_id,
                 ))
 
         except Exception as e:
             results.append(DeleteResponse(
-                input_index=i, status="error", registry_id=item.entry_id, error=str(e)
+                index=i, status="error", registry_id=item.entry_id, error=str(e)
             ))
 
     return BulkDeleteResponse(
@@ -1167,7 +1167,7 @@ async def resolve_synonyms(
         try:
             if not item.entry_id and not item.composite_key:
                 results.append(ResolveResponse(
-                    input_index=i, status="error",
+                    index=i, status="error",
                     error="Provide either entry_id or composite_key",
                 ))
                 error_count += 1
@@ -1214,7 +1214,7 @@ async def resolve_synonyms(
 
             if entry:
                 results.append(ResolveResponse(
-                    input_index=i,
+                    index=i,
                     status="found",
                     composite_key=item.composite_key,
                     entry_id=entry.entry_id,
@@ -1222,7 +1222,7 @@ async def resolve_synonyms(
                 found_count += 1
             else:
                 results.append(ResolveResponse(
-                    input_index=i,
+                    index=i,
                     status="not_found",
                     composite_key=item.composite_key,
                     entry_id=item.entry_id,
@@ -1231,7 +1231,7 @@ async def resolve_synonyms(
 
         except Exception as e:
             results.append(ResolveResponse(
-                input_index=i, status="error", error=str(e),
+                index=i, status="error", error=str(e),
             ))
             error_count += 1
 

@@ -82,13 +82,13 @@ async def test_by_fields_failure_is_visible_and_isolated(
     assert response.status_code == 200
     failed, ok = response.json()["results"]
 
-    assert failed["input_index"] == 0
+    assert failed["index"] == 0
     assert failed["status"] == "error"
     assert "synthetic search failure 606" in failed["error"]
     assert failed["results"] == []
     assert failed["total_matches"] == 0
 
-    assert ok["input_index"] == 1
+    assert ok["index"] == 1
     assert ok["status"] == "ok"
     assert ok["error"] is None
     assert ok["total_matches"] >= 1

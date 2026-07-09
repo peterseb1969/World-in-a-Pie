@@ -51,7 +51,7 @@ async def add_synonyms(
 
             if not entry:
                 results.append(AddSynonymResponse(
-                    input_index=i, status="target_not_found",
+                    index=i, status="target_not_found",
                 ))
                 continue
 
@@ -65,7 +65,7 @@ async def add_synonyms(
                 or entry.find_synonym_by_hash(synonym_hash) is not None
             ):
                 results.append(AddSynonymResponse(
-                    input_index=i, status="already_exists",
+                    index=i, status="already_exists",
                     registry_id=entry.entry_id,
                 ))
                 continue
@@ -91,7 +91,7 @@ async def add_synonyms(
                     # entry doesn't currently embed it (cross-owner orphan,
                     # cleared by reconciliation), the hot path stays safe.
                     results.append(AddSynonymResponse(
-                        input_index=i, status="error",
+                        index=i, status="error",
                         error=f"Synonym already registered under different entry: {owner}"
                     ))
                     continue
@@ -120,12 +120,12 @@ async def add_synonyms(
                 raise
 
             results.append(AddSynonymResponse(
-                input_index=i, status="added", registry_id=entry.entry_id,
+                index=i, status="added", registry_id=entry.entry_id,
             ))
 
         except Exception as e:
             results.append(AddSynonymResponse(
-                input_index=i, status="error", error=str(e)
+                index=i, status="error", error=str(e)
             ))
 
     return BulkSynonymAddResponse(
@@ -156,7 +156,7 @@ async def remove_synonyms(
 
             if not entry:
                 results.append(RemoveSynonymResponse(
-                    input_index=i, status="not_found", registry_id=item.target_id,
+                    index=i, status="not_found", registry_id=item.target_id,
                 ))
                 continue
 
@@ -172,7 +172,7 @@ async def remove_synonyms(
 
             if len(entry.synonyms) == original_count:
                 results.append(RemoveSynonymResponse(
-                    input_index=i, status="not_found", registry_id=entry.entry_id,
+                    index=i, status="not_found", registry_id=entry.entry_id,
                     error="Synonym not found in entry"
                 ))
                 continue
@@ -200,12 +200,12 @@ async def remove_synonyms(
                 )
 
             results.append(RemoveSynonymResponse(
-                input_index=i, status="removed", registry_id=entry.entry_id,
+                index=i, status="removed", registry_id=entry.entry_id,
             ))
 
         except Exception as e:
             results.append(RemoveSynonymResponse(
-                input_index=i, status="error", error=str(e)
+                index=i, status="error", error=str(e)
             ))
 
     return BulkSynonymRemoveResponse(
@@ -234,7 +234,7 @@ async def merge_entries(
             })
             if not preferred:
                 results.append(MergeResponse(
-                    input_index=i, status="preferred_not_found",
+                    index=i, status="preferred_not_found",
                     preferred_id=item.preferred_id,
                 ))
                 continue
@@ -244,14 +244,14 @@ async def merge_entries(
             })
             if not deprecated:
                 results.append(MergeResponse(
-                    input_index=i, status="deprecated_not_found",
+                    index=i, status="deprecated_not_found",
                     deprecated_id=item.deprecated_id,
                 ))
                 continue
 
             if str(preferred.id) == str(deprecated.id):
                 results.append(MergeResponse(
-                    input_index=i, status="error",
+                    index=i, status="error",
                     error="Cannot merge an entry with itself"
                 ))
                 continue
@@ -302,14 +302,14 @@ async def merge_entries(
             await preferred.save()
 
             results.append(MergeResponse(
-                input_index=i, status="merged",
+                index=i, status="merged",
                 preferred_id=preferred.entry_id,
                 deprecated_id=deprecated.entry_id,
             ))
 
         except Exception as e:
             results.append(MergeResponse(
-                input_index=i, status="error", error=str(e)
+                index=i, status="error", error=str(e)
             ))
 
     return BulkMergeResponse(

@@ -1074,7 +1074,7 @@ describe('Service classes via createWipClient', () => {
 
     it('lookupEntry unwraps results array', async () => {
       mockJsonResponse({
-        results: [{ input_index: 0, status: 'found', entry_id: 'E-001' }],
+        results: [{ index: 0, status: 'found', entry_id: 'E-001' }],
       })
 
       const result = await client.registry.lookupEntry('E-001')

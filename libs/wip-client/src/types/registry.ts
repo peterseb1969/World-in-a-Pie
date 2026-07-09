@@ -122,7 +122,7 @@ export interface RegistryByTermHit {
 }
 
 export interface RegistryLookupResponse {
-  input_index: number
+  index: number
   status: string
   entry_id: string | null
   namespace: string | null

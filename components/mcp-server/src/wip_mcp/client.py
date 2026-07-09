@@ -259,9 +259,9 @@ class WipClient:
             raise BulkError(
                 result.get("error", "Unknown error"),
                 # "index" is the platform-canonical per-item key (wip_auth
-                # bulk_models); registry's entries/synonyms/search family
-                # spells it "input_index" — accept both so unwrapping works
-                # against every store.
+                # bulk_models). "input_index" was the registry family's
+                # spelling before the platform-wide rename; kept as fallback
+                # for unwrapping against a pre-rename registry.
                 index=result.get("index", result.get("input_index", 0)),
                 error_code=result.get("error_code"),
             )
