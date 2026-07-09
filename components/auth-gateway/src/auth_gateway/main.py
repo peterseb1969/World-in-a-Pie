@@ -12,6 +12,12 @@ to turn into a browser redirect to /auth/login:
   - Caddy: `handle_response @401 { redir ... }` in the forward_auth block.
   - nginx: `auth-signin` annotation on the Ingress.
 
+Proxies that cannot own that redirect (Traefik's forwardAuth passes
+non-2xx auth responses to the client verbatim) set
+AUTH_REDIRECT_MODE=redirect instead, and the gateway 302s browser
+requests to the absolute public login URL itself — see
+Settings.auth_redirect_mode in config.py for the full contract.
+
 The OIDC flow (login → Dex → callback → session) is handled entirely by
 this service. Apps never touch OIDC — they read identity from headers.
 """
@@ -25,7 +31,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 
-from .config import check_production_security, settings
+from .config import check_production_security, check_redirect_mode, settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("auth_gateway")
@@ -33,6 +39,10 @@ logger = logging.getLogger("auth_gateway")
 # Refuse to start in prod with the forgeable default session secret —
 # before the SessionMiddleware below is ever constructed with it.
 check_production_security()
+
+# Refuse to start on a mistyped AUTH_REDIRECT_MODE — a typo silently
+# falling back to 401 behaviour would surface far from its cause.
+check_redirect_mode()
 
 app = FastAPI(title="WIP Auth Gateway", version="0.1.0")
 
@@ -64,14 +74,22 @@ async def verify(request: Request):
     """Check session cookie.
 
     Authenticated  → 200 with X-WIP-User / X-WIP-Groups / X-API-Key headers.
-    Unauthenticated → 401 with X-Auth-Redirect header pointing at /auth/login.
+    Unauthenticated → 401 with X-Auth-Redirect header pointing at
+    /auth/login — or, in AUTH_REDIRECT_MODE=redirect, a 302 to the
+    absolute public login URL for browser requests.
 
     The 401 response is the standard signal both nginx's auth-request
     module (via the `auth-signin` annotation) and Caddy's `forward_auth`
     (via `handle_response @401 { redir ... }`) know how to turn into a
-    browser redirect. Keeping the gateway target-agnostic — it never
-    initiates a redirect itself — means renderers own the target-
-    specific UX and the gateway code stays uniform.
+    browser redirect — the proxy owns the target-specific UX, and behind
+    nginx the 401 is the ONLY safe answer (auth_request treats any other
+    non-2xx status, a 302 included, as an internal error → 500). The
+    "redirect" mode exists solely for proxy families that pass the auth
+    response to the client verbatim and therefore cannot own the
+    redirect themselves (Traefik forwardAuth). Which mode applies is
+    deployment configuration, never request sniffing: every proxy
+    forwards the browser's Accept header to the auth subrequest, so a
+    header heuristic cannot tell the constellations apart.
     """
     session = request.session
     email = session.get("email")
@@ -97,10 +115,24 @@ async def verify(request: Request):
     return_to = f"{original_proto}://{original_host}{original_uri}"
 
     from urllib.parse import quote
-    login_url = f"/auth/login?return_to={quote(return_to)}"
+    login_path = f"/auth/login?return_to={quote(return_to)}"
+
+    # "redirect" mode only: the proxy passes this response to the
+    # browser verbatim, so the gateway must issue the login redirect
+    # itself — absolute, because the browser resolves it, not the
+    # proxy. API callers (no text/html Accept) keep the 401 contract.
+    if (
+        settings.auth_redirect_mode == "redirect"
+        and "text/html" in request.headers.get("Accept", "")
+    ):
+        return RedirectResponse(
+            url=f"{original_proto}://{original_host}{login_path}",
+            status_code=302,
+        )
+
     return Response(
         status_code=401,
-        headers={"X-Auth-Redirect": login_url},
+        headers={"X-Auth-Redirect": login_path},
     )
 
 

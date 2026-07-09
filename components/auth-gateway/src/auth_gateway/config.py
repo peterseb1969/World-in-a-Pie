@@ -73,5 +73,47 @@ class Settings:
     # Scopes to request from Dex.
     oidc_scopes: str = os.getenv("OIDC_SCOPES", "openid email profile groups offline_access")
 
+    # Unauthenticated /auth/verify behaviour — who owns the browser's
+    # login redirect. Which value is correct is a property of the
+    # reverse-proxy family in front of the gateway, not of the request:
+    #
+    #   "401" (default): every unauthenticated request gets 401 +
+    #   X-Auth-Redirect, and the proxy turns that into the login flow
+    #   (nginx-ingress `auth-signin`, Caddy `handle_response @401`).
+    #   MANDATORY behind nginx's auth_request, which treats any status
+    #   other than 2xx/401/403 from the auth subrequest — a 302
+    #   included — as an internal error and answers the browser 500.
+    #
+    #   "redirect": browser requests (Accept: text/html) get a 302 to
+    #   the absolute public login URL; API callers still get the 401 +
+    #   X-Auth-Redirect contract. For proxies like Traefik whose
+    #   forwardAuth passes non-2xx auth responses to the client
+    #   verbatim and has no mechanism of its own to start a login flow.
+    #
+    # Sniffing the proxy family from request headers instead of
+    # configuring it is not possible: every proxy forwards the
+    # browser's Accept header to the auth subrequest.
+    auth_redirect_mode: str = os.getenv("AUTH_REDIRECT_MODE", "401")
+
+
+def check_redirect_mode(mode: str | None = None) -> None:
+    """Refuse to start on an invalid AUTH_REDIRECT_MODE.
+
+    A typo silently treated as the default would put a Traefik
+    deployment back on bare 401s — browsers see an Unauthorized page
+    and the misconfiguration surfaces as a UX bug far from its cause.
+    Fail loudly at startup instead.
+    """
+    value = mode if mode is not None else settings.auth_redirect_mode
+    if value not in ("401", "redirect"):
+        logger.critical(
+            "Invalid AUTH_REDIRECT_MODE %r — must be '401' (proxy owns the "
+            "login redirect; nginx-ingress/Caddy) or 'redirect' (gateway "
+            "302s browsers to the login URL; Traefik-style forwardAuth). "
+            "Refusing to start.",
+            value,
+        )
+        sys.exit(1)
+
 
 settings = Settings()
