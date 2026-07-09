@@ -75,9 +75,12 @@ async def delete_namespace(
     except ValueError as e:
         raise HTTPException(400, str(e)) from None
 
-    if journal.status == "completed":
+    # Both terminal-success states carry the summary; completed_with_warnings
+    # additionally means a best-effort MinIO/PostgreSQL step degraded — the
+    # per-step errors are in the deletion-status journal view.
+    if journal.status in ("completed", "completed_with_warnings"):
         return {
-            "status": "completed",
+            "status": journal.status,
             "namespace": prefix,
             "summary": journal.summary,
         }

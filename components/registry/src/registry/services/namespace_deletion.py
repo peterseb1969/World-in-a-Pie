@@ -1,7 +1,12 @@
 """Namespace deletion service.
 
-Builds and executes a persistent delete journal for crash-safe
-namespace deletion across MongoDB, MinIO, and PostgreSQL.
+Builds and executes a persistent delete journal for namespace deletion.
+Crash-safety is a MongoDB guarantee: Mongo steps fail the journal loudly
+and resume idempotently. MinIO and PostgreSQL cleanup is best-effort by
+design — a dead secondary store must not make a namespace undeletable —
+but a degraded step records its error and the journal terminates as
+"completed_with_warnings" instead of a bare "completed", so the outcome
+is visible in the journal itself, not only in service logs.
 """
 
 import logging
@@ -17,7 +22,6 @@ from ..models.deletion_journal import (
     InboundReference,
 )
 from ..models.entry import RegistryEntry
-from ..models.grant import NamespaceGrant
 from ..models.namespace import Namespace
 
 logger = logging.getLogger("registry.namespace_deletion")
@@ -182,21 +186,29 @@ class NamespaceDeletionService:
     # -------------------------------------------------------------------------
 
     async def _count_entities(self, prefix: str) -> dict[str, int]:
-        """Count all entities scoped to a namespace."""
+        """Count all entities scoped to a namespace.
+
+        Iterates the same collection lists the journal builder deletes from
+        (_REGISTRY_COLLECTIONS + _EXTERNAL_COLLECTIONS), so the dry-run
+        impact report cannot drift from what the real deletion removes —
+        hand-enumerating collections here is how composite_key_claims went
+        uncounted while being deleted.
+        """
         counts: dict[str, int] = {}
 
-        # Use Beanie models for registry-local collections
-        counts["registry_entries"] = await RegistryEntry.find(
-            {"namespace": prefix}
-        ).count()
         motor_client = Namespace.get_motor_collection().database.client
         reg_db = motor_client[_registry_db_name()]
+
+        for coll_name, filter_field in _REGISTRY_COLLECTIONS:
+            counts[coll_name] = await reg_db[coll_name].count_documents(
+                {filter_field: prefix}
+            )
+
+        # id_counters is keyed by "<prefix>:<entity_type>", not a namespace
+        # field — deleted by the journal via the same regex filter.
         counts["id_counters"] = await reg_db["id_counters"].count_documents(
             {"counter_key": {"$regex": f"^{prefix}:"}}
         )
-        counts["namespace_grants"] = await NamespaceGrant.find(
-            {"namespace": prefix}
-        ).count()
 
         # Count across external service databases
         for db_name, coll_name, filter_field, _ in _EXTERNAL_COLLECTIONS:
@@ -425,7 +437,10 @@ class NamespaceDeletionService:
 
             try:
                 deleted = await self._execute_step(step, journal.namespace)
-                step.status = "completed"
+                # Best-effort executors (MinIO/PostgreSQL) record a swallowed
+                # failure on step.error instead of raising — surface it as a
+                # degraded outcome rather than a clean completion.
+                step.status = "completed_with_errors" if step.error else "completed"
                 step.deleted_count = deleted
                 step.completed_at = datetime.now(UTC)
 
@@ -451,12 +466,22 @@ class NamespaceDeletionService:
             # Save progress after each step
             await journal.save()
 
-        # All steps completed
-        journal.status = "completed"
+        # All steps executed. Roll degraded best-effort steps up into the
+        # terminal status so a journal reader sees the outcome without
+        # scanning per-step errors or service logs.
+        degraded = [s for s in journal.steps if s.status == "completed_with_errors"]
+        journal.status = "completed_with_warnings" if degraded else "completed"
         journal.completed_at = datetime.now(UTC)
         journal.summary = summary
         await journal.save()
-        logger.info("Namespace '%s' deletion completed: %s", journal.namespace, summary)
+        if degraded:
+            logger.warning(
+                "Namespace '%s' deletion completed with %d degraded step(s): %s",
+                journal.namespace, len(degraded),
+                "; ".join(f"{s.detail}: {s.error}" for s in degraded),
+            )
+        else:
+            logger.info("Namespace '%s' deletion completed: %s", journal.namespace, summary)
 
     async def _execute_step(self, step: DeletionStep, namespace: str) -> int:
         """Execute a single journal step. Returns count of deleted items."""
@@ -490,6 +515,7 @@ class NamespaceDeletionService:
             base_url = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
 
             deleted = 0
+            failed = 0
             async with httpx.AsyncClient(timeout=60.0) as client:
                 for key in step.storage_keys:
                     url = f"{base_url}/{self._minio_bucket}/{key}"
@@ -502,12 +528,22 @@ class NamespaceDeletionService:
                         ))
                         if resp.status_code in (200, 204, 404):
                             deleted += 1
+                        else:
+                            failed += 1
                     except Exception as e:
+                        failed += 1
                         logger.warning("Failed to delete MinIO object %s: %s", key, e)
+            if failed:
+                step.error = (
+                    f"{failed} of {len(step.storage_keys)} MinIO objects "
+                    "failed to delete; objects may remain in storage"
+                )
             return deleted
         except Exception as e:
             logger.error("MinIO deletion failed: %s", e)
-            # Don't block the rest of the deletion
+            # Best-effort: don't block the deletion, but record the degraded
+            # outcome so the journal doesn't report a clean completion.
+            step.error = f"MinIO cleanup failed: {e}; objects may remain in storage"
             return 0
 
     async def _exec_postgresql_step(self, step: DeletionStep, namespace: str) -> int:
@@ -526,9 +562,14 @@ class NamespaceDeletionService:
                     data = resp.json()
                     return cast(int, data.get("total_deleted", 0))
                 elif resp.status_code == 404:
-                    # Endpoint doesn't exist yet — skip gracefully
+                    # Endpoint doesn't exist yet — best-effort skip, but the
+                    # rows remain, so record the degraded outcome.
                     logger.warning(
                         "Reporting-sync namespace delete endpoint not available (404)"
+                    )
+                    step.error = (
+                        "reporting-sync namespace-delete endpoint unavailable "
+                        "(404); PostgreSQL rows may remain"
                     )
                     return 0
                 else:
@@ -536,10 +577,18 @@ class NamespaceDeletionService:
                         "PostgreSQL cleanup returned %d: %s",
                         resp.status_code, resp.text,
                     )
+                    step.error = (
+                        f"PostgreSQL cleanup returned {resp.status_code}; "
+                        "rows may remain"
+                    )
                     return 0
         except httpx.ConnectError:
             logger.warning("Could not connect to reporting-sync for PostgreSQL cleanup")
+            step.error = (
+                "could not connect to reporting-sync; PostgreSQL rows may remain"
+            )
             return 0
         except Exception as e:
             logger.error("PostgreSQL deletion failed: %s", e)
+            step.error = f"PostgreSQL cleanup failed: {e}; rows may remain"
             return 0
