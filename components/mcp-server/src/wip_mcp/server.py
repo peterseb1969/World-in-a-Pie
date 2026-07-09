@@ -347,6 +347,24 @@ A template defines a document schema — like a form definition.
 - Templates are versioned: same template_id, incrementing version
 - Multiple versions can be active simultaneously — see conventions resource
 - Templates can define identity_fields for document deduplication
+- usage: "entity" (default) | "reference" | "relationship". A template with
+  usage "relationship" is an edge type — the schema for a class of
+  relationships between documents. Edge types declare two mandatory reference
+  fields (source_ref, target_ref) plus template-level source_templates /
+  target_templates allow-lists; document writes get extra validation
+  (cross-namespace and archived endpoints are rejected), and two query
+  endpoints become available: /documents/{id}/relationships and /traverse.
+  usage is immutable after creation.
+- versioned: true (default) | false. With versioned: false, document updates
+  OVERWRITE in place — documents keep a stable document_id, stay at
+  version 1, and no history is retained. Requires non-empty identity_fields
+  (overwrite-in-place needs an identity to re-address) and is immutable
+  after creation.
+- header_fields: which fields represent a document in compact "header"
+  projections (peer listings, the relationships endpoint's include=peers).
+  Bare names target data.<name>; metadata.custom.<name> paths are allowed.
+  When empty, projection falls back to identity_fields, then to
+  {title, doc_status}.
 
 ### Field Types
 string, number, integer, boolean, date, datetime, term, reference, file, array, object
@@ -385,6 +403,11 @@ For document references, set template_ref to constrain which template's document
 ### Other Field Properties
 - Use "mandatory: true" (NOT "required") for required fields
 - Validation: pattern (regex), min_length, max_length, minimum, maximum, enum
+- full_text_indexed: true on a string field builds a PostgreSQL full-text
+  search column (tsvector + GIN index) in the template's reporting table;
+  the reporting search endpoint uses it for ranked, snippet-rich search.
+  Only valid on type "string" fields and requires the template's
+  reporting.sync_enabled to be true (validated at template creation).
 
 ### Validation Rules (Cross-Field)
 Templates can define rules across fields:
@@ -408,7 +431,9 @@ Templates can configure PostgreSQL sync behaviour:
 A document is an instance of a template — a filled-in form.
 - Validated against the template's field definitions
 - Terms are resolved: you submit the value, WIP stores both value and term_id
-- Versioned: same identity → same document_id, new version
+- Versioned: same identity → same document_id, new version — unless the
+  template declares versioned: false, in which case updates overwrite in
+  place and documents stay at version 1 (no history)
 - identity_fields (defined on template) control what makes a document "the same"
 - Zero identity fields = append-only (every POST creates a new document; PATCH is rejected with `append_only`)
 
