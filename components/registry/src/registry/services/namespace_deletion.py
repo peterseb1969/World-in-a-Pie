@@ -424,7 +424,15 @@ class NamespaceDeletionService:
         """Execute all pending steps in the journal."""
         summary: dict[str, int] = {}
 
-        for step in journal.steps:
+        # Index-based iteration is load-bearing: Beanie's save() re-syncs the
+        # in-memory document from the DB afterwards, REBUILDING journal.steps
+        # with fresh objects. A `for step in journal.steps` iterator captured
+        # before the first save yields orphans — mutations on them are never
+        # serialized, which is how completed journals persisted with every
+        # step after the first still 'pending'. Re-binding through
+        # journal.steps[i] each iteration always mutates the live objects.
+        for i in range(len(journal.steps)):
+            step = journal.steps[i]
             if step.status == "completed":
                 # Already done (crash recovery)
                 if step.collection:

@@ -1056,3 +1056,102 @@ class TestPoisonedJournalHydration:
                                                   "entries": 7}}
         )
         assert journal.summary == {"postgres_rows": 0, "entries": 7}
+
+
+class TestJournalStepPersistence:
+    """The STORED journal must match what the deletion actually did.
+
+    These tests read the journal back fresh (the deletion-status endpoint
+    and a direct find_one both re-query Mongo), never the in-memory object
+    the service returned — the in-memory journal is correct at return time
+    even when the stored one is not, which is exactly how the stored drift
+    stayed invisible to the API-level suite."""
+
+    @pytest.mark.asyncio
+    async def test_all_stored_steps_completed_after_multi_step_deletion(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """Every step's completion must persist, not just the first one's."""
+        await client.post(
+            "/api/registry/namespaces",
+            json={"prefix": "journal-steps", "deletion_mode": "full"},
+            headers=auth_headers,
+        )
+        # Entries + grants ensure the journal has multiple steps before the
+        # final namespace-record step.
+        await client.post(
+            "/api/registry/entries/register",
+            json=[{"namespace": "journal-steps", "entity_type": "documents",
+                   "composite_key": {"value": f"d{i}"}, "created_by": "test"}
+                  for i in range(3)],
+            headers=auth_headers,
+        )
+        await client.post(
+            "/api/registry/namespaces/journal-steps/grants",
+            json=[{"subject": "user@test.com", "subject_type": "user",
+                   "permission": "read"}],
+            headers=auth_headers,
+        )
+
+        resp = await client.delete(
+            "/api/registry/namespaces/journal-steps",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "completed"
+
+        # Fresh read from storage via the status endpoint.
+        resp = await client.get(
+            "/api/registry/namespaces/journal-steps/deletion-status",
+            headers=auth_headers,
+        )
+        steps = resp.json()["steps"]
+        assert len(steps) >= 3
+        pending = [s for s in steps if s["status"] == "pending"]
+        assert pending == [], f"steps stored pending after completion: {pending}"
+        # The counted steps carry their real counts (3 entries, 1 grant).
+        by_coll = {s.get("collection"): s for s in steps if s.get("collection")}
+        assert by_coll["registry_entries"]["deleted_count"] == 3
+        assert by_coll["namespace_grants"]["deleted_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_stored_journal_records_failure_beyond_first_step(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """A failure on step >= 2 must persist that step's failed status and
+        error — not just the journal's top-level failed status."""
+        from unittest.mock import AsyncMock, patch
+
+        from registry.models.deletion_journal import DeletionJournal, DeletionStep
+        from registry.services.namespace_deletion import NamespaceDeletionService
+
+        journal = DeletionJournal(
+            namespace="journal-fail",
+            steps=[
+                DeletionStep(order=1, store="mongodb",
+                             collection="registry_entries",
+                             filter={"namespace": "journal-fail"},
+                             detail="delete entries"),
+                DeletionStep(order=2, store="mongodb",
+                             collection="namespace_grants",
+                             filter={"namespace": "journal-fail"},
+                             detail="second step, made to fail"),
+            ],
+        )
+        await journal.create()
+
+        with (
+            patch.object(
+                NamespaceDeletionService, "_execute_step",
+                AsyncMock(side_effect=[5, RuntimeError("injected step-2 failure")]),
+            ),
+            pytest.raises(RuntimeError, match="injected step-2 failure"),
+        ):
+            await NamespaceDeletionService()._execute_journal(journal)
+
+        stored = await DeletionJournal.find_one({"namespace": "journal-fail"})
+        assert stored.status == "failed"
+        assert stored.steps[0].status == "completed"
+        assert stored.steps[0].deleted_count == 5
+        assert stored.steps[1].status == "failed"
+        assert "injected step-2 failure" in stored.steps[1].error
