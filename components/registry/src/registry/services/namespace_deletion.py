@@ -560,7 +560,20 @@ class NamespaceDeletionService:
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    return cast(int, data.get("total_deleted", 0))
+                    total = data.get("total_deleted")
+                    if total is None:
+                        # A present-but-null count (the reporting-sync
+                        # schema-per-namespace rewrite shipped one) must not
+                        # reach the int-typed journal fields — it poisons the
+                        # journal document and the DELETE reports failure
+                        # after the deletion already succeeded. Record the
+                        # degraded audit instead of inventing a count.
+                        step.error = (
+                            "postgres row count unavailable (upstream "
+                            "returned null total_deleted)"
+                        )
+                        return 0
+                    return int(total)
                 elif resp.status_code == 404:
                     # Endpoint doesn't exist yet — best-effort skip, but the
                     # rows remain, so record the degraded outcome.

@@ -951,3 +951,108 @@ class TestRecreateAfterDeletion:
         )
         counts = resp.json()["entity_counts"]
         assert all(v == 0 for v in counts.values())
+
+
+class TestPostgresRowCountSeam:
+    """The reporting-sync row count must never poison the int-typed journal.
+
+    Under schema-per-namespace reporting, DELETE /namespace/{prefix} on
+    reporting-sync once answered 200 with ``total_deleted: null``; the
+    executor's ``data.get("total_deleted", 0)`` default only covers a
+    MISSING key, so the null flowed into DeletionStep.deleted_count /
+    summary.postgres_rows and every otherwise-successful namespace DELETE
+    returned a pydantic validation error — with the persisted journal left
+    unreadable (deletion-status 500).
+    """
+
+    async def test_null_total_deleted_maps_to_zero_with_degraded_error(
+        self, monkeypatch
+    ):
+        """A present-but-null count → 0 + step.error, never None."""
+        from registry.models.deletion_journal import DeletionStep
+        from registry.services.namespace_deletion import NamespaceDeletionService
+
+        class FakeResponse:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"namespace": "x", "dropped_schema": "x", "total_deleted": None}
+
+        class FakeClient:
+            def __init__(self, *a, **kw): ...
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+            async def delete(self, *a, **kw):
+                return FakeResponse()
+
+        import registry.services.namespace_deletion as mod
+        monkeypatch.setattr(mod.httpx, "AsyncClient", FakeClient)
+
+        svc = NamespaceDeletionService()
+        svc._postgres_url = "http://reporting-sync.test"
+        step = DeletionStep(order=0, store="postgresql")
+
+        deleted = await svc._exec_postgresql_step(step, "probe-ns")
+        assert deleted == 0
+        assert step.error is not None
+        assert "null" in step.error
+
+    async def test_integer_total_deleted_passes_through(self, monkeypatch):
+        """The healthy path stays a real int with no degraded marker."""
+        from registry.models.deletion_journal import DeletionStep
+        from registry.services.namespace_deletion import NamespaceDeletionService
+
+        class FakeResponse:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"namespace": "x", "dropped_schema": "x", "total_deleted": 42}
+
+        class FakeClient:
+            def __init__(self, *a, **kw): ...
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+            async def delete(self, *a, **kw):
+                return FakeResponse()
+
+        import registry.services.namespace_deletion as mod
+        monkeypatch.setattr(mod.httpx, "AsyncClient", FakeClient)
+
+        svc = NamespaceDeletionService()
+        svc._postgres_url = "http://reporting-sync.test"
+        step = DeletionStep(order=0, store="postgresql")
+
+        assert await svc._exec_postgresql_step(step, "probe-ns") == 42
+        assert step.error is None
+
+
+class TestPoisonedJournalHydration:
+    """Journals persisted while the null-count bug was live must stay
+    readable — completed journals are never deleted, and an unreadable
+    audit record (deletion-status 500) is worse than a lost one."""
+
+    def test_step_deleted_count_null_hydrates_to_zero(self):
+        from registry.models.deletion_journal import DeletionStep
+
+        step = DeletionStep.model_validate(
+            {"order": 0, "store": "postgresql", "status": "completed",
+             "deleted_count": None}
+        )
+        assert step.deleted_count == 0
+
+    async def test_summary_null_values_hydrate_to_zero(self, client: AsyncClient):
+        # `client` is unused directly — it forces app startup so Beanie is
+        # initialized; a Document subclass cannot be constructed before that.
+        from registry.models.deletion_journal import DeletionJournal
+
+        journal = DeletionJournal.model_validate(
+            {"namespace": "poisoned", "summary": {"postgres_rows": None,
+                                                  "entries": 7}}
+        )
+        assert journal.summary == {"postgres_rows": 0, "entries": 7}

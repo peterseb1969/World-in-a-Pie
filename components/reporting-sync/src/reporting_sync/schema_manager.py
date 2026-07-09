@@ -416,6 +416,36 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
             await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
         return schema
 
+    async def drop_namespace_schema(self, namespace: str) -> int:
+        """Drop the namespace's schema and return how many rows went with it.
+
+        The row count exists for the caller's audit trail: Registry's
+        namespace-deletion journal records `postgres_rows` as an integer, and
+        DROP SCHEMA alone has no count to offer — a bare "dropped" answer
+        forces the caller to invent one (a None here once propagated into the
+        int-typed journal and made every namespace DELETE return a validation
+        error while the deletion itself succeeded). Counting first is cheap at
+        namespace-deletion frequency. Returns 0 when the schema doesn't exist.
+        """
+        schema = self.schema_for(namespace)
+        total = 0
+        async with self.pool.acquire() as conn:
+            tables = await conn.fetch(
+                """
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = $1 AND table_type = 'BASE TABLE'
+                """,
+                schema,
+            )
+            for row in tables:
+                table = self._safe_ident(row["table_name"])
+                count = await conn.fetchval(
+                    f'SELECT COUNT(*) FROM "{schema}"."{table}"'
+                )
+                total += int(count or 0)
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        return total
+
     async def table_exists(self, schema: str, table_name: str) -> bool:
         """Check if a table exists in the given namespace schema."""
         async with self.pool.acquire() as conn:

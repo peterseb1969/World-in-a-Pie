@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal
 
 from beanie import Document
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pymongo import IndexModel
 
 
@@ -34,6 +34,17 @@ class DeletionStep(BaseModel):
     deleted_count: int = 0
     error: str | None = None
     completed_at: datetime | None = None
+
+    @field_validator("deleted_count", mode="before")
+    @classmethod
+    def _null_count_reads_as_zero(cls, v: Any) -> Any:
+        """Journals persisted while reporting-sync returned a null row count
+        carry ``deleted_count: null`` in MongoDB. The journal is the audit
+        trail and completed journals are never deleted, so those documents
+        must stay readable — hydrating them to 0 beats a 500 on every
+        deletion-status read. The write path never produces None anymore
+        (the executor maps a null upstream count to 0 + step.error)."""
+        return 0 if v is None else v
 
 
 class InboundReference(BaseModel):
@@ -69,6 +80,16 @@ class DeletionJournal(Document):
     broken_references: list[InboundReference] = Field(default_factory=list)
     steps: list[DeletionStep] = Field(default_factory=list)
     summary: dict[str, int] | None = None
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _null_summary_counts_read_as_zero(cls, v: Any) -> Any:
+        """Same tolerance as DeletionStep.deleted_count, for the summary dict:
+        a stored ``postgres_rows: null`` must hydrate (as 0) rather than make
+        the journal unreadable. New writes never contain None values."""
+        if isinstance(v, dict):
+            return {k: (0 if val is None else val) for k, val in v.items()}
+        return v
 
     class Settings:
         name = "namespace_deletions"

@@ -1718,24 +1718,32 @@ async def delete_namespace(prefix: str):
 
     # Validate the prefix as a safe SQL identifier before interpolating it into
     # DROP SCHEMA (identifiers cannot be parameterised).
+    sm = SchemaManager(state.postgres_pool)
     try:
-        schema = SchemaManager(state.postgres_pool).schema_for(prefix)
+        schema = sm.schema_for(prefix)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
+    # total_deleted MUST be a real integer: Registry records it as the
+    # deletion journal's `postgres_rows` audit field, which is int-typed —
+    # a null here poisoned the journal and turned every otherwise-successful
+    # namespace DELETE into a validation error. drop_namespace_schema counts
+    # the schema's rows before dropping it.
+    total_deleted = await sm.drop_namespace_schema(prefix)
+
     async with state.postgres_pool.acquire() as conn:
-        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         # Clear the namespace's rows from the shared bookkeeping tables (these
         # live in public, keyed by namespace — see init_postgres_schema).
-        await conn.execute(
-            "DELETE FROM _wip_schema_migrations WHERE namespace = $1", prefix
-        )
-        await conn.execute(
-            "DELETE FROM _wip_sync_status WHERE namespace = $1", prefix
-        )
+        # asyncpg returns a "DELETE <n>" status string; fold those rows into
+        # the audit total.
+        for table in ("_wip_schema_migrations", "_wip_sync_status"):
+            status = await conn.execute(
+                f"DELETE FROM {table} WHERE namespace = $1", prefix
+            )
+            total_deleted += int(status.rsplit(" ", 1)[-1])
 
     logger.info(f"Namespace {prefix} reporting schema dropped ({schema})")
-    return {"namespace": prefix, "dropped_schema": schema, "total_deleted": None}
+    return {"namespace": prefix, "dropped_schema": schema, "total_deleted": total_deleted}
 
 
 @router.get("/")

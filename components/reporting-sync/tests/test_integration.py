@@ -808,6 +808,46 @@ class TestNamespaceDeletion:
         async with pg_pool.acquire() as conn:
             await conn.execute('DROP SCHEMA IF EXISTS "never_existed" CASCADE')
 
+    async def test_drop_namespace_schema_returns_row_count(self, pg_pool):
+        """drop_namespace_schema counts the rows it removes — the count feeds
+        Registry's int-typed journal (`postgres_rows`), where a null once
+        poisoned the journal and made every namespace DELETE report failure
+        after the deletion had already succeeded."""
+        await init_postgres_schema(pg_pool)
+        sm = SchemaManager(pg_pool)
+        fields = make_fields(("name", FieldType.STRING))
+        await sm.create_table(
+            "count_me", "Countable", 1, fields, identity_fields=["name"]
+        )
+        async with pg_pool.acquire() as conn:
+            for i in range(3):
+                await conn.execute(
+                    """
+                    INSERT INTO "count_me"."doc_countable" (document_id,
+                        namespace, template_id, template_version, version,
+                        status, identity_hash, name, created_at, data_json)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    """,
+                    f"0190d000-0000-7000-0000-00000000000{i}", "count_me",
+                    "0190c000-0000-7000-0000-000000000001", 1, 1, "active",
+                    f"hash{i}", f"row {i}", datetime.now(UTC), "{}",
+                )
+
+        deleted = await sm.drop_namespace_schema("count_me")
+
+        assert isinstance(deleted, int)
+        assert deleted == 3
+        async with pg_pool.acquire() as conn:
+            gone = await conn.fetchval(
+                "SELECT count(*) FROM pg_namespace WHERE nspname = 'count_me'"
+            )
+        assert gone == 0
+
+    async def test_drop_namespace_schema_missing_schema_returns_zero(self, pg_pool):
+        """No schema → 0, never None: the caller records this integer."""
+        sm = SchemaManager(pg_pool)
+        assert await sm.drop_namespace_schema("never_existed_either") == 0
+
 
 # =============================================================================
 # Indexes and constraints
