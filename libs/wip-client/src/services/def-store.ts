@@ -252,12 +252,18 @@ export class DefStoreService extends BaseService {
     return this.get(`/ontology/terms/${termId}/descendants`, params)
   }
 
-  async getParents(termId: string, namespace: string): Promise<TermRelation[]> {
-    return this.get(`/ontology/terms/${termId}/parents`, { namespace })
+  async getParents(termId: string, params?: {
+    relation_type?: string
+    namespace?: string
+  }): Promise<TermRelation[]> {
+    return this.get(`/ontology/terms/${termId}/parents`, params)
   }
 
-  async getChildren(termId: string, namespace: string): Promise<TermRelation[]> {
-    return this.get(`/ontology/terms/${termId}/children`, { namespace })
+  async getChildren(termId: string, params?: {
+    relation_type?: string
+    namespace?: string
+  }): Promise<TermRelation[]> {
+    return this.get(`/ontology/terms/${termId}/children`, params)
   }
 
   // ---- Audit Log ----

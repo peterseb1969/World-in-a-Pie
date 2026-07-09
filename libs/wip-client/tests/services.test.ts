@@ -93,6 +93,32 @@ describe('Service classes via createWipClient', () => {
       expect(options.method).toBe('DELETE')
       expect(JSON.parse(options.body)).toEqual([{ id: '0190b000-0000-7000-0000-000000000001' }])
     })
+
+    it('getChildren forwards relation_type and namespace as query params', async () => {
+      mockJsonResponse([])
+
+      await client.defStore.getChildren('0190b000-0000-7000-0000-000000000002', {
+        relation_type: 'part_of',
+        namespace: 'wip',
+      })
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/def-store/ontology/terms/0190b000-0000-7000-0000-000000000002/children')
+      expect(url).toContain('relation_type=part_of')
+      expect(url).toContain('namespace=wip')
+    })
+
+    it('getParents forwards relation_type as a query param', async () => {
+      mockJsonResponse([])
+
+      await client.defStore.getParents('0190b000-0000-7000-0000-000000000002', {
+        relation_type: 'part_of',
+      })
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/def-store/ontology/terms/0190b000-0000-7000-0000-000000000002/parents')
+      expect(url).toContain('relation_type=part_of')
+    })
   })
 
   describe('TemplateStoreService', () => {
@@ -1005,6 +1031,50 @@ describe('Service classes via createWipClient', () => {
 
       expect(events).toHaveLength(1)
       expect(events[0].percent).toBe(10)
+    })
+
+    it('migrateDocuments POSTs the request with namespace as a query param', async () => {
+      mockJsonResponse({
+        results: [{ index: 0, status: 'updated', document_id: 'doc-1' }],
+        total: 1,
+        succeeded: 1,
+        failed: 0,
+        dry_run: true,
+        template_id: '0190c000-0000-7000-0000-000000000001',
+        from_version: 1,
+        to_version: 2,
+      })
+
+      const result = await client.documents.migrateDocuments(
+        { template_id: 'PATIENT_RECORD', from_version: 1, to_version: 2 },
+        'clinic-a',
+      )
+
+      expect(result.dry_run).toBe(true)
+      expect(result.failed).toBe(0)
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/documents/migrate')
+      expect(url).toContain('namespace=clinic-a')
+      expect(options.method).toBe('POST')
+      expect(JSON.parse(options.body)).toEqual({
+        template_id: 'PATIENT_RECORD',
+        from_version: 1,
+        to_version: 2,
+      })
+    })
+
+    it('migrateDocuments omits the namespace param when not given', async () => {
+      mockJsonResponse({
+        results: [], total: 0, succeeded: 0, failed: 0,
+        dry_run: false, template_id: 'T', from_version: 1, to_version: 2,
+      })
+
+      await client.documents.migrateDocuments({
+        template_id: 'T', from_version: 1, to_version: 2, dry_run: false,
+      })
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).not.toContain('namespace=')
     })
   })
 

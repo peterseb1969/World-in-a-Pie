@@ -22,6 +22,8 @@ import type {
   DocumentRelationshipsParams,
   DocumentTraverseParams,
   DocumentTraverseResponse,
+  DocumentMigrateRequest,
+  DocumentMigrateResponse,
 } from '../types/document.js'
 import type {
   BackupJobSnapshot,
@@ -231,6 +233,27 @@ export class DocumentStoreService extends BaseService {
     params?: DocumentTraverseParams,
   ): Promise<DocumentTraverseResponse> {
     return this.get(`/documents/${documentId}/traverse`, params)
+  }
+
+  // ---- Migration ----
+
+  /**
+   * Migrate a cohort of documents from one template version to another —
+   * a validated, identity-preserving bulk re-pin.
+   *
+   * `dry_run` defaults to true on the server: run it first and check
+   * `failed === 0` before applying. Bulk-first: always HTTP 200,
+   * per-document outcome in `results`. Operation-level problems (bad
+   * versions, identity-fields mismatch, inactive target) throw as 4xx.
+   *
+   * @param request Template (UUID or value/synonym), from/to versions, dry_run.
+   * @param namespace Cohort namespace. Omittable only for single-namespace keys.
+   */
+  async migrateDocuments(
+    request: DocumentMigrateRequest,
+    namespace?: string,
+  ): Promise<DocumentMigrateResponse> {
+    return this.post('/documents/migrate', request, namespace ? { namespace } : undefined)
   }
 
   // ---- Import ----

@@ -1,4 +1,4 @@
-import type { PaginatedResponse } from './common.js'
+import type { BulkResponse, PaginatedResponse } from './common.js'
 
 export type DocumentStatus = 'active' | 'inactive' | 'archived'
 
@@ -396,4 +396,39 @@ export interface DocumentTraverseParams {
   direction?: 'outgoing' | 'incoming' | 'both'
   /** Defaults to the seed document's namespace. */
   namespace?: string
+}
+
+/**
+ * Request for `POST /api/document-store/documents/migrate`.
+ *
+ * Re-pins every active document on `from_version` to `to_version`,
+ * identity-preserving only — the two template versions must declare the same
+ * identity_fields, or the operation is rejected (an identity-changing move is
+ * a fork, not a migrate). No data transformation happens; per-document data
+ * prep is the caller's job while the source version is still writable.
+ */
+export interface DocumentMigrateRequest {
+  /** Template to migrate (canonical UUID or registered value/synonym). */
+  template_id: string
+  /** Source version documents are pinned to. May be inactive (frozen). */
+  from_version: number
+  /** Target version to re-pin to. Must be active. */
+  to_version: number
+  /**
+   * Default true: report per-document readiness without writing. A dry-run
+   * with failed === 0 guarantees a successful apply (barring concurrent writes).
+   */
+  dry_run?: boolean
+}
+
+/**
+ * Bulk-first migrate result — always HTTP 200, per-document outcome in
+ * `results` (status `updated` or `error`). When `dry_run` is true the
+ * statuses are PROJECTED — nothing was written.
+ */
+export interface DocumentMigrateResponse extends BulkResponse {
+  dry_run: boolean
+  template_id: string
+  from_version: number
+  to_version: number
 }

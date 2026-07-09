@@ -340,8 +340,15 @@ const ancestors = await client.defStore.getAncestors('ALZHEIMERS_DISEASE', {
   max_depth: 10,
 })
 const descendants = await client.defStore.getDescendants('NEUROLOGY', { max_depth: 3 })
-const parents = await client.defStore.getParents('ALZHEIMERS_DISEASE', 'wip')
-const children = await client.defStore.getChildren('NEUROLOGY', 'wip')
+
+// Direct neighbors (depth 1 by definition — no max_depth).
+// relation_type defaults to is_a on the server; pass another type to
+// follow part_of / regulates / ... links instead.
+const parents = await client.defStore.getParents('ALZHEIMERS_DISEASE', { namespace: 'wip' })
+const children = await client.defStore.getChildren('NEUROLOGY', {
+  relation_type: 'part_of',
+  namespace: 'wip',
+})
 ```
 
 ---
@@ -549,6 +556,34 @@ const csv = await client.documents.exportTableCsv('PATIENT_RECORD', {
   status: 'active',
   include_metadata: true,
 })
+```
+
+### Migrating Documents Across Template Versions
+
+A validated, identity-preserving bulk re-pin of a cohort from one template
+version to another. The two versions must declare the same `identity_fields`
+(an identity-changing move is a fork, not a migrate, and is rejected).
+Dry-run first — a dry-run with `failed === 0` guarantees a successful apply,
+barring concurrent writes:
+
+```typescript
+const preview = await client.documents.migrateDocuments({
+  template_id: 'PATIENT_RECORD',   // UUID or registered value/synonym
+  from_version: 1,
+  to_version: 2,
+  // dry_run defaults to true
+})
+
+if (preview.failed === 0) {
+  await client.documents.migrateDocuments({
+    template_id: 'PATIENT_RECORD',
+    from_version: 1,
+    to_version: 2,
+    dry_run: false,
+  })
+}
+// Per-document outcome in results[i]: status 'updated' | 'error'
+// (error_code 'validation_failed' | 'identity_fields_changed')
 ```
 
 ---

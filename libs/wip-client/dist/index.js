@@ -494,11 +494,11 @@ var DefStoreService = class extends BaseService {
   async getDescendants(termId, params) {
     return this.get(`/ontology/terms/${termId}/descendants`, params);
   }
-  async getParents(termId, namespace) {
-    return this.get(`/ontology/terms/${termId}/parents`, { namespace });
+  async getParents(termId, params) {
+    return this.get(`/ontology/terms/${termId}/parents`, params);
   }
-  async getChildren(termId, namespace) {
-    return this.get(`/ontology/terms/${termId}/children`, { namespace });
+  async getChildren(termId, params) {
+    return this.get(`/ontology/terms/${termId}/children`, params);
   }
   // ---- Audit Log ----
   async getTerminologyAuditLog(terminologyId, params) {
@@ -783,6 +783,22 @@ var DocumentStoreService = class extends BaseService {
    */
   async traverseDocuments(documentId, params) {
     return this.get(`/documents/${documentId}/traverse`, params);
+  }
+  // ---- Migration ----
+  /**
+   * Migrate a cohort of documents from one template version to another —
+   * a validated, identity-preserving bulk re-pin.
+   *
+   * `dry_run` defaults to true on the server: run it first and check
+   * `failed === 0` before applying. Bulk-first: always HTTP 200,
+   * per-document outcome in `results`. Operation-level problems (bad
+   * versions, identity-fields mismatch, inactive target) throw as 4xx.
+   *
+   * @param request Template (UUID or value/synonym), from/to versions, dry_run.
+   * @param namespace Cohort namespace. Omittable only for single-namespace keys.
+   */
+  async migrateDocuments(request, namespace) {
+    return this.post("/documents/migrate", request, namespace ? { namespace } : void 0);
   }
   // ---- Import ----
   async previewImport(file, filename) {
