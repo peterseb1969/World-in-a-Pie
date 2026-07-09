@@ -396,7 +396,11 @@ class NamespaceDeletionService:
             namespace=prefix,
             force=force,
             requested_by=requested_by,
-            broken_references=inbound_refs if force else [],
+            # Persisted unconditionally: the journal is the audit trail, and a
+            # non-forced deletion still breaks its low-severity inbound refs
+            # (synonym links) — gating on force would drop the only record of
+            # what broke on the common path.
+            broken_references=inbound_refs,
             steps=steps,
         )
 

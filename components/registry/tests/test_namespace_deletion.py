@@ -408,6 +408,60 @@ class TestNamespaceDeletion:
         assert resp.status_code == 404
 
     @pytest.mark.asyncio
+    async def test_nonforced_delete_journals_synonym_links(self, client: AsyncClient, auth_headers: dict):
+        """A non-forced deletion persists its low-severity inbound refs.
+
+        Synonym links never block deletion, so a non-forced delete is exactly
+        the path where they get broken — the journal must record them, or the
+        deletion is not reconstructable from its own audit trail."""
+        # Namespace being deleted, and a surviving namespace that references it
+        for prefix in ("del-syn-target", "del-syn-source"):
+            await client.post(
+                "/api/registry/namespaces",
+                json={"prefix": prefix, "deletion_mode": "full"},
+                headers=auth_headers,
+            )
+        resp = await client.post(
+            "/api/registry/entries/register",
+            json=[{"namespace": "del-syn-source", "entity_type": "templates",
+                   "composite_key": {"value": "survivor"}, "created_by": "test"}],
+            headers=auth_headers,
+        )
+        entry_id = resp.json()["results"][0]["registry_id"]
+
+        # The surviving entry carries a synonym in the doomed namespace
+        resp = await client.post(
+            "/api/registry/synonyms/add",
+            json=[{"target_id": entry_id,
+                   "synonym_namespace": "del-syn-target",
+                   "synonym_entity_type": "templates",
+                   "synonym_composite_key": {"value": "doomed-alias"}}],
+            headers=auth_headers,
+        )
+        assert resp.json()["results"][0]["status"] == "added"
+
+        # Non-forced delete succeeds (synonym_link is low severity)
+        resp = await client.delete(
+            "/api/registry/namespaces/del-syn-target",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "completed"
+
+        # The journal records what the deletion broke
+        resp = await client.get(
+            "/api/registry/namespaces/del-syn-target/deletion-status",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["force"] is False
+        broken = data["broken_references"]
+        assert len(broken) == 1
+        assert broken[0]["type"] == "synonym_link"
+        assert broken[0]["source_namespace"] == "del-syn-source"
+
+    @pytest.mark.asyncio
     async def test_deleted_namespace_not_in_list(self, client: AsyncClient, auth_headers: dict):
         """After deletion, namespace does not appear in list."""
         await client.post(
