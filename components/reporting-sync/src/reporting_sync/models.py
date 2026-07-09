@@ -192,14 +192,6 @@ class BatchSyncJob(BaseModel):
     error_message: str | None = None
 
 
-class BatchSyncRequest(StrictModel):
-    """Request to start a batch sync."""
-
-    template_value: str | None = None  # None = all templates
-    force: bool = False  # Force re-sync even if table has data
-    page_size: int = Field(default=100, ge=10, le=1000)
-
-
 class BatchSyncResponse(BaseModel):
     """Response from starting a batch sync."""
 
