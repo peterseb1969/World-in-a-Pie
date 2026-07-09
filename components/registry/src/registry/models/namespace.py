@@ -48,9 +48,20 @@ class Namespace(Document):
         default="retain",
         description="'retain' = soft-delete only; 'full' = allows hard-delete and namespace deletion"
     )
+    # 'deleted' is a legacy soft-delete marker with no remaining write path:
+    # journal-based namespace deletion (2026-03-27) physically removes the
+    # document instead of setting a status. The value stays in the Literal so
+    # documents soft-deleted before that cutover — and backups containing
+    # them — still hydrate; narrowing the enum would 500 every read that
+    # materializes such a record. Lifecycle today: active <-> archived
+    # (archive/restore), -> locked (deletion in progress) -> physical removal.
     status: Literal["active", "archived", "deleted", "locked"] = Field(
         default="active",
-        description="Namespace status. 'locked' means deletion is in progress."
+        description=(
+            "Namespace status. 'locked' means deletion is in progress. "
+            "'deleted' is a legacy soft-delete marker — no current write "
+            "path sets it; retained so pre-cutover records still load."
+        )
     )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)

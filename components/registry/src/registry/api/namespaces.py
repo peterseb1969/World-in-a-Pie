@@ -65,6 +65,9 @@ async def list_namespaces(
     """List namespaces the caller can access."""
     query: dict[str, Any]
     if include_archived:
+        # The $ne guards against legacy soft-deleted records (a retired
+        # write path — deletion is physical removal today), not a current
+        # lifecycle state. See the status field on the Namespace model.
         query = {"status": {"$ne": "deleted"}}
     else:
         query = {"status": "active"}
