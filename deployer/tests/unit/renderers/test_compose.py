@@ -551,7 +551,15 @@ class TestCaddyfile:
     ) -> None:
         """Gateway returns 401 on unauthenticated requests. Caddy must
         catch that and redirect the browser to /auth/login — otherwise
-        users see a bare 401 page instead of the login flow."""
+        users see a bare 401 page instead of the login flow.
+
+        The redir MUST carry the explicit `*` matcher: Caddyfile parses
+        a first argument starting with `/` as a path matcher, so the
+        unmatchered form `redir /auth/login... 302` compiles to
+        match-path + destination "302" and the redirect never fires
+        (browsers got Caddy's default empty 200). This test pins the
+        disambiguated token shape, not just the substring.
+        """
         d = _minimal_compose(apps=["react-console"])
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
@@ -561,7 +569,9 @@ class TestCaddyfile:
         rc_block = caddyfile[rc_start : rc_start + 500]
         assert "@unauth status 401" in rc_block
         assert "handle_response @unauth" in rc_block
-        assert "redir /auth/login" in rc_block
+        assert "redir * /auth/login?return_to={http.request.uri} 302" in rc_block
+        # The broken form must not resurface anywhere in the file.
+        assert "redir /auth/login" not in caddyfile
 
     def test_bare_path_redirects_to_trailing_slash(
         self, tmp_path: Path, real_discovery: Discovery

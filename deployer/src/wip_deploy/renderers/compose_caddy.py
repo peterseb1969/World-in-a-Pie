@@ -116,13 +116,21 @@ def _write_forward_auth(out: StringIO, cfg: CaddyConfig) -> None:
     302 redirect to /auth/login. Without this, Caddy would propagate
     the 401 straight to the browser, which sees a bare "Unauthorized"
     page instead of a login flow.
+
+    The redir needs the explicit `*` matcher: Caddyfile's ambiguous
+    grammar parses a first argument starting with `/` as a PATH MATCHER,
+    so `redir /auth/login... 302` compiles to match-path-`/auth/login...`
+    with destination "302" — it never matches the protected route, the
+    handle_response block does nothing, and the browser gets Caddy's
+    default empty 200 instead of the login flow. Same trap as the
+    bare-path redirect in _write_route below.
     """
     out.write(f"        forward_auth {cfg.gateway_service}:{cfg.gateway_port} {{\n")
     out.write("            uri /auth/verify\n")
     out.write("            copy_headers X-WIP-User X-WIP-Groups X-API-Key\n")
     out.write("            @unauth status 401\n")
     out.write("            handle_response @unauth {\n")
-    out.write("                redir /auth/login?return_to={http.request.uri} 302\n")
+    out.write("                redir * /auth/login?return_to={http.request.uri} 302\n")
     out.write("            }\n")
     out.write("        }\n")
 
