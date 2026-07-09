@@ -97,19 +97,10 @@ async def verify(request: Request):
     return_to = f"{original_proto}://{original_host}{original_uri}"
 
     from urllib.parse import quote
-    login_path = f"/auth/login?return_to={quote(return_to)}"
-    login_url_public = f"{original_proto}://{original_host}{login_path}"
-
-    # Traefik's forwardAuth passes 401/302 responses through to the
-    # browser verbatim, resolving relative URLs against the internal
-    # service address. Use absolute public URLs for browser redirects.
-    accept = request.headers.get("Accept", "")
-    if "text/html" in accept:
-        return RedirectResponse(url=login_url_public, status_code=302)
-
+    login_url = f"/auth/login?return_to={quote(return_to)}"
     return Response(
         status_code=401,
-        headers={"X-Auth-Redirect": login_path},
+        headers={"X-Auth-Redirect": login_url},
     )
 
 
