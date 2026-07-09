@@ -225,6 +225,16 @@ function useQueryDocuments(query, options) {
     ...options
   });
 }
+function useTableView(templateId, params, options) {
+  const client = useWipClient();
+  return useQuery({
+    queryKey: wipKeys.documents.tableView(templateId, params),
+    queryFn: () => client.documents.getTableView(templateId, params),
+    staleTime: STALE_TIMES.documents,
+    enabled: !!templateId,
+    ...options
+  });
+}
 function useDocumentVersions(id, options) {
   const client = useWipClient();
   return useQuery({
@@ -942,6 +952,6 @@ function useBulkImport(options) {
   };
 }
 
-export { STALE_TIMES, WipFooter, WipProvider, useActivateTemplate, useActivity, useAddEdgeTypeEndpoints, useAddSynonym, useArchiveDocument, useArchiveNamespace, useBatchJob, useBatchJobs, useBulkImport, useCancelBatchJob, useClearCompletedJobs, useCreateDocument, useCreateDocuments, useCreateNamespace, useCreateTemplate, useCreateTerm, useCreateTermRelations, useCreateTerminology, useDeactivateEntry, useDeleteDocument, useDeleteFile, useDeleteFiles, useDeleteNamespace, useDeleteTemplate, useDeleteTerm, useDeleteTermRelations, useDeleteTerminology, useDeprecateTerm, useDocument, useDocumentRelationships, useDocumentVersions, useDocuments, useDownloadUrl, useFile, useFiles, useFormSchema, useHardDeleteFile, useIntegrityCheck, useMergeEntries, useNamespaces, useQueryDocuments, useReactivateTemplate, useRegistrySearch, useRemoveSynonym, useReportQuery, useRestoreNamespace, useSyncStatus, useTemplate, useTemplateByValue, useTemplates, useTerm, useTerminologies, useTerminology, useTerms, useTraverseDocuments, useTriggerBatchSync, useTriggerBatchSyncAll, useTriggerTermRelationSync, useTriggerTermSync, useTriggerTerminologySync, useUpdateDocument, useUpdateDocuments, useUpdateFileMetadata, useUpdateNamespace, useUpdateTemplate, useUpdateTerm, useUpdateTerminology, useUploadFile, useWipClient, wipKeys };
+export { STALE_TIMES, WipFooter, WipProvider, useActivateTemplate, useActivity, useAddEdgeTypeEndpoints, useAddSynonym, useArchiveDocument, useArchiveNamespace, useBatchJob, useBatchJobs, useBulkImport, useCancelBatchJob, useClearCompletedJobs, useCreateDocument, useCreateDocuments, useCreateNamespace, useCreateTemplate, useCreateTerm, useCreateTermRelations, useCreateTerminology, useDeactivateEntry, useDeleteDocument, useDeleteFile, useDeleteFiles, useDeleteNamespace, useDeleteTemplate, useDeleteTerm, useDeleteTermRelations, useDeleteTerminology, useDeprecateTerm, useDocument, useDocumentRelationships, useDocumentVersions, useDocuments, useDownloadUrl, useFile, useFiles, useFormSchema, useHardDeleteFile, useIntegrityCheck, useMergeEntries, useNamespaces, useQueryDocuments, useReactivateTemplate, useRegistrySearch, useRemoveSynonym, useReportQuery, useRestoreNamespace, useSyncStatus, useTableView, useTemplate, useTemplateByValue, useTemplates, useTerm, useTerminologies, useTerminology, useTerms, useTraverseDocuments, useTriggerBatchSync, useTriggerBatchSyncAll, useTriggerTermRelationSync, useTriggerTermSync, useTriggerTerminologySync, useUpdateDocument, useUpdateDocuments, useUpdateFileMetadata, useUpdateNamespace, useUpdateTemplate, useUpdateTerm, useUpdateTerminology, useUploadFile, useWipClient, wipKeys };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

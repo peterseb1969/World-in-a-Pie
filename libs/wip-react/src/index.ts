@@ -17,6 +17,7 @@ export {
   useDocument,
   useQueryDocuments,
   useDocumentVersions,
+  useTableView,
   // Phase-4 relationship-graph queries (CASE-296)
   useDocumentRelationships,
   useTraverseDocuments,

@@ -248,6 +248,7 @@ const { data: template } = useTemplateByValue('PATIENT_RECORD')
 | `useDocument(id)` | `Document` | 30s | when `id` is truthy |
 | `useQueryDocuments(query)` | `DocumentListResponse` | 30s | when `query.template_id` or `query.filters.length > 0` |
 | `useDocumentVersions(id)` | `DocumentVersionResponse` | 30s | when `id` is truthy |
+| `useTableView(templateId, params?)` | `TableViewResponse` | 30s | when `templateId` is truthy |
 | `useDocumentRelationships(id, params?)` | `DocumentListResponse` | 30s | when `id` is truthy |
 | `useTraverseDocuments(id, params?)` | `DocumentTraverseResponse` | 30s | when `id` is truthy |
 

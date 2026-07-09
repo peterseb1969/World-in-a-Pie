@@ -5,7 +5,7 @@ import { WipProvider } from '../src/provider'
 import { useTerminologies, useTerminology } from '../src/hooks/use-terminologies'
 import { useTerms, useTerm } from '../src/hooks/use-terms'
 import { useTemplates, useTemplate } from '../src/hooks/use-templates'
-import { useDocuments, useDocument } from '../src/hooks/use-documents'
+import { useDocuments, useDocument, useTableView } from '../src/hooks/use-documents'
 import { useFiles, useFile } from '../src/hooks/use-files'
 import {
   useCreateTerminology,
@@ -53,6 +53,11 @@ function createMockClient() {
       getDocument: vi.fn().mockResolvedValue({ entity_id: 'doc1', data: {} }),
       queryDocuments: vi.fn().mockResolvedValue({ items: [], total: 0 }),
       getVersions: vi.fn().mockResolvedValue({ versions: [] }),
+      getTableView: vi.fn().mockResolvedValue({
+        columns: [{ name: 'field_a', label: 'Field A' }],
+        rows: [{ field_a: 'v1' }],
+        total: 1,
+      }),
       createDocument: vi.fn().mockResolvedValue({ entity_id: 'doc1', status: 'created' }),
       createDocuments: vi.fn().mockResolvedValue({ items: [] }),
       updateDocument: vi.fn().mockResolvedValue({ index: 0, status: 'updated', document_id: 'doc1', version: 2 }),
@@ -299,6 +304,37 @@ describe('Query hooks', () => {
 
       expect(result.current.fetchStatus).toBe('idle')
       expect(mockClient.documents.getDocument).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('useTableView', () => {
+    it('calls client.documents.getTableView with templateId and params', async () => {
+      const { Wrapper } = createWrapper(mockClient)
+      const params = { status: 'active', page: 1 }
+      const { result } = renderHook(() => useTableView('tpl1', params), { wrapper: Wrapper })
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true))
+      expect(mockClient.documents.getTableView).toHaveBeenCalledWith('tpl1', params)
+      expect(result.current.data).toMatchObject({ total: 1 })
+    })
+
+    it('is disabled when templateId is empty string', () => {
+      const { Wrapper } = createWrapper(mockClient)
+      const { result } = renderHook(() => useTableView(''), { wrapper: Wrapper })
+
+      expect(result.current.fetchStatus).toBe('idle')
+      expect(mockClient.documents.getTableView).not.toHaveBeenCalled()
+    })
+
+    it('uses the tableView query key so external invalidation reaches it', async () => {
+      const { Wrapper, queryClient } = createWrapper(mockClient)
+      const params = { status: 'active' }
+      const { result } = renderHook(() => useTableView('tpl1', params), { wrapper: Wrapper })
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true))
+      expect(
+        queryClient.getQueryData(wipKeys.documents.tableView('tpl1', params)),
+      ).toBeDefined()
     })
   })
 

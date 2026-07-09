@@ -227,6 +227,16 @@ function useQueryDocuments(query, options) {
     ...options
   });
 }
+function useTableView(templateId, params, options) {
+  const client = useWipClient();
+  return reactQuery.useQuery({
+    queryKey: wipKeys.documents.tableView(templateId, params),
+    queryFn: () => client.documents.getTableView(templateId, params),
+    staleTime: STALE_TIMES.documents,
+    enabled: !!templateId,
+    ...options
+  });
+}
 function useDocumentVersions(id, options) {
   const client = useWipClient();
   return reactQuery.useQuery({
@@ -994,6 +1004,7 @@ exports.useRemoveSynonym = useRemoveSynonym;
 exports.useReportQuery = useReportQuery;
 exports.useRestoreNamespace = useRestoreNamespace;
 exports.useSyncStatus = useSyncStatus;
+exports.useTableView = useTableView;
 exports.useTemplate = useTemplate;
 exports.useTemplateByValue = useTemplateByValue;
 exports.useTemplates = useTemplates;
