@@ -9,11 +9,21 @@ from pydantic import BaseModel, Field
 
 
 class NamespaceConfig(BaseModel):
-    """Namespace configuration from the Registry."""
+    """Namespace configuration from the Registry.
+
+    allowed_external_refs and deletion_mode default to None, not to the
+    platform defaults: None means "this archive predates the field" and the
+    restore upsert must OMIT it (leaving an existing namespace's config
+    untouched), while an explicit value — including an empty list — is
+    applied. A [] default would make restoring an old archive actively
+    clear an existing namespace's allowlist.
+    """
     prefix: str
     description: str = ""
     isolation_mode: str = "open"
     id_config: dict[str, Any] | None = None
+    allowed_external_refs: list[str] | None = None
+    deletion_mode: str | None = None
 
 
 class ClosureInfo(BaseModel):

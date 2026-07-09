@@ -251,6 +251,33 @@ class TestReadNamespaceConfig:
         assert await engine._read_namespace_config("nonexistent") is None
 
     @pytest.mark.asyncio
+    async def test_captures_allowed_external_refs_and_deletion_mode(self):
+        """The full namespace config round-trips — a restored namespace must
+        not silently revert its allowlist or deletion policy to defaults."""
+        mongo, _ = _make_mongo_mock(
+            namespace_config_doc={
+                "prefix": "library",
+                "isolation_mode": "open",
+                "allowed_external_refs": ["kb"],
+                "deletion_mode": "full",
+            }
+        )
+        engine = DirectBackupEngine(mongo, None, lambda _: None)
+        config = await engine._read_namespace_config("library")
+        assert config.allowed_external_refs == ["kb"]
+        assert config.deletion_mode == "full"
+
+    @pytest.mark.asyncio
+    async def test_absent_config_fields_stay_none(self):
+        """None (not [] / 'retain') marks fields the source doc did not carry,
+        so the restore upsert knows to omit rather than reset them."""
+        mongo, _ = _make_mongo_mock(namespace_config_doc={"prefix": "minimal"})
+        engine = DirectBackupEngine(mongo, None, lambda _: None)
+        config = await engine._read_namespace_config("minimal")
+        assert config.allowed_external_refs is None
+        assert config.deletion_mode is None
+
+    @pytest.mark.asyncio
     async def test_defaults_for_missing_fields(self):
         # ns doc with only prefix — other fields default
         mongo, _ = _make_mongo_mock(
@@ -488,6 +515,114 @@ class TestUpsertNamespace:
             assert body["description"] == "Knowledge base"
             assert body["isolation_mode"] == "strict"
             assert body["id_config"] == {"terminologies": {"algorithm": "uuid7"}}
+
+    @pytest.mark.asyncio
+    async def test_body_includes_allowlist_and_deletion_mode_when_present(self):
+        """Explicit values round-trip — including an EMPTY allowlist, which is
+        a real config, distinct from an archive that predates the field."""
+        mongo, _ = _make_mongo_mock()
+        engine = DirectRestoreEngine(
+            mongo, None, lambda _: None,
+            registry_base_url="http://registry:8001",
+            registry_api_key="test-key",
+        )
+        config = NamespaceConfig(
+            prefix="library",
+            allowed_external_refs=[],
+            deletion_mode="retain",
+        )
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "ok"
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.put = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+
+            await engine._upsert_namespace("library", config)
+
+            body = mock_client.put.await_args.kwargs["json"]
+            assert body["allowed_external_refs"] == []
+            assert body["deletion_mode"] == "retain"
+
+    @pytest.mark.asyncio
+    async def test_body_omits_fields_absent_from_old_archives(self):
+        """A pre-fix archive (fields None) must not touch an existing
+        namespace's allowlist or deletion policy."""
+        mongo, _ = _make_mongo_mock()
+        engine = DirectRestoreEngine(
+            mongo, None, lambda _: None,
+            registry_base_url="http://registry:8001",
+            registry_api_key="test-key",
+        )
+        config = NamespaceConfig(prefix="kb", description="old archive")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "ok"
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.put = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+
+            await engine._upsert_namespace("kb", config)
+
+            body = mock_client.put.await_args.kwargs["json"]
+            assert "allowed_external_refs" not in body
+            assert "deletion_mode" not in body
+
+    @pytest.mark.asyncio
+    async def test_retain_to_full_guard_warns_and_continues(self):
+        """Restoring deletion_mode='full' over an existing retain namespace
+        must not abort the restore and must not bypass the confirmation
+        guard — the field is skipped with a loud warning and the rest of the
+        config is applied."""
+        mongo, _ = _make_mongo_mock()
+        events = []
+        engine = DirectRestoreEngine(
+            mongo, None, events.append,
+            registry_base_url="http://registry:8001",
+            registry_api_key="test-key",
+        )
+        config = NamespaceConfig(
+            prefix="lab",
+            allowed_external_refs=["wip"],
+            deletion_mode="full",
+        )
+
+        guard_response = MagicMock()
+        guard_response.status_code = 400
+        guard_response.text = (
+            "Set confirm_enable_deletion=true in the body to flip "
+            "deletion_mode from 'retain' to 'full'"
+        )
+        ok_response = MagicMock()
+        ok_response.status_code = 200
+        ok_response.text = "ok"
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.put = AsyncMock(side_effect=[guard_response, ok_response])
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+
+            await engine._upsert_namespace("lab", config)
+
+            assert mock_client.put.await_count == 2
+            retry_body = mock_client.put.await_args_list[1].kwargs["json"]
+            assert "deletion_mode" not in retry_body
+            assert retry_body["allowed_external_refs"] == ["wip"]
+            warnings = [e for e in events if "NOT applied" in e.message]
+            assert len(warnings) == 1
+            assert "lab" in warnings[0].message
 
     @pytest.mark.asyncio
     async def test_raises_on_non_2xx_response(self):

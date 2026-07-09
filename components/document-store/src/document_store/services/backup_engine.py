@@ -289,6 +289,8 @@ class DirectBackupEngine:
             description=ns_doc.get("description", ""),
             isolation_mode=ns_doc.get("isolation_mode", "open"),
             id_config=ns_doc.get("id_config"),
+            allowed_external_refs=ns_doc.get("allowed_external_refs"),
+            deletion_mode=ns_doc.get("deletion_mode"),
         )
 
     def _emit(
@@ -523,17 +525,41 @@ class DirectRestoreEngine:
             body["isolation_mode"] = ns_config.isolation_mode
             if ns_config.id_config:
                 body["id_config"] = ns_config.id_config
+            # None means the archive predates these manifest fields — omit
+            # them so the PUT leaves an existing namespace's config untouched
+            # instead of resetting it to platform defaults. An explicit value
+            # (including an empty allowlist) round-trips.
+            if ns_config.allowed_external_refs is not None:
+                body["allowed_external_refs"] = ns_config.allowed_external_refs
+            if ns_config.deletion_mode is not None:
+                body["deletion_mode"] = ns_config.deletion_mode
 
         url = f"{self._registry_url}/api/registry/namespaces/{namespace}"
+        headers = {
+            "X-API-Key": self._registry_api_key,
+            "Content-Type": "application/json",
+        }
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.put(
-                url,
-                json=body,
-                headers={
-                    "X-API-Key": self._registry_api_key,
-                    "Content-Type": "application/json",
-                },
-            )
+            resp = await client.put(url, json=body, headers=headers)
+            if (
+                resp.status_code == 400
+                and "confirm_enable_deletion" in resp.text
+                and "deletion_mode" in body
+            ):
+                # An existing retain-mode namespace cannot be flipped to full
+                # without explicit confirmation — that guard is deliberate and
+                # a restore must not bypass it silently. Apply the rest of the
+                # config and surface the skipped field loudly instead of
+                # aborting the data restore over a config nuance.
+                skipped = body.pop("deletion_mode")
+                warning = (
+                    f"deletion_mode '{skipped}' NOT applied to existing "
+                    f"namespace '{namespace}' — flipping retain to full "
+                    "requires a manual PUT with confirm_enable_deletion=true"
+                )
+                logger.warning(warning)
+                self._emit("phase_namespace", f"WARNING: {warning}")
+                resp = await client.put(url, json=body, headers=headers)
             if resp.status_code not in (200, 201):
                 raise RestoreEngineError(
                     f"Failed to upsert namespace '{namespace}': "

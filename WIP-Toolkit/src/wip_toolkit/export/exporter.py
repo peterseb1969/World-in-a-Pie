@@ -99,6 +99,8 @@ def run_export(
             description=ns_config_data.get("description", ""),
             isolation_mode=ns_config_data.get("isolation_mode", "open"),
             id_config=ns_config_data.get("id_config"),
+            allowed_external_refs=ns_config_data.get("allowed_external_refs"),
+            deletion_mode=ns_config_data.get("deletion_mode"),
         )
 
     # Phase 1a: Collect small entities (fit in memory)
