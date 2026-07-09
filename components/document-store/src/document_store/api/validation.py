@@ -41,11 +41,12 @@ async def validate_document(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Validate document data without saving."""
-    # CASE-384 follow-up — validation reveals template structure +
-    # term-reference resolution against a namespace's term corpus. Gate
-    # by read on the target namespace.
-    if request.namespace:
-        await check_namespace_permission(identity, request.namespace, "read")
+    # Validation reveals template structure + term-reference resolution
+    # against a namespace's term corpus, so the read gate is unconditional.
+    # namespace is a required field — a conditional `if request.namespace:`
+    # gate's only reachable effect was letting an empty-string namespace
+    # skip enforcement entirely.
+    await check_namespace_permission(identity, request.namespace, "read")
 
     request.template_id = await resolve_or_404(
         request.template_id, "template", request.namespace, param_name="template_id"
@@ -86,10 +87,9 @@ async def validate_documents_bulk(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Validate multiple documents (single template) without saving (CASE-419)."""
-    # Same gating as the singular endpoint: validation reveals template
-    # structure + term-reference resolution, so require read on the namespace.
-    if request.namespace:
-        await check_namespace_permission(identity, request.namespace, "read")
+    # Same gating as the singular endpoint: unconditional — namespace is
+    # required, and a falsy-check gate lets an empty string skip enforcement.
+    await check_namespace_permission(identity, request.namespace, "read")
 
     request.template_id = await resolve_or_404(
         request.template_id, "template", request.namespace, param_name="template_id"

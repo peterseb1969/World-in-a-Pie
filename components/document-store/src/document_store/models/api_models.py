@@ -527,6 +527,7 @@ class ValidationRequest(StrictModel):
     )
     namespace: str = Field(
         ...,
+        min_length=1,
         description="Namespace for the document"
     )
     data: dict[str, Any] = Field(
@@ -588,6 +589,7 @@ class BulkValidationRequest(StrictModel):
     )
     namespace: str = Field(
         ...,
+        min_length=1,
         description="Namespace for the documents"
     )
     template_version: int | None = Field(

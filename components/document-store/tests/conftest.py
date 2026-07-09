@@ -51,6 +51,15 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "owner": "test",
     "groups": ["wip-admins"],
     "namespaces": ["wip"],
+}, {
+    # Non-admin key scoped to a namespace no test data lives in — exists to
+    # exercise permission gates (a wip-admins key bypasses every check, so
+    # gate enforcement is untestable with the primary key alone).
+    "name": "test-scoped",
+    "key": "test_scoped_key",
+    "owner": "test-scoped",
+    "groups": [],
+    "namespaces": ["scoped-test-ns"],
 }]))
 
 
