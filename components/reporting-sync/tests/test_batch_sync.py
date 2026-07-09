@@ -627,6 +627,7 @@ class TestInitialMetadataSync:
         batch_service.batch_sync_terminologies = AsyncMock(return_value={"synced": 1})
         batch_service.batch_sync_terms = AsyncMock(return_value={"synced": 1})
         batch_service.batch_sync_term_relations = AsyncMock(return_value={"synced": 1})
+        batch_service.batch_sync_templates = AsyncMock(return_value={"synced": 1})
 
         with patch("reporting_sync.main.retry_async", new=AsyncMock()):
             await _initial_metadata_sync(batch_service)

@@ -289,9 +289,10 @@ async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
         logger.error(
             "Initial metadata sync skipped; trigger "
             "POST /api/reporting-sync/sync/batch/terminologies?namespace=<ns>, "
-            "POST /api/reporting-sync/sync/batch/terms?namespace=<ns>, and "
-            "POST /api/reporting-sync/sync/batch/term_relations?namespace=<ns> "
-            "manually once def-store is reachable."
+            "POST /api/reporting-sync/sync/batch/terms?namespace=<ns>, "
+            "POST /api/reporting-sync/sync/batch/term_relations?namespace=<ns>, and "
+            "POST /api/reporting-sync/sync/batch/templates?namespace=<ns> "
+            "manually once the services are reachable."
         )
         return
 
@@ -306,6 +307,12 @@ async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
         # relations until the next relation write.
         t_result = await batch_sync_service.batch_sync_term_relations()
         logger.info(f"Initial term-relation sync: {t_result}")
+        # Templates metadata has the same rebuild-loss shape as term
+        # relations: live sync happens only on template events, so a rebuilt
+        # reporting database holds no template metadata until each
+        # template's next write. Backfill it here too.
+        t_result = await batch_sync_service.batch_sync_templates()
+        logger.info(f"Initial template metadata sync: {t_result}")
     except Exception as e:
         logger.error(f"Initial metadata sync failed: {e}")
 
@@ -830,6 +837,37 @@ async def trigger_term_relation_sync(
     return {
         "status": "completed",
         "table": "term_relations",
+        **result,
+    }
+
+
+@router.post("/sync/batch/templates")
+async def trigger_template_metadata_sync(
+    namespace: str,
+    page_size: int = 100,
+) -> dict[str, Any]:
+    """
+    Batch sync all template metadata from Template-Store to PostgreSQL.
+
+    Rebuild/backfill path for the templates metadata table — the live path
+    only writes on template events, so a rebuilt reporting database would
+    otherwise hold no template metadata until each template's next write.
+
+    Args:
+        namespace: Namespace to sync (required — no default)
+        page_size: Page size for API fetches (default: 100)
+    """
+    if not state.batch_sync_service:
+        raise HTTPException(status_code=503, detail="Batch sync service not available")
+
+    result = await state.batch_sync_service.batch_sync_templates(
+        namespace=namespace,
+        page_size=page_size,
+    )
+
+    return {
+        "status": "completed",
+        "table": "templates",
         **result,
     }
 
@@ -1368,7 +1406,7 @@ async def list_tables(
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
     allowed_prefixes = ("doc_",)
-    allowed_exact = {"terminologies", "terms", "term_relations"}
+    allowed_exact = {"terminologies", "terms", "term_relations", "templates"}
 
     async with state.postgres_pool.acquire() as conn:
         # Base tables across every non-system schema (each is a namespace).
@@ -1543,7 +1581,7 @@ async def execute_query(body: ReportQuery):
 
 # Allowed tables for CSV export (same whitelist as /tables)
 _EXPORT_ALLOWED_PREFIXES = ("doc_",)
-_EXPORT_ALLOWED_EXACT = {"terminologies", "terms", "term_relations"}
+_EXPORT_ALLOWED_EXACT = {"terminologies", "terms", "term_relations", "templates"}
 
 
 def _is_allowed_table(name: str) -> bool:
@@ -1598,7 +1636,7 @@ async def export_table_csv(
         raise HTTPException(
             status_code=400,
             detail=f"Table '{table}' is not available for export. "
-            "Only doc_* tables and metadata tables (terminologies, terms, term_relations) are allowed.",
+            "Only doc_* tables and metadata tables (terminologies, terms, term_relations, templates) are allowed.",
         )
 
     # Validate both identifiers before interpolation.

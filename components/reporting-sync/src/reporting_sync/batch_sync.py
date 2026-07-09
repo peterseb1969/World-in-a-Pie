@@ -536,7 +536,15 @@ class BatchSyncService:
                 page = 1
 
                 while True:
-                    params: dict = {"page": page, "page_size": page_size}
+                    # latest_only: the templates table keys one row per
+                    # (namespace, template_id) — the same row the live event
+                    # path last wrote. Without it the list returns every
+                    # version and the final upserted row depends on page
+                    # ordering, not on which version is actually latest.
+                    params: dict = {
+                        "page": page, "page_size": page_size,
+                        "latest_only": "true",
+                    }
                     if namespace:
                         params["namespace"] = namespace
                     resp = await client.get(
