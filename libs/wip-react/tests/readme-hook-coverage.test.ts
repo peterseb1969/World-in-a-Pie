@@ -7,6 +7,13 @@
  * runtime exports and asserts every `use*` hook name — and every top-level
  * `wipKeys` group — appears verbatim somewhere in README.md. A hook added
  * without a README row now fails CI instead of rotting silently.
+ *
+ * SCOPE (CASE-648): this guard checks NAME PRESENCE ONLY. It does not verify
+ * that a documented signature or key shape matches the actual export — a row
+ * with the right hook name but a stale parameter list (e.g. an added
+ * `namespace` argument the README omits) passes. Signature/shape correctness
+ * is not enforced here; treat a green run as "every hook is mentioned", not
+ * "every documented signature is right".
  */
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'

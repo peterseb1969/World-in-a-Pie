@@ -345,7 +345,7 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 | `useCreateTerminology()` | `CreateTerminologyRequest` | `BulkResultItem` | `terminologies.all` |
 | `useUpdateTerminology()` | `{ id, data }` | `BulkResultItem` | `terminologies.all` |
 | `useDeleteTerminology()` | `string` | `BulkResultItem` | `terminologies.all` |
-| `useCreateTerm(terminologyId)` | `CreateTermRequest` | `BulkResultItem` | `terms.all` + `terminologies.detail` |
+| `useCreateTerm(terminologyId, namespace)` | `CreateTermRequest` | `BulkResultItem` | `terms.all` + `terminologies.detail` |
 | `useUpdateTerm()` | `{ termId, data }` | `BulkResultItem` | `terms.all` |
 | `useDeprecateTerm()` | `{ termId, data }` | `BulkResultItem` | `terms.all` |
 | `useDeleteTerm(terminologyId)` | `string` | `BulkResultItem` | `terms.all` + `terminologies.detail` |
@@ -413,13 +413,13 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 ### Single-Item Mutations
 
 ```tsx
-const createTerm = useCreateTerminology()
+const createTerminology = useCreateTerminology()
 
 // Fire-and-forget
-createTerm.mutate({ value: 'GENDER', label: 'Gender' })
+createTerminology.mutate({ value: 'GENDER', label: 'Gender' })
 
 // With callbacks
-createTerm.mutate(
+createTerminology.mutate(
   { value: 'GENDER', label: 'Gender' },
   {
     onSuccess: (result) => {
@@ -433,7 +433,7 @@ createTerm.mutate(
 )
 
 // Async/await
-const result = await createTerm.mutateAsync({ value: 'GENDER', label: 'Gender' })
+const result = await createTerminology.mutateAsync({ value: 'GENDER', label: 'Gender' })
 ```
 
 ### Bulk Mutations
@@ -662,7 +662,7 @@ wipKeys.reporting.all                          → ['wip', 'reporting']
 wipKeys.reporting.integrity(params?)           → ['wip', 'reporting', 'integrity', params]
 wipKeys.reporting.activity(params?)            → ['wip', 'reporting', 'activity', params]
 wipKeys.reporting.search(params?)              → ['wip', 'reporting', 'search', params]
-wipKeys.reporting.query(sql, params?)          → ['wip', 'reporting', 'query', sql, params]
+wipKeys.reporting.query(sql, params?, namespace?) → ['wip', 'reporting', 'query', sql, params, namespace]
 wipKeys.reporting.syncStatus()                 → ['wip', 'reporting', 'sync-status']
 wipKeys.reporting.batchJobs()                  → ['wip', 'reporting', 'batch-jobs']
 wipKeys.reporting.batchJob(jobId)              → ['wip', 'reporting', 'batch-jobs', jobId]
@@ -696,7 +696,7 @@ const { data } = useActivity(params, { refetchInterval: 10_000 }) // poll every 
 | Mutation | Invalidates |
 |----------|-------------|
 | `useCreateTerminology` | `wipKeys.terminologies.all` |
-| `useCreateTerm(terminologyId)` | `wipKeys.terms.all` + `wipKeys.terminologies.detail(terminologyId)` |
+| `useCreateTerm(terminologyId, namespace)` | `wipKeys.terms.all` + `wipKeys.terminologies.detail(terminologyId)` |
 | `useCreateTemplate` | `wipKeys.templates.all` |
 | `useCreateDocument` | `wipKeys.documents.all` |
 | `useCreateDocuments` | `wipKeys.documents.all` |
