@@ -25,7 +25,13 @@ spec:
     - {name: data, mount_path: /data/db, size: 20Gi}
 
   healthcheck:
-    command: ["mongosh", "--quiet", "--eval", "db.runCommand('ping').ok"]
+    # TCP accept probe, deliberately NOT mongosh: mongosh is a full Node.js
+    # process forked per probe, and under host/VM load those spawns overrun
+    # the timeout, pile up as zombies, and amplify a merely-slow VM into an
+    # unresponsive one. A TCP accept costs ~nothing and cannot amplify; deep
+    # liveness comes from the core services' own MongoDB connection errors,
+    # which they already surface loudly.
+    command: ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/27017"]
     interval_seconds: 30
     timeout_seconds: 10
     start_period_seconds: 15

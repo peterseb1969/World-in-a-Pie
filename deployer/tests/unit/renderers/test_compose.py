@@ -383,14 +383,18 @@ class TestComposeYaml:
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
         """Command probes render CMD-SHELL with shlex-joined args so
-        shell metacharacters (parens, quotes) are preserved."""
+        shell metacharacters (redirections, quotes) are preserved."""
         doc = self._render_compose(tmp_path, real_discovery)
         mongo = doc["services"]["mongodb"]
         test = mongo["healthcheck"]["test"]
         assert test[0] == "CMD-SHELL"
-        # mongosh --quiet --eval '...' — parens-safe via shlex quoting
-        assert "mongosh" in test[1]
-        assert "db.runCommand" in test[1]
+        # bash -c 'exec 3<>/dev/tcp/...' — the <> redirection must survive
+        # shlex quoting intact.
+        assert "bash" in test[1]
+        assert "3<>/dev/tcp/127.0.0.1/27017" in test[1]
+        # The healthcheck must NOT fork a mongosh (full Node.js) per probe —
+        # that shape amplified a slow VM into an unresponsive one.
+        assert "mongosh" not in test[1]
 
     def test_env_secrets_go_via_env_file(
         self, tmp_path: Path, real_discovery: Discovery
