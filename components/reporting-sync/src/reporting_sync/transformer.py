@@ -376,11 +376,22 @@ class DocumentTransformer:
         # Build field type map and semantic type map from template
         field_types: dict[str, str] = {}
         semantic_types: dict[str, SemanticType] = {}
+        # File-field multiplicity decides the column shape, mirroring the
+        # schema_manager DDL: multiple -> one bare JSONB column; single ->
+        # three columns (<name>_file_id/_filename/_content_type), NO bare
+        # column at all.
+        single_file_fields: set[str] = set()
+        multiple_file_fields: set[str] = set()
         for field in template.get("fields", []):
             field_types[field["name"]] = field.get("type", "string")
             if field.get("semantic_type"):
                 with contextlib.suppress(ValueError):
                     semantic_types[field["name"]] = SemanticType(field["semantic_type"])
+            if field.get("type") == "file":
+                if (field.get("file_config") or {}).get("multiple"):
+                    multiple_file_fields.add(field["name"])
+                else:
+                    single_file_fields.add(field["name"])
         file_references_list = document.get("file_references", [])
 
         # Convert array format to dict for compatibility with existing flattening logic
@@ -458,6 +469,13 @@ class DocumentTransformer:
         )
         base_row.update(flattened_data)
 
+        # Single-file fields have no bare column — the DDL creates the
+        # three-column form instead. The generic flatten just emitted the
+        # raw data value under the bare name; drop it, or the INSERT
+        # references a column that does not exist and the row is lost.
+        for name in single_file_fields:
+            base_row.pop(self._safe_column_name(name), None)
+
         # Process semantic types if template is provided
         if semantic_types:
             self._process_semantic_types(base_row, data, term_references, semantic_types)
@@ -470,14 +488,25 @@ class DocumentTransformer:
                 if col_name not in base_row:
                     base_row[col_name] = term_id
 
-        # Add file columns for file references
+        # Add file columns for file references. Branch on the TEMPLATE's
+        # declared multiplicity (the same thing the DDL branched on), not on
+        # the reference payload's shape — a lone indexed ref on a multiple
+        # field arrives as a one-element list, and a shape-based branch would
+        # write three columns the table doesn't have.
         for field_path, file_ref in file_references.items():
             safe_field = self._safe_column_name(field_path)
-            if isinstance(file_ref, list):
-                # Multiple files - store as JSON
+            refs = file_ref if isinstance(file_ref, list) else [file_ref]
+            if field_path in multiple_file_fields:
+                base_row[safe_field] = json.dumps(refs)
+            elif field_path in single_file_fields:
+                base_row[f"{safe_field}_file_id"] = refs[0].get("file_id")
+                base_row[f"{safe_field}_filename"] = refs[0].get("filename")
+                base_row[f"{safe_field}_content_type"] = refs[0].get("content_type")
+            elif isinstance(file_ref, list):
+                # Field not in this template version (e.g. ref from an older
+                # data shape) — keep the pre-existing shape-based behavior.
                 base_row[safe_field] = json.dumps(file_ref)
             else:
-                # Single file - separate columns
                 base_row[f"{safe_field}_file_id"] = file_ref.get("file_id")
                 base_row[f"{safe_field}_filename"] = file_ref.get("filename")
                 base_row[f"{safe_field}_content_type"] = file_ref.get("content_type")

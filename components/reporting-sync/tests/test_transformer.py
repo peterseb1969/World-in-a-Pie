@@ -134,6 +134,109 @@ class TestDocumentTransformer:
         assert row["country"] == "USA"
         assert row["country_term_id"] == "0190b000-0000-7000-0000-000000000042"
 
+    def test_single_file_field_emits_three_columns_never_bare_name(self):
+        """A single-file field maps to <name>_file_id/_filename/_content_type.
+        The bare <name> column does not exist in the DDL — emitting it makes
+        the INSERT reference a missing column and the row is silently lost."""
+        transformer = DocumentTransformer()
+        template = {
+            "fields": [
+                {"name": "title", "type": "string", "label": "title"},
+                {"name": "attachment", "type": "file", "label": "attachment",
+                 "file_config": {"multiple": False}},
+            ],
+        }
+
+        document = {
+            "document_id": "doc-f1",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
+            "template_version": 1,
+            "version": 1,
+            "status": "active",
+            "identity_hash": "abc",
+            "namespace": "wip",
+            "data": {
+                "title": "Report",
+                "attachment": "0190f000-0000-7000-0000-000000000001",
+            },
+            "file_references": [
+                {"field_path": "attachment",
+                 "file_id": "0190f000-0000-7000-0000-000000000001",
+                 "filename": "report.pdf",
+                 "content_type": "application/pdf"},
+            ],
+        }
+
+        row = transformer.transform(document, template)[0]
+
+        assert "attachment" not in row
+        assert row["attachment_file_id"] == "0190f000-0000-7000-0000-000000000001"
+        assert row["attachment_filename"] == "report.pdf"
+        assert row["attachment_content_type"] == "application/pdf"
+
+    def test_single_file_field_without_reference_emits_nothing(self):
+        """No file attached: neither the bare name nor stale file columns —
+        the raw data value must still not leak into the nonexistent bare
+        column."""
+        transformer = DocumentTransformer()
+        template = {
+            "fields": [
+                {"name": "attachment", "type": "file", "label": "attachment"},
+            ],
+        }
+
+        document = {
+            "document_id": "doc-f2",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
+            "template_version": 1,
+            "version": 1,
+            "status": "active",
+            "identity_hash": "abc",
+            "namespace": "wip",
+            "data": {"attachment": "0190f000-0000-7000-0000-000000000002"},
+            "file_references": [],
+        }
+
+        row = transformer.transform(document, template)[0]
+
+        assert "attachment" not in row
+        assert "attachment_file_id" not in row
+
+    def test_multiple_file_field_emits_enriched_jsonb_under_bare_name(self):
+        """multiple: true maps to ONE bare JSONB column (matching the DDL),
+        holding the enriched refs — even when only one file is attached and
+        the ref arrives as a single-element list."""
+        transformer = DocumentTransformer()
+        template = {
+            "fields": [
+                {"name": "attachments", "type": "file", "label": "attachments",
+                 "file_config": {"multiple": True}},
+            ],
+        }
+
+        document = {
+            "document_id": "doc-f3",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
+            "template_version": 1,
+            "version": 1,
+            "status": "active",
+            "identity_hash": "abc",
+            "namespace": "wip",
+            "data": {"attachments": ["0190f000-0000-7000-0000-000000000003"]},
+            "file_references": [
+                {"field_path": "attachments[0]",
+                 "file_id": "0190f000-0000-7000-0000-000000000003",
+                 "filename": "scan.png",
+                 "content_type": "image/png"},
+            ],
+        }
+
+        row = transformer.transform(document, template)[0]
+
+        assert "attachments_file_id" not in row
+        enriched = json.loads(row["attachments"])
+        assert enriched[0]["filename"] == "scan.png"
+
     def test_array_flattening(self):
         """Test that arrays with term references are stored as JSON.
 
