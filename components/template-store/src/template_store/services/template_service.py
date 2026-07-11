@@ -420,20 +420,22 @@ class TemplateService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Restore mode: both template_id and version provided — skip Registry,
-        # insert directly with the given ID and version
-        if request.template_id and request.version is not None:
-            template_id = request.template_id
-            version = request.version
-        else:
-            # Normal mode: Register with Registry to get ID
-            client = get_registry_client()
-            template_id = await client.register_template(
-                created_by=actor,
-                namespace=namespace,
-                entry_id=request.template_id,
-            )
-            version = 1
+        # Register with Registry — ALWAYS, including restore mode
+        # (pre-assigned template_id + version). Every later resolution of a
+        # template_id (activation, references, synonym lookup) goes through
+        # the Registry, so an unregistered pre-assigned ID makes a restored
+        # template unresolvable: created but unusable. The Registry honors a
+        # provided entry_id and errors loudly if that ID already exists
+        # ("restore requires a clean target"), which is the correct
+        # double-restore behavior. Only the auto-synonym is skipped for
+        # restore (synonyms arrive separately from the archive, below).
+        client = get_registry_client()
+        template_id = await client.register_template(
+            created_by=actor,
+            namespace=namespace,
+            entry_id=request.template_id,
+        )
+        version = request.version if is_restore else 1
 
         # Create template document
         template = Template(
