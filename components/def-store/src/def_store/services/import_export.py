@@ -8,7 +8,7 @@ import logging
 import time
 from collections import Counter
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from ..models.api_models import (
     BulkResultItem,
@@ -275,7 +275,8 @@ class ImportExportService:
     async def import_terminology(
         data: dict[str, Any],
         format: str = "json",
-        options: dict[str, Any] | None = None
+        options: dict[str, Any] | None = None,
+        namespace: str | None = None,
     ) -> dict[str, Any]:
         """
         Import a terminology with terms.
@@ -287,6 +288,10 @@ class ImportExportService:
                 - skip_duplicates: Skip terms that already exist
                 - update_existing: Update existing terms
                 - created_by: User performing import
+            namespace: Destination namespace, resolved by the API layer
+                (query param / JSON body / single-namespace-key derivation)
+                and already permission-checked there. When set it wins;
+                the CSV payload never carries one.
 
         Returns:
             Import results
@@ -297,7 +302,7 @@ class ImportExportService:
         created_by = options.get("created_by")
 
         if format == "csv":
-            return await ImportExportService._import_csv(data, options)
+            return await ImportExportService._import_csv(data, options, namespace)
 
         # JSON import
         terminology_data = data.get("terminology")
@@ -310,10 +315,26 @@ class ImportExportService:
         if not terminology_data.get("label"):
             raise ValueError("Missing 'terminology.label' field in import data")
 
+        if namespace:
+            terminology_data["namespace"] = namespace
+        target_namespace = terminology_data.get("namespace")
+        if not target_namespace:
+            # The API layer always resolves one; direct service callers must
+            # supply it too — an import without a destination namespace used
+            # to die later as a bare KeyError on the create path.
+            raise ValueError("Missing terminology namespace for import")
+
         terms_data = data.get("terms", [])
 
-        # Check if terminology exists
-        existing_terminology = await Terminology.find_one({"value": terminology_data.get("value")})
+        # Check if terminology exists — scoped to the destination namespace.
+        # (namespace, value) is the terminology's identity; an unscoped
+        # value-only lookup could match a same-named terminology in ANOTHER
+        # namespace and attach the imported terms there, sidestepping the
+        # permission check that gated only the destination.
+        existing_terminology = await Terminology.find_one({
+            "value": terminology_data.get("value"),
+            "namespace": target_namespace,
+        })
 
         if existing_terminology:
             if not update_existing:
@@ -331,15 +352,16 @@ class ImportExportService:
                 value=terminology_data["value"],
                 label=terminology_data["label"],
                 description=terminology_data.get("description"),
-                namespace=terminology_data["namespace"],
+                namespace=target_namespace,
                 case_sensitive=terminology_data.get("case_sensitive", False),
                 allow_multiple=terminology_data.get("allow_multiple", False),
                 extensible=terminology_data.get("extensible", False),
                 metadata=TerminologyMetadata(**metadata) if metadata else None,
                 created_by=created_by
             )
-            namespace = terminology_data["namespace"]
-            terminology_response = await TerminologyService.create_terminology(create_req, namespace)
+            terminology_response = await TerminologyService.create_terminology(
+                create_req, target_namespace
+            )
             terminology_id = terminology_response.terminology_id
             terminology_status = "created"
 
@@ -390,11 +412,10 @@ class ImportExportService:
         relations_data = data.get("relations", [])
         rel_result = None
         if relations_data:
-            namespace = terminology_data["namespace"]
             rel_result = await ImportExportService._import_term_relations(
                 relations_data,
                 terminology_id=terminology_id,
-                namespace=namespace,
+                namespace=target_namespace,
                 term_results=term_results,
                 options=options,
             )
@@ -421,9 +442,17 @@ class ImportExportService:
     @staticmethod
     async def _import_csv(
         data: dict[str, Any],
-        options: dict[str, Any]
+        options: dict[str, Any],
+        namespace: str | None = None,
     ) -> dict[str, Any]:
-        """Import from CSV format."""
+        """Import from CSV format.
+
+        The flat CSV payload carries no namespace by design — the caller
+        resolves the destination namespace (API layer: query param or
+        single-namespace-key derivation) and passes it here. Without it,
+        creating a new terminology from CSV was impossible: the rebuilt
+        JSON block had no namespace and the create path requires one.
+        """
         terminology_value = data.get("terminology_value")
         terminology_label = data.get("terminology_label", terminology_value)
         csv_content = data.get("csv_content", "")
@@ -458,7 +487,9 @@ class ImportExportService:
             "terms": terms_data
         }
 
-        return await ImportExportService.import_terminology(json_data, "json", options)
+        return await ImportExportService.import_terminology(
+            json_data, "json", options, namespace=namespace
+        )
 
     @staticmethod
     async def _import_term_relations(
@@ -574,7 +605,7 @@ class ImportExportService:
     # =========================================================================
 
     # Predicate URI → WIP relation type
-    OBO_PREDICATE_MAP: dict[str, str] = {
+    OBO_PREDICATE_MAP: ClassVar[dict[str, str]] = {
         "is_a": "is_a",
         "http://purl.obolibrary.org/obo/BFO_0000050": "part_of",
         "http://purl.obolibrary.org/obo/BFO_0000051": "has_part",
@@ -588,7 +619,7 @@ class ImportExportService:
         "http://purl.obolibrary.org/obo/RO_0002331": "involved_in",
         "http://purl.obolibrary.org/obo/RO_0002332": "regulates_activity_of",
     }
-    OBO_SKIP_PREDICATES = {"subPropertyOf"}
+    OBO_SKIP_PREDICATES: ClassVar[set[str]] = {"subPropertyOf"}
 
     @staticmethod
     def _uri_to_value(uri: str) -> str:

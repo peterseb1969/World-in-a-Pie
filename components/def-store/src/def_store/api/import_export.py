@@ -72,7 +72,7 @@ async def export_terminology(
         return JSONResponse(content=result)
 
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.get(
@@ -106,6 +106,15 @@ async def export_all_terminologies(
 async def import_terminology(
     data: dict[str, Any] = Body(...),
     format: str = Query("json", description="Import format: json, csv"),
+    namespace: str | None = Query(
+        None,
+        description=(
+            "Destination namespace. Required for CSV imports unless the "
+            "API key is scoped to exactly one namespace (then derived). "
+            "For JSON imports it must match terminology.namespace when "
+            "both are provided."
+        ),
+    ),
     skip_duplicates: bool = Query(True, description="Skip existing terms"),
     update_existing: bool = Query(False, description="Update existing terms"),
     created_by: str | None = Query(None, description="User performing import"),
@@ -140,7 +149,10 @@ async def import_terminology(
     ```
 
     CSV format requires terminology_value and terminology_label in the data,
-    plus csv_content with columns: value, label, description, sort_order
+    plus csv_content with columns: value, label, description, sort_order.
+    The destination namespace comes from the `namespace` query parameter
+    (or is derived when the key is scoped to a single namespace) — the CSV
+    payload itself carries no namespace field by design.
 
     For very large imports (100k+ terms), you may need to tune the batch sizes:
     - `batch_size`: Controls MongoDB batch size (default 1000)
@@ -148,20 +160,49 @@ async def import_terminology(
 
     If you experience timeouts, try reducing `registry_batch_size` to 50 or lower.
     """
-    # CASE-384 — destination namespace lives in data.terminology.namespace.
-    # Require write on that namespace before importing. For CSV format
-    # the namespace may not yet be in the payload — fall through to the
-    # service's own validation; a misconfigured CSV import without
-    # namespace will still 400 there.
-    target_namespace: str | None = None
+    # Resolve the destination namespace from its three legitimate sources,
+    # then gate the write on it UNCONDITIONALLY. The old form only checked
+    # when data.terminology.namespace existed — the CSV payload is flat by
+    # design (no terminology block), so every CSV import silently skipped
+    # the write-permission check.
+    body_namespace: str | None = None
     if isinstance(data, dict):
         terminology_block = data.get("terminology")
         if isinstance(terminology_block, dict):
             ns_val = terminology_block.get("namespace")
             if isinstance(ns_val, str):
-                target_namespace = ns_val
-    if target_namespace:
-        await check_namespace_permission(identity, target_namespace, "write")
+                body_namespace = ns_val
+
+    # Two explicit sources must agree — silently preferring one would let a
+    # payload smuggle the write past a differently-scoped query param.
+    if namespace and body_namespace and namespace != body_namespace:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"namespace query parameter ({namespace!r}) contradicts "
+                f"terminology.namespace in the body ({body_namespace!r})"
+            ),
+        )
+
+    target_namespace = namespace or body_namespace
+    if target_namespace is None:
+        # Platform convention: a key scoped to exactly one namespace
+        # implies it; multi-namespace keys must say where the import goes.
+        key_namespaces = (identity.raw_claims or {}).get("namespaces")
+        if isinstance(key_namespaces, list) and len(key_namespaces) == 1:
+            target_namespace = key_namespaces[0]
+
+    if target_namespace is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Destination namespace is required: pass ?namespace=, "
+                "include terminology.namespace in a JSON body, or use an "
+                "API key scoped to a single namespace"
+            ),
+        )
+
+    await check_namespace_permission(identity, target_namespace, "write")
 
     try:
         options = {
@@ -175,7 +216,8 @@ async def import_terminology(
         result = await ImportExportService.import_terminology(
             data=data,
             format=format,
-            options=options
+            options=options,
+            namespace=target_namespace,
         )
 
         return JSONResponse(content=result)
@@ -183,9 +225,9 @@ async def import_terminology(
     except ValueError as e:
         msg = str(e)
         status = 409 if "already exists" in msg else 400
-        raise HTTPException(status_code=status, detail=msg)
+        raise HTTPException(status_code=status, detail=msg) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Import failed: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {e!s}") from e
 
 
 @router.post(
@@ -242,9 +284,9 @@ async def import_ontology(
         return JSONResponse(content=result)
 
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ontology import failed: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Ontology import failed: {e!s}") from e
 
 
 @router.post(
@@ -323,6 +365,6 @@ async def import_from_url(
     except ValueError as e:
         msg = str(e)
         status = 409 if "already exists" in msg else 400
-        raise HTTPException(status_code=status, detail=msg)
+        raise HTTPException(status_code=status, detail=msg) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Import failed: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {e!s}") from e
