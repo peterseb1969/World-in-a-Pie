@@ -63,7 +63,12 @@ class EntityCollector:
                 params={
                     "namespace": self.namespace,
                     "source_terminology_id": terminology_id,
-                    "status": "active" if not self.include_inactive else "",
+                    # Empty string = all statuses on this endpoint. Omitting
+                    # the param is NOT equivalent here: unlike the other
+                    # def-store list routes, /term-relations/all defaults an
+                    # omitted status to 'active' (reporting-sync's batch path
+                    # depends on that default).
+                    "status": "" if self.include_inactive else "active",
                     "page": page,
                     "page_size": 100,
                 },
@@ -82,8 +87,9 @@ class EntityCollector:
             tid = t["terminology_id"]
             rels = self.fetch_term_relations(tid)
             all_rels.extend(rels)
-        if all_rels:
-            console.print(f"  Fetched {len(all_rels)} term-relations across {len(terminologies)} terminologies")
+        # Always print the count — a silent zero once hid every relation
+        # being dropped from an archive.
+        console.print(f"  Fetched {len(all_rels)} term-relations across {len(terminologies)} terminologies")
         return all_rels
 
     # --- Template-Store ---

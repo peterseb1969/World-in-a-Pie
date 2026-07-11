@@ -137,7 +137,10 @@ async def list_all_term_relations(
     namespace: str | None = Query(default=None, description="Namespace (omit for all accessible)"),
     relation_type: str | None = Query(None, description="Filter by type"),
     source_terminology_id: str | None = Query(None, description="Filter by source terminology ID"),
-    status: str = Query("active", description="Filter by status"),
+    status: str = Query(
+        "active",
+        description="Filter by status; empty string = all statuses",
+    ),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Page size (max 1000)"),
     identity: UserIdentity = Depends(require_api_key),
@@ -148,6 +151,12 @@ async def list_all_term_relations(
     Unlike the per-term list endpoint, this returns ALL relations,
     useful for batch sync and export operations. Use source_terminology_id
     to filter to a specific terminology. Omit namespace for cross-namespace results.
+
+    Status semantics: omitted defaults to 'active' (existing batch-sync
+    callers depend on that default); an explicit empty string means all
+    statuses. An empty string must never become a literal filter — it
+    would silently match nothing, and an exporter asking for everything
+    would archive zero relations and lose data.
     """
     ns_filter = await resolve_namespace_filter(identity, namespace)
 
@@ -161,7 +170,7 @@ async def list_all_term_relations(
         ns_filter=ns_filter.query,
         relation_type=relation_type,
         source_terminology_id=source_terminology_id,
-        status=status,
+        status=status or None,
         page=page,
         page_size=page_size,
     )

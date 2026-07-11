@@ -751,6 +751,55 @@ class TestListAllRelations:
         assert len(data["items"]) == 1
         assert data["pages"] >= 2
 
+    @pytest.mark.asyncio
+    async def test_list_all_empty_status_means_all_statuses(
+        self, client, auth_headers
+    ):
+        """status='' returns ALL statuses; omitted status stays active-only.
+
+        An empty status must never become a literal filter — it silently
+        matched nothing, so an exporter asking for everything archived zero
+        relations and namespaces lost their ontology layer on round-trip."""
+        tid = await create_terminology(client, auth_headers)
+        a = await create_term(client, auth_headers, tid, "A")
+        b = await create_term(client, auth_headers, tid, "B")
+        c = await create_term(client, auth_headers, tid, "C")
+        await create_relation(client, auth_headers, a, b, "is_a")
+        await create_relation(client, auth_headers, a, c, "part_of")
+
+        # Soft-delete one relation → status inactive
+        del_resp = await client.request(
+            "DELETE",
+            f"{API}/ontology/term-relations",
+            json=[{
+                "source_term_id": a,
+                "target_term_id": c,
+                "relation_type": "part_of",
+            }],
+            params={"namespace": "wip"},
+            headers=auth_headers,
+        )
+        assert del_resp.status_code == 200
+        assert del_resp.json()["succeeded"] == 1
+
+        base_params = {"namespace": "wip", "source_terminology_id": tid}
+
+        # Omitted status → the 'active' default (batch-sync callers rely on it)
+        resp = await client.get(
+            f"{API}/ontology/term-relations/all",
+            params=base_params, headers=auth_headers,
+        )
+        statuses = [i["status"] for i in resp.json()["items"]]
+        assert statuses == ["active"]
+
+        # Empty status → all statuses, NOT a match-nothing literal filter
+        resp = await client.get(
+            f"{API}/ontology/term-relations/all",
+            params={**base_params, "status": ""}, headers=auth_headers,
+        )
+        statuses = sorted(i["status"] for i in resp.json()["items"])
+        assert statuses == ["active", "inactive"]
+
 
 class TestMetadataRoundTrip:
     """Tests for metadata persistence through create and list."""

@@ -384,12 +384,18 @@ class OntologyService:
         ns_filter: dict | None = None,
         relation_type: str | None = None,
         source_terminology_id: str | None = None,
-        status: str = "active",
+        status: str | None = "active",
         page: int = 1,
         page_size: int = 50,
     ) -> tuple[list[TermRelationResponse], int]:
-        """List all relations with pagination (cross-namespace when filter allows)."""
-        query: dict = {"status": status}
+        """List all relations with pagination (cross-namespace when filter allows).
+
+        A falsy status means "all statuses" — it must never become a literal
+        Mongo filter, which would silently match nothing.
+        """
+        query: dict = {}
+        if status:
+            query["status"] = status
         if ns_filter:
             query.update(ns_filter)
 
