@@ -3989,6 +3989,10 @@ WRITE_TOOLS = frozenset({
     "archive_document",
     "delete_document",
     "delete_documents_bulk",
+    # migrate_documents writes new doc versions pinned to the target
+    # template version (dry_run=False); it shipped without being added
+    # here and readonly servers kept exposing it.
+    "migrate_documents",
     # Files
     "upload_file",
     "delete_file",

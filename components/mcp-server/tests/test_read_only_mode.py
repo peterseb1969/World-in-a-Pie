@@ -68,6 +68,40 @@ def test_readonly_mode_updates_instructions():
     assert result.returncode == 0, f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
 
 
+def test_write_tools_covers_every_write_verb_tool():
+    """Drift guard: WRITE_TOOLS is a hand-maintained allowlist, and twice
+    now a new write tool shipped without being added (api-key pair, then
+    migrate_documents) — leaving readonly-mode servers exposing a genuine
+    write. Derive the write-shaped tool names from the live registry by
+    verb prefix and require every one to be in WRITE_TOOLS, so the next
+    write tool fails THIS test instead of silently leaking past readonly.
+
+    If this fails for a genuinely read-only tool whose name merely starts
+    with a write verb, rename the tool or extend WRITE_TOOLS consciously —
+    don't weaken the prefix list without checking what it guards.
+    """
+    write_verbs = (
+        "create_", "update_", "delete_", "upsert_", "merge_", "add_",
+        "remove_", "start_", "cancel_", "pause_", "resume_", "import_",
+        "upload_", "archive_", "deprecate_", "activate_", "deactivate_",
+        "reactivate_", "revoke_", "migrate_", "restore_", "hard_",
+    )
+    result = _run_in_subprocess(
+        "from wip_mcp.server import mcp, WRITE_TOOLS; "
+        f"verbs = {write_verbs!r}; "
+        "tools = {t.name for t in mcp._tool_manager.list_tools()}; "
+        "write_shaped = {t for t in tools if t.startswith(verbs)}; "
+        "missing = write_shaped - WRITE_TOOLS; "
+        "assert not missing, f'Write-shaped tools missing from WRITE_TOOLS: {missing}'; "
+        "stale = WRITE_TOOLS - tools; "
+        "assert not stale, f'WRITE_TOOLS entries with no registered tool: {stale}'; "
+        "print(f'OK: {len(write_shaped)} write-shaped tools all covered')",
+        readonly=False,
+    )
+    assert result.returncode == 0, f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    assert "OK:" in result.stdout
+
+
 def test_readonly_preserves_key_read_tools():
     """Key query/discovery tools must remain in read-only mode."""
     expected = [
