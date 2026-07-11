@@ -8,7 +8,7 @@ import re
 import secrets
 import string
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
@@ -99,7 +99,12 @@ class IdGenerator:
     @staticmethod
     def generate_uuid7() -> str:
         """Generate a UUID7 (time-ordered)."""
-        timestamp_ms = int(datetime.utcnow().timestamp() * 1000)
+        # The embedded timestamp must be true UTC epoch millis. A naive
+        # utcnow() here would be reinterpreted as LOCAL time by
+        # .timestamp(), skewing the time-ordering bits by the host's UTC
+        # offset on any non-UTC machine — silently breaking cross-host
+        # ordering of minted IDs.
+        timestamp_ms = int(datetime.now(UTC).timestamp() * 1000)
         time_bytes = timestamp_ms.to_bytes(6, byteorder="big")
         random_bytes = secrets.token_bytes(10)
 
