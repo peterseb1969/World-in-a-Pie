@@ -409,6 +409,45 @@ tar czf - "$WIP_DATA_DIR" \
   > "wip-backup-$(date +%Y%m%d).tar.gz.gpg"
 ```
 
+### 5.6 Logical export/import — the wip-toolkit CLI
+
+The tar backups above are physical (whole data directory, same platform
+version back). For **logical, per-namespace** data management — portable
+archives, namespace cloning, scripted/headless workflows — use the
+`wip-toolkit` CLI. It is a separate surface from the React Console's
+backup/restore (which uses document-store's engine); the CLI is for
+headless, scripted, and composable use.
+
+```bash
+# Export one namespace to a portable ZIP archive (v3 format;
+# multi-namespace archives are supported by the format)
+wip-toolkit --proxy export mylab mylab-backup.zip --include-files
+
+# See what an archive contains without touching the instance
+wip-toolkit inspect mylab-backup.zip
+
+# Clone into a NEW namespace: fresh mode re-keys every ID and rewrites
+# references (documents, files, edges) to the new IDs
+wip-toolkit --proxy import mylab-backup.zip --mode fresh \
+  --target-namespace mylab-copy
+
+# Both export and import accept --dry-run to preview
+```
+
+The full command set: `export`, `import` (fresh/restore modes), `inspect`,
+`seed` (bootstrap a namespace from seed files), `status` (§7.4),
+`update-document`, `backfill-synonyms`. Each documents its options via
+`wip-toolkit <command> --help`.
+
+Scope honesty, so you don't discover limits mid-incident: fresh-mode
+import is the verified path for cloning and disaster recovery to a new
+namespace. Restore mode (same IDs, original prefix) and full fidelity of
+edge-type templates through import have known open defects at the time of
+writing — check open cases against the toolkit before relying on either.
+There is no point-in-time snapshot (an export captures current state), no
+archive merge/diff, and archives do not carry API keys or namespace
+grants: a restore brings back data, not access.
+
 ---
 
 ## 6. Apps on WIP

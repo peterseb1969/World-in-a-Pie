@@ -343,17 +343,27 @@ r = result["results"][0]
 if r["status"] == "error":
     raise RuntimeError(r["error"])
 
-# Delete terminologies
-result = client.post("def-store", "/terminologies", json=[
-    {"id": tid1},
-    {"id": tid2, "force": True},
-])
-for r in result["results"]:
+# Delete terminologies — bulk deletes use HTTP DELETE with a JSON body
+# (matching Key Rule 4 and the @router.delete routes every store exposes).
+# WIPClient has no delete() helper yet, so issue the request directly:
+import httpx
+
+resp = httpx.request(
+    "DELETE",
+    f"{base_url}/api/def-store/terminologies",
+    json=[{"id": tid1}, {"id": tid2, "force": True}],
+    headers={"X-API-Key": api_key},
+)
+for r in resp.json()["results"]:
     if r["status"] == "error":
         print(f"Failed to delete item {r['index']}: {r['error']}")
 ```
 
-> **Why POST for deletes?** HTTP DELETE with a JSON body is non-standard. The bulk-first pattern uses POST for all write operations — creates, updates, and deletes — so they all accept arrays and return BulkResponse.
+> **DELETE with a JSON body?** Yes — it is unusual but well-defined, every
+> WIP store routes bulk deletes as `@router.delete` with a `List[...]` body,
+> and the response is the same BulkResponse envelope as every other write.
+> (An earlier revision of this example used POST for deletes; the platform
+> never did.)
 
 ### TypeScript (WIP Console UI)
 
