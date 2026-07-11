@@ -45,7 +45,9 @@ class TemplateService:
     # =========================================================================
 
     @staticmethod
-    def _validate_relationship_template_shape(request: CreateTemplateRequest) -> None:
+    async def _validate_relationship_template_shape(
+        request: CreateTemplateRequest, namespace: str
+    ) -> None:
         """Enforce structural constraints on relationship templates.
 
         A relationship template must declare:
@@ -54,8 +56,15 @@ class TemplateService:
           - a source_ref and target_ref reference field with
             reference_type=document
           - the source_ref / target_ref field-level target_templates
-            must equal the template-level lists (same set, order
-            insensitive)
+            must name the same set of templates as the template-level
+            lists. Equivalence is by canonical entity, not by string:
+            value-form and ID-form of the same template compare equal
+            (the universal synonym rule for reference comparisons).
+            Same-form lists short-circuit on set equality without any
+            Registry call, so draft chains naming not-yet-created
+            templates keep working as long as both lists use the same
+            spelling; MIXED forms need the targets to resolve and fail
+            loudly when they cannot.
 
         For non-relationship templates (entity, reference), the
         template-level source_templates / target_templates must be
@@ -101,11 +110,15 @@ class TemplateService:
                     f"reference_type='document' (got '{field.reference_type}')"
                 )
             field_targets = field.target_templates or []
-            if set(field_targets) != set(expected):
+            if not await TemplateService._ref_lists_equivalent(
+                field_targets, list(expected), "template", namespace
+            ):
                 raise ValueError(
                     f"Relationship template field '{endpoint}.target_templates' "
                     f"must match template-level {endpoint.replace('_ref', '_templates')}: "
-                    f"expected {sorted(expected)}, got {sorted(field_targets)}"
+                    f"expected {sorted(expected)}, got {sorted(field_targets)} "
+                    "(compared by canonical entity — value-form and ID-form of "
+                    "the same template are equivalent)"
                 )
 
     # =========================================================================
@@ -322,9 +335,11 @@ class TemplateService:
         if request.status is not None and request.status not in ("active", "draft"):
             raise ValueError(f"Invalid status '{request.status}': must be 'active' or 'draft'")
 
-        # Structural validation for relationship templates (purely
-        # declarative — runs even in draft mode, no DB calls).
-        TemplateService._validate_relationship_template_shape(request)
+        # Structural validation for relationship templates. Runs in draft
+        # mode too; DB/Registry-free for same-form endpoint lists (the
+        # equivalence check short-circuits on set equality) — mixed
+        # value/ID forms resolve through the Registry.
+        await TemplateService._validate_relationship_template_shape(request, namespace)
 
         # Structural validation for full_text_indexed fields (also
         # purely declarative — runs in draft mode too).
@@ -1808,7 +1823,9 @@ class TemplateService:
 
             # Structural validation for relationship templates
             try:
-                TemplateService._validate_relationship_template_shape(template_req)
+                await TemplateService._validate_relationship_template_shape(
+                    template_req, namespace
+                )
             except ValueError as e:
                 results.append(BulkResultItem(
                     index=i,

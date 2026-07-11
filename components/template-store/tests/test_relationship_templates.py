@@ -322,3 +322,48 @@ async def test_usage_and_versioned_preserved_across_update(
     assert body["source_templates"] == ["EXPERIMENT"]
     assert body["target_templates"] == ["MOLECULE"]
     assert body["version"] >= 2  # new version was created
+
+
+# ---------------------------------------------------------------------------
+# Endpoint-list equivalence resolves through the Registry
+# ---------------------------------------------------------------------------
+
+
+class TestEndpointListSynonymEquivalence:
+    """The field-level vs template-level endpoint-list check compares by
+    canonical entity, not by string: value-form and ID-form of the same
+    template are equivalent (the universal synonym rule for reference
+    comparisons). Stored templates carry field-level lists as canonical IDs
+    while template-level lists stay values, so archived edge types re-created
+    by a backup import legitimately arrive in mixed form."""
+
+    @pytest.mark.asyncio
+    async def test_mixed_value_and_id_forms_accepted(self, client, auth_headers):
+        src = await _post_template(client, auth_headers, _entity_template("EQ_SRC"))
+        tgt = await _post_template(client, auth_headers, _entity_template("EQ_TGT"))
+        assert src["status"] == "created" and tgt["status"] == "created"
+
+        payload = _relationship_template(
+            value="EQ_LINK",
+            source_templates=["EQ_SRC"],          # value form
+            target_templates=["EQ_TGT"],          # value form
+            source_ref_targets=[src["id"]],       # canonical-ID form
+            target_ref_targets=[tgt["id"]],       # canonical-ID form
+        )
+        result = await _post_template(client, auth_headers, payload)
+        assert result["status"] == "created", result
+
+    @pytest.mark.asyncio
+    async def test_genuinely_different_entities_still_rejected(self, client, auth_headers):
+        for v in ("EQ_A", "EQ_B", "EQ_C"):
+            await _post_template(client, auth_headers, _entity_template(v))
+
+        payload = _relationship_template(
+            value="EQ_BAD_LINK",
+            source_templates=["EQ_A"],
+            target_templates=["EQ_B"],
+            source_ref_targets=["EQ_C"],  # resolves fine — to the WRONG entity
+        )
+        result = await _post_template(client, auth_headers, payload)
+        assert result["status"] == "error"
+        assert "must match template-level" in (result.get("error") or "")
