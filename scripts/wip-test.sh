@@ -76,7 +76,10 @@ fi
 # Case statement (not assoc array) for macOS bash 3.2 compatibility.
 _component_deps() {
     case "$1" in
-        registry|def-store|template-store|document-store|ingest-gateway)
+        registry|def-store|template-store|document-store|ingest-gateway|wip-toolkit)
+            # wip-toolkit: the tests/integration/ suite mounts the four
+            # services in-process and needs a real MongoDB (unit tests
+            # skip gracefully without it, but the wrapper should provide it)
             echo "mongo"
             ;;
         reporting-sync)

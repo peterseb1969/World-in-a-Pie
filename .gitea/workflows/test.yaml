@@ -348,13 +348,33 @@ jobs:
           python3 -m venv .venv
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
+      # tests/integration/ mounts registry, def-store, template-store, and
+      # document-store in-process against a real MongoDB. Without mongo +
+      # the services' requirements the integration tests SKIP — which
+      # would silently turn the round-trip guard back into theater, so CI
+      # provisions both.
+      - name: Start MongoDB
+        run: |
+          docker start test-mongo 2>/dev/null || \
+            docker run -d --name test-mongo -p 27017:27017 mongo:7
+          for i in $(seq 1 10); do
+            docker exec test-mongo mongosh --quiet --eval "db.runCommand('ping')" && break
+            sleep 1
+          done
+
       - name: Install dependencies
         run: |
           . .venv/bin/activate
           pip install -e WIP-Toolkit
+          pip install -r components/registry/requirements.txt
+          pip install -r components/def-store/requirements.txt
+          pip install -r components/template-store/requirements.txt
+          pip install -r components/document-store/requirements.txt
           pip install pytest
 
       - name: Run tests
+        env:
+          MONGO_URI: mongodb://localhost:27017/
         run: |
           . .venv/bin/activate
           pytest WIP-Toolkit/tests/ -v --tb=short
