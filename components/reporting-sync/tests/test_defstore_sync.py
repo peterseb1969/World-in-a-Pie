@@ -692,3 +692,72 @@ class TestSchemaManagerTables:
 
         assert result == '"wip"."term_relations"'
         assert not any("CREATE TABLE" in str(c.args[0]) for c in conn.execute.call_args_list)
+
+
+# =========================================================================
+# Terminal-drop visibility: a failure on the final permitted delivery is
+# a permanent loss and must be counted distinctly from ordinary retries
+# =========================================================================
+
+
+class TestTerminalDropVisibility:
+    """Failures that exhaust max_deliver must be queryable, not log-only."""
+
+    @staticmethod
+    def _failing_message(num_delivered) -> MagicMock:
+        """A message whose event fails processing (terminology without an id)."""
+        msg = MagicMock()
+        msg.data = json.dumps({
+            "event_type": "terminology.created",
+            "terminology": {"terminology_id": "", "value": "X", "namespace": "wip"},
+        }).encode()
+        msg.ack = AsyncMock()
+        msg.nak = AsyncMock()
+        msg.metadata.num_delivered = num_delivered
+        return msg
+
+    @pytest.mark.asyncio
+    async def test_failure_on_final_delivery_records_drop(self, worker):
+        from reporting_sync.config import settings
+
+        msg = self._failing_message(settings.retry_attempts)
+        await worker._process_message(msg)
+
+        assert worker.status.events_dropped == 1
+        assert worker.status.events_failed == 1
+        drop = worker.status.recent_drops[0]
+        assert drop.event_type == "terminology.created"
+        assert drop.deliveries == settings.retry_attempts
+        msg.nak.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_failure_before_final_delivery_is_not_a_drop(self, worker):
+        msg = self._failing_message(1)
+        await worker._process_message(msg)
+
+        assert worker.status.events_dropped == 0
+        assert worker.status.recent_drops == []
+        assert worker.status.events_failed == 1
+        msg.nak.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_mock_or_missing_metadata_treated_as_first_delivery(self, worker):
+        """A non-int num_delivered (absent metadata, or a bare MagicMock as in
+        older tests) must never count as a terminal drop."""
+        msg = self._failing_message(MagicMock())
+        await worker._process_message(msg)
+
+        assert worker.status.events_dropped == 0
+        assert worker.status.events_failed == 1
+
+    @pytest.mark.asyncio
+    async def test_recent_drops_ring_is_bounded(self, worker):
+        from reporting_sync.config import settings
+
+        for _ in range(25):
+            await worker._process_message(
+                self._failing_message(settings.retry_attempts)
+            )
+
+        assert worker.status.events_dropped == 25
+        assert len(worker.status.recent_drops) == worker._RECENT_DROPS_MAX

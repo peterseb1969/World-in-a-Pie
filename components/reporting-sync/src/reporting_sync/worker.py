@@ -10,6 +10,7 @@ Responsibilities:
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -24,7 +25,7 @@ from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 
 from .config import settings
 from .metrics import metrics
-from .models import EventType, ReportingConfig, SyncStatus
+from .models import DroppedEvent, EventType, ReportingConfig, SyncStatus
 from .schema_manager import SchemaManager
 from .transformer import DocumentTransformer, _parse_datetime
 
@@ -657,9 +658,7 @@ class SyncWorker:
                 self.status.events_processed += 1
                 self.status.last_event_processed = datetime.now(UTC)
             else:
-                # Negative ack for retry
-                await msg.nak(delay=settings.retry_delay_ms / 1000)
-                self.status.events_failed += 1
+                await self._nak_or_record_drop(msg, event_data, "processing returned failure")
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in message: {e}")
@@ -668,8 +667,71 @@ class SyncWorker:
 
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
-            await msg.nak(delay=settings.retry_delay_ms / 1000)
-            self.status.events_failed += 1
+            event = None
+            with contextlib.suppress(Exception):
+                event = json.loads(msg.data.decode())
+            await self._nak_or_record_drop(msg, event, str(e))
+
+    # Bounded ring of recent terminal drops kept on the status object.
+    _RECENT_DROPS_MAX = 20
+
+    async def _nak_or_record_drop(
+        self, msg, event_data: dict | None, error: str
+    ) -> None:
+        """Nak for redelivery — and if this was the final permitted delivery,
+        record the loss distinctly.
+
+        JetStream stops delivering after the consumer's max_deliver, so a
+        failure on that delivery means the entity is permanently absent from
+        SQL. The aggregate events_failed counter cannot distinguish a retry
+        that later succeeded from that permanent loss — the drop counter and
+        ring exist so the loss is queryable via the status endpoint instead
+        of only reconstructable from worker logs.
+        """
+        deliveries = 1
+        try:
+            nd = msg.metadata.num_delivered
+            if isinstance(nd, int):
+                deliveries = nd
+        except Exception:
+            pass
+
+        if deliveries >= settings.retry_attempts:
+            entity_id = None
+            namespace = None
+            for container, id_key in (
+                ("document", "document_id"),
+                ("template", "template_id"),
+                ("terminology", "terminology_id"),
+                ("term", "term_id"),
+            ):
+                obj = (event_data or {}).get(container)
+                if isinstance(obj, dict) and obj.get(id_key):
+                    entity_id = obj[id_key]
+                    namespace = obj.get("namespace")
+                    break
+
+            drop = DroppedEvent(
+                event_type=(event_data or {}).get("event_type", "unknown"),
+                entity_id=entity_id,
+                namespace=namespace,
+                error=error[:500],
+                deliveries=deliveries,
+                dropped_at=datetime.now(UTC),
+            )
+            self.status.events_dropped += 1
+            self.status.recent_drops.append(drop)
+            del self.status.recent_drops[:-self._RECENT_DROPS_MAX]
+            logger.error(
+                "TERMINAL DROP after %d deliveries — %s %s (namespace=%s) "
+                "will not be retried: %s",
+                deliveries, drop.event_type, entity_id or "?", namespace, error,
+            )
+
+        # Nak either way: on the final delivery JetStream will not redeliver
+        # regardless — the nak just releases the message state promptly.
+        await msg.nak(delay=settings.retry_delay_ms / 1000)
+        self.status.events_failed += 1
 
     async def start(self) -> None:
         """Start the sync worker."""

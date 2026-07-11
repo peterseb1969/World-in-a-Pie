@@ -144,6 +144,23 @@ class TemplateField(BaseModel):
     full_text_indexed: bool | None = None
 
 
+class DroppedEvent(BaseModel):
+    """A sync event that exhausted its redeliveries and will never retry.
+
+    JetStream stops delivering after the consumer's max_deliver; without
+    this record the affected entity is simply absent from SQL with only
+    worker-log evidence. Kept in a bounded in-memory ring on SyncStatus —
+    visibility, not a durable dead-letter store.
+    """
+
+    event_type: str
+    entity_id: str | None = None
+    namespace: str | None = None
+    error: str
+    deliveries: int
+    dropped_at: datetime
+
+
 class SyncStatus(BaseModel):
     """Status of the sync worker."""
 
@@ -152,7 +169,12 @@ class SyncStatus(BaseModel):
     connected_to_postgres: bool
     last_event_processed: datetime | None = None
     events_processed: int = 0
+    # Counts every failed processing attempt, including retries that later
+    # succeed. events_dropped counts only terminal losses — events that
+    # exhausted max_deliver and will never be retried.
     events_failed: int = 0
+    events_dropped: int = 0
+    recent_drops: list[DroppedEvent] = Field(default_factory=list)
     tables_managed: int = 0
 
 
