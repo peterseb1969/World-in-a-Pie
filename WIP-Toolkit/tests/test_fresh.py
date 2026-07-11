@@ -17,7 +17,7 @@ from wip_toolkit.import_.fresh import (
     fresh_import,
 )
 from wip_toolkit.import_.remap import IDRemapper
-from wip_toolkit.models import ImportStats
+from wip_toolkit.models import ImportStats, NamespaceConfig
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -165,46 +165,85 @@ class TestRemapCompositeKey:
 # ---------------------------------------------------------------------------
 
 class TestEnsureNamespace:
-    def test_namespace_exists(self):
+    """The namespace step is a single idempotent PUT upsert that applies the
+    archive's namespace config (import half of the manifest round-trip)."""
+
+    def test_upsert_without_config(self):
         client = MagicMock()
-        client.get.return_value = {"prefix": "target-ns"}
         stats = ImportStats(mode="fresh", target_namespace="target-ns")
 
         _ensure_namespace(client, "target-ns", stats)
 
-        client.get.assert_called_once_with("registry", "/namespaces/target-ns")
+        client.put.assert_called_once()
+        args, kwargs = client.put.call_args
+        assert args == ("registry", "/namespaces/target-ns")
+        # No archive config → only the description; nothing that could
+        # reset an existing namespace's settings to defaults.
+        assert "deletion_mode" not in kwargs["json"]
+        assert "allowed_external_refs" not in kwargs["json"]
+        client.get.assert_not_called()
         client.post.assert_not_called()
 
-    def test_namespace_404_creates(self):
+    def test_upsert_applies_manifest_config(self):
         client = MagicMock()
-        client.get.side_effect = WIPClientError("Not found", status_code=404)
-        client.post.return_value = {"prefix": "target-ns"}
         stats = ImportStats(mode="fresh", target_namespace="target-ns")
+        cfg = NamespaceConfig(
+            prefix="src-ns",
+            description="from archive",
+            isolation_mode="strict",
+            allowed_external_refs=["wip"],
+            deletion_mode="full",
+        )
 
-        _ensure_namespace(client, "target-ns", stats)
+        _ensure_namespace(client, "target-ns", stats, ns_config=cfg)
 
-        client.post.assert_called_once()
-        args, kwargs = client.post.call_args
-        assert args == ("registry", "/namespaces")
-        assert kwargs["json"]["prefix"] == "target-ns"
+        body = client.put.call_args.kwargs["json"]
+        assert body["isolation_mode"] == "strict"
+        assert body["allowed_external_refs"] == ["wip"]
+        assert body["deletion_mode"] == "full"
+        assert body["description"] == "from archive"
 
-    def test_namespace_create_fails(self):
+    def test_upsert_omits_fields_older_archives_lack(self):
+        """None means the archive predates the field — the PUT must omit it
+        so an existing namespace's config is not reset to defaults."""
         client = MagicMock()
-        client.get.side_effect = WIPClientError("Not found", status_code=404)
-        client.post.side_effect = WIPClientError("Conflict", status_code=409)
+        stats = ImportStats(mode="fresh", target_namespace="target-ns")
+        cfg = NamespaceConfig(prefix="src-ns")  # pre-CASE-649 shape
+
+        _ensure_namespace(client, "target-ns", stats, ns_config=cfg)
+
+        body = client.put.call_args.kwargs["json"]
+        assert "deletion_mode" not in body
+        assert "allowed_external_refs" not in body
+
+    def test_retain_to_full_guard_warns_and_retries_without_field(self):
+        """Flipping an existing retain namespace to full needs manual
+        confirmation — the import must neither bypass the guard nor abort."""
+        client = MagicMock()
+        stats = ImportStats(mode="fresh", target_namespace="target-ns")
+        cfg = NamespaceConfig(prefix="src-ns", deletion_mode="full")
+        client.put.side_effect = [
+            WIPClientError(
+                "requires confirm_enable_deletion=true", status_code=400
+            ),
+            {"prefix": "target-ns"},
+        ]
+
+        _ensure_namespace(client, "target-ns", stats, ns_config=cfg)
+
+        assert client.put.call_count == 2
+        retry_body = client.put.call_args.kwargs["json"]
+        assert "deletion_mode" not in retry_body
+        assert any("deletion_mode" in w for w in stats.warnings)
+
+    def test_upsert_fails(self):
+        client = MagicMock()
+        client.put.side_effect = WIPClientError("Server Error", status_code=500)
         stats = ImportStats(mode="fresh", target_namespace="target-ns")
 
         with pytest.raises(WIPClientError):
             _ensure_namespace(client, "target-ns", stats)
         assert len(stats.errors) == 1
-
-    def test_namespace_other_error_raises(self):
-        client = MagicMock()
-        client.get.side_effect = WIPClientError("Server Error", status_code=500)
-        stats = ImportStats(mode="fresh", target_namespace="target-ns")
-
-        with pytest.raises(WIPClientError):
-            _ensure_namespace(client, "target-ns", stats)
 
 
 # ---------------------------------------------------------------------------
@@ -1378,3 +1417,55 @@ class TestFreshImportProgressCallback:
             progress_callback=explosive,
         )
         assert stats.mode == "fresh"
+
+
+# ---------------------------------------------------------------------------
+# Template-class flag + metadata fidelity through fresh import
+# ---------------------------------------------------------------------------
+
+class TestTemplateFlagFidelity:
+    """usage / versioned / header_fields / source_templates / target_templates
+    must survive import. usage and versioned are immutable after create, so a
+    dropped flag silently turns a restored edge type into a plain entity
+    template — the round-trip's worst silent failure."""
+
+    def test_create_payload_carries_class_flags(self):
+        client = MagicMock()
+        client.post.side_effect = [_ok_template("NEW-EDGE"), {}]
+        stats = ImportStats(mode="fresh", target_namespace="ns")
+        templates = [{
+            "template_id": "OLD-EDGE",
+            "value": "AUD_LINK",
+            "version": 1,
+            "fields": [],
+            "usage": "relationship",
+            "versioned": False,
+            "header_fields": ["code"],
+            "source_templates": ["AUD_ITEM"],
+            "target_templates": ["AUD_ITEM"],
+        }]
+
+        _create_templates_multipass(client, "ns", templates, IDRemapper(), stats, False)
+
+        payload = client.post.call_args_list[0][1]["json"][0]
+        assert payload["usage"] == "relationship"
+        assert payload["versioned"] is False
+        assert payload["header_fields"] == ["code"]
+        assert payload["source_templates"] == ["AUD_ITEM"]
+        assert payload["target_templates"] == ["AUD_ITEM"]
+
+    def test_create_payload_omits_flags_older_archives_lack(self):
+        """Pre-edge-type archives carry none of the flags — the payload must
+        omit the keys entirely, not send None."""
+        client = MagicMock()
+        client.post.side_effect = [_ok_template("NEW-TPL"), {}]
+        stats = ImportStats(mode="fresh", target_namespace="ns")
+        templates = [{
+            "template_id": "OLD-TPL", "value": "THING", "version": 1, "fields": [],
+        }]
+
+        _create_templates_multipass(client, "ns", templates, IDRemapper(), stats, False)
+
+        payload = client.post.call_args_list[0][1]["json"][0]
+        for flag in ("usage", "versioned", "source_templates", "target_templates"):
+            assert flag not in payload

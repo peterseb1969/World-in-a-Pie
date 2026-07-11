@@ -24,7 +24,7 @@ from .._progress import ProgressCallback
 from .._progress import emit as _emit
 from ..archive import ArchiveReader
 from ..client import WIPClient, WIPClientError
-from ..models import ImportStats, ProgressEvent
+from ..models import ImportStats, Manifest, NamespaceConfig, ProgressEvent
 
 console = Console(stderr=True)
 
@@ -57,7 +57,10 @@ def restore_import(
         message=f"Ensuring namespace '{target_namespace}' exists",
         percent=5.0,
     ))
-    _ensure_namespace(client, target_namespace, stats)
+    _ensure_namespace(
+        client, target_namespace, stats,
+        ns_config=_manifest_namespace_config(manifest, stats.source_namespace),
+    )
 
     # Step 1: Create terminologies via Def-Store (service handles Registry)
     # Def-Store doesn't support terminology_id pass-through, so we build
@@ -163,25 +166,74 @@ def restore_import(
     return stats
 
 
-def _ensure_namespace(client: WIPClient, namespace: str, stats: ImportStats) -> None:
-    """Create the target namespace if it doesn't exist."""
+def _manifest_namespace_config(
+    manifest: Manifest, source_namespace: str
+) -> NamespaceConfig | None:
+    """The archive's config for the namespace being imported, if carried."""
+    if manifest.namespace_config is not None:
+        return manifest.namespace_config
+    for entry in manifest.namespaces:
+        if entry.prefix == source_namespace:
+            return entry.namespace_config
+    return None
+
+
+def _ensure_namespace(
+    client: WIPClient,
+    namespace: str,
+    stats: ImportStats,
+    ns_config: NamespaceConfig | None = None,
+) -> None:
+    """Upsert the target namespace, applying the archive's namespace config.
+
+    PUT /namespaces/{prefix} is the platform's idempotent bootstrap upsert.
+    Config keys the manifest doesn't carry (archives predating them) are
+    OMITTED so an existing namespace's settings are not reset to defaults;
+    an explicit value — including an empty allowlist — is applied. Flipping
+    an existing namespace from retain to full deletion_mode requires manual
+    confirmation by design: the import warns and proceeds without the field
+    rather than bypassing the guard or aborting the data import over it.
+    """
+    body: dict[str, Any] = {"description": "Restored from backup"}
+    if ns_config is not None:
+        if ns_config.description:
+            body["description"] = ns_config.description
+        body["isolation_mode"] = ns_config.isolation_mode
+        if ns_config.id_config:
+            body["id_config"] = ns_config.id_config
+        if ns_config.allowed_external_refs is not None:
+            body["allowed_external_refs"] = ns_config.allowed_external_refs
+        if ns_config.deletion_mode is not None:
+            body["deletion_mode"] = ns_config.deletion_mode
+
+    def _put() -> None:
+        client.put("registry", f"/namespaces/{namespace}", json=body)
+
     try:
-        client.get("registry", f"/namespaces/{namespace}")
-        console.print(f"  Namespace '{namespace}' already exists")
+        _put()
+        console.print(f"  Namespace '{namespace}' ready")
     except WIPClientError as e:
-        if e.status_code == 404:
-            console.print(f"  Creating namespace '{namespace}'")
+        if (
+            e.status_code == 400
+            and "confirm_enable_deletion" in str(e)
+            and "deletion_mode" in body
+        ):
+            skipped = body.pop("deletion_mode")
+            msg = (
+                f"deletion_mode '{skipped}' NOT applied to existing namespace "
+                f"'{namespace}' — flipping retain to full requires a manual "
+                "PUT with confirm_enable_deletion=true"
+            )
+            console.print(f"  [yellow]WARNING:[/yellow] {msg}")
+            stats.warnings.append(msg)
             try:
-                client.post("registry", "/namespaces", json={
-                    "prefix": namespace,
-                    "description": "Restored from backup",
-                    "isolation_mode": "open",
-                    "created_by": "wip-toolkit",
-                })
-            except WIPClientError as create_err:
-                stats.errors.append(f"Failed to create namespace: {create_err}")
+                _put()
+                console.print(f"  Namespace '{namespace}' ready")
+            except WIPClientError as retry_err:
+                stats.errors.append(f"Failed to upsert namespace: {retry_err}")
                 raise
         else:
+            stats.errors.append(f"Failed to upsert namespace: {e}")
             raise
 
 
@@ -457,10 +509,13 @@ def _remap_template_terminology_refs(
 def _template_create_payload(tpl: dict, namespace: str) -> dict[str, Any]:
     """Build a CreateTemplateRequest payload.
 
-    Includes both template_id and version so the template-store
-    skips Registry registration (restore-mode bypass).
+    Includes both template_id and version — the template-store's restore
+    path inserts with exactly this ID and version, and registers the
+    pre-assigned ID with the Registry so it resolves afterwards (an
+    unregistered ID would make the template unresolvable — activation
+    and every later lookup would fail).
     """
-    return {
+    payload: dict[str, Any] = {
         "value": tpl["value"],
         "label": tpl.get("label", tpl["value"]),
         "description": tpl.get("description", ""),
@@ -477,11 +532,47 @@ def _template_create_payload(tpl: dict, namespace: str) -> dict[str, Any]:
         "created_by": "wip-toolkit-restore",
         "status": "draft",
     }
+    # Template-class flags and declarations pass through verbatim when the
+    # archive carries them (older archives omit them — don't send the key).
+    # usage and versioned are IMMUTABLE after create: dropping them here
+    # silently turns a restored edge type into a plain entity template.
+    for flag in (
+        "usage", "versioned", "header_fields",
+        "source_templates", "target_templates",
+    ):
+        if tpl.get(flag) is not None:
+            payload[flag] = tpl[flag]
+    _align_edge_endpoint_fields(payload)
+    return payload
+
+
+def _align_edge_endpoint_fields(payload: dict[str, Any]) -> None:
+    """Give an edge type's endpoint fields the template-level target lists.
+
+    Edge-type creation validates that source_ref/target_ref fields'
+    ``target_templates`` literally equal the template-level
+    ``source_templates``/``target_templates`` lists. Stored templates carry
+    the field-level lists as canonical IDs (resolved at creation) while the
+    template-level lists stay values, so an archived edge type fails that
+    literal check on re-create. Emitting both as the template-level values —
+    the same shape a hand-written create_edge_type call sends — restores the
+    invariant; creation resolves the values in the target namespace.
+    """
+    if payload.get("usage") != "relationship":
+        return
+    fields_by_name = {f.get("name"): f for f in payload.get("fields", [])}
+    for endpoint, tpl_level in (
+        ("source_ref", payload.get("source_templates")),
+        ("target_ref", payload.get("target_templates")),
+    ):
+        field = fields_by_name.get(endpoint)
+        if field is not None and tpl_level:
+            field["target_templates"] = list(tpl_level)
 
 
 def _template_update_payload(tpl: dict) -> dict[str, Any]:
     """Build an UpdateTemplateRequest payload for subsequent versions."""
-    return {
+    payload: dict[str, Any] = {
         "value": tpl["value"],
         "label": tpl.get("label", tpl["value"]),
         "description": tpl.get("description", ""),
@@ -494,6 +585,12 @@ def _template_update_payload(tpl: dict) -> dict[str, Any]:
         "reporting": tpl.get("reporting"),
         "updated_by": "wip-toolkit-restore",
     }
+    # Only header_fields is PUT-mutable of the template-class declarations
+    # (usage/versioned are immutable; endpoint lists grow via the dedicated
+    # add-endpoints route) — the update model rejects unknown keys.
+    if tpl.get("header_fields") is not None:
+        payload["header_fields"] = tpl["header_fields"]
+    return payload
 
 
 def _activate_templates(
@@ -644,7 +741,12 @@ def _build_document_payloads(docs: list[dict], namespace: str) -> list[dict]:
             "namespace": namespace,
             "data": d["data"],
             "created_by": "wip-toolkit-restore",
-            "metadata": d.get("metadata"),
+            # The create API's `metadata` param IS the custom content (it
+            # lands under metadata.custom). Submitting the stored envelope
+            # wholesale nests one level per import cycle; the envelope's
+            # source_system/warnings are create-time system fields the new
+            # create regenerates.
+            "metadata": (d.get("metadata") or {}).get("custom") or {},
         }
         for d in docs
     ]

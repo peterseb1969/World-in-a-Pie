@@ -18,7 +18,7 @@ from .._progress import ProgressCallback
 from .._progress import emit as _emit
 from ..archive import ArchiveReader
 from ..client import WIPClient, WIPClientError
-from ..models import ImportStats, ProgressEvent
+from ..models import ImportStats, Manifest, NamespaceConfig, ProgressEvent
 from .remap import IDRemapper
 
 console = Console(stderr=True)
@@ -54,7 +54,10 @@ def fresh_import(
         message=f"Ensuring namespace '{target_namespace}' exists",
         percent=5.0,
     ))
-    _ensure_namespace(client, target_namespace, stats)
+    _ensure_namespace(
+        client, target_namespace, stats,
+        ns_config=_manifest_namespace_config(manifest, stats.source_namespace),
+    )
 
     # Step 2: Create terminologies (new IDs)
     console.print("\n[bold cyan]Step 1:[/bold cyan] Creating terminologies (new IDs)")
@@ -146,25 +149,98 @@ def fresh_import(
     return stats
 
 
-def _ensure_namespace(client: WIPClient, namespace: str, stats: ImportStats) -> None:
-    """Create the target namespace if it doesn't exist."""
+def _align_edge_endpoint_fields(payload: dict[str, Any]) -> None:
+    """Give an edge type's endpoint fields the template-level target lists.
+
+    Edge-type creation validates that source_ref/target_ref fields'
+    ``target_templates`` literally equal the template-level
+    ``source_templates``/``target_templates`` lists. Stored templates carry
+    the field-level lists as canonical IDs (resolved at creation) while the
+    template-level lists stay values, so an archived edge type fails that
+    literal check on re-create. Emitting both as the template-level values —
+    the same shape a hand-written create_edge_type call sends — restores the
+    invariant; creation resolves the values in the target namespace.
+    """
+    if payload.get("usage") != "relationship":
+        return
+    fields_by_name = {f.get("name"): f for f in payload.get("fields", [])}
+    for endpoint, tpl_level in (
+        ("source_ref", payload.get("source_templates")),
+        ("target_ref", payload.get("target_templates")),
+    ):
+        field = fields_by_name.get(endpoint)
+        if field is not None and tpl_level:
+            field["target_templates"] = list(tpl_level)
+
+
+def _manifest_namespace_config(
+    manifest: Manifest, source_namespace: str
+) -> NamespaceConfig | None:
+    """The archive's config for the namespace being imported, if carried."""
+    if manifest.namespace_config is not None:
+        return manifest.namespace_config
+    for entry in manifest.namespaces:
+        if entry.prefix == source_namespace:
+            return entry.namespace_config
+    return None
+
+
+def _ensure_namespace(
+    client: WIPClient,
+    namespace: str,
+    stats: ImportStats,
+    ns_config: NamespaceConfig | None = None,
+) -> None:
+    """Upsert the target namespace, applying the archive's namespace config.
+
+    PUT /namespaces/{prefix} is the platform's idempotent bootstrap upsert.
+    Config keys the manifest doesn't carry (archives predating them) are
+    OMITTED so an existing namespace's settings are not reset to defaults;
+    an explicit value — including an empty allowlist — is applied. Flipping
+    an existing namespace from retain to full deletion_mode requires manual
+    confirmation by design: the import warns and proceeds without the field
+    rather than bypassing the guard or aborting the data import over it.
+    """
+    body: dict[str, Any] = {"description": "Fresh import from backup"}
+    if ns_config is not None:
+        if ns_config.description:
+            body["description"] = ns_config.description
+        body["isolation_mode"] = ns_config.isolation_mode
+        if ns_config.id_config:
+            body["id_config"] = ns_config.id_config
+        if ns_config.allowed_external_refs is not None:
+            body["allowed_external_refs"] = ns_config.allowed_external_refs
+        if ns_config.deletion_mode is not None:
+            body["deletion_mode"] = ns_config.deletion_mode
+
+    def _put() -> None:
+        client.put("registry", f"/namespaces/{namespace}", json=body)
+
     try:
-        client.get("registry", f"/namespaces/{namespace}")
-        console.print(f"  Namespace '{namespace}' already exists")
+        _put()
+        console.print(f"  Namespace '{namespace}' ready")
     except WIPClientError as e:
-        if e.status_code == 404:
-            console.print(f"  Creating namespace '{namespace}'")
+        if (
+            e.status_code == 400
+            and "confirm_enable_deletion" in str(e)
+            and "deletion_mode" in body
+        ):
+            skipped = body.pop("deletion_mode")
+            msg = (
+                f"deletion_mode '{skipped}' NOT applied to existing namespace "
+                f"'{namespace}' — flipping retain to full requires a manual "
+                "PUT with confirm_enable_deletion=true"
+            )
+            console.print(f"  [yellow]WARNING:[/yellow] {msg}")
+            stats.warnings.append(msg)
             try:
-                client.post("registry", "/namespaces", json={
-                    "prefix": namespace,
-                    "description": "Fresh import from backup",
-                    "isolation_mode": "open",
-                    "created_by": "wip-toolkit",
-                })
-            except WIPClientError as create_err:
-                stats.errors.append(f"Failed to create namespace: {create_err}")
+                _put()
+                console.print(f"  Namespace '{namespace}' ready")
+            except WIPClientError as retry_err:
+                stats.errors.append(f"Failed to upsert namespace: {retry_err}")
                 raise
         else:
+            stats.errors.append(f"Failed to upsert namespace: {e}")
             raise
 
 
@@ -500,6 +576,20 @@ def _create_templates_multipass(
                             "created_by": "wip-toolkit-fresh",
                             "status": "draft",
                         }
+                        # Template-class flags and declarations pass through
+                        # verbatim when the archive carries them (older
+                        # archives omit them — don't send the key). usage and
+                        # versioned are IMMUTABLE after create: dropping them
+                        # here silently turns a restored edge type into a
+                        # plain entity template, unrepairable without
+                        # delete + recreate + re-import.
+                        for flag in (
+                            "usage", "versioned", "header_fields",
+                            "source_templates", "target_templates",
+                        ):
+                            if remapped.get(flag) is not None:
+                                payload[flag] = remapped[flag]
+                        _align_edge_endpoint_fields(payload)
                         result = client.post("template-store", "/templates", json=[payload])
                         r = result["results"][0]
                         if r["status"] == "error":
@@ -528,6 +618,13 @@ def _create_templates_multipass(
                             "reporting": remapped.get("reporting"),
                             "updated_by": "wip-toolkit-fresh",
                         }
+                        # Of the template-class declarations, only
+                        # header_fields is PUT-mutable (usage/versioned are
+                        # immutable; endpoint lists grow via the dedicated
+                        # add-endpoints route) — the update model rejects
+                        # unknown keys, so send just the legal one.
+                        if remapped.get("header_fields") is not None:
+                            payload["header_fields"] = remapped["header_fields"]
                         payload["template_id"] = new_tid
                         result = client.put("template-store", "/templates", json=[payload])
                         r = result["results"][0]
@@ -674,7 +771,12 @@ def _create_documents(
                     "namespace": namespace,
                     "data": remapped["data"],
                     "created_by": "wip-toolkit-fresh",
-                    "metadata": remapped.get("metadata"),
+                    # The create API's `metadata` param IS the custom content
+                    # (it lands under metadata.custom). Submitting the stored
+                    # envelope wholesale nests one level per import cycle;
+                    # the envelope's source_system/warnings are create-time
+                    # system fields the new create regenerates.
+                    "metadata": (remapped.get("metadata") or {}).get("custom") or {},
                 })
 
             try:
