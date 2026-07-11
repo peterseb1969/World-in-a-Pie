@@ -5,8 +5,9 @@ insert the template into MongoDB without registering the ID in the Registry.
 Every later resolution of that ID — activation first among them — then 404'd:
 the template existed but was unusable, and the toolkit's restore mode died at
 its activation step. The create path now registers the pre-assigned ID exactly
-as it registers generated ones; only the auto-synonym stays skipped for
-restore (archives carry synonyms separately).
+as it registers generated ones. (The value auto-synonym is also registered on
+restore creates — activation needs value resolution before the archive's
+synonym replay runs; see test_case_665.py.)
 
 These tests run against the real in-process Registry (conftest mounts it), so
 they exercise the exact resolution path that failed live.

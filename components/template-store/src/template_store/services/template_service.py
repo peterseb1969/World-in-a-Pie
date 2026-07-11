@@ -442,8 +442,7 @@ class TemplateService:
         # template unresolvable: created but unusable. The Registry honors a
         # provided entry_id and errors loudly if that ID already exists
         # ("restore requires a clean target"), which is the correct
-        # double-restore behavior. Only the auto-synonym is skipped for
-        # restore (synonyms arrive separately from the archive, below).
+        # double-restore behavior.
         client = get_registry_client()
         template_id = await client.register_template(
             created_by=actor,
@@ -479,9 +478,15 @@ class TemplateService:
 
         # Register auto-synonym for human-readable resolution
         # Only for version 1 (auto-synonym resolves to entity_id, stable across versions)
-        # Skip for restore mode (synonyms are imported separately)
+        # Restore mode registers it on EVERY version create: a restored template
+        # must be resolvable by value no later than its own activation (edge
+        # types resolve value-form source/target_templates there), and archives
+        # may not contain version 1 at all (latest-only exports). Repeat
+        # registrations of the same value are absorbed by the Registry's
+        # idempotent already_exists path, which also lets the archive's later
+        # synonym replay re-add the same key harmlessly.
         # On failure, roll back the MongoDB document and re-raise
-        if version == 1 and not is_restore:
+        if version == 1 or is_restore:
             try:
                 client = get_registry_client()
                 await client.register_auto_synonym(
