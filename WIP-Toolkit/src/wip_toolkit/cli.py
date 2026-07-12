@@ -197,26 +197,51 @@ def inspect(archive_path: str, show_ids: bool, show_references: bool) -> None:
             table.add_row("Tool version", manifest.tool_version)
             table.add_row("Exported at", str(manifest.exported_at))
             table.add_row("Source host", manifest.source_host)
-            table.add_row("Namespace", manifest.namespace)
+            # A v3 multi-namespace archive sets the legacy scalar `namespace`
+            # to "" — namespace_prefixes() reads the v3 list and falls back to
+            # the scalar for legacy-shaped manifests, so this row is correct
+            # for both shapes.
+            table.add_row("Namespaces", ", ".join(manifest.namespace_prefixes()))
             table.add_row("Include inactive", str(manifest.include_inactive))
             table.add_row("Include files", str(manifest.include_files))
             console.print(table)
 
-            # Entity counts
+            # Entity counts. An omitted namespace only auto-resolves when the
+            # archive carries exactly one (reader raises on several), so a
+            # multi-namespace archive is counted per namespace. The manifest's
+            # top-level counts are the AGGREGATE across namespaces; per-
+            # namespace expectations live on NamespaceEntry.counts.
+            namespaces = reader.list_namespaces()
+            multi = len(namespaces) > 1
+
             counts_table = Table(title="Entity Counts")
+            if multi:
+                counts_table.add_column("Namespace", style="bold")
             counts_table.add_column("Entity Type", style="bold")
             counts_table.add_column("Count", justify="right")
             counts_table.add_column("Verified", justify="right", style="dim")
 
-            for entity_type in ENTITY_FILES:
-                manifest_count = getattr(manifest.counts, entity_type, 0)
-                actual_count = reader.entity_count(entity_type)
-                match = "[green]OK[/green]" if manifest_count == actual_count else f"[red]{actual_count}[/red]"
-                counts_table.add_row(entity_type.title(), str(manifest_count), match)
-
-            counts_table.add_row(
-                "Total", str(manifest.counts.total), "", style="bold",
-            )
+            if multi:
+                entry_by_prefix = {e.prefix: e for e in manifest.namespaces}
+                for ns in namespaces:
+                    entry = entry_by_prefix.get(ns)
+                    for entity_type in ENTITY_FILES:
+                        manifest_count = getattr(entry.counts, entity_type, 0) if entry else 0
+                        actual_count = reader.entity_count(entity_type, namespace=ns)
+                        match = "[green]OK[/green]" if manifest_count == actual_count else f"[red]{actual_count}[/red]"
+                        counts_table.add_row(ns, entity_type.title(), str(manifest_count), match)
+                counts_table.add_row(
+                    "", "Total", str(manifest.counts.total), "", style="bold",
+                )
+            else:
+                for entity_type in ENTITY_FILES:
+                    manifest_count = getattr(manifest.counts, entity_type, 0)
+                    actual_count = reader.entity_count(entity_type)
+                    match = "[green]OK[/green]" if manifest_count == actual_count else f"[red]{actual_count}[/red]"
+                    counts_table.add_row(entity_type.title(), str(manifest_count), match)
+                counts_table.add_row(
+                    "Total", str(manifest.counts.total), "", style="bold",
+                )
             console.print(counts_table)
 
             # Closure info
@@ -268,7 +293,7 @@ def inspect(archive_path: str, show_ids: bool, show_references: bool) -> None:
 
 
 def _show_entity_ids(reader: ArchiveReader) -> None:
-    """List all entity IDs in the archive."""
+    """List all entity IDs in the archive, per namespace."""
     id_fields = {
         "terminologies": "terminology_id",
         "terms": "term_id",
@@ -277,29 +302,39 @@ def _show_entity_ids(reader: ArchiveReader) -> None:
         "files": "file_id",
     }
 
+    # Always pass an explicit namespace: the reader's omitted-namespace
+    # convenience raises on a multi-namespace archive. Explicit passes
+    # straight through, so the single-namespace output is unchanged.
+    namespaces = reader.list_namespaces()
+    multi = len(namespaces) > 1
+
     for entity_type, id_field in id_fields.items():
-        entities = list(reader.read_entities(entity_type))
-        if not entities:
-            continue
+        for ns in namespaces:
+            entities = list(reader.read_entities(entity_type, namespace=ns))
+            if not entities:
+                continue
 
-        table = Table(title=f"{entity_type.title()} IDs")
-        table.add_column("ID", style="bold")
-        table.add_column("Source")
-        if entity_type in ("terminologies", "templates"):
-            table.add_column("Value")
-            table.add_column("Version")
-
-        for e in entities:
-            eid = e.get(id_field, "?")
-            source = e.get("_source", "?")
+            title = f"{entity_type.title()} IDs"
+            if multi:
+                title += f" — {ns}"
+            table = Table(title=title)
+            table.add_column("ID", style="bold")
+            table.add_column("Source")
             if entity_type in ("terminologies", "templates"):
-                value = e.get("value", "")
-                version = str(e.get("version", ""))
-                table.add_row(eid, source, value, version)
-            else:
-                table.add_row(eid, source)
+                table.add_column("Value")
+                table.add_column("Version")
 
-        console.print(table)
+            for e in entities:
+                eid = e.get(id_field, "?")
+                source = e.get("_source", "?")
+                if entity_type in ("terminologies", "templates"):
+                    value = e.get("value", "")
+                    version = str(e.get("version", ""))
+                    table.add_row(eid, source, value, version)
+                else:
+                    table.add_row(eid, source)
+
+            console.print(table)
 
 
 @main.command(name="backfill-synonyms")
@@ -547,8 +582,17 @@ def _print_status_report(report) -> None:
 
 
 def _show_references(reader: ArchiveReader) -> None:
-    """Show dependency graph for templates."""
-    templates = list(reader.read_entities("templates"))
+    """Show dependency graph for templates, per namespace."""
+    # Explicit namespace per iteration — the omitted-namespace convenience
+    # raises on a multi-namespace archive (same reasoning as _show_entity_ids).
+    namespaces = reader.list_namespaces()
+    multi = len(namespaces) > 1
+    templates: list[dict] = []
+    for ns in namespaces:
+        for tpl in reader.read_entities("templates", namespace=ns):
+            if multi:
+                tpl = {**tpl, "_ns": ns}
+            templates.append(tpl)
     if not templates:
         return
 
@@ -574,4 +618,7 @@ def _show_references(reader: ArchiveReader) -> None:
                 deps.append(f"target_term {tterm}")
 
         dep_str = ", ".join(deps) if deps else "[dim]none[/dim]"
-        console.print(f"  {tid} v{version} ({value}) → {dep_str}")
+        # Plain-text namespace prefix — square brackets would be swallowed
+        # by rich as a markup tag.
+        ns_prefix = f"{tpl['_ns']} :: " if "_ns" in tpl else ""
+        console.print(f"  {ns_prefix}{tid} v{version} ({value}) → {dep_str}")

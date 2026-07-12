@@ -2,9 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 from click.testing import CliRunner
-
 from wip_toolkit.models import EntityCounts, ExportStats, ImportStats
 
 
@@ -43,6 +41,7 @@ def _make_manifest():
     manifest.exported_at = "2025-01-01T00:00:00Z"
     manifest.source_host = "localhost"
     manifest.namespace = "wip"
+    manifest.namespace_prefixes.return_value = ["wip"]
     manifest.include_inactive = False
     manifest.include_files = False
     manifest.counts = MagicMock()
@@ -66,6 +65,7 @@ def _make_mock_archive_reader(manifest=None):
     reader.__exit__ = MagicMock(return_value=False)
     reader.read_manifest.return_value = manifest or _make_manifest()
     reader.entity_count.return_value = 0
+    reader.list_namespaces.return_value = ["wip"]
     reader.list_blobs.return_value = []
     reader.compressed_size.return_value = 1024
     reader.total_size.return_value = 4096
@@ -361,6 +361,112 @@ class TestInspectCommand:
         result = runner.invoke(main, ["inspect", "/tmp/test.zip", "--show-references"])
 
         assert result.exit_code == 0
+
+
+class TestInspectMultiNamespace:
+    """inspect against REAL archives (no mocked reader) — CASE-545.
+
+    The reader's omitted-namespace convenience raises on a multi-namespace
+    v3 archive, so before the fix even a bare `inspect` died in the entity-
+    count loop, and the summary's Namespace row printed the manifest's legacy
+    scalar, which the multi-namespace producer sets to "".
+    """
+
+    @staticmethod
+    def _write_archive(path, ns_entities):
+        """A real v3 archive. ns_entities: {ns: {entity_type: [entities]}}."""
+        from wip_toolkit.archive import ArchiveWriter
+        from wip_toolkit.models import EntityCounts, Manifest, NamespaceEntry
+
+        writer = ArchiveWriter(path)
+        entries = []
+        for ns, by_type in ns_entities.items():
+            counts = {}
+            for entity_type, entities in by_type.items():
+                for e in entities:
+                    writer.add_entity(entity_type, e, namespace=ns)
+                counts[entity_type] = len(entities)
+            entries.append(NamespaceEntry(prefix=ns, counts=EntityCounts(**counts)))
+
+        aggregate = {}
+        for entry in entries:
+            for field in EntityCounts.model_fields:
+                aggregate[field] = aggregate.get(field, 0) + getattr(entry.counts, field)
+
+        manifest = Manifest(
+            namespaces=entries,
+            namespace=entries[0].prefix if len(entries) == 1 else "",
+            counts=EntityCounts(**aggregate),
+        )
+        writer.write(manifest)
+        return path
+
+    def _two_ns_archive(self, tmp_path):
+        return self._write_archive(
+            tmp_path / "multi.zip",
+            {
+                "alpha": {
+                    "terminologies": [{"terminology_id": "LOV-1", "value": "COLOR"}],
+                    "templates": [
+                        {"template_id": "TPL-1", "value": "ALPHA_DOC", "version": 1, "fields": []}
+                    ],
+                },
+                "beta": {
+                    "terms": [
+                        {"term_id": "ITEM-1", "value": "red"},
+                        {"term_id": "ITEM-2", "value": "blue"},
+                    ],
+                },
+            },
+        )
+
+    def test_inspect_multi_namespace_archive(self, tmp_path):
+        from wip_toolkit.cli import main
+
+        archive = self._two_ns_archive(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["inspect", str(archive)])
+
+        assert result.exit_code == 0, result.output
+        # Summary lists both namespaces (not the blank legacy scalar).
+        assert "alpha, beta" in result.output
+        # Per-namespace counts verified against NamespaceEntry.counts —
+        # every row matches, so no red mismatch markers.
+        assert "OK" in result.output
+        assert "[red]" not in result.output
+
+    def test_inspect_multi_namespace_show_ids_and_references(self, tmp_path):
+        from wip_toolkit.cli import main
+
+        archive = self._two_ns_archive(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["inspect", str(archive), "--show-ids", "--show-references"]
+        )
+
+        assert result.exit_code == 0, result.output
+        # IDs from BOTH namespaces are listed, tables labeled per namespace.
+        assert "LOV-1" in result.output
+        assert "ITEM-1" in result.output
+        assert "ITEM-2" in result.output
+        # Reference graph reached the alpha template and tags its namespace.
+        assert "alpha :: TPL-1" in result.output
+
+    def test_inspect_single_namespace_archive_unchanged(self, tmp_path):
+        from wip_toolkit.cli import main
+
+        archive = self._write_archive(
+            tmp_path / "single.zip",
+            {"wip": {"terminologies": [{"terminology_id": "LOV-9", "value": "STATUS"}]}},
+        )
+        runner = CliRunner()
+        result = runner.invoke(main, ["inspect", str(archive), "--show-ids"])
+
+        assert result.exit_code == 0, result.output
+        assert "wip" in result.output
+        assert "LOV-9" in result.output
+        # No per-namespace table labels in the single-namespace layout.
+        assert "— wip" not in result.output
 
 
 class TestUpdateDocumentCommand:
