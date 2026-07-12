@@ -59,10 +59,13 @@ async def test_post_overwrites_in_place_for_versioned_false(
         "body": "updated body",
     })
     # is_new=False because identity matched; version still 1 (not bumped).
+    # The overwrite changed data, so it must report "updated" — not the
+    # no-op bucket. (The bulk envelope does not carry previous_version;
+    # the status label is the observable contract here.)
+    assert second["status"] == "updated", second
     assert second["document_id"] == doc_id, second
     assert second["version"] == 1, second
     assert second["is_new"] is False
-    assert second.get("previous_version") in (None, 1)
 
     # Read back: the latest body should win, only one version exists.
     versions_resp = await client.get(
@@ -98,6 +101,68 @@ async def test_post_no_change_returns_unchanged_for_versioned_false(
     assert second["document_id"] == first["document_id"]
     assert second["version"] == 1
     assert second["is_new"] is False
+    # A true no-op reports "unchanged" — same vocabulary as the bulk and
+    # PATCH paths. "skipped" is reserved for items that were never
+    # attempted (batch aborted after an earlier failure).
+    assert second["status"] == "unchanged", second
+
+
+@pytest.mark.asyncio
+async def test_bulk_post_overwrites_in_place_for_versioned_false(
+    client: AsyncClient, auth_headers: dict,
+):
+    """A 2+-item POST routes through bulk_create, which must honour
+    versioned=False exactly like the single-item path: overwrite in
+    place, version stays 1, exactly one version row — never a
+    deactivate-and-insert-v2."""
+    first = await _create_doc(client, auth_headers, "LATEST_ONLY_NOTE", {
+        "note_id": "N-BULK", "body": "first body",
+    })
+    assert first["status"] == "created", first
+    doc_id = first["document_id"]
+
+    # Two items so the request takes the bulk path, not the single-item
+    # short-circuit. Item 0 re-addresses the existing identity with
+    # changed data; item 1 is an unrelated fresh identity.
+    resp = await client.post(
+        f"{API}/documents",
+        headers=auth_headers,
+        json=[
+            {
+                "namespace": "wip",
+                "template_id": "LATEST_ONLY_NOTE",
+                "data": {"note_id": "N-BULK", "body": "second body"},
+            },
+            {
+                "namespace": "wip",
+                "template_id": "LATEST_ONLY_NOTE",
+                "data": {"note_id": "N-BULK-OTHER", "body": "unrelated"},
+            },
+        ],
+    )
+    assert resp.status_code == 200, resp.text
+    results = {r["index"]: r for r in resp.json()["results"]}
+    overwrite = results[0]
+    assert overwrite["status"] == "updated", overwrite
+    assert overwrite["document_id"] == doc_id, overwrite
+    assert overwrite["version"] == 1, overwrite
+    assert results[1]["status"] == "created", results[1]
+
+    versions_resp = await client.get(
+        f"{API}/documents/{doc_id}/versions",
+        headers=auth_headers,
+    )
+    versions_body = versions_resp.json()
+    versions = versions_body.get("versions") or versions_body.get("items") or []
+    assert len(versions) == 1, f"Expected exactly 1 version, got {versions}"
+
+    doc_resp = await client.get(
+        f"{API}/documents/{doc_id}",
+        headers=auth_headers,
+    )
+    body = doc_resp.json()
+    assert body["data"]["body"] == "second body"
+    assert body["version"] == 1
 
 
 # =============================================================================

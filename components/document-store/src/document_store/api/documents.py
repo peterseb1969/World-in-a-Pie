@@ -90,7 +90,12 @@ async def create_documents(
             elif response.previous_version is not None:
                 status = "updated"
             else:
-                status = "skipped"
+                # Nothing was written — the submitted data was byte-identical
+                # to the current version. "unchanged" matches the bulk and
+                # PATCH vocabulary for this outcome; "skipped" is reserved
+                # for items that were never attempted (batch aborted after
+                # an earlier failure).
+                status = "unchanged"
             results = [BulkResultItem(
                 index=0, status=status,
                 id=response.document_id, document_id=response.document_id,

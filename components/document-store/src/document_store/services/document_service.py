@@ -1018,7 +1018,14 @@ class DocumentService:
             identity_hash=existing.identity_hash,
             version=existing.version,
             is_new=False,
-            previous_version=None,  # No new version created
+            # No new version was minted — the replaced payload was at this
+            # same version, so previous_version == version is the in-place
+            # overwrite signature. It also distinguishes this data-changing
+            # write (an update) from the data-unchanged no-op, which returns
+            # previous_version=None; with None here the API layer cannot
+            # tell the two apart and reports a successful overwrite as a
+            # no-op.
+            previous_version=existing.version,
             warnings=all_warnings,
         ), None
 
@@ -2293,6 +2300,36 @@ class DocumentService:
                     ),
                     None,
                     "unchanged",
+                )
+
+            # Templates with versioned=false overwrite in place — the same
+            # branch the single-item and PATCH paths take. Without it, the
+            # deactivate-and-insert flow below would mint version 2 and
+            # retain the old row as inactive, creating exactly the version
+            # history the flag forbids.
+            if not await self._is_template_versioned(item.template_id):
+                response, _ = await self._overwrite_in_place(
+                    item, existing, validation_result, namespace,
+                    extra_warnings=synonym_warnings,
+                )
+                # existing_by_doc_id already holds this Document object,
+                # mutated in place — later same-identity items in the batch
+                # see the fresh data. No pending event: _overwrite_in_place
+                # publishes DOCUMENT_UPDATED itself, which is equivalent to
+                # the deferred batch publish (deferred events carry no
+                # ordering guarantee either).
+                return _ItemOutcome(
+                    BulkResultItem(
+                        index=i,
+                        status="updated",
+                        document_id=response.document_id,
+                        identity_hash=identity_hash,
+                        version=response.version,
+                        is_new=False,
+                        warnings=response.warnings,
+                    ),
+                    None,
+                    "updated",
                 )
 
             # Deactivate old version

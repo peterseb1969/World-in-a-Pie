@@ -85,8 +85,9 @@ class TestInlineSynonymConflict:
         # Same document + same synonym again — self-owned, not a conflict.
         again = await _create(client, auth_headers, "300000001", synonyms=[{"value": "CASE-6001"}])
         assert again["failed"] == 0, again
-        # Identical content → the single-create API reports "skipped" (no new
-        # version); the key point is the self-owned synonym is NOT a conflict.
+        # Identical content → the single-create API reports "unchanged" (no
+        # new version); the key point is the self-owned synonym is NOT a
+        # conflict, so the exact non-error status is not what this test pins.
         assert again["results"][0]["status"] in ("skipped", "unchanged", "updated", "created")
 
     async def test_bulk_per_item_conflict_isolated(self, client: AsyncClient, auth_headers: dict):
