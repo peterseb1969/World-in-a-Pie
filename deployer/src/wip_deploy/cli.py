@@ -888,19 +888,26 @@ def install(
         typer.Option(
             "--reconcile",
             help=(
-                "Allow this install to remove apps or optional modules "
-                "that were present in the previous install but absent "
-                "from the current invocation. Without this flag, an "
-                "install that would drop state aborts with an actionable "
-                "error listing the items at risk (CASE-331 Fix B)."
+                "Allow this install to reshape an existing install: "
+                "remove apps or optional modules that were present in "
+                "the previous install but absent from this invocation, "
+                "or change identity fields (target, hostname, TLS, "
+                "ports, registry, auth mode) recorded in the saved "
+                "spec. Without this flag, such a re-run aborts with an "
+                "actionable error listing what would change."
             ),
         ),
     ] = False,
 ) -> None:
     """Build → validate → render → apply. The end-to-end install verb.
 
-    Generates secrets on first run (persists to the secret backend);
-    re-runs pick up existing values and don't regenerate.
+    Creates a NEW install. A re-run against an existing install name
+    re-specifies the FULL spec from CLI flags — the saved spec is NOT
+    loaded (secrets are the one exception: existing values are picked
+    up, never regenerated). A re-run that would drop apps/modules or
+    change identity fields (target, hostname, TLS, ports, registry,
+    auth mode) aborts unless --reconcile is passed. To re-apply or
+    roll an existing install, use `redeploy` — it loads the saved spec.
 
     Examples:
 
@@ -969,6 +976,34 @@ def install(
         name=name,
     )
 
+    target_dir = install_dir or _default_install_dir(name)
+
+    # Refuse to silently reshape an existing install. `install` builds
+    # its spec from CLI flags alone — it never loads the saved spec — so
+    # a re-run with reduced flags renders a defaults-shaped config over
+    # whatever is deployed. Two comparisons against the persisted
+    # previous spec, both overridable with --reconcile: (1) enabled apps
+    # / optional modules that would be dropped; (2) identity fields
+    # (target, hostname, TLS, ports, registry, auth mode) that would
+    # silently change — hostname and TLS feed the ingress host, cert
+    # SANs, and the OIDC issuer, so a silent change there rewrites the
+    # install's identity, it doesn't tweak it. This guard runs BEFORE
+    # spec validation so its actionable "install exists — use redeploy"
+    # message wins over incidental validation errors; a missing
+    # --registry error used to fire first and mask exactly this
+    # situation on a live production install.
+    previous = _try_load_previous_deployment(target_dir)
+    if previous is not None:
+        dropped_apps, dropped_modules = _diff_spec_for_drops(previous, deployment)
+        drifted = _diff_spec_for_identity_drift(previous, deployment)
+        if (dropped_apps or dropped_modules or drifted) and not reconcile:
+            _print_existing_install_conflict_and_exit(
+                name=name,
+                dropped_apps=dropped_apps,
+                dropped_modules=dropped_modules,
+                drifted=drifted,
+            )
+
     _validate_or_exit(deployment, components, apps_list)
 
     # Apply CLI flag overrides on top of spec.apply.
@@ -976,8 +1011,6 @@ def install(
         deployment.spec.apply.wait = False
     if wait_timeout is not None:
         deployment.spec.apply.timeout_seconds = wait_timeout
-
-    target_dir = install_dir or _default_install_dir(name)
 
     # CASE-373 — auto-mount external CA into app containers when a bundle
     # has seeded one. `wip-deploy import-bundle` writes
@@ -988,24 +1021,6 @@ def install(
     # without the mount.
     if (target_dir / "secrets" / "external-ca.crt").exists():
         deployment.spec.network.external_ca_mount = True
-
-    # CASE-331 Fix B — refuse to silently drop apps or optional modules
-    # that were in the previous install but absent from this invocation.
-    # The pre-CASE-331 behaviour: running `wip-deploy install` with
-    # reduced flags (e.g., omitting --app-source for an app that was
-    # previously installed) silently removed that state. Compare new
-    # spec against the persisted previous spec and abort with an
-    # actionable error if anything is going away — unless --reconcile
-    # is set, which is the deliberate "yes I really mean to drop these"
-    # opt-in.
-    previous = _try_load_previous_deployment(target_dir)
-    if previous is not None:
-        dropped_apps, dropped_modules = _diff_spec_for_drops(previous, deployment)
-        if (dropped_apps or dropped_modules) and not reconcile:
-            _print_drop_warning_and_exit(
-                dropped_apps=dropped_apps,
-                dropped_modules=dropped_modules,
-            )
 
     # Preflight: catch port conflicts and stale containers before any work
     # happens. Only applies to compose/dev targets that bind host ports;
@@ -3857,36 +3872,83 @@ def _diff_spec_for_drops(
     return dropped_apps, dropped_modules
 
 
-def _print_drop_warning_and_exit(
+def _diff_spec_for_identity_drift(
+    previous: Deployment, current: Deployment
+) -> list[tuple[str, str, str]]:
+    """Return (field, old, new) for identity fields that differ on a re-install.
+
+    `install` builds its spec from CLI flags alone — the saved spec is
+    never loaded — so every field the operator does not re-specify
+    reverts to its flag default. For most fields that is an
+    inconvenience; for these it rewrites the install's identity:
+    hostname feeds the ingress host, the TLS cert SANs, and the OIDC
+    issuer; target/registry/auth decide where images come from and how
+    requests authenticate; the ports are the public bind. Image tags
+    are deliberately NOT compared — re-running install with a new
+    --tag is the routine roll intent, not drift. Apps and modules are
+    covered separately by `_diff_spec_for_drops`.
+    """
+    prev, curr = previous.spec, current.spec
+
+    def _show(value: object) -> str:
+        return "(none)" if value is None else str(value)
+
+    checks: list[tuple[str, object, object]] = [
+        ("target", prev.target, curr.target),
+        ("network.hostname", prev.network.hostname, curr.network.hostname),
+        ("network.tls", prev.network.tls, curr.network.tls),
+        ("network.https_port", prev.network.https_port, curr.network.https_port),
+        ("network.http_port", prev.network.http_port, curr.network.http_port),
+        ("images.registry", prev.images.registry, curr.images.registry),
+        ("auth.mode", prev.auth.mode, curr.auth.mode),
+    ]
+    return [
+        (field, _show(old), _show(new))
+        for field, old, new in checks
+        if old != new
+    ]
+
+
+def _print_existing_install_conflict_and_exit(
     *,
+    name: str,
     dropped_apps: list[str],
     dropped_modules: list[str],
+    drifted: list[tuple[str, str, str]],
 ) -> None:
-    """Emit the CASE-331 Fix B abort message and exit non-zero."""
+    """Abort message for a re-install that would reshape the existing
+    install — dropped apps/modules or drifted identity fields."""
     typer.echo(
         typer.style(
-            "✗ install aborted: this would remove state from the "
-            "previous install.",
+            f"✗ install aborted: install '{name}' already exists and "
+            "this run would reshape it. `install` re-specifies the full "
+            "spec from flags; it does not load the saved spec.",
             fg=typer.colors.RED,
             bold=True,
         ),
         err=True,
     )
+    if drifted:
+        typer.echo("", err=True)
+        typer.echo("  Identity fields that would change:", err=True)
+        for field, old, new in drifted:
+            typer.echo(f"    - {field}: {old} → {new}", err=True)
     if dropped_apps:
         typer.echo("", err=True)
         typer.echo("  Apps to remove:", err=True)
-        for name in dropped_apps:
-            typer.echo(f"    - {name}", err=True)
+        for app_name in dropped_apps:
+            typer.echo(f"    - {app_name}", err=True)
     if dropped_modules:
         typer.echo("", err=True)
         typer.echo("  Optional modules to remove:", err=True)
-        for name in dropped_modules:
-            typer.echo(f"    - {name}", err=True)
+        for module_name in dropped_modules:
+            typer.echo(f"    - {module_name}", err=True)
     typer.echo("", err=True)
     typer.echo(
-        "  If this is what you want, re-run with --reconcile. Otherwise "
-        "re-add the missing --app-source / --add flags so the previous "
-        "state is preserved.",
+        f"  To re-apply or roll the existing install, use `wip-deploy "
+        f"redeploy --name {name}` (it loads the saved spec). To reshape "
+        "the install from these flags deliberately, re-run with "
+        "--reconcile.",
         err=True,
     )
     raise typer.Exit(2)
