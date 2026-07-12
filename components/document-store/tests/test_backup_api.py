@@ -319,18 +319,45 @@ async def test_download_complete_backup(
 
 
 @pytest.mark.asyncio
-async def test_download_rejects_non_backup_job(
-    client: AsyncClient, auth_headers: dict
+async def test_download_serves_restore_job_archive(
+    client: AsyncClient, auth_headers: dict, tmp_path
 ):
+    """Restore jobs' retained INPUT archives are downloadable — the old
+    kind guard destroyed them on delete but refused to serve them. The
+    input is valid regardless of job outcome, so even FAILED works."""
+    archive = tmp_path / "restore-input.zip"
+    archive.write_bytes(b"PK\x03\x04RESTOREINPUT")
     job = await _make_persisted_job(
         kind=BackupJobKind.RESTORE,
-        status=BackupJobStatus.COMPLETE,
+        status=BackupJobStatus.FAILED,
+        archive_path=str(archive),
+        archive_size=archive.stat().st_size,
     )
     resp = await client.get(
         f"/api/document-store/backup/jobs/{job.job_id}/download",
         headers=auth_headers,
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 200, resp.text
+    assert resp.content == b"PK\x03\x04RESTOREINPUT"
+
+
+@pytest.mark.asyncio
+async def test_download_restore_job_archive_gone_is_410(
+    client: AsyncClient, auth_headers: dict, tmp_path
+):
+    """Without file storage, restore inputs are deleted at job completion —
+    the download then reports the non-retention contract, not a 400."""
+    job = await _make_persisted_job(
+        kind=BackupJobKind.RESTORE,
+        status=BackupJobStatus.COMPLETE,
+        archive_path=str(tmp_path / "already-deleted.zip"),
+    )
+    resp = await client.get(
+        f"/api/document-store/backup/jobs/{job.job_id}/download",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 410
+    assert "retained" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio

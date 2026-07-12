@@ -71,7 +71,9 @@ class BackupJob(BeanieDocument):
         default_factory=list,
         description="All namespaces this job spans. For a backup: the exported "
                     "set (1 for a single-namespace backup). For a restore: the "
-                    "namespaces the archive writes into, read from its manifest.",
+                    "namespaces the archive writes into, read from its manifest "
+                    "(the scalar namespace when the manifest was unreadable — "
+                    "never blank on new records; legacy records may be empty).",
     )
 
     # Lifecycle
@@ -115,7 +117,16 @@ class BackupJob(BeanieDocument):
     # Archive tracking
     archive_path: str | None = Field(
         default=None,
-        description="Local filesystem path of the produced (backup) or uploaded (restore) archive"
+        description="Archive locator: a local filesystem path when "
+                    "archive_backend is 'local', an object key in the "
+                    "backup bucket when it is 'minio'"
+    )
+    archive_backend: str = Field(
+        default="local",
+        description="Where the archive lives: 'local' (scratch filesystem, "
+                    "no durability promise) or 'minio' (dedicated bucket). "
+                    "Records predating the field are local by construction, "
+                    "which is exactly what the default yields."
     )
     archive_size: int | None = Field(
         default=None,
@@ -253,6 +264,25 @@ class BackupRequest(BaseModel):
 # one meaningful bound (batch_size 1..500) lives on the Form declaration.
 
 
+class RestoreFromJobRequest(BaseModel):
+    """Request body for POST /backup/jobs/{job_id}/restore.
+
+    Unlike the upload restore (multipart form), this endpoint takes JSON —
+    the archive is already retained server-side, so there is no file part.
+    This model IS wired to the route, so its bounds are enforced.
+    """
+
+    skip_documents: bool = Field(
+        False, description="Skip the documents phase entirely"
+    )
+    skip_files: bool = Field(
+        False, description="Skip restoring file blobs"
+    )
+    batch_size: int = Field(
+        50, ge=1, le=500, description="Document write batch size"
+    )
+
+
 class BackupJobSnapshot(BaseModel):
     """API response shape for a BackupJob — hides mongo _id and trims internals."""
 
@@ -269,6 +299,7 @@ class BackupJobSnapshot(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     archive_size: int | None = None
+    archive_backend: str = "local"
     options: dict[str, Any] = Field(default_factory=dict)
     created_by: str
 
@@ -289,6 +320,7 @@ class BackupJobSnapshot(BaseModel):
             started_at=job.started_at,
             completed_at=job.completed_at,
             archive_size=job.archive_size,
+            archive_backend=job.archive_backend,
             options=job.options,
             created_by=job.created_by,
         )

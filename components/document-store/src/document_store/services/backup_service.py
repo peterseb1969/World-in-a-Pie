@@ -262,6 +262,24 @@ async def wait_for_job(job_id: str, timeout: float | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
+def read_archive_manifest(archive_path: str | Path) -> Any | None:
+    """Read an archive's manifest, or None if it is unreadable.
+
+    Lives here (not in the API layer) so ``api/backup.py`` keeps its
+    no-toolkit-imports guardrail intact — the manifest read used to be a
+    function-local toolkit import inside the restore endpoint, which the
+    guardrail's own verification grep would have flagged.
+    """
+    from wip_toolkit.archive import ArchiveReader
+
+    try:
+        with ArchiveReader(Path(archive_path)) as reader:
+            return reader.read_manifest()
+    except Exception as exc:
+        logger.warning("Could not read manifest from archive %s: %s", archive_path, exc)
+        return None
+
+
 async def list_all_namespaces() -> list[str]:
     """Every namespace prefix the registry knows (CASE-542 'all' backup).
 
