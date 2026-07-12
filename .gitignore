@@ -101,3 +101,6 @@ data/
 
 # Cross-agent case discussions (symlink to shared store)
 yac-discussions
+
+# Local test fixtures (downloaded ontologies + generated terminology CSVs)
+test-data/
