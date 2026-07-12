@@ -1,356 +1,265 @@
 # Case Workflow Playbook
 
-Full handler reference for the `/case` slash command. The slash command stub at `.claude/commands/case.md` performs the directory pre-flight, then reads this file and dispatches based on `$ARGUMENTS`.
+Handler reference for the `/wip-case` slash command. The command reads this file
+and dispatches on `$ARGUMENTS`.
 
-By the time you are reading this, `yac-discussions/` is known to exist. Do not re-check.
+**Cases live in the KB, not on disk.** There are no `yac-discussions/CASE-*.md`
+files to scan, rename, or stage — the KB is the record. Every read and write goes
+through the **served KB client** (`case-fetch.py` to read, `kb-write.py` to write),
+which talks only to the KB **gateway** (never the document-store backend).
 
 ## Subcommands
 
-- `/case file [optional Peter comment]` — file a new case about a bug, question, or platform gap
-- `/case list` — list all open/responded cases (one-line summary each)
-- `/case read <number>` — read a specific case in full, including all comments and responses
-- `/case respond <number>` — append a response to an existing case
-- `/case comment <number> [text]` — add a comment (anyone: filer, responder, or Peter via a YAC)
-- `/case close <number>` — close without implementation (won't-fix, not-an-issue, deferred, handled manually)
-- `/case implement <number>` — apply the proposed patch, then close as implemented
+- `/wip-case file [Peter comment]` — file a new case (bug, question, request, gap)
+- `/wip-case list` — list open/responded cases
+- `/wip-case read <n>` — read a case in full (body + all responses)
+- `/wip-case respond <n>` — append a response (drives open→responded)
+- `/wip-case comment <n>` — add a comment (any state; no transition)
+- `/wip-case close <n>` — close without implementing (won't-fix / not-an-issue / deferred)
+- `/wip-case implement <n>` — apply the proposed patch, then close as implemented
 
 ## Prerequisites
 
-You must have a session ID (see YAC Reporting section in CLAUDE.md).
+A session ID (see YAC Reporting in CLAUDE.md).
 
-## The served KB client (one-time setup, self-refreshing)
+## The served KB client (one-time, self-refreshing)
 
-All kb reads/writes in this playbook go through the **served KB client** — fetched
-from the running KB instance itself (CASE-437/440), version-matched, with **zero
-FR-YAC dependency**. The only inputs are the instance URL and your API key:
+Fetched from the running instance — version-matched, no FR-YAC dependency. Inputs
+are the instance URL + your API key (both from `.claude/kb.json`):
 
 ```bash
 curl -fsSk -H "X-API-Key: $(cat "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')")" \
   "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/apps/kb/server-api/kb-client/install" | sh
 ```
 
-This materializes the bundle (loaders + the `kb-client.sh` runner + this playbook)
-into `~/.cache/wip-kb-client/`. Run it once per machine; every subsequent
-invocation of the runner **self-refreshes when the instance's bundle digest
-changes**, so you never re-install by hand:
+That materializes the bundle into `~/.cache/wip-kb-client/` and writes the stable
+`kbc` shim to `~/.local/bin/kbc`. Everything below runs through `kbc`; the runner
+behind it self-refreshes when the instance's bundle digest changes and restores a
+missing shim on every invocation:
 
 ```bash
-bash ~/.cache/wip-kb-client/kb-client.sh <script.py> [args...]
+kbc case-fetch.py …    # reads
+kbc kb-write.py …      # writes
 ```
 
-If `~/.cache/wip-kb-client/kb-client.sh` is missing, run the install one-liner —
-that is the whole recovery procedure.
+If `kbc` does not resolve, re-run the install one-liner — that is the whole
+recovery. (The bootstrap curl stays long-form deliberately: it runs before `kbc`
+can exist.)
 
-**Case WRITES go through the gateway verbs (CASE-464), not the runner.** Set
-once per shell:
+**One write surface.** All writes are `kb-write.py <TYPE> …` → the gateway's single
+`POST /write/:type`. The gateway allocates the `case_number` + claims the `CASE-<n>`
+synonym, scoped `CASE-<n>#<seq>` for responses, and persists edges. Status-transition
+*validity* is enforced here in the playbook (compose only a legal transition); the
+gateway is pure persistence.
+
+Legal transitions: `open → {responded, closed, implemented}`,
+`responded → {closed, implemented}`; `closed` / `implemented` are terminal.
+
+---
+
+## `/wip-case file`
+
+1. **Time:** `date '+%Y-%m-%d %H:%M'`.
+2. **Compose `case.md`** — frontmatter keys are CASE_RECORD fields; the markdown
+   after the fence becomes the case body:
+
+   ```markdown
+   ---
+   title: <short case title>
+   authored_by: <your session ID>
+   filed_by: <your session ID>
+   doc_status: published
+   status: open
+   type: <bug | question | request | platform-gap>
+   severity: <blocks-me | annoying | fyi>
+   component: <wip-client | document-store | registry | scaffold | mcp-server | wip-react | wip-proxy | wip-auth | reporting-sync | other>
+   app: <your app name, or "backend">
+   target_yac: <FRanC | BE-YAC | any>
+   ---
+
+   ## Problem
+   <what happened, with evidence — errors, behaviour, missing functionality;
+   specific enough for a YAC with no knowledge of your app.>
+
+   ## Expected
+   <what should have happened.>
+
+   ## Workaround
+   <what you're doing meanwhile, or "None" if blocked.>
+
+   ## Peter's Take
+   <verbatim, only if Peter gave a comment with /wip-case file; else omit.>
+   ```
+
+3. **File it** (the gateway mints `case_number` + the `CASE-<n>` synonym; link any
+   related cases as REFERENCES edges):
+
+   ```bash
+   kbc kb-write.py CASE_RECORD case.md --edge REFERENCES:CASE_RECORD:12 --edge REFERENCES:CASE_RECORD:340
+   # -> created CASE-<n> (<document_id>)  edges: REFERENCES→12=linked, …
+   ```
+
+4. **Confirm:** tell Peter the case number + document_id.
+
+---
+
+## `/wip-case list`
 
 ```bash
-BASE="$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/apps/kb/server-api/kb"
-KEY="$(cat "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')")"   # or your YAC's runtime key
+kbc case-fetch.py list --status open,responded
+# facets: --status (comma list) --filed-by --severity --type --component --app  --format table|json
 ```
 
-The verbs are server-side domain logic: allocation, the `CASE-<n>` synonym
-claim, REFERENCES edges, the status machine, and race-safe section appends
-(`if_match`) all live in the gateway. Reads stay on the runner's
-`case-fetch.py` for now (the read API `GET $BASE/cases…` also works;
-`?since=` under-reports on the cluster until CASE-466 closes).
+APP-YACs: filter to your app (`--app <name>`) or cases you filed (`--filed-by <id>`).
+BE-YACs: list all. If none, say "No cases" and stop.
 
-## Filename Convention
+---
 
-Case files are named: `CASE-<NN>-<status>-<slug>.md`
-
-- `<NN>` — a short number, unique within the directory. **Server-assigned** at allocation (the `CASE-<n>` Registry synonym of the case's UUID; `case_helper.sh claim` retired — see `/case file`). The flat filename carries it for the FS record; identity lives in kb.
-- `<status>` — one of: `open`, `responded`, `closed`, `implemented`
-- `<slug>` — 2-4 word kebab-case topic
-
-Examples:
-```
-CASE-01-open-unknown-fields.md
-CASE-02-responded-doc-arch.md
-CASE-03-closed-relative-baseurl.md
-CASE-04-implemented-doc-faq.md
-```
-
-**Status lives in kb (`data.status`), maintained by the gateway verbs.** Flat files are optional write-staging (CASE-464) — regenerable via `GET $BASE/cases/<n>`. If you keep one, renaming it to match the status is a courtesy for FS browsing, not a required step; there is no rename-and-re-mirror flow anymore.
-
-## Finding Cases by Number
-
-When a command takes `<number>`, match it against the `CASE-<NN>-` prefix in the filename. For example, `/case read 3` finds the file starting with `CASE-03-`. The number is stable — it never changes, even when the file is renamed for status updates.
+## `/wip-case read <n>`
 
 ```bash
-ls yac-discussions/CASE-03-*.md 2>/dev/null
+kbc case-fetch.py case <n>                    # body + full response thread (default: view=both)
+kbc case-fetch.py case <n> --view case        # case body only
+kbc case-fetch.py case <n> --view responses   # the response thread only
+kbc case-fetch.py case <n> --response latest  # just the latest response
+kbc case-fetch.py case <n> --response <seq>   # a specific response (404 if absent)
+kbc case-fetch.py case <n> --format json      # raw gateway payload
+```
+
+Prints the case body followed by its responses (CASE_RESPONSE docs, seq-ordered,
+active-only) — one gateway read, no separate fetch. Backed by
+`GET /cases/:n?view=both|case|responses[&response=latest|<seq>]`. If the case (or an
+explicit `--response <seq>`) isn't found, tell Peter and stop.
+
+---
+
+## `/wip-case respond <n>`
+
+**Analyse before responding — do not jump to implementation.**
+1. Understand the root cause from the source, not the symptom.
+2. Don't assume the filer's proposed fix is correct — check it against the platform
+   (validation rules, identity scoping, bulk contracts, edge cases). Propose a better
+   one if warranted, and say why.
+3. If the proposed fix IS right, say so and show the analysis.
+   (CASE-50 was implemented blindly and broke; CASE-36 was analysed properly. Be CASE-36.)
+
+Then, two writes — the response doc + the status transition:
+
+```bash
+# 1) the response (compose response.md: body markdown; frontmatter sets the fields)
+#    response.md frontmatter: case_number: <n> / response_kind: respond / author: <id> / doc_status: published
+kbc kb-write.py CASE_RESPONSE response.md --edge RESPONDS_TO:CASE_RECORD:<n>
+# -> created CASE-<n>#<seq>  edges: RESPONDS_TO→<n>=linked
+
+# 2) drive open → responded (only if currently open)
+kbc kb-write.py CASE_RECORD --patch status=responded --match case_number=<n>
+```
+
+Confirm the case number + new status to Peter.
+
+---
+
+## `/wip-case comment <n>`
+
+A comment is a CASE_RESPONSE with `response_kind: comment` and **no** status change
+(legal in any state, including terminal):
+
+```bash
+kbc kb-write.py CASE_RESPONSE comment.md --edge RESPONDS_TO:CASE_RECORD:<n>
+# comment.md frontmatter: case_number: <n> / response_kind: comment / author: <id> / doc_status: published
 ```
 
 ---
 
-## Handling `/case file`
+## `/wip-case close <n>`
 
-> **Filing discipline (do not skip).** Filing a NEW case is ONE gateway call — `POST $BASE/cases` (CASE-464) — never the `Write` tool with a hand-picked number, never client-side number reasoning. The server allocates the number, claims the `CASE-<n>` Registry synonym atomically (CASE-427/436 — the serializer; concurrent filers get distinct numbers by construction), creates the record with `data.status=open`, and derives REFERENCES edges from `related`. If you find yourself asking "what's the next available number?", stop — the verb does it. (History: FS `case-helper.sh claim` retired by CASE-440; the served `case_allocate.py` retired by CASE-464.)
-
-### 1. Get the current time
-
-```bash
-date '+%Y-%m-%d %H:%M'
-```
-
-### 2. Create a slug
-
-Infer a short slug from context: `unknown-fields`, `relative-baseurl`, `template-update-missing`. 2-4 words, lowercase kebab-case (matches the regex `^[a-z0-9]+(-[a-z0-9]+)*$`).
-
-### 3. Compose the case body
-
-Full case markdown, frontmatter included. Leave `case:` as `<NN>` — the server assigns the number; fill it into your staged copy afterwards if you keep one:
-
-```markdown
----
-case: <NN>
-filed_by: <your session ID>
-app: <your app name, or "backend">
-type: <bug | question | request | platform-gap>
-severity: <blocks-me | annoying | fyi>
-component: <wip-client | document-store | registry | scaffold | mcp-server | wip-react | wip-proxy | wip-auth | reporting-sync | other>
-status: open
-filed: <YYYY-MM-DD HH:MM>
----
-
-## Problem
-
-<What happened, with evidence — error messages, unexpected behavior, missing functionality.
-Be specific enough that a BE-YAC with no knowledge of your app can understand.>
-
-## Expected
-
-<What should have happened.>
-
-## Workaround
-
-<What you're doing in the meantime. "None" if blocked. This matters — workarounds hide problems.>
-
-## Peter's Take
-
-<If Peter provided a comment with `/case file`, put it here verbatim. If no comment, omit this section entirely.>
-```
-
-Optionally stage it to `yac-discussions/CASE-<n>-open-<slug>.md` after the POST returns the number — the staged file is a local convenience, regenerable via `GET $BASE/cases/<n>`; kb is the record.
-
-### 4. File it (one gateway call)
+Close without implementing (won't-fix / not-an-issue / deferred / handled manually).
+Compose the resolution rationale, then response + transition:
 
 ```bash
-curl -fsSk -X POST "$BASE/cases" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"title":"<short case title>","filed_by":"<your session ID>",
-       "type":"<bug|question|request|platform-gap>","severity":"<blocks-me|annoying|fyi>",
-       "component":"<component>","app":"<your app>",
-       "body":"<the full case markdown from step 3>","related":["CASE-12","CASE-340"]}'
-# -> 201 {"case":N,"synonym":"CASE-N","document_id":"…","edges":K}
+kbc kb-write.py CASE_RESPONSE close.md --edge RESPONDS_TO:CASE_RECORD:<n>
+#   close.md frontmatter: case_number: <n> / response_kind: close / author: <id> / doc_status: published
+kbc kb-write.py CASE_RECORD --patch status=closed --match case_number=<n>
 ```
 
-Allocation, synonym, `data.status=open`, and REFERENCES edges are all server-side. A 422 names the invalid field; retries are safe (a failed create allocates nothing).
-
-### 5. Confirm
-
-Tell Peter the case number, the kb document_id, and the staged file path if you kept one.
+Terminal. Tell Peter it's closed and why.
 
 ---
 
-## Handling `/case list`
+## `/wip-case implement <n>`
 
-### 1. Scan for cases
+The "do the work" command. Read the case (`case-fetch.py case <n>`); if it has no
+proposed fix, tell Peter to `/wip-case respond` first and stop.
 
-```bash
-ls yac-discussions/CASE-*.md 2>/dev/null
-```
+1. **Verify the proposed fix before touching code** — does the analysis convince you?
+   Has the target code changed since the response? Side effects on other callers/tests?
+   If anything is wrong, respond with your findings instead of implementing a fix you
+   don't trust.
+2. **Apply each change**; if quoted "current text" no longer matches, flag and skip it.
+3. **Show the diff** (`git diff`) and let Peter review before committing.
+4. **Record + close:**
 
-If no files, say "No cases filed" and stop.
+   ```bash
+   kbc kb-write.py CASE_RESPONSE implement.md --edge RESPONDS_TO:CASE_RECORD:<n>
+   #   implement.md frontmatter: case_number: <n> / response_kind: implement / author: <id> / doc_status: published
+   kbc kb-write.py CASE_RECORD --patch status=implemented --match case_number=<n>
+   ```
 
-### 2. Read frontmatter of each case
-
-For each file, read just the YAML frontmatter (case number, status, type, severity, filed_by, component).
-
-### 3. Present a summary
-
-Show non-closed cases first, then recently closed/implemented (last 7 days). One line each:
-
-```markdown
-## Open Cases
-
-| # | Status | Severity | Type | Component | Filed by | Slug |
-|---|--------|----------|------|-----------|----------|------|
-| 01 | open | blocks-me | bug | document-store | APP-AA-20260401-2139 | unknown-fields |
-| 02 | responded | annoying | request | mcp-server | APP-AA-20260401-2139 | no-update-template |
-
-## Recently Closed/Implemented
-
-| # | Status | Type | Slug |
-|---|--------|------|------|
-| 03 | implemented | bug | relative-baseurl |
-| 04 | closed | request | wont-fix-example |
-```
-
-Filter by relevance:
-- **BE-YACs:** show all cases (you maintain the platform)
-- **APP-YACs:** show cases filed by your app prefix, or cases with `status: responded` where you are the filer
+Terminal. Tell Peter what was applied and that the case is implemented.
 
 ---
 
-## Handling `/case read <number>`
+## Edges — attach and inspect cross-links (CASE-630)
 
-### 1. Find the case
+Cross-links live in the graph, not in prose. A response that concerns another
+case gets a REFERENCES edge (CASE_RESPONSE is an allowed source since CASE-630).
+
+**Attach an edge between two EXISTING docs** — the sanctioned retry for a
+failed edge intent; never re-post the document:
 
 ```bash
-ls yac-discussions/CASE-<NN>-*.md 2>/dev/null
+kbc kb-write.py EDGE REFERENCES CASE-629#1 CASE-627
+# handles = Registry synonyms (CASE-<n>, CASE-<n>#<seq>, session ids) or document_ids
+# idempotent: KB edge types are versioned:false, identity [source_ref, target_ref]
 ```
 
-Read the matching file. If it doesn't exist, tell Peter and stop.
+**Inspect a doc's edges** (both directions, far end labeled with its doc type):
 
-### 2. Present the full case
+```bash
+kbc case-fetch.py edges CASE-626
+kbc case-fetch.py edges CASE-626#1
+```
 
-Show the complete file — frontmatter, problem, expected, workaround, Peter's take (if any), and all comments/responses/resolution in order.
+**Failed edge intents on a doc write no longer abort the request.** The write
+returns the doc result plus per-edge status (`linked` / `target_not_found` /
+`error`); `kb-write.py` exits **3** when the doc persisted but an edge intent
+was rejected — retry ONLY the edge with the EDGE verb above. Exit 2 remains
+transport failure; a `target_not_found` intent stays exit 0 (the loaders'
+converge-on-rewrite semantics).
 
 ---
 
-## Handling `/case respond <number>`
+## Flags — the deterministic dispatch queue (flag-for-YAC)
 
-### 1. Find and read the case
-
-Find `yac-discussions/CASE-<NN>-*.md`. If it doesn't exist, tell Peter and stop.
-
-### 2. Analyse before responding
-
-**Do not jump to implementation.** Before writing a response:
-
-1. **Understand the root cause.** Read the relevant source code. Don't guess from the symptom description — verify where the bug actually lives.
-2. **Check the proposed solution (if any).** Cases often include a "Suggested Fix" or "Workaround" from the filer. **Do not assume the proposed solution is correct.** The filer sees their side; you see the platform. Ask:
-   - Does this actually solve the root cause, or just the symptom?
-   - Does the library/framework validate assumptions this solution breaks? (e.g., OIDC issuer validation, identity hash scoping, bulk-first response contracts)
-   - Are there edge cases the filer couldn't see from their vantage point?
-   - Is there a simpler or more principled solution?
-3. **If you find a better solution**, describe both in your response: what was proposed, why it doesn't fully work, and what you recommend instead. Update the case — don't silently implement a different fix.
-4. **If the proposed solution IS correct**, say so and explain why. Show your analysis, not just "looks right, implementing."
-
-The goal: every response demonstrates that the solution was analysed, not just executed. CASE-50 was implemented blindly (OIDC issuer split) and broke because the library validates issuer consistency. CASE-36 was analysed properly (three agents contributed different perspectives) and produced the right fix. Be like CASE-36.
-
-### 3. Post the response (one gateway call)
-
-Compose the section content — `### Analysis` / `### Fix` subsections as before — **without** the `## Response — …` heading (the server composes it from `author` + its own timestamp), then:
+Peter flags a doc in the UI → a FLAG_RECORD (target_yac, flag_type) plus a
+FLAGGED_FROM edge. A deterministic poller turns pending flags into sub-agent
+dispatches:
 
 ```bash
-curl -fsSk -X POST "$BASE/cases/<n>/respond" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"author":"<your session ID>","text":"<the section markdown WITHOUT the ## heading>"}'
-# -> 200 {"case":N,"status":"responded","doc_version":V} | 422 illegal transition | 404 unknown | 409 after 3 conflict retries
+kbc case-fetch.py flags --target-yac FRanC --target-type CASE_RECORD --format json
+# rows carry flag_id + target.case_number — everything a dispatcher needs
 ```
 
-The append is race-safe (`if_match` + re-read retry — concurrent writers both land, CASE-462's lesson) and the status transition (open→responded) is enforced server-side. No file rename, no mirror step — kb is the record; refresh any staged flat file from `GET $BASE/cases/<n>` if you keep one.
-
-### 4. Confirm
-
-Tell Peter the case number and the returned status.
-
----
-
-## Handling `/case comment <number>`
-
-Add a follow-up comment to an existing case. Use this for clarifications, additional context, Peter's input, or questions between filer and responder.
-
-### 1. Find and read the case
-
-Find `yac-discussions/CASE-<NN>-*.md`. If it doesn't exist, tell Peter and stop.
-
-### 2. Get the current time
+**Lifecycle contract:** `doc_status: published` = pending dispatch (the
+default filter). After dispatching, mark the flag consumed so the poller
+never re-triggers it:
 
 ```bash
-date '+%Y-%m-%d %H:%M'
+kbc kb-write.py FLAG_RECORD --patch doc_status=dispatched --match document_id=<flag_id>
 ```
 
-### 3. Post the comment (one gateway call)
-
-```bash
-curl -fsSk -X POST "$BASE/cases/<n>/comment" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"author":"<your session ID>","text":"<the comment markdown WITHOUT the ## heading>"}'
-# -> 200 (no status change — comments are legal in every state, including terminal)
-```
-
-Race-safe append; the server composes the `## Comment — <author> (<ts>)` heading. No rename, no mirror.
-
-### 4. Confirm
-
-One line to Peter: comment posted on CASE-<n>.
-
----
-
-## Handling `/case close <number>`
-
-Close a case without implementing anything. Use for: won't-fix, not-an-issue, deferred, or Peter handled it manually.
-
-### 1. Find and read the case
-
-Find `yac-discussions/CASE-<NN>-*.md`. If it doesn't exist, tell Peter and stop.
-
-### 2. Post the resolution (one gateway call)
-
-Compose the resolution rationale (won't-fix / not-an-issue / deferred / handled manually — with the why), then:
-
-```bash
-curl -fsSk -X POST "$BASE/cases/<n>/close" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"author":"<your session ID>","text":"<resolution markdown WITHOUT the ## heading>"}'
-# -> 200 {"case":N,"status":"closed",…} | 422 if the transition is illegal
-```
-
-Terminal: after this, comments remain legal but no further transitions. No rename, no mirror.
-
-### 3. Confirm
-
-Tell Peter the case is closed and why.
-
----
-
-## Handling `/case implement <number>`
-
-Apply the proposed patch from a responded case, then close it as implemented. This is the "do the work" command.
-
-### 1. Find and read the case
-
-Find `yac-discussions/CASE-<NN>-*.md`. Read the full case, including all responses.
-
-If the case has no `## Response` section with a proposed patch, tell Peter: "Case <NN> has no proposed patch to implement. Use `/case respond` first." Then stop.
-
-### 2. Verify the proposed fix before applying
-
-Find the most recent `## Response` section. Read the analysis and proposed fix.
-
-**Before touching any code:**
-- Does the analysis in the response convince you? If not, do your own analysis and update the case first.
-- Read the target files. Has the code changed since the response was written? The fix may no longer apply or may be obsolete.
-- Check whether the fix has side effects the responder didn't consider (other callers, other services, test suites).
-- If anything is unclear or wrong, update the case with your findings — don't implement a fix you don't trust.
-
-### 3. Apply each change
-
-For each proposed change:
-- Find the target file (referenced in the case or response)
-- Locate the "Current text" quoted in the patch
-- Replace with the "Proposed text"
-- If the current text doesn't match (file has changed since the review), flag it and skip that change — don't force it
-
-### 4. Show what changed
-
-```bash
-git diff
-```
-
-Tell Peter what was applied and what was skipped (if any). Let Peter review the diff before committing.
-
-### 5. Post the implementation record (one gateway call)
-
-Compose the implementation section — what was applied, where, verification results — then:
-
-```bash
-curl -fsSk -X POST "$BASE/cases/<n>/implement" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"author":"<your session ID>","text":"<implementation markdown WITHOUT the ## heading>"}'
-# -> 200 {"case":N,"status":"implemented",…}
-```
-
-Terminal; server-side transition; no rename, no mirror.
-
-### 6. Confirm
-
-Tell Peter what was applied and that the case is implemented.
+(`document_id` match is the escape hatch for composite-identity types —
+FLAG_RECORD's identity is `[flag_type, flagged_document]`.) Re-flagging the
+same doc in the UI upserts that identity back to `published`, which re-arms
+the trigger after a failed run. `--doc-status dispatched` / `all` list
+consumed / every flag.
