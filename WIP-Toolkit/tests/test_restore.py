@@ -851,3 +851,77 @@ class TestDocumentMetadataUnwrap:
         docs = [{"template_id": "T", "document_id": "D", "version": 1, "data": {}}]
         payloads = _build_document_payloads(docs, "ns")
         assert payloads[0]["metadata"] == {}
+
+
+# ---------------------------------------------------------------------------
+# CASE-668 — pre-flight: refuse restores that cannot succeed, up front
+# ---------------------------------------------------------------------------
+
+from wip_toolkit.import_.restore import (  # noqa: E402
+    RestorePreflightError,
+    _preflight_clean_target,
+)
+
+
+def _stats_response(total: int) -> dict:
+    return {"entity_counts": {"templates": total, "documents": 0}}
+
+
+def _client_with_stats(by_namespace: dict):
+    """Mock client whose registry stats GET answers per namespace;
+    namespaces absent from the map 404 (don't exist)."""
+    client = MagicMock()
+
+    def _get(service, path, params=None):
+        ns = path.removeprefix("/namespaces/").removesuffix("/stats")
+        if ns in by_namespace:
+            return _stats_response(by_namespace[ns])
+        raise WIPClientError("not found", status_code=404)
+
+    client.get.side_effect = _get
+    return client
+
+
+class TestPreflightCleanTarget:
+    def test_clean_instance_passes(self):
+        """Both namespaces gone (the disaster-recovery shape) → proceed."""
+        client = _client_with_stats({})
+        _preflight_clean_target(client, "target-ns", "source-ns")  # no raise
+
+    def test_self_restore_into_empty_namespace_passes(self):
+        client = _client_with_stats({"ns": 0})
+        _preflight_clean_target(client, "ns", "ns")  # no raise
+
+    def test_non_empty_target_refused(self):
+        client = _client_with_stats({"ns": 3})
+        try:
+            _preflight_clean_target(client, "ns", "ns")
+            raise AssertionError("expected RestorePreflightError")
+        except RestorePreflightError as e:
+            assert "empty target" in str(e)
+            assert "3 active entities" in str(e)
+
+    def test_redirect_with_live_source_refused(self):
+        """The observed incident: --target-namespace while the source still
+        owns the archived IDs — ID-preserving restore can never succeed."""
+        client = _client_with_stats({"source-ns": 14})
+        try:
+            _preflight_clean_target(client, "fresh-ns", "source-ns")
+            raise AssertionError("expected RestorePreflightError")
+        except RestorePreflightError as e:
+            assert "source-ns" in str(e)
+            assert "--mode fresh" in str(e)
+
+    def test_redirect_with_gone_source_passes(self):
+        """The valid rename-on-restore shape."""
+        client = _client_with_stats({})
+        _preflight_clean_target(client, "fresh-ns", "source-ns")  # no raise
+
+    def test_non_404_stats_error_propagates(self):
+        client = MagicMock()
+        client.get.side_effect = WIPClientError("boom", status_code=500)
+        try:
+            _preflight_clean_target(client, "ns", "ns")
+            raise AssertionError("expected WIPClientError")
+        except WIPClientError:
+            pass

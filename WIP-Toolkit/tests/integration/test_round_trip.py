@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import pytest
 from wip_toolkit.archive import ArchiveReader
+from wip_toolkit.client import WIPClientError
 from wip_toolkit.export.exporter import run_export
 from wip_toolkit.import_.importer import run_import
+from wip_toolkit.import_.restore import RestorePreflightError
 
 NS = "toolkit-it"
 
@@ -289,3 +291,19 @@ def test_golden_round_trip(stack, wip_client, tmp_path):
     )
     assert overwritten["version"] == 1
     assert overwritten["data"]["proficiency"] == "novice"
+
+    # Phase 7 — CASE-668: an ID-preserving restore into a SECOND namespace
+    # while the restored entities still own the archived IDs must be
+    # refused up front, before creating anything (the live incident
+    # half-proceeded: target namespace created, then a per-entity
+    # clean-target failure cascade).
+    with pytest.raises(RestorePreflightError, match="--mode fresh"):
+        run_import(
+            wip_client, str(archive), mode="restore",
+            target_namespace="toolkit-it-2",
+        )
+    # The refusal must come BEFORE anything is created — the target
+    # namespace must not exist afterward.
+    with pytest.raises(WIPClientError) as refused:
+        wip_client.get("registry", "/namespaces/toolkit-it-2/stats")
+    assert refused.value.status_code == 404

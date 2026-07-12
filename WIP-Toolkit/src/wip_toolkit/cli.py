@@ -16,6 +16,7 @@ from .client import WIPClient
 from .config import WIPConfig
 from .export.exporter import run_export
 from .import_.importer import run_import
+from .import_.restore import RestorePreflightError
 from .seed import run_seed
 from .status import StatusThresholds, collect_status
 
@@ -154,17 +155,21 @@ def import_cmd(
     """
     config = ctx.obj["config"]
     with WIPClient(config) as client:
-        stats = run_import(
-            client, archive_path,
-            mode=mode,
-            target_namespace=target_namespace,
-            register_synonyms=register_synonyms,
-            skip_documents=skip_documents,
-            skip_files=skip_files,
-            batch_size=batch_size,
-            continue_on_error=continue_on_error,
-            dry_run=dry_run,
-        )
+        try:
+            stats = run_import(
+                client, archive_path,
+                mode=mode,
+                target_namespace=target_namespace,
+                register_synonyms=register_synonyms,
+                skip_documents=skip_documents,
+                skip_files=skip_files,
+                batch_size=batch_size,
+                continue_on_error=continue_on_error,
+                dry_run=dry_run,
+            )
+        except RestorePreflightError as e:
+            console.print(f"[red bold]Refused:[/red bold] {e}")
+            sys.exit(1)
 
         if stats.errors:
             sys.exit(1)

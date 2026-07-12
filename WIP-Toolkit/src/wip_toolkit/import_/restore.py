@@ -29,6 +29,58 @@ from ..models import ImportStats, Manifest, NamespaceConfig, ProgressEvent
 console = Console(stderr=True)
 
 
+class RestorePreflightError(Exception):
+    """Restore-mode import refused up front: the target cannot succeed.
+
+    ID-preserving restore requires the archived entity IDs to be free.
+    Without this gate, an invalid restore half-proceeds — the target
+    namespace gets created, then every entity cascades through per-item
+    Registry clean-target refusals, and the operator is left with noise
+    instead of one actionable message."""
+
+
+def _namespace_entity_total(client: WIPClient, namespace: str) -> int | None:
+    """Total active Registry entities in a namespace; None if it doesn't
+    exist (404 also covers namespaces invisible to the caller's key — the
+    per-entity clean-target refusals remain the integrity backstop)."""
+    try:
+        stats = client.get("registry", f"/namespaces/{namespace}/stats")
+    except WIPClientError as e:
+        if e.status_code == 404:
+            return None
+        raise
+    counts = stats.get("entity_counts") or {}
+    return sum(counts.values())
+
+
+def _preflight_clean_target(
+    client: WIPClient, target_namespace: str, source_namespace: str | None
+) -> None:
+    """Refuse the two restore shapes that can never succeed, before
+    creating anything. The valid redirect (--target-namespace with the
+    source gone) is the disaster-recovery / rename-on-restore shape and
+    passes both probes."""
+    target_total = _namespace_entity_total(client, target_namespace)
+    if target_total:
+        raise RestorePreflightError(
+            f"Restore requires an empty target: namespace "
+            f"'{target_namespace}' holds {target_total} active entities. "
+            f"Delete the namespace first, or use --mode fresh for a "
+            f"re-keyed copy."
+        )
+    if source_namespace and source_namespace != target_namespace:
+        source_total = _namespace_entity_total(client, source_namespace)
+        if source_total:
+            raise RestorePreflightError(
+                f"Restore preserves entity IDs, and the archive's source "
+                f"namespace '{source_namespace}' still holds "
+                f"{source_total} active entities owning those IDs — an "
+                f"ID-preserving restore into '{target_namespace}' cannot "
+                f"succeed. Delete the source namespace first, or use "
+                f"--mode fresh for a re-keyed copy."
+            )
+
+
 def restore_import(
     client: WIPClient,
     reader: ArchiveReader,
@@ -50,6 +102,12 @@ def restore_import(
         console.print("[bold yellow]Dry run[/bold yellow] — no changes will be made")
         _preview(reader, manifest, skip_documents, skip_files)
         return stats
+
+    # Pre-flight: refuse up front when the ID-preserving restore cannot
+    # succeed (non-empty target, or a redirect while the source namespace
+    # still owns the archived IDs) — one actionable message instead of a
+    # per-entity clean-target failure cascade.
+    _preflight_clean_target(client, target_namespace, stats.source_namespace)
 
     # Step 0: Ensure namespace exists
     _emit(progress_callback, ProgressEvent(
