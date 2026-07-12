@@ -1305,8 +1305,12 @@ def rebuild(
     for the requested services. Polls `compose ps` until each service
     with a healthcheck reports healthy unless `--no-wait` is set.
 
-    For Dockerfile or requirements.txt edits — bind-mounted source is
-    already live without a rebuild; just `podman restart wip-<svc>`.
+    This is the verb for Dockerfile or requirements.txt/package.json
+    edits — changes that need a new image. Source-only edits on a dev
+    install need nothing at all: source is bind-mounted and hot-reloads
+    within seconds (the dev renderer injects WATCHFILES_FORCE_POLLING
+    so --reload works across the bind mount). `wip-deploy restart <svc>`
+    is the fallback for stacks rendered before that fix shipped.
 
     Examples:
 
