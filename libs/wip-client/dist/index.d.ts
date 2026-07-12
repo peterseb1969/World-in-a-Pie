@@ -266,7 +266,16 @@ interface ExportTerminologyResponse {
     terminology: Terminology;
     terms: Term[];
     export_date: string;
-    export_format: string;
+    format: string;
+    version: string;
+    relations?: Array<{
+        source_term_value: string;
+        target_term_value: string;
+        relation_type: string;
+        metadata?: Record<string, unknown>;
+        source_terminology_id?: string;
+        target_terminology_id?: string;
+    }>;
 }
 interface ValidateValueRequest {
     terminology_id?: string;
@@ -398,17 +407,18 @@ declare class DefStoreService extends BaseService {
     importTerminology(data: ImportTerminologyRequest): Promise<{
         terminology: Terminology;
         terms_result: BulkResponse;
-        relationships_result?: {
+        relations_result?: {
             total: number;
             created: number;
             skipped: number;
             errors: number;
+            error_samples: string[];
         };
     }>;
     exportTerminology(terminologyId: string, options?: {
         format?: 'json' | 'csv';
         includeInactive?: boolean;
-        includeRelationships?: boolean;
+        includeRelations?: boolean;
         includeMetadata?: boolean;
         languages?: string[];
     }): Promise<ExportTerminologyResponse | string>;
@@ -421,7 +431,7 @@ declare class DefStoreService extends BaseService {
         max_synonyms?: number;
         batch_size?: number;
         registry_batch_size?: number;
-        relationship_batch_size?: number;
+        relation_batch_size?: number;
         skip_duplicates?: boolean;
         update_existing?: boolean;
     }): Promise<{
@@ -437,13 +447,13 @@ declare class DefStoreService extends BaseService {
             skipped: number;
             errors: number;
         };
-        relationships: {
+        relations: {
             total: number;
             created: number;
             skipped: number;
             errors: number;
             predicate_distribution: Record<string, number>;
-            error_samples?: string[];
+            error_samples: string[];
         };
         elapsed_seconds: number;
     }>;

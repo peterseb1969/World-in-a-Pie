@@ -119,6 +119,92 @@ describe('Service classes via createWipClient', () => {
       expect(url).toContain('/api/def-store/ontology/terms/0190b000-0000-7000-0000-000000000002/parents')
       expect(url).toContain('relation_type=part_of')
     })
+
+    // CASE-677: the return type and the request params must match the wire.
+    // The backend's import-ontology handler returns the ontology-edge stats
+    // under `relations` (not `relationships`) and reads `relation_batch_size`
+    // as its query param; the export handler reads `include_relations`. These
+    // assert against a recorded response body + the emitted query string so a
+    // future rename drift on this endpoint fails here instead of at runtime.
+    it('importOntology reads `relations` from the wire and sends relation_batch_size', async () => {
+      // Recorded shape of POST /import-export/import-ontology (wip-local).
+      mockJsonResponse({
+        terminology: { terminology_id: 'LOV-1', value: 'HPO', label: 'HPO', status: 'active' },
+        terms: { total: 3, created: 3, skipped: 0, errors: 0 },
+        relations: {
+          total: 2,
+          created: 2,
+          skipped: 0,
+          errors: 0,
+          predicate_distribution: { is_a: 2 },
+          error_samples: [],
+        },
+        elapsed_seconds: 0.4,
+      })
+
+      const res = await client.defStore.importOntology(
+        { graphs: [] },
+        { namespace: 'wip', terminology_value: 'HPO', relation_batch_size: 250 },
+      )
+
+      // The field the case's crash was about — readable off the typed result.
+      expect(res.relations.created).toBe(2)
+      expect(res.relations.error_samples).toEqual([])
+
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/def-store/import-export/import-ontology')
+      expect(options.method).toBe('POST')
+      // The wire param is relation_batch_size; the old relationship_batch_size
+      // was silently ignored by the backend.
+      expect(url).toContain('relation_batch_size=250')
+      expect(url).not.toContain('relationship_batch_size')
+    })
+
+    it('exportTerminology sends include_relations and reads the wire fields', async () => {
+      // Recorded shape of _export_json (import_export.py): `format`/`version`
+      // tags and a conditional `relations` block, NOT `export_format`.
+      mockJsonResponse({
+        terminology: { value: 'COUNTRY', label: 'Country' },
+        terms: [],
+        export_date: '2026-07-12T00:00:00Z',
+        format: 'json',
+        version: '2.0',
+        relations: [
+          { source_term_value: 'GB', target_term_value: 'EU', relation_type: 'part_of' },
+        ],
+      })
+
+      const res = await client.defStore.exportTerminology('COUNTRY', { includeRelations: true })
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/def-store/import-export/export/COUNTRY')
+      expect(url).toContain('include_relations=true')
+      expect(url).not.toContain('include_relationships')
+      // Typed reads of the wire fields the old type got wrong.
+      if (typeof res !== 'string') {
+        expect(res.format).toBe('json')
+        expect(res.version).toBe('2.0')
+        expect(res.relations?.[0].relation_type).toBe('part_of')
+      }
+    })
+
+    it('importTerminology reads relation stats from `relations_result`', async () => {
+      // Recorded shape of POST /import-export/import (import_export.py) when
+      // the payload carried relations: the stats key is `relations_result`.
+      mockJsonResponse({
+        terminology: { terminology_id: 'LOV-1', value: 'COUNTRY', label: 'Country', status: 'active' },
+        terms_result: { results: [], total: 0, succeeded: 0, skipped: 0, failed: 0 },
+        relations_result: { total: 1, created: 1, skipped: 0, errors: 0, error_samples: [] },
+      })
+
+      const res = await client.defStore.importTerminology({
+        terminology: { value: 'COUNTRY', label: 'Country' },
+        terms: [],
+      })
+
+      expect(res.relations_result?.created).toBe(1)
+      expect(res.relations_result?.error_samples).toEqual([])
+    })
   })
 
   describe('TemplateStoreService', () => {

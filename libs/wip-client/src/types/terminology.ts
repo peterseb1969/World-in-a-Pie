@@ -140,7 +140,20 @@ export interface ExportTerminologyResponse {
   terminology: Terminology
   terms: Term[]
   export_date: string
-  export_format: string
+  // Wire fields from def-store's _export_json (import_export.py): the format
+  // tag is `format`, not `export_format`; `version` is the export schema
+  // version; `relations` is present only when the export pulled any term
+  // relations (includeRelations).
+  format: string
+  version: string
+  relations?: Array<{
+    source_term_value: string
+    target_term_value: string
+    relation_type: string
+    metadata?: Record<string, unknown>
+    source_terminology_id?: string
+    target_terminology_id?: string
+  }>
 }
 
 export interface ValidateValueRequest {

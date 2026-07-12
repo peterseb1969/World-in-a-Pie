@@ -293,7 +293,7 @@ const imported = await client.defStore.importTerminology({
 // Export
 const exported = await client.defStore.exportTerminology('COUNTRY', {
   format: 'json',              // or 'csv'
-  includeRelationships: true,
+  includeRelations: true,
   includeInactive: false,
   includeMetadata: true,
 })
@@ -306,7 +306,7 @@ const ontology = await client.defStore.importOntology(oboGraphJson, {
   batch_size: 1000,
   registry_batch_size: 50,
 })
-// ontology.terms.created, ontology.relationships.created, ontology.elapsed_seconds
+// ontology.terms.created, ontology.relations.created, ontology.elapsed_seconds
 ```
 
 ### Ontology Term Relations

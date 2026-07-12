@@ -136,7 +136,13 @@ export class DefStoreService extends BaseService {
   async importTerminology(data: ImportTerminologyRequest): Promise<{
     terminology: Terminology
     terms_result: BulkResponse
-    relationships_result?: { total: number; created: number; skipped: number; errors: number }
+    // The wire key is `relations_result` (import_export.py sets it only when
+    // the payload carried relations), matching the platform's post-2eeb872
+    // "relation" = term-ontology-edge terminology. The old `relationships_result`
+    // was undefined on every response that did include relation stats.
+    relations_result?: {
+      total: number; created: number; skipped: number; errors: number; error_samples: string[]
+    }
   }> {
     return this.post('/import-export/import', data)
   }
@@ -146,7 +152,7 @@ export class DefStoreService extends BaseService {
     options?: {
       format?: 'json' | 'csv'
       includeInactive?: boolean
-      includeRelationships?: boolean
+      includeRelations?: boolean
       includeMetadata?: boolean
       languages?: string[]
     },
@@ -154,7 +160,7 @@ export class DefStoreService extends BaseService {
     return this.get(`/import-export/export/${terminologyId}`, {
       format: options?.format ?? 'json',
       include_inactive: options?.includeInactive,
-      include_relationships: options?.includeRelationships,
+      include_relations: options?.includeRelations,
       include_metadata: options?.includeMetadata,
       languages: options?.languages,
     })
@@ -171,17 +177,17 @@ export class DefStoreService extends BaseService {
       max_synonyms?: number
       batch_size?: number
       registry_batch_size?: number
-      relationship_batch_size?: number
+      relation_batch_size?: number
       skip_duplicates?: boolean
       update_existing?: boolean
     },
   ): Promise<{
     terminology: { terminology_id: string; value: string; label: string; status: string }
     terms: { total: number; created: number; skipped: number; errors: number }
-    relationships: {
+    relations: {
       total: number; created: number; skipped: number; errors: number
       predicate_distribution: Record<string, number>
-      error_samples?: string[]
+      error_samples: string[]
     }
     elapsed_seconds: number
   }> {

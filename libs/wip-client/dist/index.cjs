@@ -455,7 +455,7 @@ var DefStoreService = class extends BaseService {
     return this.get(`/import-export/export/${terminologyId}`, {
       format: options?.format ?? "json",
       include_inactive: options?.includeInactive,
-      include_relationships: options?.includeRelationships,
+      include_relations: options?.includeRelations,
       include_metadata: options?.includeMetadata,
       languages: options?.languages
     });
