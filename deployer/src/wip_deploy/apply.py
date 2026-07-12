@@ -1052,6 +1052,7 @@ def apply_k8s(
     apps: list[App],
     tree: FileTree,
     install_dir: Path,
+    services_scope: list[str] | None = None,
 ) -> ApplyResult:
     """Materialize the tree and run `kubectl apply`.
 
@@ -1059,6 +1060,21 @@ def apply_k8s(
     `kubectl rollout status` per Deployment/StatefulSet. Post-install
     hooks run via `kubectl exec` against a pod selected by the
     component's `app.kubernetes.io/name` label.
+
+    `services_scope` (non-empty list) narrows the apply for
+    single-service mutations like an app tag roll. The full tree is
+    still rendered and written to disk — the on-disk state stays
+    truthful — but kubectl applies only the shared cross-cutting files
+    (secrets, configmaps, ingress, network policies; no-ops when
+    unchanged) plus the named services' own manifests, and NEVER
+    `--prune`. kubectl's incremental apply is not a scope: a full-tree
+    apply recreates any unrelated manifest that drifted from live
+    (renderer churn between invocations) — a one-app tag roll once
+    bounced mongodb this way and flashed every Mongo-backed service
+    unhealthy — and prune against a partial apply set would delete
+    everything not in it. Rollout wait and post-install hooks narrow to
+    the scoped services. Resource DELETION happens only via the full
+    apply's prune, so verbs that remove resources must not pass a scope.
     """
     if not shutil.which("kubectl"):
         raise ApplyError("kubectl not on PATH")
@@ -1084,9 +1100,21 @@ def apply_k8s(
     # CASE-455: see apply_compose — post-`kubectl apply` failures are
     # post-mutation; stamp them so the CLI persists the applied spec.
     try:
-        _kubectl_apply_tree(install_dir, ns)
-
-        up_count = _count_k8s_workloads(tree)
+        if services_scope:
+            _kubectl_apply_scoped(install_dir, ns, services_scope)
+            # Narrow the wait / hooks / summary to the scoped services.
+            # Filtering the component and app lists here composes through
+            # _expected_workloads, _run_post_install_k8s, and
+            # _skipped_post_install_labels without signature changes.
+            scoped_names = set(services_scope)
+            components = [
+                c for c in components if c.metadata.name in scoped_names
+            ]
+            apps = [a for a in apps if a.metadata.name in scoped_names]
+            up_count = len(_expected_workloads(components, apps, deployment))
+        else:
+            _kubectl_apply_tree(install_dir, ns)
+            up_count = _count_k8s_workloads(tree)
 
         healthy = True
         post_install_skipped: list[str] = []
@@ -1161,6 +1189,49 @@ def _clean_rendered_tree(install_dir: Path) -> None:
         sub = install_dir / name
         if sub.is_dir():
             shutil.rmtree(sub)
+
+
+def _kubectl_apply_scoped(
+    install_dir: Path, ns: str, services: list[str]
+) -> None:
+    """Apply the shared cross-cutting files plus the named services'
+    manifests — one file at a time, no recursion, NO `--prune`.
+
+    Prune semantics work against the whole apply set; against a partial
+    set kubectl would delete every live resource not in it, so a scoped
+    apply must never carry the flag. The shared files are included
+    because a single-service mutation can legitimately change them
+    (adding an app extends the ingress routes and configmaps); when
+    unchanged they are no-ops under kubectl's incremental apply. Other
+    services' workload manifests are deliberately NOT applied — that
+    exclusion is the scope.
+    """
+    namespace_yaml = install_dir / "namespace.yaml"
+    if namespace_yaml.exists():
+        _kubectl_run(["apply", "-f", str(namespace_yaml)])
+
+    for rel in (
+        "secrets.yaml",
+        "configmaps.yaml",
+        "ingress.yaml",
+        "network-policies.yaml",
+    ):
+        shared = install_dir / rel
+        if shared.exists():
+            _kubectl_run(["apply", "-n", ns, "-f", str(shared)])
+
+    for svc in services:
+        candidates = (
+            install_dir / "services" / f"{svc}.yaml",
+            install_dir / "infrastructure" / f"{svc}.yaml",
+        )
+        path = next((p for p in candidates if p.exists()), None)
+        if path is None:
+            raise ApplyError(
+                f"scoped apply: no rendered manifest for {svc!r} "
+                f"(looked in services/ and infrastructure/)"
+            )
+        _kubectl_run(["apply", "-n", ns, "-f", str(path)])
 
 
 def _kubectl_apply_tree(install_dir: Path, ns: str) -> None:

@@ -1980,13 +1980,18 @@ def _apply_and_persist_mutation(
     the deployment-state with the mutated spec so subsequent verbs
     see the latest.
 
-    `services_scope` (CASE-443, compose targets only): scope the apply
-    to the named compose services instead of a full-stack re-up — see
-    `apply_compose`. Ignored on k8s, where `kubectl apply` is already
-    incremental. App verbs pass it; module verbs deliberately do NOT —
-    flipping a module changes OTHER services' rendered env (e.g. NATS_URL
-    appears on document-store when nats arrives via from_component), so
-    the full re-up is semantically required there.
+    `services_scope`: scope the apply to the named services instead of
+    a full-stack re-up/re-apply — see `apply_compose` and `apply_k8s`.
+    App verbs pass it; module verbs deliberately do NOT — flipping a
+    module changes OTHER services' rendered env (e.g. NATS_URL appears
+    on document-store when nats arrives via from_component), so the
+    full apply is semantically required there. On k8s, only a NON-EMPTY
+    scope narrows the apply: "kubectl apply is already incremental" is
+    not a substitute for scoping (a full-tree apply recreates unrelated
+    drifted manifests — a one-app tag roll once bounced mongodb as
+    collateral), but resource DELETION on k8s happens only via the full
+    apply's prune, so the empty scope (remove-app's compose config-only
+    mode) and None both fall back to the full tree there.
     """
     _validate_or_exit(deployment, components, apps_list)
 
@@ -2006,6 +2011,9 @@ def _apply_and_persist_mutation(
     apply_fn = apply_k8s if deployment.spec.target == "k8s" else apply_compose
     apply_kwargs: dict[str, Any] = {}
     if deployment.spec.target != "k8s":
+        apply_kwargs["services_scope"] = services_scope
+    elif services_scope:
+        # k8s: non-empty scope only — see the docstring's deletion caveat.
         apply_kwargs["services_scope"] = services_scope
     try:
         result = apply_fn(
