@@ -258,6 +258,15 @@ class RegistryClientBase:
         Used by services as part of entity creation — auto-synonyms enable
         human-readable resolution (e.g., "PATIENT" -> template ID). Failure
         prevents entity creation, so we raise rather than return a status.
+
+        Failure includes PER-ITEM failure: /synonyms/add is bulk-first and
+        returns HTTP 200 even when the item was refused (e.g. the synonym
+        key is owned by a DIFFERENT entry — the Registry's never-auto-steal
+        guard). Swallowing that leaves the entity created but resolving its
+        value to the wrong entry, and the callers' rollback paths never
+        fire. `already_exists` is success: the target entry already owns
+        this exact key (restore-mode creates re-register the value per
+        version, and archive synonym replays re-add the same key).
         """
         try:
             async with self._make_client() as client:
@@ -276,6 +285,16 @@ class RegistryClientBase:
                     raise RegistryError(
                         f"Failed to register auto-synonym for {target_id}: {response.text}"
                     )
+                data = response.json()
+                results = data.get("results", data) if isinstance(data, dict) else data
+                if isinstance(results, list) and results:
+                    status = results[0].get("status")
+                    if status not in ("added", "already_exists"):
+                        error = results[0].get("error") or ""
+                        raise RegistryError(
+                            f"Failed to register auto-synonym for {target_id}: "
+                            f"status={status}{': ' + error if error else ''}"
+                        )
         except RegistryError:
             raise
         except Exception as e:
@@ -290,7 +309,13 @@ class RegistryClientBase:
         """Bulk auto-synonym registration. items: list of dicts with keys
         target_id, namespace (or synonym_namespace), entity_type (or
         synonym_entity_type), composite_key (or synonym_composite_key),
-        created_by."""
+        created_by.
+
+        Raises on PER-ITEM failure, not just HTTP failure — the endpoint is
+        bulk-first (200 even when items were refused) and the real callers
+        discard the returned results, so a swallowed refusal leaves entities
+        created but mis-resolving. `already_exists` counts as success (the
+        idempotent re-registration path)."""
         normalised: list[dict[str, Any]] = []
         for it in items:
             normalised.append({
@@ -314,7 +339,23 @@ class RegistryClientBase:
             results_data = data.get("results", data) if isinstance(data, dict) else data
             if not isinstance(results_data, list):
                 return []
-            return [AddSynonymResult.model_validate(r) for r in results_data]
+            results = [AddSynonymResult.model_validate(r) for r in results_data]
+            failed = [
+                (i, r) for i, r in enumerate(results)
+                if r.status not in ("added", "already_exists")
+            ]
+            if failed:
+                detail = "; ".join(
+                    f"item {i}: status={r.status}"
+                    + (f" ({r.error})" if r.error else "")
+                    for i, r in failed[:5]
+                )
+                if len(failed) > 5:
+                    detail += f"; … {len(failed) - 5} more"
+                raise RegistryError(
+                    f"{len(failed)} auto-synonym registration(s) failed: {detail}"
+                )
+            return results
 
     # ── Universal public methods ────────────────────────────────────────
 
