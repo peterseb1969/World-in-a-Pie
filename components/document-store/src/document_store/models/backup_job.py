@@ -61,13 +61,17 @@ class BackupJob(BeanieDocument):
     namespace: str = Field(
         ...,
         description="Primary namespace (the URL anchor). For a multi-namespace "
-                    "backup this is the first of `namespaces`; for restore it is "
-                    "the target."
+                    "backup this is the first of `namespaces`; for a "
+                    "single-namespace restore it is the target, but for a "
+                    "multi-namespace restore it is the URL anchor only (each "
+                    "namespace restores into itself) — use `namespaces` for the "
+                    "actual restored set."
     )
     namespaces: list[str] = Field(
         default_factory=list,
-        description="All namespaces this backup job spans (1 for a "
-                    "single-namespace backup). Empty on restore jobs.",
+        description="All namespaces this job spans. For a backup: the exported "
+                    "set (1 for a single-namespace backup). For a restore: the "
+                    "namespaces the archive writes into, read from its manifest.",
     )
 
     # Lifecycle

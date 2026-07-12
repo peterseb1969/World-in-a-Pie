@@ -272,6 +272,12 @@ async def start_restore(
         job_id=job_id,
         kind=BackupJobKind.RESTORE,
         namespace=effective_target or namespace,
+        # The manifest's prefixes are the namespaces this restore writes; a
+        # single-namespace archive derives prefixes == [effective_target], so
+        # this one expression covers both the single- and multi-namespace
+        # paths. Only an unreadable manifest leaves prefixes empty — fall back
+        # to the scalar namespace so the field is never silently blank.
+        namespaces=prefixes or [effective_target or namespace],
         archive_path=str(archive_path),
         archive_size=archive_size,
         options=options,

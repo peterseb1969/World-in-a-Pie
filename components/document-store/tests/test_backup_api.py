@@ -164,6 +164,9 @@ async def test_start_restore_streams_upload_and_creates_job(
     body = resp.json()
     assert body["kind"] == "restore"
     assert body["namespace"] == "wip"
+    # Unreadable manifest → prefixes is empty, so namespaces falls back to the
+    # scalar namespace rather than staying blank (CASE-547).
+    assert body["namespaces"] == ["wip"]
     assert body["archive_size"] == len(payload)
     assert body["options"]["mode"] == "restore"
 
