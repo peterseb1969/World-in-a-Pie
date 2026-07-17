@@ -17,6 +17,21 @@ class TestHealthEndpoints:
         assert "version" in data
 
     @pytest.mark.asyncio
+    async def test_prefixed_root_serves_build_provenance(self, client: AsyncClient):
+        """The router preserves the /api/registry prefix, so the root payload
+        (with its build block) must also be served at the prefixed path —
+        otherwise router-side consumers like the console's build probe 404."""
+        response = await client.get("/api/registry/")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["service"] == "WIP Registry"
+        build = data["build"]
+        assert set(build) == {"version", "sha", "built_at", "image_tag"}
+        # version comes from the package, not a hand-maintained literal
+        from registry import __version__
+        assert build["version"] == __version__
+
+    @pytest.mark.asyncio
     async def test_health_endpoint(self, client: AsyncClient):
         """Test health endpoint."""
         response = await client.get("/health")

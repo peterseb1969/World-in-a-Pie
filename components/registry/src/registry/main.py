@@ -23,6 +23,7 @@ from wip_auth import (
     setup_rate_limiting,
 )
 
+from . import __version__
 from .api import api_router
 from .api.api_keys import configure_api_key_management
 from .models.api_key import StoredAPIKey
@@ -233,15 +234,20 @@ app.include_router(api_router)
 declare_api_key_security(app)
 
 
-# Root endpoint
+# Root endpoint. The prefixed alias matters: Caddy preserves the
+# /api/registry prefix on the way to this app, so the bare "/" is reachable
+# only container-direct — without the alias, router-side consumers (the
+# console's build-provenance probe at /api/registry/) get a 404 and the
+# dashboard shows no build info for this service.
 @app.get("/", tags=["Health"])
+@app.get("/api/registry/", include_in_schema=False, tags=["Health"])
 async def root():
     """Root endpoint with service information."""
     return {
         "service": "WIP Registry",
-        "version": "0.4.0",
-        # CASE-526: uniform build-provenance block (sha/built_at/image_tag).
-        "build": build_metadata("0.4.0"),
+        "version": __version__,
+        # Uniform build-provenance block (sha/built_at/image_tag).
+        "build": build_metadata(__version__),
         "documentation": "/docs",
         "health": "/health",
     }
