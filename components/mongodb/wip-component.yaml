@@ -13,6 +13,24 @@ spec:
     name: docker.io/library/mongo
     tag: "7"
 
+  # Cap WiredTiger's cache. Default ceiling is 50% x (RAM - 1GB); against an
+  # 8GB VM with no per-container memory limit that lets Mongo grow its cache
+  # toward ~3.6GB, oversized for WIP's Pi-to-dev footprint. 1GB keeps the cache
+  # bounded (total RSS lands a few hundred MB above this).
+  #
+  # argv[0] MUST stay docker-entrypoint.sh, NOT bare mongod. The renderers
+  # replace the image ENTRYPOINT with this argv (compose splits it into
+  # entrypoint + command, k8s uses command:), so a bare `mongod` here would
+  # bypass the mongo image's docker-entrypoint.sh — and that script injects
+  # --bind_ip_all. Without it mongod falls back to its localhost-only default
+  # bindIp: the DB comes up "healthy" on the container's own TCP probe but
+  # REFUSES every cross-container connection, so registry/def-store/
+  # template-store/document-store all fail Beanie init with "Connection
+  # refused". Passing docker-entrypoint.sh as argv[0] re-runs the full stock
+  # setup (bind_ip_all, MONGO_INITDB_* bootstrap, /data/db perms) and just
+  # appends our cache flag.
+  command: [docker-entrypoint.sh, mongod, --wiredTigerCacheSizeGB, "1.0"]
+
   ports:
     - {name: mongo, container_port: 27017}
 
