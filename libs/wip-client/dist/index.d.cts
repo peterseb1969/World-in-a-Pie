@@ -1006,8 +1006,17 @@ interface PatchDocumentRequest {
     /**
      * RFC 7396 JSON Merge Patch applied to the document's `data` field.
      * Objects deep-merge, arrays replace, `null` deletes the key.
+     * Pass `{}` for a metadata-only patch.
      */
     patch: Record<string, unknown>;
+    /**
+     * Optional RFC 7396 JSON Merge Patch applied to the document's
+     * `metadata.custom`. Metadata is non-identity document content — a
+     * metadata change creates a new version like any other change, but never
+     * feeds the identity hash. Platform-owned metadata (warnings,
+     * source_system) cannot be addressed. Omitted = metadata carries forward.
+     */
+    metadata_patch?: Record<string, unknown>;
     /**
      * Optional optimistic concurrency control. If supplied, the patch fails with
      * `concurrency_conflict` unless the current document version matches.
@@ -1394,6 +1403,7 @@ declare class DocumentStoreService extends BaseService {
      */
     updateDocument(documentId: string, patch: Record<string, unknown>, options?: {
         ifMatch?: number;
+        metadataPatch?: Record<string, unknown>;
     }): Promise<BulkResultItem>;
     /**
      * Bulk PATCH /documents — apply RFC 7396 merge patches to multiple documents

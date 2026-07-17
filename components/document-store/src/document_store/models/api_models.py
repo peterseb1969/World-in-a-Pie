@@ -417,8 +417,11 @@ class ArchiveItem(StrictModel):
 class PatchDocumentItem(StrictModel):
     """Item in a bulk PATCH /documents request.
 
-    Applies a JSON Merge Patch (RFC 7396) to the document's `data` and creates
-    a new version. Identity fields and namespace cannot be changed via patch.
+    Applies a JSON Merge Patch (RFC 7396) to the document's `data` (and,
+    via `metadata_patch`, to `metadata.custom`) and creates a new version.
+    Metadata is non-identity document content: it versions like data but
+    never feeds the identity hash. Identity fields and namespace cannot be
+    changed via patch.
     """
 
     document_id: str = Field(
@@ -428,7 +431,15 @@ class PatchDocumentItem(StrictModel):
     patch: dict[str, Any] = Field(
         ...,
         description="Partial data following RFC 7396 (JSON Merge Patch). "
-                    "Objects are deep-merged, arrays are replaced, null deletes a field."
+                    "Objects are deep-merged, arrays are replaced, null deletes a field. "
+                    "Pass {} for a metadata-only patch."
+    )
+    metadata_patch: dict[str, Any] | None = Field(
+        default=None,
+        description="Partial metadata.custom following RFC 7396 (JSON Merge Patch), "
+                    "merged onto the document's custom metadata. Platform-owned "
+                    "metadata (warnings, source_system) cannot be addressed. "
+                    "A metadata change creates a new version like any other change."
     )
     if_match: int | None = Field(
         default=None,

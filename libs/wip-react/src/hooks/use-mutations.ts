@@ -317,7 +317,17 @@ export function useUpdateDocument(
     UseMutationOptions<
       BulkResultItem,
       Error,
-      { documentId: string; patch: Record<string, unknown>; ifMatch?: number }
+      {
+        documentId: string
+        patch: Record<string, unknown>
+        ifMatch?: number
+        /**
+         * RFC 7396 merge patch for `metadata.custom`. Metadata versions
+         * like data (a metadata-only change mints a new version); pass
+         * `patch: {}` for a metadata-only update.
+         */
+        metadataPatch?: Record<string, unknown>
+      }
     >,
     'mutationFn'
   >,
@@ -327,8 +337,8 @@ export function useUpdateDocument(
   const queryClient = useQueryClient()
   return useMutation({
     ...restOptions,
-    mutationFn: ({ documentId, patch, ifMatch }) =>
-      client.documents.updateDocument(documentId, patch, { ifMatch }),
+    mutationFn: ({ documentId, patch, ifMatch, metadataPatch }) =>
+      client.documents.updateDocument(documentId, patch, { ifMatch, metadataPatch }),
     onSuccess: (...args) => {
       const variables = args[1]
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.detail(variables.documentId) })

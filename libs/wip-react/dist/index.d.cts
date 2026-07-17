@@ -371,10 +371,22 @@ declare function useUpdateDocument(options?: Omit<UseMutationOptions<BulkResultI
     documentId: string;
     patch: Record<string, unknown>;
     ifMatch?: number;
+    /**
+     * RFC 7396 merge patch for `metadata.custom`. Metadata versions
+     * like data (a metadata-only change mints a new version); pass
+     * `patch: {}` for a metadata-only update.
+     */
+    metadataPatch?: Record<string, unknown>;
 }>, 'mutationFn'>): _tanstack_react_query.UseMutationResult<BulkResultItem, Error, {
     documentId: string;
     patch: Record<string, unknown>;
     ifMatch?: number;
+    /**
+     * RFC 7396 merge patch for `metadata.custom`. Metadata versions
+     * like data (a metadata-only change mints a new version); pass
+     * `patch: {}` for a metadata-only update.
+     */
+    metadataPatch?: Record<string, unknown>;
 }, unknown>;
 /**
  * Bulk variant of {@link useUpdateDocument}. Returns the raw `BulkResponse`

@@ -1080,17 +1080,21 @@ class WipClient:
         patch: dict,
         if_match: int | None = None,
         namespace: str | None = None,
+        metadata_patch: dict | None = None,
     ) -> dict:
         """Apply an RFC 7396 JSON Merge Patch to a document.
 
-        Wraps the bulk PATCH endpoint with a single item and unwraps the
-        result. Raises BulkError (with `error_code` populated) on per-item
-        failure (e.g. not_found, identity_field_change, validation_failed,
-        concurrency_conflict).
+        `patch` targets the document's `data`; `metadata_patch` (optional)
+        targets `metadata.custom`. Wraps the bulk PATCH endpoint with a
+        single item and unwraps the result. Raises BulkError (with
+        `error_code` populated) on per-item failure (e.g. not_found,
+        identity_field_change, validation_failed, concurrency_conflict).
         """
         item: dict[str, Any] = {"document_id": document_id, "patch": patch}
         if if_match is not None:
             item["if_match"] = if_match
+        if metadata_patch is not None:
+            item["metadata_patch"] = metadata_patch
         resp = await self._patch(
             self.document_store_url,
             "/api/document-store/documents",

@@ -81,11 +81,14 @@ export class DocumentStoreService extends BaseService {
   async updateDocument(
     documentId: string,
     patch: Record<string, unknown>,
-    options?: { ifMatch?: number },
+    options?: { ifMatch?: number; metadataPatch?: Record<string, unknown> },
   ): Promise<BulkResultItem> {
     const item: PatchDocumentRequest = { document_id: documentId, patch }
     if (options?.ifMatch !== undefined) {
       item.if_match = options.ifMatch
+    }
+    if (options?.metadataPatch !== undefined) {
+      item.metadata_patch = options.metadataPatch
     }
     return this.bulkWriteOne('/documents', item, 'PATCH')
   }

@@ -524,6 +524,44 @@ class TestUpdateDocumentCommand:
         assert body == [{"document_id": "DOC-1", "patch": {"x": 1}, "if_match": 4}]
 
     @patch("wip_toolkit.cli.WIPClient")
+    def test_update_document_forwards_metadata_patch(self, MockClient):
+        from wip_toolkit.cli import main
+
+        mock_client = _make_mock_client()
+        mock_client.patch.return_value = {
+            "results": [{"index": 0, "status": "updated", "document_id": "DOC-1", "version": 2}],
+            "total": 1, "succeeded": 1, "failed": 0,
+        }
+        MockClient.return_value = mock_client
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["update-document", "DOC-1", "--patch", "{}",
+             "--metadata-patch", '{"reviewed": true}'],
+        )
+
+        assert result.exit_code == 0, result.output
+        body = mock_client.patch.call_args.kwargs["json"]
+        assert body == [{
+            "document_id": "DOC-1",
+            "patch": {},
+            "metadata_patch": {"reviewed": True},
+        }]
+
+    @patch("wip_toolkit.cli.WIPClient")
+    def test_update_document_rejects_invalid_metadata_patch_json(self, MockClient):
+        from wip_toolkit.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["update-document", "DOC-1", "--patch", "{}",
+             "--metadata-patch", "not-json"],
+        )
+        assert result.exit_code == 2
+
+    @patch("wip_toolkit.cli.WIPClient")
     def test_update_document_error_exits_nonzero(self, MockClient):
         from wip_toolkit.cli import main
 

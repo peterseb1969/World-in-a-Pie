@@ -656,7 +656,7 @@ function useUpdateDocument(options) {
   const queryClient = reactQuery.useQueryClient();
   return reactQuery.useMutation({
     ...restOptions,
-    mutationFn: ({ documentId, patch, ifMatch }) => client.documents.updateDocument(documentId, patch, { ifMatch }),
+    mutationFn: ({ documentId, patch, ifMatch, metadataPatch }) => client.documents.updateDocument(documentId, patch, { ifMatch, metadataPatch }),
     onSuccess: (...args) => {
       const variables = args[1];
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.detail(variables.documentId) });

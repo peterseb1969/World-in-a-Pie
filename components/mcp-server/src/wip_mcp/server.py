@@ -91,7 +91,12 @@ the whole document.
 
 Semantics:
 - Objects deep-merge, arrays replace wholesale, null deletes a field
-- Empty patch or a no-op patch returns status "unchanged" (no new version)
+- `metadata_patch` applies the same merge semantics to `metadata.custom` —
+  metadata is document content and versions like data (it never feeds the
+  identity hash, so it cannot create or dedup a document). Pass patch={}
+  with a metadata_patch for a metadata-only update.
+- Empty patch or a no-op patch (data AND metadata unchanged) returns status
+  "unchanged" (no new version)
 - Identity fields CANNOT be changed via PATCH — you get error_code
   `identity_field_change`. To change identity, POST a new document.
 - A template with NO identity_fields (append-only) CANNOT be PATCHed at all —
@@ -2787,6 +2792,7 @@ async def update_document(
     document_id: str,
     patch: dict,
     if_match: int | None = None,
+    metadata_patch: dict | None = None,
 ) -> str:
     """Apply a partial update to a document via RFC 7396 JSON Merge Patch.
 
@@ -2794,15 +2800,25 @@ async def update_document(
     inactive. NATS DOCUMENT_UPDATED is published — same event reporting-sync
     consumes for new versions, so the reporting layer refreshes automatically.
 
+    Metadata versions like data: a change to `metadata.custom` (via
+    `metadata_patch`) creates a new version exactly like a `data` change.
+    Metadata never feeds the identity hash — it cannot create or dedup a
+    document — but it is document content, not a mutable side-channel.
+
     Args:
         document_id: Document ID (e.g. 'DOC-xxx') or registered synonym.
         patch: JSON Merge Patch applied to the document's `data` field.
             - Objects are deep-merged
             - Arrays are REPLACED entirely (not merged element-wise)
             - `null` values DELETE the corresponding key
+            Pass {} for a metadata-only update.
         if_match: Optional optimistic concurrency control. If supplied, the
             patch fails with `concurrency_conflict` unless the current
             version matches.
+        metadata_patch: Optional JSON Merge Patch applied to the document's
+            `metadata.custom` (same RFC 7396 semantics as `patch`).
+            Platform-owned metadata (warnings, source_system) cannot be
+            addressed. Omitted = metadata carries forward unchanged.
 
     Restrictions:
         - Cannot change identity fields (use create_document to create a new
@@ -2824,10 +2840,14 @@ async def update_document(
 
     Example — concurrency-safe update:
         update_document("DOC-123", {"status": "approved"}, if_match=4)
+
+    Example — metadata-only update (mints a new version):
+        update_document("DOC-123", {}, metadata_patch={"source_tag": "batch-7"})
     """
     try:
         data = await get_client().update_document(
             document_id, patch, if_match=if_match,
+            metadata_patch=metadata_patch,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

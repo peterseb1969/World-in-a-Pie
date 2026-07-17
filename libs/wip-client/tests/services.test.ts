@@ -572,6 +572,27 @@ describe('Service classes via createWipClient', () => {
       expect(body).toEqual([{ document_id: 'D-001', patch: { name: 'Jane' }, if_match: 4 }])
     })
 
+    it('updateDocument forwards metadataPatch as metadata_patch', async () => {
+      mockJsonResponse({
+        results: [{ index: 0, status: 'updated', document_id: 'D-001', version: 2 }],
+        total: 1,
+        succeeded: 1,
+        failed: 0,
+      })
+
+      await client.documents.updateDocument(
+        'D-001', {}, { metadataPatch: { reviewed_by: 'peter' } },
+      )
+
+      const [, options] = fetchMock.mock.calls[0]
+      const body = JSON.parse(options.body)
+      expect(body).toEqual([{
+        document_id: 'D-001',
+        patch: {},
+        metadata_patch: { reviewed_by: 'peter' },
+      }])
+    })
+
     it('updateDocument throws WipBulkItemError carrying error_code', async () => {
       mockJsonResponse({
         results: [{

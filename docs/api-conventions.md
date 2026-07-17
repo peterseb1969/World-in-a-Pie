@@ -115,7 +115,8 @@ A JSON array of patch items:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `document_id` | yes | Canonical UUID or registered synonym — resolved before processing |
-| `patch` | yes | RFC 7396 JSON Merge Patch applied to the entity's `data` |
+| `patch` | yes | RFC 7396 JSON Merge Patch applied to the entity's `data`. Pass `{}` for a metadata-only patch |
+| `metadata_patch` | no | RFC 7396 JSON Merge Patch applied to the entity's `metadata.custom`. Platform-owned metadata (`warnings`, `source_system`) cannot be addressed. Omitted = metadata carries forward unchanged |
 | `if_match` | no | Per-item optimistic concurrency control: if current version != `if_match`, the item fails with `concurrency_conflict` |
 
 ### RFC 7396 JSON Merge Patch Semantics
@@ -124,7 +125,8 @@ A JSON array of patch items:
 - Arrays are **replaced** wholesale (no per-element merging)
 - `null` **deletes** the key from the merged result
 - `null` on a required field fails validation for that item (error_code `validation_failed`)
-- Empty patch `{}` or a patch that results in no change returns `status: "unchanged"` — no new version is created
+- The same semantics apply to `metadata_patch` against `metadata.custom`
+- Empty patch `{}` or a patch that results in no change (data **and** metadata) returns `status: "unchanged"` — no new version is created
 
 ### Response Format
 
@@ -163,6 +165,7 @@ Codes defined by `PATCH /documents`:
 3. **PATCH preserves `template_version` and `identity_hash`** — the new version validates against the template version recorded on the document, not the latest template version.
 4. **PATCH reuses existing NATS event types** — e.g., `EventType.DOCUMENT_UPDATED`. Reporting-sync and other downstream consumers need no changes.
 5. **PATCH requires logical identity** — a template with empty `identity_fields` is append-only; its documents have only a surrogate `document_id`, not a logical identity, so PATCH is rejected with `append_only`. Relatedly, `versioned: false` requires non-empty `identity_fields` (rejected at template create *and* update), so the append-only + overwrite-in-place combination cannot exist. "Zero identity fields = no update path" therefore covers **both** the create/upsert path and PATCH (CASE-478).
+6. **Metadata versions like data** — `metadata.custom` is non-identity document content. It never feeds the identity hash (a metadata delta cannot create or dedup a document), but a change to it is a change to the document: change detection on both the create/upsert path and PATCH compares `metadata.custom`, and a metadata-only delta produces a normal new version (`updated`), never a silent drop. On create/upsert, `metadata` omitted/`null` means "not addressed" — the existing custom metadata carries forward; a supplied object (including `{}`) replaces it wholesale. On PATCH, `metadata_patch` merges (RFC 7396) onto `metadata.custom`; omitted = carries forward. Genuinely mutable, history-free annotations belong in a `deletion_mode: "full"` namespace, not in metadata.
 
 ---
 

@@ -697,19 +697,28 @@ class DocumentService:
             warnings=all_warnings
         ), None
 
-    def _data_has_changed(
+    def _document_has_changed(
         self,
         existing: Document,
         new_data: dict[str, Any],
         new_term_references: list[dict[str, Any]],
         new_references: list[dict[str, Any]],
-        new_file_references: list[dict[str, Any]] | None = None
+        new_file_references: list[dict[str, Any]] | None = None,
+        new_metadata_custom: dict[str, Any] | None = None,
     ) -> bool:
         """
-        Check if document data has changed.
+        Check if any versioned part of the document has changed.
 
-        Compares the data, term_references, references, and file_references
-        to determine if a new version should be created.
+        Compares data, term_references, references, file_references, and
+        metadata.custom to determine if a new version should be created.
+        Metadata is non-identity document content: it never feeds the
+        identity hash (it cannot create or dedup a document), but a change
+        to it is a change to the document and versions like any other.
+
+        ``new_file_references`` and ``new_metadata_custom`` are compared
+        only when not None — None means the caller did not address that
+        part (no opinion), not "clear it". An explicitly supplied empty
+        dict/list DOES compare, so callers can clear metadata on purpose.
         """
         import json
 
@@ -740,6 +749,16 @@ class DocumentService:
             new_file_refs_json = json.dumps(new_file_references, sort_keys=True, default=str)
 
             if existing_file_refs_json != new_file_refs_json:
+                return True
+
+        # Compare metadata.custom (caller-supplied only; platform-owned
+        # metadata fields like warnings/source_system never drive versioning)
+        if new_metadata_custom is not None:
+            existing_custom = existing.metadata.custom if existing.metadata else {}
+            existing_custom_json = json.dumps(existing_custom, sort_keys=True, default=str)
+            new_custom_json = json.dumps(new_metadata_custom, sort_keys=True, default=str)
+
+            if existing_custom_json != new_custom_json:
                 return True
 
         return False
@@ -847,11 +866,11 @@ class DocumentService:
         document in place instead of creating a new version. Same
         document_id, same version number, just newer data/timestamps.
 
-        When ``force_new_version`` is True the data-unchanged short-circuit is
+        When ``force_new_version`` is True the unchanged short-circuit is
         bypassed: a new version (or in-place re-pin) is always written even if
-        the data is byte-identical. This is the template-version migrate path
+        the document is byte-identical. This is the template-version migrate path
         (CASE-491) — the *intent* is to re-pin to a different ``template_version``,
-        which the data-only change check (`_data_has_changed`) deliberately
+        which the change check (`_document_has_changed`) deliberately
         ignores so it doesn't disturb ordinary create dedup.
         """
         # CASE-434/436 sibling fix: the update path used to ignore inline
@@ -867,15 +886,19 @@ class DocumentService:
             if err_code:
                 return None, f"{err_code}: {err_msg}"
 
-        # Check if data has actually changed. The migrate path (force_new_version)
-        # skips this gate: re-pinning to a new template_version is a real change
-        # even when the data bytes are identical (the typical migration).
-        if not force_new_version and not self._data_has_changed(
+        # Check if the document has actually changed. The migrate path
+        # (force_new_version) skips this gate: re-pinning to a new
+        # template_version is a real change even when the bytes are identical
+        # (the typical migration). metadata=None means the caller did not
+        # address metadata — it is not compared and the existing metadata
+        # carries forward on any write below.
+        if not force_new_version and not self._document_has_changed(
             existing,
             request.data,
             validation_result.term_references,
             validation_result.references,
-            validation_result.file_references
+            validation_result.file_references,
+            new_metadata_custom=request.metadata,
         ):
             # No change - return existing document info without creating new version
             return DocumentCreateResponse(
@@ -906,12 +929,18 @@ class DocumentService:
         existing.updated_by = actor
         await existing.save()
 
-        # Create new version with SAME document_id (stable)
+        # Create new version with SAME document_id (stable).
+        # metadata=None carries the existing custom metadata forward (the
+        # caller did not address it); a supplied dict replaces it wholesale,
+        # including an explicit {} to clear. Mirrors the change gate above —
+        # None must mean the same thing in the gate and in the write, or a
+        # data-only update would silently wipe metadata.
         now = datetime.now(UTC)
         new_version = existing.version + 1
         metadata = DocumentMetadata(
             warnings=validation_result.warnings + synonym_warnings,
-            custom=request.metadata or {}
+            custom=request.metadata if request.metadata is not None
+            else dict(existing.metadata.custom if existing.metadata else {}),
         )
 
         document = await self._insert_with_retry(
@@ -982,6 +1011,9 @@ class DocumentService:
 
         previous_file_refs = list(existing.file_references)
 
+        # metadata=None carries the existing custom forward (caller did not
+        # address it); a supplied dict — including {} — replaces wholesale.
+        preserved_custom = dict(existing.metadata.custom if existing.metadata else {})
         existing.data = request.data
         existing.term_references = validation_result.term_references
         existing.references = validation_result.references
@@ -990,7 +1022,7 @@ class DocumentService:
         existing.template_value = validation_result.template_value or existing.template_value
         existing.metadata = DocumentMetadata(
             warnings=all_warnings,
-            custom=request.metadata or {},
+            custom=request.metadata if request.metadata is not None else preserved_custom,
         )
         existing.updated_at = now
         existing.updated_by = actor
@@ -2280,12 +2312,13 @@ class DocumentService:
                 )
 
         if existing and version_override is None:
-            if not self._data_has_changed(
+            if not self._document_has_changed(
                 existing,
                 item.data,
                 validation_result.term_references,
                 validation_result.references,
                 validation_result.file_references,
+                new_metadata_custom=item.metadata,
             ):
                 # No change — report existing without creating a new version.
                 return _ItemOutcome(
@@ -2348,9 +2381,19 @@ class DocumentService:
 
         # Create document with retry on duplicate key (handles concurrent
         # requests racing on the same identity hash).
+        # metadata=None on an update of an existing document carries the
+        # existing custom metadata forward (the caller did not address it);
+        # a supplied dict — including {} — replaces wholesale. Brand-new
+        # documents and restores start from {} when nothing is supplied.
+        if item.metadata is not None:
+            custom_metadata = item.metadata
+        elif existing is not None and existing.metadata:
+            custom_metadata = dict(existing.metadata.custom)
+        else:
+            custom_metadata = {}
         metadata = DocumentMetadata(
             warnings=validation_result.warnings + synonym_warnings,
-            custom=item.metadata or {},
+            custom=custom_metadata,
         )
         document = await self._insert_with_retry(
             namespace=namespace,
@@ -3100,8 +3143,17 @@ class DocumentService:
                     f"Expected version {item.if_match}, current is {current.version}",
                 )
 
-            # 4. Apply RFC 7396 merge to current data.
+            # 4. Apply RFC 7396 merge to current data, and (when supplied) to
+            #    the document's custom metadata. metadata_patch=None means the
+            #    caller did not address metadata — it carries forward as-is.
+            #    Platform-owned metadata (warnings, source_system) is never
+            #    patchable; only the custom bag is.
             merged_data = json_merge_patch(current.data, item.patch)
+            merged_custom = (
+                json_merge_patch(dict(current.metadata.custom), item.metadata_patch)
+                if item.metadata_patch is not None
+                else dict(current.metadata.custom)
+            )
 
             # 5. Re-validate the merged document against the SAME template
             #    version the existing document was created with (design §13).
@@ -3165,14 +3217,17 @@ class DocumentService:
                         f"(use POST to create a new document instead)",
                     )
 
-            # 7. No-op detection — if data + all 3 reference arrays are byte-equal
-            #    to the current version, return without bumping.
-            if not self._data_has_changed(
+            # 7. No-op detection — if data, all 3 reference arrays, and the
+            #    merged custom metadata are byte-equal to the current version,
+            #    return without bumping. A metadata-only delta is a real
+            #    change and falls through to the write like any other.
+            if not self._document_has_changed(
                 current,
                 merged_data,
                 validation_result.term_references,
                 validation_result.references,
                 validation_result.file_references,
+                new_metadata_custom=merged_custom,
             ):
                 return BulkResultItem(
                     index=index,
@@ -3218,7 +3273,7 @@ class DocumentService:
                 current.metadata = DocumentMetadata(
                     source_system=current.metadata.source_system,
                     warnings=validation_result.warnings,
-                    custom=dict(current.metadata.custom),
+                    custom=merged_custom,
                 )
                 current.updated_at = now
                 current.updated_by = actor
@@ -3249,12 +3304,13 @@ class DocumentService:
             current.updated_by = actor
             await current.save()
 
-            # Preserve metadata.custom from the existing version. Warnings come
+            # Carry the merged custom metadata (identical to the current
+            # version's when no metadata_patch was supplied). Warnings come
             # from the new validation (they describe the merged state).
             new_metadata = DocumentMetadata(
                 source_system=current.metadata.source_system,
                 warnings=validation_result.warnings,
-                custom=dict(current.metadata.custom),
+                custom=merged_custom,
             )
 
             try:

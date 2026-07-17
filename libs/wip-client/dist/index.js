@@ -678,6 +678,9 @@ var DocumentStoreService = class extends BaseService {
     if (options?.ifMatch !== void 0) {
       item.if_match = options.ifMatch;
     }
+    if (options?.metadataPatch !== void 0) {
+      item.metadata_patch = options.metadataPatch;
+    }
     return this.bulkWriteOne("/documents", item, "PATCH");
   }
   /**

@@ -388,7 +388,12 @@ def backfill_synonyms_cmd(
 @click.argument("document_id")
 @click.option("--patch", "patch_json", required=True,
               help="JSON Merge Patch (RFC 7396) to apply to the document's `data`. "
-                   "Use '-' to read JSON from stdin.")
+                   "Use '-' to read JSON from stdin; use '{}' for a "
+                   "metadata-only update.")
+@click.option("--metadata-patch", "metadata_patch_json", default=None,
+              help="JSON Merge Patch (RFC 7396) applied to the document's "
+                   "`metadata.custom`. Metadata versions like data; a "
+                   "metadata-only change mints a new version.")
 @click.option("--if-match", type=int, default=None,
               help="Optimistic concurrency: only apply if current version matches.")
 @click.pass_context
@@ -396,6 +401,7 @@ def update_document_cmd(
     ctx: click.Context,
     document_id: str,
     patch_json: str,
+    metadata_patch_json: str | None,
     if_match: int | None,
 ) -> None:
     """Apply an RFC 7396 JSON Merge Patch to a document.
@@ -407,6 +413,9 @@ def update_document_cmd(
       - Arrays are REPLACED entirely
       - `null` deletes the corresponding key
 
+    --metadata-patch applies the same merge semantics to `metadata.custom`
+    (platform-owned metadata like warnings/source_system cannot be addressed).
+
     Identity fields cannot be changed via PATCH (use create-document with new
     identity values instead). Archived or soft-deleted documents are rejected.
 
@@ -415,6 +424,8 @@ def update_document_cmd(
       wip-toolkit update-document DOC-123 --patch '{"score": 92}'
 
       wip-toolkit update-document DOC-123 --patch '{"middle_name": null}'
+
+      wip-toolkit update-document DOC-123 --patch '{}' --metadata-patch '{"reviewed": true}'
 
       cat patch.json | wip-toolkit update-document DOC-123 --patch -
     """
@@ -429,7 +440,20 @@ def update_document_cmd(
         console.print("[red]--patch must be a JSON object.[/red]")
         sys.exit(2)
 
+    metadata_patch: dict | None = None
+    if metadata_patch_json is not None:
+        try:
+            metadata_patch = _json.loads(metadata_patch_json)
+        except _json.JSONDecodeError as e:
+            console.print(f"[red]Invalid JSON in --metadata-patch:[/red] {e}")
+            sys.exit(2)
+        if not isinstance(metadata_patch, dict):
+            console.print("[red]--metadata-patch must be a JSON object.[/red]")
+            sys.exit(2)
+
     item: dict = {"document_id": document_id, "patch": patch}
+    if metadata_patch is not None:
+        item["metadata_patch"] = metadata_patch
     if if_match is not None:
         item["if_match"] = if_match
 
