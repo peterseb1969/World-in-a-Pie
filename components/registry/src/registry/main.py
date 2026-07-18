@@ -13,11 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import (
-    declare_api_key_security,
     APIKeyProvider,
     APIKeyRecord,
     build_metadata,
     check_production_security,
+    declare_api_key_security,
     init_beanie_with_retry,
     setup_auth,
     setup_rate_limiting,
