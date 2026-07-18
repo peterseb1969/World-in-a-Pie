@@ -1,0 +1,231 @@
+"""Caddyfile emitter.
+
+Converts a `CaddyConfig` into Caddyfile syntax. Caddy isn't YAML — it
+has its own directive format — so this is hand-built.
+
+Auth-protected routes use `forward_auth` to delegate to the gateway
+(which injects X-WIP-User / X-WIP-Groups / X-API-Key headers).
+Streaming routes set `flush_interval -1` so large file downloads
+don't buffer.
+"""
+
+from __future__ import annotations
+
+from io import StringIO
+
+from wip_deploy.config_gen.caddy import CaddyConfig
+from wip_deploy.renderers.caddy_common import write_api_fallthrough_404
+
+
+def render_caddyfile(cfg: CaddyConfig) -> str:
+    """Render a Caddyfile as a string."""
+    out = StringIO()
+
+    # Global options (email for letsencrypt, etc.). Kept minimal here;
+    # letsencrypt mode would add `email admin@example.com`.
+    out.write("{\n")
+    out.write("    auto_https disable_redirects\n")
+    out.write("}\n\n")
+
+    # Site block. Explicit :port so Caddy binds where our compose port
+    # mapping expects (compose maps host:<https_port> → container:<https_port>).
+    # Without the :port, Caddy would default to 443 inside the container
+    # regardless of what the host-side mapping says.
+    if cfg.hostname == "localhost":
+        host_line = f"localhost:{cfg.https_port}"
+    else:
+        host_line = f"{cfg.hostname}:{cfg.https_port}, localhost:{cfg.https_port}"
+
+    out.write(f"{host_line} {{\n")
+    _write_tls(out, cfg)
+    out.write("\n")
+
+    # Hardening headers for publicly exposed installs. Site-block level
+    # so they apply to every route, app routes included.
+    if cfg.emit_hardening_headers:
+        out.write("    header {\n")
+        out.write('        Strict-Transport-Security "max-age=31536000"\n')
+        out.write('        X-Content-Type-Options "nosniff"\n')
+        out.write('        X-Frame-Options "SAMEORIGIN"\n')
+        out.write('        Referrer-Policy "strict-origin-when-cross-origin"\n')
+        out.write("    }\n\n")
+
+    # Bare-host redirect (CASE-368): send `/` to the resolved target (the
+    # first app's prefix, or /auth/login when only the gateway is up).
+    # Emitted up front, but `handle /` is an EXACT-path matcher — it
+    # doesn't overlap /api, /apps/*, etc., so order is irrelevant. Skipped
+    # when a component declares its own `/` route (the catch-all below
+    # owns it then). The explicit `*` matcher on `redir` avoids Caddy
+    # parsing a leading-`/` destination as a matcher (same disambiguation
+    # as the bare-path redirect in _write_route).
+    has_root_route = any(r.path == "/" for r in cfg.routes)
+    if cfg.root_redirect and not has_root_route:
+        out.write("    handle / {\n")
+        out.write(f"        redir * {cfg.root_redirect} permanent\n")
+        out.write("    }\n\n")
+
+    # All browser-facing routes (/dex/*, /auth/*, /api/*, /apps/*, /)
+    # flow through the component manifest → _write_route pipeline. No
+    # renderer special-cases — both Caddy and nginx-ingress consume the
+    # same route list so they can't disagree about what's exposed.
+
+    # Routes — sorted by path-depth descending so longer paths match first.
+    # Caddy's handle matching is order-independent for non-overlapping
+    # prefixes but explicit ordering protects against future ambiguity.
+    sorted_routes = sorted(cfg.routes, key=lambda r: (-len(r.path), r.path))
+
+    for route in sorted_routes:
+        if route.path == "/":
+            # Catch-all route — render last, outside the loop below.
+            continue
+        _write_route(out, route, cfg)
+
+    # Terminal /api/* guard (CASE-513): a stale aggregate path that matches
+    # no /api/<service>/* route 404s loudly instead of falling to Caddy's
+    # default empty-200. Less specific than every service handle, so Caddy's
+    # longest-match never lets it shadow a live route; emitted before the
+    # catch-all so /api paths never reach an SPA catch-all either.
+    write_api_fallthrough_404(out)
+
+    # Catch-all route (path "/") goes last.
+    for route in sorted_routes:
+        if route.path == "/":
+            _write_catchall(out, route, cfg)
+            break
+
+    out.write("}\n")
+
+    # Internal /api/* routing for SSR proxies used to live here as a
+    # second `:8080` site block. That's now owned by the wip-router
+    # component — its own Caddyfile is rendered by router_caddy.py
+    # and emitted by the top-level compose renderer.
+
+    return out.getvalue()
+
+
+def _write_tls(out: StringIO, cfg: CaddyConfig) -> None:
+    if cfg.tls_mode == "internal":
+        out.write("    tls {\n")
+        out.write("        issuer internal {\n")
+        out.write("            lifetime 720h\n")
+        out.write("        }\n")
+        out.write("    }\n")
+    elif cfg.tls_mode == "letsencrypt":
+        # Handled via global email directive + auto_https.
+        pass
+    elif cfg.tls_mode == "external":
+        # TLS terminated upstream; Caddy runs plain HTTP.
+        out.write("    tls off\n")
+
+
+def _write_forward_auth(out: StringIO, cfg: CaddyConfig) -> None:
+    """Emit the forward_auth block shared by routes and the catch-all.
+
+    The `@unauth status 401` + `handle_response` pair converts the
+    gateway's 401 (returned when the session is missing/expired) into a
+    302 redirect to /auth/login. Without this, Caddy would propagate
+    the 401 straight to the browser, which sees a bare "Unauthorized"
+    page instead of a login flow.
+
+    The redir needs the explicit `*` matcher: Caddyfile's ambiguous
+    grammar parses a first argument starting with `/` as a PATH MATCHER,
+    so `redir /auth/login... 302` compiles to match-path-`/auth/login...`
+    with destination "302" — it never matches the protected route, the
+    handle_response block does nothing, and the browser gets Caddy's
+    default empty 200 instead of the login flow. Same trap as the
+    bare-path redirect in _write_route below.
+    """
+    out.write(f"        forward_auth {cfg.gateway_service}:{cfg.gateway_port} {{\n")
+    out.write("            uri /auth/verify\n")
+    out.write("            copy_headers X-WIP-User X-WIP-Groups X-API-Key\n")
+    out.write("            @unauth status 401\n")
+    out.write("            handle_response @unauth {\n")
+    out.write("                redir * /auth/login?return_to={http.request.uri} 302\n")
+    out.write("            }\n")
+    out.write("        }\n")
+
+
+def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyped-def]
+    # Bare-path redirect: /apps/rc (no trailing slash) must 301 to
+    # /apps/rc/, otherwise the bare path falls through the /apps/rc/*
+    # glob and 404s. CASE-49 / CASE-53 regression — the old setup-wip.sh
+    # emitted this per-route; the v2 port missed it.
+    #
+    # Opted out per-route via `redirect_bare_path=false`. MCP's
+    # StreamableHTTP transport mounts at the bare path and redirects
+    # /mcp/ → /mcp itself, which loops with this redirect in the
+    # opposite direction. SPAs want the redirect (relative-URL
+    # resolution); backends with their own canonicalization don't.
+    #
+    # Important: Caddyfile's `redir` directive parses its first argument
+    # as a MATCHER when it starts with `/` (ambiguous grammar). Writing
+    # `redir /apps/rc/ permanent` makes Caddy compile `Location:
+    # "permanent"` with the matcher `/apps/rc/`. Using the `*` matcher
+    # explicitly disambiguates: match-all, destination is the path.
+    if route.redirect_bare_path:
+        out.write(f"    handle {route.path} {{\n")
+        out.write(f"        redir * {route.path}/ permanent\n")
+        out.write("    }\n\n")
+
+    # CASE-248: preserve-prefix subpaths under a strip_prefix route.
+    # MinIO's S3 API at /minio/<bucket>/<key> needs the prefix stripped
+    # (presigned URLs encode the bucket+key path); but its own admin
+    # endpoints under /minio/admin and /minio/health live in MinIO's
+    # URL space and need the prefix preserved. Emit `handle` blocks
+    # for those subpaths first; Caddy's longest-match picks them over
+    # the trailing handle_path block.
+    backend = f"wip-{route.backend_component}:{route.backend_port}"
+    if route.strip_prefix and route.preserve_prefix_subpaths:
+        for sub in route.preserve_prefix_subpaths:
+            out.write(f"    handle {sub}/* {{\n")
+            if route.auth_protected:
+                _write_forward_auth(out, cfg)
+            if route.streaming:
+                out.write(f"        reverse_proxy {backend} {{\n")
+                out.write("            flush_interval -1\n")
+                out.write("        }\n")
+            else:
+                out.write(f"        reverse_proxy {backend}\n")
+            out.write("    }\n\n")
+
+    # `handle_path` strips the route's prefix before forwarding; `handle`
+    # preserves the full request path. MinIO's S3 API is the canonical
+    # strip_prefix case — it serves at the root and doesn't know about
+    # the public /minio prefix, and SigV2 presigned URLs encode the
+    # bucket+key path that must match what MinIO sees.
+    directive = "handle_path" if route.strip_prefix else "handle"
+
+    def _emit_block(matcher_path: str) -> None:
+        out.write(f"    {directive} {matcher_path} {{\n")
+        if route.auth_protected:
+            _write_forward_auth(out, cfg)
+        if route.streaming:
+            out.write(f"        reverse_proxy {backend} {{\n")
+            out.write("            flush_interval -1\n")
+            out.write("        }\n")
+        else:
+            out.write(f"        reverse_proxy {backend}\n")
+        out.write("    }\n\n")
+
+    # CASE-312: when redirect_bare_path is False, no companion `handle
+    # {route.path}` block was emitted above. The wildcard matcher
+    # `{route.path}/*` alone does NOT match the bare path (Caddy's path
+    # glob requires the trailing slash). Without an explicit bare-path
+    # block, requests for `/<path>` fall through to Caddy's default
+    # 200-with-empty-body behaviour — which the MCP StreamableHTTP
+    # transport hits as "Unexpected content type: null" and crashes.
+    # Emit a sibling bare-path handle block (Caddy's first-match wins,
+    # both forward to the same backend) so bare requests are served too.
+    if not route.redirect_bare_path:
+        _emit_block(route.path)
+    _emit_block(f"{route.path}/*")
+
+
+def _write_catchall(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyped-def]
+    out.write("    handle {\n")
+    if route.auth_protected:
+        _write_forward_auth(out, cfg)
+    out.write(
+        f"        reverse_proxy wip-{route.backend_component}:{route.backend_port}\n"
+    )
+    out.write("    }\n")

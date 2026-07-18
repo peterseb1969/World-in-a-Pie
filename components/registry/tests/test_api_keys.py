@@ -2,6 +2,7 @@
 
 import pytest
 from httpx import AsyncClient
+
 from wip_auth.providers.api_key import verify_api_key
 
 BASE = "/api/registry/api-keys"
@@ -77,8 +78,8 @@ class TestListAPIKeys:
         response = await client.get(BASE, headers=auth_headers)
         assert response.status_code == 200
         data = response.json()
-        names = [k["name"] for k in data]
-        sources = {k["name"]: k["source"] for k in data}
+        names = [k["name"] for k in data["items"]]
+        sources = {k["name"]: k["source"] for k in data["items"]}
 
         assert "legacy" in names
         assert sources["legacy"] == "config"
@@ -89,9 +90,54 @@ class TestListAPIKeys:
     async def test_list_no_hashes_exposed(self, client: AsyncClient, auth_headers: dict):
         response = await client.get(BASE, headers=auth_headers)
         assert response.status_code == 200
-        for key in response.json():
+        for key in response.json()["items"]:
             assert "key_hash" not in key
             assert "plaintext_key" not in key
+
+    @pytest.mark.asyncio
+    async def test_list_pagination_envelope(self, client: AsyncClient, auth_headers: dict):
+        """List response carries the platform-wide pagination envelope."""
+        response = await client.get(BASE, headers=auth_headers)
+        assert response.status_code == 200
+        data = response.json()
+        # Envelope shape per wip://conventions
+        assert "items" in data
+        assert "total" in data
+        assert "page" in data
+        assert "page_size" in data
+        assert "pages" in data
+        assert data["page"] == 1
+        assert data["page_size"] == 50
+        assert isinstance(data["items"], list)
+        assert data["total"] >= 1  # the legacy config-file key exists
+
+    @pytest.mark.asyncio
+    async def test_list_pagination_page_2(self, client: AsyncClient, auth_headers: dict):
+        """page_size=1 paginates correctly across config + runtime keys."""
+        # Create enough runtime keys so we have >= 3 total (legacy + 2 created)
+        await client.post(BASE, json={"name": "page-a"}, headers=auth_headers)
+        await client.post(BASE, json={"name": "page-b"}, headers=auth_headers)
+
+        # Page 1
+        r1 = await client.get(f"{BASE}?page=1&page_size=1", headers=auth_headers)
+        assert r1.status_code == 200
+        d1 = r1.json()
+        assert d1["page_size"] == 1
+        assert len(d1["items"]) == 1
+        assert d1["total"] >= 3
+        assert d1["pages"] == d1["total"]
+
+        # Page 2 — different item (sorted by name)
+        r2 = await client.get(f"{BASE}?page=2&page_size=1", headers=auth_headers)
+        d2 = r2.json()
+        assert len(d2["items"]) == 1
+        assert d2["items"][0]["name"] != d1["items"][0]["name"]
+
+    @pytest.mark.asyncio
+    async def test_list_page_size_max_is_100(self, client: AsyncClient, auth_headers: dict):
+        """page_size > 100 is rejected per platform convention."""
+        response = await client.get(f"{BASE}?page_size=101", headers=auth_headers)
+        assert response.status_code == 422
 
 
 class TestGetAPIKey:
@@ -377,3 +423,75 @@ class TestRequestValidation:
             headers=auth_headers,
         )
         assert response.status_code == 404
+
+
+class TestConfigKeyGrants:
+    """Config-declared grants surface on the metadata API — the write
+    scope of a spec-declared key (wip-deploy auth.api_keys) must be
+    visible to admins, not only readable from the install host's
+    rendered api-keys.json. Runtime keys always return grants=None:
+    their write grants are Registry NamespaceGrants (wipe-mortal) and
+    deliberately stay out of this field."""
+
+    @staticmethod
+    def _spec_declared_record():
+        from wip_auth.models import APIKeyRecord
+        from wip_auth.providers.api_key import hash_api_key
+
+        return APIKeyRecord(
+            name="spec-declared",
+            key_hash=hash_api_key("kR7mX2pQ9vL4nB8wZ3cF6a"),
+            owner="system:web-yac",
+            namespaces=["library", "kb"],
+            grants={"kb": "write"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_config_key_grants_exposed_on_list_and_get(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        from registry.api import api_keys as api_keys_module
+
+        provider = api_keys_module._get_provider()
+        record = self._spec_declared_record()
+        provider._keys.append(record)
+        api_keys_module._config_key_names.add(record.name)
+        try:
+            listed = await client.get(BASE, headers=auth_headers)
+            assert listed.status_code == 200
+            by_name = {k["name"]: k for k in listed.json()["items"]}
+            assert by_name["spec-declared"]["grants"] == {"kb": "write"}
+            # Config key WITHOUT grants: field present, None.
+            assert by_name["legacy"]["grants"] is None
+
+            single = await client.get(
+                f"{BASE}/spec-declared", headers=auth_headers
+            )
+            assert single.status_code == 200
+            assert single.json()["grants"] == {"kb": "write"}
+        finally:
+            provider._keys.remove(record)
+            api_keys_module._config_key_names.discard(record.name)
+
+    @pytest.mark.asyncio
+    async def test_runtime_key_grants_always_none(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        await client.post(
+            BASE,
+            json={
+                "name": "grants-none-runtime",
+                "namespaces": ["default"],
+                "grant_permission": "write",
+            },
+            headers=auth_headers,
+        )
+        response = await client.get(
+            f"{BASE}/grants-none-runtime", headers=auth_headers
+        )
+        assert response.status_code == 200
+        # Even though a NamespaceGrant was created (grant_permission),
+        # the response field stays None — Registry grants are a
+        # different, wipe-mortal source and must not blur into the
+        # config-declared field.
+        assert response.json()["grants"] is None

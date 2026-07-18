@@ -15,6 +15,7 @@ from wip_auth.resolve import (
     clear_resolution_cache,
     resolve_entity_id,
     resolve_entity_ids,
+    split_qualified_value,
 )
 
 
@@ -93,6 +94,25 @@ class TestBuildCompositeKey:
     def test_term_bare_value(self):
         key = _build_composite_key("approved", "term", "wip")
         assert key == {"ns": "wip", "type": "term", "value": "approved"}
+
+    # CASE-589: pin the qualified NS:VALUE form for the entity types that
+    # lacked coverage. The namespace rides inside the hashed composite key —
+    # this is the deterministic cross-namespace reference mechanism
+    # (CASE-540), so its shape is load-bearing for every template that
+    # declares a foreign ref by value.
+    def test_cross_namespace_template(self):
+        key = _build_composite_key("kb-libdev:BOOTSTRAP_RECORD", "template", "library")
+        assert key == {"ns": "kb-libdev", "type": "template", "value": "BOOTSTRAP_RECORD"}
+
+    def test_cross_namespace_document(self):
+        key = _build_composite_key("other:INV-001", "document", "wip")
+        assert key == {"ns": "other", "type": "document", "value": "INV-001"}
+
+    def test_bare_template_value_never_crosses(self):
+        """A bare value must resolve in the caller's own namespace — the
+        anti-guessing-game property (CASE-540)."""
+        key = _build_composite_key("BOOTSTRAP_RECORD", "template", "library")
+        assert key == {"ns": "library", "type": "template", "value": "BOOTSTRAP_RECORD"}
 
 
 # ===========================================================================
@@ -225,6 +245,36 @@ class TestResolveEntityId:
         await resolve_entity_id(uuid, "template", "wip")
         assert len(httpx_mock.get_requests()) == 1
 
+    @pytest.mark.asyncio
+    async def test_bypass_cache_ignores_stale_entry(self, httpx_mock):
+        """CASE-56: on write paths, bypass_cache=True must ignore any
+        prior cached entry and always hit Registry for a fresh UUID.
+        The stale entry is overwritten by the fresh Registry result."""
+        # Seed cache with stale UUID via a first resolve
+        httpx_mock.add_response(
+            url="http://localhost:8001/api/registry/entries/resolve",
+            json={"results": [{"status": "found", "entry_id": "stale-uuid"}]},
+        )
+        first = await resolve_entity_id("CT_STATUS", "terminology", "clintrial")
+        assert first == "stale-uuid"
+        # Registry returns fresh UUID on the next call (simulates
+        # delete+recreate during the cache TTL window)
+        httpx_mock.add_response(
+            url="http://localhost:8001/api/registry/entries/resolve",
+            json={"results": [{"status": "found", "entry_id": "fresh-uuid"}]},
+        )
+        fresh = await resolve_entity_id(
+            "CT_STATUS", "terminology", "clintrial", bypass_cache=True,
+        )
+        assert fresh == "fresh-uuid"
+        # Subsequent read-path call should now see the fresh UUID (cache
+        # self-healed — not stale anymore).
+        again = await resolve_entity_id("CT_STATUS", "terminology", "clintrial")
+        assert again == "fresh-uuid"
+        # Two HTTP requests total: one seed + one bypass. The third
+        # (read-path) hits the refreshed cache.
+        assert len(httpx_mock.get_requests()) == 2
+
 
 # ===========================================================================
 # resolve_entity_ids — batch resolution
@@ -287,3 +337,38 @@ class TestResolveEntityIds:
             await resolve_entity_ids(
                 ["00000000-0000-0000-0000-000000000000"], "template", "wip"
             )
+
+
+# ===========================================================================
+# split_qualified_value — the shared NS:VALUE parser (CASE-608 extraction)
+# ===========================================================================
+
+
+class TestSplitQualifiedValue:
+    """The single definition of the non-term qualified reference form.
+
+    _build_composite_key delegates its non-term branch here, so these pins
+    also guard the CASE-589 semantics: bare never crosses, first colon
+    wins, purely syntactic (no namespace-existence check).
+    """
+
+    def test_bare_value(self):
+        assert split_qualified_value("PERSON") == (None, "PERSON")
+
+    def test_qualified_value(self):
+        assert split_qualified_value("kb:DOC-1") == ("kb", "DOC-1")
+
+    def test_first_colon_wins(self):
+        assert split_qualified_value("ns:a:b") == ("ns", "a:b")
+
+    def test_empty_prefix_preserved(self):
+        # ":x" keeps the empty prefix — callers decide whether an empty
+        # namespace falls back (document-store treats it as bare).
+        assert split_qualified_value(":x") == ("", "x")
+
+    def test_delegation_parity_with_composite_key(self):
+        # The composite-key builder and the public helper must never drift.
+        for raw in ("PERSON", "kb:DOC-1", "ns:a:b"):
+            ns, value = split_qualified_value(raw)
+            key = _build_composite_key(raw, "document", "callerns")
+            assert key == {"ns": ns if ns is not None else "callerns", "type": "document", "value": value}

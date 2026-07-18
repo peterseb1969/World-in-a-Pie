@@ -16,6 +16,7 @@ from .client import WIPClient
 from .config import WIPConfig
 from .export.exporter import run_export
 from .import_.importer import run_import
+from .import_.restore import RestorePreflightError
 from .seed import run_seed
 from .status import StatusThresholds, collect_status
 
@@ -154,17 +155,21 @@ def import_cmd(
     """
     config = ctx.obj["config"]
     with WIPClient(config) as client:
-        stats = run_import(
-            client, archive_path,
-            mode=mode,
-            target_namespace=target_namespace,
-            register_synonyms=register_synonyms,
-            skip_documents=skip_documents,
-            skip_files=skip_files,
-            batch_size=batch_size,
-            continue_on_error=continue_on_error,
-            dry_run=dry_run,
-        )
+        try:
+            stats = run_import(
+                client, archive_path,
+                mode=mode,
+                target_namespace=target_namespace,
+                register_synonyms=register_synonyms,
+                skip_documents=skip_documents,
+                skip_files=skip_files,
+                batch_size=batch_size,
+                continue_on_error=continue_on_error,
+                dry_run=dry_run,
+            )
+        except RestorePreflightError as e:
+            console.print(f"[red bold]Refused:[/red bold] {e}")
+            sys.exit(1)
 
         if stats.errors:
             sys.exit(1)
@@ -192,26 +197,51 @@ def inspect(archive_path: str, show_ids: bool, show_references: bool) -> None:
             table.add_row("Tool version", manifest.tool_version)
             table.add_row("Exported at", str(manifest.exported_at))
             table.add_row("Source host", manifest.source_host)
-            table.add_row("Namespace", manifest.namespace)
+            # A v3 multi-namespace archive sets the legacy scalar `namespace`
+            # to "" — namespace_prefixes() reads the v3 list and falls back to
+            # the scalar for legacy-shaped manifests, so this row is correct
+            # for both shapes.
+            table.add_row("Namespaces", ", ".join(manifest.namespace_prefixes()))
             table.add_row("Include inactive", str(manifest.include_inactive))
             table.add_row("Include files", str(manifest.include_files))
             console.print(table)
 
-            # Entity counts
+            # Entity counts. An omitted namespace only auto-resolves when the
+            # archive carries exactly one (reader raises on several), so a
+            # multi-namespace archive is counted per namespace. The manifest's
+            # top-level counts are the AGGREGATE across namespaces; per-
+            # namespace expectations live on NamespaceEntry.counts.
+            namespaces = reader.list_namespaces()
+            multi = len(namespaces) > 1
+
             counts_table = Table(title="Entity Counts")
+            if multi:
+                counts_table.add_column("Namespace", style="bold")
             counts_table.add_column("Entity Type", style="bold")
             counts_table.add_column("Count", justify="right")
             counts_table.add_column("Verified", justify="right", style="dim")
 
-            for entity_type in ENTITY_FILES:
-                manifest_count = getattr(manifest.counts, entity_type, 0)
-                actual_count = reader.entity_count(entity_type)
-                match = "[green]OK[/green]" if manifest_count == actual_count else f"[red]{actual_count}[/red]"
-                counts_table.add_row(entity_type.title(), str(manifest_count), match)
-
-            counts_table.add_row(
-                "Total", str(manifest.counts.total), "", style="bold",
-            )
+            if multi:
+                entry_by_prefix = {e.prefix: e for e in manifest.namespaces}
+                for ns in namespaces:
+                    entry = entry_by_prefix.get(ns)
+                    for entity_type in ENTITY_FILES:
+                        manifest_count = getattr(entry.counts, entity_type, 0) if entry else 0
+                        actual_count = reader.entity_count(entity_type, namespace=ns)
+                        match = "[green]OK[/green]" if manifest_count == actual_count else f"[red]{actual_count}[/red]"
+                        counts_table.add_row(ns, entity_type.title(), str(manifest_count), match)
+                counts_table.add_row(
+                    "", "Total", str(manifest.counts.total), "", style="bold",
+                )
+            else:
+                for entity_type in ENTITY_FILES:
+                    manifest_count = getattr(manifest.counts, entity_type, 0)
+                    actual_count = reader.entity_count(entity_type)
+                    match = "[green]OK[/green]" if manifest_count == actual_count else f"[red]{actual_count}[/red]"
+                    counts_table.add_row(entity_type.title(), str(manifest_count), match)
+                counts_table.add_row(
+                    "Total", str(manifest.counts.total), "", style="bold",
+                )
             console.print(counts_table)
 
             # Closure info
@@ -263,7 +293,7 @@ def inspect(archive_path: str, show_ids: bool, show_references: bool) -> None:
 
 
 def _show_entity_ids(reader: ArchiveReader) -> None:
-    """List all entity IDs in the archive."""
+    """List all entity IDs in the archive, per namespace."""
     id_fields = {
         "terminologies": "terminology_id",
         "terms": "term_id",
@@ -272,29 +302,39 @@ def _show_entity_ids(reader: ArchiveReader) -> None:
         "files": "file_id",
     }
 
+    # Always pass an explicit namespace: the reader's omitted-namespace
+    # convenience raises on a multi-namespace archive. Explicit passes
+    # straight through, so the single-namespace output is unchanged.
+    namespaces = reader.list_namespaces()
+    multi = len(namespaces) > 1
+
     for entity_type, id_field in id_fields.items():
-        entities = list(reader.read_entities(entity_type))
-        if not entities:
-            continue
+        for ns in namespaces:
+            entities = list(reader.read_entities(entity_type, namespace=ns))
+            if not entities:
+                continue
 
-        table = Table(title=f"{entity_type.title()} IDs")
-        table.add_column("ID", style="bold")
-        table.add_column("Source")
-        if entity_type in ("terminologies", "templates"):
-            table.add_column("Value")
-            table.add_column("Version")
-
-        for e in entities:
-            eid = e.get(id_field, "?")
-            source = e.get("_source", "?")
+            title = f"{entity_type.title()} IDs"
+            if multi:
+                title += f" — {ns}"
+            table = Table(title=title)
+            table.add_column("ID", style="bold")
+            table.add_column("Source")
             if entity_type in ("terminologies", "templates"):
-                value = e.get("value", "")
-                version = str(e.get("version", ""))
-                table.add_row(eid, source, value, version)
-            else:
-                table.add_row(eid, source)
+                table.add_column("Value")
+                table.add_column("Version")
 
-        console.print(table)
+            for e in entities:
+                eid = e.get(id_field, "?")
+                source = e.get("_source", "?")
+                if entity_type in ("terminologies", "templates"):
+                    value = e.get("value", "")
+                    version = str(e.get("version", ""))
+                    table.add_row(eid, source, value, version)
+                else:
+                    table.add_row(eid, source)
+
+            console.print(table)
 
 
 @main.command(name="backfill-synonyms")
@@ -348,7 +388,12 @@ def backfill_synonyms_cmd(
 @click.argument("document_id")
 @click.option("--patch", "patch_json", required=True,
               help="JSON Merge Patch (RFC 7396) to apply to the document's `data`. "
-                   "Use '-' to read JSON from stdin.")
+                   "Use '-' to read JSON from stdin; use '{}' for a "
+                   "metadata-only update.")
+@click.option("--metadata-patch", "metadata_patch_json", default=None,
+              help="JSON Merge Patch (RFC 7396) applied to the document's "
+                   "`metadata.custom`. Metadata versions like data; a "
+                   "metadata-only change mints a new version.")
 @click.option("--if-match", type=int, default=None,
               help="Optimistic concurrency: only apply if current version matches.")
 @click.pass_context
@@ -356,6 +401,7 @@ def update_document_cmd(
     ctx: click.Context,
     document_id: str,
     patch_json: str,
+    metadata_patch_json: str | None,
     if_match: int | None,
 ) -> None:
     """Apply an RFC 7396 JSON Merge Patch to a document.
@@ -367,6 +413,9 @@ def update_document_cmd(
       - Arrays are REPLACED entirely
       - `null` deletes the corresponding key
 
+    --metadata-patch applies the same merge semantics to `metadata.custom`
+    (platform-owned metadata like warnings/source_system cannot be addressed).
+
     Identity fields cannot be changed via PATCH (use create-document with new
     identity values instead). Archived or soft-deleted documents are rejected.
 
@@ -375,6 +424,8 @@ def update_document_cmd(
       wip-toolkit update-document DOC-123 --patch '{"score": 92}'
 
       wip-toolkit update-document DOC-123 --patch '{"middle_name": null}'
+
+      wip-toolkit update-document DOC-123 --patch '{}' --metadata-patch '{"reviewed": true}'
 
       cat patch.json | wip-toolkit update-document DOC-123 --patch -
     """
@@ -389,7 +440,20 @@ def update_document_cmd(
         console.print("[red]--patch must be a JSON object.[/red]")
         sys.exit(2)
 
+    metadata_patch: dict | None = None
+    if metadata_patch_json is not None:
+        try:
+            metadata_patch = _json.loads(metadata_patch_json)
+        except _json.JSONDecodeError as e:
+            console.print(f"[red]Invalid JSON in --metadata-patch:[/red] {e}")
+            sys.exit(2)
+        if not isinstance(metadata_patch, dict):
+            console.print("[red]--metadata-patch must be a JSON object.[/red]")
+            sys.exit(2)
+
     item: dict = {"document_id": document_id, "patch": patch}
+    if metadata_patch is not None:
+        item["metadata_patch"] = metadata_patch
     if if_match is not None:
         item["if_match"] = if_match
 
@@ -542,8 +606,17 @@ def _print_status_report(report) -> None:
 
 
 def _show_references(reader: ArchiveReader) -> None:
-    """Show dependency graph for templates."""
-    templates = list(reader.read_entities("templates"))
+    """Show dependency graph for templates, per namespace."""
+    # Explicit namespace per iteration — the omitted-namespace convenience
+    # raises on a multi-namespace archive (same reasoning as _show_entity_ids).
+    namespaces = reader.list_namespaces()
+    multi = len(namespaces) > 1
+    templates: list[dict] = []
+    for ns in namespaces:
+        for tpl in reader.read_entities("templates", namespace=ns):
+            if multi:
+                tpl = {**tpl, "_ns": ns}
+            templates.append(tpl)
     if not templates:
         return
 
@@ -569,4 +642,7 @@ def _show_references(reader: ArchiveReader) -> None:
                 deps.append(f"target_term {tterm}")
 
         dep_str = ", ".join(deps) if deps else "[dim]none[/dim]"
-        console.print(f"  {tid} v{version} ({value}) → {dep_str}")
+        # Plain-text namespace prefix — square brackets would be swallowed
+        # by rich as a markup tag.
+        ns_prefix = f"{tpl['_ns']} :: " if "_ns" in tpl else ""
+        console.print(f"  {ns_prefix}{tid} v{version} ({value}) → {dep_str}")

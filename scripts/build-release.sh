@@ -6,14 +6,14 @@
 #
 # Usage:
 #   scripts/build-release.sh                                    # Build all, local tags
-#   scripts/build-release.sh --registry gitea.local:3000/peter --tag 1.0.0
-#   scripts/build-release.sh --registry gitea.local:3000/peter --tag 1.0.0 --push --insecure
+#   scripts/build-release.sh --registry gitea.internal:3000/peter --tag 1.0.0
+#   scripts/build-release.sh --registry gitea.internal:3000/peter --tag 1.0.0 --push --insecure
 #   scripts/build-release.sh --service document-store           # Build one service
 #   scripts/build-release.sh --generate-compose                 # Also emit docker-compose.production.yml
 #   scripts/build-release.sh --platforms linux/amd64,linux/arm64 --push  # Multi-arch
 #
 # Image naming:
-#   With --registry: <registry>/<service>:<tag>    (e.g. gitea.local:3000/peter/registry:1.0.0)
+#   With --registry: <registry>/<service>:<tag>    (e.g. gitea.internal:3000/peter/registry:1.0.0)
 #   Without:         wip/<service>:<tag>           (local only)
 #
 # Multi-arch builds:
@@ -58,7 +58,7 @@ Usage: $(basename "$0") [OPTIONS]
 Build WIP release images with libraries baked in.
 
 Options:
-  --registry REG       Image registry prefix (e.g. gitea.local:3000/peter)
+  --registry REG       Image registry prefix (e.g. gitea.internal:3000/peter)
   --tag TAG            Image tag (default: latest)
   --push               Push images after building
   --insecure           Use --tls-verify=false for push (needed for HTTP registries)
@@ -71,17 +71,17 @@ Options:
   -h, --help           Show this help
 
 Services: registry, def-store, template-store, document-store,
-          reporting-sync, ingest-gateway, mcp-server
+          reporting-sync, ingest-gateway, mcp-server, auth-gateway
 
 Examples:
   # Build all and push to Gitea (native arch only)
-  $(basename "$0") --registry gitea.local:3000/peter --tag 1.0.0 --push --insecure
+  $(basename "$0") --registry gitea.internal:3000/peter --tag 1.0.0 --push --insecure
 
   # Build one service locally
   $(basename "$0") --service document-store
 
   # Build all + generate production compose
-  $(basename "$0") --registry gitea.local:3000/peter --tag 1.0.0 --push --insecure --generate-compose
+  $(basename "$0") --registry gitea.internal:3000/peter --tag 1.0.0 --push --insecure --generate-compose
 
   # Multi-arch build for GHCR (amd64 + arm64)
   $(basename "$0") --registry ghcr.io/peterseb1969 --tag v1.0 \\
@@ -159,7 +159,7 @@ run_build() {
     if [[ -z "$PLATFORMS" ]]; then
         # Native-only fast path (unchanged behavior).
         if $BUILDER build ${extra[@]+"${extra[@]}"} -t "$img" "$context"; then
-            push_image "$img"
+            push_image "$img" || return 1
             return 0
         fi
         return 1
@@ -176,6 +176,13 @@ run_build() {
     local plat
     IFS=',' read -ra plat_list <<< "$PLATFORMS"
     for plat in "${plat_list[@]}"; do
+        # Trim surrounding whitespace: "linux/amd64, linux/arm64" (comma+space,
+        # the natural way to type the list) otherwise yields " linux/arm64",
+        # which the builder rejects with "invalid platform syntax" — every
+        # multi-arch GH run typed with a space failed instantly on this.
+        plat="${plat#"${plat%%[![:space:]]*}"}"
+        plat="${plat%"${plat##*[![:space:]]}"}"
+        [[ -z "$plat" ]] && continue
         log_info "  Building ${plat}"
         if ! $BUILDER build --platform "$plat" --manifest "$img" ${extra[@]+"${extra[@]}"} "$context"; then
             log_error "  Build failed for platform ${plat}"
@@ -197,11 +204,25 @@ run_build() {
 BUILT_IMAGES=()
 FAILED=()
 
+# ── Build provenance (CASE-526) ─────────────────────────────────
+# Stamp every image with the git SHA, a UTC build timestamp, and the image tag
+# via --build-arg (consumed by each Dockerfile's ARG/ENV/LABEL). Surfaced on
+# each service's root `build` block + as OCI labels. Always non-empty, so the
+# "${arr[@]}" expansion is bash-3.2 / set -u safe.
+GIT_SHA="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
+BUILD_STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+BUILD_ARGS=(
+    --build-arg "WIP_BUILD_SHA=${GIT_SHA}"
+    --build-arg "WIP_BUILD_STAMP=${BUILD_STAMP}"
+    --build-arg "WIP_IMAGE_TAG=${TAG}"
+)
+log_info "Build provenance: sha=${GIT_SHA} stamp=${BUILD_STAMP} tag=${TAG}"
+
 # ── Services requiring wip-auth ─────────────────────────────────
 # document-store also needs wip-toolkit (backup engine imports it)
 AUTH_SERVICES=(registry def-store template-store document-store reporting-sync)
 TOOLKIT_SERVICES=(document-store)
-PLAIN_SERVICES=(ingest-gateway mcp-server)
+PLAIN_SERVICES=(ingest-gateway mcp-server auth-gateway)
 
 build_python_with_libs() {
     local svc="$1"
@@ -214,7 +235,7 @@ build_python_with_libs() {
     local tmpdir
     tmpdir="$(mktemp -d)"
     # Clean up temp dir on function exit
-    trap "rm -rf '$tmpdir'" RETURN
+    trap 'rm -rf "$tmpdir"' RETURN
 
     # Copy service files into temp build context
     cp "${svc_dir}/Dockerfile" "$tmpdir/"
@@ -261,7 +282,7 @@ build_python_with_libs() {
     ' "$dockerfile" > "$patched"
     mv "$patched" "$dockerfile"
 
-    if run_build "$img" "$tmpdir"; then
+    if run_build "$img" "$tmpdir" "${BUILD_ARGS[@]}"; then
         BUILT_IMAGES+=("$img")
         log_info "  ${svc}: OK"
     else
@@ -279,7 +300,7 @@ build_python_plain() {
 
     log_step "Building ${img}"
 
-    if run_build "$img" "$svc_dir"; then
+    if run_build "$img" "$svc_dir" "${BUILD_ARGS[@]}"; then
         BUILT_IMAGES+=("$img")
         log_info "  ${svc}: OK"
     else
@@ -318,7 +339,7 @@ generate_production_compose() {
     # Matches patterns like: image: <anything>/<service>:<anything>
     # for the 7 WIP core service names.
     local tmp="${out}.tmp"
-    sed -E "s|image: [^ ]+/(registry\|def-store\|template-store\|document-store\|reporting-sync\|ingest-gateway\|mcp-server):[^ ]+|image: ${REGISTRY}/\1:${TAG}|g" \
+    sed -E "s|image: [^ ]+/(registry\|def-store\|template-store\|document-store\|reporting-sync\|ingest-gateway\|mcp-server\|auth-gateway):[^ ]+|image: ${REGISTRY}/\1:${TAG}|g" \
         "$out" > "$tmp" && mv "$tmp" "$out"
 
     log_info "Updated image tags to ${REGISTRY}/<service>:${TAG}"
@@ -345,7 +366,7 @@ START_TIME=$(date +%s)
 
 if [[ -n "$ONLY_SERVICE" ]]; then
     case "$ONLY_SERVICE" in
-        ingest-gateway|mcp-server)
+        ingest-gateway|mcp-server|auth-gateway)
             build_python_plain "$ONLY_SERVICE" ;;
         registry|def-store|template-store|document-store|reporting-sync)
             build_python_with_libs "$ONLY_SERVICE" ;;
@@ -380,7 +401,7 @@ else
 fi
 echo ""
 echo "  Built ${#BUILT_IMAGES[@]} images:"
-for img in "${BUILT_IMAGES[@]}"; do
+for img in ${BUILT_IMAGES[@]+"${BUILT_IMAGES[@]}"}; do
     echo "    ${img}"
 done
 if ! $PUSH; then
@@ -388,3 +409,6 @@ if ! $PUSH; then
     echo "  Run with --push to push images to the registry."
 fi
 echo "=========================================="
+
+# Exit nonzero on any failed build so CI wrappers fail loudly.
+[[ ${#FAILED[@]} -eq 0 ]]

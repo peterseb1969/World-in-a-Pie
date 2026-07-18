@@ -6,7 +6,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
     check_namespace_permission,
-    get_current_identity,
+    require_current_identity,
     resolve_bulk_ids,
     resolve_namespace_filter,
     resolve_or_404,
@@ -14,6 +14,7 @@ from wip_auth import (
 
 from ..models.api_models import (
     ActivateTemplateResponse,
+    AddEndpointsRequest,
     BulkResponse,
     BulkResultItem,
     CascadeResponse,
@@ -25,6 +26,7 @@ from ..models.api_models import (
     ValidateTemplateRequest,
     ValidateTemplateResponse,
 )
+from ..models.template import Template
 from ..services.dependency_service import DependencyService, TemplateDependencies
 from ..services.inheritance_service import InheritanceService
 from ..services.registry_client import RegistryError
@@ -56,7 +58,7 @@ async def create_templates(
     Create one or more templates.
 
     Each template is registered with the Registry service to get a unique ID.
-    Namespace is specified per item (default: "wip").
+    Namespace is specified per item (required — no default).
     For single items, uses direct creation. For multiple items, uses batch path.
     """
     if on_conflict not in ("error", "validate"):
@@ -65,7 +67,7 @@ async def create_templates(
             detail=f"Invalid on_conflict value: {on_conflict!r}. Must be 'error' or 'validate'.",
         )
 
-    identity = get_current_identity()
+    identity = require_current_identity()
     namespaces = {item.namespace for item in items}
     for ns in namespaces:
         await check_namespace_permission(identity, ns, "write")
@@ -119,7 +121,7 @@ async def list_templates(
     Supports filtering by status, parent template, and value.
     Use latest_only=true to only show the most recent version of each template.
     """
-    identity = get_current_identity()
+    identity = require_current_identity()
     ns_filter = await resolve_namespace_filter(identity, namespace)
 
     # Resolve extends synonym if provided
@@ -142,6 +144,25 @@ async def list_templates(
         page_size=page_size,
         pages=math.ceil(total / page_size) if total > 0 else 0
     )
+
+
+# NOTE: declared before "/{template_id}" so the literal "/stamp" path is not
+# captured as a template_id by the dynamic route below.
+@router.get("/stamp")
+async def get_namespace_template_stamp(
+    namespace: str = Query(..., description="Namespace to stamp"),
+):
+    """Change-detection stamp for all templates in a namespace.
+
+    Returns ``{"namespace": ..., "stamp": "<count>:<max_updated_at>"}`` — a
+    single cheap value a template-caching consumer (e.g. document-store) polls
+    per namespace to decide whether its cached templates are still valid,
+    rather than re-fetching every template. `count` catches creates/deletes;
+    `max(updated_at)` catches updates and status flips (deactivate/reactivate).
+    """
+    require_current_identity()
+    stamp = await TemplateService.get_namespace_template_stamp(namespace)
+    return {"namespace": namespace, "stamp": stamp}
 
 
 @router.get("/{template_id}", response_model=TemplateResponse)
@@ -167,6 +188,11 @@ async def get_template(
         template = await TemplateService.get_template(value=template_id, version=version, namespace=namespace)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+    # CASE-386 — gate read on the template's actual namespace (prevents
+    # cross-namespace schema leakage; the 404 on denial also hides which
+    # template IDs exist in which namespace).
+    identity = require_current_identity()
+    await check_namespace_permission(identity, template.namespace, "read")
     return template
 
 
@@ -194,13 +220,16 @@ async def get_template_raw(
         )
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+    # CASE-386 — gate read on the template's actual namespace.
+    identity = require_current_identity()
+    await check_namespace_permission(identity, template.namespace, "read")
     return template
 
 
 @router.get("/by-value/{value}", response_model=TemplateResponse)
 async def get_template_by_value(
     value: str,
-    namespace: str | None = Query(default=None, description="Namespace to search in (omit for all)")
+    namespace: str | None = Query(default=None, description="Namespace to search in (omit for all accessible)")
 ):
     """
     Get the latest version of a template by value.
@@ -208,11 +237,16 @@ async def get_template_by_value(
     Returns the template with inheritance resolved.
     To get a specific version, use /by-value/{value}/versions/{version}.
     """
-    if namespace:
-        identity = get_current_identity()
-        await check_namespace_permission(identity, namespace, "read")
+    # CASE-579 — always gate. Explicit namespace → permission-checked scope;
+    # omitted → search restricted to the caller's accessible namespaces
+    # (superadmin unrestricted), same contract as list_templates. These are
+    # value-search routes that can match multiple namespaces, so filter the
+    # query rather than re-gating on a single resolved entity (CASE-386
+    # pattern doesn't fit here).
+    identity = require_current_identity()
+    ns_filter = await resolve_namespace_filter(identity, namespace)
 
-    versions = await TemplateService.get_template_versions(value, namespace=namespace)
+    versions = await TemplateService.get_template_versions(value, ns_filter=ns_filter.query)
     if not versions:
         raise HTTPException(status_code=404, detail="Template not found")
     # Return the first one (highest version since sorted descending)
@@ -227,6 +261,9 @@ async def get_template_by_value_raw(
     """
     Get the latest version of a template by value without inheritance resolution.
     """
+    # CASE-386 — namespace is required here; gate read on it directly.
+    identity = require_current_identity()
+    await check_namespace_permission(identity, namespace, "read")
     template = await TemplateService.get_template_raw(value=value, namespace=namespace)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -236,7 +273,7 @@ async def get_template_by_value_raw(
 @router.get("/by-value/{value}/versions", response_model=TemplateListResponse)
 async def get_template_versions(
     value: str,
-    namespace: str | None = Query(default=None, description="Namespace to search in (omit for all)"),
+    namespace: str | None = Query(default=None, description="Namespace to search in (omit for all accessible)"),
 ):
     """
     Get all versions of a template by value.
@@ -244,11 +281,11 @@ async def get_template_versions(
     Returns all versions sorted by version number (newest first).
     This allows viewing the full version history of a template.
     """
-    if namespace:
-        identity = get_current_identity()
-        await check_namespace_permission(identity, namespace, "read")
+    # CASE-579 — always gate; see get_template_by_value above.
+    identity = require_current_identity()
+    ns_filter = await resolve_namespace_filter(identity, namespace)
 
-    versions = await TemplateService.get_template_versions(value, namespace=namespace)
+    versions = await TemplateService.get_template_versions(value, ns_filter=ns_filter.query)
     if not versions:
         raise HTTPException(status_code=404, detail="Template not found")
     return TemplateListResponse(
@@ -260,20 +297,57 @@ async def get_template_versions(
 
 
 @router.get("/by-value/{value}/versions/{version}", response_model=TemplateResponse)
-async def get_template_by_value_and_version(value: str, version: int):
+async def get_template_by_value_and_version(
+    value: str,
+    version: int,
+    namespace: str | None = Query(
+        default=None,
+        description="Namespace to disambiguate the value (omit to search all).",
+    ),
+):
     """
     Get a specific version of a template.
 
     Args:
         value: Template value
         version: Version number
+        namespace: Restrict to this namespace — a value is unique only within a
+            namespace, so omitting it is ambiguous. Omit to search all.
 
     Returns the template with inheritance resolved.
     """
-    template = await TemplateService.get_template_by_value_and_version(value, version)
+    template = await TemplateService.get_template_by_value_and_version(
+        value, version, namespace=namespace
+    )
     if not template:
         raise HTTPException(status_code=404, detail="Template version not found")
+    # CASE-386 — gate read on the template's actual namespace.
+    identity = require_current_identity()
+    await check_namespace_permission(identity, template.namespace, "read")
     return template
+
+
+@router.get("/{template_id}/versions", response_model=TemplateListResponse)
+async def get_template_versions_by_id(template_id: str):
+    """
+    Get all versions of a template by its template_id.
+
+    A template_id is globally unique and stable across versions, so no namespace
+    is needed — the cleanest call when the caller already holds the id. Returns
+    all versions newest-first.
+    """
+    versions = await TemplateService.get_template_versions_by_id(template_id)
+    if not versions:
+        raise HTTPException(status_code=404, detail="Template not found")
+    # CASE-386 — gate read on the template's namespace (all versions share it).
+    identity = require_current_identity()
+    await check_namespace_permission(identity, versions[0].namespace, "read")
+    return TemplateListResponse(
+        items=versions,
+        total=len(versions),
+        page=1,
+        page_size=len(versions),
+    )
 
 
 @router.put("", response_model=BulkResponse)
@@ -288,6 +362,19 @@ async def update_templates(
     document with the same template_id but incremented version number.
     """
     await resolve_bulk_ids(items, "template_id", "template", namespace=namespace)
+
+    # CASE-386 — gate write on each template's actual namespace. One batched
+    # lookup over all template_ids, then a per-id check (aborts on first
+    # denial, matching the bulk convention; admin keys bypass via superadmin).
+    identity = require_current_identity()
+    ids = [item.template_id for item in items if item.template_id]
+    if ids:
+        existing_docs = await Template.find({"template_id": {"$in": ids}}).to_list()
+        id_to_namespace = {d.template_id: d.namespace for d in existing_docs}
+        for item in items:
+            ns = id_to_namespace.get(item.template_id)
+            if ns:
+                await check_namespace_permission(identity, ns, "write")
 
     results = []
     for i, item in enumerate(items):
@@ -325,6 +412,13 @@ async def get_template_dependencies(template_id: str, namespace: str | None = Qu
     """
     template_id = await resolve_or_404(template_id, "template", namespace=namespace, param_name="template_id")
 
+    # CASE-386 — dependency metadata leaks existence + dependent names;
+    # gate read on the template's actual namespace.
+    identity = require_current_identity()
+    existing = await Template.find_one({"template_id": template_id})
+    if existing:
+        await check_namespace_permission(identity, existing.namespace, "read")
+
     try:
         return await DependencyService.check_template_dependencies(template_id)
     except ValueError as e:
@@ -344,6 +438,18 @@ async def delete_templates(
     Set force=true per item to delete even if documents exist.
     """
     await resolve_bulk_ids(items, "id", "template", namespace=namespace)
+
+    # CASE-386 — gate write on each template's actual namespace (batched
+    # lookup + per-id check; admin keys bypass via superadmin).
+    identity = require_current_identity()
+    ids = [item.id for item in items if item.id]
+    if ids:
+        existing_docs = await Template.find({"template_id": {"$in": ids}}).to_list()
+        id_to_namespace = {d.template_id: d.namespace for d in existing_docs}
+        for item in items:
+            ns = id_to_namespace.get(item.id)
+            if ns:
+                await check_namespace_permission(identity, ns, "write")
 
     results = []
     for i, item in enumerate(items):
@@ -400,6 +506,13 @@ async def validate_template(
     """
     template_id = await resolve_or_404(template_id, "template", namespace=namespace, param_name="template_id")
 
+    # CASE-386 — validating against a template exercises its semantics;
+    # gate read on the template's actual namespace.
+    identity = require_current_identity()
+    existing = await Template.find_one({"template_id": template_id})
+    if existing:
+        await check_namespace_permission(identity, existing.namespace, "read")
+
     return await TemplateService.validate_template(
         template_id=template_id,
         check_terminologies=request.check_terminologies,
@@ -423,7 +536,7 @@ async def activate_template(
 
     Use dry_run=true to preview what would be activated without making changes.
     """
-    identity = get_current_identity()
+    identity = require_current_identity()
     await check_namespace_permission(identity, namespace, "write")
 
     template_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
@@ -433,6 +546,36 @@ async def activate_template(
             template_id=template_id,
             namespace=namespace,
             dry_run=dry_run
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/{template_id}/reactivate", response_model=TemplateResponse)
+async def reactivate_template(
+    template_id: str,
+    namespace: str = Query(..., description="Namespace for the template"),
+    version: int = Query(..., description="The inactive version to reactivate"),
+):
+    """
+    Reactivate a soft-deleted (inactive) template version.
+
+    The symmetric inverse of deactivate: restores a specific
+    inactive version to active so documents pinned to it can be updated
+    again. `version` is required — reactivate targets a known frozen version,
+    there is no "latest" default (and `/activate` is draft-only, so it cannot
+    address an inactive version). Idempotent on an already-active version;
+    a draft version is rejected (use `/activate`).
+    """
+    identity = require_current_identity()
+    await check_namespace_permission(identity, namespace, "write")
+
+    template_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
+
+    try:
+        return await TemplateService.reactivate_template(
+            template_id=template_id,
+            version=version,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -451,6 +594,13 @@ async def cascade_template(template_id: str, namespace: str | None = Query(None,
     """
     template_id = await resolve_or_404(template_id, "template", namespace=namespace, param_name="template_id")
 
+    # CASE-386 — cascade mutates child templates; gate write on the
+    # parent template's actual namespace.
+    identity = require_current_identity()
+    existing = await Template.find_one({"template_id": template_id})
+    if existing:
+        await check_namespace_permission(identity, existing.namespace, "write")
+
     try:
         return await TemplateService.cascade_to_children(template_id)
     except ValueError as e:
@@ -459,12 +609,49 @@ async def cascade_template(template_id: str, namespace: str | None = Query(None,
         raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
 
 
+@router.post("/{template_id}/endpoints", response_model=TemplateResponse)
+async def add_edge_type_endpoints(
+    template_id: str,
+    request: AddEndpointsRequest,
+    namespace: str = Query(..., description="Namespace for the edge type"),
+):
+    """
+    Additively widen an edge type's allowed endpoint set.
+
+    Adds source/target endpoint template(s) to an existing relationship template
+    IN PLACE, preserving every existing edge. Additive-only — it never removes
+    (endpoints are append-only); each new endpoint must be a real template;
+    idempotent. The frozen-endpoints invariant becomes "no in-place removal",
+    not "no change" (see PoNIF #7). No reindex / reporting migration — the
+    relationship indexes and reporting columns are generic.
+    """
+    identity = require_current_identity()
+    await check_namespace_permission(identity, namespace, "write")
+
+    template_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
+
+    try:
+        return await TemplateService.add_edge_type_endpoints(
+            template_id=template_id,
+            add_source_templates=request.add_source_templates,
+            add_target_templates=request.add_target_templates,
+            namespace=namespace,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @router.get("/{template_id}/children", response_model=TemplateListResponse)
 async def get_template_children(template_id: str, namespace: str | None = Query(None, description="Namespace for synonym resolution")):
     """
     Get templates that directly extend this template.
     """
     template_id = await resolve_or_404(template_id, "template", namespace=namespace, param_name="template_id")
+    # CASE-386 — child listing confirms existence cross-namespace; gate read.
+    identity = require_current_identity()
+    existing = await Template.find_one({"template_id": template_id})
+    if existing:
+        await check_namespace_permission(identity, existing.namespace, "read")
     children = await InheritanceService.get_children(template_id)
     templates = [TemplateService._to_template_response(t) for t in children]
     return TemplateListResponse(
@@ -481,6 +668,11 @@ async def get_template_descendants(template_id: str, namespace: str | None = Que
     Get all templates that extend this template (directly or indirectly).
     """
     template_id = await resolve_or_404(template_id, "template", namespace=namespace, param_name="template_id")
+    # CASE-386 — descendant listing confirms existence cross-namespace; gate read.
+    identity = require_current_identity()
+    existing = await Template.find_one({"template_id": template_id})
+    if existing:
+        await check_namespace_permission(identity, existing.namespace, "read")
     descendants = await InheritanceService.get_descendants(template_id)
     templates = [TemplateService._to_template_response(t) for t in descendants]
     return TemplateListResponse(

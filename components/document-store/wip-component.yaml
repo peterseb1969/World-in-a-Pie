@@ -1,0 +1,70 @@
+api_version: wip.dev/v1
+kind: Component
+metadata:
+  name: document-store
+  category: core
+  description: |
+    Document storage with template-based validation. Handles document
+    CRUD, versioning, term validation, file attachments, and CSV/XLSX
+    import. Publishes change events to NATS when reporting is active.
+
+spec:
+  image:
+    name: document-store
+    build_context: .
+
+  ports:
+    - {name: http, container_port: 8004}
+
+  command: [uvicorn, document_store.main:app, --host, 0.0.0.0, --port, "8004"]
+
+  env:
+    required:
+      - {name: MONGO_URI, source: {from_component: mongodb}}
+      - {name: DATABASE_NAME, source: {literal: wip_document_store}}
+      - {name: REGISTRY_URL, source: {from_component: registry}}
+      - {name: DEF_STORE_URL, source: {from_component: def-store}}
+      - {name: TEMPLATE_STORE_URL, source: {from_component: template-store}}
+      - {name: MASTER_API_KEY, source: {from_secret: api-key}}
+      # Outbound credentials for calls to registry + template-store +
+      # def-store (e.g., during document validation, term resolution,
+      # restore upserts).
+      - {name: REGISTRY_API_KEY, source: {from_secret: api-key}}
+      - {name: TEMPLATE_STORE_API_KEY, source: {from_secret: api-key}}
+      - {name: DEF_STORE_API_KEY, source: {from_secret: api-key}}
+      # Derived from deployment.spec.auth.mode (CASE-361). See registry
+      # manifest for the full mapping rationale.
+      - {name: WIP_AUTH_MODE, source: {from_spec: auth.wip_auth_mode}}
+      # Security posture — arms the WIP_VARIANT=prod startup guard (refuse
+      # to start on known-default secrets). From the deployment's --variant.
+      - {name: WIP_VARIANT, source: {from_spec: security.variant}}
+      # Spec-declared config-file API keys (deployment auth.api_keys);
+      # empty when none are declared — wip-auth treats empty as unset.
+      - {name: WIP_AUTH_API_KEYS_FILE, source: {from_spec: security.api_keys_file}}
+    optional:
+      # NATS is optional — only present when reporting or ingest module active.
+      # Document-store gracefully skips publish when NATS_URL is empty.
+      - {name: NATS_URL, source: {from_component: nats}}
+      # JWT issuer URL — honored in jwt_only / dual; ignored otherwise. CASE-361.
+      - {name: WIP_AUTH_JWT_ISSUER_URL, source: {from_spec: auth.issuer_url_internal}}
+      # File storage — MinIO only present when files module active.
+      - {name: WIP_FILE_STORAGE_ENABLED, source: {from_spec: features.files_enabled}}
+      - {name: WIP_FILE_STORAGE_ENDPOINT, source: {from_component: minio}}
+      # Browser-facing URL for presigned download links. Internal endpoint
+      # above is correct for server-side S3 PUTs; this one is what
+      # document-store rewrites into the URL before returning it to the
+      # caller. Resolved via Caddy/Ingress with /minio prefix stripping
+      # (CASE-54).
+      - {name: WIP_FILE_STORAGE_PUBLIC_ENDPOINT, source: {from_spec: features.file_storage_public_endpoint}}
+      - {name: WIP_FILE_STORAGE_ACCESS_KEY, source: {literal: wip-minio-root}}
+      - {name: WIP_FILE_STORAGE_SECRET_KEY, source: {from_secret: minio-password}}
+      - {name: WIP_FILE_STORAGE_BUCKET, source: {literal: wip-attachments}}
+      - {name: CORS_ORIGINS, source: {from_spec: network.cors_origins}}
+
+  routes:
+    - {path: /api/document-store, auth_required: false, streaming: true}
+
+  depends_on: [mongodb, registry, def-store, template-store]
+
+  healthcheck:
+    endpoint: /health

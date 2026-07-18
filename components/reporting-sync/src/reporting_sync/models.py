@@ -46,9 +46,9 @@ class EventType(StrEnum):
     TERM_DEPRECATED = "term.deprecated"
     TERM_DELETED = "term.deleted"
 
-    # Relationship events (from def-store)
-    RELATIONSHIP_CREATED = "relationship.created"
-    RELATIONSHIP_DELETED = "relationship.deleted"
+    # Term-relation events (from def-store)
+    TERM_RELATION_CREATED = "term_relation.created"
+    TERM_RELATION_DELETED = "term_relation.deleted"
 
 
 class SyncStrategy(StrEnum):
@@ -141,6 +141,24 @@ class TemplateField(BaseModel):
     file_config: FileFieldConfig | None = None
     array_file_config: FileFieldConfig | None = None
     semantic_type: SemanticType | None = None
+    full_text_indexed: bool | None = None
+
+
+class DroppedEvent(BaseModel):
+    """A sync event that exhausted its redeliveries and will never retry.
+
+    JetStream stops delivering after the consumer's max_deliver; without
+    this record the affected entity is simply absent from SQL with only
+    worker-log evidence. Kept in a bounded in-memory ring on SyncStatus —
+    visibility, not a durable dead-letter store.
+    """
+
+    event_type: str
+    entity_id: str | None = None
+    namespace: str | None = None
+    error: str
+    deliveries: int
+    dropped_at: datetime
 
 
 class SyncStatus(BaseModel):
@@ -151,7 +169,12 @@ class SyncStatus(BaseModel):
     connected_to_postgres: bool
     last_event_processed: datetime | None = None
     events_processed: int = 0
+    # Counts every failed processing attempt, including retries that later
+    # succeed. events_dropped counts only terminal losses — events that
+    # exhausted max_deliver and will never be retried.
     events_failed: int = 0
+    events_dropped: int = 0
+    recent_drops: list[DroppedEvent] = Field(default_factory=list)
     tables_managed: int = 0
 
 
@@ -189,14 +212,6 @@ class BatchSyncJob(BaseModel):
     documents_failed: int = 0
     current_page: int = 0
     error_message: str | None = None
-
-
-class BatchSyncRequest(StrictModel):
-    """Request to start a batch sync."""
-
-    template_value: str | None = None  # None = all templates
-    force: bool = False  # Force re-sync even if table has data
-    page_size: int = Field(default=100, ge=10, le=1000)
 
 
 class BatchSyncResponse(BaseModel):

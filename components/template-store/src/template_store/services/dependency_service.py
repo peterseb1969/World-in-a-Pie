@@ -5,6 +5,8 @@ Checks what depends on a template before allowing deactivation.
 """
 
 import os
+from typing import cast
+from beanie.odm.enums import SortDirection
 
 import httpx
 from pydantic import BaseModel, Field
@@ -52,7 +54,7 @@ class DependencyService:
         """
         # Get template info
         # Get latest version (template_id is stable across versions)
-        results = await Template.find(Template.template_id == template_id).sort([("version", -1)]).limit(1).to_list()
+        results = await Template.find(Template.template_id == template_id).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         template = results[0] if results else None
         if not template:
             raise ValueError(f"Template {template_id} not found")
@@ -119,7 +121,7 @@ class DependencyService:
 
                 if response.status_code == 200:
                     data = response.json()
-                    return data.get("total", 0)
+                    return cast(int, data.get("total", 0))
                 return 0
         except Exception:
             raise

@@ -10,6 +10,12 @@ set -euo pipefail
 #   ./scripts/quality-audit.sh --fix        # Auto-fix ruff + eslint issues
 #   ./scripts/quality-audit.sh --ci         # Fail if issues exceed baseline
 #   ./scripts/quality-audit.sh --update-baseline  # Write current counts to baseline
+#
+#   Re-pin baselines deliberately on a cadence (not only reactively) so real
+#   drift surfaces in days, not after a month of silent accumulation. radon is
+#   version-pinned (radon==6.0.1) for the same reason: an unpinned bump moves
+#   complexity counts and makes the baseline a moving target. Bump it in
+#   lockstep with a baseline re-pin.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -27,6 +33,7 @@ QUICK=false
 CI_MODE=false
 FIX=false
 UPDATE_BASELINE=false
+INSTALL_DEPS=false
 
 for arg in "$@"; do
     case "$arg" in
@@ -34,13 +41,17 @@ for arg in "$@"; do
         --ci) CI_MODE=true ;;
         --fix) FIX=true ;;
         --update-baseline) UPDATE_BASELINE=true ;;
+        --install-deps) INSTALL_DEPS=true ;;
         --help|-h)
-            echo "Usage: $0 [--quick] [--ci] [--fix] [--update-baseline]"
+            echo "Usage: $0 [--quick] [--ci] [--fix] [--update-baseline] [--install-deps]"
             echo ""
             echo "  --quick            Skip coverage steps (no MongoDB/services needed)"
             echo "  --ci               Exit non-zero if any dimension exceeds baseline"
             echo "  --fix              Auto-fix ruff and eslint issues"
             echo "  --update-baseline  Write current counts to baseline.json"
+            echo "  --install-deps     pip-install missing quality tools into the active"
+            echo "                     venv (vulture, radon, shellcheck-py, pytest-cov),"
+            echo "                     then continue."
             exit 0
             ;;
         *) echo "Unknown flag: $arg"; exit 1 ;;
@@ -84,13 +95,68 @@ check_tool vulture
 check_tool radon
 check_tool shellcheck
 
-if [ ${#MISSING[@]} -gt 0 ]; then
-    fail "Missing tools: ${MISSING[*]}"
-    echo ""
-    echo "Install with:"
-    echo "  pip install ruff mypy vulture radon"
-    echo "  brew install shellcheck  # or: pip install shellcheck-py"
-    exit 1
+# pytest-cov powers Step 9 (Python coverage in full mode). It's not in the
+# preflight `command -v` set because it's a pytest plugin (no binary), so we
+# detect it via `import pytest_cov`. If missing and --install-deps was passed,
+# install alongside the other tools; without --install-deps, just warn so the
+# user knows Step 9 will silently no-op. (CASE-326 follow-up — original
+# --install-deps shipped without this; the silent Step-9 failure surfaced
+# during the first full-mode run.)
+PYTEST_COV_MISSING=false
+if ! "$ROOT_DIR/.venv/bin/python" -c "import pytest_cov" 2>/dev/null; then
+    PYTEST_COV_MISSING=true
+fi
+
+if [ ${#MISSING[@]} -gt 0 ] || { [ "$INSTALL_DEPS" = true ] && [ "$PYTEST_COV_MISSING" = true ]; }; then
+    if [ "$INSTALL_DEPS" = true ]; then
+        info "Installing missing quality tools into active venv: ${MISSING[*]:-}${PYTEST_COV_MISSING:+ pytest-cov}"
+        # Map tool name → pip package. ruff/mypy/vulture/radon ship under the same
+        # name; shellcheck (a C binary) is satisfied by shellcheck-py which puts
+        # a `shellcheck` shim on PATH. pytest-cov is a pytest plugin.
+        PIP_PKGS=()
+        if [ ${#MISSING[@]} -gt 0 ]; then
+            for tool in "${MISSING[@]}"; do
+                case "$tool" in
+                    shellcheck) PIP_PKGS+=("shellcheck-py") ;;
+                    # radon pinned — its CC counts shift across releases, which
+                    # would make the radon-cc-c-plus baseline a moving target.
+                    radon)      PIP_PKGS+=("radon==6.0.1") ;;
+                    *)          PIP_PKGS+=("$tool") ;;
+                esac
+            done
+        fi
+        if [ "$PYTEST_COV_MISSING" = true ]; then
+            PIP_PKGS+=("pytest-cov")
+        fi
+        if ! pip install --quiet "${PIP_PKGS[@]}"; then
+            fail "pip install ${PIP_PKGS[*]} failed. Install manually and re-run."
+            exit 1
+        fi
+        # Re-probe — make sure every tool resolves before continuing
+        MISSING=()
+        check_tool ruff
+        check_tool mypy
+        check_tool vulture
+        check_tool radon
+        check_tool shellcheck
+        if [ ${#MISSING[@]} -gt 0 ]; then
+            fail "Tools still missing after install: ${MISSING[*]}"
+            exit 1
+        fi
+        ok "Installed: ${PIP_PKGS[*]}"
+    else
+        fail "Missing tools: ${MISSING[*]}"
+        echo ""
+        echo "Install with:"
+        echo "  pip install ruff mypy vulture radon==6.0.1 pytest-cov"
+        echo "  brew install shellcheck  # or: pip install shellcheck-py"
+        echo ""
+        echo "Or re-run with --install-deps to install them into the active venv."
+        exit 1
+    fi
+elif [ "$PYTEST_COV_MISSING" = true ] && ! $QUICK; then
+    warn "pytest-cov not installed — Step 9 (Python coverage) will produce no data."
+    warn "Re-run with --install-deps to install, or use --quick to skip coverage."
 fi
 
 # Check npm tools (optional — skip steps if not available)
@@ -159,6 +225,7 @@ vulture \
     "$ROOT_DIR/components/document-store/src" \
     "$ROOT_DIR/components/reporting-sync/src" \
     "$ROOT_DIR/components/ingest-gateway/src" \
+    "$ROOT_DIR/components/mcp-server/src" \
     "$ROOT_DIR/libs/wip-auth/src" \
     "$ROOT_DIR/vulture_allowlist.py" \
     --min-confidence 80 \
@@ -201,6 +268,7 @@ python3 -m radon cc \
     "$ROOT_DIR/components/document-store/src" \
     "$ROOT_DIR/components/reporting-sync/src" \
     "$ROOT_DIR/components/ingest-gateway/src" \
+    "$ROOT_DIR/components/mcp-server/src" \
     "$ROOT_DIR/libs/wip-auth/src" \
     --min C --json \
     > "$RAW_DIR/radon.json" 2>&1 || true
@@ -226,6 +294,7 @@ for component_dir in \
     "$ROOT_DIR/components/document-store/src" \
     "$ROOT_DIR/components/reporting-sync/src" \
     "$ROOT_DIR/components/ingest-gateway/src" \
+    "$ROOT_DIR/components/mcp-server/src" \
     "$ROOT_DIR/libs/wip-auth/src"; do
 
     component_name=$(echo "$component_dir" | sed "s|$ROOT_DIR/||" | sed 's|/src||' | sed 's|/|-|g')
@@ -319,31 +388,45 @@ else
 fi
 
 # ─── Step 9: pytest-cov (Python coverage) ────────────────────────────
+#
+# Delegates to wip-test.sh per component — that script handles test-container
+# provisioning (test-mongo / test-postgres / test-nats per CASE-320) AND
+# pytest invocation. Coverage flags pass through to pytest unchanged.
+# CASE-332 Fix A.
+#
+# Each per-component invocation's stderr is captured to a sidecar file so
+# Fix B (detect zero-output failures and warn loudly) and Fix C (report
+# generator distinguishes failed vs missing-plugin vs healthy) have the
+# raw failure signal to render. CASE-332 Fix B.
 if ! $QUICK; then
     info "Step 9: pytest-cov..."
     STEP_START=$(date +%s)
 
+    COVERAGE_FAILURES=()
     for component in registry def-store template-store document-store reporting-sync ingest-gateway; do
         component_dir="$ROOT_DIR/components/$component"
         if [ ! -d "$component_dir/tests" ]; then continue; fi
 
-        # Determine the Python package name (replace - with _)
         pkg_name=$(echo "$component" | tr '-' '_')
-
-        # ingest-gateway needs tests/ on PYTHONPATH for shared fixtures
-        local_pypath="src"
-        if [ "$component" = "ingest-gateway" ]; then local_pypath="src:tests"; fi
-
         info "  pytest-cov: $component..."
-        cd "$component_dir"
-        PYTHONPATH="$local_pypath" python3 -m pytest tests/ \
-            --cov="src/$pkg_name" \
-            --cov-report=json:"$RAW_DIR/pytest-cov-${component}.json" \
-            --cov-report=html:"$RAW_DIR/pytest-cov-${component}-html" \
-            -q --tb=no 2>&1 || true
-        cd "$ROOT_DIR"
+
+        # Delegate to wip-test.sh. It handles ensure_test_containers and
+        # the standard PYTHONPATH/cd shape for the component. Coverage
+        # args trail through to its pytest invocation.
+        if ! bash "$SCRIPT_DIR/wip-test.sh" "$component" \
+                --cov="src/$pkg_name" \
+                --cov-report=json:"$RAW_DIR/pytest-cov-${component}.json" \
+                --cov-report=html:"$RAW_DIR/pytest-cov-${component}-html" \
+                -q --tb=no \
+                2>"$RAW_DIR/pytest-cov-${component}.stderr"; then
+            warn "    pytest-cov $component: failed (see raw/pytest-cov-${component}.stderr)"
+            COVERAGE_FAILURES+=("$component")
+        fi
     done
 
+    if [ ${#COVERAGE_FAILURES[@]} -gt 0 ]; then
+        warn "pytest-cov: ${#COVERAGE_FAILURES[@]} of 6 components produced no coverage data: ${COVERAGE_FAILURES[*]}"
+    fi
     ok "pytest-cov complete ($(step_time $STEP_START))"
 else
     warn "Step 9: pytest-cov — skipped (--quick mode)"
@@ -354,11 +437,16 @@ if ! $QUICK && $HAS_VITEST; then
     info "Step 10: vitest coverage..."
     STEP_START=$(date +%s)
 
+    # Two reporters: `json` writes coverage-final.json (per-file detail),
+    # `json-summary` writes coverage-summary.json (aggregated totals).
+    # The report-generator reads coverage-summary.json. CASE-333.
     for lib in wip-client wip-react; do
         lib_dir="$ROOT_DIR/libs/$lib"
         if [ -d "$lib_dir" ]; then
             cd "$lib_dir"
-            npx vitest run --coverage --coverage.reporter=json \
+            npx vitest run --coverage \
+                --coverage.reporter=json \
+                --coverage.reporter=json-summary \
                 --coverage.reportsDirectory="$RAW_DIR/vitest-cov-${lib}" \
                 2>&1 || true
             cd "$ROOT_DIR"
@@ -411,8 +499,52 @@ done
 
 ok "Dependency health ($(step_time $STEP_START))"
 
-# ─── Step 13: Generate report ────────────────────────────────────────
-info "Step 13: Generating report..."
+# ─── Step 13: Doc drift (CASE-456) ───────────────────────────────────
+info "Step 13: Doc drift..."
+STEP_START=$(date +%s)
+
+python3 "$SCRIPT_DIR/check-doc-drift.py" \
+    --root "$ROOT_DIR" \
+    --output "$RAW_DIR/doc-drift.json" \
+    2>&1 || true
+
+DOC_DRIFT=$(python3 -c "
+import json
+data = json.load(open('$RAW_DIR/doc-drift.json'))
+undoc = sum(len(v) for v in data.get('undocumented', {}).values())
+stale = len(data.get('count_mismatches', []))
+print(f'{undoc} undocumented exports, {stale} stale counts')
+" 2>/dev/null || echo "?")
+ok "Doc drift: $DOC_DRIFT ($(step_time $STEP_START))"
+
+# ─── Step 14: Tier-2 purity (CASE-463) ───────────────────────────────
+info "Step 14: Tier-2 purity..."
+STEP_START=$(date +%s)
+
+if "$SCRIPT_DIR/check-tier2-purity.sh" > "$RAW_DIR/tier2-purity.log" 2>&1; then
+    ok "Tier-2 purity: clean ($(step_time $STEP_START))"
+else
+    warn "Tier-2 purity: VIOLATIONS — see $RAW_DIR/tier2-purity.log ($(step_time $STEP_START))"
+fi
+
+# ─── Step 15: Vendored-tarball consistency (CASE-500) ────────────────
+info "Step 15: Vendored-tarball consistency..."
+STEP_START=$(date +%s)
+
+# Guards that every @wip/* lib's tracked tarball matches its package.json
+# version (committed + correct internally). A bumped package.json/dist with a
+# stale/un-committed .tgz silently ships old code to apps re-vendoring it.
+TARBALL_OK=true
+if "$SCRIPT_DIR/check-tarball-consistency.sh" > "$RAW_DIR/tarball-consistency.log" 2>&1; then
+    ok "Vendored tarballs: consistent ($(step_time $STEP_START))"
+else
+    TARBALL_OK=false
+    fail "Vendored tarballs: MISMATCH — see $RAW_DIR/tarball-consistency.log ($(step_time $STEP_START))"
+    cat "$RAW_DIR/tarball-consistency.log"
+fi
+
+# ─── Step 16: Generate report ────────────────────────────────────────
+info "Step 16: Generating report..."
 STEP_START=$(date +%s)
 
 MODE="full"
@@ -433,6 +565,14 @@ fi
 python3 "$SCRIPT_DIR/quality-audit-report.py" "${REPORT_ARGS[@]}" 2>&1
 
 ok "Report generated ($(step_time $STEP_START))"
+
+# Vendored-tarball mismatch is a hard gate in CI (CASE-500): it is a binary
+# correctness fault, not a baseline-counted dimension, so it fails the audit
+# directly rather than through quality-audit-report.py's baseline comparison.
+if $CI_MODE && [ "$TARBALL_OK" = false ]; then
+    fail "Vendored-tarball consistency failed — failing audit (--ci). See Step 15."
+    exit 1
+fi
 
 # ─── Summary ─────────────────────────────────────────────────────────
 TOTAL_ELAPSED=$(( $(date +%s) - TOTAL_START ))

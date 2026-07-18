@@ -1,0 +1,64 @@
+api_version: wip.dev/v1
+kind: App
+metadata:
+  name: wip-aa
+  category: optional
+  description: |
+    AuthorAssist — novel-writing workspace over the aa namespace.
+    Characters, locations, scenes, chapters, and plot threads as WIP
+    documents. Vite SPA + Express server (tsx). Drafted by APP-AA-YAC
+    per CASE-376; mirrors apps/wip-kb/wip-app.yaml.
+
+spec:
+  image:
+    name: wip-aa
+    # App lives in its own repo (WIP-AA). No containerized build has been
+    # published yet — placeholder tag; bump suffix on first/every rebuild
+    # since pull_policy: if-not-present caches by tag. The --app-source
+    # dev flow builds from WIP-AA/Dockerfile.dev and ignores this tag.
+    tag: 20260610a
+
+  ports:
+    - {name: http, container_port: 3014}
+    # CASE-375: Vite dev-server. Used only when --app-source is active.
+    # The dev_simple renderer routes /apps/aa/* to this port instead of
+    # 3014 (which only serves the API in dev). Ignored on compose/k8s.
+    # 5180 avoids wip-kb (5173) and react-console (5174) on multi-app
+    # dev installs.
+    - {name: dev, container_port: 5180}
+
+  env:
+    required:
+      - {name: WIP_BASE_URL, source: {from_component: router}}
+      - {name: WIP_API_KEY, source: {from_secret: api-key}}
+      - {name: PORT, source: {literal: "3014"}}
+      - {name: APP_BASE_PATH, source: {literal: /apps/aa}}
+      - {name: NODE_ENV, source: {literal: production}}
+      - {name: WIP_NAMESPACE, source: {literal: "aa"}}
+    optional:
+      # AskBar NL-query + AI manuscript import use Anthropic. Both
+      # degrade gracefully when the key is unset.
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+      # CASE-375: the query agent uses the MCP client; without MCP_URL it
+      # falls back to spawning `python -m wip_mcp` via stdio, which fails
+      # inside a Node.js container (no Python). Same literal shape as
+      # wip-kb until a from_component_url env source exists.
+      - {name: MCP_URL, source: {literal: "http://wip-mcp-server:8007/mcp"}}
+      - {name: MCP_TRANSPORT, source: {literal: "http"}}
+
+  routes:
+    - {path: /apps/aa, auth_required: true}
+
+  # AuthorAssist reads/writes documents in the aa namespace via the WIP
+  # API proxy. document-store is the hard start-order requirement.
+  depends_on: [document-store]
+
+  healthcheck:
+    endpoint: /apps/aa/api/health
+    probe: auto
+    start_period_seconds: 15
+
+app_metadata:
+  display_name: AuthorAssist
+  route_prefix: /apps/aa
+  ui_only: false

@@ -6,6 +6,7 @@ They coexist with config-file keys (loaded at startup via wip-auth).
 
 import secrets
 from datetime import UTC, datetime
+from typing import ClassVar, Literal
 
 from beanie import Document
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,12 +24,12 @@ class StoredAPIKey(Document):
     key_hash: str = Field(..., description="Bcrypt hash of the plaintext key")
     owner: str = Field(default="system", description="Owner identifier")
     groups: list[str] = Field(default_factory=list, description="Authorization groups")
-    description: str | None = Field(None, description="What this key is for")
+    description: str | None = Field(default=None, description="What this key is for")
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    expires_at: datetime | None = Field(None, description="Expiration (None = never)")
+    expires_at: datetime | None = Field(default=None, description="Expiration (None = never)")
     enabled: bool = Field(default=True, description="Whether the key is active")
     namespaces: list[str] | None = Field(
-        None, description="Namespace scope (None = unrestricted)"
+        default=None, description="Namespace scope (None = unrestricted)"
     )
     created_by: str = Field(
         default="system", description="Identity string of the admin who created this key"
@@ -36,7 +37,7 @@ class StoredAPIKey(Document):
 
     class Settings:
         name = "api_keys"
-        indexes = [
+        indexes: ClassVar[list] = [
             IndexModel([("name", 1)], unique=True, name="api_key_name_unique"),
         ]
 
@@ -57,10 +58,20 @@ class APIKeyCreateRequest(BaseModel):
     name: str = Field(..., description="Unique name for the key")
     owner: str = Field(default="system", description="Owner identifier")
     groups: list[str] = Field(default_factory=list, description="Authorization groups")
-    description: str | None = Field(None, description="What this key is for")
-    expires_at: datetime | None = Field(None, description="Expiration (None = never)")
+    description: str | None = Field(default=None, description="What this key is for")
+    expires_at: datetime | None = Field(default=None, description="Expiration (None = never)")
     namespaces: list[str] | None = Field(
-        None, description="Namespace scope (None = unrestricted)"
+        default=None, description="Namespace scope (None = unrestricted)"
+    )
+    grant_permission: Literal["read", "write", "admin"] | None = Field(
+        default=None,
+        description=(
+            "When set, create a namespace grant at this level for "
+            "the new key (subject = key name) on each namespace in "
+            "`namespaces`. Requires `namespaces` to be set. Without it, a "
+            "scoped key can read its namespaces but not write — the grant "
+            "is a separate, easily-missed step."
+        ),
     )
 
 
@@ -77,12 +88,25 @@ class APIKeyResponse(BaseModel):
     namespaces: list[str] | None
     created_by: str
     source: str = Field(description="'config' or 'runtime'")
+    grants: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Config-declared grants ({namespace: read|write|admin}) — "
+            "resolved locally in wip-auth and surviving MongoDB rebuilds. "
+            "Always None for runtime keys: their write grants are Registry "
+            "NamespaceGrants (wipe-mortal) and are not shown in this field."
+        ),
+    )
 
 
 class APIKeyCreatedResponse(APIKeyResponse):
     """Response after creating a key — includes plaintext shown once."""
 
     plaintext_key: str = Field(description="The plaintext key (shown once, not stored)")
+    granted_namespaces: list[str] | None = Field(
+        default=None,
+        description="Namespaces a grant was created on (grant_permission)",
+    )
 
 
 class APIKeyUpdateRequest(BaseModel):
@@ -109,3 +133,13 @@ class APIKeySyncRecord(BaseModel):
     expires_at: datetime | None
     enabled: bool
     namespaces: list[str] | None
+
+
+class APIKeyListResponse(BaseModel):
+    """Paginated response for listing API keys (per wip://conventions)."""
+
+    items: list[APIKeyResponse]
+    total: int
+    page: int = 1
+    page_size: int = 50
+    pages: int = 0

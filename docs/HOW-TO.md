@@ -885,7 +885,7 @@ curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 # Response:
 # {
 #   "results": [{
-#     "input_index": 0,
+#     "index": 0,
 #     "status": "created",
 #     "registry_id": "019abc...",
 #     "namespace": "wip",

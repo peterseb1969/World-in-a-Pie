@@ -31,14 +31,14 @@ class NamespaceCreate(StrictModel):
         description="For open mode, optional allowlist of external namespace prefixes"
     )
     id_config: dict[str, Any] | None = Field(
-        None,
+        default=None,
         description="Per-entity-type ID algorithm config. Defaults to UUID7 for all."
     )
     deletion_mode: str = Field(
         default="retain",
         description="'retain' = soft-delete only; 'full' = allows hard-delete and namespace deletion"
     )
-    created_by: str | None = Field(None, description="User creating the namespace")
+    created_by: str | None = Field(default=None, description="User creating the namespace")
 
 
 class NamespaceUpdate(StrictModel):
@@ -51,6 +51,13 @@ class NamespaceUpdate(StrictModel):
     deletion_mode: str | None = Field(
         default=None,
         description="'retain' = soft-delete only; 'full' = allows hard-delete and namespace deletion"
+    )
+    confirm_enable_deletion: bool | None = Field(
+        default=None,
+        description=(
+            "Required when flipping deletion_mode from 'retain' to 'full' on an "
+            "existing namespace. Mirrors the safety guard on the narrow PATCH route."
+        ),
     )
     updated_by: str | None = None
 
@@ -122,22 +129,30 @@ class RegisterKeyItem(StrictModel):
 
     namespace: str = Field(..., description="Namespace")
     entity_type: str = Field(..., description="Entity type")
-    entry_id: str | None = Field(None, description="Client-provided ID (if not provided, registry generates one)")
+    entry_id: str | None = Field(default=None, description="Client-provided ID (if not provided, registry generates one)")
     composite_key: dict[str, Any] = Field(default_factory=dict, description="Composite key values (empty = no dedup, always generates new ID)")
     identity_values: dict[str, Any] | None = Field(
-        None,
+        default=None,
         description="Raw identity field values. Registry computes identity_hash, "
                     "injects it into composite_key, and creates a synonym with the raw values."
     )
-    source_info: SourceInfo | None = Field(None, description="Source system info")
-    created_by: str | None = Field(None, description="Creator identifier")
+    skip_identity_value_synonym: bool = Field(
+        default=False,
+        description="Still compute/inject identity_hash from "
+                    "identity_values, but do NOT create the raw-values synonym. "
+                    "Set by document-store for relationship/edge types, whose "
+                    "identity_values {source_ref, target_ref} omit the template "
+                    "and would collide across edge types between the same pair."
+    )
+    source_info: SourceInfo | None = Field(default=None, description="Source system info")
+    created_by: str | None = Field(default=None, description="Creator identifier")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RegisterKeyResponse(BaseModel):
     """Response model for a registration operation."""
 
-    input_index: int
+    index: int
     status: str  # created, already_exists, error
     registry_id: str | None = None
     namespace: str | None = None
@@ -167,10 +182,10 @@ class ProvisionRequest(StrictModel):
     entity_type: str = Field(..., description="Entity type")
     count: int = Field(default=1, description="Number of IDs to provision", ge=1, le=1000)
     composite_keys: list[dict[str, Any]] | None = Field(
-        None,
+        default=None,
         description="Optional composite keys to associate with provisioned IDs"
     )
-    created_by: str | None = Field(None, description="Creator identifier")
+    created_by: str | None = Field(default=None, description="Creator identifier")
 
 
 class ProvisionedId(BaseModel):
@@ -199,14 +214,14 @@ class ReserveItem(StrictModel):
     entry_id: str = Field(..., description="Client-provided ID")
     namespace: str = Field(..., description="Namespace")
     entity_type: str = Field(..., description="Entity type")
-    composite_key: dict[str, Any] | None = Field(None, description="Composite key values")
-    created_by: str | None = Field(None, description="Creator identifier")
+    composite_key: dict[str, Any] | None = Field(default=None, description="Composite key values")
+    created_by: str | None = Field(default=None, description="Creator identifier")
 
 
 class ReserveItemResponse(BaseModel):
     """Response for a single reserve operation."""
 
-    input_index: int
+    index: int
     status: str  # reserved, already_exists, invalid_format, error
     entry_id: str | None = None
     error: str | None = None
@@ -234,7 +249,7 @@ class ActivateItem(StrictModel):
 class ActivateItemResponse(BaseModel):
     """Response for a single activate operation."""
 
-    input_index: int
+    index: int
     status: str  # activated, not_found, already_active, error
     entry_id: str | None = None
     error: str | None = None
@@ -260,14 +275,14 @@ class AddSynonymItem(StrictModel):
     synonym_namespace: str = Field(..., description="Namespace for the synonym")
     synonym_entity_type: str = Field(..., description="Entity type for the synonym")
     synonym_composite_key: dict[str, Any] = Field(..., description="Composite key for the synonym")
-    synonym_source_info: SourceInfo | None = Field(None, description="Source info for synonym")
-    created_by: str | None = Field(None, description="Creator identifier")
+    synonym_source_info: SourceInfo | None = Field(default=None, description="Source info for synonym")
+    created_by: str | None = Field(default=None, description="Creator identifier")
 
 
 class AddSynonymResponse(BaseModel):
     """Response model for adding a synonym."""
 
-    input_index: int
+    index: int
     status: str  # added, already_exists, target_not_found, error
     registry_id: str | None = None
     error: str | None = None
@@ -280,13 +295,13 @@ class RemoveSynonymItem(StrictModel):
     synonym_namespace: str = Field(..., description="Namespace of synonym to remove")
     synonym_entity_type: str = Field(..., description="Entity type of synonym to remove")
     synonym_composite_key: dict[str, Any] = Field(..., description="Composite key of synonym to remove")
-    updated_by: str | None = Field(None, description="Updater identifier")
+    updated_by: str | None = Field(default=None, description="Updater identifier")
 
 
 class RemoveSynonymResponse(BaseModel):
     """Response model for removing a synonym."""
 
-    input_index: int
+    index: int
     status: str  # removed, not_found, error
     registry_id: str | None = None
     error: str | None = None
@@ -301,13 +316,13 @@ class MergeItem(StrictModel):
 
     preferred_id: str
     deprecated_id: str
-    updated_by: str | None = Field(None, description="Updater identifier")
+    updated_by: str | None = Field(default=None, description="Updater identifier")
 
 
 class MergeResponse(BaseModel):
     """Response model for a merge operation."""
 
-    input_index: int
+    index: int
     status: str  # merged, preferred_not_found, deprecated_not_found, error
     preferred_id: str | None = None
     deprecated_id: str | None = None
@@ -340,7 +355,7 @@ class LookupByKeyItem(StrictModel):
 class LookupResponse(BaseModel):
     """Response model for lookups."""
 
-    input_index: int
+    index: int
     status: str  # found, not_found, error
 
     entry_id: str | None = None
@@ -354,7 +369,7 @@ class LookupResponse(BaseModel):
     synonyms: list[Synonym] = Field(default_factory=list)
 
     matched_via: str | None = Field(
-        None,
+        default=None,
         description="How the match was found: entry_id or composite_key_value"
     )
 
@@ -385,17 +400,17 @@ class ResolveItem(StrictModel):
     (canonical ID verification). If both are given, ``entry_id`` is tried first.
     """
 
-    composite_key: dict[str, Any] | None = Field(None, description="Synonym composite key to resolve")
-    entry_id: str | None = Field(None, description="Canonical entry ID to verify")
-    namespace: str | None = Field(None, description="Namespace filter for composite key resolution")
-    entity_type: str | None = Field(None, description="Entity type filter for composite key resolution")
-    include_statuses: list[str] | None = Field(None, description="Status filter. Default: active only.")
+    composite_key: dict[str, Any] | None = Field(default=None, description="Synonym composite key to resolve")
+    entry_id: str | None = Field(default=None, description="Canonical entry ID to verify")
+    namespace: str | None = Field(default=None, description="Namespace filter for composite key resolution")
+    entity_type: str | None = Field(default=None, description="Entity type filter for composite key resolution")
+    include_statuses: list[str] | None = Field(default=None, description="Status filter. Default: active only.")
 
 
 class ResolveResponse(BaseModel):
     """Response model for a single resolve result."""
 
-    input_index: int
+    index: int
     status: str  # found, not_found, error
     composite_key: dict[str, Any] | None = None
     entry_id: str | None = None
@@ -424,11 +439,11 @@ class SearchItem(StrictModel):
         description="Field-value pairs to search for in composite keys"
     )
     restrict_to_namespaces: list[str] | None = Field(
-        None,
+        default=None,
         description="Only search in these namespaces (None = all)"
     )
     restrict_to_entity_types: list[str] | None = Field(
-        None,
+        default=None,
         description="Only search in these entity types (None = all)"
     )
     include_inactive: bool = Field(default=False)
@@ -439,14 +454,19 @@ class SearchByTermItem(StrictModel):
 
     term: str = Field(..., description="Term to search for across all composite key values")
     restrict_to_namespaces: list[str] | None = Field(
-        None,
+        default=None,
         description="Only search in these namespaces (None = all)"
     )
     restrict_to_entity_types: list[str] | None = Field(
-        None,
+        default=None,
         description="Only search in these entity types (None = all)"
     )
     include_inactive: bool = Field(default=False)
+    limit: int | None = Field(
+        default=None,
+        ge=1,
+        description="Max hits to return (None = all); total_matches still reports the full count"
+    )
 
 
 class SearchResult(BaseModel):
@@ -463,11 +483,19 @@ class SearchResult(BaseModel):
 
 
 class SearchResponse(BaseModel):
-    """Response model for a search query."""
+    """Response model for a search query.
 
-    input_index: int
+    status distinguishes a genuinely empty result set ("ok") from a
+    per-item failure ("error") — without it, a Mongo outage or a bug in
+    the search path is indistinguishable from "0 matches" to every
+    caller. error carries the failure message when status == "error".
+    """
+
+    index: int
+    status: str = "ok"  # ok, error
     results: list[SearchResult]
     total_matches: int
+    error: str | None = None
 
 
 class SearchBulkResponse(BaseModel):
@@ -492,7 +520,7 @@ class UpdateEntryItem(StrictModel):
 class UpdateEntryResponse(BaseModel):
     """Response model for an update operation."""
 
-    input_index: int
+    index: int
     status: str  # updated, not_found, error
     registry_id: str | None = None
     error: str | None = None
@@ -507,13 +535,25 @@ class DeleteItem(StrictModel):
 
     entry_id: str
     hard_delete: bool = Field(default=False, description="Permanently remove entry (requires namespace deletion_mode='full')")
+    rollback_uncommitted: bool = Field(
+        default=False,
+        description=(
+            "Roll back a just-allocated entry whose backing object was never "
+            "committed (e.g. a document create that failed on synonym "
+            "registration). Hard-deletes the entry and releases its claims "
+            "while BYPASSING the namespace deletion_mode='full' gate. Honored "
+            "ONLY for privileged callers (wip-admins / wip-services) — it is a "
+            "trusted-service write-rollback primitive, not a way for ordinary "
+            "keys to circumvent retain-mode. Implies hard_delete."
+        ),
+    )
     updated_by: str | None = None
 
 
 class DeleteResponse(BaseModel):
     """Response model for a delete operation."""
 
-    input_index: int
+    index: int
     status: str  # deactivated, deleted, not_found, error
     registry_id: str | None = None
     error: str | None = None
@@ -654,7 +694,7 @@ class ImportRequest(StrictModel):
     """Request model for namespace import."""
 
     target_prefix: str | None = Field(
-        None,
+        default=None,
         description="Optional new prefix for the imported namespace"
     )
     mode: str = Field(
@@ -662,7 +702,7 @@ class ImportRequest(StrictModel):
         description="Import mode: create (fail if exists), merge (add new), replace (overwrite)"
     )
     imported_by: str | None = Field(
-        None,
+        default=None,
         description="User performing the import"
     )
 
@@ -677,6 +717,6 @@ class ImportResponse(BaseModel):
         description="Count of imported entities by type"
     )
     source_prefix: str | None = Field(
-        None,
+        default=None,
         description="Original prefix from the export (if remapped)"
     )

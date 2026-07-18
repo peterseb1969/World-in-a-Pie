@@ -51,10 +51,10 @@ elif allowed_namespaces is not None:
 | `GET /ontology/children/{term_id}` | `def-store/api/ontology.py:69` | |
 | `GET /ontology/ancestors/{term_id}` | `def-store/api/ontology.py:105` | |
 | `GET /ontology/descendants/{term_id}` | `def-store/api/ontology.py:134` | |
-| `GET /ontology/relationships` | `def-store/api/ontology.py:187` | |
-| `POST /ontology/relationships` | `def-store/api/ontology.py:218` | |
-| `DELETE /ontology/relationships` | `def-store/api/ontology.py:247` | |
-| `GET /ontology/relationships/all` | `def-store/api/ontology.py:270` | |
+| `GET /ontology/term-relations` | `def-store/api/ontology.py:187` | |
+| `POST /ontology/term-relations` | `def-store/api/ontology.py:218` | |
+| `DELETE /ontology/term-relations` | `def-store/api/ontology.py:247` | |
+| `GET /ontology/term-relations/all` | `def-store/api/ontology.py:270` | |
 | `POST /import` | `def-store/api/import_export.py:163` | 1 endpoint |
 | `GET /files` | `document-store/api/files.py:151` | 1 endpoint |
 | `POST /files` (upload) | `document-store/api/files.py:84` | 1 endpoint |
@@ -190,27 +190,27 @@ The 8 ontology endpoints currently require `namespace: str = Query(...)`. Change
 **Important nuance:** Ontology traversal (ancestors, descendants) starts from a specific term. The term has a namespace. For traversal endpoints, namespace could be:
 - **Provided:** Filter results to that namespace only
 - **Omitted:** Use the term's own namespace (current CASE-07 fix approach)
-- **Cross-namespace traversal:** Follow relationships across namespaces the identity can access
+- **Cross-namespace traversal:** Follow relations across namespaces the identity can access
 
 **Simplification (from cross-agent review):** Don't branch on admin/partial/single in endpoint code. `resolve_namespace_filter()` returns either an empty dict (superadmin, no filter) or `{"namespace": {"$in": [...]}}`. The `$in` with a single-element list works identically to `{"namespace": "ns1"}` — MongoDB optimizes this. Two branches, not three.
 
 **Decision needed:** Should ontology traversal cross namespace boundaries?
 
-**Proposed answer: No, not yet.** Ontology relationships are namespace-scoped today. Cross-namespace ontology is a separate design item (namespace isolation modes). For now:
-- `GET /ontology/relationships` and `/relationships/all` → make namespace optional, apply `resolve_namespace_filter` (these are list endpoints)
+**Proposed answer: No, not yet.** Ontology relations are namespace-scoped today. Cross-namespace ontology is a separate design item (namespace isolation modes). For now:
+- `GET /ontology/term-relations` and `/relations/all` → make namespace optional, apply `resolve_namespace_filter` (these are list endpoints)
 - Traversal endpoints (`parents`, `children`, `ancestors`, `descendants`) → keep namespace required (they need a starting namespace for the traversal algorithm)
 
 **Endpoints to change (2 list + 0 traversal):**
-1. `GET /ontology/relationships` — list, make optional
-2. `GET /ontology/relationships/all` — list, make optional
+1. `GET /ontology/term-relations` — list, make optional
+2. `GET /ontology/term-relations/all` — list, make optional
 
 **Endpoints to leave as-is (6):**
 - `GET /ontology/parents/{term_id}` — traversal, namespace required
 - `GET /ontology/children/{term_id}` — traversal, namespace required
 - `GET /ontology/ancestors/{term_id}` — traversal, namespace required
 - `GET /ontology/descendants/{term_id}` — traversal, namespace required
-- `POST /ontology/relationships` — write, namespace required (scopes the new relationship)
-- `DELETE /ontology/relationships` — write, namespace required
+- `POST /ontology/term-relations` — write, namespace required (scopes the new relation)
+- `DELETE /ontology/term-relations` — write, namespace required
 
 **Commit 3.** Small scope — only 2 endpoints change.
 
@@ -234,7 +234,7 @@ Verify that every list response includes the `namespace` field on each item. Whe
 
 ## What This Does NOT Change
 
-1. **Write endpoints** — `POST /terminologies`, `POST /templates`, `POST /documents`, `POST /files`, `POST /ontology/relationships` — all require explicit namespace. You must know where you're writing.
+1. **Write endpoints** — `POST /terminologies`, `POST /templates`, `POST /documents`, `POST /files`, `POST /ontology/term-relations` — all require explicit namespace. You must know where you're writing.
 
 2. **Get-by-ID endpoints** — `GET /terminologies/{id}`, `GET /templates/{id}`, `GET /documents/{id}`, `GET /files/{id}` — these retrieve a specific entity. Namespace is not needed (ID is globally unique). Permission check happens post-fetch against the entity's namespace.
 
@@ -340,7 +340,7 @@ Phase 2 (refactor existing endpoints) is the riskiest step due to test churn on 
 
 ---
 
-## Relationship to Other Work
+## Relation to Other Work
 
 - **CASE-07 (Console term detail):** Fixed by using term's own namespace. Not affected by this design.
 - **Namespace-scoped API keys:** Prerequisite. Done (1e3f508).

@@ -13,7 +13,7 @@ The ClinTrial app exposed the gap: users need to extend a curated therapeutic ar
 
 This will recur. Any app that needs user-editable controlled vocabularies will face the same choice between abusing terminologies or rebuilding them from documents.
 
-**Solution:** Add a `mutable: true` flag on terminologies. Mutable terminologies allow term deletion and behave as app-scoped, freely editable vocabularies while using the full terminology infrastructure (ontology relationships, reporting-sync, MCP tools, ontology browser).
+**Solution:** Add a `mutable: true` flag on terminologies. Mutable terminologies allow term deletion and behave as app-scoped, freely editable vocabularies while using the full terminology infrastructure (ontology relations, reporting-sync, MCP tools, ontology browser).
 
 ## Design Principles
 
@@ -45,7 +45,7 @@ Today, `DELETE /api/def-store/terms` sets `status: deprecated` and requires `dep
 
 For mutable terminologies, the same endpoint performs a **hard delete**:
 - Remove the term document from MongoDB
-- Cascade: delete all `TermRelationship` records where the term is source or target
+- Cascade: delete all `TermRelation` records where the term is source or target
 - Emit `term.deleted` event (existing event type, same payload)
 - Registry: mark the entry as inactive (existing behavior)
 
@@ -58,7 +58,7 @@ No new events. The existing `term.deleted` event already exists and is handled b
 | Consumer | Current Behavior | Change Needed |
 |----------|-----------------|---------------|
 | **Reporting-sync** | Sets `status = 'inactive'` in PG `terms` table | None — correct for both modes |
-| **Reporting-sync** | Relationship cascade in PG | Add: DELETE from `term_relationships` where source or target matches |
+| **Reporting-sync** | Relation cascade in PG | Add: DELETE from `term_relations` where source or target matches |
 | **MCP Server** | Thin wrapper, passes through | None |
 | **Ingest Gateway** | No term handling | None |
 
@@ -76,7 +76,7 @@ No new events. The existing `term.deleted` event already exists and is handled b
 The `terms` metadata table in PostgreSQL already has a `status` column. When a mutable term is deleted:
 1. `term.deleted` event fires (same as today)
 2. Reporting-sync sets `status = 'inactive'` (same as today)
-3. **New:** cascade DELETE from `term_relationships` table where `source_term_id` or `target_term_id` matches
+3. **New:** cascade DELETE from `term_relations` table where `source_term_id` or `target_term_id` matches
 
 No schema changes. The hard delete happens in MongoDB; PostgreSQL reflects it as inactive status. This is intentional — the reporting layer preserves history.
 
@@ -109,14 +109,14 @@ No changes. The `delete_term` tool calls the same API endpoint. The `create_term
 ### Phase 1: Core (Def-Store)
 
 1. Add `mutable` field to Terminology model
-2. Modify term delete endpoint: check `terminology.mutable`, hard delete + relationship cascade if true
+2. Modify term delete endpoint: check `terminology.mutable`, hard delete + relation cascade if true
 3. Add validation: `mutable=True` implies `extensible=True`
 4. Add validation: reject `mutable` changes on terminologies with existing terms
 5. Tests: mutable term CRUD, cascade, immutable behavior unchanged
 
 ### Phase 2: Downstream
 
-6. Reporting-sync: cascade relationship DELETE on `term.deleted` for mutable terms
+6. Reporting-sync: cascade relation DELETE on `term.deleted` for mutable terms
 7. WIP-Toolkit: include `mutable` in export/import
 8. Console: show `mutable` indicator, create dialog option
 9. Documentation updates
@@ -126,16 +126,16 @@ No changes. The `delete_term` tool calls the same API endpoint. The `create_term
 | Area | Risk | Mitigation |
 |------|------|------------|
 | Existing terminologies | Zero — `mutable` defaults to `false` | No behavior change unless opted in |
-| Reporting-sync | Low — already handles `term.deleted` | Add relationship cascade (small change) |
+| Reporting-sync | Low — already handles `term.deleted` | Add relation cascade (small change) |
 | MCP Server | None — thin wrapper | No changes needed |
 | WIP-Toolkit | Low — new field passthrough | Standard import/export pattern |
-| Ontology relationships | Moderate — cascade delete must be correct | Test: delete term → all its relationships gone |
+| Ontology relations | Moderate — cascade delete must be correct | Test: delete term → all its relations gone |
 | `@wip/client` | Low — delete method exists | May need `mutable` in Terminology type |
 | Consumer apps | Low — mutable terminologies are new, no existing consumers | n/a |
 
 ## What This Enables
 
-- **ClinTrial:** User-defined therapeutic areas as a mutable terminology with `is_a` relationships to the curated CT_THERAPEUTIC_AREA. Full ontology browser support, no document overlay hack.
+- **ClinTrial:** User-defined therapeutic areas as a mutable terminology with `is_a` relations to the curated CT_THERAPEUTIC_AREA. Full ontology browser support, no document overlay hack.
 - **Any app** needing user-editable picklists, tags, categories, or classifications — use a mutable terminology instead of reinventing the pattern with documents.
 - **Pattern:** Curated base terminology (immutable) + user extension terminology (mutable), merged at the app level by combining both term sets. The ontology browser shows the full merged hierarchy automatically.
 

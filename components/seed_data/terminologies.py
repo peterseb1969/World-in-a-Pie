@@ -34,6 +34,7 @@ def get_terminology_definitions() -> list[dict[str, Any]]:
         BLOOD_TYPE,
         UNIT_OF_MEASURE,
         SEVERITY,
+        REPORTING_TYPE,
     ]
 
 
@@ -645,5 +646,27 @@ SEVERITY = {
         {"value": "Moderate", "label": "Severity 3 - Moderate", "aliases": ["moderate", "s3", "sev3"], "sort_order": 3, "metadata": {"color": "#FFA500", "response_time_hours": 24}},
         {"value": "Minor", "label": "Severity 4 - Minor", "aliases": ["minor", "s4", "sev4"], "sort_order": 4, "metadata": {"color": "#32CD32", "response_time_hours": 72}},
         {"value": "Cosmetic", "label": "Severity 5 - Cosmetic", "aliases": ["cosmetic", "s5", "sev5", "trivial"], "sort_order": 5, "metadata": {"color": "#808080", "response_time_hours": 168}},
+    ]
+}
+
+
+# =============================================================================
+# REPORTING_TYPE - Edge property for EMPLOYEE_MANAGES relationships
+# =============================================================================
+REPORTING_TYPE = {
+    "value": "REPORTING_TYPE",
+    "label": "Reporting Type",
+    "description": "Type of management/reporting line on an EMPLOYEE_MANAGES edge",
+    "case_sensitive": False,
+    "allow_multiple": False,
+    "extensible": False,
+    "metadata": {
+        "source": "internal",
+        "version": "1.0",
+        "language": "en"
+    },
+    "terms": [
+        {"value": "direct", "label": "Direct report", "aliases": ["solid_line"], "sort_order": 1},
+        {"value": "dotted_line", "label": "Dotted-line report", "aliases": ["matrix"], "sort_order": 2},
     ]
 }

@@ -6,12 +6,12 @@ Each namespace has configurable ID algorithms per entity type.
 
 import os
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
-from wip_auth import get_current_identity
+from wip_auth import UserIdentity, get_current_identity
 
 from ..models.api_models import (
     ExportResponse,
@@ -60,10 +60,14 @@ def namespace_to_response(ns: Namespace) -> NamespaceResponse:
 )
 async def list_namespaces(
     include_archived: bool = Query(False, description="Include archived namespaces"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> list[NamespaceResponse]:
     """List namespaces the caller can access."""
+    query: dict[str, Any]
     if include_archived:
+        # The $ne guards against legacy soft-deleted records (a retired
+        # write path — deletion is physical removal today), not a current
+        # lifecycle state. See the status field on the Namespace model.
         query = {"status": {"$ne": "deleted"}}
     else:
         query = {"status": "active"}
@@ -71,7 +75,6 @@ async def list_namespaces(
     namespaces = await Namespace.find(query).to_list()
 
     # Filter to accessible namespaces
-    identity = get_current_identity()
     accessible = []
     for ns in namespaces:
         perm = await _resolve_permission(identity, ns.prefix)
@@ -87,14 +90,13 @@ async def list_namespaces(
 )
 async def get_namespace(
     prefix: str,
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> NamespaceResponse:
     """Get a specific namespace by its prefix."""
     ns = await Namespace.find_one({"prefix": prefix})
     if not ns:
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
 
-    identity = get_current_identity()
     perm = await _resolve_permission(identity, prefix)
     if perm == "none":
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
@@ -109,14 +111,13 @@ async def get_namespace(
 )
 async def get_namespace_stats(
     prefix: str,
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> NamespaceStatsResponse:
     """Get entity counts for each entity type in the namespace."""
     ns = await Namespace.find_one({"prefix": prefix})
     if not ns:
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
 
-    identity = get_current_identity()
     perm = await _resolve_permission(identity, prefix)
     if perm == "none":
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
@@ -146,14 +147,13 @@ async def get_namespace_stats(
 )
 async def get_namespace_id_config(
     prefix: str,
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> dict[str, Any]:
     """Get ID algorithm configuration for a namespace. Services cache this at startup."""
     ns = await Namespace.find_one({"prefix": prefix, "status": "active"})
     if not ns:
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
 
-    identity = get_current_identity()
     perm = await _resolve_permission(identity, prefix)
     if perm == "none":
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
@@ -222,10 +222,32 @@ async def upsert_namespace(
 
     This makes app bootstrap scripts idempotent — a single self-healing
     call replaces the `GET → 404 → POST` dance.
+
+    Safety guards on `deletion_mode` mirror the narrow PATCH route:
+    the `wip` default namespace cannot be flipped to `full`, and
+    flipping an existing namespace from `retain` to `full` requires
+    `confirm_enable_deletion=true` in the body.
     """
     ns = await Namespace.find_one({"prefix": prefix})
     update_data = request.model_dump(exclude_unset=True)
     actor = request.updated_by
+
+    new_deletion_mode = update_data.get("deletion_mode")
+    if new_deletion_mode == "full":
+        if prefix == "wip":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot enable deletion on the default 'wip' namespace",
+            )
+        if ns is not None and ns.deletion_mode == "retain":
+            if not update_data.get("confirm_enable_deletion"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Set confirm_enable_deletion=true in the body to flip "
+                        "deletion_mode from 'retain' to 'full'"
+                    ),
+                )
 
     if ns is None:
         # Create path — use provided fields, defaults for the rest.
@@ -242,8 +264,12 @@ async def upsert_namespace(
         return namespace_to_response(ns)
 
     # Update path — only touch explicitly provided fields.
+    # confirm_enable_deletion is a safety toggle, not a stored field —
+    # consumed by the guard above and dropped here.
     for field, value in update_data.items():
-        if value is not None and field != "updated_by":
+        if field in ("updated_by", "confirm_enable_deletion"):
+            continue
+        if value is not None:
             setattr(ns, field, value)
 
     ns.updated_at = datetime.now(UTC)
@@ -382,7 +408,7 @@ async def export_namespace(
 )
 async def download_export(
     export_id: str,
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Download an exported namespace archive."""
     import tempfile
@@ -407,7 +433,7 @@ async def download_export(
 async def import_namespace(
     file: UploadFile = File(..., description="Export ZIP file to import"),
     target_prefix: str = Query(None, description="Optional new prefix"),
-    mode: str = Query("create", description="Import mode: create, merge, replace"),
+    mode: Literal["create", "merge", "replace"] = Query("create", description="Import mode: create, merge, replace"),
     imported_by: str = Query(None, description="User performing import"),
     api_key: str = Depends(require_admin_key)
 ) -> ImportResponse:

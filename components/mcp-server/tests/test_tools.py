@@ -162,9 +162,7 @@ async def test_list_report_tables():
     """list_report_tables returns table info."""
     mock = _mock_client()
     mock.list_report_tables.return_value = {
-        "tables": [
-            {"name": "doc_patient", "columns": [{"name": "id", "type": "text"}], "row_count": 10}
-        ]
+        "tables": [{"name": "doc_patient", "columns": [{"name": "id", "type": "text"}], "row_count": 10}]
     }
 
     with patch("wip_mcp.server.get_client", return_value=mock):
@@ -199,6 +197,32 @@ async def test_run_report_query():
         sql="SELECT name, country FROM doc_patient WHERE country = $1",
         params=["CH"],
         max_rows=1000,
+        namespace=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_report_query_forwards_namespace():
+    """A namespace argument reaches the client (per-namespace search_path)."""
+    mock = _mock_client()
+    mock.run_report_query.return_value = {
+        "columns": ["name"],
+        "rows": [{"name": "Alice"}],
+        "row_count": 1,
+        "truncated": False,
+    }
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await run_report_query(
+            sql="SELECT name FROM doc_patient",
+            namespace="clinic-a",
+        )
+
+    mock.run_report_query.assert_awaited_once_with(
+        sql="SELECT name FROM doc_patient",
+        params=None,
+        max_rows=1000,
+        namespace="clinic-a",
     )
 
 
@@ -363,3 +387,291 @@ async def test_import_documents_csv_auto_mapping():
         assert data["succeeded"] == 1
     finally:
         os.unlink(tmp_path)
+
+
+# =========================================================================
+# CASE-288: create_edge_type — identity_fields default substitution
+# =========================================================================
+
+from wip_mcp.server import create_edge_type  # noqa: E402
+
+
+def _edge_type_fields():
+    """Standard source_ref + target_ref pair with the right shape."""
+    return [
+        {
+            "name": "source_ref",
+            "label": "Source",
+            "type": "reference",
+            "reference_type": "document",
+            "target_templates": ["PERSON"],
+            "mandatory": True,
+        },
+        {
+            "name": "target_ref",
+            "label": "Target",
+            "type": "reference",
+            "reference_type": "document",
+            "target_templates": ["PERSON"],
+            "mandatory": True,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_edge_type_default_identity_fields():
+    """When identity_fields is omitted, the wrapper substitutes the
+    documented default `[source_ref, target_ref]` before forwarding to
+    create_template. Without this, PoNIF #8's versioned=false
+    overwrite-in-place contract is silently broken — every duplicate
+    write becomes a new document instead of overwriting."""
+    mock = _mock_client()
+    mock.default_namespace = None
+    mock.create_template.return_value = {"template_id": "T-IMPACTS", "version": 1}
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await create_edge_type(
+            value="IMPACTS",
+            label="Impacts",
+            source_templates=["LESSON"],
+            target_templates=["DECISION"],
+            fields=[
+                {**_edge_type_fields()[0], "target_templates": ["LESSON"]},
+                {**_edge_type_fields()[1], "target_templates": ["DECISION"]},
+            ],
+            versioned=False,
+        )
+
+    mock.create_template.assert_awaited_once()
+    template = mock.create_template.call_args.args[0]
+    assert template["identity_fields"] == ["source_ref", "target_ref"]
+
+
+@pytest.mark.asyncio
+async def test_create_edge_type_explicit_identity_fields_preserved():
+    """A caller passing identity_fields explicitly (e.g., adding a third
+    field for multi-edge dedup) must have their value forwarded as-is —
+    not overridden by the default."""
+    mock = _mock_client()
+    mock.default_namespace = None
+    mock.create_template.return_value = {"template_id": "T", "version": 1}
+
+    fields = [
+        *_edge_type_fields(),
+        {"name": "role", "label": "Role", "type": "string"},
+    ]
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await create_edge_type(
+            value="COLLAB",
+            label="Collaboration",
+            source_templates=["PERSON"],
+            target_templates=["PERSON"],
+            fields=fields,
+            identity_fields=["source_ref", "target_ref", "role"],
+        )
+
+    template = mock.create_template.call_args.args[0]
+    assert template["identity_fields"] == ["source_ref", "target_ref", "role"]
+
+
+@pytest.mark.asyncio
+async def test_create_edge_type_explicit_empty_respected():
+    """`identity_fields=[]` is an explicit opt-out into truly
+    append-only semantics — rare, but the caller's intent must be
+    preserved (FR-YAC's pushback #4 on CASE-288 — distinguish "not
+    provided" from "explicitly empty")."""
+    mock = _mock_client()
+    mock.default_namespace = None
+    mock.create_template.return_value = {"template_id": "T", "version": 1}
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await create_edge_type(
+            value="LOGS",
+            label="Append-only edge log",
+            source_templates=["PERSON"],
+            target_templates=["EVENT"],
+            fields=[
+                {**_edge_type_fields()[0], "target_templates": ["PERSON"]},
+                {**_edge_type_fields()[1], "target_templates": ["EVENT"]},
+            ],
+            identity_fields=[],
+        )
+
+    template = mock.create_template.call_args.args[0]
+    assert template["identity_fields"] == []
+
+
+# =========================================================================
+# CASE-290: upsert_namespace — PUT-based namespace upsert MCP tool
+# =========================================================================
+
+from wip_mcp.server import upsert_namespace  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_upsert_namespace_creates_on_missing():
+    """PUT creates the namespace per the upsert contract.
+
+    `create_namespace` (POST) returns 409 if the namespace exists; the
+    PUT-based `upsert_namespace` is the idempotent path. The wrapper's
+    job is to forward to client.upsert_namespace with the supplied
+    fields — no extra logic, no policy."""
+    mock = _mock_client()
+    mock.upsert_namespace.return_value = {
+        "prefix": "dev-kb",
+        "description": "KB dev namespace",
+        "isolation_mode": "open",
+        "deletion_mode": "retain",
+        "allowed_external_refs": [],
+        "status": "active",
+    }
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        result = await upsert_namespace(
+            prefix="dev-kb",
+            description="KB dev namespace",
+        )
+
+    data = json.loads(result)
+    assert data["prefix"] == "dev-kb"
+    mock.upsert_namespace.assert_awaited_once()
+    call_kwargs = mock.upsert_namespace.call_args.kwargs
+    assert call_kwargs["prefix"] == "dev-kb"
+    assert call_kwargs["description"] == "KB dev namespace"
+
+
+@pytest.mark.asyncio
+async def test_upsert_namespace_updates_existing_fields():
+    """Re-running PUT with the same body is a no-op (idempotent).
+
+    The wrapper just forwards; the registry's `exclude_unset=True`
+    semantics + setattr-only-non-None loop guarantee re-runs are
+    no-ops. This test verifies the wrapper passes the body through
+    faithfully on every call."""
+    mock = _mock_client()
+    mock.upsert_namespace.return_value = {
+        "prefix": "dev-kb",
+        "deletion_mode": "full",
+        "status": "active",
+    }
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await upsert_namespace(prefix="dev-kb", deletion_mode="full")
+        await upsert_namespace(prefix="dev-kb", deletion_mode="full")
+
+    assert mock.upsert_namespace.await_count == 2
+    for call in mock.upsert_namespace.call_args_list:
+        assert call.kwargs["prefix"] == "dev-kb"
+        assert call.kwargs["deletion_mode"] == "full"
+
+
+@pytest.mark.asyncio
+async def test_upsert_namespace_preserves_untouched_fields():
+    """Caller flipping just `deletion_mode` must leave other fields alone.
+
+    The wrapper passes `None` for unspecified params; the *client*
+    method is responsible for not putting Nones in the HTTP body
+    (covered separately by test_client.py). This test verifies the
+    wrapper hands through Nones faithfully — no fabricated defaults."""
+    mock = _mock_client()
+    mock.upsert_namespace.return_value = {
+        "prefix": "dev-kb",
+        "deletion_mode": "full",
+    }
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await upsert_namespace(prefix="dev-kb", deletion_mode="full")
+
+    mock.upsert_namespace.assert_awaited_once()
+    call_kwargs = mock.upsert_namespace.call_args.kwargs
+    assert call_kwargs["prefix"] == "dev-kb"
+    assert call_kwargs["deletion_mode"] == "full"
+    assert call_kwargs["description"] is None
+    assert call_kwargs["isolation_mode"] is None
+    assert call_kwargs["allowed_external_refs"] is None
+
+
+@pytest.mark.asyncio
+async def test_upsert_namespace_forwards_confirm_enable_deletion():
+    """CASE-291: confirm_enable_deletion=True passes through to the client.
+
+    The MCP tool's default is False (opt-in), and callers flipping
+    retain→full on an existing namespace must explicitly pass True.
+    The wrapper just forwards — the registry enforces the policy."""
+    mock = _mock_client()
+    mock.upsert_namespace.return_value = {
+        "prefix": "dev-kb",
+        "deletion_mode": "full",
+    }
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await upsert_namespace(
+            prefix="dev-kb",
+            deletion_mode="full",
+            confirm_enable_deletion=True,
+        )
+
+    call_kwargs = mock.upsert_namespace.call_args.kwargs
+    assert call_kwargs["confirm_enable_deletion"] is True
+
+
+# =========================================================================
+# CASE-584: _error() must surface error_code
+# =========================================================================
+
+from wip_mcp.client import BulkError  # noqa: E402
+from wip_mcp.server import _error  # noqa: E402
+
+
+def test_error_includes_error_code():
+    """CASE-584: single-item tools must surface the machine-readable
+    error_code, per wip://conventions ("branch on the code, not the
+    message string")."""
+    e = BulkError("Identity fields cannot be changed", error_code="identity_field_change")
+    assert _error(e) == "WIP error [identity_field_change]: Identity fields cannot be changed"
+
+
+def test_error_without_error_code_keeps_plain_format():
+    """A BulkError with no error_code keeps the original format."""
+    e = BulkError("something went wrong")
+    assert _error(e) == "WIP error: something went wrong"
+
+
+def test_error_non_bulk_exception():
+    """Non-BulkError exceptions keep the generic format."""
+    assert _error(ValueError("boom")) == "Error: boom"
+
+
+# =========================================================================
+# get_term_hierarchy: relation_type reaches every direction
+# =========================================================================
+
+from wip_mcp.server import get_term_hierarchy  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_get_term_hierarchy_forwards_relation_type_to_children():
+    """The children branch must forward relation_type — dropping it silently
+    returns is_a-only rows while the caller believes their filter applied."""
+    mock = _mock_client()
+    mock.get_term_children.return_value = []
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await get_term_hierarchy("T-1", direction="children", relation_type="part_of")
+
+    call_kwargs = mock.get_term_children.call_args.kwargs
+    assert call_kwargs["relation_type"] == "part_of"
+
+
+@pytest.mark.asyncio
+async def test_get_term_hierarchy_forwards_relation_type_to_parents():
+    """The parents branch must forward relation_type, same as children."""
+    mock = _mock_client()
+    mock.get_term_parents.return_value = []
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await get_term_hierarchy("T-1", direction="parents", relation_type="part_of")
+
+    call_kwargs = mock.get_term_parents.call_args.kwargs
+    assert call_kwargs["relation_type"] == "part_of"

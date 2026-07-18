@@ -221,6 +221,23 @@ async def test_http_api_key_required():
 
 
 @pytest.mark.asyncio
+async def test_http_health_exempt_from_api_key():
+    """GET /health returns 200 without an API key — orchestration
+    probes (compose healthcheck, k8s readinessProbe) must not need
+    credentials."""
+    import httpx
+
+    port = _free_port()
+    async with _network_server("--http", port, api_key="any-key"):
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"http://127.0.0.1:{port}/health")
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["status"] == "ok"
+            assert body["service"] == "mcp-server"
+
+
+@pytest.mark.asyncio
 async def test_http_api_key_accepted():
     """HTTP transport: valid API key allows MCP handshake."""
     import httpx

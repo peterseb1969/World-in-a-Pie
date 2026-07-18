@@ -21,6 +21,7 @@ export class FileStoreService extends BaseService {
     file: File | Blob,
     filename?: string,
     metadata?: FileUploadMetadata,
+    namespace?: string,
   ): Promise<FileEntity> {
     const formData = new FormData()
     if (file instanceof File) {
@@ -29,6 +30,7 @@ export class FileStoreService extends BaseService {
       formData.append('file', file, filename ?? 'upload')
     }
 
+    if (namespace) formData.append('namespace', namespace)
     if (metadata?.description) formData.append('description', metadata.description)
     if (metadata?.tags?.length) formData.append('tags', metadata.tags.join(','))
     if (metadata?.category) formData.append('category', metadata.category)

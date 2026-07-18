@@ -7,7 +7,7 @@
 Users may want to re-use existing ontologies (SNOMED CT, ICD, Gene Ontology, SKOS thesauri, etc.) within WIP. Today, WIP can import **terminologies** (flat or single-parent hierarchies) but cannot faithfully represent **ontologies**, which have:
 
 - **Polyhierarchy** — a concept can have multiple parents (e.g., "Viral pneumonia" is_a "Pneumonia" AND is_a "Viral respiratory infection")
-- **Typed relationships** — `is_a`, `part_of`, `finding_site`, `maps_to` are semantically distinct
+- **Typed relations** — `is_a`, `part_of`, `finding_site`, `maps_to` are semantically distinct
 - **Cross-terminology links** — concepts in one vocabulary relate to concepts in another
 
 The single `parent_term_id` field on Term only supports one parent within one terminology. This makes ontology import lossy.
@@ -16,7 +16,7 @@ The single `parent_term_id` field on Term only supports one parent within one te
 
 1. Import standard ontologies (OBO Graph JSON) without losing structural information
 2. Support polyhierarchy (multiple parents per concept)
-3. Support typed relationships between terms, including cross-terminology
+3. Support typed relations between terms, including cross-terminology
 4. Enable traversal queries (ancestors, descendants, transitive closure)
 5. Leverage existing WIP primitives — no unnecessary duplication
 6. Maintain backward compatibility — existing terminologies and `parent_term_id` continue to work
@@ -36,26 +36,26 @@ The single `parent_term_id` field on Term only supports one parent within one te
 | External code mapping | Registry synonyms | ✅ |
 | Deprecation + replacement | `term.replaced_by_term_id` | ✅ |
 | Bulk import | Import/export endpoints | ✅ |
-| Multi-parent hierarchy | `TermRelationship` (is_a) | ✅ |
-| Typed relationships | `TermRelationship` + `_ONTOLOGY_RELATIONSHIP_TYPES` | ✅ |
-| Cross-terminology links | `TermRelationship` | ✅ |
+| Multi-parent hierarchy | `TermRelation` (is_a) | ✅ |
+| Typed relations | `TermRelation` + `_ONTOLOGY_RELATIONSHIP_TYPES` | ✅ |
+| Cross-terminology links | `TermRelation` | ✅ |
 | Transitive traversal | BFS with cycle detection | ✅ |
 | OBO Graph JSON import | CLI script + API endpoint + UI | ✅ |
-| Round-trip export/import | JSON with relationships + aliases | ✅ |
+| Round-trip export/import | JSON with relations + aliases | ✅ |
 
-## Model: TermRelationship
+## Model: TermRelation
 
-A lightweight edge model stored in the `term_relationships` collection in Def-Store's MongoDB database.
+A lightweight edge model stored in the `term_relations` collection in Def-Store's MongoDB database.
 
 ```python
-class TermRelationship(Document):
-    """A typed, directed relationship between two terms."""
+class TermRelation(Document):
+    """A typed, directed relation between two terms."""
 
     namespace: str                          # Scoped like all WIP entities
     source_term_id: str                     # The subject term
     target_term_id: str                     # The object term
-    relationship_type: str                  # Value from _ONTOLOGY_RELATIONSHIP_TYPES terminology
-    relationship_value: Optional[str]       # Denormalized value for display
+    relation_type: str                  # Value from _ONTOLOGY_RELATIONSHIP_TYPES terminology
+    relation_value: Optional[str]       # Denormalized value for display
 
     # Denormalized for query efficiency
     source_terminology_id: Optional[str]
@@ -68,27 +68,27 @@ class TermRelationship(Document):
     created_by: Optional[str]
 
     class Settings:
-        name = "term_relationships"
+        name = "term_relations"
         indexes = [
-            # Find all relationships FROM a term
-            IndexModel([("namespace", 1), ("source_term_id", 1), ("relationship_type", 1)]),
-            # Find all relationships TO a term (reverse lookup)
-            IndexModel([("namespace", 1), ("target_term_id", 1), ("relationship_type", 1)]),
-            # Uniqueness: one relationship of each type between two terms
+            # Find all relations FROM a term
+            IndexModel([("namespace", 1), ("source_term_id", 1), ("relation_type", 1)]),
+            # Find all relations TO a term (reverse lookup)
+            IndexModel([("namespace", 1), ("target_term_id", 1), ("relation_type", 1)]),
+            # Uniqueness: one relation of each type between two terms
             IndexModel(
-                [("namespace", 1), ("source_term_id", 1), ("target_term_id", 1), ("relationship_type", 1)],
+                [("namespace", 1), ("source_term_id", 1), ("target_term_id", 1), ("relation_type", 1)],
                 unique=True,
             ),
             # By terminology (for ontology-wide queries)
-            IndexModel([("namespace", 1), ("source_terminology_id", 1), ("relationship_type", 1)]),
+            IndexModel([("namespace", 1), ("source_terminology_id", 1), ("relation_type", 1)]),
             # Status filter
             IndexModel([("namespace", 1), ("status", 1)]),
         ]
 ```
 
-## Relationship Types
+## Relation Types
 
-Relationship types are validated against the system terminology `_ONTOLOGY_RELATIONSHIP_TYPES`, which is auto-created at Def-Store startup. New types are auto-created during ontology import.
+Relation types are validated against the system terminology `_ONTOLOGY_RELATIONSHIP_TYPES`, which is auto-created at Def-Store startup. New types are auto-created during ontology import.
 
 ### Built-in Types
 
@@ -106,7 +106,7 @@ Relationship types are validated against the system terminology `_ONTOLOGY_RELAT
 
 ### Auto-Created Types (from OBO imports)
 
-OBO ontologies bring additional relationship types that are auto-created as terms in `_ONTOLOGY_RELATIONSHIP_TYPES`:
+OBO ontologies bring additional relation types that are auto-created as terms in `_ONTOLOGY_RELATIONSHIP_TYPES`:
 
 - `regulates`, `positively_regulates`, `negatively_regulates` — Gene Ontology
 - `capable_of`, `capable_of_part_of`, `has_input`, `has_output` — GO biological process
@@ -115,68 +115,68 @@ OBO ontologies bring additional relationship types that are auto-created as term
 
 ### Validation
 
-`create_relationships` validates every `relationship_type` against terms in `_ONTOLOGY_RELATIONSHIP_TYPES`. Unknown types are rejected with a clear error listing valid types.
+`create_relations` validates every `relation_type` against terms in `_ONTOLOGY_RELATIONSHIP_TYPES`. Unknown types are rejected with a clear error listing valid types.
 
-**Per-terminology restriction** of allowed relationship types is not enforced by WIP — this is delegated to client applications. The global terminology defines what types *exist*; clients decide which types to *use* per context.
+**Per-terminology restriction** of allowed relation types is not enforced by WIP — this is delegated to client applications. The global terminology defines what types *exist*; clients decide which types to *use* per context.
 
 ## Registry Synonyms for Identity Mapping
 
-External ontology codes are mapped via Registry synonyms — **not** via TermRelationship. This keeps a clean separation:
+External ontology codes are mapped via Registry synonyms — **not** via TermRelation. This keeps a clean separation:
 
 - **Synonyms** = "these are the same entity" (identity)
-- **Relationships** = "these are related entities" (semantics)
+- **Relations** = "these are related entities" (semantics)
 
 ## Interaction with parent_term_id
 
-`parent_term_id` remains as-is for simple single-parent terminologies. It is **not** deprecated — many terminologies are flat or single-hierarchy and don't need the relationship model.
+`parent_term_id` remains as-is for simple single-parent terminologies. It is **not** deprecated — many terminologies are flat or single-hierarchy and don't need the relation model.
 
 For ontology imports with polyhierarchy, the importer:
 1. Leaves `parent_term_id` empty
-2. Creates `is_a` TermRelationship records for ALL parents
+2. Creates `is_a` TermRelation records for ALL parents
 
-Traversal queries always check both `parent_term_id` AND `is_a` relationships to give a unified view.
+Traversal queries always check both `parent_term_id` AND `is_a` relations to give a unified view.
 
 ## API
 
-All relationship endpoints live under `/api/def-store/ontology/`.
+All relation endpoints live under `/api/def-store/ontology/`.
 
-### Relationship CRUD
+### Relation CRUD
 
 ```
-# Create relationships (bulk-first, as per WIP convention)
-POST /api/def-store/ontology/relationships
+# Create relations (bulk-first, as per WIP convention)
+POST /api/def-store/ontology/term-relations
 Body: [
     {
         "source_term_id": "019abc01-def3-7abc-8def-100000000123",
         "target_term_id": "019abc01-def3-7abc-8def-100000000456",
-        "relationship_type": "is_a"
+        "relation_type": "is_a"
     },
     ...
 ]
 Response: BulkResponse
 
-# List relationships for a term
-GET /api/def-store/ontology/relationships?term_id=019abc01-def3-7abc-8def-100000000123&direction=outgoing
-GET /api/def-store/ontology/relationships?term_id=019abc01-def3-7abc-8def-100000000123&direction=incoming
-GET /api/def-store/ontology/relationships?term_id=019abc01-def3-7abc-8def-100000000123&relationship_type=is_a
+# List relations for a term
+GET /api/def-store/ontology/term-relations?term_id=019abc01-def3-7abc-8def-100000000123&direction=outgoing
+GET /api/def-store/ontology/term-relations?term_id=019abc01-def3-7abc-8def-100000000123&direction=incoming
+GET /api/def-store/ontology/term-relations?term_id=019abc01-def3-7abc-8def-100000000123&relation_type=is_a
 
-# List all relationships in namespace (paginated)
-GET /api/def-store/ontology/relationships/all?namespace=wip&relationship_type=is_a
+# List all relations in namespace (paginated)
+GET /api/def-store/ontology/term-relations/all?namespace=wip&relation_type=is_a
 
-# Delete relationships (bulk)
-DELETE /api/def-store/ontology/relationships
-Body: [{"source_term_id": "019abc01-def3-7abc-8def-100000000123", "target_term_id": "019abc01-def3-7abc-8def-100000000456", "relationship_type": "is_a"}]
+# Delete relations (bulk)
+DELETE /api/def-store/ontology/term-relations
+Body: [{"source_term_id": "019abc01-def3-7abc-8def-100000000123", "target_term_id": "019abc01-def3-7abc-8def-100000000456", "relation_type": "is_a"}]
 ```
 
 ### Traversal Queries
 
 ```
 # Ancestors: follow is_a (and parent_term_id) upward, transitively
-GET /api/def-store/ontology/terms/{term_id}/ancestors?relationship_type=is_a&max_depth=10
+GET /api/def-store/ontology/terms/{term_id}/ancestors?relation_type=is_a&max_depth=10
 
 Response: {
     "term_id": "019abc01-def3-7abc-8def-100000000123",
-    "relationship_type": "is_a",
+    "relation_type": "is_a",
     "direction": "ancestors",
     "nodes": [
         {"term_id": "019abc01-def3-7abc-8def-100000000456", "value": "Pneumonia", "depth": 1, "path": ["019abc01-def3-7abc-8def-100000000123", "019abc01-def3-7abc-8def-100000000456"]},
@@ -188,7 +188,7 @@ Response: {
 }
 
 # Descendants: follow is_a downward
-GET /api/def-store/ontology/terms/{term_id}/descendants?relationship_type=is_a&max_depth=5
+GET /api/def-store/ontology/terms/{term_id}/descendants?relation_type=is_a&max_depth=5
 
 # Direct parents only (immediate, non-transitive)
 GET /api/def-store/ontology/terms/{term_id}/parents
@@ -217,7 +217,7 @@ Query parameters:
   max_synonyms: int             # Max aliases per term (default: 10)
   batch_size: int               # Terms per MongoDB batch (default: 1000)
   registry_batch_size: int      # Terms per registry HTTP call (default: 50)
-  relationship_batch_size: int  # Relationships per batch (default: 500)
+  relation_batch_size: int  # Relations per batch (default: 500)
   skip_duplicates: bool         # Skip existing terms (default: true)
   update_existing: bool         # Update existing terms (default: false)
 ```
@@ -228,8 +228,8 @@ Query parameters:
 2. **Auto-detect** — Prefix, title, version from graph metadata
 3. **Create terminology** — Or find existing
 4. **Bulk-create terms** — With aliases, descriptions, cross-references from OBO metadata
-5. **Ensure relationship types** — Auto-create missing types in `_ONTOLOGY_RELATIONSHIP_TYPES`
-6. **Bulk-create relationships** — Map OBO predicates to WIP relationship types
+5. **Ensure relation types** — Auto-create missing types in `_ONTOLOGY_RELATIONSHIP_TYPES`
+6. **Bulk-create relations** — Map OBO predicates to WIP relation types
 
 **OBO Predicate Mapping:**
 
@@ -261,11 +261,11 @@ Same parsing logic as the API endpoint. Supports `--dry-run`, `--via-proxy`, bat
 
 Navigate to **Terminologies → Import Ontology** in the sidebar. Upload an OBO Graph JSON file, preview detected nodes/edges/predicates, configure options, and import.
 
-### Export with Relationships
+### Export with Relations
 
 ```
-# Export terminology with relationships (JSON)
-GET /api/def-store/import-export/export/{terminology_id}?include_relationships=true
+# Export terminology with relations (JSON)
+GET /api/def-store/import-export/export/{terminology_id}?include_relations=true
 
 Response includes:
 {
@@ -274,57 +274,57 @@ Response includes:
     { "value": "HP:0000001", "label": "All", "aliases": [...], ... },
     ...
   ],
-  "relationships": [
-    { "source_term_value": "HP:0000002", "target_term_value": "HP:0000001", "relationship_type": "is_a" },
+  "relations": [
+    { "source_term_value": "HP:0000002", "target_term_value": "HP:0000001", "relation_type": "is_a" },
     ...
   ]
 }
 ```
 
-The exported JSON can be re-imported via the standard `/import-export/import` endpoint — relationships are automatically processed using `source_term_value`/`target_term_value` to resolve term IDs.
+The exported JSON can be re-imported via the standard `/import-export/import` endpoint — relations are automatically processed using `source_term_value`/`target_term_value` to resolve term IDs.
 
-The Console UI JSON export automatically includes relationships.
+The Console UI JSON export automatically includes relations.
 
 ### Reporting Sync
 
-TermRelationships are synced to PostgreSQL via NATS events:
+TermRelations are synced to PostgreSQL via NATS events:
 
 ```sql
-CREATE TABLE term_relationships (
+CREATE TABLE term_relations (
     id SERIAL PRIMARY KEY,
     namespace TEXT NOT NULL,
     source_term_id TEXT NOT NULL,
     target_term_id TEXT NOT NULL,
-    relationship_type TEXT NOT NULL,
-    relationship_value TEXT,
+    relation_type TEXT NOT NULL,
+    relation_value TEXT,
     source_terminology_id TEXT,
     target_terminology_id TEXT,
     status TEXT DEFAULT 'active',
     created_at TIMESTAMPTZ,
-    UNIQUE (namespace, source_term_id, target_term_id, relationship_type)
+    UNIQUE (namespace, source_term_id, target_term_id, relation_type)
 );
 
-CREATE INDEX idx_tr_source ON term_relationships (namespace, source_term_id, relationship_type);
-CREATE INDEX idx_tr_target ON term_relationships (namespace, target_term_id, relationship_type);
+CREATE INDEX idx_tr_source ON term_relations (namespace, source_term_id, relation_type);
+CREATE INDEX idx_tr_target ON term_relations (namespace, target_term_id, relation_type);
 ```
 
-Events: `RELATIONSHIP_CREATED`, `RELATIONSHIP_DELETED`.
+Events: `TERM_RELATION_CREATED`, `TERM_RELATION_DELETED`.
 
 ## Console UI
 
 ### Ontology Browser
 
-Available at **Terminologies → Ontology Browser** (or via the `?tab=ontology` query parameter on the terminology list view). Shows all relationships in the current namespace with type filtering and pagination.
+Available at **Terminologies → Ontology Browser** (or via the `?tab=ontology` query parameter on the terminology list view). Shows all relations in the current namespace with type filtering and pagination.
 
 ### Term Detail View
 
 The term detail page includes:
-- **Relationships tab** — outgoing and incoming relationships for the term
+- **Relations tab** — outgoing and incoming relations for the term
 - **Hierarchy tab** — interactive tree showing ancestors and descendants via `is_a` traversal
 
-### Relationship Management
+### Relation Management
 
-Relationships can be created and deleted via the term detail view. The form requires term IDs (no autocomplete search — for large-scale ontology design, use the OBO import or CLI tools).
+Relations can be created and deleted via the term detail view. The form requires term IDs (no autocomplete search — for large-scale ontology design, use the OBO import or CLI tools).
 
 ## OWL / SKOS Mapping
 
@@ -336,16 +336,16 @@ Relationships can be created and deleted via the term detail view. The form requ
 | `term.aliases` | — | `skos:altLabel` |
 | `term.description` | `rdfs:comment` | `skos:definition` |
 | `term.translations` | `rdfs:label@lang` | `skos:prefLabel@lang` |
-| `is_a` relationship | `rdfs:subClassOf` | `skos:broader` |
-| `related_to` relationship | — | `skos:related` |
-| `maps_to` relationship | — | `skos:exactMatch` / `skos:closeMatch` |
+| `is_a` relation | `rdfs:subClassOf` | `skos:broader` |
+| `related_to` relation | — | `skos:related` |
+| `maps_to` relation | — | `skos:exactMatch` / `skos:closeMatch` |
 | Registry synonym | `owl:sameAs` | `skos:notation` |
 
 OWL/SKOS import/export parsers are not implemented. The current import path is OBO Graph JSON. OWL files can be converted to OBO Graph JSON using the [ROBOT](http://robot.obolibrary.org/) tool.
 
 ## Scope of Ontology Support
 
-**WIP provides full ontology support for data capture and annotation.** It can import standard ontologies (OBO Graph JSON), preserve their complete structure including polyhierarchy and typed relationships, annotate documents against ontology terms with validated references, and export both data and ontology structure for round-trip fidelity.
+**WIP provides full ontology support for data capture and annotation.** It can import standard ontologies (OBO Graph JSON), preserve their complete structure including polyhierarchy and typed relations, annotate documents against ontology terms with validated references, and export both data and ontology structure for round-trip fidelity.
 
 ### SKOS / Thesauri / Simple OWL — 100% Faithful
 
@@ -354,8 +354,8 @@ Classification schemes, controlled vocabularies, and simple ontologies map lossl
 | Feature | WIP Storage | Fidelity |
 |---|---|---|
 | Concepts, labels, definitions | Terms (value, aliases, description) | Lossless |
-| Polyhierarchy (broader/narrower) | TermRelationship `is_a` | Lossless |
-| Associative links (related) | TermRelationship `related_to` | Lossless |
+| Polyhierarchy (broader/narrower) | TermRelation `is_a` | Lossless |
+| Associative links (related) | TermRelation `related_to` | Lossless |
 | External code mappings | Registry synonyms | Lossless |
 | Multi-language labels | translations | Lossless |
 | ConceptScheme metadata | Terminology fields + metadata | Lossless |
@@ -364,7 +364,7 @@ This covers ICD-10, ICD-11, MedDRA, LOINC, most of SNOMED CT's hierarchy, and an
 
 ### OWL Description Logic Axioms — Preserved, Not Interpreted
 
-Full OWL-DL ontologies can contain logical axioms (class restrictions, cardinality constraints, disjointness, unions/intersections). These are stored in `term.metadata` and `relationship.metadata` for **round-trip preservation** but are not evaluated during data capture.
+Full OWL-DL ontologies can contain logical axioms (class restrictions, cardinality constraints, disjointness, unions/intersections). These are stored in `term.metadata` and `relation.metadata` for **round-trip preservation** but are not evaluated during data capture.
 
 This is consistent with WIP's architecture: **capture is upstream, reasoning is downstream.** WIP stores and serves ontology structure faithfully; inference and logical validation are delegated to specialized downstream tools (Protege, Ontoserver, OWL reasoners).
 
@@ -374,7 +374,7 @@ SNOMED CT allows combining concepts at data entry time. WIP terms are pre-coordi
 
 ## Verified Imports
 
-| Ontology | Terms | Relationships | Time | Notes |
+| Ontology | Terms | Relations | Time | Notes |
 |---|---|---|---|---|
 | HPO (Human Phenotype Ontology) | 19,389 | 23,677 (all is_a) | 53.5s | Mac localhost |
 | GO (Gene Ontology) | 38,739 | 75,246 (9 types) | 128.5s | Mac localhost |
@@ -386,18 +386,18 @@ SNOMED CT allows combining concepts at data entry time. WIP terms are pre-coordi
 A standalone `ontology-store` microservice with its own database and full OWL reasoning. Rejected because:
 - Adds significant operational complexity (another service to deploy on Raspberry Pi)
 - WIP's use case is storage and retrieval, not inference
-- The relationship model in Def-Store is sufficient for import, browsing, and traversal
+- The relation model in Def-Store is sufficient for import, browsing, and traversal
 
 ### Extend parent_term_id to a list
 
 Making `parent_term_id` an array of strings. Rejected because:
-- Only solves polyhierarchy, not typed relationships
+- Only solves polyhierarchy, not typed relations
 - Breaks backward compatibility for all existing term queries and indexes
 - Doesn't support cross-terminology links
 
-### Store relationships in term.metadata
+### Store relations in term.metadata
 
-Using the existing `metadata` dict for ad-hoc relationship storage. Rejected because:
+Using the existing `metadata` dict for ad-hoc relation storage. Rejected because:
 - No validation, no indexing, no traversal queries
-- Relationships hidden inside individual terms instead of queryable as first-class entities
+- Relations hidden inside individual terms instead of queryable as first-class entities
 - Import/export would need custom conventions per ontology

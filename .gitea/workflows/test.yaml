@@ -54,6 +54,19 @@ jobs:
             echo "No Python files changed"
           fi
 
+  # Vendored client-lib tarball version consistency (CASE-500)
+  vendored-tarballs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Self-test the guard, then check the tarballs
+        run: |
+          # --self-test proves the guard still catches the failure modes (so it
+          # can't silently rot), then the real run gates this push.
+          scripts/check-tarball-consistency.sh --self-test
+          scripts/check-tarball-consistency.sh
+
   # Dependency vulnerability check
   security-audit:
     runs-on: ubuntu-latest
@@ -216,6 +229,32 @@ jobs:
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pytest tests/ -v --tb=short
 
+  # Auth gateway (no DB needed)
+  test-auth-gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        working-directory: components/auth-gateway
+        run: |
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+
+      - name: Run tests
+        working-directory: components/auth-gateway
+        env:
+          PYTHONPATH: src
+        run: |
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          pytest tests/ -v --tb=short
+
   # wip-auth library
   test-wip-auth:
     runs-on: ubuntu-latest
@@ -253,6 +292,51 @@ jobs:
           . .venv/bin/activate
           pytest libs/wip-auth/tests/ -v --tb=short
 
+  # Deployer (wip-deploy CLI) — pure unit tests, no DB or NATS needed
+  test-deployer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install deployer
+        run: |
+          . .venv/bin/activate
+          pip install -e deployer
+          pip install pytest pytest-asyncio
+
+      - name: Run tests
+        run: |
+          . .venv/bin/activate
+          pytest deployer/tests/unit/ -v --tb=short
+
+  # Scaffold engine (CASE-612). Unit tests only — the golden-snapshot
+  # tests are opt-in (WIP_GOLDEN=1, need podman + a running install +
+  # BSD sed) and skip themselves here.
+  test-scaffold:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install pytest
+        run: |
+          . .venv/bin/activate
+          pip install pytest
+
+      - name: Run tests
+        run: |
+          . .venv/bin/activate
+          cd scaffold && PYTHONPATH=src pytest tests/ -v --tb=short
+
   # WIP-Toolkit
   test-wip-toolkit:
     runs-on: ubuntu-latest
@@ -264,13 +348,39 @@ jobs:
           python3 -m venv .venv
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
+      # tests/integration/ mounts registry, def-store, template-store, and
+      # document-store in-process against a real MongoDB. Without mongo +
+      # the services' requirements the integration tests SKIP — which
+      # would silently turn the round-trip guard back into theater, so CI
+      # provisions both.
+      - name: Start MongoDB
+        run: |
+          docker start test-mongo 2>/dev/null || \
+            docker run -d --name test-mongo -p 27017:27017 mongo:7
+          for i in $(seq 1 10); do
+            docker exec test-mongo mongosh --quiet --eval "db.runCommand('ping')" && break
+            sleep 1
+          done
+
       - name: Install dependencies
         run: |
           . .venv/bin/activate
           pip install -e WIP-Toolkit
+          # The component requirements files carry an editable install
+          # (-e ../../libs/wip-auth) whose relative path pip resolves against
+          # the CURRENT working directory, not the requirements file's
+          # location. Installing them from the repo root makes that path
+          # climb out of the checkout and the whole job dies before pytest
+          # runs. Install each file from its component dir instead —
+          # mirroring test-services' working-directory.
+          for c in registry def-store template-store document-store; do
+            (cd "components/$c" && pip install -r requirements.txt)
+          done
           pip install pytest
 
       - name: Run tests
+        env:
+          MONGO_URI: mongodb://localhost:27017/
         run: |
           . .venv/bin/activate
           pytest WIP-Toolkit/tests/ -v --tb=short

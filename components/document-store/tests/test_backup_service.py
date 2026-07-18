@@ -1,10 +1,10 @@
-"""Tests for the backup/restore async/sync bridge (CASE-23 Phase 3 STEP 3).
+"""Tests for the backup/restore job pipeline (queue→consume→persist).
 
-The toolkit is entirely mocked — these tests verify the bridge itself:
-* events from a worker thread are marshalled onto the event loop
+The engine is entirely mocked — these tests verify the pipeline itself:
+* events emitted by an async runner are consumed off the job queue
 * each event is persisted to the BackupJob MongoDB record
 * terminal phases ('complete' / 'error') transition job.status correctly
-* worker-thread exceptions become FAILED + error event
+* runner exceptions become FAILED + error event
 * the on_event hook is called for subscribers (SSE)
 * job state is cleaned up from _job_queues / _job_tasks on completion
 """
@@ -36,7 +36,7 @@ async def _init_backup_service_beanie():
     db = mongo[os.environ["DATABASE_NAME"] + "_backup_service"]
     await init_beanie(database=db, document_models=[BackupJob])
     await BackupJob.delete_all()
-    # Also reset the in-process bridge state — previous test may have leaked
+    # Also reset the in-process pipeline state — previous test may have leaked
     backup_service._job_queues.clear()
     backup_service._job_tasks.clear()
     yield
@@ -57,23 +57,23 @@ async def fresh_job() -> BackupJob:
 
 
 def _scripted_runner(events: list[ProgressEvent]):
-    """Return a ToolkitRunner that emits the given events in order."""
-    def runner(callback):
+    """Return an AsyncRunner that emits the given events in order."""
+    async def runner(callback):
         for ev in events:
             callback(ev)
     return runner
 
 
 def _scripted_runner_raising(events_before: list[ProgressEvent], exc: Exception):
-    """Emit some events then raise — simulates a mid-operation toolkit failure."""
-    def runner(callback):
+    """Emit some events then raise — simulates a mid-operation engine failure."""
+    async def runner(callback):
         for ev in events_before:
             callback(ev)
         raise exc
     return runner
 
 
-class TestStartJobHappyPath:
+class TestStartAsyncJobHappyPath:
     async def test_persists_start_through_complete(self, fresh_job: BackupJob):
         events = [
             ProgressEvent(phase="start", message="beginning backup", percent=0.0),
@@ -81,7 +81,7 @@ class TestStartJobHappyPath:
             ProgressEvent(phase="phase_1b_documents", message="docs", percent=60.0),
             ProgressEvent(phase="complete", message="done", percent=100.0),
         ]
-        task = await backup_service.start_job(
+        task = await backup_service.start_async_job(
             fresh_job.job_id, _scripted_runner(events)
         )
         await asyncio.wait_for(task, timeout=5.0)
@@ -106,7 +106,7 @@ class TestStartJobHappyPath:
         async def on_event(ev: ProgressEvent) -> None:
             received.append(ev)
 
-        task = await backup_service.start_job(
+        task = await backup_service.start_async_job(
             fresh_job.job_id, _scripted_runner(events), on_event=on_event
         )
         await asyncio.wait_for(task, timeout=5.0)
@@ -118,7 +118,7 @@ class TestStartJobHappyPath:
             ProgressEvent(phase="start", message="go", percent=0.0),
             ProgressEvent(phase="complete", message="ok", percent=100.0),
         ]
-        task = await backup_service.start_job(
+        task = await backup_service.start_async_job(
             fresh_job.job_id, _scripted_runner(events)
         )
         # Task is registered while running
@@ -129,7 +129,7 @@ class TestStartJobHappyPath:
         assert fresh_job.job_id not in backup_service._job_queues
 
 
-class TestStartJobErrorPaths:
+class TestStartAsyncJobErrorPaths:
     async def test_explicit_error_phase(self, fresh_job: BackupJob):
         events = [
             ProgressEvent(phase="start", message="go", percent=0.0),
@@ -140,7 +140,7 @@ class TestStartJobErrorPaths:
                 details={"health": {"def-store": "down"}},
             ),
         ]
-        task = await backup_service.start_job(
+        task = await backup_service.start_async_job(
             fresh_job.job_id, _scripted_runner(events)
         )
         await asyncio.wait_for(task, timeout=5.0)
@@ -152,21 +152,21 @@ class TestStartJobErrorPaths:
         assert updated.phase == "error"
         assert updated.completed_at is not None
 
-    async def test_worker_thread_exception_becomes_failed(self, fresh_job: BackupJob):
+    async def test_runner_exception_becomes_failed(self, fresh_job: BackupJob):
         events_before = [
             ProgressEvent(phase="start", message="go", percent=0.0),
             ProgressEvent(phase="phase_1a_entities", message="e", percent=25.0),
         ]
         runner = _scripted_runner_raising(
-            events_before, RuntimeError("httpx broke")
+            events_before, RuntimeError("engine broke")
         )
-        task = await backup_service.start_job(fresh_job.job_id, runner)
+        task = await backup_service.start_async_job(fresh_job.job_id, runner)
         await asyncio.wait_for(task, timeout=5.0)
 
         updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
         assert updated is not None
         assert updated.status == BackupJobStatus.FAILED
-        assert "httpx broke" in (updated.error or "")
+        assert "engine broke" in (updated.error or "")
 
     async def test_on_event_hook_exception_does_not_break_job(
         self, fresh_job: BackupJob
@@ -179,7 +179,7 @@ class TestStartJobErrorPaths:
         async def explosive(_ev: ProgressEvent) -> None:
             raise RuntimeError("subscriber crashed")
 
-        task = await backup_service.start_job(
+        task = await backup_service.start_async_job(
             fresh_job.job_id, _scripted_runner(events), on_event=explosive
         )
         await asyncio.wait_for(task, timeout=5.0)
@@ -189,32 +189,24 @@ class TestStartJobErrorPaths:
         assert updated.status == BackupJobStatus.COMPLETE
 
 
-class TestStartJobConcurrency:
+class TestStartAsyncJobConcurrency:
     async def test_duplicate_job_rejected(self, fresh_job: BackupJob):
-        # A runner that blocks on an event so we can race
+        # A runner gated on an event so the first job is still running
+        # when the duplicate submission arrives.
         gate = asyncio.Event()
-        gate_set = False
 
-        def slow_runner(callback):
-            nonlocal gate_set
+        async def gated_runner(callback):
             callback(ProgressEvent(phase="start", message="go", percent=0.0))
-            # Busy-wait briefly; the loop flags that start event has been
-            # picked up via gate being set from the consumer side.
-            import time
-            for _ in range(50):
-                if gate_set:
-                    break
-                time.sleep(0.01)
+            await gate.wait()
             callback(ProgressEvent(phase="complete", message="ok", percent=100.0))
 
-        task = await backup_service.start_job(fresh_job.job_id, slow_runner)
+        task = await backup_service.start_async_job(fresh_job.job_id, gated_runner)
 
         with pytest.raises(ValueError, match="already running"):
-            await backup_service.start_job(
+            await backup_service.start_async_job(
                 fresh_job.job_id, _scripted_runner([])
             )
 
-        gate_set = True
         gate.set()
         await asyncio.wait_for(task, timeout=5.0)
 
@@ -230,7 +222,7 @@ class TestPersistEventDetails:
             ),
             ProgressEvent(phase="complete", message="ok", percent=100.0),
         ]
-        task = await backup_service.start_job(
+        task = await backup_service.start_async_job(
             fresh_job.job_id, _scripted_runner(events)
         )
         await asyncio.wait_for(task, timeout=5.0)
@@ -247,7 +239,7 @@ class TestPersistEventDetails:
             ProgressEvent(phase="start", message="go", percent=0.0),
             ProgressEvent(phase="complete", message="ok", percent=100.0),
         ]
-        task = await backup_service.start_job(
+        task = await backup_service.start_async_job(
             fresh_job.job_id, _scripted_runner(events)
         )
         await asyncio.wait_for(task, timeout=5.0)

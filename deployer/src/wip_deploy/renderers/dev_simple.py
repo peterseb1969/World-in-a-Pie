@@ -1,0 +1,623 @@
+"""Dev renderer (simple mode) — compose-style output with source mounts
+and live-reload where possible.
+
+For developers iterating on component source locally. Produces the same
+file set as the compose renderer but with three dev-friendly changes:
+
+  1. `build:` contexts materialized into the render tree at
+     build-contexts/<name>/ — no pulling from a registry. For the 5
+     Python services that use `wip_auth` the context is patched to
+     COPY + pip install `libs/wip-auth` (mirrors `build-release.sh`
+     for production). `document-store` additionally gets `WIP-Toolkit`
+     baked in.
+  2. Source volume mounts (`./components/<name>/src:/app/src:ro`) for
+     every component with a build_context — edits to Python source show
+     up inside the container without a rebuild.
+  3. `--reload` appended to uvicorn commands — Python services
+     hot-reload on source change.
+
+Node/Go apps don't benefit from (2) and (3) — they need rebuilds. MVP
+treats them the same: they get build contexts but no hot reload. Tilt
+mode reserved for future incremental-build orchestration; not
+implemented today.
+
+Caddy, Dex, and the .env are rendered identically to compose — same
+auth flow, same internal TLS. Production fidelity by default; if a
+specific integration issue surfaces in dev it also surfaces in prod.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from wip_deploy.config_gen import (
+    SecretRef,
+    generate_caddy_config,
+    generate_dex_config,
+    make_spec_context,
+    resolve_all_env,
+)
+from wip_deploy.config_gen.api_keys import (
+    API_KEYS_CONTAINER_PATH,
+    API_KEYS_RENDER_PATH,
+    declares_api_keys_file,
+    generate_api_keys_json,
+)
+from wip_deploy.config_gen.router import generate_router_config
+from wip_deploy.renderers.base import FileTree
+from wip_deploy.renderers.compose import (
+    _EXTERNAL_CA_CONTAINER_PATH,
+    _caddy_service_block,
+    _collect_volumes,
+    _command_for,
+    _container_name,
+    _depends_on_block,
+    _environment_block,
+    _healthcheck_block,
+    _image_ref,
+    _render_dotenv,
+)
+from wip_deploy.renderers.compose_caddy import render_caddyfile
+from wip_deploy.renderers.compose_dex import render_dex_config
+from wip_deploy.renderers.router_caddy import render_router_caddyfile
+from wip_deploy.secrets_backend import ResolvedSecrets
+from wip_deploy.spec import Deployment
+from wip_deploy.spec.activation import is_component_active
+from wip_deploy.spec.app import App
+from wip_deploy.spec.component import Component
+
+# ────────────────────────────────────────────────────────────────────
+# Build-context baking — match build-release.sh
+# ────────────────────────────────────────────────────────────────────
+
+# Services that import `wip_auth`. Their dev images need it baked in
+# (the Dockerfiles don't install it by default — production images are
+# patched by build-release.sh; dev gets the same treatment here).
+_AUTH_SERVICES: frozenset[str] = frozenset({
+    "registry", "def-store", "template-store", "document-store", "reporting-sync",
+})
+
+# Services that additionally import from WIP-Toolkit.
+_TOOLKIT_SERVICES: frozenset[str] = frozenset({"document-store"})
+
+# Directories/files to skip when copying a component tree into the
+# render output. Caches and test fixtures aren't needed in the build
+# context and can contain binaries that would break FileTree's
+# text-only storage.
+_SKIP_DIR_NAMES: frozenset[str] = frozenset({
+    "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache",
+    ".venv", "venv", "node_modules", ".git", "tests", "dist", "build",
+    ".egg-info",
+})
+_SKIP_SUFFIXES: frozenset[str] = frozenset({".pyc", ".pyo", ".pyd"})
+
+
+def _copy_tree_into(src: Path, tree: FileTree, prefix: str) -> None:
+    """Walk `src` and add every text file to `tree` under `prefix/...`.
+
+    Binary files are silently skipped (FileTree stores text only; our
+    Python services don't need binary assets in the build context).
+    """
+    if not src.is_dir():
+        return
+    for path in src.rglob("*"):
+        if not path.is_file():
+            continue
+        parts = path.relative_to(src).parts
+        if any(part in _SKIP_DIR_NAMES for part in parts):
+            continue
+        if path.suffix in _SKIP_SUFFIXES:
+            continue
+        try:
+            content = path.read_text()
+        except UnicodeDecodeError:
+            continue
+        rel = "/".join(parts)
+        tree.add(f"{prefix}/{rel}", content)
+
+
+def _patch_dockerfile_for_dev(content: str, *, bake_toolkit: bool) -> str:
+    """Insert wip-auth (and optionally wip-toolkit) installs into a
+    component's Dockerfile, right after the requirements install.
+
+    Mirrors the awk patch in `scripts/build-release.sh`. If the trigger
+    line isn't present (unusual — every Python component has it), the
+    Dockerfile is returned unchanged.
+    """
+    trigger = "RUN pip install --no-cache-dir -r requirements-docker.txt"
+    insert = [
+        "",
+        "# Install wip-auth library (dev-bake)",
+        "COPY wip-auth /tmp/wip-auth",
+        "RUN pip install --no-cache-dir /tmp/wip-auth && rm -rf /tmp/wip-auth",
+    ]
+    if bake_toolkit:
+        insert.extend([
+            "",
+            "# Install wip-toolkit library (dev-bake)",
+            "COPY wip-toolkit /tmp/wip-toolkit",
+            "RUN pip install --no-cache-dir /tmp/wip-toolkit && rm -rf /tmp/wip-toolkit",
+        ])
+    out_lines: list[str] = []
+    patched = False
+    for line in content.splitlines():
+        out_lines.append(line)
+        if not patched and line.strip() == trigger:
+            out_lines.extend(insert)
+            patched = True
+    return "\n".join(out_lines) + "\n"
+
+
+def _materialize_dev_build_context(
+    component: Component,
+    repo_root: Path,
+    tree: FileTree,
+) -> str | None:
+    """Copy a component's build inputs + wip-auth (+ wip-toolkit) into
+    the render tree under build-contexts/<name>/.
+
+    Returns the relative path the compose `build.context:` field should
+    point at, or None for components that have no build_context (use
+    the upstream image directly).
+    """
+    if component.spec.image.build_context is None:
+        return None
+
+    name = component.metadata.name
+    ctx_root = repo_root / "components" / name
+    if not ctx_root.is_dir():
+        return None
+
+    prefix = f"build-contexts/{name}"
+    _copy_tree_into(ctx_root, tree, prefix)
+
+    if name in _AUTH_SERVICES:
+        _copy_tree_into(repo_root / "libs" / "wip-auth", tree, f"{prefix}/wip-auth")
+    if name in _TOOLKIT_SERVICES:
+        _copy_tree_into(repo_root / "WIP-Toolkit", tree, f"{prefix}/wip-toolkit")
+
+    if name in _AUTH_SERVICES:
+        dockerfile_path = Path(f"{prefix}/Dockerfile")
+        if dockerfile_path in tree.files:
+            patched = _patch_dockerfile_for_dev(
+                tree.files[dockerfile_path].content,
+                bake_toolkit=(name in _TOOLKIT_SERVICES),
+            )
+            tree.add(str(dockerfile_path), patched)
+
+    return f"./{prefix}"
+
+
+# ────────────────────────────────────────────────────────────────────
+
+
+def render_dev_simple(
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+    secrets: ResolvedSecrets,
+    *,
+    repo_root: Path,
+) -> FileTree:
+    """Render a dev-mode compose tree with build contexts and source mounts."""
+    if deployment.spec.target != "dev":
+        raise ValueError(
+            f"render_dev_simple requires target=dev, got {deployment.spec.target!r}"
+        )
+    dev_plat = deployment.spec.platform.dev
+    if dev_plat is None or dev_plat.mode != "simple":
+        raise ValueError("render_dev_simple requires platform.dev.mode='simple'")
+
+    ctx = make_spec_context(deployment, components)
+    resolved_env = resolve_all_env(
+        deployment, components, apps, ctx,
+        collected_secrets=set(secrets.values.keys()),
+    )
+
+    tree = FileTree()
+
+    # Materialize a self-contained build context per Python service so
+    # wip-auth (and WIP-Toolkit for document-store) get baked in the
+    # image. Without this, services crash at import with
+    # `ModuleNotFoundError: No module named 'wip_auth'`.
+    build_context_paths: dict[str, str] = {}
+    for c in components:
+        if not is_component_active(c, deployment):
+            continue
+        ctx_path = _materialize_dev_build_context(c, repo_root, tree)
+        if ctx_path is not None:
+            build_context_paths[c.metadata.name] = ctx_path
+
+    tree.add(
+        "docker-compose.yaml",
+        _render_dev_compose_yaml(
+            deployment, components, apps, resolved_env, repo_root,
+            source_mount=dev_plat.source_mount,
+            build_context_paths=build_context_paths,
+            app_sources=dev_plat.app_sources,
+        ),
+    )
+
+    tree.add(".env", _render_dotenv(secrets), mode=0o600)
+
+    caddy_cfg = generate_caddy_config(deployment, components, apps)
+    tree.add("config/caddy/Caddyfile", render_caddyfile(caddy_cfg))
+
+    # Spec-declared config-file API keys — same render + posture as the
+    # compose target (0600, mounted where the manifest declares the env).
+    api_keys_json = generate_api_keys_json(deployment, secrets)
+    if api_keys_json is not None:
+        tree.add(API_KEYS_RENDER_PATH, api_keys_json, mode=0o600)
+
+    dex_cfg = generate_dex_config(deployment, components, apps)
+    if dex_cfg is not None:
+        tree.add("config/dex/config.yaml", render_dex_config(dex_cfg, secrets))
+
+    # wip-router Caddyfile — same as compose renderer. Without this,
+    # the wip-router container boots with the stock caddy image's
+    # default Caddyfile (listening on :80, serving static files) and
+    # every SSR-proxied API call through wip-router:8080 returns 502.
+    router_active = any(
+        c.metadata.name == "router" and is_component_active(c, deployment)
+        for c in components
+    )
+    if router_active:
+        router_cfg = generate_router_config(deployment, components, apps)
+        tree.add(
+            "config/router/Caddyfile",
+            render_router_caddyfile(router_cfg),
+        )
+
+    return tree
+
+
+# ────────────────────────────────────────────────────────────────────
+
+
+def _render_dev_compose_yaml(
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+    resolved_env: dict[str, Any],  # dict[str, ResolvedEnv]
+    repo_root: Path,
+    *,
+    source_mount: bool,
+    build_context_paths: dict[str, str],
+    app_sources: dict[str, Path],
+) -> str:
+    """Same shape as compose's _render_compose_yaml but with build: blocks,
+    source mounts, and uvicorn --reload."""
+    services: dict[str, Any] = {}
+    volumes: dict[str, Any] = {}
+
+    enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
+
+    active_names: set[str] = set()
+    healthcheck_owners: set[str] = set()
+    for c in components:
+        if is_component_active(c, deployment):
+            active_names.add(c.metadata.name)
+            if c.spec.healthcheck is not None:
+                healthcheck_owners.add(c.metadata.name)
+    for a in apps:
+        if a.metadata.name in enabled_app_names:
+            active_names.add(a.metadata.name)
+            if a.spec.healthcheck is not None:
+                healthcheck_owners.add(a.metadata.name)
+
+    for c in components:
+        if not is_component_active(c, deployment):
+            continue
+        services[c.metadata.name] = _dev_service_block(
+            c, deployment, resolved_env[c.metadata.name], repo_root,
+            healthcheck_owners=healthcheck_owners,
+            active_names=active_names,
+            source_mount=source_mount,
+            build_context_paths=build_context_paths,
+            app_sources=app_sources,
+        )
+        _collect_volumes(c, volumes)
+
+    for a in apps:
+        if a.metadata.name not in enabled_app_names:
+            continue
+        services[a.metadata.name] = _dev_service_block(
+            a, deployment, resolved_env[a.metadata.name], repo_root,
+            healthcheck_owners=healthcheck_owners,
+            active_names=active_names,
+            source_mount=source_mount,
+            build_context_paths=build_context_paths,
+            app_sources=app_sources,
+        )
+        _collect_volumes(a, volumes)
+        # CASE-55: declare named volume for node_modules shadow so it
+        # persists across --force-recreate and is shared with `run`
+        # commands (needed to populate the volume via a one-off
+        # `npm ci` without it being discarded).
+        if a.metadata.name in app_sources:
+            volumes[f"{a.metadata.name}-node-modules"] = {}
+
+    services["caddy"] = _caddy_service_block(deployment)
+
+    top: dict[str, Any] = {
+        "services": services,
+        "networks": {"wip-network": {"name": "wip-network", "driver": "bridge"}},
+    }
+    if volumes:
+        top["volumes"] = volumes
+
+    return yaml.safe_dump(top, sort_keys=False, default_flow_style=False)
+
+
+def _dev_service_block(
+    owner: Component | App,
+    deployment: Deployment,
+    env: Any,  # ResolvedEnv
+    repo_root: Path,
+    *,
+    healthcheck_owners: set[str],
+    active_names: set[str],
+    source_mount: bool,
+    build_context_paths: dict[str, str],
+    app_sources: dict[str, Path],
+) -> dict[str, Any]:
+    """Same as compose's _service_block but with dev-mode overrides."""
+    block: dict[str, Any] = {"container_name": _container_name(owner.metadata.name)}
+
+    # Dev: prefer build: over image: when a build_context is declared.
+    # For Python components we use the materialized per-component build
+    # context under ./build-contexts/<name>/ (wip-auth baked in).
+    # For apps with --app-source overrides we use the user-provided
+    # local path (the app's own repo). Other apps fall back to the
+    # registry image just like compose target.
+    name = owner.metadata.name
+    dev_plat = deployment.spec.platform.dev
+    apps_from_registry: set[str] = (
+        set(dev_plat.apps_from_registry) if dev_plat is not None else set()
+    )
+    if name in build_context_paths:
+        block["build"] = {"context": build_context_paths[name]}
+        if owner.spec.image.build_args:
+            block["build"]["args"] = dict(owner.spec.image.build_args)
+        block["image"] = f"{owner.spec.image.name}:dev"
+    elif isinstance(owner, App) and name in app_sources:
+        # CASE-55: app source override. Build the app's image locally
+        # from the user's checkout. Prefer Dockerfile.dev if the app
+        # provides one — that's where the app defines its own dev
+        # command (e.g., `npm run dev` for React/Vite with HMR),
+        # keeping renderer-side knowledge minimal.
+        app_path = app_sources[name]
+        build_cfg: dict[str, Any] = {"context": str(app_path)}
+        if (app_path / "Dockerfile.dev").is_file():
+            build_cfg["dockerfile"] = "Dockerfile.dev"
+        if owner.spec.image.build_args:
+            build_cfg["args"] = dict(owner.spec.image.build_args)
+        block["build"] = build_cfg
+        block["image"] = f"{owner.spec.image.name}:dev"
+    else:
+        build_ctx = _resolve_build_context(owner, repo_root)
+        if build_ctx is not None:
+            block["build"] = {"context": str(build_ctx)}
+            if owner.spec.image.build_args:
+                block["build"]["args"] = dict(owner.spec.image.build_args)
+            block["image"] = f"{owner.spec.image.name}:dev"
+        elif isinstance(owner, App) and name not in apps_from_registry:
+            # CASE-355: dev mode means dev. An enabled app with no local
+            # source (no --app-source, no build_context) silently fell
+            # back to the registry image pre-CASE-355 — leading to
+            # stale-image installs the operator only noticed when a
+            # recent fix was absent. Refuse loudly. Operators who really
+            # want the registry image in dev opt in via
+            # --app-from-registry NAME.
+            raise ValueError(
+                f"app {name!r} is enabled but has no source for --target dev. "
+                f"Either: (a) pass --app-source {name}=<path-to-checkout> to "
+                f"bind-mount the app's source, (b) pass "
+                f"--app-from-registry {name} to explicitly opt into the "
+                f"registry image, or (c) disable the app and re-install."
+            )
+        else:
+            block["image"] = _image_ref(owner, deployment)
+
+    environment = _environment_block(env)
+    # CASE-55: apps with --app-source run in dev mode (npm run dev), so
+    # devDependencies (vite, concurrently, etc.) must be installed. The
+    # manifest's NODE_ENV=production literal is correct for prod images
+    # but wrong here — it makes `npm ci` skip devDeps, breaking the dev
+    # command. Override to development whenever --app-source is active.
+    #
+    # Also mirror APP_BASE_PATH → VITE_BASE_PATH so Vite's `base` and
+    # proxy-key prefixes match the Caddy-exposed path (e.g. /apps/rc).
+    # Prod images bake VITE_BASE_PATH via Dockerfile build ARG; the dev
+    # loop needs the same contract. Without this, Vite renders assets
+    # at bare paths (/@vite/client) instead of prefixed
+    # (/apps/rc/@vite/client) → 404 through Caddy. Only mirror when
+    # VITE_BASE_PATH isn't already set — respect an explicit override.
+    if isinstance(owner, App) and owner.metadata.name in app_sources:
+        environment["NODE_ENV"] = "development"
+        base_path = environment.get("APP_BASE_PATH")
+        if base_path and "VITE_BASE_PATH" not in environment:
+            environment["VITE_BASE_PATH"] = base_path
+    # CASE-373 Phase 1 — app containers receive NODE_EXTRA_CA_CERTS
+    # pointing at the bind-mounted CA when an imported bundle has
+    # seeded `secrets/external-ca.crt`. Set on apps only (backend
+    # services on the same host don't need cross-host trust).
+    if isinstance(owner, App) and deployment.spec.network.external_ca_mount:
+        environment["NODE_EXTRA_CA_CERTS"] = _EXTERNAL_CA_CONTAINER_PATH
+    # CASE-301: extend PYTHONPATH so the bind-mounted wip-auth source
+    # shadows the build-baked site-packages copy. Without this, edits
+    # to libs/wip-auth/ would only land via a full `wip-deploy install`
+    # (build-context refresh + image rebuild) rather than via a simple
+    # restart. The build-time pip install stays as a fallback — if the
+    # bind-mount is somehow missing, the site-packages copy still lets
+    # the container boot.
+    if name in _AUTH_SERVICES:
+        environment["PYTHONPATH"] = "/app/libs/wip-auth/src:/app/src"
+    if environment:
+        block["environment"] = environment
+
+    if any(isinstance(v, SecretRef) for v in env.merged().values()):
+        block["env_file"] = [".env"]
+
+    # Dev: if the command is uvicorn-based, append --reload for hot reload AND
+    # force the reload watcher to poll (CASE-523). uvicorn --reload's watcher
+    # (watchfiles) uses native inotify by default, which does NOT propagate across
+    # the macOS podman virtiofs/9p bind mount — so --reload is a silent no-op there
+    # (edits land on disk but the running process never reloads, manufacturing
+    # "the fix isn't deployed" misdiagnoses). WATCHFILES_FORCE_POLLING is the
+    # backend analogue of the apps' CHOKIDAR_USEPOLLING.
+    cmd = _command_for(owner)
+    if cmd:
+        if cmd[0] == "uvicorn":
+            if "--reload" not in cmd:
+                cmd = [*cmd, "--reload"]
+            block.setdefault("environment", {})["WATCHFILES_FORCE_POLLING"] = "1"
+        # See compose.py for the entrypoint/command split rationale:
+        # compose's `command:` only overrides CMD, so full argv needs to
+        # go to `entrypoint:` to replace the image's ENTRYPOINT.
+        block["entrypoint"] = [cmd[0]]
+        block["command"] = cmd[1:]
+
+    # Dev: mount source directories for build-context components so edits
+    # show up inside the container without a rebuild.
+    volumes = _dev_volumes_for(
+        owner, repo_root,
+        enable_source_mount=source_mount,
+        app_sources=app_sources,
+    )
+    # CASE-373 Phase 1 — bind-mount the imported external CA (read-only)
+    # into app containers when the flag is set. Path is install-dir-
+    # relative because compose runs from there.
+    if isinstance(owner, App) and deployment.spec.network.external_ca_mount:
+        volumes.append(
+            f"./secrets/external-ca.crt:{_EXTERNAL_CA_CONTAINER_PATH}:ro"
+        )
+    if deployment.spec.auth.api_keys and declares_api_keys_file(owner):
+        volumes.append(f"./{API_KEYS_RENDER_PATH}:{API_KEYS_CONTAINER_PATH}:ro")
+    if volumes:
+        block["volumes"] = volumes
+
+    block["networks"] = ["wip-network"]
+    block["restart"] = "unless-stopped"
+
+    hc = _healthcheck_block(owner)
+    if hc is not None:
+        block["healthcheck"] = hc
+
+    deps = _depends_on_block(
+        owner, deployment,
+        healthcheck_owners=healthcheck_owners,
+        active_names=active_names,
+    )
+    if deps:
+        block["depends_on"] = deps
+
+    return block
+
+
+def _resolve_build_context(
+    owner: Component | App, repo_root: Path
+) -> Path | None:
+    """Where is this component's Dockerfile?
+
+    Component manifests declare `build_context: .` (relative to the
+    manifest directory). We resolve that to an absolute path: for
+    components, `repo_root/components/<name>/`; for apps, we skip
+    because the app images are built externally in the MVP.
+    """
+    ref = owner.spec.image
+    if ref.build_context is None:
+        return None
+    if isinstance(owner, App):
+        # Apps are Node/mixed — no hot reload, and their repos are external.
+        # Still rebuild from source if a build_context is set (future).
+        return None
+    return (repo_root / "components" / owner.metadata.name).resolve()
+
+
+def _dev_volumes_for(
+    owner: Component | App,
+    repo_root: Path,
+    *,
+    enable_source_mount: bool,
+    app_sources: dict[str, Path],
+) -> list[str]:
+    """Compose volumes list with dev-mode source mounts added.
+
+    Storage volumes come from the manifest (same as prod). Config-file
+    mounts (Dex) come from the compose renderer's logic — mirrored here
+    so dev doesn't need a full compose re-implementation.
+    """
+    volumes: list[str] = []
+
+    # Named storage volumes — same as prod.
+    for storage in owner.spec.storage:
+        volume_name = f"wip-{owner.metadata.name}-{storage.name}"
+        volumes.append(f"{volume_name}:{storage.mount_path}")
+
+    # Dex config bind mount — same as prod.
+    if owner.metadata.name == "dex":
+        volumes.append("./config/dex/config.yaml:/etc/dex/config.yaml:ro")
+
+    # Router config bind mount — same as prod. Without this, wip-router
+    # starts with the stock caddy default Caddyfile and all /api/* routing
+    # breaks (502 Bad Gateway from SSR-proxied app calls).
+    if owner.metadata.name == "router":
+        volumes.append("./config/router/Caddyfile:/etc/caddy/Caddyfile:ro")
+
+    # Dev-specific: source mount for Python services.
+    if enable_source_mount and not isinstance(owner, App):
+        ref = owner.spec.image
+        if ref.build_context is not None:
+            source = (repo_root / "components" / owner.metadata.name / "src").resolve()
+            if source.exists():
+                volumes.append(f"{source}:/app/src:ro")
+        # CASE-301: also bind-mount libs/wip-auth/src for components that
+        # use wip_auth, so library edits propagate via a `restart` instead
+        # of forcing a full `wip-deploy install` to refresh the
+        # build-context. The PYTHONPATH override above (set in
+        # _dev_service_block) makes Python find this bind-mount before
+        # falling through to the site-packages copy installed at build
+        # time.
+        if owner.metadata.name in _AUTH_SERVICES:
+            wip_auth_src = (repo_root / "libs" / "wip-auth" / "src").resolve()
+            if wip_auth_src.is_dir():
+                volumes.append(f"{wip_auth_src}:/app/libs/wip-auth/src:ro")
+
+    # CASE-55: app source-mount for --app-source overrides. Mount the
+    # entire app directory into /app (including package.json + src/ +
+    # node_modules if present). The container's dev command (defined by
+    # the app's Dockerfile.dev via `npm run dev` or equivalent) reads
+    # from /app and watches for changes. `rw` because dev servers often
+    # write build artifacts; read-only is too strict for most Node dev
+    # loops.
+    #
+    # Node_modules shadow: a NAMED volume `<name>-node-modules` at
+    # /app/node_modules shadows the host's node_modules directory.
+    # Without this, macOS darwin-arm64 binaries (esbuild native module,
+    # etc.) leak into the linux-arm64 container and fail to execute;
+    # worse, the container's first-run `npm install` would overwrite
+    # the host's node_modules with linux builds, breaking host-side
+    # `npm run dev`.
+    #
+    # Named (not anonymous): podman-compose's `run --rm` scopes
+    # anonymous volumes to the run-container, so a one-off install
+    # can't populate the service container's node_modules. A named
+    # volume is shared across all service invocations (up, run, exec)
+    # and persists across --force-recreate — so `podman-compose run
+    # --rm react-console npm ci` populates it once, then every
+    # subsequent start sees a populated node_modules.
+    if isinstance(owner, App) and owner.metadata.name in app_sources:
+        app_path = app_sources[owner.metadata.name]
+        volumes.append(f"{app_path}:/app:rw")
+        volumes.append(f"{owner.metadata.name}-node-modules:/app/node_modules")
+
+    return volumes
+
+
+# Re-export for potential external use; the name aligns with the module's
+# `render_*` convention.
+__all__ = ["render_dev_simple"]

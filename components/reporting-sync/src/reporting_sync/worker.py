@@ -10,11 +10,12 @@ Responsibilities:
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 import httpx
@@ -24,7 +25,7 @@ from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 
 from .config import settings
 from .metrics import metrics
-from .models import EventType, ReportingConfig, SyncStatus
+from .models import DroppedEvent, EventType, ReportingConfig, SyncStatus
 from .schema_manager import SchemaManager
 from .transformer import DocumentTransformer, _parse_datetime
 
@@ -69,7 +70,7 @@ class SyncWorker:
                 if response.status_code == 200:
                     template = response.json()
                     self._template_cache[template_id] = template
-                    return template
+                    return cast(dict[str, Any] | None, template)
                 elif response.status_code == 404:
                     logger.warning(f"Template {template_id} not found (404)")
                     return None
@@ -121,8 +122,13 @@ class SyncWorker:
             metrics.record_event_skipped(template_value, "sync_disabled")
             return True  # Not an error, just skipped
 
+        # The reporting table lives in the schema of the document's namespace
+        # (CASE-628). ensure_table_for_template returns the schema-qualified
+        # reference ("<ns>"."<table>") for building SQL directly.
+        namespace = document.get("namespace") or "wip"
+
         # Ensure table exists
-        table_name = await self.schema_manager.ensure_table_for_template(template)
+        table_name = await self.schema_manager.ensure_table_for_template(namespace, template)
         if not table_name:
             metrics.record_event_skipped(template_value, "table_creation_skipped")
             return True  # Sync disabled
@@ -146,12 +152,12 @@ class SyncWorker:
                     target_version = document.get("version")
                     if target_version is not None:
                         await conn.execute(
-                            f'DELETE FROM "{table_name}" WHERE document_id = $1 AND version = $2',
+                            f'DELETE FROM {table_name} WHERE document_id = $1 AND version = $2',
                             document_id, target_version,
                         )
                     else:
                         await conn.execute(
-                            f'DELETE FROM "{table_name}" WHERE document_id = $1',
+                            f'DELETE FROM {table_name} WHERE document_id = $1',
                             document_id,
                         )
                 latency_ms = (time.perf_counter() - start_time) * 1000
@@ -162,7 +168,7 @@ class SyncWorker:
             new_status = "archived" if event_type == EventType.DOCUMENT_ARCHIVED.value else "deleted"
             async with self.pool.acquire() as conn:
                 await conn.execute(
-                    f'UPDATE "{table_name}" SET status = $1 WHERE document_id = $2',
+                    f'UPDATE {table_name} SET status = $1 WHERE document_id = $2',
                     new_status,
                     document_id,
                 )
@@ -224,12 +230,17 @@ class SyncWorker:
 
         config = self._get_reporting_config(template)
 
+        # A template event ensures the reporting table in the template's own
+        # namespace schema (CASE-628); documents from other namespaces
+        # materialise their own table lazily on their doc events.
+        namespace = template.get("namespace") or "wip"
+
         if not config.sync_enabled:
             logger.info(f"Sync disabled for template {template_value}, skipping schema update")
             # Still sync template metadata even if doc sync is disabled
         else:
             # Create or update document table
-            table_name = await self.schema_manager.ensure_table_for_template(template)
+            table_name = await self.schema_manager.ensure_table_for_template(namespace, template)
             if table_name and table_name not in self._managed_tables:
                 self._managed_tables.add(table_name)
                 self.status.tables_managed = len(self._managed_tables)
@@ -237,8 +248,7 @@ class SyncWorker:
 
         # Sync template metadata to templates table
         if template_id:
-            namespace = template["namespace"]
-            meta_table = await self.schema_manager.ensure_templates_table()
+            meta_table = await self.schema_manager.ensure_templates_table(namespace)
 
             try:
                 async with self.pool.acquire() as conn:
@@ -248,18 +258,18 @@ class SyncWorker:
                             target_version = template.get("version")
                             if target_version is not None:
                                 await conn.execute(
-                                    f'DELETE FROM "{meta_table}" WHERE "namespace" = $1 AND "template_id" = $2 AND "version" = $3',
+                                    f'DELETE FROM {meta_table} WHERE "namespace" = $1 AND "template_id" = $2 AND "version" = $3',
                                     namespace, template_id, target_version,
                                 )
                             else:
                                 await conn.execute(
-                                    f'DELETE FROM "{meta_table}" WHERE "namespace" = $1 AND "template_id" = $2',
+                                    f'DELETE FROM {meta_table} WHERE "namespace" = $1 AND "template_id" = $2',
                                     namespace, template_id,
                                 )
                         else:
                             await conn.execute(
                                 f"""
-                                UPDATE "{meta_table}"
+                                UPDATE {meta_table}
                                 SET "status" = 'inactive',
                                     "updated_at" = NOW(),
                                     "updated_by" = $3
@@ -271,7 +281,7 @@ class SyncWorker:
                     else:
                         await conn.execute(
                             f"""
-                            INSERT INTO "{meta_table}" (
+                            INSERT INTO {meta_table} (
                                 "template_id", "namespace", "value", "label",
                                 "description", "version", "status", "extends",
                                 "extends_version", "created_at", "created_by",
@@ -332,7 +342,7 @@ class SyncWorker:
             logger.warning("Invalid terminology event: missing terminology_id")
             return False
 
-        table_name = await self.schema_manager.ensure_terminologies_table()
+        table_name = await self.schema_manager.ensure_terminologies_table(namespace)
 
         try:
             async with self.pool.acquire() as conn:
@@ -340,14 +350,14 @@ class SyncWorker:
                     if term_data.get("hard_delete"):
                         # Hard delete: remove from terminologies table
                         await conn.execute(
-                            f'DELETE FROM "{table_name}" WHERE "namespace" = $1 AND "terminology_id" = $2',
+                            f'DELETE FROM {table_name} WHERE "namespace" = $1 AND "terminology_id" = $2',
                             namespace, terminology_id,
                         )
                     else:
                         # Soft delete (existing behavior)
                         await conn.execute(
                             f"""
-                            UPDATE "{table_name}"
+                            UPDATE {table_name}
                             SET "status" = 'inactive',
                                 "updated_at" = NOW(),
                                 "updated_by" = $3
@@ -359,7 +369,7 @@ class SyncWorker:
                 else:
                     await conn.execute(
                         f"""
-                        INSERT INTO "{table_name}" (
+                        INSERT INTO {table_name} (
                             "terminology_id", "namespace", "value", "label",
                             "description", "case_sensitive", "allow_multiple",
                             "extensible", "mutable", "status", "term_count",
@@ -424,27 +434,27 @@ class SyncWorker:
             logger.warning("Invalid term event: missing term_id")
             return False
 
-        table_name = await self.schema_manager.ensure_terms_table()
+        table_name = await self.schema_manager.ensure_terms_table(namespace)
 
         try:
             async with self.pool.acquire() as conn:
                 if event_type == "term.deleted":
                     if term_data.get("hard_delete"):
-                        # Hard delete: remove from terms and cascade relationships
-                        rel_table = await self.schema_manager.ensure_term_relationships_table()
+                        # Hard delete: remove from terms and cascade term_relations
+                        rel_table = await self.schema_manager.ensure_term_relations_table(namespace)
                         await conn.execute(
-                            f'DELETE FROM "{rel_table}" WHERE "namespace" = $1 AND ("source_term_id" = $2 OR "target_term_id" = $2)',
+                            f'DELETE FROM {rel_table} WHERE "namespace" = $1 AND ("source_term_id" = $2 OR "target_term_id" = $2)',
                             namespace, term_id,
                         )
                         await conn.execute(
-                            f'DELETE FROM "{table_name}" WHERE "namespace" = $1 AND "term_id" = $2',
+                            f'DELETE FROM {table_name} WHERE "namespace" = $1 AND "term_id" = $2',
                             namespace, term_id,
                         )
                     else:
                         # Soft delete (existing behavior)
                         await conn.execute(
                             f"""
-                            UPDATE "{table_name}"
+                            UPDATE {table_name}
                             SET "status" = 'inactive',
                                 "updated_at" = NOW(),
                                 "updated_by" = $3
@@ -456,7 +466,7 @@ class SyncWorker:
                 elif event_type == "term.deprecated":
                     await conn.execute(
                         f"""
-                        UPDATE "{table_name}"
+                        UPDATE {table_name}
                         SET "status" = 'deprecated',
                             "deprecated_reason" = $3,
                             "replaced_by_term_id" = $4,
@@ -475,7 +485,7 @@ class SyncWorker:
                     # Upsert for create/update
                     await conn.execute(
                         f"""
-                        INSERT INTO "{table_name}" (
+                        INSERT INTO {table_name} (
                             "term_id", "namespace", "terminology_id",
                             "terminology_value", "value", "aliases",
                             "label", "description", "sort_order",
@@ -526,67 +536,67 @@ class SyncWorker:
             logger.error(f"Error syncing term: {e}")
             raise
 
-    async def _process_relationship_event(self, event_data: dict[str, Any]) -> bool:
+    async def _process_term_relation_event(self, event_data: dict[str, Any]) -> bool:
         """
-        Process a relationship event (created, deleted).
+        Process a term_relation event (created, deleted).
 
-        Syncs the relationship to the term_relationships table in PostgreSQL.
+        Syncs the term_relation to the term_relations table in PostgreSQL.
         """
         start_time = time.perf_counter()
         event_type = event_data.get("event_type")
-        rel = event_data.get("relationship", {})
+        rel = event_data.get("term_relation", {})
 
         namespace = rel["namespace"]
         source_term_id = rel.get("source_term_id")
         target_term_id = rel.get("target_term_id")
-        relationship_type = rel.get("relationship_type")
+        relation_type = rel.get("relation_type")
 
-        if not source_term_id or not target_term_id or not relationship_type:
-            logger.warning("Invalid relationship event: missing required fields")
+        if not source_term_id or not target_term_id or not relation_type:
+            logger.warning("Invalid term_relation event: missing required fields")
             return False
 
         # Ensure table exists
-        table_name = await self.schema_manager.ensure_term_relationships_table()
+        table_name = await self.schema_manager.ensure_term_relations_table(namespace)
 
         try:
             async with self.pool.acquire() as conn:
-                if event_type == "relationship.deleted":
+                if event_type == "term_relation.deleted":
                     if rel.get("hard_delete"):
                         # Hard delete: remove from table
                         await conn.execute(
                             f"""
-                            DELETE FROM "{table_name}"
+                            DELETE FROM {table_name}
                             WHERE "namespace" = $1
                               AND "source_term_id" = $2
                               AND "target_term_id" = $3
-                              AND "relationship_type" = $4
+                              AND "relation_type" = $4
                             """,
-                            namespace, source_term_id, target_term_id, relationship_type,
+                            namespace, source_term_id, target_term_id, relation_type,
                         )
                     else:
                         # Soft delete (existing behavior)
                         await conn.execute(
                             f"""
-                            UPDATE "{table_name}"
+                            UPDATE {table_name}
                             SET "status" = 'inactive'
                             WHERE "namespace" = $1
                               AND "source_term_id" = $2
                               AND "target_term_id" = $3
-                              AND "relationship_type" = $4
+                              AND "relation_type" = $4
                             """,
-                            namespace, source_term_id, target_term_id, relationship_type,
+                            namespace, source_term_id, target_term_id, relation_type,
                         )
                 else:
                     # Upsert for create/reactivate
                     await conn.execute(
                         f"""
-                        INSERT INTO "{table_name}" (
+                        INSERT INTO {table_name} (
                             "namespace", "source_term_id", "target_term_id",
-                            "relationship_type", "source_term_value", "target_term_value",
+                            "relation_type", "source_term_value", "target_term_value",
                             "source_terminology_id", "target_terminology_id",
                             "metadata", "status", "created_at", "created_by"
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11)
-                        ON CONFLICT ("namespace", "source_term_id", "target_term_id", "relationship_type")
+                        ON CONFLICT ("namespace", "source_term_id", "target_term_id", "relation_type")
                         DO UPDATE SET
                             "status" = EXCLUDED."status",
                             "source_term_value" = EXCLUDED."source_term_value",
@@ -597,7 +607,7 @@ class SyncWorker:
                         namespace,
                         source_term_id,
                         target_term_id,
-                        relationship_type,
+                        relation_type,
                         rel.get("source_term_value"),
                         rel.get("target_term_value"),
                         rel.get("source_terminology_id"),
@@ -609,13 +619,13 @@ class SyncWorker:
 
             latency_ms = (time.perf_counter() - start_time) * 1000
             logger.info(
-                f"Synced relationship {source_term_id} --{relationship_type}--> "
+                f"Synced term_relation {source_term_id} --{relation_type}--> "
                 f"{target_term_id} to {table_name} ({latency_ms:.1f}ms)"
             )
             return True
 
         except Exception as e:
-            logger.error(f"Error syncing relationship: {e}")
+            logger.error(f"Error syncing term_relation: {e}")
             raise
 
     async def _process_message(self, msg) -> None:
@@ -637,8 +647,8 @@ class SyncWorker:
                 success = await self._process_terminology_event(event_data)
             elif event_type.startswith("term."):
                 success = await self._process_term_event(event_data)
-            elif event_type.startswith("relationship."):
-                success = await self._process_relationship_event(event_data)
+            elif event_type.startswith("term_relation."):
+                success = await self._process_term_relation_event(event_data)
             else:
                 logger.warning(f"Unknown event type: {event_type}")
                 success = True  # Don't retry unknown events
@@ -648,9 +658,7 @@ class SyncWorker:
                 self.status.events_processed += 1
                 self.status.last_event_processed = datetime.now(UTC)
             else:
-                # Negative ack for retry
-                await msg.nak(delay=settings.retry_delay_ms / 1000)
-                self.status.events_failed += 1
+                await self._nak_or_record_drop(msg, event_data, "processing returned failure")
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in message: {e}")
@@ -659,8 +667,71 @@ class SyncWorker:
 
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
-            await msg.nak(delay=settings.retry_delay_ms / 1000)
-            self.status.events_failed += 1
+            event = None
+            with contextlib.suppress(Exception):
+                event = json.loads(msg.data.decode())
+            await self._nak_or_record_drop(msg, event, str(e))
+
+    # Bounded ring of recent terminal drops kept on the status object.
+    _RECENT_DROPS_MAX = 20
+
+    async def _nak_or_record_drop(
+        self, msg, event_data: dict | None, error: str
+    ) -> None:
+        """Nak for redelivery — and if this was the final permitted delivery,
+        record the loss distinctly.
+
+        JetStream stops delivering after the consumer's max_deliver, so a
+        failure on that delivery means the entity is permanently absent from
+        SQL. The aggregate events_failed counter cannot distinguish a retry
+        that later succeeded from that permanent loss — the drop counter and
+        ring exist so the loss is queryable via the status endpoint instead
+        of only reconstructable from worker logs.
+        """
+        deliveries = 1
+        try:
+            nd = msg.metadata.num_delivered
+            if isinstance(nd, int):
+                deliveries = nd
+        except Exception:
+            pass
+
+        if deliveries >= settings.retry_attempts:
+            entity_id = None
+            namespace = None
+            for container, id_key in (
+                ("document", "document_id"),
+                ("template", "template_id"),
+                ("terminology", "terminology_id"),
+                ("term", "term_id"),
+            ):
+                obj = (event_data or {}).get(container)
+                if isinstance(obj, dict) and obj.get(id_key):
+                    entity_id = obj[id_key]
+                    namespace = obj.get("namespace")
+                    break
+
+            drop = DroppedEvent(
+                event_type=(event_data or {}).get("event_type", "unknown"),
+                entity_id=entity_id,
+                namespace=namespace,
+                error=error[:500],
+                deliveries=deliveries,
+                dropped_at=datetime.now(UTC),
+            )
+            self.status.events_dropped += 1
+            self.status.recent_drops.append(drop)
+            del self.status.recent_drops[:-self._RECENT_DROPS_MAX]
+            logger.error(
+                "TERMINAL DROP after %d deliveries — %s %s (namespace=%s) "
+                "will not be retried: %s",
+                deliveries, drop.event_type, entity_id or "?", namespace, error,
+            )
+
+        # Nak either way: on the final delivery JetStream will not redeliver
+        # regardless — the nak just releases the message state promptly.
+        await msg.nak(delay=settings.retry_delay_ms / 1000)
+        self.status.events_failed += 1
 
     async def start(self) -> None:
         """Start the sync worker."""

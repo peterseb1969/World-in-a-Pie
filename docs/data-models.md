@@ -91,6 +91,10 @@ class Terminology(BaseModel):
         default=False,
         description="Whether new terms can be added by users"
     )
+    mutable: bool = Field(
+        default=False,
+        description="When True, terms can be hard-deleted (not just deprecated). Implies extensible=True. Immutable after creation if terms exist."
+    )
     status: Literal["active", "inactive"] = Field(
         default="active",
         description="Lifecycle status"
@@ -355,6 +359,22 @@ class Template(BaseModel):
     status: Literal["draft", "active", "inactive"] = Field(
         default="active"
     )
+    usage: Literal["entity", "reference", "relationship"] = Field(
+        default="entity",
+        description="Usage class — controls validation, query APIs, reporting shape. Immutable after creation."
+    )
+    source_templates: list[str] = Field(
+        default_factory=list,
+        description="Template values allowed as edge source (usage='relationship' only). Immutable after creation."
+    )
+    target_templates: list[str] = Field(
+        default_factory=list,
+        description="Template values allowed as edge target (usage='relationship' only). Immutable after creation."
+    )
+    versioned: bool = Field(
+        default=True,
+        description="True = updates create new versions; False = overwrite in place. Immutable after creation."
+    )
     extends: str | None = Field(
         None,
         description="Parent template_id for inheritance"
@@ -540,14 +560,16 @@ Cross-field validation rules:
 
 ```python
 class RuleType(str, Enum):
-    CONDITIONAL_REQUIRED = "conditional_required"
-    CONDITIONAL_VALUE = "conditional_value"
-    MUTUAL_EXCLUSION = "mutual_exclusion"
-    DEPENDENCY = "dependency"
+    CONDITIONAL_REQUIRED = "conditional_required"  # Field required if condition met
+    CONDITIONAL_VALUE = "conditional_value"        # Field value constrained by condition
+    MUTUAL_EXCLUSION = "mutual_exclusion"          # Only one of listed fields can have a value
+    DEPENDENCY = "dependency"                       # Field requires another field to be present
+    PATTERN = "pattern"                             # Regex validation against a field value
+    RANGE = "range"                                 # Numeric range validation (min/max bounds)
 
 
 class ValidationRule(BaseModel):
-    """A cross-field validation rule."""
+    """A cross-field or field-level validation rule."""
 
     type: RuleType
     description: str | None = None
@@ -661,6 +683,47 @@ class RuleCondition(BaseModel):
   "created_by": "apikey:legacy"
 }
 ```
+
+### Template Usage Annotation
+
+`usage` is a top-level enum on every template that selects one of three lifecycles:
+
+| `usage` | Meaning | Status |
+|---|---|---|
+| `entity` (default) | Full document lifecycle — what every v1.x template does today. | Shipping |
+| `reference` | Reserved for lightweight LOV documents. Currently behaves like `entity`. | Placeholder |
+| `relationship` | Typed, property-carrying edge between two documents. Enables write-time validation, query APIs, and reporting columns. | Shipping |
+
+**The annotation changes behaviour, not structure.** An edge type is still a normal template stored in template-store; its documents are still normal MongoDB documents. What changes is what document-store enforces on write, what extra endpoints are reachable, and what columns reporting-sync provisions. Throughout this section "edge type" refers to the schema; "template" refers to the underlying storage representation.
+
+#### Edge types (`usage: "relationship"`)
+
+An edge type MUST declare:
+
+- `source_templates: list[str]` — non-empty list of template values allowed as the source endpoint
+- `target_templates: list[str]` — non-empty list of template values allowed as the target endpoint
+- A reference field named **exactly** `source_ref` (`reference_type: "document"`, `target_templates` matching the template-level list)
+- A reference field named **exactly** `target_ref` (same shape, against the target list)
+
+The field-name convention (`source_ref` / `target_ref`) is mandatory — query APIs, lazy Mongo indexes (`(template_id, data.source_ref)` and `…target_ref`), and reporting-sync (`source_ref_id` / `target_ref_id` columns) all key on those names. Template-store enforces the shape on every create.
+
+Documents under an edge type additionally enforce:
+
+- `source_ref` and `target_ref` resolve to documents in templates listed in `source_templates` / `target_templates`
+- Both endpoints live in the same namespace as the relationship document (`cross_namespace_relationship` error otherwise — deferred to post-v2)
+- Neither endpoint is `archived` (`archived_relationship_endpoint` error otherwise)
+
+See `docs/api-conventions.md` for the API surface (the `/relationships` and `/traverse` endpoints) and `docs/design/document-relationships.md` for the design rationale.
+
+#### `versioned: false` lifecycle
+
+`versioned: true` (default) — updates create new versions, full audit trail preserved.
+
+`versioned: false` — updates overwrite the existing document in place; documents stay at `version: 1` forever. The document_id is stable across writes; the previous payload is gone. Useful for edge types where the relationship identity matters but its history doesn't.
+
+#### Immutability
+
+`usage`, `source_templates`, `target_templates`, and `versioned` are set at template creation and cannot be changed after — flipping them mid-life would silently reshape every existing document's lifecycle (e.g., `versioned: true → false` would orphan version history; `usage: "entity" → "relationship"` would skip validation that was supposed to gate the writes). To change them, create a new template (with a new value); migrate documents explicitly if needed.
 
 ### Template Versioning
 
@@ -1052,8 +1115,11 @@ class DocumentEvent(BaseModel):
 
 The identity hash determines whether a newly submitted document is a new entity or a new version of an existing entity.
 
+> **Canonical source:** the algorithm below mirrors `libs/wip-auth/src/wip_auth/document_identity.py`. The contract test at `libs/wip-auth/tests/test_document_identity_contract.py` pins this doc's worked-example digest to the library's output — if the algorithm changes, the test fails and this section must be updated in the same change (CASE-402).
+
 ```python
 import hashlib
+import json
 
 def compute_identity_hash(
     data: dict[str, Any],
@@ -1063,25 +1129,23 @@ def compute_identity_hash(
     Compute a deterministic hash from identity fields.
 
     Algorithm:
-    1. Sort identity field names alphanumerically
-    2. Build normalized string: field1=value1|field2=value2|...
-    3. Hash with SHA-256
-    4. Return hex digest
+    1. Extract identity values into a dict keyed by field name.
+    2. JSON-serialize with sort_keys=True, no extra whitespace, ASCII escapes,
+       and default=str for non-JSON types (datetime, UUID, etc.).
+    3. SHA-256 hash the UTF-8 bytes of the canonical string.
+    4. Return hex digest.
     """
-    sorted_fields = sorted(identity_fields)
+    identity_values = {f: data.get(f) for f in identity_fields}
 
-    parts = []
-    for field in sorted_fields:
-        value = data.get(field, "")
-        if value is None:
-            value = ""
-        else:
-            value = str(value)
-        parts.append(f"{field}={value}")
+    canonical = json.dumps(
+        identity_values,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
+    )
 
-    normalized = "|".join(parts)
-
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 ```
 
 **Example:**
@@ -1092,15 +1156,14 @@ data = {
 }
 identity_fields = ["email"]
 
-# Normalized: "email=alice@example.com"
-# Result: sha256("email=alice@example.com")
+# Canonical string: '{"email":"alice@example.com"}'
 hash = compute_identity_hash(data, identity_fields)
-# → "a1b2c3d4e5f6..."
+# → "9327398c303b9282f3826f9d3a65a17c63d720e4ce06651dad2b3edfa2892697"
 ```
 
-> **Note:** Two hash modes exist:
-> - **Strict** (default): Values are serialized as-is via `str(value)`. Used for standard identity hashing.
-> - **Normalized**: Values are stripped and lowercased before hashing. Used for case-insensitive matching. Must be explicitly requested.
+> **Note:** Two identity-hash functions exist (separate methods, not modes of one):
+> - **`compute_identity_hash(data, identity_fields)`** — standard. Values pass through the JSON encoder with `default=str` for non-JSON types.
+> - **`compute_normalized_hash(data, identity_fields)`** — case-insensitive variant. Strings are stripped and lowercased before JSON serialization (lists/dicts recursively normalized). Used when callers need case-insensitive identity matching. Called explicitly; not selected by a flag.
 
 **Namespace scoping:** The identity hash itself covers only the identity field values. However, uniqueness is enforced per-namespace because the Registry's composite key includes `{namespace, identity_hash, template_id}`. This means two documents in different namespaces can share the same identity hash but receive different `document_id`s.
 

@@ -27,6 +27,8 @@ function getArg(name: string, fallback: string): string {
 
 const baseUrl = process.env.WIP_TEST_BASE_URL ?? getArg('base-url', 'https://localhost:8443')
 const apiKey = process.env.WIP_TEST_API_KEY ?? getArg('api-key', 'dev_master_key_for_testing')
+// The default master key is multi-namespace, so writes must pass namespace explicitly.
+const namespace = process.env.WIP_TEST_NAMESPACE ?? getArg('namespace', 'wip')
 
 let passed = 0
 let failed = 0
@@ -85,6 +87,7 @@ async function main() {
       value: testValue,
       label: 'Smoke Test Terminology',
       description: 'Created by smoke-test.ts — safe to delete',
+      namespace,
     })
     assert(result.status === 'created', `Expected status "created", got "${result.status}"`)
     assert(typeof result.id === 'string', 'Expected id')
@@ -108,7 +111,7 @@ async function main() {
       const result = await client.defStore.createTerm(terminologyId!, {
         value: 'TEST_TERM_A',
         label: 'Test Term A',
-      })
+      }, { namespace })
       assert(result.status === 'created', `Expected "created", got "${result.status}"`)
     })
 
@@ -125,7 +128,7 @@ async function main() {
         await client.defStore.createTerm(terminologyId!, {
           value: 'TEST_TERM_A',
           label: 'Test Term A',
-        })
+        }, { namespace })
         throw new Error('Should have thrown')
       } catch (err) {
         assert(err instanceof WipBulkItemError, `Expected WipBulkItemError, got ${(err as Error).constructor.name}`)

@@ -31,8 +31,8 @@ mcp = FastMCP(
         "WIP uses a bulk-first API: all write operations accept arrays and "
         "return per-item results. This MCP server handles the bulk envelope "
         "for you — single-item calls return the unwrapped result directly. "
-        "KEY CAPABILITIES: (1) Terms support ontology relationships (is_a, "
-        "part_of, etc.) for hierarchical data modeling — use create_relationships "
+        "KEY CAPABILITIES: (1) Terms support ontology relations (is_a, "
+        "part_of, etc.) for hierarchical data modeling — use create_term_relations "
         "and get_term_hierarchy. (2) A PostgreSQL reporting layer enables SQL "
         "aggregations, cross-template JOINs, and analytics via run_report_query. "
         "IMPORTANT: Before creating any templates or documents, read the "
@@ -56,6 +56,8 @@ def get_client() -> WipClient:
 def _error(e: Exception) -> str:
     """Format an exception for MCP tool output."""
     if isinstance(e, BulkError):
+        if e.error_code:
+            return f"WIP error [{e.error_code}]: {e.error}"
         return f"WIP error: {e.error}"
     return f"Error: {e}"
 
@@ -89,17 +91,27 @@ the whole document.
 
 Semantics:
 - Objects deep-merge, arrays replace wholesale, null deletes a field
-- Empty patch or a no-op patch returns status "unchanged" (no new version)
+- `metadata_patch` applies the same merge semantics to `metadata.custom` —
+  metadata is document content and versions like data (it never feeds the
+  identity hash, so it cannot create or dedup a document). Pass patch={}
+  with a metadata_patch for a metadata-only update.
+- Empty patch or a no-op patch (data AND metadata unchanged) returns status
+  "unchanged" (no new version)
 - Identity fields CANNOT be changed via PATCH — you get error_code
   `identity_field_change`. To change identity, POST a new document.
+- A template with NO identity_fields (append-only) CANNOT be PATCHed at all —
+  you get error_code `append_only`. Its documents have only a surrogate
+  document_id, not a logical identity; PATCH operates on logical entities. The
+  error carries remediation: create a new document, or declare identity_fields
+  on the template.
 - `if_match=N` is optional per-item optimistic concurrency control: if the
   current version != N, you get error_code `concurrency_conflict`.
 - template_version and identity_hash are preserved — the new version validates
   against the template version recorded on the document, not the latest.
 
 Error codes from PATCH: `not_found`, `forbidden`, `archived`,
-`identity_field_change`, `concurrency_conflict`, `validation_failed`,
-`reference_violation`, `internal_error`.
+`identity_field_change`, `append_only`, `concurrency_conflict`,
+`validation_failed`, `reference_violation`, `internal_error`.
 
 When to PATCH vs create_document:
 - Use update_document when the identity is unchanged and you're correcting or
@@ -108,15 +120,23 @@ When to PATCH vs create_document:
   may change (create_document is still an upsert — same identity = new version).
 
 ## Idempotent Bootstrap (apps installing themselves)
-Two endpoints exist so an app can provision its namespace and templates against
-a fresh WIP instance and re-run the same script repeatedly without ugly
-GET → 404 → POST dances or silent schema drift.
+These endpoints exist so an app can provision its namespace, templates, and
+vocabularies against a fresh WIP instance and re-run the same script repeatedly
+without ugly GET → 404 → POST dances or silent schema drift. A bootstrap that
+died mid-run (network blip, seed bug) is recovered by simply running it again.
 
 ### Namespace upsert: PUT /api/registry/namespaces/{prefix}
 PUT is an upsert — creates the namespace on missing using platform defaults
 (isolation_mode='open', deletion_mode='retain', description='',
 allowed_external_refs=[]); updates supplied fields when existing. Always 200 OK.
 Idempotent: re-running with the same body is a no-op.
+
+Safety guards on `deletion_mode`:
+- The 'wip' default namespace cannot be flipped to `full` — 400.
+- Flipping an existing namespace from `retain` to `full` requires
+  `confirm_enable_deletion=true` in the body — 400 without it.
+- Creating a new namespace with `deletion_mode='full'` is allowed
+  directly (no transition to confirm).
 
 ### Template create with conflict validation: POST /templates?on_conflict=validate
 Adds a query parameter to control collision behavior on (namespace, value):
@@ -134,19 +154,51 @@ The narrow compatibility rule is intentional: silent guardrails are worse than
 loud ones. If the bootstrap script wants to evolve the template in a way the
 platform considers incompatible, it must explicitly bump the version itself.
 
+Reference comparison: terminology_ref, template_ref, target_templates,
+target_terminologies, array_terminology_ref, array_template_ref (and the
+template-level source_templates / target_templates on relationship templates)
+resolve through Registry before being compared. Value-form, UUID-form, and
+any other registered synonym for the same entity are equivalent at this
+comparison site — the diff checker will not flag a value↔UUID mismatch as
+`modified_existing`. This is the universal rule (Vision.md
+§"References Must Resolve"): synonyms work identically to canonical IDs
+everywhere the platform compares references.
+
+### Terminology / term create with conflict validation
+POST /terminologies and single-item POST /terminologies/{id}/terms accept the
+same on_conflict parameter (also exposed on the create_terminology,
+create_terminologies_bulk, and create_terms MCP tools):
+- on_conflict='error' (default): duplicates return per-item status='error'
+  with error_code='already_exists'.
+- on_conflict='validate':
+  * identical config → status='unchanged' (returns the existing ID)
+  * different config → status='error', error_code='incompatible_config',
+    details={changed: [field names]}
+No 'compatible update' tier — any config difference is loud, matching the
+template philosophy. Bulk term creates (2+ items) skip duplicates regardless
+(status='skipped'), and duplicate term relations are skipped (an inactive
+duplicate is reactivated). 'unchanged'/'skipped' count as succeeded.
+
 ## Querying Documents
 Two primary query tools:
 - query_by_template(template_value, field_filters) — the most common way to
   query documents. Filters on field values, auto-resolves template_value to ID.
-- run_report_query(sql) — raw SQL against PostgreSQL reporting tables (doc_*).
-  Use for cross-template JOINs, aggregations, and complex analytics.
+- run_report_query(sql, namespace=...) — raw SQL against the PostgreSQL reporting
+  tables. Each namespace is its own PostgreSQL schema; a table is
+  "<namespace>"."doc_<value>". Pass namespace so unqualified names like doc_patient
+  resolve in that schema, or schema-qualify for cross-namespace queries. Use for
+  cross-template JOINs, aggregations, and complex analytics.
 
 For a spreadsheet-like view: get_table_view(template_value).
 For CSV export: export_table_csv(template_value).
 
 ## Soft Delete — Inactive Means Retired, Not Deleted
-Entities are never hard-deleted, only set to status: "inactive".
-(Exception: files support hard-delete to reclaim storage.)
+By default entities are never hard-deleted, only set to status: "inactive"
+(namespace deletion_mode: "retain"). A namespace configured with
+deletion_mode: "full" accepts hard_delete=true on delete operations for
+PERMANENT removal — see the deletion_mode safety guards in the Idempotent
+Bootstrap section above. Independent exceptions regardless of deletion_mode:
+binary files (reclaim storage) and terms in mutable terminologies.
 
 Retired entities are invisible to new data but always resolve for existing data.
 A document referencing term "ACTIVE" will always resolve, even if "ACTIVE" was
@@ -173,7 +225,7 @@ Templates define identity_fields. WIP hashes those fields to decide:
 same hash = new version (update), different hash = new document (create).
 The same create_document tool handles both — it's an upsert.
 
-- Zero identity fields = every submission creates a new document (append-only, no update path)
+- Zero identity fields = every submission creates a new document (append-only, no update path: create always appends AND PATCH is rejected with `append_only`)
 - Too many identity fields = corrections create duplicates instead of versions
 - Never add timestamps or per-run data to identity fields — it makes every
   hash unique, creating duplicates instead of versions
@@ -203,6 +255,15 @@ list or modify a namespace's data, but not to reference its terms.
 
 Reference validation runs at document creation, not template creation.
 
+Relationship (edge) documents are the exception: allowed_external_refs
+governs plain reference fields only. An edge document's source_ref and
+target_ref must resolve within the edge's own namespace — cross-namespace
+edges are rejected with error_code `cross_namespace_relationship`
+regardless of isolation config. To link documents across namespaces, use
+a plain document reference field instead; the trade-off is losing the
+/relationships and /traverse endpoints and the edge reporting columns
+that same-namespace edges get.
+
 ### API Key Namespace Scoping
 Non-privileged API keys MUST have an explicit `namespaces` list. Keys without
 namespace scoping that are not in `wip-admins` or `wip-services` get no access
@@ -219,27 +280,28 @@ values pass through unresolved.
 This matters for apps: use a single-namespace key scoped to your dev namespace,
 and you can skip the `namespace` parameter on all API and MCP tool calls.
 
-## Ontology Relationships
-Terms can be connected via typed relationships to model hierarchies and
+## Ontology Relations
+Terms can be connected via typed relations to model hierarchies and
 associations. This is powerful for taxonomies, classification trees, org charts,
-part-of-whole relationships, and any domain with inherent structure.
+part-of-whole relations, and any domain with inherent structure.
 
-Available relationship types: is_a, part_of, has_part, regulates,
+Available relation types: is_a, part_of, has_part, regulates,
 positively_regulates, negatively_regulates. Custom types can be added via the
 _ONTOLOGY_RELATIONSHIP_TYPES terminology.
 
 Key tools:
-- create_relationships — connect terms (e.g., "Cat is_a Animal")
-- list_relationships — see connections for a term
+- create_term_relations — connect terms (e.g., "Cat is_a Animal")
+- list_term_relations — see connections for a term
 - get_term_hierarchy — traverse ancestors, descendants, parents, children
 - import_terminology with OBO Graph JSON — bulk-load entire ontologies
 
 When to use: If a terminology has natural parent-child or part-whole structure
 (species taxonomy, disease classification, org hierarchy, geographic containment),
-model it with ontology relationships rather than flat term lists.
+model it with ontology relations rather than flat term lists.
 
 ## Reporting & Aggregation (PostgreSQL)
-WIP syncs document data to PostgreSQL tables (one per template: doc_*).
+WIP syncs document data to PostgreSQL tables, one per template inside each
+namespace's own schema ("<namespace>"."doc_<value>").
 This enables SQL queries for aggregation, cross-template JOINs, and analytics
 that the document API does not support.
 
@@ -254,6 +316,12 @@ and "full" presets, not in "core"). Data syncs within seconds of document change
 Template changes may take up to 5 seconds to propagate (cache TTL on "latest"
 resolution). Lookups by explicit version are cached permanently (immutable).
 If a template update seems to have no effect, wait or pass the explicit version.
+
+## Namespace-Config Cache
+Namespace isolation config (isolation_mode, allowed_external_refs) read during
+reference validation is cached with the same 5-second TTL. After changing a
+namespace's allow-list, a retried write may still be rejected for up to 5
+seconds — wait and retry, no service restart needed.
 
 ## Pagination
 Default page_size: 50, max: 100. List responses include a `pages` field
@@ -274,7 +342,7 @@ A terminology is a controlled vocabulary (e.g., COUNTRY, GENDER, DIAGNOSIS_CODE)
 ## Terms
 A term is an entry in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).
 - Fields: value (unique within terminology), label, aliases, description
-- Terms can have ontology relationships (see Ontology section below)
+- Terms can have ontology relations (see Ontology section below)
 - Documents store both the original value AND the resolved term_id
 - Inactive terms are rejected in new documents (enforced by validation)
 
@@ -284,6 +352,24 @@ A template defines a document schema — like a form definition.
 - Templates are versioned: same template_id, incrementing version
 - Multiple versions can be active simultaneously — see conventions resource
 - Templates can define identity_fields for document deduplication
+- usage: "entity" (default) | "reference" | "relationship". A template with
+  usage "relationship" is an edge type — the schema for a class of
+  relationships between documents. Edge types declare two mandatory reference
+  fields (source_ref, target_ref) plus template-level source_templates /
+  target_templates allow-lists; document writes get extra validation
+  (cross-namespace and archived endpoints are rejected), and two query
+  endpoints become available: /documents/{id}/relationships and /traverse.
+  usage is immutable after creation.
+- versioned: true (default) | false. With versioned: false, document updates
+  OVERWRITE in place — documents keep a stable document_id, stay at
+  version 1, and no history is retained. Requires non-empty identity_fields
+  (overwrite-in-place needs an identity to re-address) and is immutable
+  after creation.
+- header_fields: which fields represent a document in compact "header"
+  projections (peer listings, the relationships endpoint's include=peers).
+  Bare names target data.<name>; metadata.custom.<name> paths are allowed.
+  When empty, projection falls back to identity_fields, then to
+  {title, doc_status}.
 
 ### Field Types
 string, number, integer, boolean, date, datetime, term, reference, file, array, object
@@ -310,12 +396,23 @@ For document references, set template_ref to constrain which template's document
 - multiple: allow multiple files; max_files sets the limit
 
 ### Array Field Configuration
-- array_item_type: string, number, object, or term
-- array_terminology_ref / array_template_ref for typed array items
+- array_item_type: string, number, integer, boolean, date, datetime, term, object, or reference
+- array_terminology_ref / array_template_ref for typed array items (term / object)
+- For array_item_type "reference", the field carries its reference config in the
+  field's own reference_type / target_templates / target_terminologies /
+  version_strategy slots (the same slots a single reference field uses), and each
+  array item is existence-checked exactly like a single reference. reference_type
+  is mandatory for an array of references — without it the items would not be
+  validated.
 
 ### Other Field Properties
 - Use "mandatory: true" (NOT "required") for required fields
 - Validation: pattern (regex), min_length, max_length, minimum, maximum, enum
+- full_text_indexed: true on a string field builds a PostgreSQL full-text
+  search column (tsvector + GIN index) in the template's reporting table;
+  the reporting search endpoint uses it for ranked, snippet-rich search.
+  Only valid on type "string" fields and requires the template's
+  reporting.sync_enabled to be true (validated at template creation).
 
 ### Validation Rules (Cross-Field)
 Templates can define rules across fields:
@@ -339,9 +436,11 @@ Templates can configure PostgreSQL sync behaviour:
 A document is an instance of a template — a filled-in form.
 - Validated against the template's field definitions
 - Terms are resolved: you submit the value, WIP stores both value and term_id
-- Versioned: same identity → same document_id, new version
+- Versioned: same identity → same document_id, new version — unless the
+  template declares versioned: false, in which case updates overwrite in
+  place and documents stay at version 1 (no history)
 - identity_fields (defined on template) control what makes a document "the same"
-- Zero identity fields = append-only (every POST creates a new document)
+- Zero identity fields = append-only (every POST creates a new document; PATCH is rejected with `append_only`)
 
 ## Files
 Binary files stored in MinIO, referenced by documents.
@@ -361,12 +460,12 @@ Key operations:
 
 This enables cross-system integration without mapping tables.
 
-## Ontology Relationships
-Terms can be connected via typed relationships:
+## Ontology Relations
+Terms can be connected via typed relations:
 - Types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates
-- Fields: source_term_id, target_term_id, relationship_type
+- Fields: source_term_id, target_term_id, relation_type
 - Supports traversal: ancestors, descendants, parents, children
-- Supports OBO Graph JSON import for bulk relationship loading
+- Supports OBO Graph JSON import for bulk relation loading
 """
 
 
@@ -397,17 +496,17 @@ Do NOT recreate terminologies or templates that already exist. Reuse them.
 Map your domain onto WIP primitives:
 
 1. Identify controlled vocabularies → terminologies (value + label + aliases)
-2. Identify hierarchical vocabularies → terminologies WITH ontology relationships
+2. Identify hierarchical vocabularies → terminologies WITH ontology relations
    Ask: "Are any of these vocabularies hierarchical? Do terms have parent-child
-   or part-of-whole relationships?" Examples: species taxonomy, disease
+   or part-of-whole relations?" Examples: species taxonomy, disease
    classification, org hierarchy, geographic containment, product categories.
-   If yes, plan ontology relationships (is_a, part_of, etc.) alongside terms.
+   If yes, plan ontology relations (is_a, part_of, etc.) alongside terms.
 3. Identify document types → templates with typed fields
-4. Define relationships between templates (references, inheritance)
+4. Define relations between templates (references, inheritance)
 5. Define identity_fields for deduplication — choose carefully:
    - Too few → unrelated entities collide into one document
    - Too many → corrections create duplicates instead of versions
-   - Zero → append-only, no update path (fine for event logs)
+   - Zero → append-only, no update path: create appends, PATCH is rejected (`append_only`) — fine for event logs; such templates are always versioned:true
    - NEVER include timestamps or per-run data in identity fields
    - Avoid timestamps in non-identity fields too — they trigger unnecessary
      version updates on otherwise unchanged documents
@@ -427,8 +526,8 @@ Create the data model in WIP using MCP tools:
 1. Create terminologies: create_terminology(value, label, description)
    Populate with terms: create_terms(terminology_id, terms)
    Verify: list_terms(terminology_id)
-   If hierarchical: create_relationships([{source_term_id, target_term_id,
-   relationship_type}]) — e.g., "Cat is_a Animal". Verify: get_term_hierarchy.
+   If hierarchical: create_term_relations([{source_term_id, target_term_id,
+   relation_type}]) — e.g., "Cat is_a Animal". Verify: get_term_hierarchy.
 2. Create templates: create_template(template) — use draft mode for
    circular dependencies, then activate_template (all-or-nothing validation)
    Verify: get_template_fields(template_value)
@@ -458,7 +557,7 @@ MCP tools remain useful for debugging and data queries:
 - Identity hashing: define identity_fields so duplicate submissions update, not duplicate
 - Draft mode: create templates with status: "draft" to handle circular deps
 - Registry synonyms: register external IDs for cross-system lookups
-- Ontology relationships: connect terms hierarchically (is_a, part_of) for taxonomies
+- Ontology relations: connect terms hierarchically (is_a, part_of) for taxonomies
 - SQL aggregation: use run_report_query for GROUP BY, COUNT, JOINs across templates
 
 Detailed step-by-step procedures for each phase are in the slash commands:
@@ -485,6 +584,17 @@ Trap: You deactivate a term and expect documents using it to fail. They don't.
 Rule: Never treat inactive as deleted. Inactive entities are invisible to new
       data but always visible to existing data.
 
+Default, not absolute: "nothing ever dies" is the platform
+DEFAULT (namespace deletion_mode: "retain"), not a physical law. A
+namespace explicitly flipped to deletion_mode: "full" (guarded: the "wip"
+namespace refuses it; retain->full requires confirm_enable_deletion=true)
+accepts hard_delete=true on delete operations across the stores — the
+record is PERMANENTLY removed, and existing references to it will NOT
+resolve. Trap addendum: in a "full"-mode namespace, do not assume an old
+reference still resolves — it may be gone for real. Independent smaller
+deviations: mutable-terminology terms and binary files are hard-deletable
+regardless of deletion_mode.
+
 ## 2. Template Versioning — Update Does NOT Replace
 Updating a template creates a new version. The OLD version stays active.
 Multiple versions coexist. New documents can be created against ANY active version.
@@ -495,6 +605,37 @@ Rule: After updating, deactivate the old version with deactivate_template()
       unless you specifically need multi-version operation. Always pass
       template_version when creating documents.
 
+Corollary: Existing documents survive template updates unchanged. The
+      identity_hash scopes to template_id (PoNIF #3), and template_id is
+      canonical — stable across versions. This is the exception to WIP's
+      "new version → new ID" pattern: templates carry ONE id across all
+      their versions, so existing docs remain matchable through future
+      template updates. Add a non-identity field to a template, re-mirror
+      an existing doc with the same identity values, and you get an UPDATE
+      (new doc version, populated new field) rather than a CREATE — no
+      data migration step needed, just a backfill pass.
+
+Moving a cohort forward: the corollary handles ADDITIVE changes
+      for free (existing docs stay valid on their pinned version). When you need
+      to actively re-pin existing documents to a newer version, use the
+      `migrate_documents` tool / `POST /documents/migrate` — a validated,
+      identity-preserving bulk move. Dry-run first: it validates each doc against
+      the TARGET version and reports per-doc readiness; apply then writes a new
+      doc version pinned to the target, keeping the same document_id and
+      identity_hash. Migration is still never AUTOMATIC (that's the PoNIF — the
+      system won't silently move your data) — but it is now a first-class
+      operation, not MongoDB surgery. The source version may be inactive
+      (frozen) — migrate validates against the target, not the source. An
+      identity-changing move is a FORK (create new docs), not a migrate, and is
+      rejected.
+
+v2 caveat: the planned v2 template-ID redesign (docs/design/v2-index.md)
+      is planning to make template_id version-specific and route logical
+      identity through (namespace, template_value). The corollary HOLDS in both v1 and v2
+      — identity stays stable across schema updates by design — but the
+      mechanism changes. Code that names template_id as the canonical
+      handle will need a rename pass when v2 lands.
+
 ## 3. Document Identity — The Hash Decides
 Templates define identity_fields. WIP hashes them to decide: same hash = new
 version (update), different hash = new document (create). The same
@@ -503,9 +644,30 @@ create_document call handles both — it's an upsert.
 Trap: Adding a timestamp to document data makes every hash unique — you get
       duplicates instead of versions. Too many identity fields means corrections
       create new documents instead of new versions. Zero identity fields means
-      every submission creates a new document (no update path).
+      every submission creates a new document — append-only, NO update path at
+      all: the create/upsert path always appends, AND PATCH-by-document_id is
+      rejected with error_code `append_only`. A document_id is a
+      surrogate row handle, not a logical identity; PATCH operates on logical
+      entities, so an identity-less doc cannot be patched. To change such data,
+      create a new document; to make a template updatable, declare
+      identity_fields on it.
 Rule: Identity fields answer "is this the same real-world thing?" — no more,
       no less. Never include timestamps, run IDs, or per-execution data.
+
+What's NOT in the identity hash:
+- `template_version` — see PoNIF #2's corollary; existing docs carry forward
+  across template versions cleanly.
+- `namespace` — scoped externally via the platform's composite key
+  (namespace, identity_hash, template_id); the same identity_hash in two
+  different namespaces is two different entities.
+
+Adding a field to `identity_fields` IS breaking: every existing doc would
+hash differently on next write, creating parallel orphan docs (a recurring
+real-world shape: an external loader computed identity from fields the
+template didn't declare, hashes collided to empty, and 213 of 214 records
+were silently dropped). Adding a field to `data.*` that is NOT in
+identity_fields is non-breaking — see PoNIF #2's corollary; existing docs
+just receive the new field's value on next backfill.
 
 ## 4. Bulk-First — 200 OK Always
 All WIP write APIs return HTTP 200 even when individual items fail. Per-item
@@ -535,6 +697,59 @@ Trap: You update a template and immediately create a document — it validates
       against the OLD version from cache.
 Rule: Pass explicit template_version, or wait 5 seconds after template changes.
 
+## 7. Edge Types Are Stored as Templates
+WIP has two conceptually distinct schemas that share a storage representation:
+**entity templates** (the default — `usage: 'entity'`) and **edge types**
+(`usage: 'relationship'`). They live in the same `templates` collection and
+flow through the same APIs, but document-store treats edge-type writes
+differently: extra cross-namespace and not-archived validation, lazy Mongo
+indexes on data.source_ref / data.target_ref, two query endpoints
+(/relationships, /traverse), and reporting-sync columns
+(source_ref_id / target_ref_id). The MCP tool `create_edge_type` exists
+specifically to surface this distinction at the agent-facing API ingress.
+
+Trap: You see a template with two `reference_type: document` fields and assume
+      it's just an entity template with foreign keys. The `usage` flag is
+      easy to miss in a definition — but it's what selects the conceptual
+      type of the schema.
+Rule: Check `template.usage` before reasoning about a template's lifecycle.
+      Schemas with `usage: 'relationship'` are edge types — different
+      validation, different query endpoints, different reporting columns.
+      `usage` is immutable after creation. The allowed-endpoint set
+      (source_templates / target_templates) is append-only, NOT frozen:
+      widen it with `add_edge_type_endpoints` (additive, in-place,
+      edge-preserving) instead of delete+recreate. Removal stays unsupported.
+      See also PoNIF #8 — edge types can opt out of versioning entirely via
+      `versioned: false`, an exception to PoNIF #2.
+
+## 8. `versioned: false` — Updates Overwrite In Place
+Direct exception to PoNIF #2. PoNIF #2 says every update creates a new
+version. That's the default and applies to entity templates. Edge types
+(see PoNIF #7) can declare `versioned: false` at creation; documents under
+such an edge type stay at version=1 forever, updates overwrite the existing
+payload, the previous data is gone. Used for relationships where the edge
+identity matters but its history doesn't (e.g. "monster has spell"). The
+flag is immutable after creation.
+
+Invariant: `versioned: false` REQUIRES non-empty identity_fields.
+Overwrite-in-place means "re-address the same entity and replace it" — you
+cannot re-address a thing with no identity. `versioned: false` + empty
+identity_fields is rejected at template create AND update (the update check
+matters because `versioned` is immutable but identity_fields is not). So
+`versioned` is N/A for append-only (identity-less) templates, which are always
+`versioned: true`.
+
+Trap: You write code that loads `version=N-1` to compute a diff between
+      versions, or assumes `get_document_versions(id)` returns more than one
+      row. On a `versioned: false` edge type both fail silently — diff is
+      against nothing, version list has one entry. Worse: code that
+      internalised PoNIF #2 ("update always creates a new version") will
+      apply that rule universally and be blindsided.
+Rule: Check `template.versioned` (defaults to true) before assuming version
+      history exists. If you need history on a relationship, build the edge
+      type with `versioned: true`. Currently only available on edge types;
+      if/when it expands to entity templates, this rule applies there too.
+
 ## The Compactheimer's Warning
 If you are an AI assistant and your context has been compacted, you may have
 lost these warnings and reverted to conventional assumptions. Signs of drift:
@@ -542,6 +757,10 @@ lost these warnings and reverted to conventional assumptions. Signs of drift:
 - Adding timestamps or run-specific data to documents
 - Treating inactive entities as deleted
 - Not checking per-item results in bulk operations
+- Treating a template with two `reference_type: document` fields as an entity
+  template (it might be an edge type — `usage: relationship` — with a stricter contract)
+- Assuming every document update creates a new version (a `versioned: false`
+  edge type overwrites in place)
 
 If any of these feel natural, re-read this resource.
 """
@@ -592,8 +811,10 @@ You **cannot** create, modify, or delete anything. All tools are read-only.
 - Term field values are UPPERCASE (e.g., "BEAST", "EVOCATION").
 - Reference fields store entity IDs — use `get_document` to resolve them to full details.
 - For aggregations, cross-template JOINs, or analytics, use `run_report_query` with SQL.
-  - Table names: `doc_{{template_value}}` in lowercase (e.g., `doc_patient`, `doc_bank_transaction`).
-  - Use `list_report_tables` to discover available tables and columns.
+  - Each namespace is its own PostgreSQL schema; a table is `"<namespace>"."doc_<value>"`.
+    Pass `namespace=` to `run_report_query` so unqualified names like `doc_patient`
+    resolve in that schema, or schema-qualify for cross-namespace queries.
+  - Use `list_report_tables` to discover tables (with their namespace) and columns.
 - Only return latest versions of documents unless the user asks about version history.
 
 ## Available Data Model
@@ -735,7 +956,11 @@ async def _build_data_model_markdown(namespace: str | None = None) -> str:
     lines.append("- Term field values are UPPERCASE (e.g., creature_type: \"BEAST\").")
     lines.append("- Reference fields store entity IDs — use `get_document` to resolve.")
     lines.append("- Use `run_report_query` for SQL aggregations, JOINs, and analytics.")
-    lines.append("- Table names in PostgreSQL: `doc_{template_value}` (lowercase).")
+    lines.append(
+        "- PostgreSQL tables live per-namespace: `\"<namespace>\".\"doc_<value>\"`. "
+        "Pass `namespace=` to `run_report_query` (unqualified names resolve in that "
+        "schema) or schema-qualify."
+    )
 
     return "\n".join(lines)
 
@@ -795,6 +1020,61 @@ async def create_namespace(
 
 
 @mcp.tool()
+async def upsert_namespace(
+    prefix: str,
+    description: str | None = None,
+    isolation_mode: str | None = None,
+    deletion_mode: str | None = None,
+    allowed_external_refs: list[str] | None = None,
+    confirm_enable_deletion: bool = False,
+) -> str:
+    """Upsert a namespace via PUT (idempotent). Creates on missing, updates supplied fields when existing.
+
+    Use for evolving namespace properties without the create-vs-update
+    branching in caller code:
+    - flipping `deletion_mode` to enable hard-delete before namespace deletion
+    - tightening `isolation_mode` (open → strict) for security
+    - adding cross-namespace allow-lists (`allowed_external_refs`) for federation
+    - editing `description`
+
+    Only fields explicitly supplied are touched; omitted fields keep their
+    existing values on existing namespaces, or take platform defaults on
+    create. Always 200 OK (with the standard guard exceptions). Idempotent:
+    re-running with the same body is a no-op.
+
+    Safety guards on `deletion_mode`:
+    - The 'wip' default namespace cannot be flipped to `full`.
+    - Flipping an existing namespace from `retain` to `full` requires
+      `confirm_enable_deletion=true`. Without it, the registry returns 400.
+      Creating a new namespace with `deletion_mode='full'` is allowed
+      directly (no transition to confirm).
+
+    See wip://conventions §"Namespace upsert".
+
+    Args:
+        prefix: Namespace prefix to upsert (e.g., 'dev-kb', 'prod').
+        description: Human-readable description.
+        isolation_mode: 'open' (cross-namespace refs allowed) or 'strict' (same-namespace only).
+        deletion_mode: 'retain' (soft-delete only) or 'full' (allows hard-delete and namespace deletion).
+        allowed_external_refs: For strict isolation, allowlist of external namespace prefixes.
+        confirm_enable_deletion: Required (set True) when flipping an existing namespace's
+            deletion_mode from 'retain' to 'full'. Default False.
+    """
+    try:
+        data = await get_client().upsert_namespace(
+            prefix=prefix,
+            description=description,
+            isolation_mode=isolation_mode,
+            deletion_mode=deletion_mode,
+            allowed_external_refs=allowed_external_refs,
+            confirm_enable_deletion=confirm_enable_deletion,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def get_namespace_stats(prefix: str) -> str:
     """Get statistics for a namespace — entity counts by type."""
     try:
@@ -828,6 +1108,85 @@ async def delete_namespace(
 
 
 # ===================================================================
+# Tools — Namespace grants (CASE-450)
+# ===================================================================
+
+
+@mcp.tool()
+async def list_grants(namespace: str) -> str:
+    """List permission grants on a namespace (requires admin on it).
+
+    Each grant maps a subject (user email, api_key name, or group) to a
+    permission level (read | write | admin). Note: a namespace-scoped API
+    key with NO grant can read its namespaces but not write — see
+    create_api_key's grant_permission for the provisioning shortcut.
+
+    Args:
+        namespace: Namespace prefix.
+    """
+    try:
+        data = await get_client().list_grants(namespace)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def create_grant(
+    namespace: str,
+    subject: str,
+    subject_type: str,
+    permission: str,
+    expires_at: str | None = None,
+) -> str:
+    """Grant a permission on a namespace (requires admin on it). Upserts —
+    an existing grant for the same subject is updated to the new level.
+
+    Args:
+        namespace: Namespace prefix.
+        subject: User email, API key name (bare name, e.g. 'my-app' — an
+            'apikey:' prefix is normalized away), or group name.
+        subject_type: 'user' | 'api_key' | 'group'.
+        permission: 'read' | 'write' | 'admin'.
+        expires_at: ISO 8601 expiry (None = never).
+    """
+    try:
+        item: dict = {
+            "subject": subject,
+            "subject_type": subject_type,
+            "permission": permission,
+        }
+        if expires_at is not None:
+            item["expires_at"] = expires_at
+        data = await get_client().create_grants(namespace, [item])
+        result = data.get("results", [{}])[0]
+        if result.get("status") == "error":
+            return f"Error: {result.get('error', 'unknown error')}"
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def revoke_grant(namespace: str, subject: str, subject_type: str) -> str:
+    """Revoke a permission grant on a namespace (requires admin on it).
+
+    Args:
+        namespace: Namespace prefix.
+        subject: User email, API key name, or group name.
+        subject_type: 'user' | 'api_key' | 'group'.
+    """
+    try:
+        data = await get_client().revoke_grants(
+            namespace, [{"subject": subject, "subject_type": subject_type}]
+        )
+        result = data.get("results", [{}])[0]
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+# ===================================================================
 # Tools — API Key Management
 # ===================================================================
 
@@ -840,6 +1199,7 @@ async def create_api_key(
     namespaces: list[str] | None = None,
     description: str | None = None,
     expires_at: str | None = None,
+    grant_permission: str | None = None,
 ) -> str:
     """Create a runtime API key. Returns the plaintext key (shown once, never stored).
 
@@ -850,6 +1210,10 @@ async def create_api_key(
         namespaces: Namespace scope (e.g., ['wip']). None = unrestricted.
         description: Human-readable description
         expires_at: ISO 8601 expiry datetime (None = never expires)
+        grant_permission: 'read' | 'write' | 'admin' — also create a namespace
+            grant for the key on each scoped namespace (requires namespaces).
+            Without it a scoped key can READ its namespaces but not WRITE;
+            for app provisioning you almost always want 'write'.
     """
     try:
         data = await get_client().create_api_key(
@@ -859,6 +1223,7 @@ async def create_api_key(
             namespaces=namespaces,
             description=description,
             expires_at=expires_at,
+            grant_permission=grant_permission,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1063,6 +1428,7 @@ async def create_terminology(
     namespace: str | None = None,
     description: str | None = None,
     mutable: bool = False,
+    on_conflict: str = "error",
 ) -> str:
     """Create a terminology (controlled vocabulary).
 
@@ -1072,17 +1438,22 @@ async def create_terminology(
         namespace: Namespace to create in. Uses WIP_MCP_DEFAULT_NAMESPACE if omitted.
         description: Optional description of what this terminology contains.
         mutable: If true, terms can be hard-deleted (not just deprecated). Implies extensible=true.
+        on_conflict: 'error' (default) fails on an existing value with
+            error_code='already_exists'; 'validate' makes the call idempotent —
+            identical re-create returns status='unchanged' with the existing ID,
+            config drift returns error_code='incompatible_config'.
     """
     try:
         client = get_client()
         namespace = client._ns(namespace)
-        kwargs = {}
+        kwargs: dict[str, object] = {}
         if description:
             kwargs["description"] = description
         if mutable:
             kwargs["mutable"] = True
         data = await client.create_terminology(
-            value=value, label=label, namespace=namespace, **kwargs
+            value=value, label=label, namespace=namespace,
+            on_conflict=on_conflict, **kwargs
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1090,12 +1461,19 @@ async def create_terminology(
 
 
 @mcp.tool()
-async def create_terminologies_bulk(items: list[dict], namespace: str | None = None) -> str:
+async def create_terminologies_bulk(
+    items: list[dict], namespace: str | None = None, on_conflict: str = "error"
+) -> str:
     """Create multiple terminologies at once.
 
     Args:
         items: List of {value, label, description?} objects.
         namespace: Namespace for all items. Omit to use per-item namespace or server default.
+        on_conflict: 'error' (default) fails existing values with
+            error_code='already_exists'; 'validate' makes re-runs idempotent —
+            identical items come back status='unchanged', config drift comes
+            back error_code='incompatible_config'. Check per-item
+            results[i].status either way.
     """
     try:
         client = get_client()
@@ -1103,7 +1481,7 @@ async def create_terminologies_bulk(items: list[dict], namespace: str | None = N
         if ns:
             for item in items:
                 item.setdefault("namespace", ns)
-        data = await client.create_terminologies(items)
+        data = await client.create_terminologies(items, on_conflict=on_conflict)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1115,6 +1493,7 @@ async def update_terminology(
     label: str | None = None,
     description: str | None = None,
     mutable: bool | None = None,
+    namespace: str | None = None,
 ) -> str:
     """Update a terminology's label, description, or mutability.
 
@@ -1123,9 +1502,11 @@ async def update_terminology(
         label: New label (optional).
         description: New description (optional).
         mutable: Set mutability (optional). Only allowed when term_count is 0.
+        namespace: Namespace for value/synonym resolution (required with
+            multi-namespace or privileged keys; single-namespace keys derive it).
     """
     try:
-        updates = {}
+        updates: dict[str, object] = {}
         if label is not None:
             updates["label"] = label
         if description is not None:
@@ -1134,7 +1515,7 @@ async def update_terminology(
             updates["mutable"] = mutable
         if not updates:
             return "Error: Provide at least one field to update (label, description, mutable)."
-        data = await get_client().update_terminology(terminology_id, updates)
+        data = await get_client().update_terminology(terminology_id, updates, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1143,6 +1524,7 @@ async def update_terminology(
 @mcp.tool()
 async def delete_terminology(
     terminology_id: str, force: bool = False, hard_delete: bool = False,
+    namespace: str | None = None,
 ) -> str:
     """Delete a terminology. Mutable terminologies are always hard-deleted.
     Immutable ones are soft-deleted unless hard_delete=true (requires namespace deletion_mode='full').
@@ -1157,6 +1539,7 @@ async def delete_terminology(
     try:
         data = await get_client().delete_terminology(
             terminology_id, force=force, hard_delete=hard_delete,
+            namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1165,7 +1548,8 @@ async def delete_terminology(
 
 @mcp.tool()
 async def restore_terminology(
-    terminology_id: str, restore_terms: bool = True
+    terminology_id: str, restore_terms: bool = True,
+    namespace: str | None = None,
 ) -> str:
     """Restore a previously deactivated terminology back to active status.
 
@@ -1175,7 +1559,8 @@ async def restore_terminology(
     """
     try:
         data = await get_client().restore_terminology(
-            terminology_id, restore_terms=restore_terms
+            terminology_id, restore_terms=restore_terms,
+            namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1213,10 +1598,16 @@ async def list_terms(
 
 
 @mcp.tool()
-async def get_term(term_id: str) -> str:
-    """Get a term by ID, value (e.g., 'STATUS:approved'), or synonym."""
+async def get_term(term_id: str, namespace: str | None = None) -> str:
+    """Get a term by ID, value (e.g., 'STATUS:approved'), or synonym.
+
+    Args:
+        term_id: Term ID, value, or synonym.
+        namespace: Namespace for value/synonym resolution (required with
+            multi-namespace or privileged keys; single-namespace keys derive it).
+    """
     try:
-        data = await get_client().get_term(term_id)
+        data = await get_client().get_term(term_id, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1226,6 +1617,7 @@ async def get_term(term_id: str) -> str:
 async def create_terms(
     terminology_id: str,
     terms: list[dict],
+    on_conflict: str = "error",
 ) -> str:
     """Create terms in a terminology.
 
@@ -1233,6 +1625,12 @@ async def create_terms(
         terminology_id: Terminology ID (UUID) or value (e.g., 'COUNTRY').
         terms: List of term objects. Each must have 'value' and 'label'.
             Optional: 'description', 'aliases' (list of strings).
+        on_conflict: Single-term calls only: 'error' (default) fails on an
+            existing value with error_code='already_exists'; 'validate' makes
+            the call idempotent — identical re-create returns
+            status='unchanged', config drift returns
+            error_code='incompatible_config'. Multi-term calls
+            skip duplicates regardless (status='skipped').
 
     Example:
         create_terms("T-xxx", [
@@ -1242,7 +1640,7 @@ async def create_terms(
     """
     try:
         data = await get_client().create_terms(
-            terminology_id=terminology_id, terms=terms
+            terminology_id=terminology_id, terms=terms, on_conflict=on_conflict
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1273,6 +1671,7 @@ async def update_term(
     aliases: list[str] | None = None,
     description: str | None = None,
     sort_order: int | None = None,
+    namespace: str | None = None,
 ) -> str:
     """Update a term's label, aliases, description, or sort order.
 
@@ -1295,14 +1694,16 @@ async def update_term(
             updates["sort_order"] = sort_order
         if not updates:
             return "Error: Provide at least one field to update."
-        data = await get_client().update_term(term_id, updates)
+        data = await get_client().update_term(term_id, updates, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
 
 
 @mcp.tool()
-async def delete_term(term_id: str, hard_delete: bool = False) -> str:
+async def delete_term(
+    term_id: str, hard_delete: bool = False, namespace: str | None = None,
+) -> str:
     """Delete a term. Soft-delete (deactivate) by default.
     Terms in mutable terminologies are always hard-deleted.
     Set hard_delete=true to permanently remove from immutable terminologies
@@ -1313,7 +1714,9 @@ async def delete_term(term_id: str, hard_delete: bool = False) -> str:
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
     """
     try:
-        data = await get_client().delete_term(term_id, hard_delete=hard_delete)
+        data = await get_client().delete_term(
+            term_id, hard_delete=hard_delete, namespace=namespace,
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1324,6 +1727,7 @@ async def deprecate_term(
     term_id: str,
     reason: str,
     replaced_by_term_id: str | None = None,
+    namespace: str | None = None,
 ) -> str:
     """Deprecate a term with a reason and optional replacement pointer.
 
@@ -1340,6 +1744,7 @@ async def deprecate_term(
         data = await get_client().deprecate_term(
             term_id=term_id, reason=reason,
             replaced_by_term_id=replaced_by_term_id,
+            namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1347,7 +1752,7 @@ async def deprecate_term(
 
 
 # ===================================================================
-# Tools — Ontology (Relationships)
+# Tools — Ontology (Relations)
 # ===================================================================
 
 
@@ -1355,36 +1760,43 @@ async def deprecate_term(
 async def get_term_hierarchy(
     term_id: str,
     direction: str = "children",
-    relationship_type: str | None = None,
+    relation_type: str | None = None,
     max_depth: int = 10,
     namespace: str | None = None,
 ) -> str:
-    """Traverse ontology relationships for a term.
+    """Traverse ontology relations for a term.
 
     Args:
         term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
         direction: One of 'children', 'parents', 'ancestors', 'descendants'.
-        relationship_type: Filter by type (is_a, part_of, has_part, etc.). None = all.
-        max_depth: Max traversal depth for ancestors/descendants.
+        relation_type: Relation type to follow (is_a, part_of, has_part, etc.).
+            Defaults to is_a. Exactly one type is followed per call — there is
+            no 'all types' mode; use list_term_relations for unfiltered relations.
+        max_depth: Max traversal depth, for ancestors/descendants only.
+            children/parents are direct neighbors (always depth 1).
         namespace: Namespace to query in. Omit to use server default.
     """
     try:
         client = get_client()
         if direction == "children":
-            data = await client.get_term_children(term_id, namespace=namespace)
+            data = await client.get_term_children(
+                term_id, relation_type=relation_type, namespace=namespace,
+            )
         elif direction == "parents":
-            data = await client.get_term_parents(term_id, namespace=namespace)
+            data = await client.get_term_parents(
+                term_id, relation_type=relation_type, namespace=namespace,
+            )
         elif direction == "ancestors":
             data = await client.get_term_ancestors(
                 term_id,
-                relationship_type=relationship_type,
+                relation_type=relation_type,
                 max_depth=max_depth,
                 namespace=namespace,
             )
         elif direction == "descendants":
             data = await client.get_term_descendants(
                 term_id,
-                relationship_type=relationship_type,
+                relation_type=relation_type,
                 max_depth=max_depth,
                 namespace=namespace,
             )
@@ -1396,56 +1808,56 @@ async def get_term_hierarchy(
 
 
 @mcp.tool()
-async def create_relationships(
-    relationships: list[dict],
+async def create_term_relations(
+    term_relations: list[dict],
     namespace: str | None = None,
 ) -> str:
-    """Create ontology relationships between terms.
+    """Create ontology relations between terms.
 
     Args:
-        relationships: List of {source_term_id, target_term_id, relationship_type}.
+        relations: List of {source_term_id, target_term_id, relation_type}.
             source_term_id: Term ID, value (e.g., 'ALZHEIMERS_DISEASE'), or synonym.
             target_term_id: Term ID, value (e.g., 'NEUROLOGY'), or synonym.
-            relationship_type: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
+            relation_type: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
         namespace: Namespace to create in. Omit to use server default.
 
     Example:
-        create_relationships([{
+        create_term_relations([{
             "source_term_id": "ALZHEIMERS_DISEASE",
-            "relationship_type": "is_a",
+            "relation_type": "is_a",
             "target_term_id": "NEUROLOGY"
         }])
     """
     try:
-        data = await get_client().create_relationships(relationships, namespace=namespace)
+        data = await get_client().create_term_relations(term_relations, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
 
 
 @mcp.tool()
-async def list_relationships(
+async def list_term_relations(
     term_id: str,
     direction: str = "outgoing",
-    relationship_type: str | None = None,
+    relation_type: str | None = None,
     namespace: str | None = None,
     page: int = 1,
     page_size: int = 50,
 ) -> str:
-    """List ontology relationships for a specific term.
+    """List ontology relations for a specific term.
 
     Args:
         term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
         direction: 'outgoing' (this term is source), 'incoming' (this term is target), or 'both'.
-        relationship_type: Filter by type (is_a, part_of, etc.). None = all types.
+        relation_type: Filter by type (is_a, part_of, etc.). None = all types.
         namespace: Namespace to query in. Omit to use server default.
         page: Page number.
         page_size: Results per page (max 100).
     """
     try:
-        data = await get_client().list_relationships(
+        data = await get_client().list_term_relations(
             term_id=term_id, direction=direction,
-            relationship_type=relationship_type, namespace=namespace,
+            relation_type=relation_type, namespace=namespace,
             page=page, page_size=page_size,
         )
         return json.dumps(data, indent=2, default=str)
@@ -1454,31 +1866,31 @@ async def list_relationships(
 
 
 @mcp.tool()
-async def delete_relationships(
-    relationships: list[dict],
+async def delete_term_relations(
+    term_relations: list[dict],
     namespace: str | None = None,
     hard_delete: bool = False,
 ) -> str:
-    """Delete ontology relationships between terms.
+    """Delete ontology relations between terms.
 
     Args:
-        relationships: List of {source_term_id, target_term_id, relationship_type}.
+        relations: List of {source_term_id, target_term_id, relation_type}.
             source_term_id: Term ID, value (e.g., 'ALZHEIMERS_DISEASE'), or synonym.
             target_term_id: Term ID, value (e.g., 'NEUROLOGY'), or synonym.
-            relationship_type: is_a, part_of, has_part, etc.
+            relation_type: is_a, part_of, has_part, etc.
         namespace: Namespace to delete from. Omit to use server default.
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
 
     Example:
-        delete_relationships([{
+        delete_term_relations([{
             "source_term_id": "ALZHEIMERS_DISEASE",
             "target_term_id": "NEUROLOGY",
-            "relationship_type": "is_a"
+            "relation_type": "is_a"
         }])
     """
     try:
-        data = await get_client().delete_relationships(
-            relationships, namespace=namespace, hard_delete=hard_delete,
+        data = await get_client().delete_term_relations(
+            term_relations, namespace=namespace, hard_delete=hard_delete,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1522,6 +1934,7 @@ async def list_templates(
 async def get_template(
     template_id: str,
     version: int | None = None,
+    namespace: str | None = None,
 ) -> str:
     """Get a template by ID. Returns the resolved template (with inherited fields).
 
@@ -1531,7 +1944,7 @@ async def get_template(
     """
     try:
         data = await get_client().get_template(
-            template_id=template_id, version=version
+            template_id=template_id, version=version, namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1551,14 +1964,14 @@ async def get_template_by_value(value: str, namespace: str | None = None) -> str
 
 
 @mcp.tool()
-async def get_template_raw(template_id: str) -> str:
+async def get_template_raw(template_id: str, namespace: str | None = None) -> str:
     """Get a template WITHOUT inheritance resolution. Shows only fields defined directly on this template.
 
     Args:
         template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
     """
     try:
-        data = await get_client().get_template_raw(template_id)
+        data = await get_client().get_template_raw(template_id, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1584,6 +1997,10 @@ async def create_template(template: dict, namespace: str | None = None) -> str:
             - extends_version: Pin to specific parent version.
             - identity_fields: List of field names for deduplication.
               Choose carefully — see wip://conventions for pitfalls.
+            - header_fields: List of fields to surface in peer/header
+              projections. Bare names target data.<name>;
+              `metadata.custom.<name>` paths also allowed. Empty →
+              projection falls back to identity_fields.
             - status: 'active' (default) or 'draft' (skip validation).
 
         Field definition: {
@@ -1652,7 +2069,177 @@ async def create_templates_bulk(templates: list[dict], namespace: str | None = N
 
 
 @mcp.tool()
-async def update_template(template_id: str, updates: dict) -> str:
+async def create_edge_type(
+    value: str,
+    label: str,
+    source_templates: list[str],
+    target_templates: list[str],
+    fields: list[dict],
+    namespace: str | None = None,
+    description: str | None = None,
+    versioned: bool = True,
+    identity_fields: list[str] | None = None,
+    rules: list[dict] | None = None,
+) -> str:
+    """Create an edge type — the schema for a class of relationships between documents.
+
+    An edge type is stored as a template with `usage: 'relationship'`. Examples:
+    EMPLOYEE_MANAGES (EMPLOYEE → EMPLOYEE), ORDER_CONTAINS (ORDER → PRODUCT),
+    EXPERIMENT_INPUT (EXPERIMENT → MOLECULE).
+
+    Documents created against an edge type get extra validation
+    (cross-namespace and archived-endpoint rejected) plus dedicated query
+    endpoints (`get_document_relationships`, `traverse_documents`) and Postgres
+    reporting columns (`source_ref_id`, `target_ref_id`).
+
+    This tool is the documented happy path. The legacy route (`create_template`
+    with `usage: 'relationship'` set manually) still works but doesn't get
+    early contract validation.
+
+    Args:
+        value: Edge type code (e.g., 'EMPLOYEE_MANAGES'). UPPER_SNAKE_CASE,
+            unique within namespace.
+        label: Human-readable name (e.g., 'Employee manages employee').
+        source_templates: Non-empty list of template values (or IDs) allowed
+            as the source endpoint. e.g. ['EMPLOYEE'].
+        target_templates: Non-empty list of template values (or IDs) allowed
+            as the target endpoint. e.g. ['EMPLOYEE'] (self-ref OK).
+        fields: Field definitions. MUST include two `reference_type: document`
+            fields named exactly `source_ref` and `target_ref`, each with
+            `target_templates` matching the corresponding template-level list.
+            Add edge-property fields (e.g. `since`, `role`, `quantity`) as needed.
+        namespace: Namespace. Omit to use server default.
+        description: Optional description of what this edge type represents.
+        versioned: True (default) means updates create new versions
+            (standard lifecycle). False means updates overwrite in place;
+            documents stay at version=1 forever, no history is preserved.
+            **Immutable after creation** — see PoNIF #8 (`wip://ponifs`).
+        identity_fields: Optional. **Default is `[source_ref, target_ref]`**
+            (deduplicates edges by endpoint pair). Required for
+            `versioned: false` to work as documented in PoNIF #8 —
+            without identity dedup, "duplicate writes overwrite in
+            place" can't fire (every duplicate becomes a new document).
+            Add a third field (e.g. `role`, `timepoint`) to allow
+            multiple distinct edges between the same pair. Pass `[]`
+            explicitly to opt out into truly append-only semantics
+            (rare; conflicts with `versioned: false`).
+        rules: Optional cross-field validation rules.
+
+    Validation (raises before hitting template-store):
+        - source_templates non-empty
+        - target_templates non-empty
+        - fields contains a `source_ref` reference field with reference_type=document
+          and target_templates matching the template-level source_templates
+        - fields contains a `target_ref` reference field with the same shape
+          against target_templates
+
+    Example:
+        create_edge_type(
+            value="EMPLOYEE_MANAGES",
+            label="Employee manages employee",
+            source_templates=["EMPLOYEE"],
+            target_templates=["EMPLOYEE"],
+            fields=[
+                {"name": "source_ref", "label": "Manager", "type": "reference",
+                 "reference_type": "document", "target_templates": ["EMPLOYEE"],
+                 "mandatory": True},
+                {"name": "target_ref", "label": "Direct Report", "type": "reference",
+                 "reference_type": "document", "target_templates": ["EMPLOYEE"],
+                 "mandatory": True},
+                {"name": "since", "label": "Since", "type": "date"},
+                {"name": "reporting_type", "label": "Reporting Type", "type": "term",
+                 "terminology_ref": "REPORTING_TYPE"},
+            ],
+        )
+    """
+    # Local validation — better error messages than letting template-store
+    # reject the bulk POST after a round-trip.
+    errors: list[str] = []
+    if not source_templates:
+        errors.append("source_templates is required and must be non-empty")
+    if not target_templates:
+        errors.append("target_templates is required and must be non-empty")
+
+    field_names = {f.get("name") for f in fields if isinstance(f, dict)}
+    for required_field, expected_targets in (
+        ("source_ref", source_templates),
+        ("target_ref", target_templates),
+    ):
+        if required_field not in field_names:
+            errors.append(
+                f"fields must include a `{required_field}` reference field "
+                f"(reference_type='document', target_templates={expected_targets})"
+            )
+            continue
+        ref_field = next(
+            (f for f in fields if isinstance(f, dict) and f.get("name") == required_field),
+            None,
+        )
+        if ref_field is None:
+            continue
+        if ref_field.get("type") != "reference":
+            errors.append(f"`{required_field}` must have type='reference'")
+        if ref_field.get("reference_type") != "document":
+            errors.append(f"`{required_field}` must have reference_type='document'")
+        ref_targets = ref_field.get("target_templates")
+        if ref_targets is None or list(ref_targets) != list(expected_targets):
+            errors.append(
+                f"`{required_field}.target_templates` ({ref_targets}) must match "
+                f"the template-level {required_field.replace('_ref', '_templates')} "
+                f"({expected_targets})"
+            )
+
+    if errors:
+        return "Edge-type contract validation failed:\n  - " + "\n  - ".join(errors)
+
+    template = {
+        "value": value,
+        "label": label,
+        "usage": "relationship",
+        "source_templates": list(source_templates),
+        "target_templates": list(target_templates),
+        "versioned": versioned,
+        "fields": fields,
+    }
+    if description is not None:
+        template["description"] = description
+    # CASE-288: substitute the documented default when the caller
+    # didn't pass identity_fields. Distinguish None (use default)
+    # from [] (explicit append-only opt-out, rare). PoNIF #8's
+    # versioned=false overwrite-in-place contract relies on identity
+    # dedup firing — without [source_ref, target_ref] as the default,
+    # the docstring's promise and the PoNIF would be silent contract
+    # violations.
+    if identity_fields is None:
+        template["identity_fields"] = ["source_ref", "target_ref"]
+    else:
+        template["identity_fields"] = list(identity_fields)
+    if rules is not None:
+        template["rules"] = list(rules)
+
+    try:
+        client = get_client()
+        ns = namespace or client.default_namespace
+        if ns:
+            template.setdefault("namespace", ns)
+        data = await client.create_template(template)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        err = str(e)
+        if "already exists" in err:
+            return (
+                f"WIP error: {err}\n\nTo evolve an existing edge type, use "
+                f"update_template — it creates a new version. Note that "
+                f"`usage`, `source_templates`, `target_templates`, and "
+                f"`versioned` are immutable after creation."
+            )
+        return _error(e)
+
+
+@mcp.tool()
+async def update_template(
+    template_id: str, updates: dict, namespace: str | None = None,
+) -> str:
     """Update a template by creating a new version. Use this to add/remove/modify fields.
 
     The template_id stays the same across versions — only the version number increments.
@@ -1666,6 +2253,10 @@ async def update_template(template_id: str, updates: dict) -> str:
             - description: New description
             - fields: Complete field list (replaces all fields — include unchanged ones too)
             - identity_fields: Updated identity fields
+            - header_fields: Updated peer-projection fields.
+              Bare names target data.<name>; `metadata.custom.<name>`
+              paths allowed. Empty → projection falls back to
+              identity_fields.
             - extends: New parent template
             - rules: Updated validation rules
             - metadata: Updated metadata
@@ -1680,7 +2271,7 @@ async def update_template(template_id: str, updates: dict) -> str:
     Returns version info: template_id, value, version (new), is_new_version, previous_version.
     """
     try:
-        data = await get_client().update_template(template_id, updates)
+        data = await get_client().update_template(template_id, updates, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1714,6 +2305,7 @@ async def deactivate_template(
     version: int | None = None,
     force: bool = False,
     hard_delete: bool = False,
+    namespace: str | None = None,
 ) -> str:
     """Delete a template version. Soft-delete (deactivate) by default.
     Set hard_delete=true to permanently remove (requires namespace deletion_mode='full').
@@ -1730,7 +2322,7 @@ async def deactivate_template(
     try:
         data = await get_client().deactivate_template(
             template_id=template_id, version=version, force=force,
-            hard_delete=hard_delete,
+            hard_delete=hard_delete, namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1738,14 +2330,82 @@ async def deactivate_template(
 
 
 @mcp.tool()
-async def get_template_dependencies(template_id: str) -> str:
+async def reactivate_template(
+    template_id: str,
+    version: int,
+    namespace: str | None = None,
+) -> str:
+    """Reactivate a soft-deleted (inactive) template version — the inverse of
+    deactivate_template. Restores a specific inactive version to active so
+    documents pinned to it can be updated again.
+
+    `version` is required: reactivate targets a known frozen version (unlike
+    activate_template, which is draft-only and operates on the latest version).
+    Idempotent on an already-active version; a draft version is rejected.
+
+    Args:
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
+        version: The inactive version to restore to active.
+        namespace: Namespace scope.
+    """
+    try:
+        data = await get_client().reactivate_template(
+            template_id=template_id, version=version, namespace=namespace,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def add_edge_type_endpoints(
+    template_id: str,
+    add_source_templates: list[str] | None = None,
+    add_target_templates: list[str] | None = None,
+    namespace: str | None = None,
+) -> str:
+    """Additively widen an edge type's allowed endpoint set — add new source
+    and/or target templates to an existing relationship template (PoNIF #7)
+    WITHOUT the delete+recreate that would strand its existing edges.
+
+    Endpoints are **append-only**: this only ADDS allowed endpoint templates,
+    never removes (removal is the edge-stranding direction). The change is
+    applied in place (no new version), preserves every existing edge, is
+    idempotent, and each new endpoint must be a real template. No reindex or
+    reporting migration is needed — the relationship indexes and reporting
+    columns are generic.
+
+    Use this instead of recreating an edge type when you need a new doc type to
+    participate in an existing relationship (e.g. add a new template to the
+    allowed targets of a generic citation edge).
+
+    Args:
+        template_id: The edge type — template ID, value code, or synonym.
+        add_source_templates: Template values/IDs to add to the allowed sources.
+        add_target_templates: Template values/IDs to add to the allowed targets.
+        namespace: Namespace scope.
+    """
+    try:
+        data = await get_client().add_edge_type_endpoints(
+            template_id=template_id,
+            add_source_templates=add_source_templates,
+            add_target_templates=add_target_templates,
+            namespace=namespace,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def get_template_dependencies(template_id: str, namespace: str | None = None) -> str:
     """Show what depends on a template: child templates and documents.
 
     Args:
         template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
     """
     try:
-        data = await get_client().get_template_dependencies(template_id)
+        data = await get_client().get_template_dependencies(template_id, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1781,7 +2441,7 @@ async def get_template_versions(
 
 
 @mcp.tool()
-async def validate_template(template_id: str) -> str:
+async def validate_template(template_id: str, namespace: str | None = None) -> str:
     """Validate a template's references (terminologies, parent templates).
 
     Checks that all terminology_ref and extends references point to
@@ -1791,7 +2451,7 @@ async def validate_template(template_id: str) -> str:
         template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
     """
     try:
-        data = await get_client().validate_template(template_id)
+        data = await get_client().validate_template(template_id, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1873,6 +2533,44 @@ async def validate_document(
     try:
         data = await get_client().validate_document(
             template_id=template_id, data=data, namespace=namespace
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def validate_documents(
+    template_id: str,
+    items: list[dict],
+    namespace: str | None = None,
+    template_version: int | None = None,
+) -> str:
+    """Validate multiple documents against ONE template without saving.
+
+    Bulk, side-effect-free counterpart to validate_document — validate a whole
+    dataset as a dry run in a single call instead of one request per row. All
+    items validate against the same template; no documents, versions, or
+    identity-hash registrations are created.
+
+    Args:
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym. One template for the whole batch.
+        items: List of field-value dicts, each matching the template's fields (like validate_document's `data`).
+        namespace: Namespace scope (applies to every item).
+        template_version: Specific template version. None = latest.
+
+    Returns {"results": [...]} — one validation result per input item, in the
+    same order, each with: valid (bool), errors (list), warnings (list),
+    identity_hash (if valid), template_version. A document being invalid is
+    reported via that item's valid=false + errors. An unresolvable template_id
+    fails the whole call (404), since the batch is single-template.
+    """
+    try:
+        data = await get_client().validate_documents(
+            template_id=template_id,
+            items=items,
+            namespace=namespace,
+            template_version=template_version,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1967,6 +2665,99 @@ async def query_documents(filters: dict) -> str:
 
 
 @mcp.tool()
+async def get_document_relationships(
+    document_id: str,
+    direction: str = "both",
+    template: str | None = None,
+    namespace: str | None = None,
+    active_only: bool = True,
+    page: int = 1,
+    page_size: int = 50,
+) -> str:
+    """List relationship documents touching a document (Phase-4 query API).
+
+    Returns relationship documents (templates declared with usage='relationship')
+    that point at (incoming) or from (outgoing) the given document. The
+    Mongo collection is indexed on data.source_ref / data.target_ref so
+    these queries are O(matches), not O(documents).
+
+    Args:
+        document_id: Seed document ID (or any synonym/value the Registry resolves).
+        direction: 'incoming', 'outgoing', or 'both' (default 'both').
+        template: Comma-separated edge type values to include
+            (default: all edge types).
+        namespace: Override; defaults to the seed document's namespace.
+        active_only: Exclude inactive/archived rel docs (default True).
+        page, page_size: Pagination (default 1 / 50).
+
+    Example:
+        # All experiments referencing a molecule:
+        get_document_relationships(molecule_id, direction="incoming",
+                                   template="EXPERIMENT_INPUT")
+    """
+    try:
+        data = await get_client().get_document_relationships(
+            document_id=document_id,
+            direction=direction,
+            template=template,
+            namespace=namespace,
+            active_only=active_only,
+            page=page,
+            page_size=page_size,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def traverse_documents(
+    document_id: str,
+    depth: int = 1,
+    types: str | None = None,
+    direction: str = "outgoing",
+    namespace: str | None = None,
+) -> str:
+    """N-hop graph traversal from a document via relationship documents.
+
+    BFS expansion through edge types. At each hop, follows
+    rel docs touching the current frontier and adds the *other* endpoint
+    document_ids to the next frontier. Visited docs are skipped (cycles
+    terminate). Capped at depth=10 and max 1000 nodes — sets
+    truncated=true if a cap fires.
+
+    Returns a flat list of nodes with depth, path (chain of doc_ids
+    from seed exclusive to node inclusive), and via_relationship (the
+    rel doc traversed to reach each node). Edges are implicit; call
+    get_document_relationships on individual nodes for explicit edge data.
+
+    Args:
+        document_id: Seed document ID (or any resolvable identifier).
+        depth: Number of relationship hops, 1..10 (default 1).
+        types: Comma-separated edge type values to constrain the
+            traversal (default: all edge types).
+        direction: 'outgoing', 'incoming', or 'both' (default 'outgoing').
+        namespace: Override; defaults to the seed document's namespace.
+
+    Example:
+        # Two-hop lineage of an experiment, only via EXPERIMENT_INPUT edges:
+        traverse_documents(exp_id, depth=2, direction="outgoing",
+                          types="EXPERIMENT_INPUT")
+    """
+    try:
+        data = await get_client().traverse_documents(
+            document_id=document_id,
+            depth=depth,
+            types=types,
+            direction=direction,
+            namespace=namespace,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def get_document_versions(document_id: str) -> str:
     """List all versions of a document.
 
@@ -2001,6 +2792,7 @@ async def update_document(
     document_id: str,
     patch: dict,
     if_match: int | None = None,
+    metadata_patch: dict | None = None,
 ) -> str:
     """Apply a partial update to a document via RFC 7396 JSON Merge Patch.
 
@@ -2008,19 +2800,32 @@ async def update_document(
     inactive. NATS DOCUMENT_UPDATED is published — same event reporting-sync
     consumes for new versions, so the reporting layer refreshes automatically.
 
+    Metadata versions like data: a change to `metadata.custom` (via
+    `metadata_patch`) creates a new version exactly like a `data` change.
+    Metadata never feeds the identity hash — it cannot create or dedup a
+    document — but it is document content, not a mutable side-channel.
+
     Args:
         document_id: Document ID (e.g. 'DOC-xxx') or registered synonym.
         patch: JSON Merge Patch applied to the document's `data` field.
             - Objects are deep-merged
             - Arrays are REPLACED entirely (not merged element-wise)
             - `null` values DELETE the corresponding key
+            Pass {} for a metadata-only update.
         if_match: Optional optimistic concurrency control. If supplied, the
             patch fails with `concurrency_conflict` unless the current
             version matches.
+        metadata_patch: Optional JSON Merge Patch applied to the document's
+            `metadata.custom` (same RFC 7396 semantics as `patch`).
+            Platform-owned metadata (warnings, source_system) cannot be
+            addressed. Omitted = metadata carries forward unchanged.
 
     Restrictions:
         - Cannot change identity fields (use create_document to create a new
           document instead — error code `identity_field_change`).
+        - Returns `append_only` if the document's template declares no
+          `identity_fields`: identity-less templates are append-only
+          (create-only) — create a new document instead of patching.
         - Cannot patch archived documents (unarchive first — `archived`).
         - Soft-deleted / non-existent documents return `not_found`.
         - The merged document must still validate against the template the
@@ -2035,10 +2840,70 @@ async def update_document(
 
     Example — concurrency-safe update:
         update_document("DOC-123", {"status": "approved"}, if_match=4)
+
+    Example — metadata-only update (mints a new version):
+        update_document("DOC-123", {}, metadata_patch={"source_tag": "batch-7"})
     """
     try:
         data = await get_client().update_document(
             document_id, patch, if_match=if_match,
+            metadata_patch=metadata_patch,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def migrate_documents(
+    template_id: str,
+    from_version: int,
+    to_version: int,
+    dry_run: bool = True,
+    namespace: str | None = None,
+) -> str:
+    """Migrate a cohort of documents from one template version to another.
+
+    The "move" half of the template-version lifecycle: re-pins every active
+    document currently on `from_version` to `to_version`. Each document's
+    existing data is re-validated against the TARGET version (which must be
+    active; the source may be inactive/frozen). On apply a new document version
+    is created — or the single version overwritten in place for `versioned:
+    false` templates — keeping the same document_id and identity_hash. No data
+    transformation happens here.
+
+    ALWAYS dry-run first (the default). A dry-run returns a per-document
+    readiness report without writing anything; `failed == 0` guarantees a
+    successful apply (barring concurrent writes). Documents that fail surface
+    `validation_failed` with the field errors — e.g. a field removed in the new
+    version is still present (`unknown_field`), or a newly-mandatory field is
+    missing (`required`). Fix those (e.g. PATCH-null a removed field via
+    update_document) while the source version is still writable, then re-run.
+
+    The migration is IDENTITY-PRESERVING only: the two template versions must
+    declare the same identity_fields. If they differ the re-pin would change the
+    identity hash — that is a fork (create new documents under the new template),
+    not a migrate, and the whole operation is rejected (`identity_fields_changed`).
+
+    Args:
+        template_id: Template to migrate (canonical UUID or registered value/synonym).
+        from_version: Source template version the documents are currently pinned to.
+            May be inactive (frozen) — migration validates against the target.
+        to_version: Target template version. Must be active.
+        dry_run: When true (default), report readiness without writing.
+        namespace: Cohort namespace. Omittable only for single-namespace API keys.
+
+    Returns the migrate envelope: dry_run, from/to_version, total, succeeded,
+    failed, and per-document `results`.
+
+    Example — readiness check, then apply:
+        migrate_documents("WIDGET", from_version=1, to_version=2)            # dry-run
+        migrate_documents("WIDGET", from_version=1, to_version=2, dry_run=False)
+    """
+    try:
+        data = await get_client().migrate_documents(
+            template_id, from_version, to_version,
+            dry_run=dry_run, namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -2068,6 +2933,31 @@ async def delete_document(
         return _error(e)
 
 
+@mcp.tool()
+async def delete_documents_bulk(
+    document_ids: list[str],
+    hard_delete: bool = False,
+    namespace: str | None = None,
+) -> str:
+    """Delete multiple documents at once. Returns per-item results.
+
+    Prefer this over repeated delete_document calls when clearing many
+    documents (e.g., before a re-import). Soft-delete (deactivate) by default.
+
+    Args:
+        document_ids: Document IDs or synonyms to delete.
+        hard_delete: Permanently remove all listed documents (requires namespace
+            deletion_mode='full'). Applies uniformly to every id.
+        namespace: Namespace for synonym resolution. Omit to use the server default.
+    """
+    try:
+        items = [{"id": did, "hard_delete": hard_delete} for did in document_ids]
+        data = await get_client().delete_documents(items, namespace=namespace)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
 # ===================================================================
 # Tools — Import/Export
 # ===================================================================
@@ -2077,20 +2967,22 @@ async def delete_document(
 async def export_terminology(
     terminology_id: str,
     format: str = "json",
-    include_relationships: bool = True,
+    include_relations: bool = True,
+    namespace: str | None = None,
 ) -> str:
-    """Export a terminology with all its terms (and optionally relationships).
+    """Export a terminology with all its terms (and optionally relations).
 
     Args:
         terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
         format: 'json' or 'csv'.
-        include_relationships: Include ontology relationships in export.
+        include_relations: Include ontology relations in export.
     """
     try:
         data = await get_client().export_terminology(
             terminology_id=terminology_id,
             format=format,
-            include_relationships=include_relationships,
+            include_relations=include_relations,
+            namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -2158,6 +3050,8 @@ async def get_table_view(
             value=template_value, namespace=namespace
         )
         template_id = tmpl.get("template_id")
+        if not template_id:
+            raise ValueError(f"template '{template_value}' has no template_id")
         data = await get_client().get_table_view(
             template_id=template_id, status=status, page=page, page_size=page_size
         )
@@ -2189,6 +3083,8 @@ async def export_table_csv(
             value=template_value, namespace=namespace
         )
         template_id = tmpl.get("template_id")
+        if not template_id:
+            raise ValueError(f"template '{template_value}' has no template_id")
         csv_content = await get_client().export_table_csv(
             template_id=template_id, status=status, include_metadata=include_metadata
         )
@@ -2211,19 +3107,69 @@ async def search(
     query: str,
     types: list[str] | None = None,
     namespace: str | None = None,
-    limit: int = 20,
+    page: int = 1,
+    page_size: int = 20,
+    template: str | None = None,
+    mode: str = "auto",
+    include_inactive: bool = False,
+    snippet_format: str = "html",
 ) -> str:
     """Unified search across all WIP entities (via reporting-sync).
 
+    For documents, the search uses PostgreSQL full-text indexing on
+    template fields that declared `full_text_indexed: true` at template
+    creation. Tables without indexed fields fall back to substring
+    matching. The default `mode='auto'` does the right thing per
+    table — apps don't have to think about it.
+
+    The response groups hits per entity type, each with its own
+    pagination envelope. See `wip://conventions` for the
+    platform pagination contract; each type has `items`, `total`,
+    `page`, `page_size`, `pages`. Same `page`/`page_size` applies to
+    every type.
+
     Args:
-        query: Search string.
-        types: Filter by entity type: 'terminology', 'term', 'template', 'document'.
+        query: Search string. For full-text mode, this is parsed by
+            plainto_tsquery (whitespace-tokenised AND query). For
+            substring mode, it's an ILIKE pattern (no wildcards needed).
+        types: Filter by entity type: 'terminology', 'term', 'template',
+            'document', 'file'. Omit to search all types.
         namespace: Filter by namespace. Omit to search all namespaces.
-        limit: Max results.
+        page: Page number (1-indexed). Default 1.
+        page_size: Items per type. Default 20, cap 100.
+        template: Restrict document search to a single template (by
+            value, e.g. 'LESSON'). Other entity-type searches ignore
+            this filter.
+        mode: Document-search strategy.
+            - 'auto' (default): use FTS where available, substring
+              elsewhere. Picks the right path per table.
+            - 'fts': force FTS — tables without indexed fields are
+              skipped. Use when ranking is required.
+            - 'substring': legacy ILIKE across text columns. Works on
+              every doc_* table regardless of indexing; no ranking.
+        include_inactive: When false (default), only active documents
+            are returned (PoNIF #1: inactive means retired). Set true
+            to surface archived/deleted docs in deliberate queries.
+        snippet_format: Snippet rendering for FTS hits.
+            - 'html' (default): wraps matched terms with <b>...</b>.
+            - 'text': plain text without highlighting markup.
+
+    FTS document hits carry `score` (ts_rank float) and `snippet`
+    (ts_headline excerpt). Substring hits and non-document results
+    have neither. Within each type bucket FTS hits sort by score
+    descending, then substring hits, then by relevance heuristics.
     """
     try:
         data = await get_client().unified_search(
-            query=query, types=types, namespace=namespace, limit=limit
+            query=query,
+            types=types,
+            namespace=namespace,
+            page=page,
+            page_size=page_size,
+            template=template,
+            mode=mode,
+            include_inactive=include_inactive,
+            snippet_format=snippet_format,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -2522,6 +3468,7 @@ async def run_report_query(
     sql: str,
     params: list | None = None,
     max_rows: int = 1000,
+    namespace: str | None = None,
 ) -> str:
     """Execute a read-only SQL query against the PostgreSQL reporting database.
 
@@ -2530,18 +3477,23 @@ async def run_report_query(
 
     Args:
         sql: SQL SELECT query. Must be read-only (no INSERT/UPDATE/DELETE/DROP).
-            Table names: doc_{template_value} (e.g., doc_patient, doc_bank_transaction).
-            Term fields have two columns: {field} (value) and {field}_term_id.
-            Use list_report_tables() first to discover available tables and columns.
+            Each namespace is its own PostgreSQL schema; a table is
+            "<namespace>"."doc_<value>". Term fields have two columns:
+            {field} (value) and {field}_term_id. Use list_report_tables() first
+            to discover tables (with their namespace) and columns.
         params: Optional list of parameter values for $1, $2, etc. placeholders.
         max_rows: Maximum rows to return (default 1000).
+        namespace: When set, the query runs with the search_path pointed at that
+            namespace's schema, so unqualified names like doc_patient resolve
+            there. Omit and schema-qualify for cross-namespace queries.
 
     Example:
-        run_report_query("SELECT name, country FROM doc_patient WHERE country = $1", ["CH"])
+        run_report_query("SELECT name, country FROM doc_patient WHERE country = $1",
+                         ["CH"], namespace="clinic-a")
     """
     try:
         data = await get_client().run_report_query(
-            sql=sql, params=params, max_rows=max_rows
+            sql=sql, params=params, max_rows=max_rows, namespace=namespace
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -2656,6 +3608,8 @@ async def import_documents_csv(
         # Resolve template_id
         tmpl = await client.get_template_by_value(value=template_value)
         template_id = tmpl.get("template_id")
+        if not template_id:
+            raise ValueError(f"template '{template_value}' has no template_id")
 
         result = await client.import_documents(
             file_content=content,
@@ -2781,16 +3735,16 @@ async def start_backup(
     the .zip.
 
     WARNING — v1.0 limitation: include_files=true is unsafe on namespaces with
-    non-trivial file content (CASE-28: ArchiveWriter buffers all blob bytes in
-    RAM and will OOM the document-store container). Leave it false until
-    CASE-28 lands.
+    non-trivial file content: the archive writer buffers all blob bytes in
+    RAM and will OOM the document-store container. Leave it false until a
+    streaming archive path ships.
 
     Args:
         namespace: Source namespace (uses WIP_MCP_DEFAULT_NAMESPACE if unset).
         include_files: Include file blobs in the archive (see WARNING above).
         include_inactive: Include soft-deleted entities.
         skip_documents: Skip the documents phase entirely (definitions only).
-        skip_closure: Skip the closure-table (relationships) phase.
+        skip_closure: Skip the closure-table (relations) phase.
         skip_synonyms: Skip the synonyms phase.
         latest_only: Export only the latest version of each entity.
         template_prefixes: Optional template_id prefixes to filter documents.
@@ -2825,8 +3779,17 @@ async def start_restore(
     batch_size: int = 50,
     continue_on_error: bool = False,
     dry_run: bool = False,
+    drop_stale_reporting: bool = False,
 ) -> str:
     """Restore a namespace from a local archive file. Returns the initial BackupJobSnapshot.
+
+    The restore verifies the PostgreSQL reporting layer at phase boundaries:
+    a stale reporting schema fails the precondition unless
+    drop_stale_reporting=True (which drops it first); reporting tables must
+    materialize correctly after templates restore (halts before documents
+    otherwise); and row-count parity is checked at the end — a mismatch
+    completes the job WITH warnings on the job record, never a hard fail.
+    Use check_reporting_parity for the same verification any time.
 
     The archive at archive_path is uploaded as multipart and a restore job is
     queued. Poll get_backup_job to track progress.
@@ -2862,6 +3825,7 @@ async def start_restore(
             batch_size=batch_size,
             continue_on_error=continue_on_error,
             dry_run=dry_run,
+            drop_stale_reporting=drop_stale_reporting,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -2946,6 +3910,45 @@ async def get_sync_status() -> str:
     """
     try:
         data = await get_client().get_sync_status()
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def check_reporting_parity(
+    namespace: str,
+    include_counts: bool = True,
+) -> str:
+    """Verify the PostgreSQL reporting layer reflects MongoDB for a namespace.
+
+    The one-call answer to "why does the reporting layer look empty". Per
+    sync-enabled template: table present in the namespace's schema, columns
+    matching what the sync would build, bookkeeping row recorded, and
+    (with include_counts) expected-vs-actual row counts using the same
+    document query the batch sync consumes. Also reports namespace-level
+    state: schema presence, table count, and whether the sync bookkeeping
+    tables are usable at all (a pre-namespace-keying database is named
+    explicitly, with remediation).
+
+    Interpreting results:
+    - structural_issues > 0: tables missing or mis-shaped — check the
+      per-template rows for missing_columns / errors.
+    - count_mismatches > 0: sync is behind or blocked — re-run the batch
+      sync (or check get_sync_status) and re-check.
+    - bookkeeping_tables_ok false: the reporting database predates the
+      namespace-keyed bookkeeping — doc-type sync cannot work until
+      remediated (wipe the reporting volume or apply the named ALTER).
+
+    Args:
+        namespace: Namespace to verify.
+        include_counts: Include row-count parity (slower). Pass false for
+            the cheap structure-only check.
+    """
+    try:
+        data = await get_client().check_reporting_parity(
+            namespace, include_counts=include_counts
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -3036,21 +4039,29 @@ WRITE_TOOLS = frozenset({
     "update_term",
     "delete_term",
     "deprecate_term",
-    # Relationships
-    "create_relationships",
-    "delete_relationships",
+    # Relations
+    "create_term_relations",
+    "delete_term_relations",
     # Templates
     "create_template",
     "create_templates_bulk",
+    "create_edge_type",
     "update_template",
     "activate_template",
     "deactivate_template",
+    "reactivate_template",
+    "add_edge_type_endpoints",
     # Documents
     "create_document",
     "create_documents_bulk",
     "update_document",
     "archive_document",
     "delete_document",
+    "delete_documents_bulk",
+    # migrate_documents writes new doc versions pinned to the target
+    # template version (dry_run=False); it shipped without being added
+    # here and readonly servers kept exposing it.
+    "migrate_documents",
     # Files
     "upload_file",
     "delete_file",
@@ -3073,7 +4084,14 @@ WRITE_TOOLS = frozenset({
     "merge_entries",
     # Namespace
     "create_namespace",
+    "upsert_namespace",
     "delete_namespace",
+    # Grants + API keys (CASE-450 — the api-key pair was missing here
+    # before: a readonly server could still mint/revoke keys)
+    "create_grant",
+    "revoke_grant",
+    "create_api_key",
+    "revoke_api_key",
 })
 
 
@@ -3097,7 +4115,7 @@ def _apply_read_only_mode():
         "system. This server is running in READ-ONLY mode. You can discover "
         "WIP's data model, query data, search, and run reports, but you "
         "CANNOT create, modify, or delete any entities. "
-        "KEY CAPABILITIES: (1) Terms support ontology relationships (is_a, "
+        "KEY CAPABILITIES: (1) Terms support ontology relations (is_a, "
         "part_of, etc.) for hierarchical data modeling — use "
         "get_term_hierarchy. (2) A PostgreSQL reporting layer enables SQL "
         "aggregations, cross-template JOINs, and analytics via run_report_query. "
@@ -3159,12 +4177,29 @@ def main():
             else mcp.sse_app()
         )
 
-        # API key auth middleware (M7)
+        # /health — unauthenticated liveness probe. Lets orchestrators
+        # (compose, k8s) check the server is up without needing to know
+        # the API key. Returns 200 OK as long as the uvicorn worker is
+        # serving requests. Registered BEFORE the auth middleware so the
+        # middleware's path-skip list can exempt it cleanly.
+        from starlette.routing import Route
+
+        async def health(_request: Request) -> JSONResponse:
+            return JSONResponse({"status": "ok", "service": "mcp-server"})
+
+        starlette_app.router.routes.append(Route("/health", health, methods=["GET"]))
+
+        # API key auth middleware (M7). Skips /health so orchestration
+        # probes don't need to carry credentials.
         if api_key:
             from starlette.middleware.base import BaseHTTPMiddleware
 
+            _UNAUTH_PATHS = {"/health"}
+
             class ApiKeyMiddleware(BaseHTTPMiddleware):
                 async def dispatch(self, request: Request, call_next):
+                    if request.url.path in _UNAUTH_PATHS:
+                        return await call_next(request)
                     key = request.headers.get("x-api-key") or request.query_params.get("api_key")
                     if not key or key != api_key:
                         return JSONResponse(

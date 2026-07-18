@@ -5,6 +5,16 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Canonical bulk-response models live in wip_auth.bulk_models (CASE-395).
+# Re-exported here under the def-store-facing names so existing callers
+# (def_store.api.terms etc.) keep working without re-defining the schema.
+from wip_auth.bulk_models import (
+    TerminologyTermBulkResponse as BulkResponse,  # noqa: F401
+)
+from wip_auth.bulk_models import (
+    TerminologyTermBulkResultItem as BulkResultItem,  # noqa: F401
+)
+
 from .term import TermTranslation
 from .terminology import TerminologyMetadata
 
@@ -30,11 +40,11 @@ class CreateTerminologyRequest(StrictModel):
         description="Display label"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="Detailed description"
     )
     terminology_id: str | None = Field(
-        None,
+        default=None,
         description="Pre-assigned terminology ID (for restore/migration — Registry uses as-is instead of generating)"
     )
     namespace: str = Field(
@@ -58,11 +68,11 @@ class CreateTerminologyRequest(StrictModel):
         description="Whether terms can be hard-deleted (vs deprecated). Implies extensible=True."
     )
     metadata: TerminologyMetadata | None = Field(
-        None,
+        default=None,
         description="Additional metadata"
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system creating this terminology"
     )
 
@@ -71,39 +81,39 @@ class UpdateTerminologyRequest(StrictModel):
     """Request to update an existing terminology."""
 
     value: str | None = Field(
-        None,
+        default=None,
         description="New value (triggers Registry synonym)"
     )
     label: str | None = Field(
-        None,
+        default=None,
         description="New display label"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="New description"
     )
     case_sensitive: bool | None = Field(
-        None,
+        default=None,
         description="Update case sensitivity"
     )
     allow_multiple: bool | None = Field(
-        None,
+        default=None,
         description="Update multi-select setting"
     )
     extensible: bool | None = Field(
-        None,
+        default=None,
         description="Update extensibility"
     )
     mutable: bool | None = Field(
-        None,
+        default=None,
         description="Update mutability (only allowed when term_count is 0)"
     )
     metadata: TerminologyMetadata | None = Field(
-        None,
+        default=None,
         description="Update metadata"
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system updating this terminology"
     )
 
@@ -151,7 +161,7 @@ class CreateTermRequest(StrictModel):
         description="The value stored in documents (unique within terminology)"
     )
     term_id: str | None = Field(
-        None,
+        default=None,
         description="Pre-assigned term ID (for restore/migration — Registry uses as-is instead of generating)"
     )
     aliases: list[str] = Field(
@@ -159,11 +169,11 @@ class CreateTermRequest(StrictModel):
         description="Alternative values that resolve to this term (e.g., ['MR.', 'mr'])"
     )
     label: str | None = Field(
-        None,
+        default=None,
         description="Display label for UI. Defaults to value if not provided."
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="Detailed description"
     )
     sort_order: int = Field(
@@ -171,7 +181,7 @@ class CreateTermRequest(StrictModel):
         description="Sort order within terminology"
     )
     parent_term_id: str | None = Field(
-        None,
+        default=None,
         description="Parent term ID for hierarchical terms"
     )
     translations: list[TermTranslation] = Field(
@@ -183,7 +193,7 @@ class CreateTermRequest(StrictModel):
         description="Custom metadata"
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system creating this term"
     )
 
@@ -192,39 +202,39 @@ class UpdateTermRequest(StrictModel):
     """Request to update an existing term."""
 
     value: str | None = Field(
-        None,
+        default=None,
         description="New value (unique within terminology)"
     )
     aliases: list[str] | None = Field(
-        None,
+        default=None,
         description="Update aliases (replaces existing list)"
     )
     label: str | None = Field(
-        None,
+        default=None,
         description="New display label"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="New description"
     )
     sort_order: int | None = Field(
-        None,
+        default=None,
         description="New sort order"
     )
     parent_term_id: str | None = Field(
-        None,
+        default=None,
         description="New parent term ID"
     )
     translations: list[TermTranslation] | None = Field(
-        None,
+        default=None,
         description="Update translations"
     )
     metadata: dict[str, Any] | None = Field(
-        None,
+        default=None,
         description="Update metadata (merged with existing)"
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system updating this term"
     )
 
@@ -237,11 +247,11 @@ class DeprecateTermRequest(StrictModel):
         description="Why this term is being deprecated"
     )
     replaced_by_term_id: str | None = Field(
-        None,
+        default=None,
         description="ID of the replacement term"
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system deprecating this term"
     )
 
@@ -285,24 +295,8 @@ class TermListResponse(BaseModel):
 # =============================================================================
 # BULK OPERATION MODELS
 # =============================================================================
-
-class BulkResultItem(BaseModel):
-    """Result of a bulk operation for a single item."""
-
-    index: int
-    status: str  # created, updated, deleted, skipped, error
-    id: str | None = None
-    value: str | None = None
-    error: str | None = None
-
-
-class BulkResponse(BaseModel):
-    """Response for bulk operations."""
-
-    results: list[BulkResultItem]
-    total: int
-    succeeded: int
-    failed: int
+# Canonical models live in wip_auth.bulk_models (CASE-395) — imported at
+# the top of this file and re-exported as BulkResponse / BulkResultItem.
 
 
 class UpdateTerminologyItem(UpdateTerminologyRequest):
@@ -317,7 +311,7 @@ class DeleteItem(StrictModel):
     id: str = Field(..., description="ID of entity to delete")
     force: bool = Field(default=False, description="Force deletion even if dependencies exist")
     hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
-    updated_by: str | None = Field(None, description="User performing deletion")
+    updated_by: str | None = Field(default=None, description="User performing deletion")
 
 
 class UpdateTermItem(UpdateTermRequest):
@@ -388,11 +382,11 @@ class ValidateValueRequest(StrictModel):
     """Request to validate a value against a terminology."""
 
     terminology_id: str | None = Field(
-        None,
+        default=None,
         description="Terminology ID (use this or terminology_value)"
     )
     terminology_value: str | None = Field(
-        None,
+        default=None,
         description="Terminology value (use this or id)"
     )
     value: str = Field(
@@ -410,11 +404,11 @@ class ValidateValueResponse(BaseModel):
     value: str
     matched_term: TermResponse | None = None
     matched_via: str | None = Field(
-        None,
+        default=None,
         description="How the match was made: 'value' or 'alias'"
     )
     suggestion: TermResponse | None = Field(
-        None,
+        default=None,
         description="Suggested term if value is close but not exact"
     )
     error: str | None = None
@@ -466,11 +460,11 @@ class AuditLogResponse(BaseModel):
 
 
 # =============================================================================
-# ONTOLOGY / RELATIONSHIP MODELS
+# ONTOLOGY / TERM-RELATION MODELS
 # =============================================================================
 
-class CreateRelationshipRequest(StrictModel):
-    """Request to create a typed relationship between two terms."""
+class CreateTermRelationRequest(StrictModel):
+    """Request to create a typed relation between two terms."""
 
     source_term_id: str = Field(
         ...,
@@ -480,37 +474,37 @@ class CreateRelationshipRequest(StrictModel):
         ...,
         description="The object term ID"
     )
-    relationship_type: str = Field(
+    relation_type: str = Field(
         ...,
-        description="Relationship type value (e.g., 'is_a', 'part_of')"
+        description="Relation type value (e.g., 'is_a', 'part_of')"
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict,
         description="Provenance, confidence, OWL axioms"
     )
     created_by: str | None = Field(
-        None,
-        description="User or system creating this relationship"
+        default=None,
+        description="User or system creating this relation"
     )
 
 
-class DeleteRelationshipRequest(StrictModel):
-    """Request to delete a specific relationship."""
+class DeleteTermRelationRequest(StrictModel):
+    """Request to delete a specific term relation."""
 
     source_term_id: str = Field(..., description="The subject term ID")
     target_term_id: str = Field(..., description="The object term ID")
-    relationship_type: str = Field(..., description="Relationship type value")
+    relation_type: str = Field(..., description="Relation type value")
     hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
 
 
-class RelationshipResponse(BaseModel):
-    """Response containing a single relationship."""
+class TermRelationResponse(BaseModel):
+    """Response containing a single term relation."""
 
     namespace: str
     source_term_id: str
     target_term_id: str
-    relationship_type: str
-    relationship_value: str | None = None
+    relation_type: str
+    relation_value: str | None = None
     source_terminology_id: str | None = None
     target_terminology_id: str | None = None
     source_term_value: str | None = None
@@ -523,10 +517,10 @@ class RelationshipResponse(BaseModel):
     created_by: str | None = None
 
 
-class RelationshipListResponse(BaseModel):
-    """Response for listing relationships."""
+class TermRelationListResponse(BaseModel):
+    """Response for listing term relations."""
 
-    items: list[RelationshipResponse]
+    items: list[TermRelationResponse]
     total: int
     page: int = 1
     page_size: int = 50
@@ -547,7 +541,7 @@ class TraversalResponse(BaseModel):
     """Response for ancestor/descendant traversal queries."""
 
     term_id: str
-    relationship_type: str
+    relation_type: str
     direction: str  # "ancestors" or "descendants"
     nodes: list[TraversalNode]
     total: int

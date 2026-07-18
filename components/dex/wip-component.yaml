@@ -1,0 +1,32 @@
+api_version: wip.dev/v1
+kind: Component
+metadata:
+  name: dex
+  category: infrastructure
+  description: |
+    OIDC identity provider. Issues tokens for wip-console, wip-gateway,
+    and per-app clients. Active when auth.mode is oidc or hybrid;
+    api-key-only deployments skip it.
+
+spec:
+  image:
+    name: ghcr.io/dexidp/dex
+    tag: v2.45.0
+
+  ports:
+    - {name: http, container_port: 5556}
+
+  routes:
+    # Browser-facing OIDC endpoints (authorize, token, userinfo, keys,
+    # the hosted login page). Dex handles its own auth — no forward_auth.
+    - {path: /dex, auth_required: false}
+
+  storage:
+    - {name: db, mount_path: /data, size: 1Gi}
+
+  # No healthcheck: Dex ships as a distroless image with no shell, curl,
+  # or wget — nothing inside the container can probe its HTTP /healthz.
+  # Dependents fall back to depends_on: service_started.
+
+  activation:
+    requires_auth_mode: [oidc, hybrid]

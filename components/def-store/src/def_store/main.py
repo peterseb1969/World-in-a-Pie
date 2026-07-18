@@ -5,26 +5,32 @@ A terminology and ontology management service for the World In a Pie system.
 Provides controlled vocabulary management with import/export capabilities.
 """
 
+import asyncio
+import contextlib
 import os
 from contextlib import asynccontextmanager
 
-from beanie import init_beanie
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import (
+    declare_api_key_security,
     RejectUnknownQueryParamsMiddleware,
+    build_metadata,
     check_production_security,
+    init_beanie_with_retry,
+    retry_async,
     setup_auth,
     setup_key_sync,
     setup_rate_limiting,
 )
 
+from . import __version__
 from .api import api_router
 from .models.audit_log import TermAuditLog
 from .models.term import Term
-from .models.term_relationship import TermRelationship
+from .models.term_relation import TermRelation
 from .models.terminology import Terminology
 from .services.nats_client import close_nats_client, configure_nats_client
 from .services.registry_client import configure_registry_client, get_registry_client
@@ -47,6 +53,51 @@ class Settings:
 settings = Settings()
 
 
+async def _bootstrap_system_terminologies() -> None:
+    """Background bootstrap of system terminologies.
+
+    Runs as a background task — waits for Registry to be healthy, then
+    creates the built-in system terminologies (_TIME_UNITS,
+    _ONTOLOGY_RELATIONSHIP_TYPES). Off the critical path so def-store's
+    HTTP listener doesn't block on Registry startup. If Registry never
+    becomes healthy, logs a warning and gives up; the terminologies can
+    be recreated by restarting def-store or hitting ensure_system_terminologies
+    via a future admin endpoint.
+    """
+    registry_client = get_registry_client()
+
+    async def _verify_registry_ready() -> None:
+        if not await registry_client.health_check():
+            raise ConnectionError("Registry health check returned non-200")
+
+    try:
+        await retry_async(
+            _verify_registry_ready,
+            retry_on=(ConnectionError,),
+            description="Registry health check (bootstrap)",
+        )
+        print("[bootstrap] Registry service is healthy.")
+    except TimeoutError as e:
+        print(f"[bootstrap] WARNING: Registry never became healthy: {e}")
+        print("[bootstrap] System terminologies not bootstrapped.")
+        return
+
+    print("[bootstrap] Ensuring system terminologies exist...")
+    try:
+        result = await ensure_system_terminologies()
+        if result["errors"]:
+            for err in result["errors"]:
+                print(f"[bootstrap]   WARNING: {err}")
+        print(
+            f"[bootstrap] System terminologies: {result['terminologies_created']} created, "
+            f"{result['terminologies_existed']} existed, "
+            f"{result['terms_created']} terms created, "
+            f"{result['terms_existed']} terms existed"
+        )
+    except Exception as e:
+        print(f"[bootstrap] WARNING: Failed to bootstrap system terminologies: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown."""
@@ -56,31 +107,26 @@ async def lifespan(app: FastAPI):
 
     # Initialize MongoDB connection
     print(f"Connecting to MongoDB at {settings.MONGO_URI}...")
-    client = AsyncIOMotorClient(settings.MONGO_URI)
+    client: AsyncIOMotorClient = AsyncIOMotorClient(settings.MONGO_URI)
 
-    # Initialize Beanie ODM with document models
-    await init_beanie(
+    # Initialize Beanie ODM with retry — tolerates MongoDB not being ready
+    # yet on fresh k8s boot, node drain, pod reschedule.
+    await init_beanie_with_retry(
         database=client[settings.DATABASE_NAME],
-        document_models=[Terminology, Term, TermAuditLog, TermRelationship]
+        document_models=[Terminology, Term, TermAuditLog, TermRelation],
+        description=f"MongoDB init ({settings.DATABASE_NAME})",
     )
     print("MongoDB connection and Beanie initialization successful.")
 
     # Store client in app state
     app.state.mongodb_client = client
 
-    # Configure Registry client
+    # Configure Registry client (no network call — just stores URL/key).
     configure_registry_client(
         base_url=settings.REGISTRY_URL,
         api_key=settings.REGISTRY_API_KEY
     )
     print(f"Registry client configured for {settings.REGISTRY_URL}")
-
-    # Check Registry health
-    registry_client = get_registry_client()
-    if await registry_client.health_check():
-        print("Registry service is healthy.")
-    else:
-        print("WARNING: Registry service is not reachable. Some features may not work.")
 
     # Configure NATS client (optional — for event publishing to reporting-sync)
     if settings.NATS_URL:
@@ -89,20 +135,16 @@ async def lifespan(app: FastAPI):
     else:
         print("NATS URL not configured, event publishing disabled")
 
-    # Bootstrap system terminologies
-    print("Ensuring system terminologies exist...")
-    try:
-        result = await ensure_system_terminologies()
-        if result["errors"]:
-            for err in result["errors"]:
-                print(f"  WARNING: {err}")
-        print(f"System terminologies: {result['terminologies_created']} created, "
-              f"{result['terminologies_existed']} existed, "
-              f"{result['terms_created']} terms created, "
-              f"{result['terms_existed']} terms existed")
-    except Exception as e:
-        print(f"WARNING: Failed to bootstrap system terminologies: {e}")
-        print("System terminologies may need to be created manually.")
+    # Background bootstrap: wait for Registry to be healthy, then run
+    # ensure_system_terminologies. Off the critical path so the HTTP
+    # listener becomes Ready as soon as Mongo init completes. Callers
+    # (e.g., reporting-sync's startup metadata sync) can then reach
+    # def-store immediately; system-terminology creation catches up
+    # once Registry is available.
+    app.state.bootstrap_task = asyncio.create_task(
+        _bootstrap_system_terminologies()
+    )
+    print("System-terminology bootstrap scheduled (background).")
 
     # Start key sync (picks up runtime API keys from Registry)
     key_sync = await setup_key_sync(
@@ -117,6 +159,14 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     print("Shutting down WIP Def-Store Service...")
+
+    # Cancel the background bootstrap task if it's still running
+    bootstrap_task = getattr(app.state, "bootstrap_task", None)
+    if bootstrap_task and not bootstrap_task.done():
+        bootstrap_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await bootstrap_task
+
     if key_sync:
         await key_sync.stop()
     await close_nats_client()
@@ -139,7 +189,7 @@ The Def-Store service manages controlled vocabularies (terminologies) for the WI
 - **Validation API**: Validate values against terminologies
 - **Import/Export**: JSON and CSV support for bulk operations
 - **Multi-language**: Translation support for internationalization
-- **Hierarchical Terms**: Support for parent-child relationships
+- **Hierarchical Terms**: Support for parent-child relations
 - **Namespace Isolation**: Multi-tenant data isolation
 
 ### Authentication
@@ -157,8 +207,10 @@ unique, system-wide identifiers. IDs are configurable per namespace (default: UU
     redoc_url="/redoc",
 )
 
-# Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY)
-_providers = setup_auth(app)
+# Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY).
+# public_paths exempts the api-prefixed /health route from auth so external
+# monitors and stale-key clients can probe it without a 401 (CASE-60).
+_providers = setup_auth(app, public_paths=["/api/def-store/health"])
 
 # Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
 setup_rate_limiting(app)
@@ -178,14 +230,26 @@ app.add_middleware(
 # Include API router
 app.include_router(api_router)
 
+# Declare the X-API-Key requirement in the OpenAPI contract — runtime
+# Depends() enforcement emits nothing into the schema, and a client
+# generated from an auth-silent schema would not send a key.
+declare_api_key_security(app)
 
-# Root endpoint
+
+# Root endpoint. The prefixed alias matters: Caddy preserves the
+# /api/def-store prefix on the way to this app, so the bare "/" is reachable
+# only container-direct — without the alias, router-side consumers (the
+# console's build-provenance probe at /api/def-store/) get a 404 and the
+# dashboard shows no build info for this service.
 @app.get("/", tags=["Health"])
+@app.get("/api/def-store/", include_in_schema=False, tags=["Health"])
 async def root():
     """Root endpoint with service information."""
     return {
         "service": "WIP Def-Store",
-        "version": "0.2.0",
+        "version": __version__,
+        # Uniform build-provenance block (sha/built_at/image_tag).
+        "build": build_metadata(__version__),
         "documentation": "/docs",
         "health": "/health",
     }
@@ -219,6 +283,13 @@ async def health_check():
         "database": mongo_status,
         "registry": registry_status,
     }
+
+
+# Also expose /health under the api-prefix so external callers through
+# Caddy can reach it. Root /health stays for direct container probes.
+app.add_api_route(
+    "/api/def-store/health", health_check, methods=["GET"], tags=["Health"]
+)
 
 
 # Ready check endpoint (for Kubernetes)

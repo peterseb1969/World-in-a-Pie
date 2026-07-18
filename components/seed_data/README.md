@@ -11,14 +11,22 @@ This module provides realistic test data for:
 
 ## Installation
 
+Install both deps into the project venv:
+
 ```bash
-pip install faker requests
+.venv/bin/pip install -r components/seed_data/requirements.txt
 ```
 
 ## Quick Start
 
+The script (v1.3+) always routes through the Caddy proxy at
+`https://<host>:8443` — wip-deploy v2 no longer publishes service
+ports to the host. The API key is auto-discovered from
+`~/.wip-deploy/<deployment>/secrets/api-key` when running against
+localhost; for remote hosts, pass `--api-key` or `--api-key-file`.
+
 ```bash
-# From project root
+# From project root — uses the local wip-dev-local deployment's api-key
 python scripts/seed_comprehensive.py
 
 # Dry run (preview what will be created)
@@ -26,6 +34,13 @@ python scripts/seed_comprehensive.py --dry-run
 
 # Minimal profile for quick testing
 python scripts/seed_comprehensive.py --profile minimal
+
+# Remote host (must supply key explicitly)
+python scripts/seed_comprehensive.py --host wip-pi.local \
+    --api-key-file /secure/wip-pi.api-key
+
+# Pick a specific local deployment when several exist
+python scripts/seed_comprehensive.py --deployment wip-staging-local
 ```
 
 ## Data Profiles
@@ -43,6 +58,11 @@ python scripts/seed_comprehensive.py --profile minimal
 python scripts/seed_comprehensive.py [options]
 
 Options:
+  --host HOSTNAME       WIP host (default: localhost or WIP_HOST env)
+  --port PORT           Caddy proxy port (default: 8443; use 443 for K8s Ingress)
+  --api-key KEY         API key (overrides --api-key-file, WIP_API_KEY, auto-discovery)
+  --api-key-file PATH   Read the key from this file (single line)
+  --deployment NAME     Pick a wip-deploy deployment under ~/.wip-deploy/ when several exist
   --profile PROFILE     Data profile: minimal, standard, full, performance
   --services SERVICES   Comma-separated: all, def-store, template-store, document-store
   --skip-terminologies  Skip terminology seeding (use existing)
@@ -50,8 +70,15 @@ Options:
   --benchmark           Run performance benchmarks after seeding
   --output FILE         Write benchmark results to JSON file
   --dry-run             Preview without making changes
-  --api-key KEY         API key (default: dev_master_key_for_testing)
 ```
+
+API key resolution (first hit wins):
+1. `--api-key`
+2. `--api-key-file`
+3. `WIP_API_KEY` env var
+4. `~/.wip-deploy/<deployment>/secrets/api-key` — auto-pick the
+   deployment if exactly one exists; require `--deployment` if more
+   than one. Skipped when `--host` is non-localhost.
 
 ## Examples
 
@@ -286,18 +313,16 @@ GENERATORS["MY_TEMPLATE"] = generate_my_template
 
 ## Services Required
 
-Before running, ensure these services are running:
-- Registry (port 8001)
-- Def-Store (port 8002)
-- Template Store (port 8003)
-- Document Store (port 8004)
+Before running, ensure the wip-deploy stack is up. Caddy must be
+reachable on `https://<host>:8443` (or `:443` for K8s Ingress) and
+the `/api/<service>/health` endpoints for registry, def-store,
+template-store, document-store, and reporting-sync must return 200.
 
+Quick check:
 ```bash
-# Start infrastructure
-podman-compose -f docker-compose.infra.yml up -d
-
-# Start services
-cd components/def-store && podman-compose -f docker-compose.yml up -d --build
-cd components/template-store && podman-compose -f docker-compose.yml up -d --build
-cd components/document-store && podman-compose -f docker-compose.yml up -d --build
+podman ps | grep wip-
+curl -ksw "%{http_code}\n" https://localhost:8443/api/def-store/health -o /dev/null
 ```
+
+The script checks each service's health before seeding and aborts
+with a clear message if anything is unreachable.

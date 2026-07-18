@@ -1,5 +1,5 @@
 """
-Tests for terminology, term, and relationship event processing in SyncWorker.
+Tests for terminology, term, and relation event processing in SyncWorker.
 
 Covers the def-store → PostgreSQL sync path added for ontology support.
 All external dependencies (NATS, PostgreSQL, httpx) are mocked.
@@ -47,10 +47,12 @@ def worker(mock_pool):
     w = SyncWorker(nc, js, pool, status)
     w.schema_manager.table_exists = AsyncMock(return_value=False)
     w.schema_manager.create_table = AsyncMock(return_value="CREATE TABLE ...")
-    w.schema_manager.ensure_table_for_template = AsyncMock(return_value="doc_person")
-    w.schema_manager.ensure_terminologies_table = AsyncMock(return_value="terminologies")
-    w.schema_manager.ensure_terms_table = AsyncMock(return_value="terms")
-    w.schema_manager.ensure_term_relationships_table = AsyncMock(return_value="term_relationships")
+    # ensure_* now return the schema-qualified reference (CASE-628), which the
+    # worker interpolates verbatim into its SQL.
+    w.schema_manager.ensure_table_for_template = AsyncMock(return_value='"wip"."doc_person"')
+    w.schema_manager.ensure_terminologies_table = AsyncMock(return_value='"wip"."terminologies"')
+    w.schema_manager.ensure_terms_table = AsyncMock(return_value='"wip"."terms"')
+    w.schema_manager.ensure_term_relations_table = AsyncMock(return_value='"wip"."term_relations"')
     w.schema_manager.update_table_schema = AsyncMock(return_value=[])
     return w
 
@@ -329,7 +331,7 @@ class TestTermEvents:
         result = await worker._process_term_event(event)
 
         assert result is True
-        # Hard delete calls execute twice: first relationships, then terms
+        # Hard delete calls execute twice: first relations, then terms
         calls = conn.execute.call_args_list
         assert len(calls) == 2
         terms_sql = calls[1][0][0]
@@ -337,8 +339,8 @@ class TestTermEvents:
         assert '"terms"' in terms_sql
 
     @pytest.mark.asyncio
-    async def test_term_hard_delete_cascades_relationships(self, worker, mock_pool):
-        """term.deleted with hard_delete=True also deletes from term_relationships."""
+    async def test_term_hard_delete_cascades_relations(self, worker, mock_pool):
+        """term.deleted with hard_delete=True also deletes from term_relations."""
         _pool, conn = mock_pool
         event = self._make_event("term.deleted", hard_delete=True)
 
@@ -349,7 +351,7 @@ class TestTermEvents:
         assert len(calls) == 2
         rel_sql = calls[0][0][0]
         assert "DELETE FROM" in rel_sql
-        assert '"term_relationships"' in rel_sql
+        assert '"term_relations"' in rel_sql
         terms_sql = calls[1][0][0]
         assert "DELETE FROM" in terms_sql
         assert '"terms"' in terms_sql
@@ -405,19 +407,19 @@ class TestTermEvents:
 
 
 # =========================================================================
-# Relationship Event Processing
+# Relation Event Processing
 # =========================================================================
 
 
-class TestRelationshipEvents:
-    """Tests for _process_relationship_event."""
+class TestRelationEvents:
+    """Tests for _process_term_relation_event."""
 
-    def _make_event(self, event_type="relationship.created", **overrides):
+    def _make_event(self, event_type="term_relation.created", **overrides):
         rel = {
             "namespace": "wip",
             "source_term_id": "0190b000-0000-7000-0000-000000000001",
             "target_term_id": "0190b000-0000-7000-0000-000000000002",
-            "relationship_type": "is_a",
+            "relation_type": "is_a",
             "source_term_value": "Pneumonia",
             "target_term_value": "Lung Disease",
             "source_terminology_id": "TRM-001",
@@ -427,18 +429,18 @@ class TestRelationshipEvents:
             "created_by": "admin",
         }
         rel.update(overrides)
-        return {"event_type": event_type, "relationship": rel}
+        return {"event_type": event_type, "term_relation": rel}
 
     @pytest.mark.asyncio
     async def test_create_event_upserts(self, worker, mock_pool):
-        """relationship.created ensures table and upserts row."""
+        """term_relation.created ensures table and upserts row."""
         _pool, conn = mock_pool
-        event = self._make_event("relationship.created")
+        event = self._make_event("term_relation.created")
 
-        result = await worker._process_relationship_event(event)
+        result = await worker._process_term_relation_event(event)
 
         assert result is True
-        worker.schema_manager.ensure_term_relationships_table.assert_awaited_once()
+        worker.schema_manager.ensure_term_relations_table.assert_awaited_once()
         conn.execute.assert_awaited_once()
         sql = conn.execute.call_args[0][0]
         assert "INSERT INTO" in sql
@@ -448,9 +450,9 @@ class TestRelationshipEvents:
     async def test_create_event_arg_types(self, worker, mock_pool):
         """Positional args to conn.execute have correct types for asyncpg."""
         _pool, conn = mock_pool
-        event = self._make_event("relationship.created")
+        event = self._make_event("term_relation.created")
 
-        await worker._process_relationship_event(event)
+        await worker._process_term_relation_event(event)
 
         args = conn.execute.call_args[0]
         # $9=metadata (JSON string, not dict)
@@ -460,11 +462,11 @@ class TestRelationshipEvents:
 
     @pytest.mark.asyncio
     async def test_delete_event_sets_inactive(self, worker, mock_pool):
-        """relationship.deleted updates status to inactive."""
+        """term_relation.deleted updates status to inactive."""
         _pool, conn = mock_pool
-        event = self._make_event("relationship.deleted")
+        event = self._make_event("term_relation.deleted")
 
-        result = await worker._process_relationship_event(event)
+        result = await worker._process_term_relation_event(event)
 
         assert result is True
         sql = conn.execute.call_args[0][0]
@@ -472,25 +474,25 @@ class TestRelationshipEvents:
         assert "inactive" in sql
 
     @pytest.mark.asyncio
-    async def test_relationship_hard_delete(self, worker, mock_pool):
-        """relationship.deleted with hard_delete=True removes row via DELETE."""
+    async def test_relation_hard_delete(self, worker, mock_pool):
+        """term_relation.deleted with hard_delete=True removes row via DELETE."""
         _pool, conn = mock_pool
-        event = self._make_event("relationship.deleted", hard_delete=True)
+        event = self._make_event("term_relation.deleted", hard_delete=True)
 
-        result = await worker._process_relationship_event(event)
+        result = await worker._process_term_relation_event(event)
 
         assert result is True
         sql = conn.execute.call_args[0][0]
         assert "DELETE FROM" in sql
-        assert '"term_relationships"' in sql
+        assert '"term_relations"' in sql
 
     @pytest.mark.asyncio
-    async def test_relationship_soft_delete_unchanged(self, worker, mock_pool):
-        """relationship.deleted WITHOUT hard_delete preserves UPDATE behavior."""
+    async def test_relation_soft_delete_unchanged(self, worker, mock_pool):
+        """term_relation.deleted WITHOUT hard_delete preserves UPDATE behavior."""
         _pool, conn = mock_pool
-        event = self._make_event("relationship.deleted")
+        event = self._make_event("term_relation.deleted")
 
-        result = await worker._process_relationship_event(event)
+        result = await worker._process_term_relation_event(event)
 
         assert result is True
         sql = conn.execute.call_args[0][0]
@@ -502,21 +504,21 @@ class TestRelationshipEvents:
     async def test_missing_source_returns_false(self, worker):
         """Event without source_term_id returns False."""
         event = self._make_event(source_term_id=None)
-        result = await worker._process_relationship_event(event)
+        result = await worker._process_term_relation_event(event)
         assert result is False
 
     @pytest.mark.asyncio
     async def test_missing_target_returns_false(self, worker):
         """Event without target_term_id returns False."""
         event = self._make_event(target_term_id=None)
-        result = await worker._process_relationship_event(event)
+        result = await worker._process_term_relation_event(event)
         assert result is False
 
     @pytest.mark.asyncio
     async def test_missing_type_returns_false(self, worker):
-        """Event without relationship_type returns False."""
-        event = self._make_event(relationship_type=None)
-        result = await worker._process_relationship_event(event)
+        """Event without relation_type returns False."""
+        event = self._make_event(relation_type=None)
+        result = await worker._process_term_relation_event(event)
         assert result is False
 
     @pytest.mark.asyncio
@@ -526,15 +528,15 @@ class TestRelationshipEvents:
         meta = {"source_ontology": "SNOMED", "confidence": 0.99}
         event = self._make_event(metadata=meta)
 
-        await worker._process_relationship_event(event)
+        await worker._process_term_relation_event(event)
 
         args = conn.execute.call_args[0]
         meta_json = json.dumps(meta)
         assert meta_json in args, f"Expected serialized metadata in args: {args}"
 
     @pytest.mark.asyncio
-    async def test_relationship_message_routes_correctly(self, worker, mock_pool):
-        """relationship.* events route to _process_relationship_event."""
+    async def test_relation_message_routes_correctly(self, worker, mock_pool):
+        """relation.* events route to _process_term_relation_event."""
         _pool, _conn = mock_pool
         event = self._make_event()
         msg = _make_nats_message(event)
@@ -542,26 +544,26 @@ class TestRelationshipEvents:
         await worker._process_message(msg)
 
         msg.ack.assert_awaited_once()
-        worker.schema_manager.ensure_term_relationships_table.assert_awaited_once()
+        worker.schema_manager.ensure_term_relations_table.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_db_error_propagates(self, worker, mock_pool):
-        """Database error during relationship sync raises."""
+        """Database error during relation sync raises."""
         _pool, conn = mock_pool
         conn.execute = AsyncMock(side_effect=RuntimeError("db gone"))
         event = self._make_event()
 
         with pytest.raises(RuntimeError, match="db gone"):
-            await worker._process_relationship_event(event)
+            await worker._process_term_relation_event(event)
 
     @pytest.mark.asyncio
     async def test_create_passes_all_fields(self, worker, mock_pool):
-        """Verify all relationship fields are passed to the INSERT."""
+        """Verify all relation fields are passed to the INSERT."""
         _pool, conn = mock_pool
         event = self._make_event(
             source_term_id="S1",
             target_term_id="T1",
-            relationship_type="maps_to",
+            relation_type="maps_to",
             source_term_value="Source Val",
             target_term_value="Target Val",
             source_terminology_id="TRM-A",
@@ -569,7 +571,7 @@ class TestRelationshipEvents:
             created_by="test-user",
         )
 
-        await worker._process_relationship_event(event)
+        await worker._process_term_relation_event(event)
 
         args = conn.execute.call_args[0]
         # Check key positional args are present
@@ -600,10 +602,10 @@ class TestSchemaManagerTables:
         conn.fetchval = AsyncMock(return_value=False)  # table doesn't exist
         sm = SchemaManager(pool)
 
-        result = await sm.ensure_terminologies_table()
+        result = await sm.ensure_terminologies_table("wip")
 
-        assert result == "terminologies"
-        conn.execute.assert_awaited_once()
+        assert result == '"wip"."terminologies"'
+        assert conn.execute.await_count == 2  # CREATE SCHEMA + CREATE TABLE
         ddl = conn.execute.call_args[0][0]
         assert "CREATE TABLE" in ddl
         assert '"terminology_id"' in ddl
@@ -619,10 +621,10 @@ class TestSchemaManagerTables:
         conn.fetchval = AsyncMock(return_value=False)
         sm = SchemaManager(pool)
 
-        result = await sm.ensure_terms_table()
+        result = await sm.ensure_terms_table("wip")
 
-        assert result == "terms"
-        conn.execute.assert_awaited_once()
+        assert result == '"wip"."terms"'
+        assert conn.execute.await_count == 2  # CREATE SCHEMA + CREATE TABLE
         ddl = conn.execute.call_args[0][0]
         assert "CREATE TABLE" in ddl
         assert '"term_id"' in ddl
@@ -630,23 +632,23 @@ class TestSchemaManagerTables:
         assert '"aliases"' in ddl
 
     @pytest.mark.asyncio
-    async def test_ensure_term_relationships_table_creates_ddl(self, mock_pool):
-        """ensure_term_relationships_table creates table with correct schema."""
+    async def test_ensure_term_relations_table_creates_ddl(self, mock_pool):
+        """ensure_term_relations_table creates table with correct schema."""
         from reporting_sync.schema_manager import SchemaManager
 
         pool, conn = mock_pool
         conn.fetchval = AsyncMock(return_value=False)
         sm = SchemaManager(pool)
 
-        result = await sm.ensure_term_relationships_table()
+        result = await sm.ensure_term_relations_table("wip")
 
-        assert result == "term_relationships"
-        conn.execute.assert_awaited_once()
+        assert result == '"wip"."term_relations"'
+        assert conn.execute.await_count == 2  # CREATE SCHEMA + CREATE TABLE
         ddl = conn.execute.call_args[0][0]
         assert "CREATE TABLE" in ddl
         assert '"source_term_id"' in ddl
         assert '"target_term_id"' in ddl
-        assert '"relationship_type"' in ddl
+        assert '"relation_type"' in ddl
         assert "PRIMARY KEY" in ddl
 
     @pytest.mark.asyncio
@@ -658,10 +660,10 @@ class TestSchemaManagerTables:
         conn.fetchval = AsyncMock(return_value=True)  # table exists
         sm = SchemaManager(pool)
 
-        result = await sm.ensure_terminologies_table()
+        result = await sm.ensure_terminologies_table("wip")
 
-        assert result == "terminologies"
-        conn.execute.assert_not_awaited()
+        assert result == '"wip"."terminologies"'
+        assert not any("CREATE TABLE" in str(c.args[0]) for c in conn.execute.call_args_list)
 
     @pytest.mark.asyncio
     async def test_ensure_terms_table_skips_if_exists(self, mock_pool):
@@ -672,13 +674,13 @@ class TestSchemaManagerTables:
         conn.fetchval = AsyncMock(return_value=True)
         sm = SchemaManager(pool)
 
-        result = await sm.ensure_terms_table()
+        result = await sm.ensure_terms_table("wip")
 
-        assert result == "terms"
-        conn.execute.assert_not_awaited()
+        assert result == '"wip"."terms"'
+        assert not any("CREATE TABLE" in str(c.args[0]) for c in conn.execute.call_args_list)
 
     @pytest.mark.asyncio
-    async def test_ensure_relationships_table_skips_if_exists(self, mock_pool):
+    async def test_ensure_relations_table_skips_if_exists(self, mock_pool):
         """If table already exists, no DDL is executed."""
         from reporting_sync.schema_manager import SchemaManager
 
@@ -686,7 +688,76 @@ class TestSchemaManagerTables:
         conn.fetchval = AsyncMock(return_value=True)
         sm = SchemaManager(pool)
 
-        result = await sm.ensure_term_relationships_table()
+        result = await sm.ensure_term_relations_table("wip")
 
-        assert result == "term_relationships"
-        conn.execute.assert_not_awaited()
+        assert result == '"wip"."term_relations"'
+        assert not any("CREATE TABLE" in str(c.args[0]) for c in conn.execute.call_args_list)
+
+
+# =========================================================================
+# Terminal-drop visibility: a failure on the final permitted delivery is
+# a permanent loss and must be counted distinctly from ordinary retries
+# =========================================================================
+
+
+class TestTerminalDropVisibility:
+    """Failures that exhaust max_deliver must be queryable, not log-only."""
+
+    @staticmethod
+    def _failing_message(num_delivered) -> MagicMock:
+        """A message whose event fails processing (terminology without an id)."""
+        msg = MagicMock()
+        msg.data = json.dumps({
+            "event_type": "terminology.created",
+            "terminology": {"terminology_id": "", "value": "X", "namespace": "wip"},
+        }).encode()
+        msg.ack = AsyncMock()
+        msg.nak = AsyncMock()
+        msg.metadata.num_delivered = num_delivered
+        return msg
+
+    @pytest.mark.asyncio
+    async def test_failure_on_final_delivery_records_drop(self, worker):
+        from reporting_sync.config import settings
+
+        msg = self._failing_message(settings.retry_attempts)
+        await worker._process_message(msg)
+
+        assert worker.status.events_dropped == 1
+        assert worker.status.events_failed == 1
+        drop = worker.status.recent_drops[0]
+        assert drop.event_type == "terminology.created"
+        assert drop.deliveries == settings.retry_attempts
+        msg.nak.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_failure_before_final_delivery_is_not_a_drop(self, worker):
+        msg = self._failing_message(1)
+        await worker._process_message(msg)
+
+        assert worker.status.events_dropped == 0
+        assert worker.status.recent_drops == []
+        assert worker.status.events_failed == 1
+        msg.nak.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_mock_or_missing_metadata_treated_as_first_delivery(self, worker):
+        """A non-int num_delivered (absent metadata, or a bare MagicMock as in
+        older tests) must never count as a terminal drop."""
+        msg = self._failing_message(MagicMock())
+        await worker._process_message(msg)
+
+        assert worker.status.events_dropped == 0
+        assert worker.status.events_failed == 1
+
+    @pytest.mark.asyncio
+    async def test_recent_drops_ring_is_bounded(self, worker):
+        from reporting_sync.config import settings
+
+        for _ in range(25):
+            await worker._process_message(
+                self._failing_message(settings.retry_attempts)
+            )
+
+        assert worker.status.events_dropped == 25
+        assert len(worker.status.recent_drops) == worker._RECENT_DROPS_MAX

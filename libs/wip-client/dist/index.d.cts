@@ -1,5 +1,6 @@
 declare class ApiKeyAuthProvider implements AuthProvider {
     private apiKey;
+    readonly cacheable = true;
     constructor(apiKey: string);
     getHeaders(): Record<string, string>;
     setApiKey(key: string): void;
@@ -18,6 +19,14 @@ declare class OidcAuthProvider implements AuthProvider {
 /** Auth provider interface — implementations supply headers for each request. */
 interface AuthProvider {
     getHeaders(): Record<string, string> | Promise<Record<string, string>>;
+    /**
+     * Whether the transport may cache this provider's headers across requests.
+     * Static credentials (API keys) set this true; rotating credentials that
+     * the transport must re-fetch every request (OIDC bearer tokens, which the
+     * consumer's callback refreshes) leave it false/undefined so an expiring
+     * token never pins a stale header (CASE-569).
+     */
+    cacheable?: boolean;
 }
 
 interface FetchTransportConfig {
@@ -41,6 +50,14 @@ declare class FetchTransport {
     private cachedAuthHeaders;
     constructor(config: FetchTransportConfig);
     setAuth(auth: AuthProvider | undefined): void;
+    /**
+     * Resolve auth headers for one request. Providers that opt into caching
+     * (`cacheable`, e.g. a static API key) are fetched once and reused until a
+     * 401/403 or setAuth() clears the cache; non-cacheable providers (OIDC,
+     * whose bearer the consumer callback rotates) are re-fetched every request
+     * so an expired token never pins a stale header (CASE-569).
+     */
+    private resolveAuthHeaders;
     request<T>(method: string, path: string, options?: {
         body?: unknown;
         params?: Record<string, unknown>;
@@ -234,10 +251,10 @@ interface TermListResponse extends PaginatedResponse<Term> {
 interface ImportTerminologyRequest {
     terminology: CreateTerminologyRequest;
     terms: CreateTermRequest[];
-    relationships?: Array<{
+    relations?: Array<{
         source_term_value: string;
         target_term_value: string;
-        relationship_type: string;
+        relation_type: string;
         target_terminology_value?: string;
     }>;
     options?: {
@@ -249,7 +266,16 @@ interface ExportTerminologyResponse {
     terminology: Terminology;
     terms: Term[];
     export_date: string;
-    export_format: string;
+    format: string;
+    version: string;
+    relations?: Array<{
+        source_term_value: string;
+        target_term_value: string;
+        relation_type: string;
+        metadata?: Record<string, unknown>;
+        source_terminology_id?: string;
+        target_terminology_id?: string;
+    }>;
 }
 interface ValidateValueRequest {
     terminology_id?: string;
@@ -293,12 +319,12 @@ interface AuditLogResponse {
     page_size: number;
 }
 
-interface Relationship {
+interface TermRelation {
     namespace: string;
     source_term_id: string;
     target_term_id: string;
-    relationship_type: string;
-    relationship_value?: string;
+    relation_type: string;
+    relation_value?: string;
     source_term_value?: string;
     source_term_label?: string;
     target_term_value?: string;
@@ -310,18 +336,18 @@ interface Relationship {
     created_at: string;
     created_by?: string;
 }
-type RelationshipListResponse = PaginatedResponse<Relationship>;
-interface CreateRelationshipRequest {
+type TermRelationListResponse = PaginatedResponse<TermRelation>;
+interface CreateTermRelationRequest {
     source_term_id: string;
     target_term_id: string;
-    relationship_type: string;
+    relation_type: string;
     metadata?: Record<string, unknown>;
     created_by?: string;
 }
-interface DeleteRelationshipRequest {
+interface DeleteTermRelationRequest {
     source_term_id: string;
     target_term_id: string;
-    relationship_type: string;
+    relation_type: string;
     hard_delete?: boolean;
 }
 interface TraversalNode {
@@ -333,7 +359,7 @@ interface TraversalNode {
 }
 interface TraversalResponse {
     term_id: string;
-    relationship_type: string;
+    relation_type: string;
     direction: string;
     nodes: TraversalNode[];
     total: number;
@@ -381,17 +407,18 @@ declare class DefStoreService extends BaseService {
     importTerminology(data: ImportTerminologyRequest): Promise<{
         terminology: Terminology;
         terms_result: BulkResponse;
-        relationships_result?: {
+        relations_result?: {
             total: number;
             created: number;
             skipped: number;
             errors: number;
+            error_samples: string[];
         };
     }>;
     exportTerminology(terminologyId: string, options?: {
         format?: 'json' | 'csv';
         includeInactive?: boolean;
-        includeRelationships?: boolean;
+        includeRelations?: boolean;
         includeMetadata?: boolean;
         languages?: string[];
     }): Promise<ExportTerminologyResponse | string>;
@@ -404,7 +431,7 @@ declare class DefStoreService extends BaseService {
         max_synonyms?: number;
         batch_size?: number;
         registry_batch_size?: number;
-        relationship_batch_size?: number;
+        relation_batch_size?: number;
         skip_duplicates?: boolean;
         update_existing?: boolean;
     }): Promise<{
@@ -420,47 +447,53 @@ declare class DefStoreService extends BaseService {
             skipped: number;
             errors: number;
         };
-        relationships: {
+        relations: {
             total: number;
             created: number;
             skipped: number;
             errors: number;
             predicate_distribution: Record<string, number>;
-            error_samples?: string[];
+            error_samples: string[];
         };
         elapsed_seconds: number;
     }>;
     validateValue(data: ValidateValueRequest): Promise<ValidateValueResponse>;
     bulkValidate(data: BulkValidateRequest): Promise<BulkValidateResponse>;
-    listRelationships(params: {
+    listTermRelations(params: {
         term_id: string;
         direction?: string;
-        relationship_type?: string;
+        relation_type?: string;
         namespace?: string;
         page?: number;
         page_size?: number;
-    }): Promise<RelationshipListResponse>;
-    listAllRelationships(params?: {
+    }): Promise<TermRelationListResponse>;
+    listAllTermRelations(params?: {
         namespace?: string;
-        relationship_type?: string;
+        relation_type?: string;
         status?: string;
         page?: number;
         page_size?: number;
-    }): Promise<RelationshipListResponse>;
-    createRelationships(items: CreateRelationshipRequest[], namespace: string): Promise<BulkResponse>;
-    deleteRelationships(items: DeleteRelationshipRequest[], namespace: string): Promise<BulkResponse>;
+    }): Promise<TermRelationListResponse>;
+    createTermRelations(items: CreateTermRelationRequest[], namespace: string): Promise<BulkResponse>;
+    deleteTermRelations(items: DeleteTermRelationRequest[], namespace: string): Promise<BulkResponse>;
     getAncestors(termId: string, params?: {
-        relationship_type?: string;
+        relation_type?: string;
         namespace?: string;
         max_depth?: number;
     }): Promise<TraversalResponse>;
     getDescendants(termId: string, params?: {
-        relationship_type?: string;
+        relation_type?: string;
         namespace?: string;
         max_depth?: number;
     }): Promise<TraversalResponse>;
-    getParents(termId: string, namespace: string): Promise<Relationship[]>;
-    getChildren(termId: string, namespace: string): Promise<Relationship[]>;
+    getParents(termId: string, params?: {
+        relation_type?: string;
+        namespace?: string;
+    }): Promise<TermRelation[]>;
+    getChildren(termId: string, params?: {
+        relation_type?: string;
+        namespace?: string;
+    }): Promise<TermRelation[]>;
     getTerminologyAuditLog(terminologyId: string, params?: {
         action?: string;
         page?: number;
@@ -504,6 +537,8 @@ interface FieldDefinition {
     default_value?: unknown;
     terminology_ref?: string;
     template_ref?: string;
+    /** Pinned version of template_ref. Backend (CASE-493) requires this when template_ref is set. */
+    template_ref_version?: number;
     reference_type?: ReferenceType;
     target_templates?: string[];
     target_terminologies?: string[];
@@ -512,10 +547,13 @@ interface FieldDefinition {
     array_item_type?: FieldType;
     array_terminology_ref?: string;
     array_template_ref?: string;
+    /** Pinned version of array_template_ref. Backend (CASE-493) requires this when array_template_ref is set. */
+    array_template_ref_version?: number;
     array_file_config?: FileFieldConfig;
     validation?: FieldValidation;
     semantic_type?: SemanticType;
     include_subtypes?: boolean;
+    full_text_indexed?: boolean;
     inherited?: boolean;
     inherited_from?: string;
     metadata: Record<string, unknown>;
@@ -541,6 +579,21 @@ interface ValidationRule {
     error_message?: string;
 }
 type SyncStrategy = 'latest_only' | 'all_versions';
+/**
+ * How a template's documents are intended to be used.
+ *
+ * - `entity` (default): full document lifecycle, the v1.x behaviour.
+ * - `reference`: lightweight controlled-vocabulary documents (LOV).
+ *   Reserved for a future phase; currently behaves like entity.
+ * - `relationship`: typed, property-carrying edge between two
+ *   documents (a.k.a. "edge type"). Requires source_templates /
+ *   target_templates to be set on the template, plus source_ref /
+ *   target_ref reference fields. Immutable after creation.
+ *
+ * See PoNIF #7 (edge types are stored as templates) and PoNIF #8
+ * (`versioned: false` is an option on relationship templates).
+ */
+type TemplateUsage = 'entity' | 'reference' | 'relationship';
 interface ReportingConfig {
     sync_enabled: boolean;
     sync_strategy: SyncStrategy;
@@ -565,6 +618,39 @@ interface Template {
     extends?: string;
     extends_version?: number;
     identity_fields: string[];
+    /**
+     * Fields to surface in peer/header projection contexts (CASE-343).
+     * Bare names target `data.<name>`; `metadata.custom.<name>` paths
+     * are allowed for audit fields. Empty → the platform's projection
+     * falls back to `identity_fields`. The relationships endpoint's
+     * `?include=peers` projection reads this; future list / summary
+     * endpoints may consume it too.
+     */
+    header_fields?: string[];
+    /**
+     * Usage class: entity (default), reference, or relationship.
+     * Immutable after creation. Relationship templates ("edge types")
+     * additionally require source_templates + target_templates and
+     * source_ref / target_ref reference fields.
+     */
+    usage?: TemplateUsage;
+    /**
+     * Template values allowed as the source endpoint of an edge.
+     * Set only on relationship templates; empty / absent on entity and
+     * reference templates.
+     */
+    source_templates?: string[];
+    /**
+     * Template values allowed as the target endpoint of an edge.
+     * Set only on relationship templates.
+     */
+    target_templates?: string[];
+    /**
+     * True (default) = updates create new versions; false = overwrite
+     * in place. Currently only available on relationship templates.
+     * Immutable after creation. See PoNIF #8.
+     */
+    versioned?: boolean;
     fields: FieldDefinition[];
     rules: ValidationRule[];
     metadata: TemplateMetadata;
@@ -585,6 +671,20 @@ interface CreateTemplateRequest {
     extends?: string;
     extends_version?: number;
     identity_fields?: string[];
+    /**
+     * Peer/header-projection fields (CASE-343). Bare names target data.*,
+     * `metadata.custom.<name>` paths allowed. Empty → projection falls
+     * back to identity_fields.
+     */
+    header_fields?: string[];
+    /** Usage class — defaults to 'entity' on the server when omitted. */
+    usage?: TemplateUsage;
+    /** Required when usage='relationship'; ignored otherwise. */
+    source_templates?: string[];
+    /** Required when usage='relationship'; ignored otherwise. */
+    target_templates?: string[];
+    /** Defaults to true. Immutable after creation. See PoNIF #8. */
+    versioned?: boolean;
     fields?: FieldDefinition[];
     rules?: ValidationRule[];
     metadata?: Partial<TemplateMetadata>;
@@ -600,6 +700,8 @@ interface UpdateTemplateRequest {
     extends?: string;
     extends_version?: number;
     identity_fields?: string[];
+    /** Update peer/header-projection fields (CASE-343). */
+    header_fields?: string[];
     fields?: FieldDefinition[];
     rules?: ValidationRule[];
     metadata?: Partial<TemplateMetadata>;
@@ -685,10 +787,17 @@ declare class TemplateStoreService extends BaseService {
     }): Promise<TemplateListResponse>;
     getTemplate(id: string, version?: number): Promise<Template>;
     getTemplateRaw(id: string, version?: number): Promise<Template>;
-    getTemplateByValue(value: string): Promise<Template>;
+    getTemplateByValue(value: string, opts?: {
+        namespace?: string;
+    }): Promise<Template>;
     getTemplateByValueRaw(value: string, namespace: string): Promise<Template>;
-    getTemplateVersions(value: string): Promise<TemplateListResponse>;
-    getTemplateByValueAndVersion(value: string, version: number): Promise<Template>;
+    getTemplateVersions(value: string, opts?: {
+        namespace?: string;
+    }): Promise<TemplateListResponse>;
+    getTemplateByValueAndVersion(value: string, version: number, opts?: {
+        namespace?: string;
+    }): Promise<Template>;
+    getTemplateVersionsById(templateId: string): Promise<TemplateListResponse>;
     /**
      * Create a single template.
      *
@@ -721,7 +830,36 @@ declare class TemplateStoreService extends BaseService {
         namespace: string;
         dry_run?: boolean;
     }): Promise<ActivateTemplateResponse>;
+    /**
+     * Reactivate a soft-deleted (inactive) template version (CASE-498).
+     *
+     * The inverse of soft-delete-by-version (`deleteTemplate(id, { version })`):
+     * restores a specific frozen version to active so documents pinned to it
+     * can be updated again. Distinct from `activateTemplate`, which is draft-only
+     * and addresses the latest version — `version` is required here and targets a
+     * known frozen version (there is no "latest" default). Idempotent on an
+     * already-active version; a draft version is rejected by the backend.
+     */
+    reactivateTemplate(id: string, version: number, options: {
+        namespace: string;
+    }): Promise<Template>;
     cascadeTemplate(id: string): Promise<CascadeResponse>;
+    /**
+     * Additively widen an edge type's allowed endpoint set (CASE-515).
+     *
+     * Adds source and/or target endpoint templates to an existing relationship
+     * template (PoNIF #7) in place, preserving every existing edge — the
+     * supported alternative to the delete+recreate that would strand them.
+     * Endpoints are append-only: this only ADDS (removal stays unsupported).
+     * Each new endpoint must be a real template; idempotent on already-allowed
+     * endpoints. No reindex / reporting migration — the relationship indexes and
+     * reporting columns are generic.
+     */
+    addEdgeTypeEndpoints(id: string, options: {
+        namespace: string;
+        addSourceTemplates?: string[];
+        addTargetTemplates?: string[];
+    }): Promise<Template>;
 }
 
 type DocumentStatus = 'active' | 'inactive' | 'archived';
@@ -773,6 +911,15 @@ interface Document {
     metadata: DocumentMetadata;
     is_latest_version?: boolean;
     latest_version?: number;
+    /**
+     * Compact projection of a related entity, attached when the
+     * relationships endpoint is called with `?include=peers` (CASE-303 /
+     * CASE-343 / CASE-348). Absent on documents returned by other
+     * endpoints. `null` when no related entity could be projected (e.g.,
+     * the target template has no `header_fields`, no `identity_fields`,
+     * and no legacy fallback).
+     */
+    peer?: PeerProjection | null;
 }
 interface CreateDocumentRequest {
     template_id: string;
@@ -859,8 +1006,17 @@ interface PatchDocumentRequest {
     /**
      * RFC 7396 JSON Merge Patch applied to the document's `data` field.
      * Objects deep-merge, arrays replace, `null` deletes the key.
+     * Pass `{}` for a metadata-only patch.
      */
     patch: Record<string, unknown>;
+    /**
+     * Optional RFC 7396 JSON Merge Patch applied to the document's
+     * `metadata.custom`. Metadata is non-identity document content — a
+     * metadata change creates a new version like any other change, but never
+     * feeds the identity hash. Platform-owned metadata (warnings,
+     * source_system) cannot be addressed. Omitted = metadata carries forward.
+     */
+    metadata_patch?: Record<string, unknown>;
     /**
      * Optional optimistic concurrency control. If supplied, the patch fails with
      * `concurrency_conflict` unless the current document version matches.
@@ -871,6 +1027,19 @@ interface ValidateDocumentRequest {
     template_id: string;
     namespace: string;
     data: Record<string, unknown>;
+}
+/** Bulk validate request (CASE-419): one template, many data payloads. */
+interface ValidateDocumentsRequest {
+    template_id: string;
+    namespace: string;
+    /** Specific template version to validate against. Default: latest. */
+    template_version?: number;
+    /** Document data payloads, each shaped like the singular validate `data`. */
+    items: Array<Record<string, unknown>>;
+}
+/** Bulk validate response (CASE-419): one result per item, in input order. */
+interface BulkValidationResponse {
+    results: DocumentValidationResponse[];
 }
 interface DocumentVersionSummary {
     document_id: string;
@@ -961,6 +1130,136 @@ interface ReplaySessionResponse {
     throttle_ms: number;
     message: string;
 }
+/**
+ * Params for `GET /api/document-store/documents/{id}/relationships`.
+ *
+ * Returns relationship documents (templates with `usage: 'relationship'`)
+ * that point at (incoming) or from (outgoing) the given document.
+ * Backed by Mongo indexes on `(template_id, data.source_ref)` and
+ * `(template_id, data.target_ref)`.
+ */
+interface DocumentRelationshipsParams {
+    /** `incoming` | `outgoing` | `both`. Default `both`. */
+    direction?: 'incoming' | 'outgoing' | 'both';
+    /** Comma-separated relationship template values. Default: all. */
+    template?: string;
+    /** Defaults to the seed document's namespace. */
+    namespace?: string;
+    /** Default true — exclude inactive/archived rel docs. */
+    active_only?: boolean;
+    page?: number;
+    /** Default 50, capped at 500. */
+    page_size?: number;
+    /**
+     * Comma-separated optional inclusions. Currently supports:
+     *   - `peers` — embeds a PeerProjection on each item (CASE-303 / CASE-343)
+     */
+    include?: string;
+}
+/**
+ * Compact projection of a peer entity document, returned on relationship
+ * items when `?include=peers` is set (CASE-303, extended CASE-343).
+ *
+ * The fields surfaced in `data` and `metadata` are determined by the peer
+ * template's `header_fields` (or `identity_fields` fallback). Legacy
+ * templates with neither declared fall back to `{title, doc_status}`.
+ */
+interface PeerProjection {
+    document_id: string;
+    namespace: string;
+    template_id: string;
+    template_value?: string | null;
+    status: 'active' | 'inactive' | 'archived' | 'deleted';
+    /**
+     * Projected data fields per the peer template's `header_fields`
+     * (or `identity_fields` fallback).
+     */
+    data: Record<string, unknown>;
+    /**
+     * Projected metadata fields. Only populated when the peer template's
+     * `header_fields` references `metadata.custom.<name>` paths
+     * (CASE-343). Shape is `{custom: {<name>: <value>, ...}}` when
+     * present, otherwise null/undefined.
+     */
+    metadata?: {
+        custom: Record<string, unknown>;
+    } | null;
+}
+/** One node in a document-relationship traversal result (CASE-296). */
+interface DocumentTraverseNode {
+    document_id: string;
+    template_id: string;
+    template_value?: string | null;
+    namespace: string;
+    /** Hops from the seed (0 = seed itself). */
+    depth: number;
+    /** Document_id of the relationship doc traversed to reach this node; null for the seed. */
+    via_relationship?: string | null;
+    /** Chain of document_ids from seed (exclusive) to this node (inclusive). */
+    path: string[];
+}
+/**
+ * Response for `GET /api/document-store/documents/{id}/traverse`.
+ *
+ * BFS expansion through relationship documents, capped at depth=10 and
+ * max_nodes=1000. When a cap fires, `truncated` is true.
+ */
+interface DocumentTraverseResponse {
+    seed_document_id: string;
+    /** `outgoing` | `incoming` | `both`. */
+    direction: string;
+    depth: number;
+    /** Relationship template values used to constrain traversal; empty = all. */
+    types_filter: string[];
+    nodes: DocumentTraverseNode[];
+    total_nodes: number;
+    /** True if a depth-cap or expansion-cap stopped traversal early. */
+    truncated: boolean;
+}
+/** Params for `GET /api/document-store/documents/{id}/traverse` (CASE-296). */
+interface DocumentTraverseParams {
+    /** 1..10. Default 1. */
+    depth?: number;
+    /** Comma-separated relationship template values. Default: all. */
+    types?: string;
+    /** `outgoing` | `incoming` | `both`. Default `outgoing`. */
+    direction?: 'outgoing' | 'incoming' | 'both';
+    /** Defaults to the seed document's namespace. */
+    namespace?: string;
+}
+/**
+ * Request for `POST /api/document-store/documents/migrate`.
+ *
+ * Re-pins every active document on `from_version` to `to_version`,
+ * identity-preserving only — the two template versions must declare the same
+ * identity_fields, or the operation is rejected (an identity-changing move is
+ * a fork, not a migrate). No data transformation happens; per-document data
+ * prep is the caller's job while the source version is still writable.
+ */
+interface DocumentMigrateRequest {
+    /** Template to migrate (canonical UUID or registered value/synonym). */
+    template_id: string;
+    /** Source version documents are pinned to. May be inactive (frozen). */
+    from_version: number;
+    /** Target version to re-pin to. Must be active. */
+    to_version: number;
+    /**
+     * Default true: report per-document readiness without writing. A dry-run
+     * with failed === 0 guarantees a successful apply (barring concurrent writes).
+     */
+    dry_run?: boolean;
+}
+/**
+ * Bulk-first migrate result — always HTTP 200, per-document outcome in
+ * `results` (status `updated` or `error`). When `dry_run` is true the
+ * statuses are PROJECTED — nothing was written.
+ */
+interface DocumentMigrateResponse extends BulkResponse {
+    dry_run: boolean;
+    template_id: string;
+    from_version: number;
+    to_version: number;
+}
 
 /**
  * Types for the document-store backup/restore endpoints (CASE-23 Phase 3 STEP 7).
@@ -974,6 +1273,14 @@ interface ReplaySessionResponse {
  */
 type BackupJobKind = 'backup' | 'restore';
 type BackupJobStatus = 'pending' | 'running' | 'complete' | 'failed';
+/**
+ * Restore mode. `'restore'` is the only mode the server implements today: it
+ * writes back into the archive's source namespace. `'fresh'` is RESERVED —
+ * the backend currently rejects it with 400 "Fresh mode is not yet
+ * implemented" (document-store `api/backup.py`); the new-ID / honour-
+ * `target_namespace` path it names does not exist yet. Kept in the union for
+ * forward-compat, but do not send it (CASE-569).
+ */
 type RestoreMode = 'restore' | 'fresh';
 /**
  * Persistent snapshot of a backup or restore job. Returned by every backup
@@ -1020,10 +1327,17 @@ interface BackupRequest {
 /**
  * Form fields accompanying a multipart restore upload.
  *
- * **Mode gotcha:** `mode: 'restore'` ignores `target_namespace` and writes
- * back into the archive's source namespace. Use `mode: 'fresh'` (the default
- * here) when restoring into a *new* namespace — that path generates new IDs
- * and honours `target_namespace`.
+ * **Mode gotcha (CASE-569):** omitting `mode` sends nothing on the wire, so
+ * the server default applies — and that default is `'restore'`, which writes
+ * back into the archive's **source** namespace. A single-namespace archive
+ * may be redirected with `target_namespace`; a multi-namespace archive
+ * restores each namespace to itself and rejects a target override. So a
+ * caller who sets `target_namespace`, omits `mode`, and expects a
+ * fresh-namespace restore lands in the archive's original namespace instead —
+ * the surprising direction, with no error. `'fresh'` is NOT yet implemented
+ * (the backend 400s on it); there is no mode that remaps to a new namespace
+ * with new IDs today. Pass `mode: 'restore'` explicitly when the namespace
+ * outcome matters.
  */
 interface RestoreOptions {
     mode?: RestoreMode;
@@ -1065,7 +1379,15 @@ interface BackupProgressMessage {
 declare class DocumentStoreService extends BaseService {
     constructor(transport: FetchTransport);
     listDocuments(params?: DocumentQueryParams): Promise<DocumentListResponse>;
-    getDocument(id: string, version?: number): Promise<Document>;
+    /**
+     * Fetch a document by ID (or any synonym/value the Registry resolves).
+     *
+     * `namespace` (CASE-457): under a MULTI-namespace key (e.g. the install admin
+     * key), a value-form `id` has no namespace context to resolve against — pass
+     * `namespace` to scope it. Maps to the `?namespace=` query param the endpoint
+     * accepts. Single-namespace keys derive it automatically and can omit it.
+     */
+    getDocument(id: string, version?: number, namespace?: string): Promise<Document>;
     createDocument(data: CreateDocumentRequest): Promise<BulkResultItem>;
     createDocuments(data: CreateDocumentRequest[]): Promise<BulkResponse>;
     /**
@@ -1081,6 +1403,7 @@ declare class DocumentStoreService extends BaseService {
      */
     updateDocument(documentId: string, patch: Record<string, unknown>, options?: {
         ifMatch?: number;
+        metadataPatch?: Record<string, unknown>;
     }): Promise<BulkResultItem>;
     /**
      * Bulk PATCH /documents — apply RFC 7396 merge patches to multiple documents
@@ -1093,8 +1416,17 @@ declare class DocumentStoreService extends BaseService {
         hardDelete?: boolean;
         version?: number;
     }): Promise<BulkResultItem>;
+    deleteDocuments(ids: string[], options?: {
+        hardDelete?: boolean;
+    }): Promise<BulkResponse>;
     archiveDocument(id: string, archivedBy?: string): Promise<BulkResultItem>;
     validateDocument(data: ValidateDocumentRequest): Promise<DocumentValidationResponse>;
+    /**
+     * Bulk validate (CASE-419): validate many data payloads against ONE template
+     * without saving. Side-effect-free — no documents/versions/identity-hash
+     * registrations. Returns per-item results in input order.
+     */
+    validateDocuments(request: ValidateDocumentsRequest): Promise<BulkValidationResponse>;
     getVersions(id: string): Promise<DocumentVersionResponse>;
     getVersion(id: string, version: number): Promise<Document>;
     getTableView(templateId: string, params?: TableViewParams): Promise<TableViewResponse>;
@@ -1104,8 +1436,55 @@ declare class DocumentStoreService extends BaseService {
         max_cross_product?: number;
     }): Promise<Blob>;
     getLatestDocument(id: string): Promise<Document>;
-    getDocumentByIdentity(identityHash: string, includeInactive?: boolean): Promise<Document>;
-    queryDocuments(body: DocumentQueryRequest): Promise<DocumentListResponse>;
+    getDocumentByIdentity(identityHash: string, includeInactive?: boolean, namespace?: string): Promise<Document>;
+    /**
+     * Query documents by template + filters (POST /documents/query).
+     *
+     * `namespace` (CASE-457): the read fails SILENTLY (total: 0, no error pre-fix)
+     * when a value-form `template_id`/`template_value` can't resolve for lack of
+     * namespace context — i.e. a MULTI-namespace key (the install admin key) with
+     * no scope. Pass `namespace` to supply it. It maps to the `?namespace=` QUERY
+     * PARAM, NOT the body — `namespace` in the JSON body is rejected
+     * `extra_forbidden` (StrictModel). Single-namespace keys derive it and can omit.
+     */
+    queryDocuments(body: DocumentQueryRequest, namespace?: string): Promise<DocumentListResponse>;
+    /**
+     * List relationship documents touching a document.
+     *
+     * Returns relationship documents (templates with `usage: 'relationship'`)
+     * that point at (incoming) or from (outgoing) the given document.
+     *
+     * Backed by Mongo indexes on `(template_id, data.source_ref)` and
+     * `(template_id, data.target_ref)` — query is O(matches), not
+     * O(documents).
+     *
+     * @param documentId Seed document ID (or any synonym/value the Registry resolves).
+     * @param params Filter, pagination, and namespace overrides.
+     */
+    getDocumentRelationships(documentId: string, params?: DocumentRelationshipsParams): Promise<DocumentListResponse>;
+    /**
+     * BFS traversal through relationship documents from a seed document.
+     *
+     * Capped at `depth=10` and `max_nodes=1000` (safety bounds). When a
+     * cap fires, the response sets `truncated: true`.
+     *
+     * @param documentId Seed document ID.
+     * @param params Depth (1..10), type filter, direction, namespace.
+     */
+    traverseDocuments(documentId: string, params?: DocumentTraverseParams): Promise<DocumentTraverseResponse>;
+    /**
+     * Migrate a cohort of documents from one template version to another —
+     * a validated, identity-preserving bulk re-pin.
+     *
+     * `dry_run` defaults to true on the server: run it first and check
+     * `failed === 0` before applying. Bulk-first: always HTTP 200,
+     * per-document outcome in `results`. Operation-level problems (bad
+     * versions, identity-fields mismatch, inactive target) throw as 4xx.
+     *
+     * @param request Template (UUID or value/synonym), from/to versions, dry_run.
+     * @param namespace Cohort namespace. Omittable only for single-namespace keys.
+     */
+    migrateDocuments(request: DocumentMigrateRequest, namespace?: string): Promise<DocumentMigrateResponse>;
     previewImport(file: Blob, filename: string): Promise<ImportPreviewResponse>;
     importDocuments(file: Blob, filename: string, options: ImportDocumentsOptions): Promise<ImportDocumentsResponse>;
     startReplay(request?: ReplayRequest): Promise<ReplaySessionResponse>;
@@ -1125,9 +1504,12 @@ declare class DocumentStoreService extends BaseService {
      * Restore a namespace from an uploaded archive. The archive is streamed
      * to disk on the server, so multi-GB uploads do not buffer in memory.
      *
-     * **Mode gotcha:** `mode: 'restore'` writes back into the archive's source
-     * namespace and ignores `target_namespace`. Use `mode: 'fresh'` when
-     * restoring into a different namespace.
+     * **Mode gotcha (CASE-569):** omitting `mode` defers to the server default
+     * `'restore'`, which writes back into the archive's source namespace
+     * (a single-namespace archive honours `target_namespace`; a multi-namespace
+     * one restores each to itself). `'fresh'` is not yet implemented server-side
+     * — the backend 400s on it. Pass `mode: 'restore'` explicitly when the
+     * namespace outcome matters; see `RestoreOptions`.
      */
     startRestore(namespace: string, archive: Blob | File, options?: RestoreOptions, filename?: string): Promise<BackupJobSnapshot>;
     /** Get the latest persisted snapshot for a backup or restore job. */
@@ -1238,7 +1620,7 @@ interface FileQueryParams {
 
 declare class FileStoreService extends BaseService {
     constructor(transport: FetchTransport);
-    uploadFile(file: File | Blob, filename?: string, metadata?: FileUploadMetadata): Promise<FileEntity>;
+    uploadFile(file: File | Blob, filename?: string, metadata?: FileUploadMetadata, namespace?: string): Promise<FileEntity>;
     listFiles(params?: FileQueryParams): Promise<FileListResponse>;
     getFile(fileId: string): Promise<FileEntity>;
     getDownloadUrl(fileId: string, expiresIn?: number): Promise<FileDownloadResponse>;
@@ -1313,6 +1695,14 @@ interface UpdateNamespaceRequest {
     allowed_external_refs?: string[];
     id_config?: Record<string, IdAlgorithmConfig>;
     updated_by?: string;
+    /**
+     * Required to be `true` when flipping `deletion_mode` from 'retain' to
+     * 'full' on an existing namespace (enabling hard-delete on namespace
+     * deletion). The backend rejects the transition without it. Ignored for
+     * other updates, and not needed when creating a namespace directly with
+     * `deletion_mode: 'full'`. Safety guard — see CASE-291 / CASE-429.
+     */
+    confirm_enable_deletion?: boolean;
 }
 interface RegistryEntry {
     entry_id: string;
@@ -1355,8 +1745,24 @@ interface RegistryEntryFull {
     updated_at: string;
     updated_by: string | null;
 }
+/**
+ * A single hit from POST /api/registry/search/by-term (CASE-572).
+ *
+ * Distinct from RegistryLookupResponse: the by-term route returns
+ * `registry_id`/`matched_in`, not `entry_id`/`matched_via`.
+ */
+interface RegistryByTermHit {
+    registry_id: string;
+    namespace: string;
+    entity_type: string;
+    matched_in: 'primary' | 'synonym';
+    matched_namespace: string;
+    matched_entity_type: string;
+    matched_composite_key: Record<string, unknown>;
+    all_synonyms: RegistrySynonym[];
+}
 interface RegistryLookupResponse {
-    input_index: number;
+    index: number;
     status: string;
     entry_id: string | null;
     namespace: string | null;
@@ -1509,9 +1915,17 @@ interface CreateAPIKeyRequest {
     namespaces?: string[] | null;
     description?: string;
     expires_at?: string;
+    /**
+     * CASE-450: also create a namespace grant at this level for the new key
+     * (subject = key name) on each namespace in `namespaces`. Without it a
+     * scoped key can read its namespaces but not write.
+     */
+    grant_permission?: 'read' | 'write' | 'admin';
 }
 interface CreateAPIKeyResponse extends APIKeyInfo {
     plaintext_key: string;
+    /** Namespaces a grant was created on (CASE-450 grant_permission). */
+    granted_namespaces?: string[] | null;
 }
 interface UpdateAPIKeyRequest {
     description?: string;
@@ -1519,6 +1933,18 @@ interface UpdateAPIKeyRequest {
     namespaces?: string[] | null;
     expires_at?: string;
     enabled?: boolean;
+}
+/**
+ * Paginated list response from `GET /api/registry/api-keys` (CASE-335).
+ * Follows the platform-wide pagination envelope (see `wip://conventions`).
+ */
+type APIKeyListResponse = PaginatedResponse<APIKeyInfo>;
+/** Query params for `GET /api/registry/api-keys` (CASE-335). */
+interface ListAPIKeysParams {
+    /** Default 1. */
+    page?: number;
+    /** Default 50, capped at 100. */
+    page_size?: number;
 }
 
 declare class RegistryService extends BaseService {
@@ -1544,11 +1970,23 @@ declare class RegistryService extends BaseService {
     initializeWipNamespace(): Promise<Namespace>;
     listEntries(params?: RegistryBrowseParams): Promise<RegistryEntryListResponse>;
     lookupEntry(entryId: string): Promise<RegistryLookupResponse>;
+    /**
+     * Free-text search across composite key values (CASE-572, breaking in 0.28.0).
+     *
+     * Returns `{ hits, total }`: `total` is the full server-side match count
+     * even when `limit` bounds the returned hits. `limit` requires a backend
+     * that accepts it (registry rejects unknown fields with 422 — ships
+     * together with this client change).
+     */
     searchEntries(term: string, options?: {
         namespaces?: string[];
         entityTypes?: string[];
         includeInactive?: boolean;
-    }): Promise<RegistryLookupResponse[]>;
+        limit?: number;
+    }): Promise<{
+        hits: RegistryByTermHit[];
+        total: number;
+    }>;
     unifiedSearch(params: RegistrySearchParams): Promise<RegistrySearchResponse>;
     getEntry(entryId: string): Promise<RegistryEntryFull>;
     addSynonym(request: AddSynonymRequest): Promise<{
@@ -1582,7 +2020,15 @@ declare class RegistryService extends BaseService {
     listGrants(prefix: string): Promise<Grant[]>;
     createGrants(prefix: string, grants: CreateGrantRequest[]): Promise<GrantBulkResponse>;
     revokeGrants(prefix: string, grants: RevokeGrantRequest[]): Promise<GrantRevokeBulkResponse>;
-    listAPIKeys(): Promise<APIKeyInfo[]>;
+    /**
+     * List API keys with pagination (CASE-335).
+     *
+     * Breaking change in @wip/client 0.19.0: the response shape is now a
+     * `PaginatedResponse<APIKeyInfo>` (envelope with `items`/`total`/`page`/
+     * `page_size`/`pages`) instead of a bare `APIKeyInfo[]`. Callers using
+     * `.map(...)` on the result must switch to `.items.map(...)`.
+     */
+    listAPIKeys(params?: ListAPIKeysParams): Promise<APIKeyListResponse>;
     createAPIKey(request: CreateAPIKeyRequest): Promise<CreateAPIKeyResponse>;
     getAPIKey(name: string): Promise<APIKeyInfo>;
     updateAPIKey(name: string, request: UpdateAPIKeyRequest): Promise<APIKeyInfo>;
@@ -1601,6 +2047,14 @@ interface ReportQueryParams {
     timeout_seconds?: number;
     /** Max rows returned (1-50000, default 1000) */
     max_rows?: number;
+    /**
+     * Namespace whose PostgreSQL schema unqualified table names resolve in.
+     * Each namespace is its own schema (a table is `"<ns>"."doc_<value>"`);
+     * when set, the server runs the query with search_path pointed there, so
+     * `doc_<value>` works unqualified. Omit for cross-namespace queries and
+     * schema-qualify each table in the SQL instead.
+     */
+    namespace?: string;
 }
 interface ReportQueryResult {
     columns: string[];
@@ -1736,6 +2190,30 @@ interface BatchSyncResponse {
     status: BatchSyncStatus;
     message: string;
 }
+/**
+ * Result shape for the entity-table batch syncs (terminologies, terms,
+ * term_relations). Synchronous on the server (no per-job polling); the
+ * full result is in the response body.
+ */
+interface BatchEntitySyncResult {
+    status: 'completed' | 'failed';
+    table: 'terminologies' | 'terms' | 'term_relations';
+    /** Entries fetched from the source service. */
+    fetched?: number;
+    /** Entries upserted into PostgreSQL. */
+    synced?: number;
+    /** Entries that failed to upsert. */
+    failed?: number;
+    /** Free-form additional fields the server may emit. */
+    [extra: string]: unknown;
+}
+interface BatchJobCancelResult {
+    status: 'cancelled' | 'not_running';
+    job_id: string;
+}
+interface BatchJobsCleared {
+    cleared: number;
+}
 interface CsvExportQuery {
     sql: string;
     params?: unknown[];
@@ -1779,11 +2257,43 @@ interface SearchResult {
     status: string | null;
     description: string | null;
     updated_at: string | null;
+    /** ts_rank score; populated for FTS document hits only. */
+    score?: number | null;
+    /**
+     * ts_headline excerpt; populated for FTS document hits only.
+     * HTML by default with <b>...</b> around matched terms; pass
+     * snippet_format='text' on the request for plain text.
+     */
+    snippet?: string | null;
 }
+/**
+ * Per-type paginated bucket on `SearchResponse.results` (CASE-329).
+ * Mirrors the platform-wide pagination envelope (see `wip://conventions`).
+ */
+interface SearchTypeResults {
+    items: SearchResult[];
+    total: number;
+    page: number;
+    page_size: number;
+    pages: number;
+}
+/**
+ * Response from `POST /api/reporting-sync/search`.
+ *
+ * Breaking change in @wip/client 0.19.0 (CASE-329): the legacy flat
+ * `results: SearchResult[]` + `counts: Record<string, number>` shape was
+ * replaced by per-type buckets keyed by entity type ('terminology',
+ * 'term', 'template', 'document', 'file'), each carrying its own
+ * pagination envelope. Consumers iterating "all hits" should iterate
+ * the values of `results`.
+ */
 interface SearchResponse {
     query: string;
-    results: SearchResult[];
-    counts: Record<string, number>;
+    /** Echo of the document-search mode used (informational only). */
+    mode?: string | null;
+    /** Per-type paginated buckets. Only types the search visited appear here. */
+    results: Record<string, SearchTypeResults>;
+    /** Sum of per-type totals across all visited types. */
     total: number;
 }
 interface ActivityItem {
@@ -1865,11 +2375,60 @@ declare class ReportingSyncService extends BaseService {
     constructor(transport: FetchTransport);
     healthCheck(): Promise<boolean>;
     getSyncStatus(): Promise<SyncStatus>;
-    /** Execute a read-only SQL query against the PostgreSQL reporting database */
+    /**
+     * Execute a read-only SQL query against the PostgreSQL reporting database.
+     *
+     * Reporting tables live in per-namespace PostgreSQL schemas
+     * (`"<ns>"."doc_<value>"`). Pass `namespace` so unqualified table names
+     * resolve in that namespace's schema, or schema-qualify each table in the
+     * SQL for cross-namespace queries.
+     */
     runQuery(sql: string, params?: unknown[], options?: {
         timeout_seconds?: number;
         max_rows?: number;
+        namespace?: string;
     }): Promise<ReportQueryResult>;
+    /**
+     * Trigger a batch sync for ALL templates with `sync_enabled=true`.
+     * Returns one BatchSyncResponse per template; jobs run async on
+     * the server. Poll `listBatchJobs()` or `getBatchJob(job_id)` for
+     * progress.
+     */
+    triggerBatchSyncAll(options?: {
+        force?: boolean;
+        page_size?: number;
+    }): Promise<BatchSyncResponse[]>;
+    /**
+     * Trigger a batch sync for a single template (by value).
+     * Job runs async; poll `getBatchJob(job_id)` for progress.
+     */
+    triggerBatchSync(templateValue: string, options?: {
+        force?: boolean;
+        page_size?: number;
+    }): Promise<BatchSyncResponse>;
+    /**
+     * Synchronous batch sync for the terminologies entity table.
+     * Returns the result inline; no per-job polling.
+     */
+    triggerTerminologySync(namespace: string, pageSize?: number): Promise<BatchEntitySyncResult>;
+    /**
+     * Synchronous batch sync for the terms entity table.
+     * Iterates every active terminology in `namespace` and syncs its
+     * terms.
+     */
+    triggerTermSync(namespace: string, pageSize?: number): Promise<BatchEntitySyncResult>;
+    /**
+     * Synchronous batch sync for the term_relations entity table.
+     */
+    triggerTermRelationSync(namespace: string, pageSize?: number): Promise<BatchEntitySyncResult>;
+    /** List all batch sync jobs (in-memory, lost on reporting-sync restart). */
+    listBatchJobs(): Promise<BatchSyncJob[]>;
+    /** Fetch a single batch sync job by id. 404 if unknown. */
+    getBatchJob(jobId: string): Promise<BatchSyncJob>;
+    /** Cancel a running batch sync job. */
+    cancelBatchJob(jobId: string): Promise<BatchJobCancelResult>;
+    /** Clear all completed/failed/cancelled jobs from in-memory state. */
+    clearCompletedJobs(): Promise<BatchJobsCleared>;
     /**
      * Wait for the reporting sync to catch up.
      *
@@ -1906,12 +2465,52 @@ declare class ReportingSyncService extends BaseService {
         check_term_refs?: boolean;
         recent_first?: boolean;
     }): Promise<IntegrityCheckResult>;
+    /**
+     * Unified search with per-type pagination (CASE-329).
+     *
+     * Breaking change in @wip/client 0.19.0: the response shape moved
+     * from a flat `results: SearchResult[]` to per-type buckets keyed
+     * by entity type, each with its own pagination envelope. Same
+     * `page`/`page_size` applies to every type. The legacy `limit`
+     * parameter is still accepted as a deprecation-window alias for
+     * `page_size` — use `page_size` going forward.
+     */
     search(params: {
         query: string;
         types?: string[];
-        namespace: string;
+        /**
+         * Filter by namespace. Optional — when omitted the server runs
+         * the search across all namespaces visible to the API key.
+         * Single-namespace keys derive it implicitly; multi-namespace
+         * keys see all of theirs.
+         */
+        namespace?: string;
         status?: string;
+        /** Page number (1-indexed). Default 1. (CASE-329) */
+        page?: number;
+        /** Items per type. Default 50, cap 100. (CASE-329) */
+        page_size?: number;
+        /** DEPRECATED (CASE-329): alias for page_size when page=1. */
         limit?: number;
+        /** Restrict document search to a single template (by value). */
+        template?: string;
+        /**
+         * Document-search strategy. 'auto' (default) picks FTS for tables
+         * with full_text_indexed fields and falls back to ILIKE elsewhere.
+         * 'fts' forces FTS (skips tables without indexed fields). 'substring'
+         * forces ILIKE on all tables.
+         */
+        mode?: 'auto' | 'fts' | 'substring';
+        /**
+         * When false (default), only active documents are returned —
+         * aligns with PoNIF #1 "inactive means retired, not deleted".
+         */
+        include_inactive?: boolean;
+        /**
+         * Snippet rendering for FTS hits. 'html' (default) wraps matched
+         * terms with <b>...</b>. 'text' returns plain text.
+         */
+        snippet_format?: 'html' | 'text';
     }): Promise<SearchResponse>;
     getRecentActivity(params?: {
         types?: string;
@@ -2063,4 +2662,4 @@ interface ResolvedReference {
  */
 declare function resolveReference(client: WipClient, templateId: string, searchTerm: string, limit?: number): Promise<ResolvedReference[]>;
 
-export { type APIKeyInfo, type ActivateTemplateResponse, type ActivationDetail, type ActivityItem, type ActivityResponse, type AddSynonymRequest, type Alert, type AlertConfig, type AlertSeverity, type AlertThresholds, type AlertType, type AlertsResponse, type ApiError, ApiKeyAuthProvider, type AuditLogEntry, type AuditLogResponse, type AuthProvider, type BackupJobKind, type BackupJobSnapshot, type BackupJobStatus, type BackupProgressMessage, type BackupRequest, type BatchSyncJob, type BatchSyncRequest, type BatchSyncResponse, type BatchSyncStatus, type BulkImportOptions, type BulkImportProgress, type BulkResponse, type BulkResultItem, type BulkValidateRequest, type BulkValidateResponse, type CascadeResponse, type CascadeResult, type Condition, type ConditionOperator, type ConsumerInfo, type CreateAPIKeyRequest, type CreateAPIKeyResponse, type CreateDocumentRequest, type CreateGrantRequest, type CreateNamespaceRequest, type CreateRelationshipRequest, type CreateTemplateRequest, type CreateTermRequest, type CreateTerminologyRequest, type CsvExportQuery, DefStoreService, type DeleteRelationshipRequest, type DeprecateTermRequest, type Document, type DocumentCreateResponse, type DocumentListResponse, type DocumentMetadata, type DocumentQueryParams, type DocumentQueryRequest, type DocumentReference, type DocumentStatus, DocumentStoreService, type DocumentValidationResponse, type DocumentVersionResponse, type DocumentVersionSummary, type EntityDetails, type EntityReference, type EntityReferencesResponse, type ExportResponse, type ExportTerminologyResponse, FetchTransport, type FetchTransportConfig, type FieldDefinition, type FieldType, type FieldValidation, type FileDownloadResponse, type FileEntity, type FileFieldConfig, type FileIntegrityIssue, type FileIntegrityResponse, type FileListResponse, type FileMetadata, type FileQueryParams, type FileStatus, FileStoreService, type FileUploadMetadata, type FormField, type FormInputType, type Grant, type GrantBulkResponse, type GrantBulkResult, type GrantPermission, type GrantRevokeBulkResponse, type GrantRevokeResult, type GrantSubjectType, type HealthResponse, type IdAlgorithmConfig, type ImportDocumentError, type ImportDocumentResult, type ImportDocumentsOptions, type ImportDocumentsResponse, type ImportPreviewResponse, type ImportResponse, type ImportTerminologyRequest, type IncomingReference, type IntegrityCheckResult, type IntegrityIssue, type IntegritySummary, type LatencyStats, type ListBackupJobsParams, type MergeRequest, type MetricsResponse, type Namespace, type NamespaceStats, OidcAuthProvider, type PaginatedResponse, type PatchDocumentRequest, type PerTemplateStats, type QueryFilter, type QueryFilterOperator, type Reference, type ReferenceType, type ReferencedByResponse, type RegistryBrowseParams, type RegistryEntry, type RegistryEntryFull, type RegistryEntryListResponse, type RegistryLookupResponse, type RegistrySearchParams, type RegistrySearchResponse, type RegistrySearchResult, RegistryService, type RegistrySourceInfo, type RegistrySynonym, type Relationship, type RelationshipListResponse, type RemoveSynonymRequest, type ReplayFilter, type ReplayRequest, type ReplaySessionResponse, type ReplayStatus, type ReportQueryParams, type ReportQueryResult, type ReportTable, type ReportTableColumn, type ReportTableSchema, type ReportingConfig, ReportingSyncService, type ResolvedReference, type RestoreMode, type RestoreOptions, type RetryConfig, type RevokeGrantRequest, type RuleType, type SearchResponse, type SearchResult, type SemanticType, type SyncStatus, type SyncStrategy, type TableColumn, type TableViewParams, type TableViewResponse, type Template, type TemplateListResponse, type TemplateMetadata, TemplateStoreService, type TemplateUpdateResponse, type Term, type TermDocumentsResponse, type TermListResponse, type TermReference, type TermTranslation, type Terminology, type TerminologyListResponse, type TerminologyMetadata, type TraversalNode, type TraversalResponse, type UpdateAPIKeyRequest, type UpdateFileMetadataRequest, type UpdateNamespaceRequest, type UpdateTemplateRequest, type UpdateTermRequest, type UpdateTerminologyRequest, type ValidateDocumentRequest, type ValidateTemplateRequest, type ValidateTemplateResponse, type ValidateValueRequest, type ValidateValueResponse, type ValidationRule, type VersionStrategy, WipAuthError, WipBulkItemError, type WipClient, type WipClientConfig, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };
+export { type APIKeyInfo, type APIKeyListResponse, type ActivateTemplateResponse, type ActivationDetail, type ActivityItem, type ActivityResponse, type AddSynonymRequest, type Alert, type AlertConfig, type AlertSeverity, type AlertThresholds, type AlertType, type AlertsResponse, type ApiError, ApiKeyAuthProvider, type AuditLogEntry, type AuditLogResponse, type AuthProvider, type BackupJobKind, type BackupJobSnapshot, type BackupJobStatus, type BackupProgressMessage, type BackupRequest, type BatchEntitySyncResult, type BatchJobCancelResult, type BatchJobsCleared, type BatchSyncJob, type BatchSyncRequest, type BatchSyncResponse, type BatchSyncStatus, type BulkImportOptions, type BulkImportProgress, type BulkResponse, type BulkResultItem, type BulkValidateRequest, type BulkValidateResponse, type BulkValidationResponse, type CascadeResponse, type CascadeResult, type Condition, type ConditionOperator, type ConsumerInfo, type CreateAPIKeyRequest, type CreateAPIKeyResponse, type CreateDocumentRequest, type CreateGrantRequest, type CreateNamespaceRequest, type CreateTemplateRequest, type CreateTermRelationRequest, type CreateTermRequest, type CreateTerminologyRequest, type CsvExportQuery, DefStoreService, type DeleteTermRelationRequest, type DeprecateTermRequest, type Document, type DocumentCreateResponse, type DocumentListResponse, type DocumentMetadata, type DocumentMigrateRequest, type DocumentMigrateResponse, type DocumentQueryParams, type DocumentQueryRequest, type DocumentReference, type DocumentRelationshipsParams, type DocumentStatus, DocumentStoreService, type DocumentTraverseNode, type DocumentTraverseParams, type DocumentTraverseResponse, type DocumentValidationResponse, type DocumentVersionResponse, type DocumentVersionSummary, type EntityDetails, type EntityReference, type EntityReferencesResponse, type ExportResponse, type ExportTerminologyResponse, FetchTransport, type FetchTransportConfig, type FieldDefinition, type FieldType, type FieldValidation, type FileDownloadResponse, type FileEntity, type FileFieldConfig, type FileIntegrityIssue, type FileIntegrityResponse, type FileListResponse, type FileMetadata, type FileQueryParams, type FileStatus, FileStoreService, type FileUploadMetadata, type FormField, type FormInputType, type Grant, type GrantBulkResponse, type GrantBulkResult, type GrantPermission, type GrantRevokeBulkResponse, type GrantRevokeResult, type GrantSubjectType, type HealthResponse, type IdAlgorithmConfig, type ImportDocumentError, type ImportDocumentResult, type ImportDocumentsOptions, type ImportDocumentsResponse, type ImportPreviewResponse, type ImportResponse, type ImportTerminologyRequest, type IncomingReference, type IntegrityCheckResult, type IntegrityIssue, type IntegritySummary, type LatencyStats, type ListAPIKeysParams, type ListBackupJobsParams, type MergeRequest, type MetricsResponse, type Namespace, type NamespaceStats, OidcAuthProvider, type PaginatedResponse, type PatchDocumentRequest, type PeerProjection, type PerTemplateStats, type QueryFilter, type QueryFilterOperator, type Reference, type ReferenceType, type ReferencedByResponse, type RegistryBrowseParams, type RegistryByTermHit, type RegistryEntry, type RegistryEntryFull, type RegistryEntryListResponse, type RegistryLookupResponse, type RegistrySearchParams, type RegistrySearchResponse, type RegistrySearchResult, RegistryService, type RegistrySourceInfo, type RegistrySynonym, type RemoveSynonymRequest, type ReplayFilter, type ReplayRequest, type ReplaySessionResponse, type ReplayStatus, type ReportQueryParams, type ReportQueryResult, type ReportTable, type ReportTableColumn, type ReportTableSchema, type ReportingConfig, ReportingSyncService, type ResolvedReference, type RestoreMode, type RestoreOptions, type RetryConfig, type RevokeGrantRequest, type RuleType, type SearchResponse, type SearchResult, type SearchTypeResults, type SemanticType, type SyncStatus, type SyncStrategy, type TableColumn, type TableViewParams, type TableViewResponse, type Template, type TemplateListResponse, type TemplateMetadata, TemplateStoreService, type TemplateUpdateResponse, type TemplateUsage, type Term, type TermDocumentsResponse, type TermListResponse, type TermReference, type TermRelation, type TermRelationListResponse, type TermTranslation, type Terminology, type TerminologyListResponse, type TerminologyMetadata, type TraversalNode, type TraversalResponse, type UpdateAPIKeyRequest, type UpdateFileMetadataRequest, type UpdateNamespaceRequest, type UpdateTemplateRequest, type UpdateTermRequest, type UpdateTerminologyRequest, type ValidateDocumentRequest, type ValidateDocumentsRequest, type ValidateTemplateRequest, type ValidateTemplateResponse, type ValidateValueRequest, type ValidateValueResponse, type ValidationRule, type VersionStrategy, WipAuthError, WipBulkItemError, type WipClient, type WipClientConfig, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };

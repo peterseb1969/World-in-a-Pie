@@ -1,0 +1,1621 @@
+"""Apply a rendered tree against the target platform.
+
+Compose target (`apply_compose`):
+
+  1. Write the FileTree under the install directory.
+  2. Run `podman-compose up -d` (or docker compose fallback).
+  3. Optionally wait for every service with a healthcheck to report
+     `healthy` via `podman-compose ps`.
+  4. Run post-install hooks via `compose exec`.
+
+K8s target (`apply_k8s`):
+
+  1. Clean stale render output under the install directory (without
+     touching the secrets backend dir if it shares the path).
+  2. Write the FileTree under the install directory.
+  3. `kubectl apply -f <namespace.yaml>` (no prune — Namespace is cluster-
+     scoped and pruning could affect peer WIP namespaces).
+  4. `kubectl apply -R -f . --prune --selector=app.kubernetes.io/part-of=wip`
+     with an explicit allowlist of pruneable kinds (Deployments, Services,
+     ConfigMaps, Secrets, PVCs, StatefulSets, Ingresses). Prune removes
+     resources from the previous install that aren't in the current render.
+  5. Optionally wait for every workload's rollout to finish via
+     `kubectl rollout status`.
+  6. Run post-install hooks via `kubectl exec` against a ready pod.
+
+Errors surface as ApplyError with a human-readable message; the CLI
+translates to a non-zero exit code.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import re
+import shutil
+import subprocess
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from wip_deploy.renderers.base import FileTree
+from wip_deploy.spec import Deployment
+from wip_deploy.spec.activation import is_component_active
+from wip_deploy.spec.app import App
+from wip_deploy.spec.component import Component, PostInstallHook
+
+# ────────────────────────────────────────────────────────────────────
+
+
+class ApplyError(Exception):
+    """Anything that went wrong during apply.
+
+    `mutated` is True when the failure happened AFTER the apply started
+    changing the running deployment (compose up / kubectl apply began) —
+    from that point on, the previously persisted deployer-state no longer
+    describes reality, and callers must persist the new spec even though
+    the apply failed (CASE-455: a health-timeout after a full container
+    recreate left state saying `compose` while the running stack was
+    `dev`; every state-reading verb then reasoned from fiction).
+    Pre-mutation failures (render errors, missing binaries, build
+    failures) keep `mutated=False` — there the old state is still the
+    truthful last-known-good.
+    """
+
+    def __init__(self, message: str, *, mutated: bool = False):
+        super().__init__(message)
+        self.mutated = mutated
+
+
+@dataclass
+class ApplyResult:
+    install_dir: Path
+    services_up: int
+    healthy: bool
+    # Post-install hooks declare `after: healthy`; when health was never
+    # established (--no-wait, or a timed-out rollout with on_timeout != "fail")
+    # the hooks are skipped rather than run against a not-ready target. Each
+    # entry is a "<hook> on <owner>" label the CLI surfaces so the skip is
+    # visible, not silent (CASE-426).
+    post_install_skipped: list[str] = field(default_factory=list)
+
+
+# ────────────────────────────────────────────────────────────────────
+# Public entry
+# ────────────────────────────────────────────────────────────────────
+
+
+# CASE-443: proxies whose mounted config a scoped mutation may change.
+# Both mount their rendered Caddyfile at /etc/caddy/Caddyfile (ro), so a
+# scoped `up -d <svc>` never recreates them — config changes need an
+# explicit graceful reload.
+_PROXY_CONFIG_FILES: dict[str, str] = {
+    "wip-caddy": "config/caddy/Caddyfile",
+    "wip-router": "config/router/Caddyfile",
+}
+
+
+def apply_compose(
+    *,
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+    tree: FileTree,
+    install_dir: Path,
+    services_scope: list[str] | None = None,
+) -> ApplyResult:
+    """Materialize the tree and run `podman-compose up -d`.
+
+    Honors `deployment.spec.apply` — wait/timeout/on_timeout.
+
+    `services_scope` (CASE-443): None — full-stack up (install semantics,
+    unchanged). A list — incremental mutation: `up -d` only the named
+    compose services (empty list = config-only change, nothing to up),
+    skip the dev-target stale-container wipe, reload any proxy whose
+    mounted Caddyfile content changed, and scope the health wait to the
+    named services. This is what makes `add-app`/`remove-app` honor
+    their "preserves the rest untouched" contract on compose.
+    """
+    install_dir = Path(install_dir)
+
+    # Snapshot proxy configs before the tree overwrites them, so we can
+    # detect changes and reload only what actually changed.
+    old_proxy_content: dict[str, str | None] = {}
+    if services_scope is not None:
+        for ctr, rel in _PROXY_CONFIG_FILES.items():
+            path = install_dir / rel
+            old_proxy_content[ctr] = path.read_text() if path.is_file() else None
+
+    tree.write(install_dir)
+
+    compose_cmd = _detect_compose_cmd()
+    # Dev target uses local build contexts — always rebuild + recreate
+    # so Dockerfile edits and libs/wip-auth changes take effect on every
+    # install. Without --build, podman-compose reuses the cached image
+    # tag; without --force-recreate, it keeps the existing container
+    # even if the image was rebuilt. Both are footguns in dev mode.
+    force_build = deployment.spec.target == "dev"
+
+    # CASE-282: dev installs must guarantee every service ends up on
+    # the freshly-built image. `--force-recreate` alone isn't enough —
+    # cross-project container name conflicts (e.g. wip-* containers
+    # left over from an earlier install with a different project name)
+    # silently survive `compose up`, leaving the operator with a mix
+    # of fresh and stale containers. Wipe them up front.
+    # CASE-443: never on a scoped mutation — the wipe would take down
+    # the exact containers the scope promises to leave untouched.
+    if deployment.spec.target == "dev" and services_scope is None:
+        _remove_stale_wip_containers()
+
+    # CASE-455: everything from `compose up` onward changes the running
+    # deployment — any ApplyError beyond this point is stamped mutated=True
+    # so the CLI persists the new spec instead of keeping a stale
+    # "last-known-good" that no longer describes reality.
+    try:
+        if services_scope is None:
+            _run_up(install_dir, compose_cmd, force_build=force_build)
+        elif services_scope:
+            _run_up(
+                install_dir,
+                compose_cmd,
+                force_build=force_build,
+                services=services_scope,
+            )
+        # else: empty scope — config-only mutation (e.g. remove-app, whose
+        # container was already removed); nothing to bring up. NB: an empty
+        # list must NOT reach _run_up — `up -d` with no service args is the
+        # full-stack up this scoping exists to prevent.
+
+        # CASE-443: a scoped up never recreates the proxies (their service
+        # definitions are unchanged — only mounted files moved). Reload the
+        # ones whose rendered config actually changed.
+        if services_scope is not None:
+            for ctr, rel in _PROXY_CONFIG_FILES.items():
+                path = install_dir / rel
+                new_content = path.read_text() if path.is_file() else None
+                if new_content is not None and new_content != old_proxy_content.get(ctr):
+                    _reload_proxy(ctr)
+
+        # Count the services in our rendered file to report a summary.
+        up_count = (
+            len(services_scope) if services_scope is not None else _count_services(tree)
+        )
+
+        healthy = True
+        post_install_skipped: list[str] = []
+        if deployment.spec.apply.wait:
+            healthy = _wait_healthy(
+                install_dir=install_dir,
+                compose_cmd=compose_cmd,
+                components=components,
+                apps=apps,
+                deployment=deployment,
+                only=(
+                    {f"wip-{s}" for s in services_scope}
+                    if services_scope is not None
+                    else None
+                ),
+            )
+
+        if deployment.spec.apply.wait and not healthy:
+            behavior = deployment.spec.apply.on_timeout
+            if behavior == "fail":
+                raise ApplyError("apply timed out: not all services became healthy")
+            # warn/continue: caller decides what to print.
+
+        # Post-install hooks declare `after: healthy`; only run them once
+        # health is confirmed. --no-wait (health never established) and a
+        # timed-out warn/continue rollout both skip them — running against a
+        # not-ready container is the CASE-426 race. The skip is surfaced, not
+        # silent: see ApplyResult.post_install_skipped.
+        if deployment.spec.apply.wait and healthy:
+            _run_post_install(install_dir, compose_cmd, components, apps, deployment)
+        else:
+            post_install_skipped = _skipped_post_install_labels(
+                components, apps, deployment
+            )
+    except ApplyError as e:
+        e.mutated = True
+        raise
+
+    return ApplyResult(
+        install_dir=install_dir,
+        services_up=up_count,
+        healthy=healthy,
+        post_install_skipped=post_install_skipped,
+    )
+
+
+# ────────────────────────────────────────────────────────────────────
+# Compose command detection
+# ────────────────────────────────────────────────────────────────────
+
+
+def _detect_compose_cmd() -> list[str]:
+    """Prefer podman-compose; fall back to `docker compose`."""
+    if shutil.which("podman-compose"):
+        return ["podman-compose"]
+    if shutil.which("docker"):
+        return ["docker", "compose"]
+    raise ApplyError(
+        "neither podman-compose nor docker is available on PATH"
+    )
+
+
+# ────────────────────────────────────────────────────────────────────
+# Stale-container wipe (CASE-282 — dev target)
+# ────────────────────────────────────────────────────────────────────
+
+
+def _remove_stale_wip_containers() -> None:
+    """Stop+remove any `wip-*` containers, regardless of compose project.
+
+    Forces a clean state before `compose up` for `--target dev`. Required
+    because `--force-recreate` doesn't reliably handle cross-project
+    name conflicts: containers left over from an earlier install with
+    a different project name silently survive the up, producing a mix
+    of fresh and stale containers.
+
+    Best-effort: if neither `podman` nor `docker` is on PATH, the wipe
+    is skipped silently — `compose up` will fail naturally and the
+    operator can take it from there.
+
+    CASE-282.
+    """
+    cli = "podman" if shutil.which("podman") else (
+        "docker" if shutil.which("docker") else None
+    )
+    if cli is None:
+        return
+
+    list_result = subprocess.run(
+        [cli, "ps", "-a", "--filter", "name=^wip-", "--format", "{{.Names}}"],
+        capture_output=True, text=True,
+    )
+    if list_result.returncode != 0:
+        # Best-effort: if list fails (e.g. daemon not running), let
+        # `compose up` surface the real error.
+        return
+
+    names = [n.strip() for n in list_result.stdout.splitlines() if n.strip()]
+    if not names:
+        return
+
+    # `rm -f` stops + removes in one call. Best-effort: a failure here
+    # (e.g. permission, container locked) shouldn't block the install —
+    # `compose up` will hit its own error if the leftover blocks it,
+    # and the operator gets a clear signal.
+    subprocess.run([cli, "rm", "-f", *names], capture_output=True)
+
+
+# ────────────────────────────────────────────────────────────────────
+# compose up
+# ────────────────────────────────────────────────────────────────────
+
+
+def _run_up(
+    install_dir: Path,
+    compose_cmd: list[str],
+    *,
+    force_build: bool = False,
+    services: list[str] | None = None,
+) -> None:
+    cmd = [
+        *compose_cmd,
+        "--env-file", ".env",
+        "-f", "docker-compose.yaml",
+        "up", "-d",
+    ]
+    if force_build:
+        cmd.extend(["--build", "--force-recreate"])
+    if services:
+        cmd.extend(services)
+    try:
+        subprocess.run(
+            cmd,
+            cwd=install_dir,
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise ApplyError(
+            f"{compose_cmd[0]} up failed (exit {e.returncode})"
+        ) from e
+
+
+# ────────────────────────────────────────────────────────────────────
+# Per-service rebuild
+# ────────────────────────────────────────────────────────────────────
+
+
+def rebuild_compose_services(
+    *,
+    install_dir: Path,
+    services: list[str],
+    wait: bool = True,
+    timeout_seconds: int = 120,
+) -> None:
+    """Rebuild + recreate one or more services in an existing compose install.
+
+    Reads ``<install_dir>/docker-compose.yaml`` (no spec, no render — the
+    install must already exist) and runs ``compose up -d --build
+    --force-recreate <svc>...`` for the requested services. Optionally
+    polls ``compose ps`` until each service with a healthcheck reports
+    healthy.
+
+    This is the per-service equivalent of ``apply_compose``'s ``_run_up``
+    — useful when you've changed a single component's source/Dockerfile
+    and want to rebuild that container without re-running the full
+    install over every service.
+
+    Raises ApplyError if the install directory or compose file is
+    missing, if any requested service is not in the compose, or if
+    ``compose up`` fails.
+    """
+    install_dir = Path(install_dir)
+    compose_file = install_dir / "docker-compose.yaml"
+    if not compose_file.is_file():
+        raise ApplyError(
+            f"no docker-compose.yaml under {install_dir}; run "
+            f"`wip-deploy install` first"
+        )
+
+    available = _services_in_compose(compose_file)
+    unknown = [s for s in services if s not in available]
+    if unknown:
+        raise ApplyError(
+            "unknown service(s): "
+            + ", ".join(unknown)
+            + ". Available: "
+            + ", ".join(sorted(available))
+        )
+
+    compose_cmd = _detect_compose_cmd()
+    _run_up(install_dir, compose_cmd, force_build=True, services=services)
+
+    if not wait:
+        return
+
+    expected = {f"wip-{s}" for s in services if _service_has_healthcheck(compose_file, s)}
+    if not expected:
+        return
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        statuses = _compose_ps(install_dir, compose_cmd)
+        unhealthy = [n for n in expected if statuses.get(n) != "healthy"]
+        if not unhealthy:
+            return
+        time.sleep(2)
+
+    # Don't raise — caller decides what to do. Surface unhealthy names
+    # in the message for the CLI to print.
+    raise ApplyError(
+        "health check timed out for: "
+        + ", ".join(sorted(n for n in expected if _compose_ps(install_dir, compose_cmd).get(n) != "healthy"))
+    )
+
+
+def restart_compose_services(
+    *,
+    install_dir: Path,
+    services: list[str],
+) -> None:
+    """Restart one or more services in an existing compose install.
+
+    The lightweight counterpart to ``rebuild_compose_services`` — does
+    not rebuild the image or recreate the container, just stops + starts
+    the existing process. Useful for picking up env-var changes that
+    don't propagate through bind-mounted source, or just bouncing a
+    process that's gone sideways.
+
+    For Dockerfile / requirements.txt edits, use ``rebuild_compose_services``
+    so the image actually picks up the new content.
+
+    Raises ApplyError if the install directory or compose file is
+    missing, if any requested service is not in the compose, or if
+    ``compose restart`` fails.
+    """
+    install_dir = Path(install_dir)
+    compose_file = install_dir / "docker-compose.yaml"
+    if not compose_file.is_file():
+        raise ApplyError(
+            f"no docker-compose.yaml under {install_dir}; run "
+            f"`wip-deploy install` first"
+        )
+
+    available = _services_in_compose(compose_file)
+    unknown = [s for s in services if s not in available]
+    if unknown:
+        raise ApplyError(
+            "unknown service(s): "
+            + ", ".join(unknown)
+            + ". Available: "
+            + ", ".join(sorted(available))
+        )
+
+    compose_cmd = _detect_compose_cmd()
+    cmd = [
+        *compose_cmd,
+        "--env-file", ".env",
+        "-f", "docker-compose.yaml",
+        "restart",
+        *services,
+    ]
+    try:
+        subprocess.run(
+            cmd,
+            cwd=install_dir,
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise ApplyError(
+            f"{compose_cmd[0]} restart failed (exit {e.returncode})"
+        ) from e
+
+
+# ────────────────────────────────────────────────────────────────────
+# Reversible run-state: stop / start (CASE-475)
+#
+# A zero-delete halt-and-resume pair. Run-state only — no render, no
+# rebuild, no spec recompute (the same class as `up`/`restart`). The
+# missing primitive before this: the only k8s teardown was `nuke`, which
+# deletes the whole namespace (PVCs included; only Retain-policy PVs
+# survive), and `up` is compose-only — so "shut it down, change nothing,
+# bring it back" forced a `nuke` + re-`install` round trip or a drop to
+# raw kubectl.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _compose_run_state(install_dir: Path, verb: str) -> None:
+    """Run `compose <verb>` (stop|start) against a rendered install.
+
+    Keeps the containers in place — `stop` is NOT `down`, `start`
+    revives the stopped containers without recreating them. Raises
+    ApplyError if the compose file is missing or the command fails.
+    """
+    install_dir = Path(install_dir)
+    compose_file = install_dir / "docker-compose.yaml"
+    if not compose_file.is_file():
+        raise ApplyError(
+            f"no docker-compose.yaml under {install_dir}; run "
+            f"`wip-deploy install` first"
+        )
+
+    compose_cmd = _detect_compose_cmd()
+    cmd = [
+        *compose_cmd,
+        "--env-file", ".env",
+        "-f", "docker-compose.yaml",
+        verb,
+    ]
+    try:
+        subprocess.run(cmd, cwd=install_dir, check=True)
+    except subprocess.CalledProcessError as e:
+        raise ApplyError(
+            f"{compose_cmd[0]} {verb} failed (exit {e.returncode})"
+        ) from e
+
+
+def _k8s_scale_all(namespace: str, replicas: int) -> None:
+    """Scale every wip-managed Deployment AND StatefulSet in `namespace`
+    to `replicas`, in one call.
+
+    Covering both workload kinds is the load-bearing detail: the renderer
+    stamps `app.kubernetes.io/part-of=wip` on each workload it writes
+    (renderers/k8s.py) and selects StatefulSet vs Deployment from
+    `owner.spec.storage`. A bare `kubectl scale deployment --all` would
+    halt the stateless service tier but silently leave the storage-bearing
+    StatefulSets (mongodb/postgres/minio/nats/dex) running — the exact
+    silent half-stop CASE-475 documents. The label selector also scopes
+    the scale to wip workloads, so a shared namespace is untouched. A
+    selector that matches nothing is a no-op (kubectl exits 0).
+
+    Restoring to `replicas=1` matches the renderer's hardcoded
+    `replicas: 1` (renderers/k8s.py); if a configurable replica field is
+    ever added to the spec, `start` must read each workload's desired
+    count instead of assuming 1.
+    """
+    _kubectl_run([
+        "-n", namespace,
+        "scale", "deployment,statefulset",
+        "--selector=app.kubernetes.io/part-of=wip",
+        f"--replicas={replicas}",
+    ])
+
+
+def stop_install(
+    *,
+    install_dir: Path,
+    target: str,
+    namespace: str | None = None,
+) -> None:
+    """Halt a running install without deleting anything (CASE-475).
+
+    Run-state only — no render, no rebuild, no spec recompute. Reverse
+    with `start_install`.
+
+    - compose/dev: `compose stop` — stops the containers, keeps them.
+    - k8s: scale every wip Deployment AND StatefulSet to 0 replicas;
+      PVCs, Services, Ingress, and secrets are left intact.
+
+    Raises ApplyError if a k8s stop is requested without a namespace,
+    or if the underlying command fails.
+    """
+    if target == "k8s":
+        if not namespace:
+            raise ApplyError(
+                "k8s stop requires a namespace (none found in the saved "
+                "deployer-state); pass --namespace explicitly"
+            )
+        _k8s_scale_all(namespace, 0)
+    else:
+        _compose_run_state(Path(install_dir), "stop")
+
+
+def start_install(
+    *,
+    install_dir: Path,
+    target: str,
+    namespace: str | None = None,
+) -> None:
+    """Bring a stopped install back to running without re-render (CASE-475).
+
+    The reciprocal of `stop_install` — run-state only, no spec recompute.
+
+    - compose/dev: `compose start` — revives the stopped containers.
+    - k8s: scale every wip Deployment AND StatefulSet back to 1 replica
+      (the renderer's hardcoded count — see `_k8s_scale_all`).
+
+    Raises ApplyError if a k8s start is requested without a namespace,
+    or if the underlying command fails.
+    """
+    if target == "k8s":
+        if not namespace:
+            raise ApplyError(
+                "k8s start requires a namespace (none found in the saved "
+                "deployer-state); pass --namespace explicitly"
+            )
+        _k8s_scale_all(namespace, 1)
+    else:
+        _compose_run_state(Path(install_dir), "start")
+
+
+def _reload_proxy(container: str) -> None:
+    """Gracefully reload a Caddy proxy whose mounted config changed (CASE-443).
+
+    A scoped `compose up` never recreates the proxies — their service
+    definitions are unchanged, only the mounted Caddyfile content moved.
+    `caddy reload` applies the new config with zero downtime; if the exec
+    fails (stopped container, image without the admin endpoint), fall back
+    to a container restart. Best-effort either way: a route to a brand-new
+    app failing to materialize is visible and recoverable; killing the
+    whole mutation over it is not proportionate.
+    """
+    cli = "podman" if shutil.which("podman") else (
+        "docker" if shutil.which("docker") else None
+    )
+    if cli is None:
+        return
+    result = subprocess.run(
+        [
+            cli, "exec", container,
+            "caddy", "reload",
+            "--config", "/etc/caddy/Caddyfile",
+            "--adapter", "caddyfile",
+        ],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        subprocess.run([cli, "restart", container], capture_output=True)
+
+
+def stop_and_remove_container(name: str) -> None:
+    """Force-stop and remove a single `wip-<name>` container.
+
+    Used by `wip-deploy remove-app` / `remove-module` (CASE-313) so a
+    spec mutation that drops a component doesn't leave an orphan
+    container running until the next `nuke`. Silent if the container
+    doesn't exist — idempotent.
+
+    Not a `compose` operation: when the rendered docker-compose.yaml
+    no longer contains the service, compose can't address it. We go
+    directly to `podman rm -f <container>` (or `docker rm`).
+    """
+    container = f"wip-{name}"
+    runtime = "podman" if shutil.which("podman") else "docker"
+    if not shutil.which(runtime):
+        return  # No container runtime — caller likely not running locally.
+    subprocess.run(
+        [runtime, "rm", "-f", container],
+        check=False,
+        capture_output=True,
+    )
+
+
+def up_compose_install(
+    *,
+    install_dir: Path,
+    wait: bool = True,
+    timeout_seconds: int = 120,
+) -> None:
+    """Bring up every service declared in the rendered docker-compose.yaml.
+
+    Counterpart to `restart_compose_services` and `rebuild_compose_services`
+    that operates on the WHOLE install — runs `compose up -d` without
+    rebuilding images or re-rendering the spec. Picks up containers
+    left in `exited` after a host reboot / podman-machine restart and
+    bounces them back to running. No state recomputation: the on-disk
+    docker-compose.yaml is the source of truth (CASE-331 Fix A).
+
+    Raises ApplyError if the install directory or compose file is
+    missing, or if `compose up` fails.
+    """
+    install_dir = Path(install_dir)
+    compose_file = install_dir / "docker-compose.yaml"
+    if not compose_file.is_file():
+        raise ApplyError(
+            f"no docker-compose.yaml under {install_dir}; run "
+            f"`wip-deploy install` first"
+        )
+
+    compose_cmd = _detect_compose_cmd()
+    _run_up(install_dir, compose_cmd, force_build=False)
+
+    if not wait:
+        return
+
+    expected = _healthcheck_container_names_from_compose(compose_file)
+    if not expected:
+        return
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        statuses = _compose_ps(install_dir, compose_cmd)
+        unhealthy = [n for n in expected if statuses.get(n) != "healthy"]
+        if not unhealthy:
+            return
+        time.sleep(2)
+
+
+def _healthcheck_container_names_from_compose(compose_file: Path) -> set[str]:
+    """Container names (`wip-<svc>`) for compose services that declare a healthcheck.
+
+    Used by `up_compose_install` to derive the wait set without
+    re-loading the spec/components/apps (CASE-331 Fix A — the on-disk
+    docker-compose.yaml is the source of truth for this path).
+    """
+    services = _services_in_compose(compose_file)
+    return {
+        f"wip-{svc}" for svc in services
+        if _service_has_healthcheck(compose_file, svc)
+    }
+
+
+def _services_in_compose(compose_file: Path) -> set[str]:
+    """Read the service keys from a rendered docker-compose.yaml."""
+    import yaml as _yaml
+
+    try:
+        data = _yaml.safe_load(compose_file.read_text())
+    except (OSError, _yaml.YAMLError) as e:
+        raise ApplyError(f"could not parse {compose_file}: {e}") from e
+    if not isinstance(data, dict):
+        return set()
+    services = data.get("services")
+    if not isinstance(services, dict):
+        return set()
+    return {str(k) for k in services}
+
+
+def _service_has_healthcheck(compose_file: Path, service: str) -> bool:
+    """Return True if the named service declares a healthcheck."""
+    import yaml as _yaml
+
+    try:
+        data = _yaml.safe_load(compose_file.read_text())
+    except (OSError, _yaml.YAMLError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    services = data.get("services")
+    if not isinstance(services, dict):
+        return False
+    svc = services.get(service)
+    if not isinstance(svc, dict):
+        return False
+    return "healthcheck" in svc
+
+
+# ────────────────────────────────────────────────────────────────────
+# Health wait
+# ────────────────────────────────────────────────────────────────────
+
+
+def _wait_healthy(
+    *,
+    install_dir: Path,
+    compose_cmd: list[str],
+    components: list[Component],
+    apps: list[App],
+    deployment: Deployment,
+    only: set[str] | None = None,
+) -> bool:
+    """Poll `compose ps` until every service with a healthcheck reports
+    healthy, or the timeout elapses.
+
+    `only` (CASE-443): restrict the wait to these container names — a
+    scoped mutation must not fail because an unrelated, pre-existing
+    container is unhealthy.
+    """
+    expected = _services_with_healthchecks(components, apps, deployment)
+    if only is not None:
+        expected = expected & only
+    if not expected:
+        return True
+
+    deadline = time.time() + deployment.spec.apply.timeout_seconds
+
+    while time.time() < deadline:
+        statuses = _compose_ps(install_dir, compose_cmd)
+        missing = [name for name in expected if name not in statuses]
+        unhealthy = [
+            name
+            for name, state in statuses.items()
+            if name in expected and state != "healthy"
+        ]
+        if not missing and not unhealthy:
+            return True
+        time.sleep(3)
+    return False
+
+
+def _services_with_healthchecks(
+    components: list[Component], apps: list[App], deployment: Deployment
+) -> set[str]:
+    """Set of container names (`wip-<name>`) we expect to turn healthy."""
+    names: set[str] = set()
+    enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
+
+    for c in components:
+        if not is_component_active(c, deployment):
+            continue
+        if c.spec.healthcheck is not None:
+            names.add(f"wip-{c.metadata.name}")
+
+    for a in apps:
+        if a.metadata.name not in enabled_app_names:
+            continue
+        if a.spec.healthcheck is not None:
+            names.add(f"wip-{a.metadata.name}")
+
+    return names
+
+
+def _compose_ps(install_dir: Path, compose_cmd: list[str]) -> dict[str, str]:
+    """Return a map of container_name → health status.
+
+    podman-compose and docker compose both support `ps --format json` in
+    modern versions, though the JSON shapes differ slightly. We normalize.
+
+    podman-compose ≤1.3.0 does not include a Health field in its JSON
+    (only State="running"/"exited"). For those cases we supplement with a
+    single `podman inspect` call per running container to fetch
+    `State.Health.Status`. Without this, `_wait_healthy` would loop until
+    timeout even when every service was actually healthy.
+    """
+    cmd = [
+        *compose_cmd,
+        "-f", "docker-compose.yaml",
+        "ps", "--format", "json",
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=install_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        # podman-compose sometimes errors noisily on first call; treat
+        # as "no statuses yet" and let the outer loop retry.
+        return {}
+
+    statuses = _parse_ps_output(result.stdout)
+    _supplement_health_from_inspect(statuses, compose_cmd)
+    return statuses
+
+
+def _supplement_health_from_inspect(
+    statuses: dict[str, str], compose_cmd: list[str]
+) -> None:
+    """Fill in missing health info from `<runtime> inspect`.
+
+    If a container's health is already a recognizable state (healthy /
+    unhealthy / starting) we leave it alone. Otherwise we query
+    `State.Health.Status` via a single batched `inspect` call. Any
+    container that has no healthcheck declared inspect returns an empty
+    string — we leave those as-is so callers that pass through
+    `_services_with_healthchecks` skip them anyway.
+    """
+    recognized = {"healthy", "unhealthy", "starting"}
+    needs_fill = [name for name, health in statuses.items() if health not in recognized]
+    if not needs_fill:
+        return
+
+    runtime = _inspect_runtime(compose_cmd)
+    if runtime is None:
+        return
+
+    # Nil-safe template: when a container has no healthcheck
+    # (.State.Health is nil), emit an empty status instead of panicking.
+    # Without `{{with}}`, the Go-template engine errors out on
+    # `.State.Health.Status` over a nil base, which fails the whole
+    # batched command — we saw this in practice on Pi where wip-dex
+    # and wip-caddy have no healthchecks.
+    template = "{{.Name}}={{with .State.Health}}{{.Status}}{{end}}"
+
+    try:
+        result = subprocess.run(
+            [runtime, "inspect", "--format", template, *needs_fill],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return
+
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if "=" not in line:
+            continue
+        name, health = line.split("=", 1)
+        name = name.lstrip("/")
+        health = health.strip()
+        if health:
+            statuses[name] = health
+
+
+def _inspect_runtime(compose_cmd: list[str]) -> str | None:
+    """Pick the runtime binary matching the compose command.
+
+    podman-compose → podman inspect.
+    docker compose → docker inspect.
+    Returns None if neither is available on PATH.
+    """
+    if compose_cmd and compose_cmd[0] == "podman-compose" and shutil.which("podman"):
+        return "podman"
+    if compose_cmd and compose_cmd[0] == "docker" and shutil.which("docker"):
+        return "docker"
+    # Last-ditch fallback.
+    return shutil.which("podman") or shutil.which("docker")
+
+
+def _parse_ps_output(stdout: str) -> dict[str, str]:
+    """Parse compose-ps output (JSON array or NDJSON) into a health map.
+
+    Fields we care about:
+      - Name / Service: the container name
+      - Health: one of 'healthy' | 'unhealthy' | 'starting' | 'none' | ''
+    """
+    stdout = stdout.strip()
+    if not stdout:
+        return {}
+
+    # Try whole-doc JSON array first (docker compose).
+    try:
+        items = json.loads(stdout)
+        if isinstance(items, dict):
+            items = [items]
+    except json.JSONDecodeError:
+        # NDJSON (podman-compose):
+        items = []
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                items.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    out: dict[str, str] = {}
+    for item in items:
+        name = (
+            item.get("Name")
+            or item.get("name")
+            or item.get("Names")
+            or ""
+        )
+        # podman-compose returns a list in Names sometimes.
+        if isinstance(name, list) and name:
+            name = name[0]
+        if isinstance(name, str) and name.startswith("/"):
+            name = name[1:]
+        if not name:
+            continue
+
+        health = (
+            item.get("Health")
+            or item.get("health")
+            or ""
+        )
+        state = item.get("State") or item.get("state") or ""
+        # Heuristic: if there's no Health field but State is "running",
+        # treat as "running" (healthy once probe completes; if no probe
+        # exists at all, we shouldn't be polling for it anyway).
+        if not health and state:
+            health = state
+
+        out[str(name)] = str(health)
+    return out
+
+
+# ────────────────────────────────────────────────────────────────────
+# Post-install hooks
+# ────────────────────────────────────────────────────────────────────
+
+
+def _post_install_owners(
+    components: list[Component],
+    apps: list[App],
+    deployment: Deployment,
+) -> list[tuple[str, list[PostInstallHook]]]:
+    """Active components + enabled apps that declare post-install hooks,
+    in apply order. Single source of truth for who has hooks, shared by the
+    runners and by the skip-accounting path (CASE-426)."""
+    enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
+
+    owners: list[tuple[str, list[PostInstallHook]]] = []
+    for c in components:
+        if is_component_active(c, deployment) and c.spec.post_install:
+            owners.append((c.metadata.name, c.spec.post_install))
+    for a in apps:
+        if a.metadata.name in enabled_app_names and a.spec.post_install:
+            owners.append((a.metadata.name, a.spec.post_install))
+    return owners
+
+
+def _skipped_post_install_labels(
+    components: list[Component],
+    apps: list[App],
+    deployment: Deployment,
+) -> list[str]:
+    """`<hook> on <owner>` labels for every post-install hook that will not
+    run because health was not established (CASE-426)."""
+    return [
+        f"{hook.name} on {owner_name}"
+        for owner_name, hooks in _post_install_owners(components, apps, deployment)
+        for hook in hooks
+    ]
+
+
+def _run_post_install(
+    install_dir: Path,
+    compose_cmd: list[str],
+    components: list[Component],
+    apps: list[App],
+    deployment: Deployment,
+) -> None:
+    """Run every active component's post-install hooks. Hooks run inside
+    their owning container via `compose exec`."""
+    for owner_name, hooks in _post_install_owners(components, apps, deployment):
+        for hook in hooks:
+            cmd = [
+                *compose_cmd,
+                "-f", "docker-compose.yaml",
+                "exec", "-T", owner_name,
+                "sh", "-c", hook.run,
+            ]
+            try:
+                subprocess.run(cmd, cwd=install_dir, check=True)
+            except subprocess.CalledProcessError as e:
+                raise ApplyError(
+                    f"post-install hook {hook.name!r} on {owner_name!r} "
+                    f"failed (exit {e.returncode})"
+                ) from e
+
+
+# ────────────────────────────────────────────────────────────────────
+# Misc
+# ────────────────────────────────────────────────────────────────────
+
+
+def _count_services(tree: FileTree) -> int:
+    """Count services in the rendered docker-compose.yaml."""
+    compose = tree.files.get(Path("docker-compose.yaml"))
+    if compose is None:
+        return 0
+    import yaml as _yaml
+
+    try:
+        data = _yaml.safe_load(compose.content)
+    except _yaml.YAMLError:
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    services = data.get("services")
+    if not isinstance(services, dict):
+        return 0
+    return len(services)
+
+
+# ════════════════════════════════════════════════════════════════════
+# K8s apply
+# ════════════════════════════════════════════════════════════════════
+
+
+def apply_k8s(
+    *,
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+    tree: FileTree,
+    install_dir: Path,
+    services_scope: list[str] | None = None,
+) -> ApplyResult:
+    """Materialize the tree and run `kubectl apply`.
+
+    Honors `deployment.spec.apply` — wait/timeout/on_timeout. Wait uses
+    `kubectl rollout status` per Deployment/StatefulSet. Post-install
+    hooks run via `kubectl exec` against a pod selected by the
+    component's `app.kubernetes.io/name` label.
+
+    `services_scope` (non-empty list) narrows the apply for
+    single-service mutations like an app tag roll. The full tree is
+    still rendered and written to disk — the on-disk state stays
+    truthful — but kubectl applies only the shared cross-cutting files
+    (secrets, configmaps, ingress, network policies; no-ops when
+    unchanged) plus the named services' own manifests, and NEVER
+    `--prune`. kubectl's incremental apply is not a scope: a full-tree
+    apply recreates any unrelated manifest that drifted from live
+    (renderer churn between invocations) — a one-app tag roll once
+    bounced mongodb this way and flashed every Mongo-backed service
+    unhealthy — and prune against a partial apply set would delete
+    everything not in it. Rollout wait and post-install hooks narrow to
+    the scoped services. Resource DELETION happens only via the full
+    apply's prune, so verbs that remove resources must not pass a scope.
+    """
+    if not shutil.which("kubectl"):
+        raise ApplyError("kubectl not on PATH")
+
+    k8s = deployment.spec.platform.k8s
+    if k8s is None:
+        raise ApplyError("k8s target requires platform.k8s")
+    ns = k8s.namespace
+
+    install_dir = Path(install_dir)
+    _clean_rendered_tree(install_dir)
+    tree.write(install_dir)
+
+    # CASE-247: tls=self-signed pre-flight — generate cert + Secret if
+    # missing, before the Ingress lands and tries to bind to it.
+    if deployment.spec.network.tls == "self-signed":
+        _ensure_self_signed_tls_secret(
+            ns=ns,
+            secret_name=k8s.tls_secret_name,
+            hostname=deployment.spec.network.hostname,
+        )
+
+    # CASE-455: see apply_compose — post-`kubectl apply` failures are
+    # post-mutation; stamp them so the CLI persists the applied spec.
+    try:
+        if services_scope:
+            _kubectl_apply_scoped(install_dir, ns, services_scope)
+            # Narrow the wait / hooks / summary to the scoped services.
+            # Filtering the component and app lists here composes through
+            # _expected_workloads, _run_post_install_k8s, and
+            # _skipped_post_install_labels without signature changes.
+            scoped_names = set(services_scope)
+            components = [
+                c for c in components if c.metadata.name in scoped_names
+            ]
+            apps = [a for a in apps if a.metadata.name in scoped_names]
+            up_count = len(_expected_workloads(components, apps, deployment))
+        else:
+            _kubectl_apply_tree(install_dir, ns)
+            up_count = _count_k8s_workloads(tree)
+
+        healthy = True
+        post_install_skipped: list[str] = []
+        if deployment.spec.apply.wait:
+            healthy = _wait_k8s_rollout(
+                install_dir=install_dir,
+                ns=ns,
+                components=components,
+                apps=apps,
+                deployment=deployment,
+            )
+
+        if deployment.spec.apply.wait and not healthy:
+            behavior = deployment.spec.apply.on_timeout
+            if behavior == "fail":
+                raise ApplyError("apply timed out: not all workloads became ready")
+
+        # Post-install hooks declare `after: healthy`; only run them once a
+        # pod is confirmed Running. --no-wait (health never established) and a
+        # timed-out warn/continue rollout both skip them — selecting a pod
+        # with `--field-selector=status.phase=Running` milliseconds after
+        # apply yields empty items and the install dies on the jsonpath. This
+        # is the CASE-426 race. The skip is surfaced via post_install_skipped.
+        if deployment.spec.apply.wait and healthy:
+            _run_post_install_k8s(ns, components, apps, deployment)
+        else:
+            post_install_skipped = _skipped_post_install_labels(
+                components, apps, deployment
+            )
+    except ApplyError as e:
+        e.mutated = True
+        raise
+
+    return ApplyResult(
+        install_dir=install_dir,
+        services_up=up_count,
+        healthy=healthy,
+        post_install_skipped=post_install_skipped,
+    )
+
+
+# ────────────────────────────────────────────────────────────────────
+# kubectl apply
+# ────────────────────────────────────────────────────────────────────
+
+
+_PRUNE_ALLOWLIST = (
+    "core/v1/Secret",
+    "core/v1/ConfigMap",
+    "core/v1/Service",
+    "core/v1/PersistentVolumeClaim",
+    "apps/v1/Deployment",
+    "apps/v1/StatefulSet",
+    "networking.k8s.io/v1/Ingress",
+    "networking.k8s.io/v1/NetworkPolicy",
+)
+
+
+def _clean_rendered_tree(install_dir: Path) -> None:
+    """Delete prior render outputs so orphans don't get re-applied.
+
+    Scope: top-level `*.yaml` files and the `services/` + `infrastructure/`
+    subdirs — exactly what the k8s renderer writes. Deliberately avoids
+    touching anything else (notably a `secrets/` backend directory that
+    may share the install_dir).
+    """
+    if not install_dir.exists():
+        return
+    for yaml_file in install_dir.glob("*.yaml"):
+        yaml_file.unlink()
+    for name in ("services", "infrastructure"):
+        sub = install_dir / name
+        if sub.is_dir():
+            shutil.rmtree(sub)
+
+
+def _kubectl_apply_scoped(
+    install_dir: Path, ns: str, services: list[str]
+) -> None:
+    """Apply the shared cross-cutting files plus the named services'
+    manifests — one file at a time, no recursion, NO `--prune`.
+
+    Prune semantics work against the whole apply set; against a partial
+    set kubectl would delete every live resource not in it, so a scoped
+    apply must never carry the flag. The shared files are included
+    because a single-service mutation can legitimately change them
+    (adding an app extends the ingress routes and configmaps); when
+    unchanged they are no-ops under kubectl's incremental apply. Other
+    services' workload manifests are deliberately NOT applied — that
+    exclusion is the scope.
+    """
+    namespace_yaml = install_dir / "namespace.yaml"
+    if namespace_yaml.exists():
+        _kubectl_run(["apply", "-f", str(namespace_yaml)])
+
+    for rel in (
+        "secrets.yaml",
+        "configmaps.yaml",
+        "ingress.yaml",
+        "network-policies.yaml",
+    ):
+        shared = install_dir / rel
+        if shared.exists():
+            _kubectl_run(["apply", "-n", ns, "-f", str(shared)])
+
+    for svc in services:
+        candidates = (
+            install_dir / "services" / f"{svc}.yaml",
+            install_dir / "infrastructure" / f"{svc}.yaml",
+        )
+        path = next((p for p in candidates if p.exists()), None)
+        if path is None:
+            raise ApplyError(
+                f"scoped apply: no rendered manifest for {svc!r} "
+                f"(looked in services/ and infrastructure/)"
+            )
+        _kubectl_run(["apply", "-n", ns, "-f", str(path)])
+
+
+def _kubectl_apply_tree(install_dir: Path, ns: str) -> None:
+    """Apply the rendered tree with prune.
+
+    Namespace applied first without prune (cluster-scoped — pruning could
+    delete a peer namespace sharing the same label). Then the full tree
+    applied with `--prune --selector=app.kubernetes.io/part-of=wip` scoped
+    to an explicit allowlist of kinds. The second apply re-targets the
+    namespace too (no-op update), but prune ignores it because Namespace
+    is not in the allowlist.
+    """
+    namespace_yaml = install_dir / "namespace.yaml"
+    if namespace_yaml.exists():
+        _kubectl_run(["apply", "-f", str(namespace_yaml)])
+
+    args = [
+        "apply",
+        "-n", ns,
+        "-R", "-f", str(install_dir),
+        "--prune",
+        "--selector=app.kubernetes.io/part-of=wip",
+    ]
+    for kind in _PRUNE_ALLOWLIST:
+        args.extend(["--prune-allowlist", kind])
+    _kubectl_run(args)
+
+
+def _kubectl_run(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Shell out to kubectl and raise ApplyError on non-zero exit."""
+    try:
+        return subprocess.run(
+            ["kubectl", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        raise ApplyError(
+            f"kubectl {' '.join(args)} failed (exit {e.returncode}): {stderr}"
+        ) from e
+
+
+# ────────────────────────────────────────────────────────────────────
+# Self-signed TLS (CASE-247)
+# ────────────────────────────────────────────────────────────────────
+
+
+def _ensure_self_signed_tls_secret(
+    *, ns: str, secret_name: str, hostname: str,
+) -> None:
+    """Idempotently ensure a kubernetes.io/tls Secret exists in `ns`.
+
+    First run: creates the namespace if missing, generates a CN=hostname
+    self-signed cert (RSA-4096, 1y validity), creates the Secret.
+    Re-run: detects existing Secret and no-ops (rotation is via
+    `kubectl delete secret <name> -n <ns>` then re-install).
+
+    Required for tls=self-signed (auto-applied for --target k8s when
+    --tls is unspecified or 'internal'). See CASE-247.
+    """
+    if not shutil.which("openssl"):
+        raise ApplyError(
+            "openssl not on PATH; required for tls=self-signed cert "
+            "generation. Either install openssl or pass --tls external "
+            "and pre-create the TLS Secret yourself."
+        )
+
+    _ensure_namespace(ns)
+
+    existing = subprocess.run(
+        ["kubectl", "get", "secret", secret_name, "-n", ns],
+        capture_output=True, text=True,
+    )
+    if existing.returncode == 0:
+        # CASE-473: the Secret exists, but CASE-247 used to no-op here
+        # without checking the cert. A stale SAN (left from a prior
+        # --hostname, or a wip-tls reused across a rename) was then served
+        # silently and surfaced as a late browser TLS error instead of an
+        # actionable pre-flight stop. Verify SAN coverage before trusting it.
+        _verify_tls_secret_san(ns=ns, secret_name=secret_name, hostname=hostname)
+        return  # Secret present and SAN covers hostname; idempotent re-install.
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        crt_path = Path(tmp) / "tls.crt"
+        key_path = Path(tmp) / "tls.key"
+        try:
+            subprocess.run(
+                [
+                    "openssl", "req", "-x509", "-newkey", "rsa:4096",
+                    "-sha256", "-days", "365", "-nodes",
+                    "-keyout", str(key_path), "-out", str(crt_path),
+                    "-subj", f"/CN={hostname}",
+                    "-addext", f"subjectAltName=DNS:{hostname}",
+                ],
+                check=True, capture_output=True, text=True,
+            )
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            raise ApplyError(
+                f"openssl failed to generate self-signed cert for "
+                f"hostname={hostname!r}: {stderr}"
+            ) from e
+
+        try:
+            subprocess.run(
+                [
+                    "kubectl", "create", "secret", "tls", secret_name,
+                    "--cert", str(crt_path), "--key", str(key_path),
+                    "-n", ns,
+                ],
+                check=True, capture_output=True, text=True,
+            )
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            raise ApplyError(
+                f"kubectl create secret tls {secret_name} -n {ns} failed "
+                f"(exit {e.returncode}): {stderr}"
+            ) from e
+
+
+def _verify_tls_secret_san(
+    *, ns: str, secret_name: str, hostname: str,
+) -> None:
+    """Fail loud if an existing TLS Secret's cert SAN doesn't cover hostname.
+
+    CASE-473: `_ensure_self_signed_tls_secret` used to no-op the moment a
+    Secret with the right name existed, never checking the certificate
+    actually matched `network.hostname`. A stale `wip-tls` (left from a
+    prior `--hostname`, or reused across a rename) was then served with a
+    SAN mismatch — surfacing as a late browser TLS error instead of an
+    actionable pre-flight stop. This reads the cert from the Secret and
+    verifies `hostname` is among its DNS SANs (wildcard-aware). `openssl`
+    is already confirmed on PATH by the caller.
+    """
+    pem = subprocess.run(
+        ["kubectl", "get", "secret", secret_name, "-n", ns,
+         "-o", r"jsonpath={.data.tls\.crt}"],
+        capture_output=True, text=True,
+    )
+    cert_b64 = (pem.stdout or "").strip()
+    if pem.returncode != 0 or not cert_b64:
+        raise ApplyError(
+            f"TLS Secret {secret_name!r} in namespace {ns!r} exists but its "
+            f"tls.crt could not be read for SAN verification "
+            f"(kubectl exit {pem.returncode}): {(pem.stderr or '').strip()}. "
+            f"Delete it and re-install to re-mint: "
+            f"kubectl delete secret {secret_name} -n {ns}"
+        )
+    try:
+        # binascii.Error subclasses ValueError, so this covers both.
+        cert_pem = base64.b64decode(cert_b64, validate=True)
+    except ValueError as e:
+        raise ApplyError(
+            f"TLS Secret {secret_name!r} in namespace {ns!r} has a tls.crt "
+            f"that is not valid base64 ({e}). Delete it and re-install to "
+            f"re-mint: kubectl delete secret {secret_name} -n {ns}"
+        ) from e
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        crt_path = Path(tmp) / "existing.crt"
+        crt_path.write_bytes(cert_pem)
+        san_proc = subprocess.run(
+            ["openssl", "x509", "-in", str(crt_path), "-noout",
+             "-ext", "subjectAltName"],
+            capture_output=True, text=True,
+        )
+    sans = _parse_dns_sans(san_proc.stdout if san_proc.returncode == 0 else "")
+    if not _hostname_in_sans(hostname, sans):
+        listed = ", ".join(sorted(sans)) if sans else "(none)"
+        raise ApplyError(
+            f"TLS Secret {secret_name!r} in namespace {ns!r} exists but its "
+            f"certificate SAN [{listed}] does not cover hostname "
+            f"{hostname!r}. Serving it would cause a browser TLS error. "
+            f"If this is a self-signed cert you want wip-deploy to manage, "
+            f"delete it and re-install to re-mint:\n"
+            f"  kubectl delete secret {secret_name} -n {ns}\n"
+            f"If it is operator/CA-managed, re-issue it with a SAN covering "
+            f"{hostname!r}."
+        )
+
+
+def _parse_dns_sans(openssl_san_output: str) -> set[str]:
+    """Extract DNS SAN entries from `openssl x509 -ext subjectAltName` output.
+
+    The relevant line looks like:
+        X509v3 Subject Alternative Name:
+            DNS:kb.internal, DNS:*.internal, IP Address:10.0.0.1
+    Only DNS entries are returned (IP SANs are not hostname-matched here).
+    """
+    return {m.lower() for m in re.findall(r"DNS:([^,\s]+)", openssl_san_output)}
+
+
+def _hostname_in_sans(hostname: str, sans: set[str]) -> bool:
+    """True if `hostname` is covered by any DNS SAN, with single-label
+    wildcard matching (`*.internal` covers `kb.internal`, not `a.b.internal`
+    or `internal`)."""
+    host = hostname.lower()
+    for san in sans:
+        if san == host:
+            return True
+        if san.startswith("*."):
+            suffix = san[1:]  # ".internal"
+            if host.endswith(suffix) and host.count(".") == san.count("."):
+                return True
+    return False
+
+
+def _ensure_namespace(ns: str) -> None:
+    """Create the namespace if missing. Idempotent."""
+    result = subprocess.run(
+        ["kubectl", "create", "namespace", ns],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        return
+    if "already exists" in (result.stderr or ""):
+        return
+    raise ApplyError(
+        f"kubectl create namespace {ns} failed "
+        f"(exit {result.returncode}): {(result.stderr or '').strip()}"
+    )
+
+
+# ────────────────────────────────────────────────────────────────────
+# Rollout wait
+# ────────────────────────────────────────────────────────────────────
+
+
+def _wait_k8s_rollout(
+    *,
+    install_dir: Path,
+    ns: str,
+    components: list[Component],
+    apps: list[App],
+    deployment: Deployment,
+) -> bool:
+    """Poll every active workload via `kubectl rollout status`.
+
+    Returns True if all rollouts complete within the total timeout,
+    False on first timeout. Respects `spec.apply.timeout_seconds` as a
+    *total* budget across all workloads, not per-workload.
+    """
+    workloads = _expected_workloads(components, apps, deployment)
+    if not workloads:
+        return True
+
+    deadline = time.time() + deployment.spec.apply.timeout_seconds
+    for kind, name in workloads:
+        remaining = int(deadline - time.time())
+        if remaining <= 0:
+            return False
+        try:
+            subprocess.run(
+                [
+                    "kubectl", "rollout", "status",
+                    "-n", ns,
+                    f"{kind.lower()}/{name}",
+                    f"--timeout={remaining}s",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError:
+            return False
+    return True
+
+
+def _expected_workloads(
+    components: list[Component], apps: list[App], deployment: Deployment
+) -> list[tuple[str, str]]:
+    """List of `(kind, name)` pairs for every active workload.
+
+    Kind is StatefulSet when the component has storage, else Deployment
+    — matches the rendering logic in `renderers/k8s.py`.
+    """
+    out: list[tuple[str, str]] = []
+    enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
+
+    for c in components:
+        if not is_component_active(c, deployment):
+            continue
+        kind = "StatefulSet" if c.spec.storage else "Deployment"
+        out.append((kind, f"wip-{c.metadata.name}"))
+
+    for a in apps:
+        if a.metadata.name not in enabled_app_names:
+            continue
+        kind = "StatefulSet" if a.spec.storage else "Deployment"
+        out.append((kind, f"wip-{a.metadata.name}"))
+
+    return out
+
+
+# ────────────────────────────────────────────────────────────────────
+# Post-install hooks (k8s)
+# ────────────────────────────────────────────────────────────────────
+
+
+def _run_post_install_k8s(
+    ns: str,
+    components: list[Component],
+    apps: list[App],
+    deployment: Deployment,
+) -> None:
+    """Run every active component's post-install hooks inside a running
+    pod via `kubectl exec`. Pod is selected by the
+    `app.kubernetes.io/name` label."""
+    for owner_name, hooks in _post_install_owners(components, apps, deployment):
+        pod = _pod_for_component(ns, owner_name)
+        for hook in hooks:
+            try:
+                subprocess.run(
+                    [
+                        "kubectl", "exec", "-n", ns, pod,
+                        "--", "sh", "-c", hook.run,
+                    ],
+                    check=True,
+                )
+            except subprocess.CalledProcessError as e:
+                raise ApplyError(
+                    f"post-install hook {hook.name!r} on {owner_name!r} "
+                    f"failed (exit {e.returncode})"
+                ) from e
+
+
+def _pod_for_component(ns: str, component_name: str) -> str:
+    """Return the name of a Running pod for the given component.
+
+    Selects via the `app.kubernetes.io/name=<component>` label set by
+    the k8s renderer. Raises ApplyError if no running pod is found."""
+    try:
+        result = subprocess.run(
+            [
+                "kubectl", "get", "pod",
+                "-n", ns,
+                "-l", f"app.kubernetes.io/name={component_name}",
+                "--field-selector=status.phase=Running",
+                "-o", "jsonpath={.items[0].metadata.name}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        raise ApplyError(
+            f"could not find pod for component {component_name!r} in ns "
+            f"{ns!r}: {stderr}"
+        ) from e
+
+    pod = result.stdout.strip()
+    if not pod:
+        raise ApplyError(
+            f"no running pod found for component {component_name!r} in ns {ns!r}"
+        )
+    return pod
+
+
+# ────────────────────────────────────────────────────────────────────
+# K8s misc
+# ────────────────────────────────────────────────────────────────────
+
+
+def _count_k8s_workloads(tree: FileTree) -> int:
+    """Count Deployments + StatefulSets in the rendered tree.
+
+    Used only for the summary line in the CLI — a rough proxy for "how
+    many services did we bring up". Ignores Namespaces/Secrets/etc.
+    """
+    import yaml as _yaml
+
+    count = 0
+    for rel, entry in tree.files.items():
+        if rel.name in ("namespace.yaml", "secrets.yaml", "configmaps.yaml", "ingress.yaml"):
+            continue
+        try:
+            for doc in _yaml.safe_load_all(entry.content):
+                if isinstance(doc, dict) and doc.get("kind") in ("Deployment", "StatefulSet"):
+                    count += 1
+        except _yaml.YAMLError:
+            continue
+    return count

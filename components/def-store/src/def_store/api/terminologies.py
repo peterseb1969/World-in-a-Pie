@@ -5,8 +5,8 @@ import math
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
+    UserIdentity,
     check_namespace_permission,
-    get_current_identity,
     resolve_bulk_ids,
     resolve_namespace_filter,
     resolve_or_404,
@@ -23,7 +23,11 @@ from ..models.api_models import (
 )
 from ..services.dependency_service import DependencyService, TerminologyDependencies
 from ..services.registry_client import RegistryError
-from ..services.terminology_service import TerminologyService
+from ..services.terminology_service import (
+    EntityExistsError,
+    TerminologyService,
+    conflict_result,
+)
 from .auth import require_api_key
 
 router = APIRouter(prefix="/terminologies", tags=["Terminologies"])
@@ -32,15 +36,30 @@ router = APIRouter(prefix="/terminologies", tags=["Terminologies"])
 @router.post("", response_model=BulkResponse, summary="Create terminologies")
 async def create_terminologies(
     items: list[CreateTerminologyRequest] = Body(...),
-    api_key: str = Depends(require_api_key)
+    on_conflict: str = Query(
+        "error",
+        description=(
+            "Duplicate handling (idempotent bootstrap): 'error' "
+            "(default) fails the item with error_code='already_exists'; "
+            "'validate' returns status='unchanged' for an identical "
+            "re-create and error_code='incompatible_config' with the "
+            "changed fields when the existing config differs."
+        ),
+    ),
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """
     Create one or more terminologies (controlled vocabularies).
 
     Each terminology will be registered with the Registry service to get
-    a unique ID. Namespace is specified per item (default: "wip").
+    a unique ID. Namespace is specified per item (required — no default).
     """
-    identity = get_current_identity()
+    if on_conflict not in ("error", "validate"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid on_conflict value: {on_conflict!r}. Must be 'error' or 'validate'.",
+        )
+
     namespaces = {item.namespace for item in items}
     for ns in namespaces:
         await check_namespace_permission(identity, ns, "write")
@@ -50,6 +69,8 @@ async def create_terminologies(
         try:
             result = await TerminologyService.create_terminology(item, namespace=item.namespace)
             results.append(BulkResultItem(index=i, status="created", id=result.terminology_id))
+        except EntityExistsError as e:
+            results.append(conflict_result(i, e, on_conflict, value=item.value))
         except (ValueError, HTTPException) as e:
             results.append(BulkResultItem(index=i, status="error", error=str(e)))
         except RegistryError as e:
@@ -68,10 +89,9 @@ async def list_terminologies(
     value: str | None = Query(None, description="Filter by exact value match"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> TerminologyListResponse:
     """List all terminologies with pagination and optional filters."""
-    identity = get_current_identity()
     ns_filter = await resolve_namespace_filter(identity, namespace)
 
     terminologies, total = await TerminologyService.list_terminologies(
@@ -94,11 +114,10 @@ async def list_terminologies(
 async def get_terminology_by_value(
     value: str,
     namespace: str | None = Query(default=None, description="Namespace to search in (omit for all)"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> TerminologyResponse:
     """Get a terminology by its value (e.g., DOC_STATUS)."""
     if namespace:
-        identity = get_current_identity()
         await check_namespace_permission(identity, namespace, "read")
 
     result = await TerminologyService.get_terminology(value=value, namespace=namespace)
@@ -111,7 +130,7 @@ async def get_terminology_by_value(
 async def get_terminology(
     terminology_id: str,
     namespace: str | None = Query(default=None, description="Namespace for value fallback lookup"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> TerminologyResponse:
     """
     Get a terminology by ID.
@@ -132,6 +151,11 @@ async def get_terminology(
     if not result:
         raise HTTPException(status_code=404, detail="Terminology not found")
 
+    # CASE-384 — enforce read permission on the entity's actual namespace.
+    # Returns 404 ("Namespace not found") on permission failure, which
+    # also prevents leaking which IDs exist in which namespaces.
+    await check_namespace_permission(identity, result.namespace, "read")
+
     return result
 
 
@@ -139,7 +163,7 @@ async def get_terminology(
 async def update_terminologies(
     items: list[UpdateTerminologyItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """
     Update one or more terminologies.
@@ -148,6 +172,21 @@ async def update_terminologies(
     lookups by both old and new values.
     """
     await resolve_bulk_ids(items, "terminology_id", "terminology", namespace=namespace)
+
+    # CASE-384 — enforce write permission on each item's actual namespace.
+    # Batched lookup: one Mongo query over all terminology_ids, then
+    # per-id permission check. Saves N-1 round-trips on cross-namespace
+    # bulks vs. the original per-item find_one. Aborts on first failure
+    # to match the bulk-create convention.
+    from ..models.terminology import Terminology as _T
+    ids = [item.terminology_id for item in items if item.terminology_id]
+    if ids:
+        existing_docs = await _T.find({"terminology_id": {"$in": ids}}).to_list()
+        id_to_namespace = {d.terminology_id: d.namespace for d in existing_docs}
+        for item in items:
+            ns = id_to_namespace.get(item.terminology_id)
+            if ns:
+                await check_namespace_permission(identity, ns, "write")
 
     results = []
     for i, item in enumerate(items):
@@ -175,7 +214,7 @@ async def update_terminologies(
 )
 async def get_terminology_dependencies(
     terminology_id: str,
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> TerminologyDependencies:
     """
     Get dependencies of a terminology.
@@ -189,6 +228,14 @@ async def get_terminology_dependencies(
         terminology_id, "terminology", namespace=None, param_name="terminology_id"
     )
 
+    # CASE-384 — even dependency metadata leaks information (it confirms
+    # the terminology exists in the namespace and lists template names
+    # referencing it). Gate by read permission on the entity's namespace.
+    from ..models.terminology import Terminology as _T
+    existing = await _T.find_one({"terminology_id": terminology_id})
+    if existing:
+        await check_namespace_permission(identity, existing.namespace, "read")
+
     try:
         return await DependencyService.check_terminology_dependencies(terminology_id)
     except ValueError as e:
@@ -199,7 +246,8 @@ async def get_terminology_dependencies(
 async def restore_terminology(
     terminology_id: str,
     restore_terms: bool = Query(True, description="Also reactivate inactive terms"),
-    api_key: str = Depends(require_api_key)
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
+    identity: UserIdentity = Depends(require_api_key)
 ) -> TerminologyResponse:
     """
     Restore a soft-deleted (inactive) terminology back to active status.
@@ -208,8 +256,16 @@ async def restore_terminology(
     Set restore_terms=false to restore only the terminology itself.
     """
     terminology_id = await resolve_or_404(
-        terminology_id, "terminology", namespace=None, param_name="terminology_id"
+        terminology_id, "terminology", namespace, param_name="terminology_id"
     )
+
+    # CASE-384 — restore is a mutation; require write on the terminology's
+    # namespace. Lookup the entity first to resolve the namespace, then
+    # check before restoring.
+    from ..models.terminology import Terminology as _T
+    existing = await _T.find_one({"terminology_id": terminology_id})
+    if existing:
+        await check_namespace_permission(identity, existing.namespace, "write")
 
     result = await TerminologyService.restore_terminology(
         terminology_id=terminology_id,
@@ -224,7 +280,7 @@ async def restore_terminology(
 async def delete_terminologies(
     items: list[DeleteItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """
     Soft-delete one or more terminologies (set status to inactive).
@@ -233,6 +289,18 @@ async def delete_terminologies(
     Set force=true per item to delete even if templates reference it.
     """
     await resolve_bulk_ids(items, "id", "terminology", namespace=namespace)
+
+    # CASE-384 — batched namespace lookup + permission check, same shape
+    # as update_terminologies above.
+    from ..models.terminology import Terminology as _T
+    ids = [item.id for item in items if item.id]
+    if ids:
+        existing_docs = await _T.find({"terminology_id": {"$in": ids}}).to_list()
+        id_to_namespace = {d.terminology_id: d.namespace for d in existing_docs}
+        for item in items:
+            ns = id_to_namespace.get(item.id)
+            if ns:
+                await check_namespace_permission(identity, ns, "write")
 
     results = []
     for i, item in enumerate(items):

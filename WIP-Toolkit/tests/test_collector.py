@@ -30,6 +30,36 @@ def collector_inactive(mock_client):
     return EntityCollector(mock_client, namespace="wip", include_inactive=True)
 
 
+class TestFetchTermRelations:
+    """Test term-relation fetching — the status param is load-bearing.
+
+    /term-relations/all defaults an OMITTED status to 'active' (unlike the
+    other def-store list routes), so include_inactive must send an explicit
+    empty string, which that endpoint defines as "all statuses"."""
+
+    def test_active_only_by_default(self, collector, mock_client):
+        mock_client.get.return_value = {"items": []}
+
+        collector.fetch_term_relations("0190a000-0000-7000-0000-000000000001")
+
+        params = mock_client.get.call_args[1]["params"]
+        assert params["status"] == "active"
+
+    def test_include_inactive_sends_empty_status_for_all(
+        self, collector_inactive, mock_client
+    ):
+        """The historical bug inverted: '' used to be a match-nothing literal
+        filter on the server, so --include-inactive archived ZERO relations."""
+        mock_client.get.return_value = {"items": []}
+
+        collector_inactive.fetch_term_relations(
+            "0190a000-0000-7000-0000-000000000001"
+        )
+
+        params = mock_client.get.call_args[1]["params"]
+        assert params["status"] == ""
+
+
 class TestFetchTerminologies:
     """Test terminology fetching."""
 

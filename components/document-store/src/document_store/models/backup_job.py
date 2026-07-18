@@ -52,7 +52,7 @@ class BackupJob(BeanieDocument):
     # Identity
     job_id: str = Field(
         ...,
-        description="Globally unique job ID (UUID4)"
+        description="Globally unique job ID: 'bkp-' (backup) or 'rst-' (restore) prefix + 16 hex chars (UUID4-derived)"
     )
     kind: BackupJobKind = Field(
         ...,
@@ -60,7 +60,20 @@ class BackupJob(BeanieDocument):
     )
     namespace: str = Field(
         ...,
-        description="Source namespace for backup, target namespace for restore"
+        description="Primary namespace (the URL anchor). For a multi-namespace "
+                    "backup this is the first of `namespaces`; for a "
+                    "single-namespace restore it is the target, but for a "
+                    "multi-namespace restore it is the URL anchor only (each "
+                    "namespace restores into itself) — use `namespaces` for the "
+                    "actual restored set."
+    )
+    namespaces: list[str] = Field(
+        default_factory=list,
+        description="All namespaces this job spans. For a backup: the exported "
+                    "set (1 for a single-namespace backup). For a restore: the "
+                    "namespaces the archive writes into, read from its manifest "
+                    "(the scalar namespace when the manifest was unreadable — "
+                    "never blank on new records; legacy records may be empty).",
     )
 
     # Lifecycle
@@ -69,21 +82,21 @@ class BackupJob(BeanieDocument):
         description="Current lifecycle status"
     )
     phase: str | None = Field(
-        None,
+        default=None,
         description="Current phase from the toolkit's ProgressEvent (e.g. 'phase_documents')"
     )
     percent: float | None = Field(
-        None,
+        default=None,
         ge=0.0,
         le=100.0,
         description="Progress percentage (0-100) from the latest event"
     )
     message: str | None = Field(
-        None,
+        default=None,
         description="Human-readable message from the latest event"
     )
     error: str | None = Field(
-        None,
+        default=None,
         description="Error message if status is 'failed'"
     )
 
@@ -93,21 +106,30 @@ class BackupJob(BeanieDocument):
         description="When the job was created"
     )
     started_at: datetime | None = Field(
-        None,
+        default=None,
         description="When the worker started running the toolkit"
     )
     completed_at: datetime | None = Field(
-        None,
+        default=None,
         description="When the job reached a terminal status (complete or failed)"
     )
 
     # Archive tracking
     archive_path: str | None = Field(
-        None,
-        description="Local filesystem path of the produced (backup) or uploaded (restore) archive"
+        default=None,
+        description="Archive locator: a local filesystem path when "
+                    "archive_backend is 'local', an object key in the "
+                    "backup bucket when it is 'minio'"
+    )
+    archive_backend: str = Field(
+        default="local",
+        description="Where the archive lives: 'local' (scratch filesystem, "
+                    "no durability promise) or 'minio' (dedicated bucket). "
+                    "Records predating the field are local by construction, "
+                    "which is exactly what the default yields."
     )
     archive_size: int | None = Field(
-        None,
+        default=None,
         ge=0,
         description="Archive size in bytes"
     )
@@ -116,6 +138,14 @@ class BackupJob(BeanieDocument):
     options: dict[str, Any] = Field(
         default_factory=dict,
         description="The request body / options that initiated the job"
+    )
+
+    # Non-fatal findings surfaced during the job (e.g. reporting count-parity
+    # incomplete after its bounded wait). A completed job with warnings
+    # succeeded — the warnings say what to double-check.
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Non-fatal warnings accumulated while the job ran"
     )
 
     # Provenance
@@ -155,7 +185,7 @@ class BackupProgressMessage(BaseModel):
     job_id: str = Field(..., description="The BackupJob.job_id this event belongs to")
     status: BackupJobStatus = Field(..., description="Current lifecycle status of the job")
     phase: str | None = Field(
-        None,
+        default=None,
         description=(
             "Current phase name — a free-form runtime convention shared "
             "between producer and consumer, not a schema contract. Phase "
@@ -163,24 +193,24 @@ class BackupProgressMessage(BaseModel):
         ),
     )
     percent: float | None = Field(
-        None,
+        default=None,
         ge=0.0,
         le=100.0,
         description="Progress percentage (0-100), if known",
     )
-    message: str | None = Field(None, description="Human-readable status message")
+    message: str | None = Field(default=None, description="Human-readable status message")
     current: int | None = Field(
-        None,
+        default=None,
         ge=0,
         description="Items processed so far in the current phase (if applicable)",
     )
     total: int | None = Field(
-        None,
+        default=None,
         ge=0,
         description="Total items to process in the current phase (if applicable)",
     )
     details: dict[str, Any] | None = Field(
-        None,
+        default=None,
         description="Opaque per-phase details (counts, sizes, skipped entities)",
     )
 
@@ -188,11 +218,26 @@ class BackupProgressMessage(BaseModel):
 class BackupRequest(BaseModel):
     """Request body for POST /backup/namespaces/{namespace}/backup.
 
-    All fields map to keyword arguments of the underlying toolkit
-    :func:`run_export` call; the factory in ``backup_service`` forwards this
-    dict as ``**options``.
+    Most fields map to keyword arguments of the underlying backup engine; the
+    factory in ``backup_service`` forwards this dict as ``options``. The
+    multi-namespace selectors (`namespaces`, `all_namespaces`) are resolved in
+    the endpoint, not forwarded to the engine.
     """
 
+    namespaces: list[str] | None = Field(
+        default=None,
+        description=(
+            "Also back up these namespaces into the same archive "
+            "(joined with the URL's {namespace}). Omit for single-namespace."
+        ),
+    )
+    all_namespaces: bool = Field(
+        False,
+        description=(
+            "Back up EVERY namespace the registry lists (incl. 'wip') "
+            "into one archive. Overrides `namespaces`/{namespace}."
+        ),
+    )
     include_files: bool = Field(
         False, description="Include file blobs in the archive"
     )
@@ -203,7 +248,7 @@ class BackupRequest(BaseModel):
         False, description="Skip the documents phase entirely"
     )
     skip_closure: bool = Field(
-        False, description="Skip the closure-table (relationships) phase"
+        False, description="Skip the closure-table (term-relations) phase"
     )
     skip_synonyms: bool = Field(
         False, description="Skip the synonyms phase"
@@ -212,7 +257,7 @@ class BackupRequest(BaseModel):
         False, description="Export only the latest version of each entity"
     )
     template_prefixes: list[str] | None = Field(
-        None,
+        default=None,
         description="Optional list of template_id prefixes to filter documents",
     )
     dry_run: bool = Field(
@@ -220,39 +265,29 @@ class BackupRequest(BaseModel):
     )
 
 
-class RestoreRequest(BaseModel):
-    """Parameters accompanying a multipart restore upload.
+# NOTE: restore's multipart form fields are bound directly as Form(...)
+# parameters on `start_restore` (api/backup.py) — deliberately no request
+# model here. A previous `RestoreRequest` model existed but was never wired
+# to the route, so its declared bounds were unenforced prose (CASE-564); the
+# one meaningful bound (batch_size 1..500) lives on the Form declaration.
 
-    These fields are expected as form fields alongside the ``archive`` file.
-    They map to keyword arguments of :func:`run_import`.
+
+class RestoreFromJobRequest(BaseModel):
+    """Request body for POST /backup/jobs/{job_id}/restore.
+
+    Unlike the upload restore (multipart form), this endpoint takes JSON —
+    the archive is already retained server-side, so there is no file part.
+    This model IS wired to the route, so its bounds are enforced.
     """
 
-    mode: str = Field(
-        "restore",
-        description="'restore' (preserve IDs) or 'fresh' (generate new IDs)",
-    )
-    target_namespace: str | None = Field(
-        None,
-        description="Override target namespace (defaults to the archive's source namespace)",
-    )
-    register_synonyms: bool = Field(
-        False,
-        description="Register original IDs as synonyms of the new IDs (fresh mode)",
-    )
     skip_documents: bool = Field(
-        False, description="Skip restoring documents (definitions only)"
+        False, description="Skip the documents phase entirely"
     )
     skip_files: bool = Field(
         False, description="Skip restoring file blobs"
     )
     batch_size: int = Field(
-        50, ge=1, le=500, description="Restore batch size"
-    )
-    continue_on_error: bool = Field(
-        False, description="Continue past per-item errors"
-    )
-    dry_run: bool = Field(
-        False, description="Walk the import without applying changes"
+        50, ge=1, le=500, description="Document write batch size"
     )
 
 
@@ -262,6 +297,7 @@ class BackupJobSnapshot(BaseModel):
     job_id: str
     kind: BackupJobKind
     namespace: str
+    namespaces: list[str] = Field(default_factory=list)
     status: BackupJobStatus
     phase: str | None = None
     percent: float | None = None
@@ -271,7 +307,9 @@ class BackupJobSnapshot(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     archive_size: int | None = None
+    archive_backend: str = "local"
     options: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
     created_by: str
 
     @classmethod
@@ -281,6 +319,7 @@ class BackupJobSnapshot(BaseModel):
             job_id=job.job_id,
             kind=job.kind,
             namespace=job.namespace,
+            namespaces=job.namespaces,
             status=job.status,
             phase=job.phase,
             percent=job.percent,
@@ -290,6 +329,8 @@ class BackupJobSnapshot(BaseModel):
             started_at=job.started_at,
             completed_at=job.completed_at,
             archive_size=job.archive_size,
+            archive_backend=job.archive_backend,
             options=job.options,
+            warnings=job.warnings,
             created_by=job.created_by,
         )

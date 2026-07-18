@@ -1,0 +1,117 @@
+name: Promote Image Set
+
+# Manually triggered: Actions tab -> "Promote Image Set" -> Run workflow.
+#
+# Stamps ONE shared label onto an already-built COMBINATION of WIP service
+# images — no rebuild, no layer transfer. Each image is retagged from its own
+# source tag (the pin in components/<svc>/wip-component.yaml, or the
+# source_tag fallback), so a heterogeneous set of build tags gets one
+# coherent set label. Retags are manifest-only via
+# `docker buildx imagetools create`, which preserves multi-arch manifest
+# lists intact (a plain pull/tag/push would silently flatten them to one
+# architecture).
+#
+# Scope: the WIP-built services only — components whose manifest carries
+# `spec.image.build_context`. Upstream infra (dex, mongodb, postgres, nats,
+# minio, router) is never stamped; those pin upstream tags.
+#
+# Label discipline: set labels should be IMMUTABLE (release-20260612,
+# stable-3) — a floating label is the `latest` failure mode: any pod restart
+# silently pulls whatever the label means that day, and the "combination
+# that works together" becomes a combination that was never tested together.
+# The authoritative definition of the set is the pins commit in git; this
+# workflow is the stamping arm. See
+# FR-YAC/papers/image-labels-pins-and-promotion.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      set_label:
+        description: 'Set label to stamp (immutable, e.g. release-20260612). Refuses "latest".'
+        required: true
+      source_tag:
+        description: 'Fallback source tag for services whose manifest has no pin. Leave empty to require pins.'
+        required: false
+        default: ''
+      services:
+        description: 'Comma-separated subset (component dir names). Empty = all WIP-built services.'
+        required: false
+        default: ''
+      dry_run:
+        description: 'true = print the retag plan without touching the registry.'
+        required: false
+        default: 'false'
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image set from pins
+        id: plan
+        run: |
+          pip install -q pyyaml
+          python3 - "$GITHUB_OUTPUT" <<'PY'
+          import glob, os, sys, yaml
+
+          set_label = "${{ inputs.set_label }}".strip()
+          fallback = "${{ inputs.source_tag }}".strip()
+          only = {s.strip() for s in "${{ inputs.services }}".split(",") if s.strip()}
+
+          if set_label in ("latest", ""):
+              sys.exit("refusing set_label '%s' — use an immutable label "
+                       "(release-YYYYMMDD, stable-N)" % set_label)
+
+          plan, missing = [], []
+          for f in sorted(glob.glob("components/*/wip-component.yaml")):
+              svc = os.path.basename(os.path.dirname(f))
+              img = (yaml.safe_load(open(f)).get("spec") or {}).get("image") or {}
+              if "build_context" not in img:
+                  continue  # upstream infra — never stamped
+              if only and svc not in only:
+                  continue
+              src = img.get("tag") or fallback
+              if not src:
+                  missing.append(svc)
+                  continue
+              plan.append(f"{svc}={src}")
+
+          if missing:
+              sys.exit("no pin and no source_tag fallback for: %s — pin them "
+                       "in components/<svc>/wip-component.yaml or pass "
+                       "source_tag" % ", ".join(missing))
+          if not plan:
+              sys.exit("empty promotion set — check the services filter")
+
+          print("Promotion plan -> :%s" % set_label)
+          for line in plan:
+              print("  " + line)
+          out = open(sys.argv[1], "a")
+          out.write("plan=%s\n" % " ".join(plan))
+          PY
+
+      - name: Log in to GHCR
+        if: inputs.dry_run != 'true'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Stamp the set label
+        run: |
+          OWNER="ghcr.io/${{ github.repository_owner }}"
+          LABEL="${{ inputs.set_label }}"
+          for entry in ${{ steps.plan.outputs.plan }}; do
+            svc="${entry%%=*}"; src="${entry#*=}"
+            echo "==> $OWNER/$svc:$src  ->  :$LABEL"
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "    (dry run — skipped)"
+            else
+              docker buildx imagetools create \
+                "$OWNER/$svc:$src" --tag "$OWNER/$svc:$LABEL"
+            fi
+          done
+          echo "Done. Verify with: docker buildx imagetools inspect $OWNER/registry:$LABEL"

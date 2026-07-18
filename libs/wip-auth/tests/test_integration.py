@@ -74,6 +74,44 @@ class TestMiddlewareIntegration:
         assert response.status_code == 200
         assert response.json()["user"] == "test"
 
+    def test_middleware_skips_auth_for_public_paths(self):
+        """CASE-60: public paths skip provider iteration entirely so a
+        wrong (but-present) X-API-Key on /health doesn't 401."""
+        keys = [APIKeyRecord(name="test", key_hash=hash_api_key("secret"))]
+        provider = APIKeyProvider(keys)
+
+        app = FastAPI()
+        middleware_class = create_auth_middleware(
+            [provider], public_paths=["/api/registry/health"],
+        )
+        app.add_middleware(middleware_class)
+
+        @app.get("/api/registry/health")
+        async def health_route():
+            return {"status": "healthy"}
+
+        @app.get("/health")  # universal default — also public
+        async def root_health():
+            return {"status": "healthy"}
+
+        client = TestClient(app)
+
+        # No header: public path returns 200 (was already true pre-CASE-60).
+        assert client.get("/api/registry/health").status_code == 200
+        assert client.get("/health").status_code == 200
+
+        # Wrong key on public path: still 200 — pre-CASE-60 this would 401
+        # because APIKeyProvider raises on bad keys and middleware
+        # short-circuited before the route handler ran.
+        wrong = {"X-API-Key": "definitely-wrong-key"}
+        assert client.get("/api/registry/health", headers=wrong).status_code == 200
+        assert client.get("/health", headers=wrong).status_code == 200
+
+        # Right key on public path: also 200 (regression check — public
+        # paths skip provider iteration regardless of the key).
+        right = {"X-API-Key": "secret"}
+        assert client.get("/api/registry/health", headers=right).status_code == 200
+
     def test_middleware_with_multiple_providers(self):
         """Middleware should try providers in order."""
         keys = [APIKeyRecord(name="api", key_hash=hash_api_key("api_secret"))]

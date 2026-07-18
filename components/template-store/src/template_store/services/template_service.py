@@ -3,6 +3,9 @@
 import contextlib
 import logging
 from datetime import UTC, datetime
+from typing import ClassVar
+
+from beanie.odm.enums import SortDirection
 
 from wip_auth.resolve import (
     EntityNotFoundError,
@@ -23,7 +26,8 @@ from ..models.api_models import (
     ValidationError,
     ValidationWarning,
 )
-from ..models.template import Template, TemplateMetadata
+from ..models.field import FieldDefinition, FieldType, ReferenceType
+from ..models.template import ReportingConfig, Template, TemplateMetadata, TemplateUsage
 from .def_store_client import DefStoreError, get_def_store_client
 from .inheritance_service import InheritanceError, InheritanceService
 from .nats_client import EventType, publish_template_event
@@ -35,6 +39,269 @@ logger = logging.getLogger(__name__)
 
 class TemplateService:
     """Service for managing templates."""
+
+    # =========================================================================
+    # RELATIONSHIP-TEMPLATE STRUCTURAL VALIDATION
+    # =========================================================================
+
+    @staticmethod
+    async def _validate_relationship_template_shape(
+        request: CreateTemplateRequest, namespace: str
+    ) -> None:
+        """Enforce structural constraints on relationship templates.
+
+        A relationship template must declare:
+          - non-empty source_templates and target_templates (at the
+            template level)
+          - a source_ref and target_ref reference field with
+            reference_type=document
+          - the source_ref / target_ref field-level target_templates
+            must name the same set of templates as the template-level
+            lists. Equivalence is by canonical entity, not by string:
+            value-form and ID-form of the same template compare equal
+            (the universal synonym rule for reference comparisons).
+            Same-form lists short-circuit on set equality without any
+            Registry call, so draft chains naming not-yet-created
+            templates keep working as long as both lists use the same
+            spelling; MIXED forms need the targets to resolve and fail
+            loudly when they cannot.
+
+        For non-relationship templates (entity, reference), the
+        template-level source_templates / target_templates must be
+        empty — they only mean something when usage=relationship.
+
+        Raises ValueError on violation.
+        """
+        usage = request.usage if request.usage is not None else TemplateUsage.ENTITY
+
+        if usage != TemplateUsage.RELATIONSHIP:
+            if request.source_templates or request.target_templates:
+                raise ValueError(
+                    "source_templates and target_templates may only be set "
+                    f"when usage='relationship' (got usage='{usage.value}')"
+                )
+            return
+
+        # usage == relationship from here on.
+        if not request.source_templates:
+            raise ValueError(
+                "Relationship templates require a non-empty source_templates list"
+            )
+        if not request.target_templates:
+            raise ValueError(
+                "Relationship templates require a non-empty target_templates list"
+            )
+
+        fields_by_name = {f.name: f for f in request.fields}
+
+        for endpoint, expected in (
+            ("source_ref", request.source_templates),
+            ("target_ref", request.target_templates),
+        ):
+            field = fields_by_name.get(endpoint)
+            if field is None:
+                raise ValueError(
+                    f"Relationship templates require a '{endpoint}' reference field "
+                    f"(missing in fields list)"
+                )
+            if field.reference_type != ReferenceType.DOCUMENT:
+                raise ValueError(
+                    f"Relationship template field '{endpoint}' must have "
+                    f"reference_type='document' (got '{field.reference_type}')"
+                )
+            field_targets = field.target_templates or []
+            if not await TemplateService._ref_lists_equivalent(
+                field_targets, list(expected), "template", namespace
+            ):
+                raise ValueError(
+                    f"Relationship template field '{endpoint}.target_templates' "
+                    f"must match template-level {endpoint.replace('_ref', '_templates')}: "
+                    f"expected {sorted(expected)}, got {sorted(field_targets)} "
+                    "(compared by canonical entity — value-form and ID-form of "
+                    "the same template are equivalent)"
+                )
+
+    # =========================================================================
+    # METADATA-IN-DECLARATIVE-SLOTS VALIDATION
+    # =========================================================================
+
+    @staticmethod
+    def _validate_no_metadata_in_declarative_slots(
+        identity_fields: list[str] | None,
+        fields: list[FieldDefinition],
+    ) -> None:
+        """Reject metadata.<x> references in template-level declarative
+        slots — slots where the platform commits to the field's
+        structural meaning (identity, FTS indexing).
+
+        Per the data-model contract:
+        - data.<field> is validated, queryable, identity-bearing,
+          indexable, FTS-able. The platform commits to its meaning.
+        - metadata.* is free-form caller-attached context. No schema
+          commitments, no platform-side guarantees.
+
+        A metadata.<x> reference in identity_fields or full_text_indexed
+        bends the contract: the document body claims structural meaning
+        for caller-context, downstream services try to honour it, the
+        guarantees aren't there, and failures cascade silently. CASE-316
+        + CASE-318 are the canonical cascade.
+
+        Read-path queries (POST /documents/query filters) are NOT a
+        declarative slot and remain free — operators legitimately need
+        to filter on metadata for debugging / audit. Only slots that
+        commit to field meaning reject metadata.
+        """
+        if identity_fields:
+            bad_identity = [f for f in identity_fields if f.startswith("metadata.")]
+            if bad_identity:
+                raise ValueError(
+                    f"identity_fields must reference structural data fields, "
+                    f"not metadata paths. Got {bad_identity}. metadata.* is "
+                    f"caller-attached context with no schema commitments and "
+                    f"cannot carry structural identity. Hoist the field(s) to "
+                    f"top-level data fields and reference them by name."
+                )
+
+        fts_metadata = [
+            f for f in fields
+            if getattr(f, "full_text_indexed", None)
+            and f.name.startswith("metadata.")
+        ]
+        if fts_metadata:
+            names = ", ".join(f.name for f in fts_metadata)
+            raise ValueError(
+                f"full_text_indexed cannot be applied to metadata.* paths. "
+                f"Got: {names}. metadata.* is not part of the template "
+                f"schema and is not indexed by reporting-sync."
+            )
+
+    # =========================================================================
+    # FULL-TEXT-INDEX STRUCTURAL VALIDATION
+    # =========================================================================
+
+    @staticmethod
+    def _validate_full_text_indexed_constraints(
+        fields: list[FieldDefinition],
+        reporting: ReportingConfig | None,
+    ) -> None:
+        """Enforce structural constraints on full_text_indexed fields.
+
+        - Only string fields may carry full_text_indexed=true. Any other
+          base type is rejected (term/reference/file/object/array carry
+          their own column shape that doesn't accept tsvector indexing).
+        - If any field is full_text_indexed, the template's reporting
+          config must allow sync (sync_enabled=true). The flag depends
+          on the reporting layer to materialise the tsvector column —
+          you cannot index what isn't synced.
+
+        Operates on the *final* fields list and reporting config so it
+        can be called from both create and update paths.
+
+        Raises ValueError on violation.
+        """
+        indexed_fields = [
+            f for f in fields if getattr(f, "full_text_indexed", None)
+        ]
+        if not indexed_fields:
+            return
+
+        non_string = [
+            f for f in indexed_fields if f.type != FieldType.STRING
+        ]
+        if non_string:
+            names_and_types = ", ".join(
+                f"{f.name}(type={f.type.value})" for f in non_string
+            )
+            raise ValueError(
+                f"full_text_indexed is only valid on type=string fields; "
+                f"got {names_and_types}"
+            )
+
+        # Default ReportingConfig has sync_enabled=True — only an explicit
+        # False conflicts. (reporting may be None; that means defaults.)
+        if reporting is not None and not reporting.sync_enabled:
+            indexed_names = ", ".join(f.name for f in indexed_fields)
+            raise ValueError(
+                f"full_text_indexed requires reporting.sync_enabled=true; "
+                f"field(s) {indexed_names} cannot be indexed without sync"
+            )
+
+    @staticmethod
+    def _validate_versioned_requires_identity(
+        versioned: bool, identity_fields: list[str] | None
+    ) -> None:
+        """Reject ``versioned: false`` paired with empty ``identity_fields`` (CASE-478).
+
+        ``versioned: false`` means "overwrite the document in place on update,
+        addressed by its identity". With no identity_fields there is nothing to
+        address: every write is a fresh append (identity-less docs never match),
+        and PATCH is rejected too (append_only). So the combination is incoherent
+        — ``versioned`` is N/A without an identity. Enforced on both create and
+        update, because ``versioned`` is immutable after creation but
+        ``identity_fields`` is not: an update could otherwise empty
+        ``identity_fields`` on a ``versioned: false`` template and reach the
+        forbidden state behind the create-time check.
+
+        Raises ValueError on violation (purely declarative — no DB calls).
+        """
+        if versioned is False and not identity_fields:
+            raise ValueError(
+                "versioned:false requires identity_fields: an overwrite-in-place "
+                "template must declare an identity to address the document being "
+                "updated. Set identity_fields, or use versioned:true (the default). "
+                "Append-only templates (empty identity_fields) are versioned:true."
+            )
+
+    @staticmethod
+    def validate_fields_for_write(fields: list[FieldDefinition]) -> None:
+        """Enforce field-shape authoring invariants at the write seam (CASE-629).
+
+        These checks used to be pydantic @model_validators on FieldDefinition.
+        FieldDefinition is embedded in the Beanie Template document, so Beanie
+        re-ran them on hydration (model_validate of the stored Mongo dict) — a
+        template legally written before a guard existed became unreadable the
+        moment the guard shipped (read endpoints 500 on the stored shape). A
+        write-time authoring rule must not live on the shared persistence
+        model. Enforced here instead: called explicitly from create/bulk/update
+        (never on hydration), so stored history always reconstructs while
+        new/updated definitions are still rejected. Same shape as
+        _validate_versioned_requires_identity (CASE-478); purely declarative,
+        no DB calls. Draft creation runs this too, so a draft can never reach
+        activation carrying a shape these forbid — no separate activation seam
+        is needed.
+
+        Raises ValueError on the first offending field.
+        """
+        for f in fields:
+            # A nested template reference must pin an explicit version: schema
+            # refs never resolve to "latest", so a parent validated against a
+            # floating nested schema strands when that schema ships an
+            # incompatible version (CASE-493).
+            if f.template_ref and f.template_ref_version is None:
+                raise ValueError(
+                    f"template_ref_version is required for field '{f.name}': a "
+                    "nested template reference must pin an explicit version (CASE-493)"
+                )
+            if f.array_template_ref and f.array_template_ref_version is None:
+                raise ValueError(
+                    f"array_template_ref_version is required for field '{f.name}': "
+                    "an array-item template reference must pin an explicit version "
+                    "(CASE-493)"
+                )
+            # An array of references must declare what it references. Without it,
+            # each item is queued for resolution carrying reference_type=None,
+            # matches no resolution branch, and is dropped silently — a bogus id
+            # validates clean with references:[] (CASE-550).
+            if (
+                f.array_item_type == FieldType.REFERENCE
+                and f.reference_type is None
+            ):
+                raise ValueError(
+                    f"reference_type is required for field '{f.name}': an array "
+                    "of references (array_item_type='reference') must declare which "
+                    "entity type it references, otherwise its items are never "
+                    "existence-checked (CASE-550)"
+                )
 
     # =========================================================================
     # TEMPLATE CRUD OPERATIONS
@@ -54,7 +321,7 @@ class TemplateService:
 
         Args:
             request: Creation request
-            namespace: Namespace for the template (default: wip)
+            namespace: Namespace for the template (required — no default)
 
         Returns:
             Created template
@@ -68,6 +335,33 @@ class TemplateService:
         if request.status is not None and request.status not in ("active", "draft"):
             raise ValueError(f"Invalid status '{request.status}': must be 'active' or 'draft'")
 
+        # Structural validation for relationship templates. Runs in draft
+        # mode too; DB/Registry-free for same-form endpoint lists (the
+        # equivalence check short-circuits on set equality) — mixed
+        # value/ID forms resolve through the Registry.
+        await TemplateService._validate_relationship_template_shape(request, namespace)
+
+        # Structural validation for full_text_indexed fields (also
+        # purely declarative — runs in draft mode too).
+        TemplateService._validate_full_text_indexed_constraints(
+            request.fields, request.reporting
+        )
+
+        # Reject metadata.<x> in declarative slots (identity_fields,
+        # full_text_indexed) — declarative slots commit the platform
+        # to structural meaning; metadata.* has no schema guarantees.
+        # Read-path query filters remain free.
+        TemplateService._validate_no_metadata_in_declarative_slots(
+            request.identity_fields, request.fields
+        )
+
+        # Reject versioned:false + empty identity_fields (CASE-478) — declarative,
+        # runs in draft mode too.
+        TemplateService._validate_versioned_requires_identity(
+            request.versioned, request.identity_fields
+        )
+        TemplateService.validate_fields_for_write(request.fields)
+
         # Check if value already exists within namespace — skip in restore mode
         # (restoring version 2+ of a template will find version 1 already present)
         is_restore = request.template_id and request.version is not None
@@ -79,12 +373,21 @@ class TemplateService:
         # Validate extends if provided
         parent_namespace: str | None = None
         if request.extends:
+            # CASE-432: resolve `extends` through the Registry first so a
+            # registered synonym for the parent resolves identically to its
+            # canonical ID (Vision §"References Must Resolve"), matching how
+            # activation (resolve_entity_id) and field references already
+            # resolve. On a miss, fall through to the legacy lookups — draft
+            # mode may legitimately name a not-yet-created parent, and a draft
+            # parent is still found by the any-status value lookup below.
+            with contextlib.suppress(EntityNotFoundError):
+                request.extends = await resolve_entity_id(request.extends, "template", namespace)
             # Find latest version of parent (template_id is stable across versions)
-            parent_results = await Template.find({"template_id": request.extends}).sort([("version", -1)]).limit(1).to_list()
+            parent_results = await Template.find({"template_id": request.extends}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             parent = parent_results[0] if parent_results else None
             if not parent:
                 # Try by value within same namespace
-                parent_results = await Template.find({"namespace": namespace, "value": request.extends}).sort([("version", -1)]).limit(1).to_list()
+                parent_results = await Template.find({"namespace": namespace, "value": request.extends}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 parent = parent_results[0] if parent_results else None
                 if parent:
                     request.extends = parent.template_id
@@ -98,40 +401,55 @@ class TemplateService:
         # Normalize all field references to canonical IDs — skip for drafts.
         # Normalization implicitly validates (raises EntityNotFoundError for invalid refs),
         # which is converted to ValueError for the API boundary.
+        resolved_template_ids: list[str] = []
+        resolved_terminology_ids: list[str] = []
         if not is_draft:
             try:
-                await TemplateService._normalize_field_references(request.fields, namespace)
+                resolved_template_ids, resolved_terminology_ids = (
+                    await TemplateService._normalize_field_references(request.fields, namespace)
+                )
             except EntityNotFoundError as e:
                 raise ValueError(str(e)) from e
 
-        # Validate cross-namespace references (isolation mode check) — skip for drafts
-        if not is_draft and parent_namespace:
-            try:
-                validator = get_reference_validator()
-                await validator.validate_template_references(
-                    template_namespace=namespace,
-                    extends_template_namespace=parent_namespace,
-                )
-            except ReferenceValidationError as e:
-                raise ValueError(f"Cross-namespace reference violation: {e.violations}") from e
+        # CASE-493: every schema reference (extends + nested template refs) must
+        # pin an explicit version. Presence is enforced on all paths (nested via
+        # the FieldDefinition model validator, extends here); existence of the
+        # pinned (template_id, version) pairs is checked on non-draft writes —
+        # drafts re-check at activation, when their referents must exist.
+        await TemplateService._validate_pinned_versions(
+            request.fields, request.extends, request.extends_version,
+            check_existence=not is_draft,
+        )
+
+        # Validate cross-namespace references (isolation mode check) over ALL
+        # resolved schema refs — extends AND field-level template/terminology
+        # refs, not just the parent — skip for drafts (re-checked at activation)
+        if not is_draft:
+            await TemplateService._check_reference_isolation(
+                namespace,
+                template_ids=resolved_template_ids,
+                terminology_ids=resolved_terminology_ids,
+                extends_namespace=parent_namespace,
+            )
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Restore mode: both template_id and version provided — skip Registry,
-        # insert directly with the given ID and version
-        if request.template_id and request.version is not None:
-            template_id = request.template_id
-            version = request.version
-        else:
-            # Normal mode: Register with Registry to get ID
-            client = get_registry_client()
-            template_id = await client.register_template(
-                created_by=actor,
-                namespace=namespace,
-                entry_id=request.template_id,
-            )
-            version = 1
+        # Register with Registry — ALWAYS, including restore mode
+        # (pre-assigned template_id + version). Every later resolution of a
+        # template_id (activation, references, synonym lookup) goes through
+        # the Registry, so an unregistered pre-assigned ID makes a restored
+        # template unresolvable: created but unusable. The Registry honors a
+        # provided entry_id and errors loudly if that ID already exists
+        # ("restore requires a clean target"), which is the correct
+        # double-restore behavior.
+        client = get_registry_client()
+        template_id = await client.register_template(
+            created_by=actor,
+            namespace=namespace,
+            entry_id=request.template_id,
+        )
+        version = request.version if is_restore else 1
 
         # Create template document
         template = Template(
@@ -144,6 +462,11 @@ class TemplateService:
             extends=request.extends,
             extends_version=request.extends_version,
             identity_fields=request.identity_fields,
+            header_fields=request.header_fields,
+            usage=request.usage,
+            source_templates=request.source_templates,
+            target_templates=request.target_templates,
+            versioned=request.versioned,
             fields=request.fields,
             rules=request.rules,
             metadata=request.metadata or TemplateMetadata(),
@@ -155,9 +478,15 @@ class TemplateService:
 
         # Register auto-synonym for human-readable resolution
         # Only for version 1 (auto-synonym resolves to entity_id, stable across versions)
-        # Skip for restore mode (synonyms are imported separately)
+        # Restore mode registers it on EVERY version create: a restored template
+        # must be resolvable by value no later than its own activation (edge
+        # types resolve value-form source/target_templates there), and archives
+        # may not contain version 1 at all (latest-only exports). Repeat
+        # registrations of the same value are absorbed by the Registry's
+        # idempotent already_exists path, which also lets the archive's later
+        # synonym replay re-add the same key harmlessly.
         # On failure, roll back the MongoDB document and re-raise
-        if version == 1 and not is_restore:
+        if version == 1 or is_restore:
             try:
                 client = get_registry_client()
                 await client.register_auto_synonym(
@@ -219,7 +548,7 @@ class TemplateService:
                 template = await Template.find_one(query)
             else:
                 # Return latest version (highest version number)
-                results = await Template.find(query).sort([("version", -1)]).limit(1).to_list()
+                results = await Template.find(query).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 template = results[0] if results else None
         elif value:
             # Value lookups require namespace — no silent fallback to "wip"
@@ -230,7 +559,7 @@ class TemplateService:
                 query["version"] = version
                 template = await Template.find_one(query)
             else:
-                results = await Template.find(query).sort([("version", -1)]).limit(1).to_list()
+                results = await Template.find(query).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 template = results[0] if results else None
         else:
             return None
@@ -334,7 +663,7 @@ class TemplateService:
             skip = (page - 1) * page_size
 
             templates = await Template.find(query) \
-                .sort([("value", 1), ("version", -1)]) \
+                .sort([("value", SortDirection.ASCENDING), ("version", SortDirection.DESCENDING)]) \
                 .skip(skip) \
                 .limit(page_size) \
                 .to_list()
@@ -347,32 +676,53 @@ class TemplateService:
     @staticmethod
     async def get_template_versions(
         value: str,
-        namespace: str | None = None
+        ns_filter: dict | None = None
     ) -> list[TemplateResponse]:
         """
         Get all versions of a template by value.
 
         Args:
             value: Template value
-            namespace: Namespace to search in (None for all namespaces)
+            ns_filter: Namespace filter dict from resolve_namespace_filter()
+                (CASE-579 — empty/None means unrestricted, superadmin only)
 
         Returns:
             List of all versions, sorted by version descending (newest first)
         """
         query: dict = {"value": value}
-        if namespace is not None:
-            query["namespace"] = namespace
+        if ns_filter:
+            query.update(ns_filter)
         templates = await Template.find(query) \
-            .sort([("version", -1)]) \
+            .sort([("version", SortDirection.DESCENDING)]) \
             .to_list()
 
+        return [TemplateService._to_template_response(t) for t in templates]
+
+    @staticmethod
+    async def get_template_versions_by_id(
+        template_id: str
+    ) -> list[TemplateResponse]:
+        """
+        Get all versions of a template by its template_id (CASE-497).
+
+        A template_id is namespace-scoped by the Registry and stable across
+        versions, so this is unambiguous and needs no namespace param — the
+        cleanest call when the caller already holds the id.
+
+        Returns:
+            List of all versions, sorted by version descending (newest first)
+        """
+        templates = await Template.find({"template_id": template_id}) \
+            .sort([("version", SortDirection.DESCENDING)]) \
+            .to_list()
         return [TemplateService._to_template_response(t) for t in templates]
 
     @staticmethod
     async def get_template_by_value_and_version(
         value: str,
         version: int,
-        resolve_inheritance: bool = True
+        resolve_inheritance: bool = True,
+        namespace: str | None = None,
     ) -> TemplateResponse | None:
         """
         Get a specific version of a template by value and version number.
@@ -381,11 +731,17 @@ class TemplateService:
             value: Template value
             version: Version number
             resolve_inheritance: Whether to resolve inheritance
+            namespace: Restrict to this namespace — a value is unique only
+                within a namespace, so omitting it is ambiguous across
+                namespaces (CASE-497). None searches all namespaces.
 
         Returns:
             Template if found, None otherwise
         """
-        template = await Template.find_one({"value": value, "version": version})
+        query: dict = {"value": value, "version": version}
+        if namespace is not None:
+            query["namespace"] = namespace
+        template = await Template.find_one(query)
         if not template:
             return None
 
@@ -419,6 +775,8 @@ class TemplateService:
         if request.extends_version is not None and request.extends_version != original.extends_version:
             return True
         if request.identity_fields is not None and request.identity_fields != original.identity_fields:
+            return True
+        if request.header_fields is not None and request.header_fields != original.header_fields:
             return True
 
         # Compare fields using JSON serialization
@@ -475,10 +833,167 @@ class TemplateService:
 
         return False
 
+    # CASE-406 — Field-level reference properties: prop_name -> entity_type.
+    # When comparing two FieldDefinitions, these properties must resolve
+    # through the Registry before comparison so that value-form and UUID-form
+    # references to the same entity compare equal. The principle: synonyms
+    # MUST work identically to canonical IDs at every comparison site
+    # (Vision.md §"References Must Resolve", docs/design/synonym-resolution-gaps.md).
+    _FIELD_REF_SCALAR_PROPS: ClassVar = {
+        "terminology_ref": "terminology",
+        "template_ref": "template",
+        "array_terminology_ref": "terminology",
+        "array_template_ref": "template",
+    }
+    _FIELD_REF_LIST_PROPS: ClassVar = {
+        "target_templates": "template",
+        "target_terminologies": "terminology",
+    }
+    # Populated during resolution (inheritance walking), never stored.
+    # Excluding them from comparison is a precondition for "stored ==
+    # round-tripped" equality.
+    _FIELD_INHERITANCE_PROPS = frozenset({"inherited", "inherited_from"})
+
     @staticmethod
-    def compute_template_compatibility(
+    async def _refs_equivalent(
+        a: str | None,
+        b: str | None,
+        entity_type: str,
+        namespace: str,
+    ) -> bool:
+        """Two reference strings are equivalent iff they resolve to the same
+        canonical entity. None == None; None != any non-None.
+
+        Trivial byte-equality short-circuits the Registry call. If both
+        sides are non-None and not byte-equal, both are resolved; if either
+        resolve fails, the references are treated as different (conservative
+        — prefer a noisy false positive over a silent false negative).
+        """
+        if a == b:
+            return True  # Covers None==None and identical-string cases.
+        if a is None or b is None:
+            return False  # One side has a ref, the other doesn't.
+        try:
+            a_canonical = await resolve_entity_id(a, entity_type, namespace)
+            b_canonical = await resolve_entity_id(b, entity_type, namespace)
+        except EntityNotFoundError:
+            return False
+        return a_canonical == b_canonical
+
+    @staticmethod
+    async def _ref_lists_equivalent(
+        a: list[str] | None,
+        b: list[str] | None,
+        entity_type: str,
+        namespace: str,
+    ) -> bool:
+        """Two reference-list properties are equivalent iff their element-wise
+        canonical IDs form the same set. Order-insensitive (these lists are
+        treated as sets semantically — target_templates ['A','B'] means
+        "allowed: A or B", same as ['B','A']).
+
+        None and empty list compare equal — both mean "no constraint."
+        """
+        a_list = list(a or [])
+        b_list = list(b or [])
+        if set(a_list) == set(b_list):
+            return True  # Trivial set-equal (incl. both empty).
+        try:
+            all_refs = list({*a_list, *b_list})
+            resolved = await resolve_entity_ids(all_refs, entity_type, namespace) if all_refs else {}
+        except EntityNotFoundError:
+            return False
+        a_canonical = {resolved[r] for r in a_list}
+        b_canonical = {resolved[r] for r in b_list}
+        return a_canonical == b_canonical
+
+    @staticmethod
+    async def _compare_field_definitions(
+        old: FieldDefinition,
+        new: FieldDefinition,
+        namespace: str,
+    ) -> bool:
+        """True if two FieldDefinitions are semantically equivalent.
+
+        Reference-typed properties (terminology_ref / template_ref /
+        target_templates / target_terminologies / array_*) are resolved
+        through Registry before comparison — value-form ≡ UUID-form ≡ any
+        synonym for the same referent. Inheritance-populated properties
+        (inherited, inherited_from) are excluded; they are not part of the
+        stored shape.
+
+        All other properties compare via structural (Pydantic dict) equality.
+        Replaces the previous JSON-byte equality which silently flagged
+        value↔UUID asymmetry as `modified_existing` (CASE-406).
+        """
+        for prop, entity_type in TemplateService._FIELD_REF_SCALAR_PROPS.items():
+            if not await TemplateService._refs_equivalent(
+                getattr(old, prop), getattr(new, prop), entity_type, namespace,
+            ):
+                return False
+        for prop, entity_type in TemplateService._FIELD_REF_LIST_PROPS.items():
+            if not await TemplateService._ref_lists_equivalent(
+                getattr(old, prop), getattr(new, prop), entity_type, namespace,
+            ):
+                return False
+        # Everything else: structural equality, excluding reference props
+        # (already compared above) and inheritance props (resolution-time
+        # only, never stored).
+        exclude = (
+            set(TemplateService._FIELD_REF_SCALAR_PROPS)
+            | set(TemplateService._FIELD_REF_LIST_PROPS)
+            | TemplateService._FIELD_INHERITANCE_PROPS
+        )
+        return old.model_dump(exclude=exclude) == new.model_dump(exclude=exclude)
+
+    @staticmethod
+    async def _compare_template_relationship_refs(
         existing: Template,
         proposed: CreateTemplateRequest,
+        namespace: str,
+    ) -> dict | None:
+        """Template-level reference comparison for relationship templates.
+
+        Edge types carry `source_templates` and `target_templates` at the
+        template level (independent of any field). Both arrays follow the
+        same value↔UUID-equivalence principle as field-level reference
+        properties.
+
+        Returns a diff dict with raw before/after lists when the resolved
+        sets differ, or None when equivalent. Empty/None on both sides
+        compares equal — a non-relationship template legitimately has both
+        empty.
+        """
+        diff: dict[str, dict] = {}
+
+        if not await TemplateService._ref_lists_equivalent(
+            existing.source_templates,
+            proposed.source_templates,
+            "template",
+            namespace,
+        ):
+            diff["source_templates"] = {
+                "old": list(existing.source_templates or []),
+                "new": list(proposed.source_templates or []),
+            }
+        if not await TemplateService._ref_lists_equivalent(
+            existing.target_templates,
+            proposed.target_templates,
+            "template",
+            namespace,
+        ):
+            diff["target_templates"] = {
+                "old": list(existing.target_templates or []),
+                "new": list(proposed.target_templates or []),
+            }
+
+        return diff or None
+
+    @staticmethod
+    async def compute_template_compatibility(
+        existing: Template,
+        proposed: CreateTemplateRequest,
+        namespace: str,
     ) -> tuple[str, dict]:
         """
         Compare a proposed CreateTemplateRequest against an existing Template.
@@ -487,15 +1002,19 @@ class TemplateService:
         - "identical": no schema differences — proposed matches existing exactly
         - "compatible": only differences are added optional fields (mandatory=false)
         - "incompatible": any other change (removed field, type change, made-required,
-          identity_fields change, modified existing field, added required field)
+          identity_fields change, modified existing field, added required field,
+          changed source/target_templates on a relationship template)
 
-        The diff dict captures the structured changes for caller-facing error messages.
-        Used by POST /templates?on_conflict=validate to decide whether to silently
-        adopt the existing template, bump the version, or reject with a structured
-        diff.
+        Reference-typed properties are resolved through Registry before
+        comparison — synonyms and canonical IDs compare equal at every
+        site. The async signature (CASE-406) replaces the prior synchronous
+        byte-equality implementation which produced phantom `modified_existing`
+        on stored-canonical ↔ submitted-value-form pairs.
+
+        Used by POST /templates?on_conflict=validate to decide whether to
+        silently adopt the existing template, bump the version, or reject
+        with a structured diff.
         """
-        import json
-
         existing_fields = {f.name: f for f in existing.fields}
         proposed_fields = {f.name: f for f in proposed.fields}
 
@@ -531,10 +1050,8 @@ class TemplateService:
             if (not old.mandatory) and new.mandatory:
                 made_required.append(name)
                 continue
-            # Compare full field definitions for any other change
-            old_json = json.dumps(old.model_dump(), sort_keys=True, default=str)
-            new_json = json.dumps(new.model_dump(), sort_keys=True, default=str)
-            if old_json != new_json:
+            # CASE-406: semantic field equality, not JSON byte equality.
+            if not await TemplateService._compare_field_definitions(old, new, namespace):
                 modified_existing.append(name)
 
         identity_changed: dict | None = None
@@ -544,7 +1061,12 @@ class TemplateService:
                 "new": list(proposed.identity_fields or []),
             }
 
-        diff = {
+        # CASE-406: template-level relationship-ref comparison (source/target_templates).
+        relationship_refs_changed = await TemplateService._compare_template_relationship_refs(
+            existing, proposed, namespace,
+        )
+
+        diff: dict = {
             "added_optional": added_optional,
             "added_required": added_required,
             "removed": sorted(removed_names),
@@ -552,6 +1074,7 @@ class TemplateService:
             "made_required": made_required,
             "modified_existing": modified_existing,
             "identity_changed": identity_changed,
+            "relationship_refs_changed": relationship_refs_changed,
         }
 
         is_incompatible = bool(
@@ -561,6 +1084,7 @@ class TemplateService:
             or made_required
             or modified_existing
             or identity_changed
+            or relationship_refs_changed
         )
         if is_incompatible:
             return "incompatible", diff
@@ -591,7 +1115,7 @@ class TemplateService:
             Update response indicating if a new version was created, or None if not found
         """
         # Find the latest version of this template
-        originals = await Template.find({"template_id": template_id}).sort([("version", -1)]).limit(1).to_list()
+        originals = await Template.find({"template_id": template_id}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         original = originals[0] if originals else None
         if not original:
             return None
@@ -610,7 +1134,7 @@ class TemplateService:
         # Calculate new version number (max version for this value + 1)
         max_version_template = await Template.find(
             {"value": original.value}
-        ).sort([("version", -1)]).limit(1).to_list()
+        ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         new_version = max_version_template[0].version + 1 if max_version_template else 1
 
         # Determine the value for the new version
@@ -628,10 +1152,14 @@ class TemplateService:
         # Validate extends if changing
         extends_value = request.extends if request.extends is not None else original.extends
         if extends_value and extends_value != original.extends:
-            parent_results = await Template.find({"template_id": extends_value}).sort([("version", -1)]).limit(1).to_list()
+            # CASE-432: resolve `extends` through the Registry first (synonym →
+            # canonical), then fall through to the legacy lookups on a miss.
+            with contextlib.suppress(EntityNotFoundError):
+                extends_value = await resolve_entity_id(extends_value, "template", original.namespace)
+            parent_results = await Template.find({"template_id": extends_value}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             parent = parent_results[0] if parent_results else None
             if not parent:
-                parent_results = await Template.find({"value": extends_value}).sort([("version", -1)]).limit(1).to_list()
+                parent_results = await Template.find({"value": extends_value}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 parent = parent_results[0] if parent_results else None
                 if parent:
                     extends_value = parent.template_id
@@ -649,14 +1177,73 @@ class TemplateService:
 
         # Normalize field references to canonical IDs (same as create_template)
         new_fields = request.fields if request.fields is not None else original.fields
+        updated_template_ids: list[str] = []
+        updated_terminology_ids: list[str] = []
         if request.fields is not None:
             try:
-                await TemplateService._normalize_field_references(new_fields, original.namespace)
+                updated_template_ids, updated_terminology_ids = (
+                    await TemplateService._normalize_field_references(new_fields, original.namespace)
+                )
             except EntityNotFoundError as e:
                 raise ValueError(str(e)) from e
 
+        # Isolation check over the updated refs + the (possibly unchanged)
+        # parent — same boundary as create; extends_value is canonical here
+        await TemplateService._check_reference_isolation(
+            original.namespace,
+            template_ids=updated_template_ids,
+            terminology_ids=updated_terminology_ids,
+            extends_template_id=extends_value,
+        )
+
+        # CASE-493: enforce mandatory, pinned versions on the merged schema
+        # references (extends + nested template refs). extends_value is the
+        # resolved canonical id of the (possibly unchanged) parent; the merged
+        # extends_version falls back to the original when not being changed.
+        new_extends_version = (
+            request.extends_version if request.extends_version is not None
+            else original.extends_version
+        )
+        await TemplateService._validate_pinned_versions(
+            new_fields, extends_value, new_extends_version,
+            check_existence=original.status != "draft",
+        )
+
+        # Validate full_text_indexed constraints against the merged final
+        # state — fields may add/remove the flag, reporting.sync_enabled
+        # may flip; both can break the invariant.
+        new_reporting = (
+            request.reporting if request.reporting is not None else original.reporting
+        )
+        TemplateService._validate_full_text_indexed_constraints(
+            new_fields, new_reporting
+        )
+
+        # Reject metadata.<x> in declarative slots after the merge —
+        # an update may newly introduce identity_fields=["metadata.x"]
+        # or flip full_text_indexed on a metadata-prefixed field.
+        new_identity_fields = (
+            request.identity_fields
+            if request.identity_fields is not None
+            else original.identity_fields
+        )
+        TemplateService._validate_no_metadata_in_declarative_slots(
+            new_identity_fields, new_fields
+        )
+
+        # Reject versioned:false + empty identity_fields after the merge (CASE-478).
+        # versioned is immutable (preserved from original below), but identity_fields
+        # can be edited — so an update could empty it on a versioned:false template;
+        # catch that here, not just at create.
+        TemplateService._validate_versioned_requires_identity(
+            original.versioned, new_identity_fields
+        )
+        TemplateService.validate_fields_for_write(new_fields)
+
         # Stable ID: reuse original template_id (no Registry call for updates)
-        # Create new template document for this version
+        # Create new template document for this version. usage,
+        # versioned, source_templates, and target_templates are
+        # immutable after creation — preserve from original.
         new_template = Template(
             namespace=original.namespace,
             template_id=original.template_id,
@@ -667,6 +1254,11 @@ class TemplateService:
             extends=extends_value if extends_value else None,
             extends_version=request.extends_version if request.extends_version is not None else original.extends_version,
             identity_fields=request.identity_fields if request.identity_fields is not None else original.identity_fields,
+            header_fields=request.header_fields if request.header_fields is not None else original.header_fields,
+            usage=original.usage,
+            source_templates=original.source_templates,
+            target_templates=original.target_templates,
+            versioned=original.versioned,
             fields=new_fields,
             rules=request.rules if request.rules is not None else original.rules,
             metadata=request.metadata if request.metadata is not None else original.metadata,
@@ -781,7 +1373,7 @@ class TemplateService:
         if version is not None:
             template = await Template.find_one({"template_id": template_id, "version": version})
         else:
-            results = await Template.find({"template_id": template_id}).sort([("version", -1)]).limit(1).to_list()
+            results = await Template.find({"template_id": template_id}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             template = results[0] if results else None
         if not template:
             return False
@@ -803,6 +1395,237 @@ class TemplateService:
         )
 
         return True
+
+    @staticmethod
+    async def reactivate_template(
+        template_id: str,
+        version: int,
+    ) -> "Template":
+        """Reactivate a soft-deleted (inactive) template version (CASE-490).
+
+        The symmetric inverse of deactivate. Flips a specific inactive
+        version back to active so documents pinned to it can be updated
+        again. Version is required and version-specific — there is no
+        "latest" default, because the caller is targeting a known frozen
+        version (`activate_template` is draft-only and cannot address this).
+
+        Idempotent: an already-active version is returned unchanged. A draft
+        version is rejected — drafts are activated, not reactivated.
+
+        Raises:
+            ValueError: version not found, or the version is a draft.
+        """
+        template = await Template.find_one(
+            {"template_id": template_id, "version": version}
+        )
+        if not template:
+            raise ValueError(
+                f"Template '{template_id}' version {version} not found"
+            )
+
+        if template.status == "draft":
+            raise ValueError(
+                f"Template '{template_id}' version {version} is 'draft', not "
+                "'inactive'. Use activate_template for drafts; reactivate only "
+                "restores a soft-deleted (inactive) version."
+            )
+
+        if template.status == "active":
+            return template  # idempotent — already active
+
+        actor = get_identity_string()
+        template.status = "active"
+        template.updated_at = datetime.now(UTC)
+        template.updated_by = actor
+        await template.save()
+
+        await publish_template_event(
+            EventType.TEMPLATE_UPDATED,
+            TemplateService._template_to_event_payload(template),
+            changed_by=actor,
+        )
+
+        return template
+
+    @staticmethod
+    async def add_edge_type_endpoints(
+        template_id: str,
+        add_source_templates: list[str] | None = None,
+        add_target_templates: list[str] | None = None,
+        namespace: str | None = None,
+    ) -> "Template":
+        """Additively widen an edge type's allowed endpoint set (CASE-515).
+
+        An edge type's endpoints — the template-level ``source_templates`` /
+        ``target_templates``, mirror-locked to the ``source_ref`` / ``target_ref``
+        field ``target_templates`` — are otherwise frozen. The only previous way
+        to add a legal endpoint was delete+recreate, which strands every existing
+        edge. This op adds endpoint template(s) IN PLACE on the latest active
+        version, preserving every existing edge:
+
+        - **Additive-only.** The resulting set is a superset of the current one;
+          this op never removes (removal is the non-monotonic, edge-stranding
+          direction, and is out of scope — endpoints are append-only).
+        - **Referential integrity preserved.** Each new endpoint resolves through
+          the Registry (``bypass_cache=True`` — write path, CASE-56) and must be a
+          real template, exactly like the create path.
+        - **Monotonic & cheap.** Widening can never invalidate an existing edge
+          (its endpoints stay in the superset), so there is no per-edge
+          revalidation, no reindex (the relationship Mongo indexes are generic on
+          ``data.source_ref`` / ``data.target_ref``), and no reporting schema
+          change (``source_ref_id`` / ``target_ref_id`` are generic columns).
+        - **Idempotent.** Adding an already-allowed endpoint is a no-op.
+
+        Raises:
+            ValueError: no active relationship template found, the template is not
+                a relationship template, or a new endpoint template doesn't exist.
+        """
+        add_source = list(add_source_templates or [])
+        add_target = list(add_target_templates or [])
+        if not add_source and not add_target:
+            raise ValueError(
+                "add_edge_type_endpoints requires add_source_templates and/or "
+                "add_target_templates"
+            )
+
+        # Resolve the edge type to its latest ACTIVE version — that is the version
+        # new edges resolve against. Accept a canonical id or a value/synonym.
+        resolved_id = template_id
+        with contextlib.suppress(EntityNotFoundError):
+            resolved_id = await resolve_entity_id(
+                template_id, "template", namespace or "wip"
+            )
+        template = await Template.find(
+            {"template_id": resolved_id, "status": "active"}
+        ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
+        template = template[0] if template else None
+        if not template:
+            by_value = await Template.find(
+                {"value": template_id, "status": "active"}
+            ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
+            template = by_value[0] if by_value else None
+        if not template:
+            raise ValueError(
+                f"No active template found for '{template_id}'"
+            )
+
+        if template.usage != TemplateUsage.RELATIONSHIP:
+            raise ValueError(
+                f"Template '{template.value}' is usage='{template.usage.value}', "
+                "not 'relationship'. Endpoint widening only applies to edge types."
+            )
+
+        # Resolve the new endpoints to canonical IDs (existence-checked). This is a
+        # write path — bypass the resolver cache so a stale entry can't pin a dead
+        # ID into the endpoint list (CASE-56).
+        ns = template.namespace
+        try:
+            resolved_source = (
+                await resolve_entity_ids(add_source, "template", ns, bypass_cache=True)
+                if add_source else {}
+            )
+            resolved_target = (
+                await resolve_entity_ids(add_target, "template", ns, bypass_cache=True)
+                if add_target else {}
+            )
+        except EntityNotFoundError as e:
+            raise ValueError(str(e)) from e
+
+        # Union into the existing lists, order-stable, with Registry-resolved
+        # dedup (CASE-515 defect, response #4). The stored lists may hold
+        # VALUE-form entries — REFERENCES ships "CASE_RECORD", … not UUIDs (create
+        # stores source/target_templates as submitted) — so comparing a
+        # resolved-canonical addition against the raw stored strings never matches,
+        # and an already-allowed endpoint gets appended a second time in the other
+        # form (the value↔UUID duplicate APP-KB hit). Resolve BOTH sides to
+        # canonical IDs before comparing: the universal "value≡UUID≡synonym at
+        # every reference-comparison site" rule (CASE-406) this site had missed.
+        async def _canonical(entry: str) -> str:
+            # Stored entries are real templates; fall back to the raw string if a
+            # historical entry no longer resolves — never drop it (data loss).
+            try:
+                return await resolve_entity_id(
+                    entry, "template", ns, bypass_cache=True
+                )
+            except EntityNotFoundError:
+                return entry
+
+        async def _value_form(canonical: str) -> str:
+            # Append new endpoints in value-form to match the seed convention and
+            # keep the list human-readable (response #4). value is stable across
+            # the template's versions.
+            row = await Template.find(
+                {"template_id": canonical}
+            ).limit(1).to_list()
+            return row[0].value if row else canonical
+
+        async def _widen(
+            existing: list[str] | None, additions: dict[str, str]
+        ) -> list[str]:
+            out = list(existing or [])
+            seen: set[str] = set()
+            for entry in out:
+                seen.add(await _canonical(entry))
+            for canonical in additions.values():
+                if canonical in seen:
+                    continue
+                out.append(await _value_form(canonical))
+                seen.add(canonical)
+            return out
+
+        new_source = await _widen(template.source_templates, resolved_source)
+        new_target = await _widen(template.target_templates, resolved_target)
+
+        # Idempotent: every requested endpoint already present (in any form).
+        if (new_source == list(template.source_templates or [])
+                and new_target == list(template.target_templates or [])):
+            return template
+
+        # Mutate in place — both the template-level lists AND the mirror-locked
+        # source_ref / target_ref field target_templates, keeping the shape
+        # invariant (_validate_relationship_template_shape) intact.
+        template.source_templates = new_source
+        template.target_templates = new_target
+        for field in template.fields:
+            if field.name == "source_ref":
+                field.target_templates = list(new_source)
+            elif field.name == "target_ref":
+                field.target_templates = list(new_target)
+
+        actor = get_identity_string()
+        template.updated_at = datetime.now(UTC)
+        template.updated_by = actor
+        await template.save()
+
+        await publish_template_event(
+            EventType.TEMPLATE_UPDATED,
+            TemplateService._template_to_event_payload(template),
+            changed_by=actor,
+        )
+
+        return template
+
+    @staticmethod
+    async def get_namespace_template_stamp(namespace: str) -> str:
+        """Cheap change-detection stamp over all templates in a namespace (CASE-490).
+
+        Returns ``"<count>:<max_updated_at>"``. The ``count`` catches creates
+        and hard-deletes; ``max(updated_at)`` catches updates and status flips
+        (deactivate and reactivate both touch ``updated_at``). A consumer that
+        caches templates can poll this single value per namespace to decide
+        whether its cache is still valid, instead of re-fetching every template
+        — O(namespaces) freshness checks rather than O(templates).
+        """
+        count = await Template.find({"namespace": namespace}).count()
+        latest = (
+            await Template.find({"namespace": namespace})
+            .sort([("updated_at", SortDirection.DESCENDING)])
+            .limit(1)
+            .to_list()
+        )
+        max_updated = latest[0].updated_at if latest else None
+        stamp_ts = max_updated.isoformat() if max_updated else ""
+        return f"{count}:{stamp_ts}"
 
     # =========================================================================
     # BULK OPERATIONS
@@ -865,7 +1688,7 @@ class TemplateService:
                 # on_conflict == "validate"
                 existing_list = await Template.find(
                     {"namespace": item.namespace, "value": item.value}
-                ).sort([("version", -1)]).limit(1).to_list()
+                ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 existing = existing_list[0] if existing_list else None
 
                 if existing is None:
@@ -881,8 +1704,8 @@ class TemplateService:
                     ))
                     continue
 
-                verdict, diff = TemplateService.compute_template_compatibility(
-                    existing, item
+                verdict, diff = await TemplateService.compute_template_compatibility(
+                    existing, item, namespace=item.namespace,
                 )
 
                 if verdict == "identical":
@@ -1003,11 +1826,58 @@ class TemplateService:
             req_status = template_req.status or "active"
             is_draft = req_status == "draft"
 
+            # Structural validation for relationship templates
+            try:
+                await TemplateService._validate_relationship_template_shape(
+                    template_req, namespace
+                )
+            except ValueError as e:
+                results.append(BulkResultItem(
+                    index=i,
+                    status="error",
+                    value=template_req.value,
+                    error=str(e)
+                ))
+                continue
+
+            # Structural validation for full_text_indexed (pre-existing
+            # gap — bulk path was bypassing this) and metadata-in-
+            # declarative-slots (CASE-317). Both are purely declarative
+            # so they run for drafts too.
+            try:
+                TemplateService._validate_full_text_indexed_constraints(
+                    template_req.fields, template_req.reporting
+                )
+                TemplateService._validate_no_metadata_in_declarative_slots(
+                    template_req.identity_fields, template_req.fields
+                )
+            except ValueError as e:
+                results.append(BulkResultItem(
+                    index=i,
+                    status="error",
+                    value=template_req.value,
+                    error=str(e)
+                ))
+                continue
+
             # Normalize field references to canonical IDs — skip for drafts
             if not is_draft:
                 try:
-                    await TemplateService._normalize_field_references(
-                        template_req.fields, namespace
+                    bulk_template_ids, bulk_terminology_ids = (
+                        await TemplateService._normalize_field_references(
+                            template_req.fields, namespace
+                        )
+                    )
+                    # Isolation check over the resolved field refs. extends is
+                    # NOT covered here: the bulk path stores it unresolved
+                    # (pins are presence-checked with check_existence=False),
+                    # so there is no canonical parent ID to look up — a
+                    # pre-existing looseness of the bulk contract, not a new
+                    # exemption.
+                    await TemplateService._check_reference_isolation(
+                        namespace,
+                        template_ids=bulk_template_ids,
+                        terminology_ids=bulk_terminology_ids,
                     )
                 except (ValueError, EntityNotFoundError) as e:
                     results.append(BulkResultItem(
@@ -1017,6 +1887,26 @@ class TemplateService:
                         error=str(e)
                     ))
                     continue
+
+            # CASE-493: enforce mandatory pinned versions (presence). Nested-ref
+            # template existence is already guaranteed by normalize above; full
+            # version existence for non-draft bulk is deferred to keep bulk's
+            # lighter contract (draft bulk re-checks every pin — incl. version —
+            # at activation, and a stale pin degrades to a document-validation
+            # warning, never a strand). Presence is the load-bearing guarantee.
+            try:
+                await TemplateService._validate_pinned_versions(
+                    template_req.fields, template_req.extends,
+                    template_req.extends_version, check_existence=False,
+                )
+            except ValueError as e:
+                results.append(BulkResultItem(
+                    index=i,
+                    status="error",
+                    value=template_req.value,
+                    error=str(e)
+                ))
+                continue
 
             # Create template document
             template = Template(
@@ -1028,6 +1918,10 @@ class TemplateService:
                 extends=template_req.extends,
                 extends_version=template_req.extends_version,
                 identity_fields=template_req.identity_fields,
+                usage=template_req.usage,
+                source_templates=template_req.source_templates,
+                target_templates=template_req.target_templates,
+                versioned=template_req.versioned,
                 fields=template_req.fields,
                 rules=template_req.rules,
                 metadata=template_req.metadata or TemplateMetadata(),
@@ -1102,7 +1996,7 @@ class TemplateService:
         Returns:
             Validation response with errors and warnings
         """
-        results = await Template.find({"template_id": template_id}).sort([("version", -1)]).limit(1).to_list()
+        results = await Template.find({"template_id": template_id}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         template = results[0] if results else None
         if not template:
             return ValidateTemplateResponse(
@@ -1308,7 +2202,7 @@ class TemplateService:
             ValueError: If template not found
         """
         # Find the target parent template (latest version)
-        parent_results = await Template.find({"template_id": template_id}).sort([("version", -1)]).limit(1).to_list()
+        parent_results = await Template.find({"template_id": template_id}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         parent = parent_results[0] if parent_results else None
         if not parent:
             raise ValueError(f"Template '{template_id}' not found")
@@ -1367,7 +2261,7 @@ class TemplateService:
                 # Calculate new version for this child
                 max_ver = await Template.find(
                     {"value": child.value}
-                ).sort([("version", -1)]).limit(1).to_list()
+                ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 new_version = max_ver[0].version + 1 if max_ver else 1
 
                 # Stable ID: reuse child's template_id (no Registry call)
@@ -1380,6 +2274,11 @@ class TemplateService:
                     description=child.description,
                     version=new_version,
                     extends=template_id,  # Point to new parent
+                    # CASE-493: re-pin the child to the parent's NEW version.
+                    # Cascade IS the explicit re-pin operation — the new child
+                    # version inherits from this exact parent version, never
+                    # "latest".
+                    extends_version=parent.version,
                     identity_fields=child.identity_fields,
                     fields=child.fields,  # Preserve child's own fields
                     rules=child.rules,
@@ -1528,6 +2427,26 @@ class TemplateService:
         # Build lookups for the activation set
         set_ids = {t.template_id for t in activation_set}
         set_values = {t.value for t in activation_set}
+        # CASE-493: version-aware membership for pinned-ref existence — a pinned
+        # (ref, version) is satisfied by a co-activating template only if that
+        # template carries the pinned version.
+        set_pinned = (
+            {(t.template_id, t.version) for t in activation_set}
+            | {(t.value, t.version) for t in activation_set}
+        )
+
+        async def _pinned_version_exists(ref: str, version: int) -> bool:
+            """A pinned (ref, version) is satisfiable iff it is in the activation
+            set at that version, or a stored template has that (template_id,
+            version). ref may be a canonical id or a value."""
+            if (ref, version) in set_pinned:
+                return True
+            if await Template.find_one({"template_id": ref, "version": version}):
+                return True
+            resolved = await TemplateService._find_template_by_ref(ref, namespace)
+            return bool(resolved) and await Template.find_one(
+                {"template_id": resolved.template_id, "version": version}
+            ) is not None
 
         errors = []
         warnings = []
@@ -1560,6 +2479,20 @@ class TemplateService:
                             code="invalid_reference",
                             message=f"Parent template '{template.extends}' is {parent.status}, not active"
                         ))
+
+                # CASE-493: extends must pin an existing parent version.
+                if template.extends_version is None:
+                    errors.append(ValidationError(
+                        field=f"{prefix}extends_version",
+                        code="invalid_reference",
+                        message="extends_version is required when 'extends' is set (CASE-493)"
+                    ))
+                elif not await _pinned_version_exists(template.extends, template.extends_version):
+                    errors.append(ValidationError(
+                        field=f"{prefix}extends_version",
+                        code="invalid_reference",
+                        message=f"Parent template '{template.extends}' has no version {template.extends_version}"
+                    ))
 
             # Check fields
             for field in template.fields:
@@ -1619,6 +2552,13 @@ class TemplateService:
                                 code="invalid_reference",
                                 message=f"Template '{field.template_ref}' is {ref_tpl.status}, not active"
                             ))
+                    # CASE-493: the nested ref must pin an existing version.
+                    if not await _pinned_version_exists(field.template_ref, field.template_ref_version):
+                        errors.append(ValidationError(
+                            field=f"{prefix}fields.{field.name}.template_ref_version",
+                            code="invalid_reference",
+                            message=f"Nested template '{field.template_ref}' has no version {field.template_ref_version}"
+                        ))
 
                 if field.array_template_ref:
                     in_set = field.array_template_ref in set_ids or field.array_template_ref in set_values
@@ -1638,6 +2578,13 @@ class TemplateService:
                                 code="invalid_reference",
                                 message=f"Template '{field.array_template_ref}' is {ref_tpl.status}, not active"
                             ))
+                    # CASE-493: the array-item ref must pin an existing version.
+                    if not await _pinned_version_exists(field.array_template_ref, field.array_template_ref_version):
+                        errors.append(ValidationError(
+                            field=f"{prefix}fields.{field.name}.array_template_ref_version",
+                            code="invalid_reference",
+                            message=f"Array-item template '{field.array_template_ref}' has no version {field.array_template_ref_version}"
+                        ))
 
                 # Reference type fields
                 if field.type.value == "reference":
@@ -1736,7 +2683,7 @@ class TemplateService:
         query: dict = {"template_id": template_id}
         if namespace:
             query["namespace"] = namespace
-        results = await Template.find(query).sort([("version", -1)]).limit(1).to_list()
+        results = await Template.find(query).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         template = results[0] if results else None
         if not template:
             raise ValueError(f"Template '{template_id}' not found")
@@ -1789,10 +2736,12 @@ class TemplateService:
         activation_statuses = ["active", "reserved"]
         try:
             for t in activation_set:
-                await TemplateService._normalize_field_references(
-                    t.fields, namespace,
-                    known_templates=known_templates,
-                    include_statuses=activation_statuses,
+                act_template_ids, act_terminology_ids = (
+                    await TemplateService._normalize_field_references(
+                        t.fields, namespace,
+                        known_templates=known_templates,
+                        include_statuses=activation_statuses,
+                    )
                 )
                 # Also resolve extends (known_templates checked first, then Registry)
                 if t.extends and t.extends in known_templates:
@@ -1802,6 +2751,17 @@ class TemplateService:
                         t.extends, "template", namespace,
                         include_statuses=activation_statuses,
                     )
+                # Isolation check — drafts skipped it at create; activation is
+                # where their coverage lands. Activation-set members are
+                # same-namespace by construction and pass trivially; external
+                # refs are checked. (Reserved-status externals are invisible
+                # to the namespace lookup and thus skipped — active-only route.)
+                await TemplateService._check_reference_isolation(
+                    namespace,
+                    template_ids=act_template_ids,
+                    terminology_ids=act_terminology_ids,
+                    extends_template_id=t.extends,
+                )
         except EntityNotFoundError as e:
             raise ValueError(str(e)) from e
 
@@ -1880,6 +2840,11 @@ class TemplateService:
             extends=t.extends,
             extends_version=t.extends_version,
             identity_fields=t.identity_fields,
+            header_fields=t.header_fields,
+            usage=t.usage,
+            source_templates=t.source_templates,
+            target_templates=t.target_templates,
+            versioned=t.versioned,
             fields=t.fields,
             rules=t.rules,
             metadata=t.metadata,
@@ -1906,15 +2871,15 @@ class TemplateService:
             namespace: Namespace for value lookups
         """
         # Try by template_id within namespace first (return latest version)
-        results = await Template.find({"template_id": ref, "namespace": namespace}).sort([("version", -1)]).limit(1).to_list()
+        results = await Template.find({"template_id": ref, "namespace": namespace}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         if results:
             return results[0]
         # Fallback: try by template_id cross-namespace (for external refs)
-        results = await Template.find({"template_id": ref}).sort([("version", -1)]).limit(1).to_list()
+        results = await Template.find({"template_id": ref}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         if results:
             return results[0]
         # Try by value within namespace (return latest version)
-        results = await Template.find({"namespace": namespace, "value": ref}).sort([("version", -1)]).limit(1).to_list()
+        results = await Template.find({"namespace": namespace, "value": ref}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         return results[0] if results else None
 
     @staticmethod
@@ -1923,7 +2888,7 @@ class TemplateService:
         namespace: str,
         known_templates: dict[str, str] | None = None,
         include_statuses: list[str] | None = None,
-    ) -> None:
+    ) -> tuple[list[str], list[str]]:
         """
         Normalize all reference fields to canonical IDs via batch Registry resolution.
 
@@ -1938,6 +2903,11 @@ class TemplateService:
                 (entries found here skip the Registry call)
             include_statuses: Status filter for resolution (e.g. ["active", "reserved"]
                 during activation). Default: active only.
+
+        Returns:
+            (template_ids, terminology_ids) — the canonical IDs applied to the
+            fields, deduplicated. Feed these to _check_reference_isolation so
+            every resolved schema reference passes the namespace boundary.
         """
         # Phase 1: Collect all refs (skip known_templates hits — those are
         # resolved within the activation set without a Registry call)
@@ -1964,15 +2934,23 @@ class TemplateService:
         resolved_templates: dict[str, str] = {}
         resolved_terminologies: dict[str, str] = {}
 
+        # CASE-56: this is a WRITE path — resolved IDs will be stored on
+        # the template as canonical references. If the wip-auth cache
+        # held a stale entry (e.g., from a bootstrap that ran before a
+        # namespace delete+recreate), reading from it here would bake a
+        # dead UUID into durable state. Bypass the cache on reads and let
+        # it self-heal with the fresh Registry result on write.
         if template_refs:
             resolved_templates = await resolve_entity_ids(
                 list(template_refs), "template", namespace,
                 include_statuses=include_statuses,
+                bypass_cache=True,
             )
         if terminology_refs:
             resolved_terminologies = await resolve_entity_ids(
                 list(terminology_refs), "terminology", namespace,
                 include_statuses=include_statuses,
+                bypass_cache=True,
             )
 
         # Merge known_templates into resolved map
@@ -1986,19 +2964,138 @@ class TemplateService:
             return resolved_terminologies[ref]
 
         # Phase 3: Apply resolved IDs back to fields
+        applied_template_ids: set[str] = set()
+        applied_terminology_ids: set[str] = set()
         for field in fields:
             if field.target_templates:
                 field.target_templates = [_resolve_tpl(r) for r in field.target_templates]
+                applied_template_ids.update(field.target_templates)
             if field.template_ref:
                 field.template_ref = _resolve_tpl(field.template_ref)
+                applied_template_ids.add(field.template_ref)
             if field.array_template_ref:
                 field.array_template_ref = _resolve_tpl(field.array_template_ref)
+                applied_template_ids.add(field.array_template_ref)
             if field.terminology_ref:
                 field.terminology_ref = _resolve_term(field.terminology_ref)
+                applied_terminology_ids.add(field.terminology_ref)
             if field.array_terminology_ref:
                 field.array_terminology_ref = _resolve_term(field.array_terminology_ref)
+                applied_terminology_ids.add(field.array_terminology_ref)
             if field.target_terminologies:
                 field.target_terminologies = [_resolve_term(r) for r in field.target_terminologies]
+                applied_terminology_ids.update(field.target_terminologies)
+
+        return sorted(applied_template_ids), sorted(applied_terminology_ids)
+
+    @staticmethod
+    async def _check_reference_isolation(
+        namespace: str,
+        template_ids: list[str],
+        terminology_ids: list[str],
+        extends_namespace: str | None = None,
+        extends_template_id: str | None = None,
+    ) -> None:
+        """Enforce namespace isolation over ALL resolved schema references.
+
+        Fetches each referenced entity's owning namespace in one bulk Registry
+        lookup, then runs the strict/open + allowed_external_refs rules. Pass
+        extends_namespace when the caller already knows it (single create),
+        or extends_template_id to have it looked up with the rest (update /
+        activation). IDs the lookup can't see (inactive/reserved) are skipped —
+        the lookup route filters to active entries.
+
+        Raises ValueError (API-boundary convention) on a violation.
+        """
+        ids = set(template_ids) | set(terminology_ids)
+        if extends_namespace is None and extends_template_id:
+            ids.add(extends_template_id)
+        ns_map = (
+            await get_registry_client().lookup_entry_namespaces(sorted(ids))
+            if ids else {}
+        )
+        if extends_namespace is None and extends_template_id:
+            extends_namespace = ns_map.get(extends_template_id)
+        try:
+            validator = get_reference_validator()
+            await validator.validate_template_references(
+                template_namespace=namespace,
+                extends_template_namespace=extends_namespace,
+                terminology_namespaces=[ns_map[i] for i in terminology_ids if i in ns_map],
+                template_ref_namespaces=[ns_map[i] for i in template_ids if i in ns_map],
+            )
+        except ReferenceValidationError as e:
+            raise ValueError(f"Cross-namespace reference violation: {e.violations}") from e
+
+    @staticmethod
+    async def _validate_pinned_versions(
+        fields: list,
+        extends: str | None,
+        extends_version: int | None,
+        *,
+        check_existence: bool,
+    ) -> None:
+        """Enforce mandatory, pinned versions on every schema reference (CASE-493).
+
+        Schema references — template inheritance (``extends``) and nested-object
+        / array template refs — must each name an explicit version. "Latest" is
+        not a permitted resolution for a schema reference: a parent document
+        validated against a floating nested (or parent) schema can silently
+        strand when that schema ships an incompatible new version.
+
+        Two checks:
+        - **Presence** (always): the version is set whenever the ref is set.
+          Nested-ref presence is also guarded by FieldDefinition's model
+          validator; ``extends_version`` presence is enforced here because it
+          lives on the template, not a field.
+        - **Existence** (``check_existence``): the pinned ``(template_id,
+          version)`` pair actually exists. Skipped for draft writes — a draft
+          may legitimately reference a not-yet-activated template; existence is
+          re-checked at activation, when the referent must exist.
+
+        Expects ``extends`` and the fields' refs to already be normalized to
+        canonical template_ids (existence queries by template_id).
+        """
+        # Presence — extends_version (nested-ref presence is enforced on the
+        # FieldDefinition model itself).
+        if extends and extends_version is None:
+            raise ValueError(
+                "extends_version is required when a template declares 'extends': "
+                "schema inheritance must pin an explicit parent version (CASE-493)"
+            )
+
+        if not check_existence:
+            return
+
+        async def _pinned_exists(template_id: str, version: int) -> bool:
+            return await Template.find_one(
+                {"template_id": template_id, "version": version}
+            ) is not None
+
+        if extends and extends_version is not None and not await _pinned_exists(extends, extends_version):
+            raise ValueError(
+                f"Parent template '{extends}' has no version {extends_version} "
+                "(extends_version must pin an existing parent version — CASE-493)"
+            )
+
+        for field in fields:
+            if (
+                field.template_ref and field.template_ref_version is not None
+                and not await _pinned_exists(field.template_ref, field.template_ref_version)
+            ):
+                raise ValueError(
+                    f"Field '{field.name}': nested template '{field.template_ref}' "
+                    f"has no version {field.template_ref_version} (CASE-493)"
+                )
+            if (
+                field.array_template_ref and field.array_template_ref_version is not None
+                and not await _pinned_exists(field.array_template_ref, field.array_template_ref_version)
+            ):
+                raise ValueError(
+                    f"Field '{field.name}': array-item template "
+                    f"'{field.array_template_ref}' has no version "
+                    f"{field.array_template_ref_version} (CASE-493)"
+                )
 
     @staticmethod
     async def _validate_field_references(fields: list, namespace: str) -> list[str]:

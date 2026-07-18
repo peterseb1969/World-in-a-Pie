@@ -1,0 +1,237 @@
+/**
+ * BootstrapGate — wraps the app, gating render on namespace state.
+ *
+ * Implements the offer-on-empty / use-on-exists pattern at the UI level:
+ *   - On mount, hits /server-api/bootstrap/status.
+ *   - If 'ready' → renders {children}, the actual app.
+ *   - If 'wip_unreachable' → shows a "WIP is unreachable, retry" panel.
+ *   - If 'needs_bootstrap' → shows the user the bootstrap offer with TWO
+ *     options: "Bootstrap" (proceeds) or "Check Again" (re-poll, in case
+ *     the user is restoring from a backup via the console — see §3.4).
+ *   - During bootstrap → shows live SSE progress.
+ *   - On error → shows the message + retry buttons.
+ *
+ * The "restore from backup is the user's other option" message under the
+ * needs-bootstrap state is load-bearing — without it the app implicitly
+ * says "your only choice is to bootstrap a fresh namespace," which can
+ * destroy data the user actually meant to restore.
+ *
+ * Usage in your app's root:
+ *
+ *     <BootstrapGate>
+ *       <YourActualApp />
+ *     </BootstrapGate>
+ *
+ * TODO when adopting this template:
+ *   - Set APP_TITLE to your app's display name.
+ *   - Set NAMESPACE_LABEL to match the namespace prefix you set in
+ *     bootstrap.server.ts.template (so the user-facing message is
+ *     accurate: "the <namespace> namespace does not exist").
+ *   - Replace the lucide-react icons if your app uses a different icon
+ *     library; the imports here match the canonical stack.
+ *   - Consider whether you want the gate to render INSIDE your normal
+ *     layout (header, footer, nav) or as a fullscreen takeover. APP-CT
+ *     uses fullscreen; this template follows that. Switch to a partial
+ *     overlay if your app's shell is meaningful before bootstrap.
+ */
+
+import { useState, useEffect, useCallback } from 'react'
+import { Database, AlertTriangle, RefreshCw, Loader2, ServerCrash } from 'lucide-react'
+import { serverApiUrl } from '@/lib/config'
+
+// TODO: set to match bootstrap.server.ts.template's NAMESPACE
+const NAMESPACE_LABEL = 'TODO_APP_NAMESPACE'
+
+// TODO: your app's display name
+const APP_TITLE = 'TODO_APP_NAME'
+
+type AppStatus = 'checking' | 'wip_unreachable' | 'needs_bootstrap' | 'bootstrapping' | 'ready' | 'error'
+
+interface BootstrapProgress {
+  step: string
+  detail: string
+  done: boolean
+  error?: string
+}
+
+export function BootstrapGate({ children }: { children: React.ReactNode }) {
+  const [status, setStatus] = useState<AppStatus>('checking')
+  const [progress, setProgress] = useState<BootstrapProgress | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const checkStatus = useCallback(async () => {
+    setStatus('checking')
+    setError(null)
+    try {
+      const res = await fetch(serverApiUrl('/bootstrap/status'))
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      setStatus(data.status as AppStatus)
+    } catch {
+      setStatus('wip_unreachable')
+    }
+  }, [])
+
+  useEffect(() => { checkStatus() }, [checkStatus])
+
+  const startBootstrap = useCallback(async () => {
+    setStatus('bootstrapping')
+    setProgress(null)
+    setError(null)
+
+    try {
+      const response = await fetch(serverApiUrl('/bootstrap/run'), { method: 'POST' })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      if (!response.body) throw new Error('No response body')
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let eventType = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7).trim()
+          } else if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6)) as BootstrapProgress
+              setProgress(data)
+              if (eventType === 'complete' && data.done && !data.error) {
+                setStatus('ready')
+              } else if (eventType === 'error' || data.error) {
+                setError(data.error || data.detail)
+                setStatus('error')
+              }
+            } catch { /* skip */ }
+            eventType = ''
+          }
+        }
+      }
+    } catch (err) {
+      setError((err as Error).message)
+      setStatus('error')
+    }
+  }, [])
+
+  if (status === 'ready') return <>{children}</>
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-gray-50">
+      <div className="w-full max-w-md rounded-lg border bg-white p-8 shadow-sm">
+        <div className="mb-6 flex items-center gap-3">
+          <Database className="h-8 w-8 text-blue-600" />
+          <h1 className="text-xl font-semibold">{APP_TITLE}</h1>
+        </div>
+
+        {status === 'checking' && (
+          <div className="flex items-center gap-3 text-gray-500">
+            <Loader2 className="h-5 w-5 animate-spin" />
+            <span>Checking WIP connection...</span>
+          </div>
+        )}
+
+        {status === 'wip_unreachable' && (
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 rounded-md border border-red-200 bg-red-50 p-4">
+              <ServerCrash className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+              <div>
+                <p className="font-medium text-red-800">WIP is unreachable</p>
+                <p className="mt-1 text-sm text-red-600">
+                  Cannot connect to the WIP backend. Make sure WIP is running and accessible.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={checkStatus}
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium hover:bg-gray-200"
+            >
+              <RefreshCw className="h-4 w-4" /> Retry
+            </button>
+          </div>
+        )}
+
+        {status === 'needs_bootstrap' && (
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-4">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+              <div>
+                <p className="font-medium text-amber-800">Namespace not found</p>
+                <p className="mt-1 text-sm text-amber-600">
+                  The <code className="rounded bg-amber-100 px-1">{NAMESPACE_LABEL}</code> namespace
+                  does not exist. You can bootstrap it now, or restore from a backup first
+                  (via the WIP console / <code className="rounded bg-amber-100 px-1">wip-deploy</code>).
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={startBootstrap}
+                className="flex flex-1 items-center justify-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              >
+                <Database className="h-4 w-4" /> Bootstrap
+              </button>
+              <button
+                onClick={checkStatus}
+                className="flex flex-1 items-center justify-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium hover:bg-gray-200"
+              >
+                <RefreshCw className="h-4 w-4" /> Check Again
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 text-center">
+              If restoring from backup, do so now and then click "Check Again".
+            </p>
+          </div>
+        )}
+
+        {status === 'bootstrapping' && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3">
+              <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+              <span className="font-medium">Bootstrapping...</span>
+            </div>
+            {progress && (
+              <div className="rounded-md bg-gray-50 p-3">
+                <p className="text-xs font-medium text-gray-500">{progress.step}</p>
+                <p className="mt-1 text-sm">{progress.detail}</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {status === 'error' && (
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 rounded-md border border-red-200 bg-red-50 p-4">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+              <div>
+                <p className="font-medium text-red-800">Bootstrap failed</p>
+                <p className="mt-1 text-sm text-red-600">{error}</p>
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={startBootstrap}
+                className="flex flex-1 items-center justify-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              >
+                <RefreshCw className="h-4 w-4" /> Retry Bootstrap
+              </button>
+              <button
+                onClick={checkStatus}
+                className="flex flex-1 items-center justify-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium hover:bg-gray-200"
+              >
+                <RefreshCw className="h-4 w-4" /> Check Status
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

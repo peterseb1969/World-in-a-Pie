@@ -93,6 +93,118 @@ describe('Service classes via createWipClient', () => {
       expect(options.method).toBe('DELETE')
       expect(JSON.parse(options.body)).toEqual([{ id: '0190b000-0000-7000-0000-000000000001' }])
     })
+
+    it('getChildren forwards relation_type and namespace as query params', async () => {
+      mockJsonResponse([])
+
+      await client.defStore.getChildren('0190b000-0000-7000-0000-000000000002', {
+        relation_type: 'part_of',
+        namespace: 'wip',
+      })
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/def-store/ontology/terms/0190b000-0000-7000-0000-000000000002/children')
+      expect(url).toContain('relation_type=part_of')
+      expect(url).toContain('namespace=wip')
+    })
+
+    it('getParents forwards relation_type as a query param', async () => {
+      mockJsonResponse([])
+
+      await client.defStore.getParents('0190b000-0000-7000-0000-000000000002', {
+        relation_type: 'part_of',
+      })
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/def-store/ontology/terms/0190b000-0000-7000-0000-000000000002/parents')
+      expect(url).toContain('relation_type=part_of')
+    })
+
+    // CASE-677: the return type and the request params must match the wire.
+    // The backend's import-ontology handler returns the ontology-edge stats
+    // under `relations` (not `relationships`) and reads `relation_batch_size`
+    // as its query param; the export handler reads `include_relations`. These
+    // assert against a recorded response body + the emitted query string so a
+    // future rename drift on this endpoint fails here instead of at runtime.
+    it('importOntology reads `relations` from the wire and sends relation_batch_size', async () => {
+      // Recorded shape of POST /import-export/import-ontology (wip-local).
+      mockJsonResponse({
+        terminology: { terminology_id: 'LOV-1', value: 'HPO', label: 'HPO', status: 'active' },
+        terms: { total: 3, created: 3, skipped: 0, errors: 0 },
+        relations: {
+          total: 2,
+          created: 2,
+          skipped: 0,
+          errors: 0,
+          predicate_distribution: { is_a: 2 },
+          error_samples: [],
+        },
+        elapsed_seconds: 0.4,
+      })
+
+      const res = await client.defStore.importOntology(
+        { graphs: [] },
+        { namespace: 'wip', terminology_value: 'HPO', relation_batch_size: 250 },
+      )
+
+      // The field the case's crash was about — readable off the typed result.
+      expect(res.relations.created).toBe(2)
+      expect(res.relations.error_samples).toEqual([])
+
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/def-store/import-export/import-ontology')
+      expect(options.method).toBe('POST')
+      // The wire param is relation_batch_size; the old relationship_batch_size
+      // was silently ignored by the backend.
+      expect(url).toContain('relation_batch_size=250')
+      expect(url).not.toContain('relationship_batch_size')
+    })
+
+    it('exportTerminology sends include_relations and reads the wire fields', async () => {
+      // Recorded shape of _export_json (import_export.py): `format`/`version`
+      // tags and a conditional `relations` block, NOT `export_format`.
+      mockJsonResponse({
+        terminology: { value: 'COUNTRY', label: 'Country' },
+        terms: [],
+        export_date: '2026-07-12T00:00:00Z',
+        format: 'json',
+        version: '2.0',
+        relations: [
+          { source_term_value: 'GB', target_term_value: 'EU', relation_type: 'part_of' },
+        ],
+      })
+
+      const res = await client.defStore.exportTerminology('COUNTRY', { includeRelations: true })
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/def-store/import-export/export/COUNTRY')
+      expect(url).toContain('include_relations=true')
+      expect(url).not.toContain('include_relationships')
+      // Typed reads of the wire fields the old type got wrong.
+      if (typeof res !== 'string') {
+        expect(res.format).toBe('json')
+        expect(res.version).toBe('2.0')
+        expect(res.relations?.[0].relation_type).toBe('part_of')
+      }
+    })
+
+    it('importTerminology reads relation stats from `relations_result`', async () => {
+      // Recorded shape of POST /import-export/import (import_export.py) when
+      // the payload carried relations: the stats key is `relations_result`.
+      mockJsonResponse({
+        terminology: { terminology_id: 'LOV-1', value: 'COUNTRY', label: 'Country', status: 'active' },
+        terms_result: { results: [], total: 0, succeeded: 0, skipped: 0, failed: 0 },
+        relations_result: { total: 1, created: 1, skipped: 0, errors: 0, error_samples: [] },
+      })
+
+      const res = await client.defStore.importTerminology({
+        terminology: { value: 'COUNTRY', label: 'Country' },
+        terms: [],
+      })
+
+      expect(res.relations_result?.created).toBe(1)
+      expect(res.relations_result?.error_samples).toEqual([])
+    })
   })
 
   describe('TemplateStoreService', () => {
@@ -267,6 +379,42 @@ describe('Service classes via createWipClient', () => {
       expect(options.method).toBe('POST')
     })
 
+    it('reactivateTemplate sends POST with required namespace + version query params', async () => {
+      mockJsonResponse({ template_id: '0190c000-0000-7000-0000-000000000001', value: 'PATIENT', version: 3, status: 'active' })
+
+      const result = await client.templates.reactivateTemplate(
+        '0190c000-0000-7000-0000-000000000001',
+        3,
+        { namespace: 'kb' },
+      )
+
+      expect(result.status).toBe('active')
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/template-store/templates/0190c000-0000-7000-0000-000000000001/reactivate')
+      expect(url).toContain('namespace=kb')
+      expect(url).toContain('version=3')
+      expect(options.method).toBe('POST')
+    })
+
+    it('addEdgeTypeEndpoints POSTs the additions to /endpoints with namespace query (CASE-515)', async () => {
+      mockJsonResponse({ template_id: '0190c000-0000-7000-0000-000000000002', value: 'REFERENCES', version: 1, status: 'active', usage: 'relationship' })
+
+      const result = await client.templates.addEdgeTypeEndpoints(
+        '0190c000-0000-7000-0000-000000000002',
+        { namespace: 'kb', addTargetTemplates: ['YAC_MEMORY'] },
+      )
+
+      expect(result.usage).toBe('relationship')
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/template-store/templates/0190c000-0000-7000-0000-000000000002/endpoints')
+      expect(url).toContain('namespace=kb')
+      expect(options.method).toBe('POST')
+      expect(JSON.parse(options.body)).toEqual({
+        add_source_templates: [],
+        add_target_templates: ['YAC_MEMORY'],
+      })
+    })
+
     it('getTemplateVersions fetches all versions by value', async () => {
       mockJsonResponse({ items: [{ version: 1 }, { version: 2 }], total: 2, page: 1, page_size: 50, pages: 1 })
 
@@ -310,6 +458,17 @@ describe('Service classes via createWipClient', () => {
       const [url] = fetchMock.mock.calls[0]
       expect(url).toContain('/api/document-store/documents/D-001')
       expect(url).toContain('version=2')
+    })
+
+    it('getDocument maps namespace to the query param (CASE-457)', async () => {
+      mockJsonResponse({ document_id: 'D-001', version: 1 })
+
+      await client.documents.getDocument('SONG_TRACK', undefined, 'dev-wip-song')
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/documents/SONG_TRACK')
+      expect(url).toContain('namespace=dev-wip-song')
+      expect(url).not.toContain('version=')
     })
 
     it('createDocument sends bulk POST', async () => {
@@ -413,6 +572,27 @@ describe('Service classes via createWipClient', () => {
       expect(body).toEqual([{ document_id: 'D-001', patch: { name: 'Jane' }, if_match: 4 }])
     })
 
+    it('updateDocument forwards metadataPatch as metadata_patch', async () => {
+      mockJsonResponse({
+        results: [{ index: 0, status: 'updated', document_id: 'D-001', version: 2 }],
+        total: 1,
+        succeeded: 1,
+        failed: 0,
+      })
+
+      await client.documents.updateDocument(
+        'D-001', {}, { metadataPatch: { reviewed_by: 'peter' } },
+      )
+
+      const [, options] = fetchMock.mock.calls[0]
+      const body = JSON.parse(options.body)
+      expect(body).toEqual([{
+        document_id: 'D-001',
+        patch: {},
+        metadata_patch: { reviewed_by: 'peter' },
+      }])
+    })
+
     it('updateDocument throws WipBulkItemError carrying error_code', async () => {
       mockJsonResponse({
         results: [{
@@ -476,6 +656,41 @@ describe('Service classes via createWipClient', () => {
       expect(body).toEqual([{ id: 'D-001', updated_by: 'admin' }])
     })
 
+    it('deleteDocuments sends bulk DELETE', async () => {
+      mockJsonResponse({
+        results: [
+          { index: 0, status: 'deleted', id: 'D-001' },
+          { index: 1, status: 'deleted', id: 'D-002' },
+        ],
+        total: 2,
+        succeeded: 2,
+        failed: 0,
+      })
+
+      const result = await client.documents.deleteDocuments(['D-001', 'D-002'])
+
+      expect(result.succeeded).toBe(2)
+      const [, options] = fetchMock.mock.calls[0]
+      expect(options.method).toBe('DELETE')
+      const body = JSON.parse(options.body)
+      expect(body).toEqual([{ id: 'D-001' }, { id: 'D-002' }])
+    })
+
+    it('deleteDocuments forwards hard_delete on every item', async () => {
+      mockJsonResponse({
+        results: [{ index: 0, status: 'deleted', id: 'D-001' }],
+        total: 1,
+        succeeded: 1,
+        failed: 0,
+      })
+
+      await client.documents.deleteDocuments(['D-001'], { hardDelete: true })
+
+      const [, options] = fetchMock.mock.calls[0]
+      const body = JSON.parse(options.body)
+      expect(body).toEqual([{ id: 'D-001', hard_delete: true }])
+    })
+
     it('getTableView sends GET with params', async () => {
       mockJsonResponse({
         template_id: '0190c000-0000-7000-0000-000000000001',
@@ -507,6 +722,20 @@ describe('Service classes via createWipClient', () => {
       const [url, options] = fetchMock.mock.calls[0]
       expect(url).toContain('/api/document-store/documents/query')
       expect(options.method).toBe('POST')
+    })
+
+    it('queryDocuments maps namespace to the query param, not the body (CASE-457)', async () => {
+      mockJsonResponse({ items: [{ document_id: 'D-001' }], total: 1, page: 1, page_size: 50, pages: 1 })
+
+      await client.documents.queryDocuments(
+        { template_value: 'SONG_TRACK', filters: [] } as any,
+        'dev-wip-song',
+      )
+
+      const [url, options] = fetchMock.mock.calls[0]
+      // namespace rides the query string (body namespace is extra_forbidden server-side)
+      expect(url).toContain('namespace=dev-wip-song')
+      expect(JSON.parse(options.body as string)).not.toHaveProperty('namespace')
     })
 
     it('getVersions fetches version history', async () => {
@@ -578,6 +807,118 @@ describe('Service classes via createWipClient', () => {
       const [url, options] = fetchMock.mock.calls[0]
       expect(url).toContain('/api/document-store/validation/validate')
       expect(options.method).toBe('POST')
+    })
+
+    it('validateDocuments sends bulk POST to /validate-bulk (CASE-419)', async () => {
+      mockJsonResponse({
+        results: [
+          { valid: true, errors: [] },
+          { valid: false, errors: [{ field: 'data.name', code: 'required', message: 'required' }] },
+        ],
+      })
+
+      const result = await client.documents.validateDocuments({
+        template_id: 'PERSON',
+        namespace: 'wip',
+        items: [{ name: 'Ada' }, {}],
+      })
+
+      expect(result.results).toHaveLength(2)
+      expect(result.results[0].valid).toBe(true)
+      expect(result.results[1].valid).toBe(false)
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/validation/validate-bulk')
+      expect(options.method).toBe('POST')
+      const body = JSON.parse(options.body)
+      expect(body).toEqual({ template_id: 'PERSON', namespace: 'wip', items: [{ name: 'Ada' }, {}] })
+    })
+
+    it('validateDocuments forwards template_version when given', async () => {
+      mockJsonResponse({ results: [{ valid: true, errors: [] }] })
+
+      await client.documents.validateDocuments({
+        template_id: 'PERSON',
+        namespace: 'wip',
+        template_version: 2,
+        items: [{ name: 'Ada' }],
+      })
+
+      const [, options] = fetchMock.mock.calls[0]
+      const body = JSON.parse(options.body)
+      expect(body.template_version).toBe(2)
+    })
+
+    // ---- Phase-4 relationship-graph queries (CASE-296) ----
+
+    it('getDocumentRelationships fetches /relationships', async () => {
+      mockJsonResponse({ items: [], total: 0, page: 1, page_size: 50 })
+
+      await client.documents.getDocumentRelationships('D-001')
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/documents/D-001/relationships')
+    })
+
+    it('getDocumentRelationships forwards filter params', async () => {
+      mockJsonResponse({ items: [], total: 0, page: 2, page_size: 25 })
+
+      await client.documents.getDocumentRelationships('D-001', {
+        direction: 'incoming',
+        template: 'IMPACTS,REFERENCES',
+        active_only: false,
+        page: 2,
+        page_size: 25,
+      })
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('direction=incoming')
+      expect(url).toContain('template=IMPACTS')
+      expect(url).toContain('active_only=false')
+      expect(url).toContain('page=2')
+      expect(url).toContain('page_size=25')
+    })
+
+    it('traverseDocuments fetches /traverse with depth + direction', async () => {
+      mockJsonResponse({
+        seed_document_id: 'D-001',
+        direction: 'outgoing',
+        depth: 3,
+        types_filter: [],
+        nodes: [],
+        total_nodes: 0,
+        truncated: false,
+      })
+
+      await client.documents.traverseDocuments('D-001', {
+        depth: 3,
+        direction: 'outgoing',
+      })
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/documents/D-001/traverse')
+      expect(url).toContain('depth=3')
+      expect(url).toContain('direction=outgoing')
+    })
+
+    it('traverseDocuments returns truncated flag from server', async () => {
+      mockJsonResponse({
+        seed_document_id: 'D-001',
+        direction: 'both',
+        depth: 10,
+        types_filter: ['IMPACTS'],
+        nodes: [],
+        total_nodes: 1000,
+        truncated: true,
+      })
+
+      const result = await client.documents.traverseDocuments('D-001', {
+        depth: 10,
+        types: 'IMPACTS',
+        direction: 'both',
+      })
+
+      expect(result.truncated).toBe(true)
+      expect(result.total_nodes).toBe(1000)
     })
 
     // ---- Backup / Restore (CASE-23 Phase 3 STEP 7) ----
@@ -798,6 +1139,50 @@ describe('Service classes via createWipClient', () => {
       expect(events).toHaveLength(1)
       expect(events[0].percent).toBe(10)
     })
+
+    it('migrateDocuments POSTs the request with namespace as a query param', async () => {
+      mockJsonResponse({
+        results: [{ index: 0, status: 'updated', document_id: 'doc-1' }],
+        total: 1,
+        succeeded: 1,
+        failed: 0,
+        dry_run: true,
+        template_id: '0190c000-0000-7000-0000-000000000001',
+        from_version: 1,
+        to_version: 2,
+      })
+
+      const result = await client.documents.migrateDocuments(
+        { template_id: 'PATIENT_RECORD', from_version: 1, to_version: 2 },
+        'clinic-a',
+      )
+
+      expect(result.dry_run).toBe(true)
+      expect(result.failed).toBe(0)
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/documents/migrate')
+      expect(url).toContain('namespace=clinic-a')
+      expect(options.method).toBe('POST')
+      expect(JSON.parse(options.body)).toEqual({
+        template_id: 'PATIENT_RECORD',
+        from_version: 1,
+        to_version: 2,
+      })
+    })
+
+    it('migrateDocuments omits the namespace param when not given', async () => {
+      mockJsonResponse({
+        results: [], total: 0, succeeded: 0, failed: 0,
+        dry_run: false, template_id: 'T', from_version: 1, to_version: 2,
+      })
+
+      await client.documents.migrateDocuments({
+        template_id: 'T', from_version: 1, to_version: 2, dry_run: false,
+      })
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).not.toContain('namespace=')
+    })
   })
 
   describe('RegistryService', () => {
@@ -866,7 +1251,7 @@ describe('Service classes via createWipClient', () => {
 
     it('lookupEntry unwraps results array', async () => {
       mockJsonResponse({
-        results: [{ input_index: 0, status: 'found', entry_id: 'E-001' }],
+        results: [{ index: 0, status: 'found', entry_id: 'E-001' }],
       })
 
       const result = await client.registry.lookupEntry('E-001')
@@ -900,20 +1285,46 @@ describe('Service classes via createWipClient', () => {
       expect(url).toContain('/api/registry/entries/E-001')
     })
 
-    it('searchEntries sends POST and unwraps nested results', async () => {
+    it('searchEntries returns hits + total and threads limit (CASE-572)', async () => {
       mockJsonResponse({
-        results: [{ results: [{ entry_id: 'E-001' }, { entry_id: 'E-002' }] }],
+        results: [{
+          results: [
+            { registry_id: 'E-001', matched_in: 'primary' },
+            { registry_id: 'E-002', matched_in: 'synonym' },
+          ],
+          total_matches: 9124,
+        }],
       })
 
       const result = await client.registry.searchEntries('test', {
         namespaces: ['wip-terms'],
         entityTypes: ['term'],
+        limit: 2,
       })
 
-      expect(result).toHaveLength(2)
+      expect(result.hits).toHaveLength(2)
+      expect(result.hits[0].registry_id).toBe('E-001')
+      expect(result.total).toBe(9124)
       const [url, options] = fetchMock.mock.calls[0]
-      expect(url).toContain('/api/registry/entries/search/by-term')
+      // CASE-568 follow-on: the real route has no /entries segment. The old
+      // assertion pinned the wrong path — a mocked test verifying a 404.
+      expect(url).toContain('/api/registry/search/by-term')
+      expect(url).not.toContain('/entries/search/by-term')
       expect(options.method).toBe('POST')
+      const body = JSON.parse(options.body)
+      expect(body[0].limit).toBe(2)
+    })
+
+    it('searchEntries omits limit from the body when not given (strict backend model)', async () => {
+      mockJsonResponse({ results: [{ results: [], total_matches: 0 }] })
+
+      const result = await client.registry.searchEntries('nohit')
+
+      expect(result.hits).toEqual([])
+      expect(result.total).toBe(0)
+      const [, options] = fetchMock.mock.calls[0]
+      const body = JSON.parse(options.body)
+      expect('limit' in body[0]).toBe(false)
     })
 
     it('unifiedSearch sends GET with params', async () => {
@@ -1330,6 +1741,19 @@ describe('Service classes via createWipClient', () => {
       expect(body.params).toEqual([])
       expect(body.timeout_seconds).toBeUndefined()
       expect(body.max_rows).toBeUndefined()
+      expect(body.namespace).toBeUndefined()
+    })
+
+    it('runQuery forwards namespace in the POST body', async () => {
+      mockJsonResponse({ columns: [], rows: [], row_count: 0, truncated: false })
+
+      await client.reporting.runQuery('SELECT * FROM doc_monster', undefined, {
+        namespace: 'dnd-app',
+      })
+
+      const [, options] = fetchMock.mock.calls[0]
+      const body = JSON.parse(options.body)
+      expect(body.namespace).toBe('dnd-app')
     })
 
     it('listTables sends GET without filter', async () => {

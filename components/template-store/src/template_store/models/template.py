@@ -1,7 +1,8 @@
 """Template model for the Template Store service."""
 
 from datetime import UTC, datetime
-from typing import Any
+from enum import StrEnum
+from typing import Any, ClassVar
 
 from beanie import Document
 from pydantic import BaseModel, Field
@@ -9,6 +10,22 @@ from pymongo import IndexModel
 
 from .field import FieldDefinition
 from .rule import ValidationRule
+
+
+class TemplateUsage(StrEnum):
+    """How a template's documents are intended to be used.
+
+    - entity (default): full document lifecycle, the v1.x behaviour.
+    - reference: lightweight controlled-vocabulary documents (LOV).
+      Reserved for a future phase; currently behaves like entity.
+    - relationship: typed, property-carrying edge between two
+      documents. Requires source_templates / target_templates to be set
+      and a source_ref / target_ref reference field on the template.
+      See docs/design/document-relationships.md.
+    """
+    ENTITY = "entity"
+    REFERENCE = "reference"
+    RELATIONSHIP = "relationship"
 
 
 class ReportingConfig(BaseModel):
@@ -46,11 +63,11 @@ class TemplateMetadata(BaseModel):
     """Additional metadata for a template."""
 
     domain: str | None = Field(
-        None,
+        default=None,
         description="Business domain (e.g., 'hr', 'finance', 'healthcare')"
     )
     category: str | None = Field(
-        None,
+        default=None,
         description="Template category (e.g., 'master_data', 'transaction')"
     )
     tags: list[str] = Field(
@@ -101,7 +118,7 @@ class Template(Document):
         description="Display label (e.g., 'Person Template')"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="Detailed description of the template's purpose"
     )
 
@@ -113,11 +130,11 @@ class Template(Document):
 
     # Inheritance
     extends: str | None = Field(
-        None,
+        default=None,
         description="Parent template ID for inheritance"
     )
     extends_version: int | None = Field(
-        None,
+        default=None,
         description="Pinned parent version (None = always use latest active parent version)"
     )
 
@@ -125,6 +142,56 @@ class Template(Document):
     identity_fields: list[str] = Field(
         default_factory=list,
         description="Fields that form the composite identity key for documents"
+    )
+
+    # Peer-projection fields (CASE-343). Names of fields the platform
+    # should include when projecting this template's documents in compact
+    # "header" contexts: relationships endpoint's `?include=peers`,
+    # registry-list summaries, etc. Bare names target `data.<name>`;
+    # `metadata.custom.<name>` paths are allowed for app-defined audit
+    # fields. Empty list / None → projection falls back to identity_fields
+    # at read time (template authors who want richer projection declare
+    # explicit header_fields; identity-only templates work zero-config).
+    header_fields: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Fields to include in peer/header projections. "
+            "Bare names → data.<name>; metadata.custom.<name> paths "
+            "allowed. Empty → projection falls back to identity_fields."
+        )
+    )
+
+    # Usage annotation — controls validation, query APIs, and reporting
+    # shape. Default 'entity' = v1.x behaviour. 'relationship' enables
+    # the document-relationship feature (requires source_templates,
+    # target_templates, and source_ref/target_ref reference fields).
+    # Immutable after creation.
+    usage: TemplateUsage = Field(
+        default=TemplateUsage.ENTITY,
+        description="Usage class: entity (default), reference, or relationship"
+    )
+
+    # Relationship templates only — list of template values allowed as
+    # the source endpoint of an edge. Empty for non-relationship templates.
+    source_templates: list[str] = Field(
+        default_factory=list,
+        description="Template values allowed as edge source (relationship only)"
+    )
+
+    # Relationship templates only — list of template values allowed as
+    # the target endpoint of an edge.
+    target_templates: list[str] = Field(
+        default_factory=list,
+        description="Template values allowed as edge target (relationship only)"
+    )
+
+    # Whether updates create new versions (true) or overwrite in place
+    # (false). Default true matches v1.x behaviour. Immutable after
+    # creation — flipping mid-life would silently reshape an existing
+    # template's lifecycle.
+    versioned: bool = Field(
+        default=True,
+        description="True = updates create new versions; False = overwrite in place. Immutable after creation."
     )
 
     # Schema definition
@@ -160,20 +227,20 @@ class Template(Document):
         default_factory=lambda: datetime.now(UTC)
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that created this template"
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that last updated this template"
     )
 
     class Settings:
         name = "templates"
-        indexes = [
+        indexes: ClassVar[list[IndexModel]] = [
             # Unique (template_id, version) within namespace — stable ID across versions
             IndexModel([("namespace", 1), ("template_id", 1), ("version", 1)], unique=True, name="ns_template_id_version_unique_idx"),
             # Unique value+version within namespace

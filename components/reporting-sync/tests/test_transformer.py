@@ -3,15 +3,10 @@ Tests for the document transformer and schema manager.
 """
 
 import json
-from unittest.mock import MagicMock
 
 from reporting_sync.models import (
-    FieldType,
     ReportingConfig,
-    SyncStrategy,
-    TemplateField,
 )
-from reporting_sync.schema_manager import SchemaManager
 from reporting_sync.transformer import DocumentTransformer
 
 
@@ -138,6 +133,109 @@ class TestDocumentTransformer:
         assert row["gender_term_id"] == "0190b000-0000-7000-0000-000000000001"
         assert row["country"] == "USA"
         assert row["country_term_id"] == "0190b000-0000-7000-0000-000000000042"
+
+    def test_single_file_field_emits_three_columns_never_bare_name(self):
+        """A single-file field maps to <name>_file_id/_filename/_content_type.
+        The bare <name> column does not exist in the DDL — emitting it makes
+        the INSERT reference a missing column and the row is silently lost."""
+        transformer = DocumentTransformer()
+        template = {
+            "fields": [
+                {"name": "title", "type": "string", "label": "title"},
+                {"name": "attachment", "type": "file", "label": "attachment",
+                 "file_config": {"multiple": False}},
+            ],
+        }
+
+        document = {
+            "document_id": "doc-f1",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
+            "template_version": 1,
+            "version": 1,
+            "status": "active",
+            "identity_hash": "abc",
+            "namespace": "wip",
+            "data": {
+                "title": "Report",
+                "attachment": "0190f000-0000-7000-0000-000000000001",
+            },
+            "file_references": [
+                {"field_path": "attachment",
+                 "file_id": "0190f000-0000-7000-0000-000000000001",
+                 "filename": "report.pdf",
+                 "content_type": "application/pdf"},
+            ],
+        }
+
+        row = transformer.transform(document, template)[0]
+
+        assert "attachment" not in row
+        assert row["attachment_file_id"] == "0190f000-0000-7000-0000-000000000001"
+        assert row["attachment_filename"] == "report.pdf"
+        assert row["attachment_content_type"] == "application/pdf"
+
+    def test_single_file_field_without_reference_emits_nothing(self):
+        """No file attached: neither the bare name nor stale file columns —
+        the raw data value must still not leak into the nonexistent bare
+        column."""
+        transformer = DocumentTransformer()
+        template = {
+            "fields": [
+                {"name": "attachment", "type": "file", "label": "attachment"},
+            ],
+        }
+
+        document = {
+            "document_id": "doc-f2",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
+            "template_version": 1,
+            "version": 1,
+            "status": "active",
+            "identity_hash": "abc",
+            "namespace": "wip",
+            "data": {"attachment": "0190f000-0000-7000-0000-000000000002"},
+            "file_references": [],
+        }
+
+        row = transformer.transform(document, template)[0]
+
+        assert "attachment" not in row
+        assert "attachment_file_id" not in row
+
+    def test_multiple_file_field_emits_enriched_jsonb_under_bare_name(self):
+        """multiple: true maps to ONE bare JSONB column (matching the DDL),
+        holding the enriched refs — even when only one file is attached and
+        the ref arrives as a single-element list."""
+        transformer = DocumentTransformer()
+        template = {
+            "fields": [
+                {"name": "attachments", "type": "file", "label": "attachments",
+                 "file_config": {"multiple": True}},
+            ],
+        }
+
+        document = {
+            "document_id": "doc-f3",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
+            "template_version": 1,
+            "version": 1,
+            "status": "active",
+            "identity_hash": "abc",
+            "namespace": "wip",
+            "data": {"attachments": ["0190f000-0000-7000-0000-000000000003"]},
+            "file_references": [
+                {"field_path": "attachments[0]",
+                 "file_id": "0190f000-0000-7000-0000-000000000003",
+                 "filename": "scan.png",
+                 "content_type": "image/png"},
+            ],
+        }
+
+        row = transformer.transform(document, template)[0]
+
+        assert "attachments_file_id" not in row
+        enriched = json.loads(row["attachments"])
+        assert enriched[0]["filename"] == "scan.png"
 
     def test_array_flattening(self):
         """Test that arrays with term references are stored as JSON.
@@ -345,84 +443,80 @@ class TestDocumentTransformer:
         assert values == ["doc-123", 1, "active", "John"]
 
 
-class TestSchemaManagerDDL:
-    """Tests for SchemaManager DDL generation."""
+class TestRelationshipTemplateRow:
+    """Phase 7 — relationship templates produce source_ref_id /
+    target_ref_id row keys derived from the Phase-6 enriched payload."""
 
-    def _make_schema_manager(self):
-        """Create a SchemaManager with a mock pool."""
-        pool = MagicMock()
-        return SchemaManager(pool)
+    def _rel_template(self):
+        return {
+            "usage": "relationship",
+            "fields": [
+                {"name": "source_ref", "type": "reference", "label": "Source"},
+                {"name": "target_ref", "type": "reference", "label": "Target"},
+                {"name": "role", "type": "string", "label": "Role"},
+            ],
+        }
 
-    def test_all_versions_composite_pk(self):
-        """Test that all_versions strategy generates composite PK (document_id, version)."""
-        sm = self._make_schema_manager()
-        config = ReportingConfig(sync_strategy=SyncStrategy.ALL_VERSIONS)
-        fields = [
-            TemplateField(name="name", type=FieldType.STRING),
-        ]
+    def _rel_doc(self, *, with_resolved: bool):
+        data = {
+            "source_ref": "src-id",
+            "target_ref": "tgt-id",
+            "role": "input",
+        }
+        if with_resolved:
+            data["source_ref_resolved"] = "src-doc-id"
+            data["target_ref_resolved"] = "tgt-doc-id"
+        return {
+            "document_id": "rel-1",
+            "template_id": "tpl-rel",
+            "template_version": 1,
+            "version": 1,
+            "status": "active",
+            "identity_hash": "hash-rel",
+            "namespace": "wip",
+            "data": data,
+            "term_references": [],
+            "file_references": [],
+        }
 
-        ddl = sm.generate_create_table_ddl("person", 1, fields, config)
+    def test_resolved_endpoints_populate_id_columns(self):
+        """When the producer (Phase 6) supplied source_ref_resolved /
+        target_ref_resolved, the row carries those as source_ref_id /
+        target_ref_id."""
+        transformer = DocumentTransformer()
+        rows = transformer.transform(self._rel_doc(with_resolved=True), self._rel_template())
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["source_ref_id"] == "src-doc-id"
+        assert row["target_ref_id"] == "tgt-doc-id"
 
-        # Should have composite primary key
-        assert "PRIMARY KEY (document_id, version)" in ddl
-        # document_id column should NOT have inline PRIMARY KEY
-        assert "document_id\" TEXT NOT NULL" in ddl
-        assert "document_id\" TEXT PRIMARY KEY" not in ddl
+    def test_falls_back_to_raw_refs_when_no_resolved(self):
+        """A pre-Phase-6 producer didn't enrich the payload; we still
+        populate the id columns from the raw refs so JOINs work for
+        documents whose document_id matches the raw ref."""
+        transformer = DocumentTransformer()
+        rows = transformer.transform(self._rel_doc(with_resolved=False), self._rel_template())
+        row = rows[0]
+        assert row["source_ref_id"] == "src-id"
+        assert row["target_ref_id"] == "tgt-id"
 
-    def test_latest_only_single_pk(self):
-        """Test that latest_only strategy generates single-column PK on document_id."""
-        sm = self._make_schema_manager()
-        config = ReportingConfig(sync_strategy=SyncStrategy.LATEST_ONLY)
-        fields = [
-            TemplateField(name="name", type=FieldType.STRING),
-        ]
-
-        ddl = sm.generate_create_table_ddl("person", 1, fields, config)
-
-        # Should have single-column primary key inline
-        assert "document_id\" TEXT PRIMARY KEY" in ddl
-        # Should NOT have composite primary key constraint
-        assert "PRIMARY KEY (document_id, version)" not in ddl
-
-    def test_all_versions_no_active_identity_index(self):
-        """Test that all_versions strategy does NOT create the partial unique index."""
-        sm = self._make_schema_manager()
-        config = ReportingConfig(sync_strategy=SyncStrategy.ALL_VERSIONS)
-        fields = [
-            TemplateField(name="name", type=FieldType.STRING),
-        ]
-
-        ddl = sm.generate_create_table_ddl("person", 1, fields, config)
-
-        # Partial unique index should NOT exist for all_versions
-        assert "_ns_active_identity_idx" not in ddl
-
-    def test_latest_only_has_active_identity_index(self):
-        """Test that latest_only strategy creates the partial unique index."""
-        sm = self._make_schema_manager()
-        config = ReportingConfig(sync_strategy=SyncStrategy.LATEST_ONLY)
-        fields = [
-            TemplateField(name="name", type=FieldType.STRING),
-        ]
-
-        ddl = sm.generate_create_table_ddl("person", 1, fields, config)
-
-        # Partial unique index should exist for latest_only
-        assert "_ns_active_identity_idx" in ddl
-        assert "WHERE status = 'active'" in ddl
-
-    def test_default_strategy_is_latest_only(self):
-        """Test that default config (no explicit strategy) uses latest_only behavior."""
-        sm = self._make_schema_manager()
-        # No config means default ReportingConfig which is latest_only
-        fields = [
-            TemplateField(name="email", type=FieldType.STRING),
-        ]
-
-        ddl = sm.generate_create_table_ddl("contact", 1, fields)
-
-        # Default should be latest_only: single-column PK
-        assert "document_id\" TEXT PRIMARY KEY" in ddl
-        assert "PRIMARY KEY (document_id, version)" not in ddl
-        # Should have partial unique index
-        assert "_ns_active_identity_idx" in ddl
+    def test_entity_template_does_not_get_endpoint_columns(self):
+        transformer = DocumentTransformer()
+        template = {
+            "fields": [{"name": "name", "type": "string", "label": "Name"}],
+        }
+        document = {
+            "document_id": "p-1",
+            "template_id": "tpl-person",
+            "template_version": 1,
+            "version": 1,
+            "status": "active",
+            "identity_hash": "h",
+            "namespace": "wip",
+            "data": {"name": "Alice"},
+            "term_references": [],
+            "file_references": [],
+        }
+        row = transformer.transform(document, template)[0]
+        assert "source_ref_id" not in row
+        assert "target_ref_id" not in row

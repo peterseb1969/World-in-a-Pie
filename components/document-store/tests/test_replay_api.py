@@ -3,11 +3,10 @@
 These tests mock the replay service to avoid needing NATS/MongoDB.
 """
 
-import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
-from httpx import AsyncClient
+from unittest.mock import MagicMock, patch
 
-from document_store.models.replay import ReplayStatus
+import pytest
+from httpx import AsyncClient
 
 
 def _mock_replay_service(sessions=None):
@@ -139,6 +138,7 @@ async def test_get_session(client: AsyncClient, auth_headers: dict):
             "total_count": 100,
             "published": 42,
             "throttle_ms": 10,
+            "filter": {"namespace": "wip"},
         }
     }
     mock_service = _mock_replay_service(sessions)
@@ -178,6 +178,7 @@ async def test_pause_replay(client: AsyncClient, auth_headers: dict):
             "total_count": 100,
             "published": 30,
             "throttle_ms": 10,
+            "filter": {"namespace": "wip"},
         }
     }
     mock_service = _mock_replay_service(sessions)
@@ -202,6 +203,7 @@ async def test_pause_not_running(client: AsyncClient, auth_headers: dict):
             "total_count": 100,
             "published": 100,
             "throttle_ms": 10,
+            "filter": {"namespace": "wip"},
         }
     }
     mock_service = _mock_replay_service(sessions)
@@ -225,6 +227,7 @@ async def test_resume_replay(client: AsyncClient, auth_headers: dict):
             "total_count": 100,
             "published": 30,
             "throttle_ms": 10,
+            "filter": {"namespace": "wip"},
         }
     }
     mock_service = _mock_replay_service(sessions)
@@ -249,6 +252,7 @@ async def test_cancel_replay(client: AsyncClient, auth_headers: dict):
             "total_count": 100,
             "published": 50,
             "throttle_ms": 10,
+            "filter": {"namespace": "wip"},
         }
     }
     mock_service = _mock_replay_service(sessions)

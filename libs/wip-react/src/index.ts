@@ -1,6 +1,9 @@
 // Provider
 export { WipProvider, useWipClient, type WipProviderProps } from './provider.js'
 
+// Brand-attribution component (CASE-308)
+export { WipFooter, type WipFooterProps } from './WipFooter.js'
+
 // Query key factories
 export { wipKeys } from './utils/keys.js'
 export { STALE_TIMES } from './utils/defaults.js'
@@ -9,10 +12,34 @@ export { STALE_TIMES } from './utils/defaults.js'
 export { useTerminologies, useTerminology } from './hooks/use-terminologies.js'
 export { useTerms, useTerm } from './hooks/use-terms.js'
 export { useTemplates, useTemplate, useTemplateByValue } from './hooks/use-templates.js'
-export { useDocuments, useDocument, useQueryDocuments, useDocumentVersions } from './hooks/use-documents.js'
+export {
+  useDocuments,
+  useDocument,
+  useQueryDocuments,
+  useDocumentVersions,
+  useTableView,
+  // Phase-4 relationship-graph queries (CASE-296)
+  useDocumentRelationships,
+  useTraverseDocuments,
+} from './hooks/use-documents.js'
 export { useFiles, useFile, useDownloadUrl } from './hooks/use-files.js'
 export { useNamespaces, useRegistrySearch } from './hooks/use-registry.js'
-export { useReportQuery, useIntegrityCheck, useActivity } from './hooks/use-reporting.js'
+export {
+  useReportQuery,
+  useIntegrityCheck,
+  useActivity,
+  // Batch sync (CASE-283)
+  useSyncStatus,
+  useBatchJobs,
+  useBatchJob,
+  useTriggerBatchSyncAll,
+  useTriggerBatchSync,
+  useTriggerTerminologySync,
+  useTriggerTermSync,
+  useTriggerTermRelationSync,
+  useCancelBatchJob,
+  useClearCompletedJobs,
+} from './hooks/use-reporting.js'
 
 // Write hooks
 export {
@@ -30,6 +57,8 @@ export {
   useUpdateTemplate,
   useDeleteTemplate,
   useActivateTemplate,
+  useReactivateTemplate,
+  useAddEdgeTypeEndpoints,
   // Documents
   useCreateDocument,
   useCreateDocuments,
@@ -43,9 +72,9 @@ export {
   useDeleteFile,
   useDeleteFiles,
   useHardDeleteFile,
-  // Ontology / Relationships
-  useCreateRelationships,
-  useDeleteRelationships,
+  // Ontology / Term-Relations (renamed from "Relationships" in CASE-67/167)
+  useCreateTermRelations,
+  useDeleteTermRelations,
   // Namespaces
   useCreateNamespace,
   useUpdateNamespace,

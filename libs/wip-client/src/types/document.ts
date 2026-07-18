@@ -1,4 +1,4 @@
-import type { PaginatedResponse } from './common.js'
+import type { BulkResponse, PaginatedResponse } from './common.js'
 
 export type DocumentStatus = 'active' | 'inactive' | 'archived'
 
@@ -53,6 +53,15 @@ export interface Document {
   metadata: DocumentMetadata
   is_latest_version?: boolean
   latest_version?: number
+  /**
+   * Compact projection of a related entity, attached when the
+   * relationships endpoint is called with `?include=peers` (CASE-303 /
+   * CASE-343 / CASE-348). Absent on documents returned by other
+   * endpoints. `null` when no related entity could be projected (e.g.,
+   * the target template has no `header_fields`, no `identity_fields`,
+   * and no legacy fallback).
+   */
+  peer?: PeerProjection | null
 }
 
 export interface CreateDocumentRequest {
@@ -148,8 +157,17 @@ export interface PatchDocumentRequest {
   /**
    * RFC 7396 JSON Merge Patch applied to the document's `data` field.
    * Objects deep-merge, arrays replace, `null` deletes the key.
+   * Pass `{}` for a metadata-only patch.
    */
   patch: Record<string, unknown>
+  /**
+   * Optional RFC 7396 JSON Merge Patch applied to the document's
+   * `metadata.custom`. Metadata is non-identity document content — a
+   * metadata change creates a new version like any other change, but never
+   * feeds the identity hash. Platform-owned metadata (warnings,
+   * source_system) cannot be addressed. Omitted = metadata carries forward.
+   */
+  metadata_patch?: Record<string, unknown>
   /**
    * Optional optimistic concurrency control. If supplied, the patch fails with
    * `concurrency_conflict` unless the current document version matches.
@@ -161,6 +179,21 @@ export interface ValidateDocumentRequest {
   template_id: string
   namespace: string
   data: Record<string, unknown>
+}
+
+/** Bulk validate request (CASE-419): one template, many data payloads. */
+export interface ValidateDocumentsRequest {
+  template_id: string
+  namespace: string
+  /** Specific template version to validate against. Default: latest. */
+  template_version?: number
+  /** Document data payloads, each shaped like the singular validate `data`. */
+  items: Array<Record<string, unknown>>
+}
+
+/** Bulk validate response (CASE-419): one result per item, in input order. */
+export interface BulkValidationResponse {
+  results: DocumentValidationResponse[]
 }
 
 export interface DocumentVersionSummary {
@@ -268,4 +301,143 @@ export interface ReplaySessionResponse {
   published: number
   throttle_ms: number
   message: string
+}
+
+// ----------------------------------------------------------------------------
+// Phase-4 relationship-graph query APIs (CASE-296)
+// ----------------------------------------------------------------------------
+
+/**
+ * Params for `GET /api/document-store/documents/{id}/relationships`.
+ *
+ * Returns relationship documents (templates with `usage: 'relationship'`)
+ * that point at (incoming) or from (outgoing) the given document.
+ * Backed by Mongo indexes on `(template_id, data.source_ref)` and
+ * `(template_id, data.target_ref)`.
+ */
+export interface DocumentRelationshipsParams {
+  /** `incoming` | `outgoing` | `both`. Default `both`. */
+  direction?: 'incoming' | 'outgoing' | 'both'
+  /** Comma-separated relationship template values. Default: all. */
+  template?: string
+  /** Defaults to the seed document's namespace. */
+  namespace?: string
+  /** Default true — exclude inactive/archived rel docs. */
+  active_only?: boolean
+  page?: number
+  /** Default 50, capped at 500. */
+  page_size?: number
+  /**
+   * Comma-separated optional inclusions. Currently supports:
+   *   - `peers` — embeds a PeerProjection on each item (CASE-303 / CASE-343)
+   */
+  include?: string
+}
+
+/**
+ * Compact projection of a peer entity document, returned on relationship
+ * items when `?include=peers` is set (CASE-303, extended CASE-343).
+ *
+ * The fields surfaced in `data` and `metadata` are determined by the peer
+ * template's `header_fields` (or `identity_fields` fallback). Legacy
+ * templates with neither declared fall back to `{title, doc_status}`.
+ */
+export interface PeerProjection {
+  document_id: string
+  namespace: string
+  template_id: string
+  template_value?: string | null
+  status: 'active' | 'inactive' | 'archived' | 'deleted'
+  /**
+   * Projected data fields per the peer template's `header_fields`
+   * (or `identity_fields` fallback).
+   */
+  data: Record<string, unknown>
+  /**
+   * Projected metadata fields. Only populated when the peer template's
+   * `header_fields` references `metadata.custom.<name>` paths
+   * (CASE-343). Shape is `{custom: {<name>: <value>, ...}}` when
+   * present, otherwise null/undefined.
+   */
+  metadata?: { custom: Record<string, unknown> } | null
+}
+
+/** One node in a document-relationship traversal result (CASE-296). */
+export interface DocumentTraverseNode {
+  document_id: string
+  template_id: string
+  template_value?: string | null
+  namespace: string
+  /** Hops from the seed (0 = seed itself). */
+  depth: number
+  /** Document_id of the relationship doc traversed to reach this node; null for the seed. */
+  via_relationship?: string | null
+  /** Chain of document_ids from seed (exclusive) to this node (inclusive). */
+  path: string[]
+}
+
+/**
+ * Response for `GET /api/document-store/documents/{id}/traverse`.
+ *
+ * BFS expansion through relationship documents, capped at depth=10 and
+ * max_nodes=1000. When a cap fires, `truncated` is true.
+ */
+export interface DocumentTraverseResponse {
+  seed_document_id: string
+  /** `outgoing` | `incoming` | `both`. */
+  direction: string
+  depth: number
+  /** Relationship template values used to constrain traversal; empty = all. */
+  types_filter: string[]
+  nodes: DocumentTraverseNode[]
+  total_nodes: number
+  /** True if a depth-cap or expansion-cap stopped traversal early. */
+  truncated: boolean
+}
+
+/** Params for `GET /api/document-store/documents/{id}/traverse` (CASE-296). */
+export interface DocumentTraverseParams {
+  /** 1..10. Default 1. */
+  depth?: number
+  /** Comma-separated relationship template values. Default: all. */
+  types?: string
+  /** `outgoing` | `incoming` | `both`. Default `outgoing`. */
+  direction?: 'outgoing' | 'incoming' | 'both'
+  /** Defaults to the seed document's namespace. */
+  namespace?: string
+}
+
+/**
+ * Request for `POST /api/document-store/documents/migrate`.
+ *
+ * Re-pins every active document on `from_version` to `to_version`,
+ * identity-preserving only — the two template versions must declare the same
+ * identity_fields, or the operation is rejected (an identity-changing move is
+ * a fork, not a migrate). No data transformation happens; per-document data
+ * prep is the caller's job while the source version is still writable.
+ */
+export interface DocumentMigrateRequest {
+  /** Template to migrate (canonical UUID or registered value/synonym). */
+  template_id: string
+  /** Source version documents are pinned to. May be inactive (frozen). */
+  from_version: number
+  /** Target version to re-pin to. Must be active. */
+  to_version: number
+  /**
+   * Default true: report per-document readiness without writing. A dry-run
+   * with failed === 0 guarantees a successful apply (barring concurrent writes).
+   */
+  dry_run?: boolean
+}
+
+/**
+ * Bulk-first migrate result — always HTTP 200, per-document outcome in
+ * `results` (status `updated` or `error`). When `dry_run` is true the
+ * statuses are PROJECTED — nothing was written.
+ */
+export interface DocumentMigrateResponse extends BulkResponse {
+  dry_run: boolean
+  template_id: string
+  from_version: number
+  to_version: number
 }

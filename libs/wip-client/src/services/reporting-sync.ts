@@ -1,17 +1,22 @@
 import { BaseService } from './base.js'
 import { WipError } from '../errors.js'
 import type {
-  IntegrityCheckResult,
-  SearchResponse,
   ActivityResponse,
-  TermDocumentsResponse,
+  BatchEntitySyncResult,
+  BatchJobCancelResult,
+  BatchJobsCleared,
+  BatchSyncJob,
+  BatchSyncResponse,
   EntityReferencesResponse,
+  IntegrityCheckResult,
   ReferencedByResponse,
   ReportQueryParams,
   ReportQueryResult,
   ReportTable,
   ReportTableSchema,
+  SearchResponse,
   SyncStatus,
+  TermDocumentsResponse,
 } from '../types/reporting.js'
 
 export class ReportingSyncService extends BaseService {
@@ -37,11 +42,18 @@ export class ReportingSyncService extends BaseService {
 
   // ── SQL Query Execution ──
 
-  /** Execute a read-only SQL query against the PostgreSQL reporting database */
+  /**
+   * Execute a read-only SQL query against the PostgreSQL reporting database.
+   *
+   * Reporting tables live in per-namespace PostgreSQL schemas
+   * (`"<ns>"."doc_<value>"`). Pass `namespace` so unqualified table names
+   * resolve in that namespace's schema, or schema-qualify each table in the
+   * SQL for cross-namespace queries.
+   */
   async runQuery(
     sql: string,
     params?: unknown[],
-    options?: { timeout_seconds?: number; max_rows?: number },
+    options?: { timeout_seconds?: number; max_rows?: number; namespace?: string },
   ): Promise<ReportQueryResult> {
     const body: ReportQueryParams = {
       sql,
@@ -49,6 +61,91 @@ export class ReportingSyncService extends BaseService {
       ...options,
     }
     return this.post('/query', body)
+  }
+
+  // ── Batch Sync (CASE-283) ──
+
+  /**
+   * Trigger a batch sync for ALL templates with `sync_enabled=true`.
+   * Returns one BatchSyncResponse per template; jobs run async on
+   * the server. Poll `listBatchJobs()` or `getBatchJob(job_id)` for
+   * progress.
+   */
+  async triggerBatchSyncAll(options?: {
+    force?: boolean
+    page_size?: number
+  }): Promise<BatchSyncResponse[]> {
+    return this.post('/sync/batch', undefined, { ...options })
+  }
+
+  /**
+   * Trigger a batch sync for a single template (by value).
+   * Job runs async; poll `getBatchJob(job_id)` for progress.
+   */
+  async triggerBatchSync(
+    templateValue: string,
+    options?: { force?: boolean; page_size?: number },
+  ): Promise<BatchSyncResponse> {
+    return this.post(`/sync/batch/${templateValue}`, undefined, { ...options })
+  }
+
+  /**
+   * Synchronous batch sync for the terminologies entity table.
+   * Returns the result inline; no per-job polling.
+   */
+  async triggerTerminologySync(
+    namespace: string,
+    pageSize: number = 100,
+  ): Promise<BatchEntitySyncResult> {
+    return this.post('/sync/batch/terminologies', undefined, {
+      namespace, page_size: pageSize,
+    })
+  }
+
+  /**
+   * Synchronous batch sync for the terms entity table.
+   * Iterates every active terminology in `namespace` and syncs its
+   * terms.
+   */
+  async triggerTermSync(
+    namespace: string,
+    pageSize: number = 100,
+  ): Promise<BatchEntitySyncResult> {
+    return this.post('/sync/batch/terms', undefined, {
+      namespace, page_size: pageSize,
+    })
+  }
+
+  /**
+   * Synchronous batch sync for the term_relations entity table.
+   */
+  async triggerTermRelationSync(
+    namespace: string,
+    pageSize: number = 100,
+  ): Promise<BatchEntitySyncResult> {
+    return this.post('/sync/batch/term_relations', undefined, {
+      namespace, page_size: pageSize,
+    })
+  }
+
+  /** List all batch sync jobs (in-memory, lost on reporting-sync restart). */
+  async listBatchJobs(): Promise<BatchSyncJob[]> {
+    return this.get('/sync/batch/jobs')
+  }
+
+  /** Fetch a single batch sync job by id. 404 if unknown. */
+  async getBatchJob(jobId: string): Promise<BatchSyncJob> {
+    return this.get(`/sync/batch/jobs/${jobId}`)
+  }
+
+  /** Cancel a running batch sync job. */
+  async cancelBatchJob(jobId: string): Promise<BatchJobCancelResult> {
+    return this.del(`/sync/batch/jobs/${jobId}`)
+  }
+
+  /** Clear all completed/failed/cancelled jobs from in-memory state. */
+  async clearCompletedJobs(): Promise<BatchJobsCleared> {
+    return this.del('/sync/batch/jobs')
   }
 
   // ── Sync Awareness ──
@@ -126,12 +223,52 @@ export class ReportingSyncService extends BaseService {
 
   // ── Search & Activity ──
 
+  /**
+   * Unified search with per-type pagination (CASE-329).
+   *
+   * Breaking change in @wip/client 0.19.0: the response shape moved
+   * from a flat `results: SearchResult[]` to per-type buckets keyed
+   * by entity type, each with its own pagination envelope. Same
+   * `page`/`page_size` applies to every type. The legacy `limit`
+   * parameter is still accepted as a deprecation-window alias for
+   * `page_size` — use `page_size` going forward.
+   */
   async search(params: {
     query: string
     types?: string[]
-    namespace: string
+    /**
+     * Filter by namespace. Optional — when omitted the server runs
+     * the search across all namespaces visible to the API key.
+     * Single-namespace keys derive it implicitly; multi-namespace
+     * keys see all of theirs.
+     */
+    namespace?: string
     status?: string
+    /** Page number (1-indexed). Default 1. (CASE-329) */
+    page?: number
+    /** Items per type. Default 50, cap 100. (CASE-329) */
+    page_size?: number
+    /** DEPRECATED (CASE-329): alias for page_size when page=1. */
     limit?: number
+    /** Restrict document search to a single template (by value). */
+    template?: string
+    /**
+     * Document-search strategy. 'auto' (default) picks FTS for tables
+     * with full_text_indexed fields and falls back to ILIKE elsewhere.
+     * 'fts' forces FTS (skips tables without indexed fields). 'substring'
+     * forces ILIKE on all tables.
+     */
+    mode?: 'auto' | 'fts' | 'substring'
+    /**
+     * When false (default), only active documents are returned —
+     * aligns with PoNIF #1 "inactive means retired, not deleted".
+     */
+    include_inactive?: boolean
+    /**
+     * Snippet rendering for FTS hits. 'html' (default) wraps matched
+     * terms with <b>...</b>. 'text' returns plain text.
+     */
+    snippet_format?: 'html' | 'text'
   }): Promise<SearchResponse> {
     return this.post('/search', params)
   }

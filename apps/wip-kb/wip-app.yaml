@@ -1,0 +1,84 @@
+api_version: wip.dev/v1
+kind: App
+metadata:
+  name: wip-kb
+  category: optional
+  description: |
+    WIP Knowledge Base — agent-facing UI over the kb namespace's case-record
+    and journal corpus. Vite SPA + Express server (tsx). Identity delivered
+    by the auth-gateway via X-WIP-User headers; no per-app OIDC client.
+
+spec:
+  image:
+    name: wip-kb
+    # App lives in its own repo (WIP-KB).
+    # First containerized build — refresh sequence joined with components
+    # at wipkb-20260513 (BE-YAC-20260430-2000). Suffix bump on rebuild
+    # since pull_policy: if-not-present caches by tag.
+    # 2026-05-21 bump: picks up 7589c60 "BrowserRouter basename = BASE_URL
+    # for k8s mounting" (CASE-370 surface #10) and the May 13–14 deploy
+    # follow-ups (Dockerfile.dev, port harmonisation, vite host binding).
+    # 2026-05-22 bump: picks up 3fe40a2 "ui: relationship-graph peer
+    # enrichment — status borders, italic terminal, more-neighbors badge".
+    # 2026-05-23 bump: picks up febae69 (CASE-404 Path B seed extension),
+    # 9de1b45 (CASE-408 peer projection carries data.status), and
+    # dea9ea8 (SearchPage Severity facet using CASE-404 data.severity).
+    tag: 20260610a
+
+  ports:
+    - {name: http, container_port: 3012}
+    # CASE-375: Vite dev-server. Used only when --app-source is active.
+    # The dev_simple renderer routes /apps/kb/* to this port instead of
+    # 3012 (which only serves the API/SSR in dev). Ignored on compose/k8s
+    # and on dev without the override. Default Vite port (5173) — note
+    # that react-console uses 5174 to avoid colliding with WIP-KB on a
+    # multi-app dev install; KB stays on 5173 since its dev port doesn't
+    # need to be unique on installs that don't run RC.
+    - {name: dev, container_port: 5173}
+
+  env:
+    required:
+      - {name: WIP_BASE_URL, source: {from_component: router}}
+      - {name: WIP_API_KEY, source: {from_secret: api-key}}
+      - {name: PORT, source: {literal: "3012"}}
+      - {name: APP_BASE_PATH, source: {literal: /apps/kb}}
+      - {name: NODE_ENV, source: {literal: production}}
+    optional:
+      # askBar / NL-query feature uses Anthropic. Degrades gracefully
+      # when the key is unset.
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+      # CASE-375: WIP-KB's query agent uses the MCP client; without
+      # MCP_URL it falls back to spawning `python -m wip_mcp` via
+      # stdio, which fails inside a Node.js container (no Python).
+      # Pragmatic v1: literal pointing at the well-known service
+      # name + port. The clean shape would be a `from_component_url`
+      # env source — separate platform case if/when adopted broadly.
+      - {name: MCP_URL, source: {literal: "http://wip-mcp-server:8007/mcp"}}
+
+  routes:
+    # CASE-439: served KB client (manifest + files) must be fetchable headlessly
+    # with an API key / anonymously — exempt it from gateway browser-auth. More
+    # specific than /apps/kb, so nginx longest-prefix routes it to the no-auth
+    # shared ingress; the app already restricts these to read-only whitelisted files.
+    - {path: /apps/kb/server-api/kb-client, auth_required: false}
+    # CASE-464: KB write-gateway verbs — headless callers with an API key. NOT
+    # unauthenticated in effect: every verb requires X-API-Key and executes its
+    # WIP calls with the caller's key (un-privileged pass-through; a bad key
+    # fails at the platform).
+    - {path: /apps/kb/server-api/kb, auth_required: false}
+    - {path: /apps/kb, auth_required: true}
+
+  # WIP-KB writes documents to the kb namespace via the WIP API proxy.
+  # document-store is the hard start-order requirement; def-store and
+  # template-store come along via the platform's normal start order.
+  depends_on: [document-store]
+
+  healthcheck:
+    endpoint: /apps/kb/api/health
+    probe: auto
+    start_period_seconds: 15
+
+app_metadata:
+  display_name: WIP Knowledge Base
+  route_prefix: /apps/kb
+  ui_only: false

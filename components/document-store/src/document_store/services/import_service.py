@@ -34,7 +34,7 @@ class ImportService:
             try:
                 import openpyxl
             except ImportError:
-                raise ValueError("openpyxl not installed. Add it to requirements.txt.")
+                raise ValueError("openpyxl not installed. Add it to requirements.txt.") from None
 
             wb = openpyxl.load_workbook(io.BytesIO(file_content), read_only=True, data_only=True)
             ws = wb.active
@@ -62,7 +62,7 @@ class ImportService:
         else:  # csv
             text = file_content.decode('utf-8-sig')  # Handle BOM
             reader = csv.DictReader(io.StringIO(text))
-            headers = reader.fieldnames or []
+            headers = list(reader.fieldnames or [])
             if not headers:
                 raise ValueError("CSV file has no headers")
 

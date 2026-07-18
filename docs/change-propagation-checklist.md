@@ -39,13 +39,12 @@ Not every change touches every layer — use judgement. But review the full list
 ## Scripts
 
 - [ ] **`scripts/seed_comprehensive.py`** — seed data should exercise new features
-- [ ] **`scripts/dev-delete.py`** — delete logic should handle new fields/behaviors
-- [ ] **`scripts/setup.sh`** — if new infrastructure or config is needed
+- [ ] **`deployer/`** — if new infrastructure, env vars, routes, or component manifests are needed (canonical deployer per CLAUDE.md §6; replaces the retired `setup.sh` / `setup-wip.sh` paths)
 - [ ] **Other scripts** — `import_testdata.py`, `import_obo_graph.py`, etc. if relevant
 
 ## Tests
 
-- [ ] **Component tests** — unit/integration tests for the service that changed
+- [ ] **Component tests** — `./scripts/wip-test.sh <component>` (the canonical wrapper handles venv, `PYTHONPATH`, exit codes per CLAUDE.md §10)
 - [ ] **Reporting-sync tests** — if event handling or PG schema changed
 - [ ] **Client lib tests** — type compilation, hook tests
 - [ ] **E2E** — manual or scripted verification through the full stack
@@ -53,7 +52,6 @@ Not every change touches every layer — use judgement. But review the full list
 ## Documentation
 
 - [ ] **Design doc** (`docs/design/`) — update status if implementing a planned feature
-- [ ] **Roadmap** (`docs/roadmap.md`) — update progress
 - [ ] **API docs** — if endpoint signatures changed
 
 ---
@@ -72,5 +70,5 @@ Not every change touches every layer — use judgement. But review the full list
 | MCP server | `server.py` | Add parameter to create/update tools |
 | WIP-Toolkit | `restore.py`, `fresh.py` | Add to import payload mapping |
 | Console UI | Form, List, Detail views | Checkbox/tag/info display |
-| Scripts | `seed_comprehensive.py`, `dev-delete.py` | Exercise the new field |
+| Scripts | `seed_comprehensive.py` | Exercise the new field |
 | Tests | Component + reporting-sync tests | Cover new behavior |

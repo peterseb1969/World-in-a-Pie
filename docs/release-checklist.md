@@ -32,13 +32,9 @@ done
 
 ## 3. Security
 
-```bash
-./scripts/security/production-check.sh
-```
-
-- [ ] `production-check.sh` passes on a `--prod` deployment
+- [ ] `wip-deploy verify --security` passes on the release-candidate install — see WIP Guide §7.3
 - [ ] No new security warnings from `pip-audit` or `bandit`
-- [ ] Default dev API key (`dev_master_key_for_testing`) rejected in prod mode
+- [ ] Default dev API key (`dev_master_key_for_testing`) not present in any install's secret backend — `verify --security` checks this too (note: the in-service prod-mode rejection gate is armed only on `--variant prod` installs; dev-variant installs rely on this check)
 
 ## 4. API Consistency
 
@@ -85,14 +81,14 @@ done
 ```
 
 - [ ] All inter-doc links resolve to existing files
-- [ ] `docs/project-structure.md` directory listing matches reality
 
 ### 5c. Terminology consistency
 
 - [ ] `podman-compose` used everywhere (not `docker-compose`) — exception: design docs for future features
 - [ ] API field names match current code (`value`/`label`, not old `code`/`name`)
-- [ ] Tool count matches reality (70+ `@mcp.tool` decorators — verify with grep count)
-- [ ] Service count and port assignments consistent across all docs
+- [ ] Tool count matches reality (verify with `grep -cE '^@mcp\.tool\(\)' components/mcp-server/src/wip_mcp/server.py` — currently 88)
+- [ ] PoNIF count matches reality (8 PoNIFs in `wip://ponifs`)
+- [ ] Service count and port assignments consistent across all docs (Registry 8001, Def-Store 8002, Template-Store 8003, Document-Store 8004, Reporting-Sync 8005, Ingest-Gateway 8006)
 
 ### 5d. Client library READMEs
 
@@ -111,14 +107,14 @@ done
 Test on at least one real device (Pi or VM), not just localhost.
 
 ```bash
-# Fresh deployment
-./scripts/setup.sh --preset standard --hostname <host> --prod -y
+# Fresh deployment via the canonical v2 deployer
+wip-deploy install --preset standard --target compose --hostname <host> --tls internal
 
 # Verify all services respond
-./scripts/security/production-check.sh
+wip-deploy status
 ```
 
-- [ ] `setup.sh --prod` completes without errors
+- [ ] `wip-deploy install` completes without errors
 - [ ] All services start and respond through Caddy
 - [ ] WIP Console loads and can log in via OIDC
 - [ ] Seed data script works: `python scripts/seed_comprehensive.py --profile minimal`
@@ -135,8 +131,7 @@ Test on at least one real device (Pi or VM), not just localhost.
 ## 8. Post-Release
 
 - [ ] Verify tag exists on both remotes
-- [ ] Update `docs/roadmap.md` if applicable
-- [ ] Deploy tagged version to Pi: `git pull && ./scripts/setup.sh --preset full --hostname <host> --prod -y`
+- [ ] Deploy tagged version to Pi: `git pull && wip-deploy install --preset full --target compose --hostname <host> --tls internal`
 
 ---
 

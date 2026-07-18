@@ -1,0 +1,502 @@
+"""Tests for render_k8s — the Kubernetes renderer.
+
+Same pattern as test_compose: real manifests + synthetic Deployment,
+verify the shape of the rendered output via yaml.safe_load.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import yaml
+
+from wip_deploy.discovery import Discovery, discover
+from wip_deploy.renderers import render_k8s
+from wip_deploy.secrets import ensure_secrets
+from wip_deploy.secrets_backend import FileSecretBackend, ResolvedSecrets
+from wip_deploy.spec import (
+    AppRef,
+    AuthSpec,
+    Deployment,
+    DeploymentMetadata,
+    DeploymentSpec,
+    ImagesSpec,
+    K8sPlatform,
+    NetworkSpec,
+    PlatformSpec,
+    SecretsSpec,
+)
+
+REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent.resolve()
+
+
+@pytest.fixture(scope="session")
+def real_discovery() -> Discovery:
+    return discover(REPO_ROOT)
+
+
+def _k8s_deployment(
+    *,
+    namespace: str = "wip-test",
+    modules: list[str] | None = None,
+    apps: list[str] | None = None,
+) -> Deployment:
+    return Deployment(
+        metadata=DeploymentMetadata(name="k8s-test"),
+        spec=DeploymentSpec(
+            target="k8s",
+            modules={"optional": modules or ["mcp-server"]},  # type: ignore[arg-type]
+            apps=[AppRef(name=n) for n in (apps or [])],
+            auth=AuthSpec(mode="oidc", gateway=True),
+            network=NetworkSpec(hostname="wip-kubi.local"),
+            images=ImagesSpec(registry="ghcr.io/peterseb1969", tag="v1.1.0"),
+            platform=PlatformSpec(k8s=K8sPlatform(namespace=namespace)),
+            secrets=SecretsSpec(backend="file", location="/tmp/s"),
+        ),
+    )
+
+
+def _secrets(
+    tmp_path: Path, deployment: Deployment, discovery: Discovery
+) -> ResolvedSecrets:
+    return ensure_secrets(
+        deployment,
+        discovery.components,
+        discovery.apps,
+        FileSecretBackend(tmp_path / "secrets"),
+    )
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tree shape
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestTreeShape:
+    def test_standard_emits_expected_files(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        d = _k8s_deployment()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
+        paths = {str(p) for p in tree.paths()}
+        assert "namespace.yaml" in paths
+        assert "secrets.yaml" in paths
+        assert "configmaps.yaml" in paths
+        assert "ingress.yaml" in paths
+        assert "network-policies.yaml" in paths
+        assert "services/registry.yaml" in paths
+
+    def test_secrets_have_0600_mode(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        d = _k8s_deployment()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
+        assert tree.files[Path("secrets.yaml")].mode == 0o600
+
+
+# ────────────────────────────────────────────────────────────────────
+# Namespace
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestNamespace:
+    def test_uses_spec_namespace(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        d = _k8s_deployment(namespace="wip-stable")
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
+        ns = yaml.safe_load(tree.files[Path("namespace.yaml")].content)
+        assert ns["metadata"]["name"] == "wip-stable"
+
+
+# ────────────────────────────────────────────────────────────────────
+# Services
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestComponents:
+    def _parse(
+        self, tmp_path: Path, discovery: Discovery, path: str, **overrides: object
+    ) -> list[dict]:  # type: ignore[type-arg]
+        d = _k8s_deployment(**overrides)  # type: ignore[arg-type]
+        s = _secrets(tmp_path, d, discovery)
+        tree = render_k8s(d, discovery.components, discovery.apps, s)
+        content = tree.files[Path(path)].content
+        return list(yaml.safe_load_all(content))
+
+    def test_registry_is_deployment_not_statefulset(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        docs = self._parse(tmp_path, real_discovery, "services/registry.yaml")
+        kinds = {d["kind"] for d in docs}
+        assert "Deployment" in kinds
+        assert "StatefulSet" not in kinds
+        assert "Service" in kinds
+
+    def test_mongodb_is_statefulset_with_pvc(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        docs = self._parse(
+            tmp_path, real_discovery, "infrastructure/mongodb.yaml"
+        )
+        kinds = {d["kind"] for d in docs}
+        assert "StatefulSet" in kinds
+        assert "PersistentVolumeClaim" in kinds
+
+    def test_image_ref_uses_registry_and_tag(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        # def-store has no per-component tag override, so it inherits
+        # the global ImagesSpec.tag. Picking a component without a pin
+        # keeps the assertion stable when others (registry, mcp-server)
+        # bump their own tags for cache invalidation.
+        docs = self._parse(tmp_path, real_discovery, "services/def-store.yaml")
+        deployment = next(d for d in docs if d["kind"] == "Deployment")
+        image = deployment["spec"]["template"]["spec"]["containers"][0]["image"]
+        assert image == "ghcr.io/peterseb1969/def-store:v1.1.0"
+
+    def test_image_pull_policy_always_for_wip_built(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-293: WIP-built components (build_context set) get
+        imagePullPolicy=Always so same-tag re-pushes don't get the
+        IfNotPresent cached-digest treatment."""
+        docs = self._parse(tmp_path, real_discovery, "services/registry.yaml")
+        deployment = next(d for d in docs if d["kind"] == "Deployment")
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        assert container.get("imagePullPolicy") == "Always"
+
+    def test_image_pull_policy_omitted_for_external_images(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-293: external images (build_context=None — mongo, postgres,
+        dex, etc.) keep the k8s default IfNotPresent. No registry hit on
+        every pod start, no risk of stale digest since their tags are
+        upstream version pins."""
+        docs = self._parse(
+            tmp_path, real_discovery, "infrastructure/mongodb.yaml"
+        )
+        statefulset = next(d for d in docs if d["kind"] == "StatefulSet")
+        container = statefulset["spec"]["template"]["spec"]["containers"][0]
+        assert "imagePullPolicy" not in container
+
+    def test_k8s_target_does_not_bind_mount_wip_auth(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-301 regression guard: only the dev target bind-mounts
+        libs/wip-auth/src for live library editing. K8s target keeps the
+        build-time pip install (production fidelity); pods don't have
+        the operator's repo on their filesystem."""
+        docs = self._parse(tmp_path, real_discovery, "services/registry.yaml")
+        deployment = next(d for d in docs if d["kind"] == "Deployment")
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        for vm in container.get("volumeMounts", []):
+            assert "wip-auth" not in vm.get("name", "")
+            assert "wip-auth" not in vm.get("mountPath", "")
+        # No PYTHONPATH override at the container level either.
+        env = {e["name"]: e for e in container.get("env", [])}
+        assert "PYTHONPATH" not in env
+
+    def test_env_secrets_use_secretkeyref(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        docs = self._parse(tmp_path, real_discovery, "services/registry.yaml")
+        deployment = next(d for d in docs if d["kind"] == "Deployment")
+        env = deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+        api_key = next(e for e in env if e["name"] == "MASTER_API_KEY")
+        assert api_key["valueFrom"]["secretKeyRef"]["name"] == "wip-secrets"
+        assert api_key["valueFrom"]["secretKeyRef"]["key"] == "api-key"
+
+    def test_healthcheck_renders_readiness_and_liveness(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        docs = self._parse(tmp_path, real_discovery, "services/registry.yaml")
+        deployment = next(d for d in docs if d["kind"] == "Deployment")
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        assert "readinessProbe" in container
+        assert "livenessProbe" in container
+        assert container["readinessProbe"]["httpGet"]["path"] == "/health"
+
+    def test_explicit_command_rendered(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        docs = self._parse(tmp_path, real_discovery, "services/registry.yaml")
+        deployment = next(d for d in docs if d["kind"] == "Deployment")
+        cmd = deployment["spec"]["template"]["spec"]["containers"][0]["command"]
+        assert cmd[0] == "uvicorn"
+        assert "registry.main:app" in cmd
+
+    def test_namespace_applied_to_all_resources(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        docs = self._parse(
+            tmp_path, real_discovery, "services/registry.yaml",
+            namespace="wip-stable",
+        )
+        for doc in docs:
+            assert doc["metadata"]["namespace"] == "wip-stable"
+
+
+# ────────────────────────────────────────────────────────────────────
+# Ingress
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestIngress:
+    def _render_ingress(
+        self, tmp_path: Path, discovery: Discovery, **overrides: object
+    ) -> list[dict]:  # type: ignore[type-arg]
+        d = _k8s_deployment(**overrides)  # type: ignore[arg-type]
+        s = _secrets(tmp_path, d, discovery)
+        tree = render_k8s(d, discovery.components, discovery.apps, s)
+        return list(yaml.safe_load_all(
+            tree.files[Path("ingress.yaml")].content
+        ))
+
+    def test_api_routes_no_auth_url(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        docs = self._render_ingress(tmp_path, real_discovery)
+        main_ingress = next(
+            d for d in docs if d["metadata"]["name"] == "wip-ingress"
+        )
+        annotations = main_ingress["metadata"].get("annotations", {})
+        assert "nginx.ingress.kubernetes.io/auth-url" not in annotations
+
+    def test_app_ingress_has_auth_url(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        docs = self._render_ingress(
+            tmp_path, real_discovery, apps=["react-console"]
+        )
+        rc_ingress = next(
+            d for d in docs if d["metadata"]["name"] == "react-console-ingress"
+        )
+        annotations = rc_ingress["metadata"]["annotations"]
+        assert "nginx.ingress.kubernetes.io/auth-url" in annotations
+        assert "wip-auth-gateway" in annotations[
+            "nginx.ingress.kubernetes.io/auth-url"
+        ]
+
+    def test_tls_configured(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        docs = self._render_ingress(tmp_path, real_discovery)
+        main_ingress = docs[0]
+        tls = main_ingress["spec"]["tls"]
+        assert tls[0]["hosts"] == ["wip-kubi.local"]
+        assert tls[0]["secretName"] == "wip-tls"
+
+    def test_root_redirect_ingress_emitted_with_app(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-368: with an app enabled, a wip-root-redirect Ingress 301s
+        `/` to the app's prefix via nginx's permanent-redirect annotation."""
+        docs = self._render_ingress(
+            tmp_path, real_discovery, apps=["react-console"]
+        )
+        redirect = next(
+            d for d in docs if d["metadata"]["name"] == "wip-root-redirect"
+        )
+        ann = redirect["metadata"]["annotations"]
+        assert (
+            ann["nginx.ingress.kubernetes.io/permanent-redirect"]
+            == "https://wip-kubi.local/apps/rc/"
+        )
+        path = redirect["spec"]["rules"][0]["http"]["paths"][0]
+        assert path["path"] == "/"
+        assert path["pathType"] == "Exact"
+        # Placeholder backend (never hit) points at the app's own service.
+        assert path["backend"]["service"]["name"] == "wip-react-console"
+
+    def test_no_root_redirect_without_apps(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """No apps + gateway on → redirect to /auth/login (gateway always
+        contributes the /auth rule that backs the placeholder)."""
+        docs = self._render_ingress(tmp_path, real_discovery)
+        redirect = next(
+            (d for d in docs if d["metadata"]["name"] == "wip-root-redirect"),
+            None,
+        )
+        assert redirect is not None
+        ann = redirect["metadata"]["annotations"]
+        assert (
+            ann["nginx.ingress.kubernetes.io/permanent-redirect"]
+            == "https://wip-kubi.local/auth/login"
+        )
+
+
+# ────────────────────────────────────────────────────────────────────
+# Inactive components
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestActivation:
+    def test_inactive_components_not_rendered(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        d = _k8s_deployment()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
+        paths = {str(p) for p in tree.paths()}
+        # reporting-sync and its deps (postgres, nats) not in standard
+        assert not any("reporting-sync" in p for p in paths)
+        assert not any("postgres" in p for p in paths)
+
+
+# ────────────────────────────────────────────────────────────────────
+# NetworkPolicies (CASE-238)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestNetworkPolicies:
+    def _network_policies_doc(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> str:
+        d = _k8s_deployment()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
+        return tree.files[Path("network-policies.yaml")].content
+
+    def test_emits_five_policies(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        import yaml
+        doc = self._network_policies_doc(tmp_path, real_discovery)
+        policies = list(yaml.safe_load_all(doc))
+        assert len(policies) == 5
+        assert all(p["kind"] == "NetworkPolicy" for p in policies)
+
+    def test_includes_deny_all_default(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        import yaml
+        policies = list(yaml.safe_load_all(
+            self._network_policies_doc(tmp_path, real_discovery)
+        ))
+        deny = next(p for p in policies if p["metadata"]["name"] == "deny-all-default")
+        assert set(deny["spec"]["policyTypes"]) == {"Ingress", "Egress"}
+        # Empty podSelector → applies to all pods
+        assert deny["spec"]["podSelector"] == {}
+        # No ingress/egress rules → fully blocking
+        assert "ingress" not in deny["spec"]
+        assert "egress" not in deny["spec"]
+
+    def test_includes_allow_ingress_controller_with_correct_namespace_label(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        import yaml
+        policies = list(yaml.safe_load_all(
+            self._network_policies_doc(tmp_path, real_discovery)
+        ))
+        p = next(p for p in policies if p["metadata"]["name"] == "allow-ingress-controller")
+        rules = p["spec"]["ingress"][0]["from"]
+        assert rules[0]["namespaceSelector"]["matchLabels"][
+            "kubernetes.io/metadata.name"
+        ] == "ingress"
+
+    def test_includes_dns_egress(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        import yaml
+        policies = list(yaml.safe_load_all(
+            self._network_policies_doc(tmp_path, real_discovery)
+        ))
+        p = next(p for p in policies if p["metadata"]["name"] == "allow-egress-dns")
+        ports = p["spec"]["egress"][0]["ports"]
+        protos = {(d["port"], d["protocol"]) for d in ports}
+        assert (53, "UDP") in protos
+        assert (53, "TCP") in protos
+
+    def test_namespace_applied_to_all_policies(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        """All emitted policies should live in the deployment's namespace."""
+        import yaml
+        d = _k8s_deployment(namespace="wip-test")
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
+        doc = tree.files[Path("network-policies.yaml")].content
+        for p in yaml.safe_load_all(doc):
+            assert p["metadata"]["namespace"] == "wip-test"
+
+
+# ────────────────────────────────────────────────────────────────────
+# Preserve-prefix subpaths (CASE-248 — MinIO admin/health)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestPreservePrefixSubpaths:
+    def _ingress_docs(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> list[dict]:  # type: ignore[type-arg]
+        # `full` preset enables minio + reporting-sync + ingest-gateway.
+        d = _k8s_deployment(modules=["minio", "reporting-sync", "ingest-gateway"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
+        return list(yaml.safe_load_all(tree.files[Path("ingress.yaml")].content))
+
+    def test_minio_strip_ingress_excludes_admin_subpaths(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        """When preserve_prefix_subpaths is set, the strip regex uses
+        a negative lookahead to exclude those segments. Otherwise
+        nginx-ingress's cross-Ingress merging lets the strip rule
+        absorb requests that should hit the admin Ingress."""
+        docs = self._ingress_docs(tmp_path, real_discovery)
+        ing = next(d for d in docs if d["metadata"]["name"] == "minio-ingress")
+        path = ing["spec"]["rules"][0]["http"]["paths"][0]
+        # Excludes "health" and "admin" segments via negative lookahead.
+        assert "(?!" in path["path"]
+        assert "health" in path["path"]
+        assert "admin" in path["path"]
+        assert path["pathType"] == "ImplementationSpecific"
+        # Capture group 1 is the rest of the path (lookahead is
+        # non-capturing).
+        assert ing["metadata"]["annotations"][
+            "nginx.ingress.kubernetes.io/rewrite-target"
+        ] == "/$1"
+
+    def test_minio_admin_ingress_separate_with_preserve_paths(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        """Preserve-prefix paths live in a SEPARATE Ingress so the
+        rewrite-target annotation on the strip Ingress doesn't apply
+        to them. Otherwise NGINX would rewrite /minio/health/live to
+        /$2 (empty) and 404."""
+        docs = self._ingress_docs(tmp_path, real_discovery)
+        admin = next(
+            d for d in docs if d["metadata"]["name"] == "minio-ingress-admin"
+        )
+        # No rewrite-target annotation on the admin Ingress.
+        assert (
+            "nginx.ingress.kubernetes.io/rewrite-target"
+            not in admin["metadata"]["annotations"]
+        )
+        # Two prefix-typed paths (admin + health).
+        paths = admin["spec"]["rules"][0]["http"]["paths"]
+        assert len(paths) == 2
+        path_strs = {p["path"] for p in paths}
+        assert "/minio/health" in path_strs
+        assert "/minio/admin" in path_strs
+        for p in paths:
+            assert p["pathType"] == "Prefix"
+
+    def test_routes_without_preserve_paths_emit_only_strip_ingress(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        """Components without preserve_prefix_subpaths shouldn't get a
+        spurious -admin Ingress emitted."""
+        docs = self._ingress_docs(tmp_path, real_discovery)
+        # Sanity: the wip-ingress (main API ingress) doesn't have an admin sibling.
+        admin_names = {
+            d["metadata"]["name"] for d in docs
+            if d["metadata"]["name"].endswith("-admin")
+        }
+        # Only minio's admin Ingress should be present.
+        assert admin_names == {"minio-ingress-admin"}

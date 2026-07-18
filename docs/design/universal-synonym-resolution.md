@@ -428,6 +428,56 @@ terminology = await mcp.get_terminology("STATUS")
 template = await mcp.get_template("PATIENT")
 ```
 
+### Cross-namespace references with a namespace qualifier (CASE-540/589)
+
+Resolution is deterministic about namespaces — there is no fallback search:
+
+- **Bare value** → resolves in the caller's own namespace, always.
+  `"PATIENT"` from namespace `clinic` means `clinic`'s PATIENT, full stop.
+- **`NS:VALUE`** → explicit cross-namespace reference for templates,
+  terminologies, and documents. `"kb-libdev:BOOTSTRAP_RECORD"` resolves to
+  the canonical ID of `BOOTSTRAP_RECORD` in namespace `kb-libdev`.
+- **`NS:TERMINOLOGY:VALUE`** → the term analogue (three parts).
+
+The qualifier's namespace goes **into the hashed composite key** — one
+Registry lookup, no candidate-set probing, no shadowing. This is the
+supported way to declare template reference fields against a sibling
+namespace **by name** instead of pinning a foreign UUID:
+
+```json
+{
+  "name": "record", "type": "reference", "reference_type": "document",
+  "target_templates": ["kb-libdev:BOOTSTRAP_RECORD"]
+}
+```
+
+The template-store normalizes the qualified value to the foreign canonical
+ID at create time (write-path resolves bypass the cache per CASE-56).
+Readability, idempotent cross-namespace bootstrap, and delete+recreate
+resilience all follow — the reference re-resolves by name where a pinned
+UUID would silently dangle. Live-verified end-to-end in CASE-540;
+regression-pinned in `libs/wip-auth/tests/test_resolve.py`
+(TestBuildCompositeKey) and
+`components/template-store/tests/test_case_589.py`.
+
+**Document reference values** (the data in a `reference_type: document`
+field) accept the same qualified form (CASE-608): a bare value resolves in
+the document's own namespace, `NS:VALUE` resolves in the named namespace.
+The split is shared code (`wip_auth.split_qualified_value`) — one
+definition of the form, used by both the schema-reference resolve layer
+and document-store's value-form doc-ref resolution. `hash:<identity_hash>`
+references keep their existing meaning (checked before the qualifier
+parse). Note the split is purely syntactic: a document identity value that
+itself contains a colon must be referenced by UUID or `hash:` form, or
+qualified explicitly (`ownns:the:value`).
+
+Namespace **isolation** is a separate concern: which namespaces a caller
+may reference is governed by `isolation_mode` + `allowed_external_refs`
+(enforcement shipped for doc refs in CASE-566). The qualifier only makes
+the reference explicit; it grants nothing — a qualified reference into an
+undeclared namespace fails with `reference_violation`, naming the
+namespace, rather than `not_found`.
+
 ---
 
 ## Performance Considerations

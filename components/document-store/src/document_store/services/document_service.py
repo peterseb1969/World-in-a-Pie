@@ -5,7 +5,9 @@ import logging
 import math
 import time
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NamedTuple, cast
+
+from beanie.odm.enums import SortDirection
 
 # Import identity helper from wip-auth
 # This returns the authenticated identity, not the client-provided value
@@ -16,12 +18,18 @@ from ..models.api_models import (
     DocumentCreateRequest,
     DocumentCreateResponse,
     DocumentListResponse,
+    DocumentMigrateResponse,
     DocumentQueryRequest,
     DocumentQueryResponse,
     DocumentResponse,
     DocumentVersionResponse,
     DocumentVersionSummary,
     PatchDocumentItem,
+    PeerProjection,
+    RelationshipItem,
+    RelationshipListResponse,
+    TraverseNode,
+    TraverseResponse,
     ValidationError,
     ValidationResponse,
 )
@@ -36,6 +44,19 @@ from .template_store_client import get_template_store_client
 from .validation_service import ValidationService
 
 logger = logging.getLogger(__name__)
+
+
+class _ItemOutcome(NamedTuple):
+    """Result of applying one validated item in bulk_create's Stage 4.
+
+    counter is one of "created" | "updated" | "unchanged" | "failed" — tells
+    the coordinator which tally to bump. pending_event is the deferred NATS
+    event (published after the loop) or None.
+    """
+
+    result: "BulkResultItem"
+    pending_event: tuple | None
+    counter: str
 
 
 class PatchError(Exception):
@@ -76,6 +97,88 @@ def json_merge_patch(target: Any, patch: Any) -> Any:
     return result
 
 
+_CORE_SORT_FIELDS = ("created_at", "updated_at", "version")
+
+
+def build_sort_clauses(
+    sort_by: str | None,
+    sort_order: str | None,
+    *,
+    default_sort_by: str = "created_at",
+    default_sort_order: str = "desc",
+) -> list[tuple[str, SortDirection]]:
+    """Build a list of (field, direction) sort clauses for Beanie / aggregation.
+
+    Always appends ("document_id", 1) as a deterministic tiebreaker so
+    pagination is stable when primary-sort values tie (CASE-304).
+
+    Allows three core fields plus any "data.<path>" string. Forward-compat
+    with a future "sortable_fields" template extension: today data.<path>
+    is accepted permissively (matches existing POST behaviour); when the
+    template-side declaration lands, validation can tighten without
+    breaking the wire shape.
+    """
+    field = (sort_by or default_sort_by).strip() or default_sort_by
+    order = (sort_order or default_sort_order).strip().lower() or default_sort_order
+
+    if order not in ("asc", "desc"):
+        raise ValueError(
+            f"Invalid sort_order '{sort_order}'. Must be 'asc' or 'desc'."
+        )
+
+    if field not in _CORE_SORT_FIELDS and not field.startswith("data."):
+        # CASE-317: sort_by is a declarative slot — the platform
+        # commits to the field's meaning for pagination order.
+        # metadata.* is caller-attached audit context with no
+        # platform-side commitments and is not indexed by reporting-
+        # sync, so it cannot carry pagination order. Surface the
+        # metadata case explicitly because it's the most-likely
+        # mistake — operators reach for it after seeing
+        # metadata.<x> work in POST /documents/query filters (which
+        # remain free; only declarative slots reject metadata).
+        if field.startswith("metadata."):
+            raise ValueError(
+                f"sort_by must reference a structural field, not a "
+                f"metadata path. Got '{field}'. metadata.* is caller-"
+                f"attached context with no schema commitments and is "
+                f"not indexed by reporting-sync. Supported: "
+                f"{', '.join(_CORE_SORT_FIELDS)}, or data.<path>. "
+                f"POST /documents/query filters can still use "
+                f"metadata.<path> — only declarative slots reject it."
+            )
+        raise ValueError(
+            f"Unknown sort field '{field}'. Supported: "
+            f"{', '.join(_CORE_SORT_FIELDS)}, "
+            f"or data.<path> for template-declared sortable fields."
+        )
+
+    direction = SortDirection.ASCENDING if order == "asc" else SortDirection.DESCENDING
+    return [(field, direction), ("document_id", SortDirection.ASCENDING)]
+
+
+def _declared_field_names(tpl: dict[str, Any]) -> set[str]:
+    """Set of `data.*` field names declared on a template.
+
+    Reads the template's `fields` list (inheritance-resolved by
+    template-store before this point — `get_template` defaults to
+    `resolve_inheritance=True`, so inherited `title`/`doc_status`
+    from a parent template counts). Used by the tier-2 peer-projection
+    auto-include (CASE-354) to gate `title`/`doc_status` inclusion
+    on whether the template actually has them.
+
+    Returns an empty set for malformed templates rather than raising —
+    the resolver caller treats missing fields as "auto-include doesn't
+    fire," which is the safe default.
+    """
+    out: set[str] = set()
+    for f in tpl.get("fields") or []:
+        if isinstance(f, dict):
+            name = f.get("name")
+            if isinstance(name, str):
+                out.add(name)
+    return out
+
+
 class DocumentService:
     """
     Service for document CRUD operations and upsert logic.
@@ -97,7 +200,7 @@ class DocumentService:
         if cls._creation_count == 0:
             return {"creation_count": 0, "stages": {}}
 
-        stats = {
+        stats: dict[str, Any] = {
             "creation_count": cls._creation_count,
             "stages": {}
         }
@@ -135,12 +238,121 @@ class DocumentService:
 
     def __init__(self):
         self.validation_service = ValidationService()
+        # Tracks which (namespace, template_id) pairs have already had
+        # relationship-template Mongo indexes ensured this process — saves
+        # an idempotent ensure_index call on every subsequent write.
+        # Cleared on process restart; ensure_index is itself idempotent.
+        self._relationship_indexes_ensured: set[tuple[str, str]] = set()
+
+    # =========================================================================
+    # PHASE 2 — RELATIONSHIP-TEMPLATE WRITE-TIME VALIDATION
+    # =========================================================================
+
+    async def _validate_relationship_constraints(
+        self,
+        template: dict[str, Any],
+        validation_result: Any,
+        namespace: str,
+    ) -> str | None:
+        """Enforce relationship-document constraints beyond reference resolution.
+
+        Phase 2 layer on top of the standard reference validation (which
+        already verifies source_ref / target_ref resolve and point at an
+        allowed template family). For relationship templates we also
+        require:
+
+          - the referenced source/target documents are in the SAME
+            namespace as the relationship document (cross-namespace
+            relationships rejected — see design doc, deferred to v2+);
+          - the referenced documents are NOT archived (active or
+            inactive is OK; archived means hard-removed semantically).
+
+        Returns None on success, or an error message string on failure.
+        Pre-condition: validation_result.references already contains the
+        resolved source_ref / target_ref entries (validation_service
+        runs before this).
+        """
+        if template.get("usage") != "relationship":
+            return None
+
+        refs_by_field = {
+            r.get("field_path"): r for r in validation_result.references
+            if r.get("reference_type") == "document"
+        }
+
+        for field in ("source_ref", "target_ref"):
+            ref = refs_by_field.get(field)
+            if ref is None:
+                # Should have been caught by template-store at template
+                # create time, but defend anyway.
+                return f"Relationship template requires field '{field}' (missing in resolved references)"
+            resolved = ref.get("resolved") or {}
+            ref_namespace = resolved.get("namespace")
+            ref_status = resolved.get("status")
+
+            if ref_namespace and ref_namespace != namespace:
+                # Distinct error code per design doc.
+                return (
+                    f"cross_namespace_relationship: '{field}' points to a document in "
+                    f"namespace '{ref_namespace}' but the relationship document is in "
+                    f"namespace '{namespace}'. Cross-namespace relationships are not "
+                    f"supported in v2."
+                )
+
+            if ref_status == "archived":
+                return (
+                    f"archived_relationship_endpoint: '{field}' points to an archived "
+                    f"document ({resolved.get('document_id')}). Endpoints of a "
+                    f"relationship must be active or inactive, not archived."
+                )
+
+        return None
+
+    async def _ensure_relationship_indexes(
+        self,
+        template_id: str,
+        namespace: str,
+    ) -> None:
+        """Idempotently create Mongo indexes on data.source_ref / data.target_ref
+        for a relationship template. Lazy: runs on first relationship-document
+        write per (namespace, template_id), then cached in-process.
+
+        These indexes power the Phase-4 query APIs (/documents/{id}/relationships,
+        /traverse). Adding them now keeps that phase's commit small.
+        """
+        cache_key = (namespace, template_id)
+        if cache_key in self._relationship_indexes_ensured:
+            return
+
+        try:
+            collection = Document.get_motor_collection()
+            await collection.create_index(
+                [("template_id", 1), ("data.source_ref", 1)],
+                name="rel_template_source_ref_idx",
+                background=True,
+            )
+            await collection.create_index(
+                [("template_id", 1), ("data.target_ref", 1)],
+                name="rel_template_target_ref_idx",
+                background=True,
+            )
+            self._relationship_indexes_ensured.add(cache_key)
+            logger.info(
+                "Ensured relationship indexes for template %s in namespace %s",
+                template_id, namespace,
+            )
+        except Exception as e:
+            # log + continue; missing index slows queries but writes still work
+            logger.warning(
+                "Failed to ensure relationship indexes for template %s: %s",
+                template_id, e,
+            )
 
     async def create_document(
         self,
         request: DocumentCreateRequest,
         namespace: str,
-    ) -> tuple[DocumentCreateResponse, str | None]:
+    ) -> tuple[DocumentCreateResponse | None, str | None]:
         """
         Create or update a document.
 
@@ -153,7 +365,7 @@ class DocumentService:
 
         Args:
             request: Document creation request
-            namespace: Namespace for the document (default: wip)
+            namespace: Namespace for the document (required — no default)
 
         Returns:
             Tuple of (response, error_message)
@@ -182,12 +394,42 @@ class DocumentService:
                 template_namespace=namespace,
                 term_references=validation_result.term_references,
                 file_references=validation_result.file_references,
+                document_references=validation_result.references,
             )
         except ReferenceValidationError as e:
             return None, f"Cross-namespace reference violation: {e.violations}"
 
+        # Phase-2 relationship-template constraints. The standard
+        # validation_service already verified source_ref / target_ref
+        # resolve and point at allowed templates; here we enforce the
+        # extra rules that only apply when usage=relationship
+        # (same namespace, not archived).
+        try:
+            template = await get_template_store_client().get_template(
+                template_id=request.template_id,
+                version=request.template_version,
+            )
+        except Exception:
+            # template fetch failures fall back to skipping the extra check;
+            # standard validation_service already ran
+            template = None
+        if template and template.get("usage") == "relationship":
+            rel_error = await self._validate_relationship_constraints(
+                template, validation_result, namespace,
+            )
+            if rel_error:
+                return None, rel_error
+            await self._ensure_relationship_indexes(request.template_id, namespace)
+
         # Determine if template has identity fields
         has_identity_fields = bool(validation_result.identity_fields)
+
+        # CASE-430: for relationship/edge types, suppress the bare
+        # identity-values synonym ({source_ref, target_ref}) — it omits the
+        # template and collides across edge types between the same pair. The
+        # template-scoped auto-synonym (register_auto_synonym) still covers
+        # restore portability.
+        is_relationship = bool(template and template.get("usage") == "relationship")
 
         # Whether this is a restore (client provides both ID and version)
         version_override = request.version if (request.document_id and request.version is not None) else None
@@ -207,6 +449,7 @@ class DocumentService:
                 created_by=get_identity_string(),
                 namespace=namespace,
                 entry_id=restore_entry_id,
+                skip_identity_value_synonym=is_relationship,
             )
         except RegistryError as e:
             return None, f"Failed to generate document ID: {e!s}"
@@ -221,7 +464,7 @@ class DocumentService:
             result = await self._create_new_document(
                 request, validation_result, document_id=document_id,
                 namespace=namespace, synonyms=request.synonyms,
-                version_override=version_override,
+                version_override=version_override, is_new_entry=is_new,
             )
             timing["3_restore"] = (time.perf_counter() - start) * 1000
         elif is_new:
@@ -229,7 +472,8 @@ class DocumentService:
             start = time.perf_counter()
             result = await self._create_new_document(
                 request, validation_result, document_id=document_id,
-                namespace=namespace, synonyms=request.synonyms
+                namespace=namespace, synonyms=request.synonyms,
+                is_new_entry=is_new,
             )
             timing["3_create_new"] = (time.perf_counter() - start) * 1000
         else:
@@ -248,7 +492,8 @@ class DocumentService:
                 # No active version found (all inactive?) — create as version 1
                 result = await self._create_new_document(
                     request, validation_result, document_id=document_id,
-                    namespace=namespace, synonyms=request.synonyms
+                    namespace=namespace, synonyms=request.synonyms,
+                    is_new_entry=is_new,
                 )
             timing["3_create_version"] = (time.perf_counter() - start) * 1000
 
@@ -256,6 +501,103 @@ class DocumentService:
         self._record_creation_timing(timing)
 
         return result
+
+    async def _register_inline_synonyms(
+        self,
+        *,
+        document_id: str,
+        namespace: str,
+        synonyms: list[dict],
+        on_synonym_conflict: str,
+        is_new_entry: bool,
+    ) -> tuple[list[str], str | None, str | None]:
+        """Register inline synonyms for a document's registry entry (CASE-434/436).
+
+        Returns (warnings, error_code, error_message):
+          - all added / already-owned     -> ([], None, None)
+          - on_synonym_conflict == "warn"  -> (warnings, None, None); caller proceeds
+          - on_synonym_conflict == "fail"  -> ([], code, msg) AFTER rolling back
+            the synonyms added in this call (and, if is_new_entry, releasing the
+            document's own entry). The caller must then abort without persisting.
+
+        ``already_exists`` is success: re-supplying a synonym the entry already
+        owns (idempotent re-create) is not a conflict.
+        """
+        registry = get_registry_client()
+        try:
+            results = await registry.add_synonyms(
+                entry_id=document_id, namespace=namespace,
+                entity_type="documents", synonyms=synonyms,
+            )
+        except RegistryError as e:
+            if on_synonym_conflict == "warn":
+                return [f"Synonyms not registered (registry error): {e}"], None, None
+            await self._rollback_synonym_allocation(document_id, namespace, [], is_new_entry)
+            return [], "registry_error", f"Synonym registration failed: {e}"
+
+        added: list[dict] = []
+        failures: list[str] = []
+        for res in results:
+            status = res.get("status")
+            # "index" is the platform-canonical per-item key; "input_index"
+            # is the registry family's pre-rename spelling, kept as fallback
+            # so a mixed-version window (new doc-store, old registry) still
+            # maps results back to their inputs.
+            idx = res.get("index", res.get("input_index", 0))
+            syn = synonyms[idx] if isinstance(idx, int) and 0 <= idx < len(synonyms) else {}
+            if status == "added":
+                added.append(syn)
+            elif status in ("error", "target_not_found"):
+                failures.append(res.get("error") or f"synonym {syn} rejected ({status})")
+
+        if not failures:
+            return [], None, None
+
+        if on_synonym_conflict == "warn":
+            return [f"Synonym not registered: {m}" for m in failures], None, None
+
+        # strict — roll back what landed and abort.
+        await self._rollback_synonym_allocation(document_id, namespace, added, is_new_entry)
+        return [], "synonym_conflict", "; ".join(failures)
+
+    async def _rollback_synonym_allocation(
+        self,
+        document_id: str,
+        namespace: str,
+        added_synonyms: list[dict],
+        is_new_entry: bool,
+    ) -> None:
+        """Best-effort rollback of a failed strict-mode inline-synonym create.
+
+        If this call allocated the document's entry, release that entry
+        (CASE-436 rollback_uncommitted — bypasses the deletion_mode gate); the
+        hard-delete cascades to its claims and embedded synonyms, so the
+        just-added ones go with it. Otherwise (update path) remove only the
+        synonyms added in this call. Failures are logged, never raised, so the
+        original conflict is what surfaces; any residue is swept by the
+        registry's claim reconciliation.
+        """
+        registry = get_registry_client()
+        if is_new_entry:
+            try:
+                await registry.hard_delete_entry(document_id, rollback_uncommitted=True)
+                return
+            except RegistryError as e:
+                logger.error(
+                    "CASE-436: failed to roll back entry %s after synonym conflict: %s",
+                    document_id, e,
+                )
+        if added_synonyms:
+            try:
+                await registry.remove_synonyms(
+                    entry_id=document_id, namespace=namespace,
+                    entity_type="documents", synonyms=added_synonyms,
+                )
+            except RegistryError as e:
+                logger.warning(
+                    "CASE-436: failed to remove %d added synonym(s) from %s during "
+                    "rollback: %s", len(added_synonyms), document_id, e,
+                )
 
     async def _create_new_document(
         self,
@@ -265,31 +607,29 @@ class DocumentService:
         namespace: str,
         synonyms: list[dict] | None = None,
         version_override: int | None = None,
-    ) -> tuple[DocumentCreateResponse, str | None]:
+        is_new_entry: bool = True,
+    ) -> tuple[DocumentCreateResponse | None, str | None]:
         """Create a brand new document with the given stable document_id."""
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Register synonyms if provided
+        # Register inline synonyms (CASE-434/436). Strict by default: a refused
+        # synonym rolls back (and releases the just-allocated entry) and aborts
+        # the create; "warn" creates the doc and surfaces the refusal.
+        synonym_warnings: list[str] = []
         if synonyms:
-            try:
-                registry = get_registry_client()
-                await registry.add_synonyms(
-                    entry_id=document_id,
-                    namespace=namespace,
-                    entity_type="documents",
-                    synonyms=synonyms
-                )
-            except RegistryError as e:
-                import logging
-                logging.getLogger(__name__).warning(
-                    f"Failed to register synonyms for {document_id}: {e}"
-                )
+            synonym_warnings, err_code, err_msg = await self._register_inline_synonyms(
+                document_id=document_id, namespace=namespace, synonyms=synonyms,
+                on_synonym_conflict=request.on_synonym_conflict, is_new_entry=is_new_entry,
+            )
+            if err_code:
+                return None, f"{err_code}: {err_msg}"
 
         # Create document
         now = datetime.now(UTC)
+        all_warnings = validation_result.warnings + synonym_warnings
         metadata = DocumentMetadata(
-            warnings=validation_result.warnings,
+            warnings=all_warnings,
             custom=request.metadata or {}
         )
 
@@ -336,7 +676,7 @@ class DocumentService:
         # Publish document created event
         await publish_document_event(
             EventType.DOCUMENT_CREATED,
-            self._document_to_event_payload(document),
+            await self._document_to_event_payload(document),
             changed_by=actor
         )
 
@@ -354,22 +694,31 @@ class DocumentService:
             version=document.version,
             is_new=document.version == 1,
             previous_version=None if document.version == 1 else document.version - 1,
-            warnings=validation_result.warnings
+            warnings=all_warnings
         ), None
 
-    def _data_has_changed(
+    def _document_has_changed(
         self,
         existing: Document,
         new_data: dict[str, Any],
         new_term_references: list[dict[str, Any]],
         new_references: list[dict[str, Any]],
-        new_file_references: list[dict[str, Any]] | None = None
+        new_file_references: list[dict[str, Any]] | None = None,
+        new_metadata_custom: dict[str, Any] | None = None,
     ) -> bool:
         """
-        Check if document data has changed.
+        Check if any versioned part of the document has changed.
 
-        Compares the data, term_references, references, and file_references
-        to determine if a new version should be created.
+        Compares data, term_references, references, file_references, and
+        metadata.custom to determine if a new version should be created.
+        Metadata is non-identity document content: it never feeds the
+        identity hash (it cannot create or dedup a document), but a change
+        to it is a change to the document and versions like any other.
+
+        ``new_file_references`` and ``new_metadata_custom`` are compared
+        only when not None — None means the caller did not address that
+        part (no opinion), not "clear it". An explicitly supplied empty
+        dict/list DOES compare, so callers can clear metadata on purpose.
         """
         import json
 
@@ -400,6 +749,16 @@ class DocumentService:
             new_file_refs_json = json.dumps(new_file_references, sort_keys=True, default=str)
 
             if existing_file_refs_json != new_file_refs_json:
+                return True
+
+        # Compare metadata.custom (caller-supplied only; platform-owned
+        # metadata fields like warnings/source_system never drive versioning)
+        if new_metadata_custom is not None:
+            existing_custom = existing.metadata.custom if existing.metadata else {}
+            existing_custom_json = json.dumps(existing_custom, sort_keys=True, default=str)
+            new_custom_json = json.dumps(new_metadata_custom, sort_keys=True, default=str)
+
+            if existing_custom_json != new_custom_json:
                 return True
 
         return False
@@ -466,7 +825,7 @@ class DocumentService:
                 )
                 latest = await Document.find(
                     {"namespace": namespace, "document_id": document_id}
-                ).sort([("version", -1)]).limit(1).to_list()
+                ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 if latest:
                     # Deactivate the current active version if it's not ours
                     if latest[0].status == DocumentStatus.ACTIVE:
@@ -477,6 +836,20 @@ class DocumentService:
                     version = latest[0].version + 1
                 else:
                     version += 1
+        raise RuntimeError(f"_insert_with_retry exhausted {max_retries} retries without returning or raising")
+
+    async def _is_template_versioned(self, template_id: str) -> bool:
+        """Read template.versioned. Defaults to True (legacy v1.x behaviour)
+        on any fetch failure so a degraded template-store never silently
+        flips a template to overwrite-in-place semantics."""
+        try:
+            template = await get_template_store_client().get_template(template_id=template_id)
+        except Exception:
+            return True
+        if not template:
+            return True
+        # Field is optional in stored documents from before Phase 1; default True.
+        return bool(template.get("versioned", True))
 
     async def _create_new_version(
         self,
@@ -484,16 +857,48 @@ class DocumentService:
         existing: Document,
         validation_result: Any,
         document_id: str,
-        namespace: str
-    ) -> tuple[DocumentCreateResponse, str | None]:
-        """Create a new version of an existing document with stable document_id."""
-        # Check if data has actually changed
-        if not self._data_has_changed(
+        namespace: str,
+        force_new_version: bool = False,
+    ) -> tuple[DocumentCreateResponse | None, str | None]:
+        """Create a new version of an existing document with stable document_id.
+
+        For templates with versioned=False, overwrites the existing
+        document in place instead of creating a new version. Same
+        document_id, same version number, just newer data/timestamps.
+
+        When ``force_new_version`` is True the unchanged short-circuit is
+        bypassed: a new version (or in-place re-pin) is always written even if
+        the document is byte-identical. This is the template-version migrate path
+        (CASE-491) — the *intent* is to re-pin to a different ``template_version``,
+        which the change check (`_document_has_changed`) deliberately
+        ignores so it doesn't disturb ordinary create dedup.
+        """
+        # CASE-434/436 sibling fix: the update path used to ignore inline
+        # synonyms entirely. Process them under the same mode, against the
+        # EXISTING entry (is_new_entry=False — never release a live doc's entry;
+        # rollback removes only the synonyms added in this call).
+        synonym_warnings: list[str] = []
+        if request.synonyms:
+            synonym_warnings, err_code, err_msg = await self._register_inline_synonyms(
+                document_id=document_id, namespace=namespace, synonyms=request.synonyms,
+                on_synonym_conflict=request.on_synonym_conflict, is_new_entry=False,
+            )
+            if err_code:
+                return None, f"{err_code}: {err_msg}"
+
+        # Check if the document has actually changed. The migrate path
+        # (force_new_version) skips this gate: re-pinning to a new
+        # template_version is a real change even when the bytes are identical
+        # (the typical migration). metadata=None means the caller did not
+        # address metadata — it is not compared and the existing metadata
+        # carries forward on any write below.
+        if not force_new_version and not self._document_has_changed(
             existing,
             request.data,
             validation_result.term_references,
             validation_result.references,
-            validation_result.file_references
+            validation_result.file_references,
+            new_metadata_custom=request.metadata,
         ):
             # No change - return existing document info without creating new version
             return DocumentCreateResponse(
@@ -505,8 +910,15 @@ class DocumentService:
                 version=existing.version,
                 is_new=False,
                 previous_version=None,  # No previous version because nothing changed
-                warnings=validation_result.warnings
+                warnings=validation_result.warnings + synonym_warnings
             ), None
+
+        # Phase 3: templates with versioned=false overwrite in place.
+        if not await self._is_template_versioned(request.template_id):
+            return await self._overwrite_in_place(
+                request, existing, validation_result, namespace,
+                extra_warnings=synonym_warnings,
+            )
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -517,12 +929,18 @@ class DocumentService:
         existing.updated_by = actor
         await existing.save()
 
-        # Create new version with SAME document_id (stable)
+        # Create new version with SAME document_id (stable).
+        # metadata=None carries the existing custom metadata forward (the
+        # caller did not address it); a supplied dict replaces it wholesale,
+        # including an explicit {} to clear. Mirrors the change gate above —
+        # None must mean the same thing in the gate and in the write, or a
+        # data-only update would silently wipe metadata.
         now = datetime.now(UTC)
         new_version = existing.version + 1
         metadata = DocumentMetadata(
-            warnings=validation_result.warnings,
-            custom=request.metadata or {}
+            warnings=validation_result.warnings + synonym_warnings,
+            custom=request.metadata if request.metadata is not None
+            else dict(existing.metadata.custom if existing.metadata else {}),
         )
 
         document = await self._insert_with_retry(
@@ -546,7 +964,7 @@ class DocumentService:
         # Publish document updated event
         await publish_document_event(
             EventType.DOCUMENT_UPDATED,
-            self._document_to_event_payload(document),
+            await self._document_to_event_payload(document),
             changed_by=actor
         )
 
@@ -563,7 +981,84 @@ class DocumentService:
             version=new_version,
             is_new=False,
             previous_version=existing.version,
-            warnings=validation_result.warnings
+            warnings=validation_result.warnings + synonym_warnings
+        ), None
+
+    async def _overwrite_in_place(
+        self,
+        request: DocumentCreateRequest,
+        existing: Document,
+        validation_result: Any,
+        namespace: str,
+        extra_warnings: list[str] | None = None,
+    ) -> tuple[DocumentCreateResponse, str | None]:
+        """Phase-3 overwrite: update the existing document's data and
+        references without creating a new version. Used when the
+        template has versioned=False (e.g., latest-only relationship
+        edges). Same document_id, same version number, fresh
+        updated_at / updated_by. File reference counts are adjusted
+        for the delta the same way _create_new_version does.
+
+        Race note: there is no per-item if_match on the POST upsert
+        path, so concurrent overwrites of the same versioned=False
+        document race. Use the PATCH endpoint (which honours if_match)
+        for serialised updates. Documented in design doc and
+        docs/api-conventions.md.
+        """
+        actor = get_identity_string()
+        now = datetime.now(UTC)
+        all_warnings = validation_result.warnings + (extra_warnings or [])
+
+        previous_file_refs = list(existing.file_references)
+
+        # metadata=None carries the existing custom forward (caller did not
+        # address it); a supplied dict — including {} — replaces wholesale.
+        preserved_custom = dict(existing.metadata.custom if existing.metadata else {})
+        existing.data = request.data
+        existing.term_references = validation_result.term_references
+        existing.references = validation_result.references
+        existing.file_references = validation_result.file_references
+        existing.template_version = validation_result.template_version or existing.template_version
+        existing.template_value = validation_result.template_value or existing.template_value
+        existing.metadata = DocumentMetadata(
+            warnings=all_warnings,
+            custom=request.metadata if request.metadata is not None else preserved_custom,
+        )
+        existing.updated_at = now
+        existing.updated_by = actor
+        await existing.save()
+
+        # Publish an updated event so downstream (reporting-sync, NATS
+        # subscribers) sees the change. Same event type / payload as
+        # _create_new_version — the only observable difference is the
+        # version stays at its prior value.
+        await publish_document_event(
+            EventType.DOCUMENT_UPDATED,
+            await self._document_to_event_payload(existing),
+            changed_by=actor,
+        )
+
+        # File-ref counts: subtract the old set, add the new set.
+        await self._update_file_reference_counts(previous_file_refs, delta=-1)
+        await self._update_file_reference_counts(validation_result.file_references, delta=1)
+
+        return DocumentCreateResponse(
+            document_id=existing.document_id,
+            namespace=namespace,
+            template_id=existing.template_id,
+            template_value=existing.template_value,
+            identity_hash=existing.identity_hash,
+            version=existing.version,
+            is_new=False,
+            # No new version was minted — the replaced payload was at this
+            # same version, so previous_version == version is the in-place
+            # overwrite signature. It also distinguishes this data-changing
+            # write (an update) from the data-unchanged no-op, which returns
+            # previous_version=None; with None here the API layer cannot
+            # tell the two apart and reports a successful overwrite as a
+            # no-op.
+            previous_version=existing.version,
+            warnings=all_warnings,
         ), None
 
     async def _find_active_by_document_id(
@@ -591,9 +1086,29 @@ class DocumentService:
         messages = [e.get("message", "Validation error") for e in errors]
         return "; ".join(messages)
 
-    def _document_to_event_payload(self, document: Document) -> dict[str, Any]:
-        """Convert Document to event payload for NATS publishing."""
-        return {
+    async def _document_to_event_payload(self, document: Document) -> dict[str, Any]:
+        """Convert Document to event payload for NATS publishing.
+
+        For relationship-template documents the payload is enriched
+        (Phase 6, see docs/design/document-relationships.md) so external
+        subscribers (Snowflake, BigQuery, …) can rebuild the edge
+        without an extra round-trip:
+
+          - top-level `template_usage` mirrors the template's usage flag
+          - `data.source_ref_resolved` / `data.target_ref_resolved` carry
+            the canonical document_id of each endpoint
+          - `data.source_template_value` / `data.target_template_value`
+            carry the endpoint template's value code (e.g. "EXPERIMENT")
+
+        Resolved values come from the document's own `references` array
+        (populated by validation_service at write time) — no extra DB
+        hit is needed beyond a single template-store fetch (cached) to
+        learn the template's `usage` flag.
+        """
+        # Build the base payload first; copy data so we don't mutate the
+        # underlying Document.
+        base_data = dict(document.data) if document.data else {}
+        payload: dict[str, Any] = {
             "document_id": document.document_id,
             "namespace": document.namespace,
             "template_id": document.template_id,
@@ -601,16 +1116,58 @@ class DocumentService:
             "template_value": document.template_value,
             "identity_hash": document.identity_hash,
             "version": document.version,
-            "data": document.data,
+            "data": base_data,
             "term_references": document.term_references,
             "references": document.references,
             "file_references": document.file_references,
-            "status": document.status.value if hasattr(document.status, 'value') else document.status,
+            "status": document.status.value if hasattr(document.status, "value") else document.status,
             "created_at": document.created_at.isoformat() if document.created_at else None,
             "created_by": document.created_by,
             "updated_at": document.updated_at.isoformat() if document.updated_at else None,
             "updated_by": document.updated_by,
         }
+
+        # Phase 6 — enrich for relationship templates.
+        try:
+            template = await get_template_store_client().get_template(
+                template_id=document.template_id,
+                version=document.template_version,
+            )
+        except Exception as exc:
+            # Log loudly so a degraded template-store (or a test mock that
+            # doesn't match the real signature) doesn't silently drop the
+            # enrichment for relationship docs. Production behaviour stays
+            # safe — a missed enrichment is better than a missed event.
+            logger.warning(
+                "Phase-6 enrichment skipped: get_template(%s) raised %s",
+                document.template_id, exc,
+            )
+            template = None
+
+        usage = (template or {}).get("usage", "entity")
+        if usage != "relationship":
+            return payload
+
+        payload["template_usage"] = usage
+        # Pull resolved endpoint info from the references array. Each
+        # entry has shape:
+        #   {"field_path", "reference_type", "lookup_value",
+        #    "version_strategy", "resolved": {document_id, namespace,
+        #    template_value, status, ...}}
+        refs_by_field = {
+            r.get("field_path"): (r.get("resolved") or {})
+            for r in (document.references or [])
+            if r.get("reference_type") == "document"
+        }
+        for field_name in ("source_ref", "target_ref"):
+            resolved = refs_by_field.get(field_name) or {}
+            doc_id = resolved.get("document_id")
+            tpl_value = resolved.get("template_value")
+            if doc_id is not None:
+                base_data[f"{field_name}_resolved"] = doc_id
+            if tpl_value is not None:
+                base_data[f"{field_name.replace('_ref', '_template_value')}"] = tpl_value
+        return payload
 
     async def get_document(
         self,
@@ -626,7 +1183,7 @@ class DocumentService:
             # Return latest version
             results = await Document.find(
                 {"document_id": document_id}
-            ).sort([("version", -1)]).limit(1).to_list()
+            ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             document = results[0] if results else None
 
         if not document:
@@ -659,6 +1216,452 @@ class DocumentService:
             return None
         return await self._to_response(document)
 
+    # =========================================================================
+    # PHASE 4 — RELATIONSHIP QUERY APIS
+    # =========================================================================
+
+    async def _resolve_relationship_template_ids(
+        self,
+        template_values: list[str],
+        namespace: str,
+    ) -> list[str]:
+        """Resolve a list of template values (or already-resolved IDs) to
+        template IDs via the template-store client. Used by /traverse and
+        /relationships when a `template` / `types` filter is supplied.
+        Unknown values are silently dropped (the resulting IN-filter is
+        the intersection)."""
+        if not template_values:
+            return []
+        client = get_template_store_client()
+        out: list[str] = []
+        for value in template_values:
+            try:
+                tpl = await client.get_template(template_id=value)
+                if tpl is None:
+                    tpl = await client.get_template(template_value=value)
+                if tpl and tpl.get("template_id"):
+                    out.append(tpl["template_id"])
+            except Exception:
+                continue
+        return out
+
+    async def find_relationships(
+        self,
+        document_id: str,
+        *,
+        direction: str = "both",
+        template_filter: list[str] | None = None,
+        namespace: str | None = None,
+        active_only: bool = True,
+        page: int = 1,
+        page_size: int = 50,
+        include_peers: bool = False,
+        identity: Any = None,
+    ) -> RelationshipListResponse:
+        """Return relationship documents that point at (incoming) or from
+        (outgoing) the given document.
+
+        Backed by the (template_id, data.source_ref) and
+        (template_id, data.target_ref) Mongo indexes that Phase 2's
+        DocumentService._ensure_relationship_indexes laid down. Only
+        relationship templates have data.source_ref / data.target_ref
+        fields, so a query on those keys naturally filters to
+        relationship documents.
+
+        When include_peers=True, each item is decorated with the peer
+        entity at the OTHER end of the edge — direction-agnostic, latest
+        active version, projected to {document_id, namespace, template_value,
+        template_id, status, data: {title?, doc_status?}}. Closes the N+1
+        fetch loop the relationships sidebar would otherwise pay (CASE-303).
+        Cross-namespace peers respect read permission: an unauthorised
+        peer namespace populates peer_error_code='forbidden' on that item
+        rather than 403'ing the whole request.
+        """
+        if direction not in ("incoming", "outgoing", "both"):
+            raise ValueError(f"direction must be incoming|outgoing|both (got '{direction}')")
+
+        query: dict[str, Any] = {}
+        if namespace:
+            query["namespace"] = namespace
+        if active_only:
+            query["status"] = DocumentStatus.ACTIVE.value
+
+        if direction == "outgoing":
+            query["data.source_ref"] = document_id
+        elif direction == "incoming":
+            query["data.target_ref"] = document_id
+        else:
+            query["$or"] = [
+                {"data.source_ref": document_id},
+                {"data.target_ref": document_id},
+            ]
+
+        if template_filter:
+            template_ids = await self._resolve_relationship_template_ids(
+                template_filter, namespace or "wip",
+            )
+            if not template_ids:
+                # Filter resolved to nothing — return empty page
+                return RelationshipListResponse(
+                    items=[], total=0, page=page, page_size=page_size, pages=0,
+                )
+            query["template_id"] = {"$in": template_ids}
+
+        total = await Document.find(query).count()
+        skip = (page - 1) * page_size
+        documents = await Document.find(query).sort(
+            [("created_at", SortDirection.DESCENDING)]
+        ).skip(skip).limit(page_size).to_list()
+        edge_items = await self._batch_to_responses(documents)
+
+        items: list[RelationshipItem] = [
+            RelationshipItem(**item.model_dump()) for item in edge_items
+        ]
+
+        if include_peers:
+            await self._decorate_with_peers(items, document_id, identity)
+
+        pages = math.ceil(total / page_size) if total else 0
+        return RelationshipListResponse(
+            items=items, total=total, page=page, page_size=page_size, pages=pages,
+        )
+
+    async def _decorate_with_peers(
+        self,
+        items: list[RelationshipItem],
+        seed_document_id: str,
+        identity: Any,
+    ) -> None:
+        """Populate peer / peer_error_code on each item in place (CASE-303).
+
+        Strategy:
+          1. Collect peer document_ids (the OTHER end of each edge — direction-
+             agnostic; self-loops resolve to the seed itself).
+          2. Single batched lookup against the documents collection: latest
+             active (or inactive — PoNIF #1: inactive peers still resolve)
+             version of each peer document_id.
+          3. For each edge, attach peer or peer_error_code per the lookup +
+             namespace permission check.
+
+        Permission policy: caller already has read on the seed namespace
+        (checked at API layer). Cross-namespace peers require an explicit
+        read grant on the peer namespace; missing grant -> peer_error_code=
+        forbidden, peer=None, no 403 on the whole request.
+        """
+        if not items:
+            return
+
+        peer_ids: set[str] = set()
+        for item in items:
+            data = item.data or {}
+            source_ref = data.get("source_ref")
+            target_ref = data.get("target_ref")
+            peer_id = (
+                target_ref if source_ref == seed_document_id else source_ref
+            )
+            if peer_id:
+                peer_ids.add(peer_id)
+
+        if not peer_ids:
+            return
+
+        # Batched lookup: latest version of each peer document_id.
+        # PoNIF #1 — inactive peers still resolve, so no status filter.
+        # The aggregation pipeline mirrors list_documents(latest_only=True).
+        peer_pipeline: list[dict] = [
+            {"$match": {"document_id": {"$in": list(peer_ids)}}},
+            {"$sort": {"document_id": 1, "version": -1}},
+            {"$group": {"_id": "$document_id", "doc": {"$first": "$$ROOT"}}},
+            {"$replaceRoot": {"newRoot": "$doc"}},
+        ]
+        peer_docs = await Document.aggregate(peer_pipeline).to_list()
+        peer_lookup: dict[str, Document] = {
+            doc["document_id"]: Document(**doc) for doc in peer_docs
+        }
+
+        # Permission cache per namespace — avoid re-checking same ns N times.
+        from wip_auth.permissions import permission_sufficient, resolve_permission
+        ns_permission_cache: dict[str, str] = {}
+
+        async def can_read_namespace(ns: str) -> bool:
+            if identity is None:
+                return True  # service called without identity context — trust caller
+            if ns not in ns_permission_cache:
+                ns_permission_cache[ns] = await resolve_permission(identity, ns)
+            return permission_sufficient(ns_permission_cache[ns], "read")
+
+        # Template-aware header_fields lookup (CASE-343, refined by
+        # CASE-354). Three-tier resolution per peer template:
+        #
+        #   1. `header_fields` (explicit) — tier 1, no auto-include.
+        #      Use this to opt out of auto-include too: setting
+        #      `header_fields=["case_number"]` projects identity ONLY.
+        #   2. `identity_fields` + auto-include `title`/`doc_status`
+        #      if the template declares those fields (tier 2, CASE-354).
+        #      The "if declared" guard reads inheritance-resolved
+        #      fields (get_template default resolves the chain) so
+        #      inherited title/doc_status counts. Applies uniformly
+        #      to entity and edge-type templates.
+        #   3. `["title", "doc_status"]` legacy compact default — tier 3,
+        #      fires only when both header_fields and identity_fields
+        #      are empty.
+        #
+        # Edge case: a template that sets `header_fields=[]` (explicitly
+        # empty, as opposed to absent) falls through to tier 2 today —
+        # the auto-include WILL fire. To project identity-only,
+        # populate `header_fields` with the desired field names
+        # explicitly (tier 1 wins).
+        peer_template_ids: set[str] = {
+            doc.template_id for doc in peer_lookup.values() if doc.template_id
+        }
+        template_client = get_template_store_client()
+        projection_paths_by_tid: dict[str, list[str]] = {}
+        for tid in peer_template_ids:
+            try:
+                tpl = await template_client.get_template(template_id=tid)
+            except Exception:
+                tpl = None
+            if not tpl:
+                projection_paths_by_tid[tid] = ["title", "doc_status"]
+                continue
+
+            header_fields = tpl.get("header_fields") or []
+            identity_fields = tpl.get("identity_fields") or []
+
+            if header_fields:
+                # Tier 1 — explicit override wins, no auto-include.
+                paths = list(header_fields)
+            elif identity_fields:
+                # Tier 2 — identity + display-label sugar (CASE-354).
+                paths = list(identity_fields)
+                declared = _declared_field_names(tpl)
+                for extra in ("title", "doc_status"):
+                    if extra in declared and extra not in paths:
+                        paths.append(extra)
+            else:
+                # Tier 3 — legacy compact default.
+                paths = ["title", "doc_status"]
+
+            projection_paths_by_tid[tid] = paths
+
+        for item in items:
+            data = item.data or {}
+            source_ref = data.get("source_ref")
+            target_ref = data.get("target_ref")
+            peer_id = (
+                target_ref if source_ref == seed_document_id else source_ref
+            )
+            if not peer_id:
+                # Edge with no resolvable peer field — leave peer=None silently.
+                continue
+
+            peer_doc = peer_lookup.get(peer_id)
+            if peer_doc is None:
+                item.peer_error_code = "not_found"
+                item.peer_error = f"Peer document '{peer_id}' not found"
+                continue
+
+            if not await can_read_namespace(peer_doc.namespace):
+                item.peer_error_code = "forbidden"
+                item.peer_error = (
+                    f"No read access to peer namespace '{peer_doc.namespace}'"
+                )
+                continue
+
+            # Template-declared projection (CASE-343).
+            # Bare names target peer.data; "metadata.custom.<name>" paths
+            # target peer.metadata.custom. Missing fields are silently
+            # skipped (no error). Applied uniformly to entity templates
+            # and edge types — both can declare header_fields.
+            peer_data = peer_doc.data or {}
+            peer_metadata: dict[str, Any] = peer_doc.metadata.model_dump() if peer_doc.metadata else {}
+            peer_metadata_custom = (
+                peer_metadata.get("custom", {})
+                if isinstance(peer_metadata, dict)
+                else getattr(peer_metadata, "custom", {}) or {}
+            )
+            projected_data: dict[str, Any] = {}
+            projected_metadata_custom: dict[str, Any] = {}
+            paths = projection_paths_by_tid.get(
+                peer_doc.template_id, ["title", "doc_status"]
+            )
+            for path in paths:
+                if path.startswith("metadata.custom."):
+                    key = path[len("metadata.custom."):]
+                    if key in peer_metadata_custom:
+                        projected_metadata_custom[key] = peer_metadata_custom[key]
+                elif "." in path:
+                    # Other metadata.* paths or nested data paths — out of
+                    # scope for v1; skip silently. Future: dotted traversal.
+                    continue
+                elif path in peer_data:
+                    projected_data[path] = peer_data[path]
+
+            projected_metadata: dict[str, Any] | None = None
+            if projected_metadata_custom:
+                projected_metadata = {"custom": projected_metadata_custom}
+
+            item.peer = PeerProjection(
+                document_id=peer_doc.document_id,
+                namespace=peer_doc.namespace,
+                template_id=peer_doc.template_id,
+                template_value=peer_doc.template_value,
+                status=peer_doc.status,
+                data=projected_data,
+                metadata=projected_metadata,
+            )
+
+    async def traverse_relationships(
+        self,
+        document_id: str,
+        *,
+        depth: int = 1,
+        types_filter: list[str] | None = None,
+        direction: str = "outgoing",
+        namespace: str | None = None,
+        max_nodes: int = 1000,
+    ) -> TraverseResponse:
+        """N-hop BFS expansion from a seed document, walking through
+        relationship documents.
+
+        At each hop we find relationship docs touching the current
+        frontier (via data.source_ref for outgoing, data.target_ref for
+        incoming), then add the *other* endpoint document_ids of those
+        relationship docs to the next frontier. Visited docs are
+        skipped — cycles terminate naturally. Capped at depth=10 and
+        max_nodes (default 1000) to keep the cost bounded.
+
+        Returns nodes only (a flat list with depth + path). Edges are
+        implicit in `path` and `via_relationship`. Callers wanting the
+        edges as well can issue follow-up /relationships queries on the
+        seed.
+        """
+        if direction not in ("incoming", "outgoing", "both"):
+            raise ValueError(f"direction must be incoming|outgoing|both (got '{direction}')")
+        if depth < 1 or depth > 10:
+            raise ValueError("depth must be between 1 and 10")
+
+        # Seed doc must exist; namespace defaults to its namespace if not given.
+        seed = await Document.find_one({"document_id": document_id})
+        if seed is None:
+            raise ValueError(f"Document not found: {document_id}")
+        ns = namespace or seed.namespace
+
+        type_filter_ids: list[str] = []
+        if types_filter:
+            type_filter_ids = await self._resolve_relationship_template_ids(types_filter, ns)
+            if not type_filter_ids:
+                # Filter resolved to nothing — empty traversal.
+                return TraverseResponse(
+                    seed_document_id=document_id,
+                    direction=direction,
+                    depth=depth,
+                    types_filter=list(types_filter),
+                    nodes=[],
+                    total_nodes=0,
+                    truncated=False,
+                )
+
+        visited: set[str] = {document_id}
+        path_by_id: dict[str, list[str]] = {document_id: []}
+        nodes: list[TraverseNode] = []
+        frontier: set[str] = {document_id}
+        truncated = False
+
+        for current_depth in range(1, depth + 1):
+            if not frontier:
+                break
+
+            # Build the per-hop query: relationship docs whose source/target
+            # references one of the frontier doc_ids.
+            base: dict[str, Any] = {
+                "namespace": ns,
+                "status": DocumentStatus.ACTIVE.value,
+            }
+            if type_filter_ids:
+                base["template_id"] = {"$in": type_filter_ids}
+
+            hop_query: dict[str, Any]
+            if direction == "outgoing":
+                hop_query = {**base, "data.source_ref": {"$in": list(frontier)}}
+            elif direction == "incoming":
+                hop_query = {**base, "data.target_ref": {"$in": list(frontier)}}
+            else:
+                hop_query = {
+                    **base,
+                    "$or": [
+                        {"data.source_ref": {"$in": list(frontier)}},
+                        {"data.target_ref": {"$in": list(frontier)}},
+                    ],
+                }
+
+            rel_docs = await Document.find(hop_query).to_list()
+            next_frontier: set[str] = set()
+
+            for rel in rel_docs:
+                rel_data = rel.data or {}
+                src_ref = rel_data.get("source_ref")
+                tgt_ref = rel_data.get("target_ref")
+                # Determine which endpoint(s) of this rel are NEW nodes.
+                # For "both", a rel touched by frontier could be reached
+                # via either endpoint; report all not-yet-visited ones.
+                candidates: list[tuple[str, str]] = []
+                # (other_endpoint_doc_id, parent_doc_id_in_frontier)
+                if direction in ("outgoing", "both") and src_ref in frontier and tgt_ref:
+                    candidates.append((tgt_ref, src_ref))
+                if direction in ("incoming", "both") and tgt_ref in frontier and src_ref:
+                    candidates.append((src_ref, tgt_ref))
+
+                for other_id, parent_id in candidates:
+                    if other_id in visited:
+                        continue
+                    if len(nodes) >= max_nodes:
+                        truncated = True
+                        break
+                    visited.add(other_id)
+                    new_path = [*path_by_id[parent_id], other_id]
+                    path_by_id[other_id] = new_path
+                    next_frontier.add(other_id)
+                    # Look up the document to get its template + namespace.
+                    other_doc = await Document.find_one({"document_id": other_id})
+                    if other_doc is None:
+                        # Reference pointed at something missing — record
+                        # what we know and skip.
+                        nodes.append(TraverseNode(
+                            document_id=other_id,
+                            template_id="",
+                            template_value=None,
+                            namespace=ns,
+                            depth=current_depth,
+                            via_relationship=rel.document_id,
+                            path=new_path,
+                        ))
+                        continue
+                    nodes.append(TraverseNode(
+                        document_id=other_doc.document_id,
+                        template_id=other_doc.template_id,
+                        template_value=other_doc.template_value,
+                        namespace=other_doc.namespace,
+                        depth=current_depth,
+                        via_relationship=rel.document_id,
+                        path=new_path,
+                    ))
+                if truncated:
+                    break
+            if truncated:
+                break
+            frontier = next_frontier
+
+        return TraverseResponse(
+            seed_document_id=document_id,
+            direction=direction,
+            depth=depth,
+            types_filter=list(types_filter) if types_filter else [],
+            nodes=nodes,
+            total_nodes=len(nodes),
+            truncated=truncated,
+        )
+
     async def list_documents(
         self,
         template_id: str | None = None,
@@ -669,6 +1672,8 @@ class DocumentService:
         latest_only: bool = False,
         cursor: str | None = None,
         ns_filter: dict | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
     ) -> DocumentListResponse:
         """List documents with pagination.
 
@@ -678,6 +1683,13 @@ class DocumentService:
         When cursor is provided, uses cursor-based pagination (more efficient
         for deep pages). The cursor is the MongoDB _id of the last item from
         the previous page. When using cursor, skip/total count are avoided.
+        Cursor mode is _id-ordered by construction; sort_by is incompatible.
+
+        sort_by / sort_order honour the same allow-list as POST /documents/query
+        (created_at, updated_at, version, or data.<path>). Default is
+        created_at DESC for stable offset pagination. CASE-304: a deterministic
+        document_id ASC tiebreaker is always appended so identical primary-sort
+        values do not scramble across page boundaries.
         """
         from bson import ObjectId
 
@@ -692,6 +1704,7 @@ class DocumentService:
             query["status"] = status.value
 
         if latest_only:
+            sort_clauses = build_sort_clauses(sort_by, sort_order)
             # Aggregation: group by document_id, keep highest version
             pipeline: list[dict] = [
                 {"$match": query} if query else {"$match": {}},
@@ -701,7 +1714,7 @@ class DocumentService:
                     "doc": {"$first": "$$ROOT"},
                 }},
                 {"$replaceRoot": {"newRoot": "$doc"}},
-                {"$sort": {"created_at": -1}},
+                {"$sort": dict(sort_clauses)},
             ]
 
             count_pipeline = [*pipeline, {"$count": "total"}]
@@ -717,6 +1730,11 @@ class DocumentService:
             results = await Document.aggregate(paginated_pipeline).to_list()
             documents = [Document(**doc) for doc in results]
         elif cursor:
+            if sort_by is not None or sort_order is not None:
+                raise ValueError(
+                    "sort_by/sort_order are incompatible with cursor pagination "
+                    "(cursor mode is _id-ordered by construction)."
+                )
             # Cursor-based pagination: use _id > cursor, sorted by _id ASC
             try:
                 cursor_oid = ObjectId(cursor)
@@ -728,16 +1746,17 @@ class DocumentService:
             total = -1
 
             documents = await Document.find(query).sort(
-                [("_id", 1)]
+                [("_id", SortDirection.ASCENDING)]
             ).limit(page_size).to_list()
         else:
+            sort_clauses = build_sort_clauses(sort_by, sort_order)
             # Count total
             total = await Document.find(query).count()
 
-            # Fetch page — sort by created_at DESC for stable offset pagination
+            # Fetch page — sort + tiebreaker for stable offset pagination
             skip = (page - 1) * page_size
             documents = await Document.find(query).sort(
-                [("created_at", -1)]
+                sort_clauses
             ).skip(skip).limit(page_size).to_list()
 
         # Convert to responses in batch (single aggregation instead of N queries)
@@ -767,7 +1786,7 @@ class DocumentService:
         # document_id is stable — query directly
         versions = await Document.find(
             {"document_id": document_id}
-        ).sort([("version", -1)]).to_list()
+        ).sort([("version", SortDirection.DESCENDING)]).to_list()
 
         if not versions:
             return None
@@ -821,7 +1840,7 @@ class DocumentService:
         """
         latest = await Document.find(
             {"document_id": document_id}
-        ).sort([("version", -1)]).limit(1).to_list()
+        ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
 
         if not latest:
             return None
@@ -869,7 +1888,7 @@ class DocumentService:
                 if not target:
                     return False
 
-                event_payload = self._document_to_event_payload(target)
+                event_payload = await self._document_to_event_payload(target)
                 event_payload["hard_delete"] = True
                 event_payload["version"] = version
 
@@ -890,7 +1909,7 @@ class DocumentService:
                 # All versions hard-delete
                 all_versions = await Document.find({"document_id": document_id}).to_list()
 
-                event_payload = self._document_to_event_payload(any_doc)
+                event_payload = await self._document_to_event_payload(any_doc)
                 event_payload["hard_delete"] = True
 
                 # Collect all file references across all versions
@@ -916,7 +1935,7 @@ class DocumentService:
         # SOFT DELETE path (existing behavior)
         results = await Document.find(
             {"document_id": document_id, "status": DocumentStatus.ACTIVE.value}
-        ).sort([("version", -1)]).limit(1).to_list()
+        ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         document = results[0] if results else None
         if not document:
             return False
@@ -932,7 +1951,7 @@ class DocumentService:
         # Publish document deleted event
         await publish_document_event(
             EventType.DOCUMENT_DELETED,
-            self._document_to_event_payload(document),
+            await self._document_to_event_payload(document),
             changed_by=actor
         )
 
@@ -974,7 +1993,7 @@ class DocumentService:
         """Archive a document (latest version)."""
         results = await Document.find(
             {"document_id": document_id}
-        ).sort([("version", -1)]).limit(1).to_list()
+        ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         document = results[0] if results else None
         if not document:
             return False
@@ -990,7 +2009,7 @@ class DocumentService:
         # Publish document archived event
         await publish_document_event(
             EventType.DOCUMENT_ARCHIVED,
-            self._document_to_event_payload(document),
+            await self._document_to_event_payload(document),
             changed_by=actor
         )
 
@@ -1014,14 +2033,12 @@ class DocumentService:
         # Count total
         total = await Document.find(query).count()
 
-        # Build sort
-        sort_direction = 1 if request.sort_order == "asc" else -1
-        sort_field = request.sort_by
+        sort_clauses = build_sort_clauses(request.sort_by, request.sort_order)
 
         # Fetch page
         skip = (request.page - 1) * request.page_size
         documents = await Document.find(query)\
-            .sort([(sort_field, sort_direction)])\
+            .sort(sort_clauses)\
             .skip(skip)\
             .limit(request.page_size)\
             .to_list()
@@ -1040,7 +2057,7 @@ class DocumentService:
 
     def _build_query(self, request: DocumentQueryRequest) -> dict[str, Any]:
         """Build MongoDB query from request."""
-        query = {}
+        query: dict[str, Any] = {}
 
         if request.template_id:
             query["template_id"] = request.template_id
@@ -1074,8 +2091,356 @@ class DocumentService:
                 query[field] = {"$exists": value}
             elif operator == "regex":
                 query[field] = {"$regex": value}
+            else:
+                # `operator` is a free str on QueryFilter (not an enum), so an
+                # unrecognized value reaches here. Before CASE-466 it fell
+                # through silently: the filter was never applied and the query
+                # over-returned (no filtering on that field) with no error —
+                # the same silent-empty/silent-wrong class the case names, on
+                # the operator axis. Fail loud; the route maps ValueError->422.
+                # NOTE: this validates the OPERATOR only. Unknown filter FIELDS
+                # stay free by design (CLAUDE.md §5: query filters are ad-hoc
+                # reads, not declarative commitments) — out of scope here.
+                raise ValueError(
+                    f"Unsupported filter operator '{operator}' on field "
+                    f"'{field}'. Supported: eq, ne, gt, gte, lt, lte, in, "
+                    f"nin, exists, regex."
+                )
 
         return query
+
+    def _finalize_bulk_response(
+        self,
+        results: list[BulkResultItem],
+        total: int,
+        timing: dict[str, float],
+        total_start: float,
+    ) -> BulkResponse:
+        """Stamp total timing, record it, and build the sorted BulkResponse.
+
+        Used at every bulk_create exit — the early-return error paths and the
+        success path — so the envelope shape, the succeeded/failed tally, and
+        timing finalization live in exactly one place. succeeded/failed are
+        derived from the result rows (equivalent to the old per-site tallies;
+        the error paths only ever held error/skipped rows at their exit).
+        """
+        timing["total"] = (time.perf_counter() - total_start) * 1000
+        self._record_creation_timing(timing)
+        sorted_results = sorted(results, key=lambda r: r.index)
+        # Bulk-response contract (CASE-413): every input item maps to exactly
+        # one result row. A mismatch means a code path dropped or duplicated an
+        # item — fail loud rather than return a silently incomplete envelope.
+        assert len(sorted_results) == total, (
+            f"bulk response invariant violated: {len(sorted_results)} result "
+            f"rows for {total} input items"
+        )
+        return BulkResponse(
+            results=sorted_results,
+            total=total,
+            succeeded=sum(1 for r in sorted_results if r.status not in ("error", "skipped")),
+            failed=sum(1 for r in sorted_results if r.status == "error"),
+            timing={k: round(v, 1) for k, v in timing.items()},
+        )
+
+    async def _validate_batch(
+        self,
+        items: list[DocumentCreateRequest],
+        namespace: str,
+        continue_on_error: bool,
+        timing: dict[str, float],
+    ) -> tuple[list, list[BulkResultItem], int]:
+        """Stage 1 of bulk_create: validate items.
+
+        Returns (validation_results, results, failed):
+        - validation_results: (i, item, validation_result) for each VALID item
+        - results: error/skipped BulkResultItems accumulated during validation
+        - failed: count of error rows
+
+        continue_on_error=True validates every item concurrently, collecting
+        per-item errors. continue_on_error=False validates sequentially and
+        stops at the first failure: that item gets an error row and every item
+        after it gets a skipped row. Items that validated BEFORE the failure
+        are returned in validation_results and created downstream — CASE-413,
+        Option 2 (create-what-validated-then-stop).
+
+        Sets timing["1_validation"].
+        """
+        start = time.perf_counter()
+        validation_results: list = []
+        results: list[BulkResultItem] = []
+        failed = 0
+
+        validation_semaphore = asyncio.Semaphore(10)
+        # Shared cache for document reference lookups across the batch —
+        # avoids repeated MongoDB queries when many docs reference the same
+        # target (e.g., 50 FIN_TRANSACTIONs all pointing to one FIN_ACCOUNT).
+        doc_ref_cache: dict = {}
+
+        async def _validate_one(i: int, item: DocumentCreateRequest):
+            async with validation_semaphore:
+                return i, item, await self.validation_service.validate(
+                    item.template_id,
+                    item.data,
+                    template_version=getattr(item, 'template_version', None),
+                    namespace=namespace,
+                    doc_ref_cache=doc_ref_cache
+                )
+
+        def _skipped_rows(after_index: int) -> list[BulkResultItem]:
+            return [
+                BulkResultItem(index=j, status="skipped", error="Stopped due to previous error")
+                for j in range(after_index + 1, len(items))
+            ]
+
+        if continue_on_error:
+            # All validations run concurrently — errors collected per-item
+            tasks = [_validate_one(i, item) for i, item in enumerate(items)]
+            settled = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for task_idx, entry in enumerate(settled):
+                if isinstance(entry, BaseException):
+                    failed += 1
+                    results.append(BulkResultItem(
+                        index=task_idx, status="error", error=str(entry)
+                    ))
+                else:
+                    i, item, validation_result = entry
+                    if validation_result.valid:
+                        validation_results.append((i, item, validation_result))
+                    else:
+                        failed += 1
+                        results.append(BulkResultItem(
+                            index=i,
+                            status="error",
+                            error=self._format_validation_errors(validation_result.errors)
+                        ))
+        else:
+            # Sequential when continue_on_error=False — stop on first failure
+            for i, item in enumerate(items):
+                try:
+                    validation_result = await self.validation_service.validate(
+                        item.template_id,
+                        item.data,
+                        template_version=getattr(item, 'template_version', None),
+                        namespace=namespace,
+                        doc_ref_cache=doc_ref_cache
+                    )
+                    if validation_result.valid:
+                        validation_results.append((i, item, validation_result))
+                    else:
+                        failed += 1
+                        results.append(BulkResultItem(
+                            index=i,
+                            status="error",
+                            error=self._format_validation_errors(validation_result.errors)
+                        ))
+                        results.extend(_skipped_rows(i))
+                        break
+                except Exception as e:
+                    failed += 1
+                    results.append(BulkResultItem(
+                        index=i, status="error", error=str(e)
+                    ))
+                    results.extend(_skipped_rows(i))
+                    break
+
+        timing["1_validation"] = (time.perf_counter() - start) * 1000
+        return validation_results, results, failed
+
+    async def _apply_validated_item(
+        self,
+        i: int,
+        item: DocumentCreateRequest,
+        validation_result,
+        registry_result: dict,
+        existing_by_doc_id: dict,
+        namespace: str,
+        actor: str,
+        now: datetime,
+    ) -> "_ItemOutcome":
+        """Stage 4 per-item: persist one validated item given its Registry result.
+
+        Returns an _ItemOutcome (result row + optional pending NATS event +
+        which counter to bump). Mutates existing_by_doc_id in place so later
+        items in the same batch targeting the same document_id observe the
+        version this call wrote. Exceptions propagate to the caller, which
+        turns them into a per-item error (and stop-on-first when
+        continue_on_error=False) — matching the previous inline behaviour.
+        """
+        if registry_result.get("status") == "error":
+            return _ItemOutcome(
+                BulkResultItem(
+                    index=i, status="error",
+                    error=registry_result.get("error", "Failed to generate ID"),
+                ),
+                None,
+                "failed",
+            )
+
+        document_id = cast(str, registry_result["registry_id"])
+        identity_hash = validation_result.identity_hash
+        is_new_from_registry = registry_result.get("status") == "created"
+
+        # For existing identity (Registry returned already_exists), look up by
+        # document_id — NOT identity_hash (CASE-36).
+        existing = existing_by_doc_id.get(document_id) if not is_new_from_registry else None
+
+        # Version override for restore/migration: if the request supplies both
+        # document_id and version, use them as-is.
+        version_override = (
+            item.version if item.document_id and item.version is not None else None
+        )
+
+        # CASE-434/436: register inline synonyms per item (bulk previously
+        # ignored them entirely). Strict by default — a refused synonym fails
+        # THIS item (and rolls back its entry/synonyms) without affecting the
+        # rest of the batch; "warn" surfaces it in the item's warnings.
+        synonym_warnings: list[str] = []
+        if item.synonyms:
+            synonym_warnings, err_code, err_msg = await self._register_inline_synonyms(
+                document_id=document_id, namespace=namespace, synonyms=item.synonyms,
+                on_synonym_conflict=item.on_synonym_conflict,
+                is_new_entry=is_new_from_registry,
+            )
+            if err_code:
+                return _ItemOutcome(
+                    BulkResultItem(
+                        index=i, status="error", error_code=err_code, error=err_msg,
+                    ),
+                    None,
+                    "failed",
+                )
+
+        if existing and version_override is None:
+            if not self._document_has_changed(
+                existing,
+                item.data,
+                validation_result.term_references,
+                validation_result.references,
+                validation_result.file_references,
+                new_metadata_custom=item.metadata,
+            ):
+                # No change — report existing without creating a new version.
+                return _ItemOutcome(
+                    BulkResultItem(
+                        index=i,
+                        status="unchanged",
+                        document_id=existing.document_id,
+                        identity_hash=identity_hash,
+                        version=existing.version,
+                        is_new=False,
+                        warnings=validation_result.warnings + synonym_warnings,
+                    ),
+                    None,
+                    "unchanged",
+                )
+
+            # Templates with versioned=false overwrite in place — the same
+            # branch the single-item and PATCH paths take. Without it, the
+            # deactivate-and-insert flow below would mint version 2 and
+            # retain the old row as inactive, creating exactly the version
+            # history the flag forbids.
+            if not await self._is_template_versioned(item.template_id):
+                response, _ = await self._overwrite_in_place(
+                    item, existing, validation_result, namespace,
+                    extra_warnings=synonym_warnings,
+                )
+                # existing_by_doc_id already holds this Document object,
+                # mutated in place — later same-identity items in the batch
+                # see the fresh data. No pending event: _overwrite_in_place
+                # publishes DOCUMENT_UPDATED itself, which is equivalent to
+                # the deferred batch publish (deferred events carry no
+                # ordering guarantee either).
+                return _ItemOutcome(
+                    BulkResultItem(
+                        index=i,
+                        status="updated",
+                        document_id=response.document_id,
+                        identity_hash=identity_hash,
+                        version=response.version,
+                        is_new=False,
+                        warnings=response.warnings,
+                    ),
+                    None,
+                    "updated",
+                )
+
+            # Deactivate old version
+            existing.status = DocumentStatus.INACTIVE
+            existing.updated_at = now
+            existing.updated_by = actor
+            await existing.save()
+            new_version = existing.version + 1
+            is_new = False
+        elif version_override is not None:
+            new_version = version_override
+            is_new = version_override == 1
+        else:
+            new_version = 1
+            is_new = True
+
+        # Create document with retry on duplicate key (handles concurrent
+        # requests racing on the same identity hash).
+        # metadata=None on an update of an existing document carries the
+        # existing custom metadata forward (the caller did not address it);
+        # a supplied dict — including {} — replaces wholesale. Brand-new
+        # documents and restores start from {} when nothing is supplied.
+        if item.metadata is not None:
+            custom_metadata = item.metadata
+        elif existing is not None and existing.metadata:
+            custom_metadata = dict(existing.metadata.custom)
+        else:
+            custom_metadata = {}
+        metadata = DocumentMetadata(
+            warnings=validation_result.warnings + synonym_warnings,
+            custom=custom_metadata,
+        )
+        document = await self._insert_with_retry(
+            namespace=namespace,
+            document_id=document_id,
+            template_id=item.template_id,
+            template_version=validation_result.template_version,
+            template_value=validation_result.template_value,
+            identity_hash=identity_hash,
+            version=new_version,
+            data=item.data,
+            term_references=validation_result.term_references,
+            references=validation_result.references,
+            file_references=validation_result.file_references,
+            metadata=metadata,
+            actor=actor,
+            now=now,
+        )
+        new_version = document.version
+        is_new = new_version == 1
+
+        # Update existing_by_doc_id so subsequent items in this batch with the
+        # same document_id see the correct latest version.
+        if document_id:
+            existing_by_doc_id[document_id] = document
+
+        # Defer NATS event — published concurrently after the loop.
+        event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
+        pending_event = (event_type, await self._document_to_event_payload(document))
+
+        # Update file reference counts
+        if not is_new and existing:
+            await self._update_file_reference_counts(existing.file_references, delta=-1)
+        await self._update_file_reference_counts(validation_result.file_references, delta=1)
+
+        return _ItemOutcome(
+            BulkResultItem(
+                index=i,
+                status="created" if is_new else "updated",
+                document_id=document_id,
+                identity_hash=identity_hash,
+                version=new_version,
+                is_new=is_new,
+                warnings=validation_result.warnings + synonym_warnings,
+            ),
+            pending_event,
+            "created" if is_new else "updated",
+        )
 
     async def bulk_create(
         self,
@@ -1131,110 +2496,15 @@ class DocumentService:
         await asyncio.gather(*(warm_template(tid) for tid in unique_template_ids))
         timing["0_cache_warmup"] = (time.perf_counter() - start) * 1000
 
-        # Stage 1: Validate all documents (concurrently)
-        # Semaphore limits concurrent validations to avoid overwhelming
-        # upstream services (template-store, def-store) with HTTP requests.
-        # Cache warming in Stage 0 means most validations hit cache, but
-        # reference resolution and file validation still make I/O calls.
-        start = time.perf_counter()
-        validation_results = []
-        valid_indices = []  # Indices of valid documents
-
-        validation_semaphore = asyncio.Semaphore(10)
-        # Shared cache for document reference lookups across the batch —
-        # avoids repeated MongoDB queries when many docs reference the same
-        # target (e.g., 50 FIN_TRANSACTIONs all pointing to one FIN_ACCOUNT).
-        doc_ref_cache: dict = {}
-
-        async def _validate_one(i: int, item: DocumentCreateRequest):
-            async with validation_semaphore:
-                return i, item, await self.validation_service.validate(
-                    item.template_id,
-                    item.data,
-                    template_version=getattr(item, 'template_version', None),
-                    namespace=namespace,
-                    doc_ref_cache=doc_ref_cache
-                )
-
-        if continue_on_error:
-            # All validations run concurrently — errors collected per-item
-            tasks = [_validate_one(i, item) for i, item in enumerate(items)]
-            settled = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for task_idx, entry in enumerate(settled):
-                if isinstance(entry, Exception):
-                    failed += 1
-                    results.append(BulkResultItem(
-                        index=task_idx, status="error", error=str(entry)
-                    ))
-                else:
-                    i, item, validation_result = entry
-                    if validation_result.valid:
-                        validation_results.append((i, item, validation_result))
-                        valid_indices.append(i)
-                    else:
-                        failed += 1
-                        results.append(BulkResultItem(
-                            index=i,
-                            status="error",
-                            error=self._format_validation_errors(validation_result.errors)
-                        ))
-        else:
-            # Sequential when continue_on_error=False — stop on first failure
-            for i, item in enumerate(items):
-                try:
-                    validation_result = await self.validation_service.validate(
-                        item.template_id,
-                        item.data,
-                        template_version=getattr(item, 'template_version', None),
-                        namespace=namespace,
-                        doc_ref_cache=doc_ref_cache
-                    )
-                    if validation_result.valid:
-                        validation_results.append((i, item, validation_result))
-                        valid_indices.append(i)
-                    else:
-                        failed += 1
-                        results.append(BulkResultItem(
-                            index=i,
-                            status="error",
-                            error=self._format_validation_errors(validation_result.errors)
-                        ))
-                        for j in range(i + 1, len(items)):
-                            results.append(BulkResultItem(
-                                index=j, status="skipped", error="Stopped due to previous error"
-                            ))
-                        timing["1_validation"] = (time.perf_counter() - start) * 1000
-                        timing["total"] = (time.perf_counter() - total_start) * 1000
-                        self._record_creation_timing(timing)
-                        return BulkResponse(
-                            results=sorted(results, key=lambda r: r.index),
-                            total=len(items),
-                            succeeded=sum(1 for r in results if r.status not in ("error", "skipped")),
-                            failed=sum(1 for r in results if r.status == "error"),
-                            timing=timing,
-                        )
-                except Exception as e:
-                    failed += 1
-                    results.append(BulkResultItem(
-                        index=i, status="error", error=str(e)
-                    ))
-                    for j in range(i + 1, len(items)):
-                        results.append(BulkResultItem(
-                            index=j, status="skipped", error="Stopped due to previous error"
-                        ))
-                    timing["1_validation"] = (time.perf_counter() - start) * 1000
-                    timing["total"] = (time.perf_counter() - total_start) * 1000
-                    self._record_creation_timing(timing)
-                    return BulkResponse(
-                        results=sorted(results, key=lambda r: r.index),
-                        total=len(items),
-                        succeeded=sum(1 for r in results if r.status not in ("error", "skipped")),
-                        failed=sum(1 for r in results if r.status == "error"),
-                        timing=timing,
-                    )
-
-        timing["1_validation"] = (time.perf_counter() - start) * 1000
+        # Stage 1: Validate all documents (see _validate_batch — concurrent
+        # when continue_on_error, sequential stop-on-first otherwise). On the
+        # sequential stop path, items that validated before the failure are in
+        # validation_results and proceed to creation (CASE-413, Option 2); the
+        # failing item's error row and the trailing skipped rows are already in
+        # results.
+        validation_results, results, failed = await self._validate_batch(
+            items, namespace, continue_on_error, timing
+        )
 
         # Aggregate per-stage validation timing from all individual results
         val_stage_totals: dict[str, float] = {}
@@ -1246,14 +2516,7 @@ class DocumentService:
                 timing[f"1v_{stage}"] = round(total_ms, 1)
 
         if not validation_results:
-            timing["total"] = (time.perf_counter() - total_start) * 1000
-            self._record_creation_timing(timing)
-            return BulkResponse(
-                results=sorted(results, key=lambda r: r.index),
-                total=len(items),
-                succeeded=0, failed=failed,
-                timing=timing,
-            )
+            return self._finalize_bulk_response(results, len(items), timing, total_start)
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -1262,12 +2525,25 @@ class DocumentService:
         # gets back identity_hash for each item)
         start = time.perf_counter()
         registry = get_registry_client()
+        # CASE-430: suppress the bare identity-values synonym for
+        # relationship/edge types. Usage is read from the templates already
+        # warmed into cache in Stage 0, so this is a cache hit per template_id.
+        template_client = get_template_store_client()
+        _usage_is_rel: dict[str, bool] = {}
+
+        async def _is_relationship(tid: str) -> bool:
+            if tid not in _usage_is_rel:
+                t = await template_client.get_template_resolved(tid)
+                _usage_is_rel[tid] = bool(t and t.get("usage") == "relationship")
+            return _usage_is_rel[tid]
+
         registry_items = []
         for vr in validation_results:
             reg_item: dict[str, Any] = {
                 "identity_values": vr[2].identity_values or None,
                 "template_id": vr[1].template_id,
                 "has_identity_fields": bool(vr[2].identity_fields),
+                "skip_identity_value_synonym": await _is_relationship(vr[1].template_id),
             }
             # Pass through pre-assigned document_id for restore/migration
             if vr[1].document_id:
@@ -1288,14 +2564,7 @@ class DocumentService:
                     index=i, status="error", error=f"Registry error: {e!s}"
                 ))
             timing["2_registry_bulk"] = (time.perf_counter() - start) * 1000
-            timing["total"] = (time.perf_counter() - total_start) * 1000
-            self._record_creation_timing(timing)
-            return BulkResponse(
-                results=sorted(results, key=lambda r: r.index),
-                total=len(items),
-                succeeded=0, failed=failed,
-                timing=timing,
-            )
+            return self._finalize_bulk_response(results, len(items), timing, total_start)
 
         timing["2_registry_bulk"] = (time.perf_counter() - start) * 1000
 
@@ -1334,131 +2603,10 @@ class DocumentService:
             zip(validation_results, registry_results, strict=False)
         ):
             try:
-                if registry_result.get("status") == "error":
-                    failed += 1
-                    results.append(BulkResultItem(
-                        index=i, status="error",
-                        error=registry_result.get("error", "Failed to generate ID")
-                    ))
-                    continue
-
-                document_id = registry_result.get("registry_id")
-                identity_hash = validation_result.identity_hash
-                is_new_from_registry = registry_result.get("status") == "created"
-
-                # For existing identity (Registry returned already_exists), look
-                # up by document_id — NOT identity_hash (CASE-36).
-                existing = existing_by_doc_id.get(document_id) if not is_new_from_registry else None
-
-                # Version override for restore/migration: if the request
-                # supplies both document_id and version, use them as-is.
-                version_override = (
-                    item.version
-                    if item.document_id and item.version is not None
-                    else None
+                outcome = await self._apply_validated_item(
+                    i, item, validation_result, registry_result,
+                    existing_by_doc_id, namespace, actor, now,
                 )
-
-                if existing and version_override is None:
-                    # Check if data has actually changed
-                    if not self._data_has_changed(
-                        existing,
-                        item.data,
-                        validation_result.term_references,
-                        validation_result.references,
-                        validation_result.file_references
-                    ):
-                        # No change - return existing document info without creating new version
-                        unchanged += 1
-                        results.append(BulkResultItem(
-                            index=i,
-                            status="unchanged",
-                            document_id=existing.document_id,
-                            identity_hash=identity_hash,
-                            version=existing.version,
-                            is_new=False,
-                            warnings=validation_result.warnings
-                        ))
-                        continue
-
-                    # Deactivate old version
-                    existing.status = DocumentStatus.INACTIVE
-                    existing.updated_at = now
-                    existing.updated_by = actor
-                    await existing.save()
-                    new_version = existing.version + 1
-                    is_new = False
-                elif version_override is not None:
-                    new_version = version_override
-                    is_new = version_override == 1
-                else:
-                    new_version = 1
-                    is_new = True
-
-                # Create document with retry on duplicate key (handles
-                # concurrent requests racing on the same identity hash)
-                metadata = DocumentMetadata(
-                    warnings=validation_result.warnings,
-                    custom=item.metadata or {}
-                )
-                document = await self._insert_with_retry(
-                    namespace=namespace,
-                    document_id=document_id,
-                    template_id=item.template_id,
-                    template_version=validation_result.template_version,
-                    template_value=validation_result.template_value,
-                    identity_hash=identity_hash,
-                    version=new_version,
-                    data=item.data,
-                    term_references=validation_result.term_references,
-                    references=validation_result.references,
-                    file_references=validation_result.file_references,
-                    metadata=metadata,
-                    actor=actor,
-                    now=now,
-                )
-                new_version = document.version
-                is_new = new_version == 1
-
-                # Update existing_by_doc_id so subsequent items in this batch
-                # with the same document_id see the correct latest version.
-                if document_id:
-                    existing_by_doc_id[document_id] = document
-
-                # Defer NATS event — published concurrently after the loop
-                event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
-                pending_events.append((
-                    event_type,
-                    self._document_to_event_payload(document),
-                ))
-
-                # Update file reference counts
-                if not is_new and existing:
-                    # Decrement for old version
-                    await self._update_file_reference_counts(
-                        existing.file_references, delta=-1
-                    )
-                # Increment for new version
-                await self._update_file_reference_counts(
-                    validation_result.file_references, delta=1
-                )
-
-                if is_new:
-                    created += 1
-                    status = "created"
-                else:
-                    updated += 1
-                    status = "updated"
-
-                results.append(BulkResultItem(
-                    index=i,
-                    status=status,
-                    document_id=document_id,
-                    identity_hash=identity_hash,
-                    version=new_version,
-                    is_new=is_new,
-                    warnings=validation_result.warnings
-                ))
-
             except Exception as e:
                 failed += 1
                 results.append(BulkResultItem(
@@ -1473,6 +2621,19 @@ class DocumentService:
                             error="Stopped due to previous error"
                         ))
                     break
+                continue
+
+            results.append(outcome.result)
+            if outcome.pending_event:
+                pending_events.append(outcome.pending_event)
+            if outcome.counter == "created":
+                created += 1
+            elif outcome.counter == "updated":
+                updated += 1
+            elif outcome.counter == "unchanged":
+                unchanged += 1
+            else:  # "failed" — registry-error row, no exception raised
+                failed += 1
 
         timing["4_create_documents"] = (time.perf_counter() - start) * 1000
 
@@ -1486,30 +2647,19 @@ class DocumentService:
                 for et, payload in pending_events
             ))
             timing["5_nats_publish"] = (time.perf_counter() - start) * 1000
-        timing["total"] = (time.perf_counter() - total_start) * 1000
-        self._record_creation_timing(timing)
+        return self._finalize_bulk_response(results, len(items), timing, total_start)
 
-        sorted_results = sorted(results, key=lambda r: r.index)
-        return BulkResponse(
-            results=sorted_results,
-            total=len(items),
-            succeeded=sum(1 for r in sorted_results if r.status not in ("error", "skipped")),
-            failed=sum(1 for r in sorted_results if r.status == "error"),
-            timing={k: round(v, 1) for k, v in timing.items()},
-        )
+    @staticmethod
+    def _result_to_validation_response(result) -> ValidationResponse:
+        """Build a ValidationResponse from a ValidationResult.
 
-    async def validate_document(
-        self,
-        template_id: str,
-        data: dict[str, Any],
-        namespace: str,
-    ) -> ValidationResponse:
-        """Validate document without saving."""
+        Dry-run: identity_hash is computed locally (no Registry side effects).
+        Shared by the singular validate_document and the bulk
+        validate_documents_bulk (CASE-419) so both produce identical per-item
+        shapes.
+        """
         from .identity_service import IdentityService
 
-        result = await self.validation_service.validate(template_id, data, namespace=namespace)
-
-        # Dry-run: compute identity_hash locally (no Registry side effects)
         identity_hash = None
         if result.valid and result.identity_values:
             identity_hash = IdentityService.compute_hash(result.identity_values)
@@ -1532,6 +2682,72 @@ class DocumentService:
             references=result.references,
             file_references=result.file_references
         )
+
+    async def validate_document(
+        self,
+        template_id: str,
+        data: dict[str, Any],
+        namespace: str,
+    ) -> ValidationResponse:
+        """Validate document without saving."""
+        result = await self.validation_service.validate(template_id, data, namespace=namespace)
+        return self._result_to_validation_response(result)
+
+    async def validate_documents_bulk(
+        self,
+        template_id: str,
+        items: list[dict[str, Any]],
+        namespace: str,
+        template_version: int | None = None,
+    ) -> list[ValidationResponse]:
+        """Validate multiple documents against ONE template without saving (CASE-419).
+
+        Single-template batch: warm the template (and its nested term/template
+        refs) into cache once, then validate every item from cache — mirroring
+        bulk_create's Stage-0 warmup. Side-effect-free: identity hashes are
+        computed locally, no Registry writes. Results are returned in input
+        order. The caller (endpoint) has already resolved template_id and
+        checked the namespace read permission.
+        """
+        # Stage 0: pre-warm the template + its nested refs once so the per-item
+        # validate loop runs entirely from cache (same pattern as bulk_create).
+        template_client = get_template_store_client()
+        def_store_client = get_def_store_client()
+        warmed_templates: set[str] = set()
+
+        async def warm_template(tid: str):
+            if tid in warmed_templates:
+                return
+            warmed_templates.add(tid)
+            template = await template_client.get_template_resolved(tid)
+            if not template:
+                return
+            for field in template.get("fields", []):
+                for key in ("terminology_ref", "array_terminology_ref"):
+                    ref = field.get(key)
+                    if ref:
+                        await def_store_client._get_terminology_cached(ref)
+                for key in ("template_ref", "array_template_ref"):
+                    ref = field.get(key)
+                    if ref:
+                        await warm_template(ref)
+
+        await warm_template(template_id)
+
+        # Shared document-reference cache across the batch (same as
+        # _validate_batch) so repeated reference lookups hit cache.
+        doc_ref_cache: dict = {}
+        responses: list[ValidationResponse] = []
+        for data in items:
+            result = await self.validation_service.validate(
+                template_id,
+                data,
+                namespace=namespace,
+                template_version=template_version,
+                doc_ref_cache=doc_ref_cache,
+            )
+            responses.append(self._result_to_validation_response(result))
+        return responses
 
     async def _batch_to_responses(self, documents: list[Document]) -> list[DocumentResponse]:
         """Convert a batch of Documents to DocumentResponses with a single aggregation.
@@ -1590,7 +2806,7 @@ class DocumentService:
         # Find the latest version for this document_id (stable)
         latest = await Document.find(
             {"document_id": document.document_id}
-        ).sort([("version", -1)]).limit(1).to_list()
+        ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
 
         if latest:
             is_latest = document.version == latest[0].version
@@ -1653,6 +2869,172 @@ class DocumentService:
 
 
     # ========================================================================
+    # POST /documents/migrate  (template-version re-pin — CASE-491)
+    # ========================================================================
+
+    async def migrate_document_version(
+        self,
+        template_id: str,
+        from_version: int,
+        to_version: int,
+        namespace: str,
+        dry_run: bool,
+    ) -> tuple[DocumentMigrateResponse | None, str | None, str | None]:
+        """Migrate every active document pinned to ``from_version`` to ``to_version``.
+
+        Validated, identity-preserving, bulk re-pin (CASE-491). Each document's
+        existing data is re-validated against the TARGET version (which must be
+        active; the source may be inactive/frozen). On apply a new document
+        version is created (or the single version overwritten in place for
+        ``versioned: false`` templates), pinned to ``to_version``, with the same
+        ``document_id`` and ``identity_hash``. No data transformation happens here.
+
+        Op-level failures return ``(None, error_code, message)`` for the route to
+        map to a 4xx; per-document outcomes ride the bulk-first 200 envelope.
+
+        Returns:
+            (response, error_code, error_message)
+        """
+        start = time.perf_counter()
+
+        # ---- Op-level guards (fail the whole migration) ----
+        if from_version == to_version:
+            return None, "invalid_migration", "from_version and to_version must differ"
+
+        client = get_template_store_client()
+        target = await client.get_template_resolved(template_id, version=to_version)
+        if target is None:
+            return None, "template_not_found", (
+                f"Template '{template_id}' version {to_version} not found"
+            )
+        if target.get("status") != "active":
+            return None, "target_inactive", (
+                f"Target version {to_version} is not active; migration must target an "
+                "active version. Reactivate it first or pick an active target."
+            )
+
+        source = await client.get_template_resolved(template_id, version=from_version)
+        if source is None:
+            return None, "template_not_found", (
+                f"Template '{template_id}' version {from_version} not found"
+            )
+
+        # Identity-preserving only: a change in identity_fields would re-key every
+        # document (the CASE-36/316 collision class). That is a fork, not a migrate.
+        source_idf = list(source.get("identity_fields") or [])
+        target_idf = list(target.get("identity_fields") or [])
+        if source_idf != target_idf:
+            return None, "identity_fields_changed", (
+                f"identity_fields differ between v{from_version} ({source_idf}) and "
+                f"v{to_version} ({target_idf}); this is a fork (create new documents), "
+                "not a migrate."
+            )
+
+        # ---- Per-document fan-out (cohort = active docs pinned to from_version) ----
+        cohort = await Document.find({
+            "namespace": namespace,
+            "template_id": template_id,
+            "template_version": from_version,
+            "status": DocumentStatus.ACTIVE.value,
+        }).to_list()
+
+        results: list[BulkResultItem] = []
+        for index, doc in enumerate(cohort):
+            try:
+                results.append(
+                    await self._migrate_one(
+                        index, doc, template_id, to_version, namespace, dry_run,
+                    )
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Unexpected error migrating document %s", doc.document_id,
+                )
+                results.append(BulkResultItem(
+                    index=index, status="error", document_id=doc.document_id,
+                    error=f"Internal error: {exc}", error_code="internal_error",
+                ))
+
+        succeeded = sum(1 for r in results if r.status != "error")
+        failed = sum(1 for r in results if r.status == "error")
+        timing = {"total": (time.perf_counter() - start) * 1000}
+        return DocumentMigrateResponse(
+            results=results, total=len(results), succeeded=succeeded, failed=failed,
+            timing=timing, dry_run=dry_run, template_id=template_id,
+            from_version=from_version, to_version=to_version,
+        ), None, None
+
+    async def _migrate_one(
+        self,
+        index: int,
+        doc: Document,
+        template_id: str,
+        to_version: int,
+        namespace: str,
+        dry_run: bool,
+    ) -> BulkResultItem:
+        """Validate one document against the target version; apply the re-pin
+        unless ``dry_run``. Validating the document's existing data against the
+        target IS the readiness check — a now-removed field still present surfaces
+        as ``unknown_field``; a newly-mandatory field missing surfaces as ``required``.
+        """
+        vr = await self.validation_service.validate(
+            template_id, doc.data, namespace=namespace, template_version=to_version,
+        )
+        if not vr.valid:
+            return BulkResultItem(
+                index=index, status="error", document_id=doc.document_id,
+                error=self._format_validation_errors(vr.errors),
+                error_code="validation_failed", details={"errors": vr.errors},
+            )
+
+        # Defensive: with identity_fields matched at the op level, the recomputed
+        # hash should equal the stored one. If it diverges, refuse rather than
+        # silently re-parent onto a different entity.
+        if vr.identity_hash and vr.identity_hash != doc.identity_hash:
+            return BulkResultItem(
+                index=index, status="error", document_id=doc.document_id,
+                error="re-pin would change the document's identity hash",
+                error_code="identity_fields_changed",
+            )
+
+        if dry_run:
+            return BulkResultItem(
+                index=index, status="updated", id=doc.document_id,
+                document_id=doc.document_id, identity_hash=doc.identity_hash,
+                version=to_version, is_new=False,
+            )
+
+        # Apply: reuse the create-new-version machinery, forcing a write even when
+        # the data is byte-identical (the re-pin is the change). Reuse the existing
+        # document_id + identity_hash — the entity is already registered; migration
+        # changes only template_version, so no new Registry resolve is needed.
+        migrate_request = DocumentCreateRequest(
+            template_id=template_id,
+            template_version=to_version,
+            namespace=namespace,
+            data=doc.data,
+            metadata=(doc.metadata.custom if doc.metadata else None),
+        )
+        vr.identity_hash = doc.identity_hash
+        response, error = await self._create_new_version(
+            migrate_request, doc, vr,
+            document_id=doc.document_id, namespace=namespace,
+            force_new_version=True,
+        )
+        if error:
+            return BulkResultItem(
+                index=index, status="error", document_id=doc.document_id,
+                error=error, error_code="internal_error",
+            )
+        assert response is not None
+        return BulkResultItem(
+            index=index, status="updated", id=response.document_id,
+            document_id=response.document_id, identity_hash=response.identity_hash,
+            version=response.version, is_new=False, warnings=response.warnings,
+        )
+
+    # ========================================================================
     # PATCH /documents
     # ========================================================================
 
@@ -1675,7 +3057,7 @@ class DocumentService:
                     error=exc.message,
                     error_code=exc.code,
                 ))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.exception(
                     "Unexpected error patching document %s", item.document_id,
                 )
@@ -1704,7 +3086,7 @@ class DocumentService:
     ) -> BulkResultItem:
         """Apply a single PATCH item.
 
-        Implements the read–merge–validate–write loop with optimistic
+        Implements the read-merge-validate-write loop with optimistic
         concurrency. The unique index on (namespace, document_id, version)
         guarantees version uniqueness; on a race, _insert_with_retry handles
         the retry transparently.
@@ -1715,8 +3097,8 @@ class DocumentService:
 
         # Lazy imports to avoid module-level coupling with FastAPI/wip-auth
         from wip_auth import (
-            get_current_identity,
             permission_sufficient,
+            require_current_identity,
             resolve_permission,
         )
 
@@ -1725,7 +3107,7 @@ class DocumentService:
             #    detect ARCHIVED/INACTIVE and return the right error code).
             latest = await Document.find(
                 {"document_id": item.document_id}
-            ).sort([("version", -1)]).limit(1).to_list()
+            ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
 
             if not latest:
                 raise PatchError("not_found", "Document not found")
@@ -1746,7 +3128,7 @@ class DocumentService:
             # 2. Permission check on the document's namespace.
             #    Use resolve_permission directly so we can produce a per-item
             #    'forbidden' error instead of an HTTP 403 from check_namespace_permission.
-            identity = get_current_identity()
+            identity = require_current_identity()
             permission = await resolve_permission(identity, current.namespace)
             if not permission_sufficient(permission, "write"):
                 raise PatchError(
@@ -1761,8 +3143,17 @@ class DocumentService:
                     f"Expected version {item.if_match}, current is {current.version}",
                 )
 
-            # 4. Apply RFC 7396 merge to current data.
+            # 4. Apply RFC 7396 merge to current data, and (when supplied) to
+            #    the document's custom metadata. metadata_patch=None means the
+            #    caller did not address metadata — it carries forward as-is.
+            #    Platform-owned metadata (warnings, source_system) is never
+            #    patchable; only the custom bag is.
             merged_data = json_merge_patch(current.data, item.patch)
+            merged_custom = (
+                json_merge_patch(dict(current.metadata.custom), item.metadata_patch)
+                if item.metadata_patch is not None
+                else dict(current.metadata.custom)
+            )
 
             # 5. Re-validate the merged document against the SAME template
             #    version the existing document was created with (design §13).
@@ -1773,9 +3164,44 @@ class DocumentService:
                 template_version=current.template_version,
             )
             if not validation_result.valid:
+                # CASE-490: a PATCH whose pinned template version is inactive
+                # (the version was deactivated after the doc was created) gets a
+                # distinct, branchable error_code instead of being buried in the
+                # generic validation_failed — so a caller (and the kb gateway,
+                # which should map it to a 4xx, not a 502) can detect a "frozen
+                # template" cleanly. Remediation: reactivate the version
+                # (reactivate_template), or migrate the doc to an active version.
+                if any(e.get("code") == "template_inactive" for e in validation_result.errors):
+                    raise PatchError(
+                        "template_inactive",
+                        self._format_validation_errors(validation_result.errors),
+                    )
                 raise PatchError(
                     "validation_failed",
                     self._format_validation_errors(validation_result.errors),
+                )
+
+            # 5b. Append-only guard (CASE-478). A template with no
+            #     identity_fields declares append-only: every document is a
+            #     standalone record addressed only by a surrogate document_id,
+            #     not a logical identity. PATCH operates on logical entities, so
+            #     there is nothing to update here — fail loud with remediation
+            #     rather than silently mutating a surrogate-keyed row (which
+            #     would let any holder of the document_id repurpose it). The
+            #     guard reads identity_fields off the template (via the
+            #     validation result), not the per-doc identity_hash. It sits
+            #     after the validity check so identity_fields is populated, and
+            #     in the shared apply loop so REST, MCP update_document, and
+            #     bulk_patch all enforce it identically.
+            if not validation_result.identity_fields:
+                raise PatchError(
+                    "append_only",
+                    "This template declares no identity_fields (append-only): "
+                    "each document is a standalone record addressed only by "
+                    "document_id, not a logical identity, so it cannot be "
+                    "PATCHed. To change the data, create a new document; to "
+                    "make this template updatable, declare identity_fields on "
+                    "the template.",
                 )
 
             # 6. Identity-field invariant (design §3).
@@ -1791,14 +3217,17 @@ class DocumentService:
                         f"(use POST to create a new document instead)",
                     )
 
-            # 7. No-op detection — if data + all 3 reference arrays are byte-equal
-            #    to the current version, return without bumping.
-            if not self._data_has_changed(
+            # 7. No-op detection — if data, all 3 reference arrays, and the
+            #    merged custom metadata are byte-equal to the current version,
+            #    return without bumping. A metadata-only delta is a real
+            #    change and falls through to the write like any other.
+            if not self._document_has_changed(
                 current,
                 merged_data,
                 validation_result.term_references,
                 validation_result.references,
                 validation_result.file_references,
+                new_metadata_custom=merged_custom,
             ):
                 return BulkResultItem(
                     index=index,
@@ -1819,6 +3248,7 @@ class DocumentService:
                     template_namespace=current.namespace,
                     term_references=validation_result.term_references,
                     file_references=validation_result.file_references,
+                    document_references=validation_result.references,
                 )
             except ReferenceValidationError as exc:
                 raise PatchError(
@@ -1826,23 +3256,61 @@ class DocumentService:
                     f"Cross-namespace reference violation: {exc.violations}",
                 ) from exc
 
-            # 9. Write new version. Mirror _create_new_version's flow:
-            #    deactivate the existing version, then insert v+1 via the
-            #    retry helper. The unique index serializes concurrent writers.
+            # 9. Write. Phase-3 branch: templates with versioned=False
+            #    overwrite the existing document in place. Same
+            #    document_id, same version, fresh data + updated_at.
+            #    if_match (step 3) gives serialised concurrency for
+            #    this path — recommended.
             actor = get_identity_string()
             now = datetime.now(UTC)
 
+            if not await self._is_template_versioned(current.template_id):
+                previous_file_refs = list(current.file_references)
+                current.data = merged_data
+                current.term_references = validation_result.term_references
+                current.references = validation_result.references
+                current.file_references = validation_result.file_references
+                current.metadata = DocumentMetadata(
+                    source_system=current.metadata.source_system,
+                    warnings=validation_result.warnings,
+                    custom=merged_custom,
+                )
+                current.updated_at = now
+                current.updated_by = actor
+                await current.save()
+
+                await publish_document_event(
+                    EventType.DOCUMENT_UPDATED,
+                    await self._document_to_event_payload(current),
+                    changed_by=actor,
+                )
+                await self._update_file_reference_counts(previous_file_refs, delta=-1)
+                await self._update_file_reference_counts(validation_result.file_references, delta=1)
+
+                return BulkResultItem(
+                    index=index,
+                    status="updated",
+                    id=current.document_id,
+                    document_id=current.document_id,
+                    identity_hash=current.identity_hash,
+                    version=current.version,
+                    is_new=False,
+                    warnings=validation_result.warnings,
+                )
+
+            # versioned=True: existing flow — deactivate current, insert v+1.
             current.status = DocumentStatus.INACTIVE
             current.updated_at = now
             current.updated_by = actor
             await current.save()
 
-            # Preserve metadata.custom from the existing version. Warnings come
+            # Carry the merged custom metadata (identical to the current
+            # version's when no metadata_patch was supplied). Warnings come
             # from the new validation (they describe the merged state).
             new_metadata = DocumentMetadata(
                 source_system=current.metadata.source_system,
                 warnings=validation_result.warnings,
-                custom=dict(current.metadata.custom),
+                custom=merged_custom,
             )
 
             try:
@@ -1851,7 +3319,7 @@ class DocumentService:
                     document_id=current.document_id,
                     template_id=current.template_id,
                     template_version=current.template_version,
-                    template_value=current.template_value,
+                    template_value=cast(str, current.template_value),
                     identity_hash=current.identity_hash,  # invariant under PATCH
                     version=current.version + 1,
                     data=merged_data,
@@ -1876,7 +3344,7 @@ class DocumentService:
             #     no changes (a PATCH is just a new version, semantically).
             await publish_document_event(
                 EventType.DOCUMENT_UPDATED,
-                self._document_to_event_payload(new_doc),
+                await self._document_to_event_payload(new_doc),
                 changed_by=actor,
             )
 

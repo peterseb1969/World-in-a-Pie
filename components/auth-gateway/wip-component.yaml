@@ -1,0 +1,69 @@
+api_version: wip.dev/v1
+kind: Component
+metadata:
+  name: auth-gateway
+  category: infrastructure
+  description: |
+    OIDC authentication gateway (Theme 7). When auth.gateway=True, it
+    sits in the request path for auth-required routes: Caddy's
+    forward_auth (compose) or NGINX Ingress auth-url (k8s) consults it
+    to verify sessions, then injects X-WIP-User / X-WIP-Groups / X-API-Key
+    headers before the request reaches the backend service.
+
+spec:
+  image:
+    name: auth-gateway
+    # Fallback release tag (CASE-438): applies only when the operator
+    # passes no --tag / --image-tag — an explicit CLI tag overrides this
+    # pin. Originally pinned because the auth-gateway was added after
+    # v1.1.0 (Theme 7) and had its own release cadence.
+    tag: 20260610a
+    build_context: .
+
+  ports:
+    - {name: http, container_port: 4180}
+
+  routes:
+    # Browser-facing /auth/* endpoints (login, callback, logout,
+    # userinfo). The gateway IS the auth — no forward_auth on these.
+    - {path: /auth, auth_required: false}
+
+  env:
+    required:
+      # Public issuer (what browsers see) vs internal (what the gateway
+      # uses server-to-server). These differ in compose: public goes
+      # through Caddy TLS; internal talks to Dex on the container network.
+      - {name: OIDC_ISSUER, source: {from_spec: auth.issuer_url_public}}
+      # Must include the `/dex` path prefix since that's Dex's issuer
+      # string — `from_component: dex` gives only the base URL without
+      # it, and OIDC discovery appends `/.well-known/openid-configuration`
+      # directly to whatever the issuer is.
+      - {name: OIDC_INTERNAL_ISSUER, source: {from_spec: auth.issuer_url_internal}}
+      - {name: OIDC_CLIENT_ID, source: {literal: wip-gateway}}
+      # Must match the Dex generator's well-known name for the
+      # wip-gateway static client (dex-client-<client_id>).
+      - {name: OIDC_CLIENT_SECRET, source: {from_secret: dex-client-wip-gateway}}
+      - {name: SESSION_SECRET, source: {from_secret: gateway-session-secret}}
+      - {name: API_KEY, source: {from_secret: api-key}}
+      - {name: WIP_HOSTNAME, source: {from_spec: network.hostname}}
+      - {name: CALLBACK_URL, source: {from_spec: auth.callback_url}}
+      # Security posture — arms the gateway's default-session-secret
+      # startup guard. From the deployment's --variant.
+      - {name: WIP_VARIANT, source: {from_spec: security.variant}}
+      # Spec-declared config-file API keys (deployment auth.api_keys);
+      # empty when none are declared — wip-auth treats empty as unset.
+      - {name: WIP_AUTH_API_KEYS_FILE, source: {from_spec: security.api_keys_file}}
+
+  depends_on: [dex]
+
+  healthcheck:
+    endpoint: /health
+    start_period_seconds: 10
+
+  oidc_client:
+    client_id: wip-gateway
+    redirect_paths: [/auth/callback]
+
+  activation:
+    # Only deployed when Theme 7 gateway is in the request path.
+    requires_auth_gateway: true

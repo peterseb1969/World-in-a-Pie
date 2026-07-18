@@ -4,20 +4,27 @@ Provides grant CRUD (bulk-first) and user-facing permission queries.
 """
 
 from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from wip_auth import UserIdentity, get_current_identity
+from wip_auth import UserIdentity
 
 from ..models.grant import (
+    GrantBulkResponse,
     GrantCreate,
     GrantResponse,
     GrantRevoke,
+    GrantRevokeBulkResponse,
     MyNamespaceResponse,
     NamespaceGrant,
 )
 from ..models.namespace import Namespace
 from ..services.auth import require_api_key
+
+# The wire-level set of auth_method values UserIdentity accepts. Mirrors
+# the Literal in libs/wip-auth/src/wip_auth/models.py::UserIdentity.
+AuthMethod = Literal["jwt", "api_key", "gateway_oidc", "none"]
 
 router = APIRouter()        # /{prefix}/grants — mounted at /namespaces
 my_router = APIRouter()     # /my/namespaces — mounted at /my
@@ -34,6 +41,53 @@ def _is_superadmin(identity: UserIdentity) -> bool:
 # Groups whose API keys are allowed to have namespaces=None (all-namespace access).
 # wip-admins: human/admin keys, wip-services: service-to-service keys (e.g. reporting-sync).
 _PRIVILEGED_GROUPS = {"wip-admins", "wip-services"}
+
+
+def _build_synthetic_identity(
+    *,
+    user_id: str,
+    email: str | None,
+    groups: list[str],
+    auth_method: AuthMethod,
+    key_namespaces_header: str | None,
+    username: str | None = None,
+) -> UserIdentity:
+    """Reconstruct the calling service's UserIdentity at the Registry side.
+
+    CASE-351: when the calling service forwards an api-key's namespace
+    scope via X-Key-Namespaces, that list must land on the synthetic
+    identity's `raw_claims["namespaces"]` so `_resolve_permission`'s
+    api_key branch can use it (lines 79-82 + 121-124).
+
+    Header absent → raw_claims=None, matching today's behaviour for
+    unscoped admin/services keys and for non-api_key identities.
+
+    Empty header (no namespaces in scope) is treated as an explicit
+    empty list, not an absent header — a key explicitly scoped to no
+    namespaces is meaningfully different from an unscoped key. (Today
+    no caller produces this shape, but the distinction is recorded
+    so future code can rely on it.)
+    """
+    raw_claims: dict | None = None
+    if key_namespaces_header is not None:
+        # Strip per-item whitespace from CSV; drop empty fragments so
+        # a stray comma in the header doesn't poison the list.
+        ns_list = [
+            ns.strip() for ns in key_namespaces_header.split(",") if ns.strip()
+        ]
+        raw_claims = {"namespaces": ns_list}
+    # CASE-450: callers that forward `username` (api-key name) get exact
+    # grant-subject parity with direct Registry calls. The email/user_id
+    # fallback keeps old-lib callers working (covered by the compat match
+    # in _resolve_permission).
+    return UserIdentity(
+        user_id=user_id,
+        username=username or email or user_id,
+        email=email,
+        groups=groups,
+        auth_method=auth_method,
+        raw_claims=raw_claims,
+    )
 
 
 def _grant_to_response(grant: NamespaceGrant) -> GrantResponse:
@@ -75,6 +129,12 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     subjects = []
     if identity.auth_method == "api_key":
         subjects.append(("api_key", identity.username))
+        # CASE-450 compat: cross-service callers on a pre-450 wip-auth don't
+        # forward username, so the synthetic identity carries the user_id
+        # form ("apikey:<name>") while grants are stored under the bare key
+        # name. Match both spellings.
+        if identity.username.startswith("apikey:"):
+            subjects.append(("api_key", identity.username.removeprefix("apikey:")))
         # Check API key namespace restrictions
         namespaces = (identity.raw_claims or {}).get("namespaces")
         if namespaces is not None:
@@ -126,6 +186,29 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     return best
 
 
+async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | None:
+    """Namespaces a directly-calling identity may read, or None for superadmin.
+
+    None means "no restriction" (superadmin) — callers should apply no
+    namespace filter. A concrete list (possibly empty) means "restrict reads
+    to exactly these prefixes." Used by the registry's own enumeration
+    endpoints to scope listings to the caller's grants, the same way the
+    stores scope their listings via wip_auth.permissions. This is the
+    in-process twin of the service-to-service ``/my/accessible-namespaces``
+    endpoint: the identity is already the direct caller here, so there is no
+    synthetic-identity reconstruction and no HTTP self-call.
+    """
+    if _is_superadmin(identity):
+        return None
+
+    all_ns = await Namespace.find({"status": "active"}).to_list()
+    return [
+        ns.prefix
+        for ns in all_ns
+        if await _resolve_permission(identity, ns.prefix) != "none"
+    ]
+
+
 # =============================================================================
 # Grant management (requires admin on the namespace)
 # =============================================================================
@@ -138,9 +221,8 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
 )
 async def list_grants(
     prefix: str,
-    _: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
-    identity = get_current_identity()
 
     # Must be admin on this namespace (or superadmin)
     permission = await _resolve_permission(identity, prefix)
@@ -153,14 +235,14 @@ async def list_grants(
 
 @router.post(
     "/{prefix}/grants",
+    response_model=GrantBulkResponse,
     summary="Create grants for a namespace (bulk)",
 )
 async def create_grants(
     prefix: str,
     items: list[GrantCreate],
-    _: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
-    identity = get_current_identity()
 
     # Must be admin on this namespace
     permission = await _resolve_permission(identity, prefix)
@@ -175,10 +257,16 @@ async def create_grants(
     results = []
     for i, item in enumerate(items):
         try:
+            # CASE-450: canonical api_key subject is the bare key name —
+            # normalize a user_id-form spelling so one logical grant has
+            # one stored record regardless of how the operator wrote it.
+            subject = item.subject
+            if item.subject_type == "api_key":
+                subject = subject.removeprefix("apikey:")
             # Upsert: update permission if grant already exists
             existing = await NamespaceGrant.find_one({
                 "namespace": prefix,
-                "subject": item.subject,
+                "subject": subject,
                 "subject_type": item.subject_type,
             })
             if existing:
@@ -189,12 +277,12 @@ async def create_grants(
                 await existing.save()
                 results.append({
                     "index": i, "status": "updated",
-                    "subject": item.subject, "permission": item.permission,
+                    "subject": subject, "permission": item.permission,
                 })
             else:
                 grant = NamespaceGrant(
                     namespace=prefix,
-                    subject=item.subject,
+                    subject=subject,
                     subject_type=item.subject_type,
                     permission=item.permission,
                     granted_by=identity.identity_string,
@@ -203,7 +291,7 @@ async def create_grants(
                 await grant.create()
                 results.append({
                     "index": i, "status": "created",
-                    "subject": item.subject, "permission": item.permission,
+                    "subject": subject, "permission": item.permission,
                 })
         except Exception as e:
             results.append({
@@ -222,14 +310,14 @@ async def create_grants(
 
 @router.delete(
     "/{prefix}/grants",
+    response_model=GrantRevokeBulkResponse,
     summary="Revoke grants for a namespace (bulk)",
 )
 async def revoke_grants(
     prefix: str,
     items: list[GrantRevoke],
-    _: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
-    identity = get_current_identity()
 
     permission = await _resolve_permission(identity, prefix)
     if _PERMISSION_LEVELS.get(permission, 0) < _PERMISSION_LEVELS["admin"]:
@@ -237,16 +325,20 @@ async def revoke_grants(
 
     results = []
     for i, item in enumerate(items):
+        # CASE-450: match the canonical (bare key name) spelling — see create.
+        subject = item.subject
+        if item.subject_type == "api_key":
+            subject = subject.removeprefix("apikey:")
         grant = await NamespaceGrant.find_one({
             "namespace": prefix,
-            "subject": item.subject,
+            "subject": subject,
             "subject_type": item.subject_type,
         })
         if grant:
             await grant.delete()
-            results.append({"index": i, "status": "revoked", "subject": item.subject})
+            results.append({"index": i, "status": "revoked", "subject": subject})
         else:
-            results.append({"index": i, "status": "not_found", "subject": item.subject})
+            results.append({"index": i, "status": "not_found", "subject": subject})
 
     succeeded = sum(1 for r in results if r["status"] == "revoked")
     return {
@@ -268,10 +360,9 @@ async def revoke_grants(
     summary="List namespaces I can access",
 )
 async def my_namespaces(
-    _: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """List all namespaces the caller has access to, with permission levels."""
-    identity = get_current_identity()
 
     # Get all active namespaces
     all_ns = await Namespace.find({"status": "active"}).to_list()
@@ -295,14 +386,13 @@ async def my_namespaces(
 )
 async def my_namespace_permission(
     prefix: str,
-    _: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Get the caller's permission level on a specific namespace.
 
     Returns 404 if the namespace doesn't exist or the caller has no access
     (to avoid leaking namespace names).
     """
-    identity = get_current_identity()
 
     # Check namespace exists
     ns = await Namespace.find_one({"prefix": prefix})
@@ -325,9 +415,10 @@ async def check_permission_internal(
     namespace: str,
     user_id: str,
     email: str | None = None,
+    username: str | None = None,
     groups: str | None = None,
-    auth_method: str = "jwt",
-    _: str = Depends(require_api_key),
+    auth_method: AuthMethod = "jwt",
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Internal endpoint for other WIP services to check permissions.
 
@@ -339,7 +430,7 @@ async def check_permission_internal(
 
     Only callable by privileged API keys (wip-admins or wip-services group).
     """
-    caller = get_current_identity()
+    caller = identity
     if not any(g in _PRIVILEGED_GROUPS for g in caller.groups):
         raise HTTPException(403, "Only service accounts can call this endpoint")
 
@@ -347,12 +438,18 @@ async def check_permission_internal(
     header_groups = request.headers.get("X-User-Groups")
     groups_str = header_groups or groups
     group_list = groups_str.split(",") if groups_str else []
-    synthetic = UserIdentity(
+    # CASE-351 — the calling service forwards the api-key's namespace
+    # scope so _resolve_permission's api_key branch can see the same
+    # scoping the calling service does. Absent header = unscoped key
+    # (admin/services) or non-api_key identity — both match existing
+    # behaviour.
+    synthetic = _build_synthetic_identity(
         user_id=user_id,
-        username=email or user_id,
         email=email,
+        username=username,
         groups=group_list,
         auth_method=auth_method,
+        key_namespaces_header=request.headers.get("X-Key-Namespaces"),
     )
 
     perm = await _resolve_permission(synthetic, namespace)
@@ -367,9 +464,10 @@ async def accessible_namespaces_internal(
     request: Request,
     user_id: str,
     email: str | None = None,
+    username: str | None = None,
     groups: str | None = None,
-    auth_method: str = "jwt",
-    _: str = Depends(require_api_key),
+    auth_method: AuthMethod = "jwt",
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Internal endpoint for services to get a user's accessible namespaces.
 
@@ -380,19 +478,21 @@ async def accessible_namespaces_internal(
 
     Only callable by privileged API keys (wip-admins or wip-services group).
     """
-    caller = get_current_identity()
+    caller = identity
     if not any(g in _PRIVILEGED_GROUPS for g in caller.groups):
         raise HTTPException(403, "Only service accounts can call this endpoint")
 
     header_groups = request.headers.get("X-User-Groups")
     groups_str = header_groups or groups
     group_list = groups_str.split(",") if groups_str else []
-    synthetic = UserIdentity(
+    # CASE-351 — see check_permission_internal for the rationale.
+    synthetic = _build_synthetic_identity(
         user_id=user_id,
-        username=email or user_id,
         email=email,
+        username=username,
         groups=group_list,
         auth_method=auth_method,
+        key_namespaces_header=request.headers.get("X-Key-Namespaces"),
     )
 
     if _is_superadmin(synthetic):

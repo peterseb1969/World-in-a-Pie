@@ -108,7 +108,8 @@ async def test_validate_template_invalid_extends(client: AsyncClient, auth_heade
                     "name": "nested",
                     "label": "Nested",
                     "type": "object",
-                    "template_ref": "NONEXISTENT_TEMPLATE"  # Invalid reference
+                    "template_ref": "NONEXISTENT_TEMPLATE",  # Invalid reference
+                    "template_ref_version": 1
                 }
             ]
         }]
@@ -197,7 +198,8 @@ async def test_validate_template_array_template_ref(client: AsyncClient, auth_he
                     "label": "Addresses",
                     "type": "array",
                     "array_item_type": "object",
-                    "array_template_ref": addr_id
+                    "array_template_ref": addr_id,
+                    "array_template_ref_version": 1
                 }
             ]
         }]
@@ -303,7 +305,8 @@ async def test_validate_template_nested_object(client: AsyncClient, auth_headers
                     "name": "contact",
                     "label": "Contact",
                     "type": "object",
-                    "template_ref": nested_id
+                    "template_ref": nested_id,
+                    "template_ref_version": 1
                 }
             ]
         }]
@@ -346,6 +349,7 @@ async def test_validate_template_with_extends(client: AsyncClient, auth_headers:
             "value": "VAL_CHILD",
             "label": "Validation Child",
             "extends": parent_id,
+            "extends_version": 1,
             "fields": [{"name": "name", "label": "Name", "type": "string"}]
         }]
     )
@@ -391,7 +395,8 @@ async def test_validate_template_multiple_errors(client: AsyncClient, auth_heade
                     "name": "field3",
                     "label": "Field 3",
                     "type": "object",
-                    "template_ref": "INVALID_TEMPLATE"
+                    "template_ref": "INVALID_TEMPLATE",
+                    "template_ref_version": 1
                 }
             ]
         }]

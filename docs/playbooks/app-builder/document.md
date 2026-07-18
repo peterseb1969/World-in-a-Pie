@@ -36,7 +36,7 @@ How the code is organized and the reasoning behind key decisions.
 
 Must contain:
 - **Page/route structure** — what pages exist, what URL routes, what each shows
-- **Component hierarchy** — key components and their relationships (not every tiny component, just the structural ones)
+- **Component hierarchy** — key components and their relations (not every tiny component, just the structural ones)
 - **Data flow** — how data moves from WIP through @wip/react hooks to the UI
 - **State management** — what state lives where (query cache, local component state, URL params)
 - **Key decisions and rationale** — why this navigation pattern, why this filter approach, why this import strategy. These are the decisions the next session will want to change unless it knows why they were made.

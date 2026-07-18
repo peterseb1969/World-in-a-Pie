@@ -4,6 +4,7 @@
 from ..models.field import FieldDefinition
 from ..models.rule import ValidationRule
 from ..models.template import Template
+from beanie.odm.enums import SortDirection
 
 MAX_INHERITANCE_DEPTH = 10
 
@@ -103,25 +104,28 @@ class InheritanceService:
                     f"Maximum inheritance depth ({MAX_INHERITANCE_DEPTH}) exceeded"
                 )
 
-            # Look up parent template — respect extends_version pin
-            if current.extends_version is not None:
-                # Pinned: find exact version
-                parent = await Template.find_one({
-                    "template_id": current.extends,
-                    "version": current.extends_version
-                })
-            else:
-                # Unpinned: find latest active version
-                results = await Template.find({
-                    "template_id": current.extends,
-                    "status": "active"
-                }).sort([("version", -1)]).limit(1).to_list()
-                parent = results[0] if results else None
+            # Look up parent template at its pinned version. extends_version is
+            # mandatory (CASE-493): schema inheritance always resolves to an
+            # explicit parent version, never "latest", so a child's resolved
+            # schema cannot silently shift when the parent ships a new version.
+            # The latest-active fallback was deliberately removed — a stored
+            # template reaching here without extends_version is a data-integrity
+            # error, not a cue to float to latest.
+            if current.extends_version is None:
+                raise InheritanceError(
+                    f"Template '{current.template_id}' extends "
+                    f"'{current.extends}' without a pinned extends_version "
+                    "(CASE-493: schema inheritance must pin an explicit version)"
+                )
+            parent = await Template.find_one({
+                "template_id": current.extends,
+                "version": current.extends_version
+            })
 
             if not parent:
                 raise InheritanceError(
-                    f"Parent template '{current.extends}' not found"
-                    + (f" at version {current.extends_version}" if current.extends_version else "")
+                    f"Parent template '{current.extends}' not found "
+                    f"at version {current.extends_version}"
                 )
 
             # Check for circular inheritance (use template_id, not template_id+version)
@@ -254,11 +258,11 @@ class InheritanceService:
             seen_ids.add(current_id)
 
             # Get latest version of the parent
-            results = await Template.find({"template_id": current_id}).sort([("version", -1)]).limit(1).to_list()
+            results = await Template.find({"template_id": current_id}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             if not results:
                 break
 
-            current_id = results[0].extends
+            current_id = results[0].extends or ""
 
         return False
 

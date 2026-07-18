@@ -160,6 +160,39 @@ function MyComponent() {
 
 ---
 
+## Components
+
+### `<WipFooter>`
+
+Brand-attribution footer. Drop into any WIP app's root layout to render a small "Built on WIP" mark with the embedded logo.
+
+```tsx
+import { WipFooter } from '@wip/react'
+
+function App() {
+  return (
+    <>
+      {/* ...your app... */}
+      <WipFooter />                       {/* "Built on WIP" */}
+      <WipFooter appName="ClinTrial" />   {/* "ClinTrial · Built on WIP" */}
+    </>
+  )
+}
+```
+
+| Prop | Type | Default | Purpose |
+|---|---|---|---|
+| `appName` | `string` | `undefined` | Prepends `<appName> · ` to the attribution text. |
+| `className` | `string` | `undefined` | Layout-only override merged onto the wrapper `<footer>`. |
+| `variant` | `'compact' \| 'full'` | `'compact'` | v1 ships `compact` only. `full` reserved for v1.5. |
+| `style` | `CSSProperties` | `undefined` | Optional inline style override. |
+| `buildStamp` | `string` | `undefined` | Build timestamp baked at image-build time (e.g. `import.meta.env.VITE_BUILD_STAMP`). Renders as a muted suffix so an operator can see which build is running. Omit or leave the `'dev'` sentinel to hide. |
+| `buildSha` | `string` | `undefined` | Short git SHA of the build (e.g. `import.meta.env.VITE_BUILD_SHA`). Rendered alongside `buildStamp` when set. |
+
+The logo embeds as a base64 data URL (~12 KB) inside the component — no asset copy needed in your app's `public/`.
+
+---
+
 ## Read Hooks
 
 All read hooks return TanStack Query's `UseQueryResult<T>` with `data`, `isLoading`, `error`, `refetch`, etc. Every hook accepts an optional final parameter to override TanStack Query options (staleTime, refetchInterval, etc.).
@@ -215,6 +248,9 @@ const { data: template } = useTemplateByValue('PATIENT_RECORD')
 | `useDocument(id)` | `Document` | 30s | when `id` is truthy |
 | `useQueryDocuments(query)` | `DocumentListResponse` | 30s | when `query.template_id` or `query.filters.length > 0` |
 | `useDocumentVersions(id)` | `DocumentVersionResponse` | 30s | when `id` is truthy |
+| `useTableView(templateId, params?)` | `TableViewResponse` | 30s | when `templateId` is truthy |
+| `useDocumentRelationships(id, params?)` | `DocumentListResponse` | 30s | when `id` is truthy |
+| `useTraverseDocuments(id, params?)` | `DocumentTraverseResponse` | 30s | when `id` is truthy |
 
 ```tsx
 // List documents for a template
@@ -278,6 +314,10 @@ const { data: results } = useRegistrySearch({
 |------|---------|-----------|---------|
 | `useIntegrityCheck(params?)` | `IntegrityCheckResult` | 1min | always |
 | `useActivity(params?)` | `ActivityResponse` | 1min | always |
+| `useReportQuery(sql, params?)` | `ReportQueryResult` | 10s | always |
+| `useSyncStatus()` | `SyncStatus` | 1min | always |
+| `useBatchJobs()` | `BatchSyncJob[]` | 0 (live) | always |
+| `useBatchJob(jobId)` | `BatchSyncJob` | 0 (live) | when `jobId` is truthy |
 
 ```tsx
 const { data: integrity } = useIntegrityCheck({ check_term_refs: true })
@@ -294,26 +334,92 @@ const { data: activity } = useActivity({ types: 'document,template', limit: 20 }
 
 All mutations return TanStack Query's `UseMutationResult` with `mutate`, `mutateAsync`, `isPending`, `error`, `data`, etc. Every hook accepts an optional parameter to override TanStack Query mutation options (`onSuccess`, `onError`, `onSettled`, etc.).
 
+The tables below list every exported mutation hook and the query keys each one
+invalidates on success. Rows are grouped by resource. (`useBulkImport` is a
+mutation too, documented under [Specialized Hooks](#usebulkimport).)
+
+**Terminologies & Terms**
+
 | Hook | Input | Returns | Invalidates |
 |------|-------|---------|-------------|
 | `useCreateTerminology()` | `CreateTerminologyRequest` | `BulkResultItem` | `terminologies.all` |
-| `useCreateTerm(terminologyId)` | `CreateTermRequest` | `BulkResultItem` | `terms.all` + `terminologies.detail(id)` |
+| `useUpdateTerminology()` | `{ id, data }` | `BulkResultItem` | `terminologies.all` |
+| `useDeleteTerminology()` | `string` | `BulkResultItem` | `terminologies.all` |
+| `useCreateTerm(terminologyId, namespace)` | `CreateTermRequest` | `BulkResultItem` | `terms.all` + `terminologies.detail` |
+| `useUpdateTerm()` | `{ termId, data }` | `BulkResultItem` | `terms.all` |
+| `useDeprecateTerm()` | `{ termId, data }` | `BulkResultItem` | `terms.all` |
+| `useDeleteTerm(terminologyId)` | `string` | `BulkResultItem` | `terms.all` + `terminologies.detail` |
+| `useCreateTermRelations()` | `{ items, namespace }` | `BulkResponse` | `terms.all` |
+| `useDeleteTermRelations()` | `{ items, namespace }` | `BulkResponse` | `terms.all` |
+
+**Templates**
+
+| Hook | Input | Returns | Invalidates |
+|------|-------|---------|-------------|
 | `useCreateTemplate()` | `CreateTemplateRequest` | `BulkResultItem` | `templates.all` |
+| `useUpdateTemplate()` | `{ id, data }` | `BulkResultItem` | `templates.all` |
+| `useDeleteTemplate()` | `{ id, updatedBy?, version?, force?, hardDelete? }` | `BulkResultItem` | `templates.all` |
+| `useActivateTemplate()` | `{ id, namespace, dry_run? }` | `ActivateTemplateResponse` | `templates.all` |
+| `useReactivateTemplate()` | `{ id, version, namespace }` | `Template` | `templates.all` |
+| `useAddEdgeTypeEndpoints()` | `{ id, namespace, addSourceTemplates?, addTargetTemplates? }` | `Template` | `templates.all` |
+
+**Documents**
+
+| Hook | Input | Returns | Invalidates |
+|------|-------|---------|-------------|
 | `useCreateDocument()` | `CreateDocumentRequest` | `BulkResultItem` | `documents.all` |
 | `useCreateDocuments()` | `CreateDocumentRequest[]` | `BulkResponse` | `documents.all` |
-| `useUploadFile()` | `{ file, filename?, metadata? }` | `FileEntity` | `files.all` |
+| `useUpdateDocument()` | `{ documentId, patch, ifMatch? }` | `BulkResultItem` | `documents.all` + `documents.detail` + `documents.versions` |
+| `useUpdateDocuments()` | `PatchDocumentRequest[]` | `BulkResponse` | `documents.all` |
 | `useDeleteDocument()` | `{ id, updatedBy? }` | `BulkResultItem` | `documents.all` |
+| `useArchiveDocument()` | `{ id, archivedBy? }` | `BulkResultItem` | `documents.all` |
+
+**Files**
+
+| Hook | Input | Returns | Invalidates |
+|------|-------|---------|-------------|
+| `useUploadFile()` | `{ file, filename?, metadata?, namespace? }` | `FileEntity` | `files.all` |
+| `useUpdateFileMetadata()` | `{ fileId, data }` | `BulkResultItem` | `files.all` |
+| `useDeleteFile()` | `string` | `BulkResultItem` | `files.all` |
+| `useDeleteFiles()` | `string[]` | `BulkResponse` | `files.all` |
+| `useHardDeleteFile()` | `string` | `void` | `files.all` |
+
+**Namespaces & Registry**
+
+| Hook | Input | Returns | Invalidates |
+|------|-------|---------|-------------|
+| `useCreateNamespace()` | `CreateNamespaceRequest` | `Namespace` | `registry.all` |
+| `useUpdateNamespace()` | `{ prefix, data }` | `Namespace` | `registry.all` |
+| `useArchiveNamespace()` | `{ prefix, archivedBy? }` | `Namespace` | `registry.all` |
+| `useRestoreNamespace()` | `{ prefix, restoredBy? }` | `Namespace` | `registry.all` |
+| `useDeleteNamespace()` | `{ prefix, deletedBy? }` | `void` | `registry.all` |
+| `useAddSynonym()` | `AddSynonymRequest` | `{ status, registry_id?, error? }` | `registry.all` |
+| `useRemoveSynonym()` | `RemoveSynonymRequest` | `{ status, registry_id?, error? }` | `registry.all` |
+| `useMergeEntries()` | `MergeRequest` | `{ status, preferred_id?, deprecated_id?, error? }` | `registry.all` |
+| `useDeactivateEntry()` | `{ entryId, updatedBy? }` | `{ status }` | `registry.all` |
+
+**Reporting & Sync**
+
+| Hook | Input | Returns | Invalidates |
+|------|-------|---------|-------------|
+| `useTriggerBatchSyncAll()` | `BatchSyncAllVars` | `BatchSyncResponse[]` | `reporting.batchJobs` |
+| `useTriggerBatchSync()` | `BatchSyncVars` | `BatchSyncResponse` | `reporting.batchJobs` |
+| `useTriggerTerminologySync()` | `EntitySyncVars` | `BatchEntitySyncResult` | — (backend sync; no local cache) |
+| `useTriggerTermSync()` | `EntitySyncVars` | `BatchEntitySyncResult` | — (backend sync; no local cache) |
+| `useTriggerTermRelationSync()` | `EntitySyncVars` | `BatchEntitySyncResult` | — (backend sync; no local cache) |
+| `useCancelBatchJob()` | `string` | `BatchJobCancelResult` | `reporting.batchJob` + `reporting.batchJobs` |
+| `useClearCompletedJobs()` | `void` | `BatchJobsCleared` | `reporting.batchJobs` |
 
 ### Single-Item Mutations
 
 ```tsx
-const createTerm = useCreateTerminology()
+const createTerminology = useCreateTerminology()
 
 // Fire-and-forget
-createTerm.mutate({ value: 'GENDER', label: 'Gender' })
+createTerminology.mutate({ value: 'GENDER', label: 'Gender' })
 
 // With callbacks
-createTerm.mutate(
+createTerminology.mutate(
   { value: 'GENDER', label: 'Gender' },
   {
     onSuccess: (result) => {
@@ -327,7 +433,7 @@ createTerm.mutate(
 )
 
 // Async/await
-const result = await createTerm.mutateAsync({ value: 'GENDER', label: 'Gender' })
+const result = await createTerminology.mutateAsync({ value: 'GENDER', label: 'Gender' })
 ```
 
 ### Bulk Mutations
@@ -540,6 +646,8 @@ wipKeys.documents.list(params?)                → ['wip', 'documents', 'list', 
 wipKeys.documents.detail(id)                   → ['wip', 'documents', 'detail', id]
 wipKeys.documents.versions(id)                 → ['wip', 'documents', 'versions', id]
 wipKeys.documents.tableView(templateId, params?) → ['wip', 'documents', 'table', templateId, params]
+wipKeys.documents.relationships(id, params?)   → ['wip', 'documents', 'relationships', id, params]
+wipKeys.documents.traverse(id, params?)        → ['wip', 'documents', 'traverse', id, params]
 wipKeys.files.all                              → ['wip', 'files']
 wipKeys.files.list(params?)                    → ['wip', 'files', 'list', params]
 wipKeys.files.detail(id)                       → ['wip', 'files', 'detail', id]
@@ -554,6 +662,10 @@ wipKeys.reporting.all                          → ['wip', 'reporting']
 wipKeys.reporting.integrity(params?)           → ['wip', 'reporting', 'integrity', params]
 wipKeys.reporting.activity(params?)            → ['wip', 'reporting', 'activity', params]
 wipKeys.reporting.search(params?)              → ['wip', 'reporting', 'search', params]
+wipKeys.reporting.query(sql, params?, namespace?) → ['wip', 'reporting', 'query', sql, params, namespace]
+wipKeys.reporting.syncStatus()                 → ['wip', 'reporting', 'sync-status']
+wipKeys.reporting.batchJobs()                  → ['wip', 'reporting', 'batch-jobs']
+wipKeys.reporting.batchJob(jobId)              → ['wip', 'reporting', 'batch-jobs', jobId]
 ```
 
 Invalidating a parent key cascades to all children. For example, `queryClient.invalidateQueries({ queryKey: wipKeys.templates.all })` invalidates every template list, detail, and byValue query.
@@ -584,7 +696,7 @@ const { data } = useActivity(params, { refetchInterval: 10_000 }) // poll every 
 | Mutation | Invalidates |
 |----------|-------------|
 | `useCreateTerminology` | `wipKeys.terminologies.all` |
-| `useCreateTerm(terminologyId)` | `wipKeys.terms.all` + `wipKeys.terminologies.detail(terminologyId)` |
+| `useCreateTerm(terminologyId, namespace)` | `wipKeys.terms.all` + `wipKeys.terminologies.detail(terminologyId)` |
 | `useCreateTemplate` | `wipKeys.templates.all` |
 | `useCreateDocument` | `wipKeys.documents.all` |
 | `useCreateDocuments` | `wipKeys.documents.all` |
@@ -598,6 +710,9 @@ const { data } = useActivity(params, { refetchInterval: 10_000 }) // poll every 
 ```typescript
 // Provider & client access
 export { WipProvider, useWipClient, type WipProviderProps }
+
+// Brand-attribution component
+export { WipFooter, type WipFooterProps }
 
 // Cache management
 export { wipKeys, STALE_TIMES }

@@ -56,6 +56,23 @@ def permission_sufficient(actual: str, required: str) -> bool:
     return PERMISSION_LEVELS.get(actual, 0) >= PERMISSION_LEVELS.get(required, 0)
 
 
+def _config_declared_grants(identity: UserIdentity) -> dict[str, str] | None:
+    """The config-file grants carried by an api-key identity, or None.
+
+    Non-None only for config-file keys whose definition declares grants.
+    Such keys resolve permissions locally — key, read scope, and write
+    grants all come from the config file, so they survive a MongoDB
+    wipe/restore with no Registry round-trip. Runtime (Mongo-stored)
+    keys never carry this claim and resolve through the Registry.
+    """
+    if identity.auth_method != "api_key":
+        return None
+    grants = (identity.raw_claims or {}).get("grants")
+    if not isinstance(grants, dict):
+        return None
+    return grants
+
+
 async def resolve_permission(identity: UserIdentity, namespace: str) -> str:
     """Resolve the effective permission for an identity on a namespace.
 
@@ -64,6 +81,16 @@ async def resolve_permission(identity: UserIdentity, namespace: str) -> str:
     # Superadmin bypass
     if _is_superadmin(identity):
         return "admin"
+
+    # Config-declared grants: local resolution, no Registry, no cache
+    # needed (pure in-memory lookup).
+    config_grants = _config_declared_grants(identity)
+    if config_grants is not None:
+        declared = config_grants.get(namespace)
+        if declared is not None:
+            return declared
+        key_namespaces = (identity.raw_claims or {}).get("namespaces") or []
+        return "read" if namespace in key_namespaces else "none"
 
     cache_key = f"{identity.user_id}:{namespace}"
 
@@ -102,11 +129,26 @@ async def _fetch_permission_from_registry(
     }
     if identity.email:
         params["email"] = identity.email
+    # CASE-450 — forward username so api_key grant subjects match the same
+    # spelling (bare key name) on this path as on direct Registry calls.
+    # Without it the Registry's synthetic identity falls back to
+    # username=user_id ("apikey:<name>") and grants stored under the key
+    # name never match cross-service checks.
+    if identity.username:
+        params["username"] = identity.username
 
     # Pass groups in header (M2 — avoid leaking group names in access logs/caches)
     headers = {"X-API-Key": api_key}
     if identity.groups:
         headers["X-User-Groups"] = ",".join(identity.groups)
+    # CASE-351 — forward the api-key's namespace scope so the Registry's
+    # synthetic identity sees the same scoping the calling service does.
+    # Without this, the Registry treats every api_key call as unscoped
+    # and returns "none" for non-privileged keys. Header (not param)
+    # matches the existing X-User-Groups pattern.
+    key_namespaces = (identity.raw_claims or {}).get("namespaces")
+    if key_namespaces is not None:
+        headers["X-Key-Namespaces"] = ",".join(key_namespaces)
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -211,6 +253,14 @@ async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | N
     if _is_superadmin(identity):
         return None
 
+    # Config-declared grants: accessible set is the config-declared
+    # scope — namespaces (read) plus granted namespaces — resolved
+    # locally, same rationale as in resolve_permission.
+    config_grants = _config_declared_grants(identity)
+    if config_grants is not None:
+        key_namespaces = (identity.raw_claims or {}).get("namespaces") or []
+        return sorted(set(key_namespaces) | set(config_grants))
+
     cache_key = identity.user_id
 
     # Use sentinel to distinguish "not cached" from "cached None"
@@ -242,10 +292,18 @@ async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str] |
     }
     if identity.email:
         params["email"] = identity.email
+    # CASE-450 — see _fetch_permission_from_registry.
+    if identity.username:
+        params["username"] = identity.username
 
     headers = {"X-API-Key": api_key}
     if identity.groups:
         headers["X-User-Groups"] = ",".join(identity.groups)
+    # CASE-351 — forward the api-key's namespace scope (see sibling
+    # _fetch_permission_from_registry for the full rationale).
+    key_namespaces = (identity.raw_claims or {}).get("namespaces")
+    if key_namespaces is not None:
+        headers["X-Key-Namespaces"] = ",".join(key_namespaces)
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:

@@ -110,10 +110,10 @@ class TestSchemaCreation:
             ("active", FieldType.BOOLEAN),
         )
 
-        await sm.create_table("Person", 1, fields)
+        await sm.create_table("testns", "Person", 1, fields)
 
-        assert await sm.table_exists("doc_person")
-        cols = await sm.get_existing_columns("doc_person")
+        assert await sm.table_exists("testns", "doc_person")
+        cols = await sm.get_existing_columns("testns", "doc_person")
         assert {"name", "age", "score", "active"}.issubset(cols)
         assert {"document_id", "namespace", "status", "version"}.issubset(cols)
 
@@ -126,9 +126,9 @@ class TestSchemaCreation:
             ("registered_at", FieldType.DATETIME),
         )
 
-        await sm.create_table("Event", 1, fields)
+        await sm.create_table("testns", "Event", 1, fields)
 
-        cols = await sm.get_existing_columns("doc_event")
+        cols = await sm.get_existing_columns("testns", "doc_event")
         assert {"birth_date", "registered_at"}.issubset(cols)
 
         # Verify PG types via information_schema
@@ -151,9 +151,9 @@ class TestSchemaCreation:
         sm = SchemaManager(pg_pool)
         fields = make_fields(("gender", FieldType.TERM))
 
-        await sm.create_table("Patient", 1, fields)
+        await sm.create_table("testns", "Patient", 1, fields)
 
-        cols = await sm.get_existing_columns("doc_patient")
+        cols = await sm.get_existing_columns("testns", "doc_patient")
         assert "gender" in cols
         assert "gender_term_id" in cols
 
@@ -165,9 +165,9 @@ class TestSchemaCreation:
             ("photo", FieldType.FILE, {"file_config": FileFieldConfig(multiple=False)}),
         )
 
-        await sm.create_table("Profile", 1, fields)
+        await sm.create_table("testns", "Profile", 1, fields)
 
-        cols = await sm.get_existing_columns("doc_profile")
+        cols = await sm.get_existing_columns("testns", "doc_profile")
         assert {"photo_file_id", "photo_filename", "photo_content_type"}.issubset(cols)
 
     async def test_create_table_with_file_field_multiple(self, pg_pool):
@@ -178,9 +178,9 @@ class TestSchemaCreation:
             ("attachments", FieldType.FILE, {"file_config": FileFieldConfig(multiple=True)}),
         )
 
-        await sm.create_table("Report", 1, fields)
+        await sm.create_table("testns", "Report", 1, fields)
 
-        cols = await sm.get_existing_columns("doc_report")
+        cols = await sm.get_existing_columns("testns", "doc_report")
         assert "attachments" in cols
         # Should be JSONB
         async with pg_pool.acquire() as conn:
@@ -201,7 +201,7 @@ class TestSchemaCreation:
             ("tags", FieldType.ARRAY),
         )
 
-        await sm.create_table("Company", 1, fields)
+        await sm.create_table("testns", "Company", 1, fields)
 
         async with pg_pool.acquire() as conn:
             rows = await conn.fetch(
@@ -224,9 +224,9 @@ class TestSchemaCreation:
             ("version", FieldType.INTEGER),
         )
 
-        await sm.create_table("Conflict", 1, fields)
+        await sm.create_table("testns", "Conflict", 1, fields)
 
-        cols = await sm.get_existing_columns("doc_conflict")
+        cols = await sm.get_existing_columns("testns", "doc_conflict")
         # System columns exist
         assert "status" in cols
         assert "version" in cols
@@ -252,7 +252,7 @@ class TestSemanticTypes:
             ("lon", FieldType.NUMBER, {"semantic_type": SemanticType.LONGITUDE}),
         )
 
-        await sm.create_table("Location", 1, fields)
+        await sm.create_table("testns", "Location", 1, fields)
 
         async with pg_pool.acquire() as conn:
             rows = await conn.fetch(
@@ -276,9 +276,9 @@ class TestSemanticTypes:
             ("prep_time", FieldType.OBJECT, {"semantic_type": SemanticType.DURATION}),
         )
 
-        await sm.create_table("Recipe", 1, fields)
+        await sm.create_table("testns", "Recipe", 1, fields)
 
-        cols = await sm.get_existing_columns("doc_recipe")
+        cols = await sm.get_existing_columns("testns", "doc_recipe")
         assert "prep_time" in cols  # JSONB
         assert "prep_time_seconds" in cols  # NUMERIC
         assert "prep_time_unit_term_id" in cols  # TEXT
@@ -290,9 +290,9 @@ class TestSemanticTypes:
             ("location", FieldType.OBJECT, {"semantic_type": SemanticType.GEO_POINT}),
         )
 
-        await sm.create_table("Place", 1, fields)
+        await sm.create_table("testns", "Place", 1, fields)
 
-        cols = await sm.get_existing_columns("doc_place")
+        cols = await sm.get_existing_columns("testns", "doc_place")
         assert "location" in cols  # JSONB
         assert "location_latitude" in cols
         assert "location_longitude" in cols
@@ -304,7 +304,7 @@ class TestSemanticTypes:
             ("completion", FieldType.NUMBER, {"semantic_type": SemanticType.PERCENTAGE}),
         )
 
-        await sm.create_table("Progress", 1, fields)
+        await sm.create_table("testns", "Progress", 1, fields)
 
         async with pg_pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -334,7 +334,7 @@ class TestSchemaEvolution:
 
         # v1: name only
         fields_v1 = make_fields(("name", FieldType.STRING))
-        await sm.create_table("Evolving", 1, fields_v1)
+        await sm.create_table("testns", "Evolving", 1, fields_v1)
 
         # v2: add email and age
         fields_v2 = make_fields(
@@ -342,10 +342,10 @@ class TestSchemaEvolution:
             ("email", FieldType.STRING),
             ("age", FieldType.INTEGER),
         )
-        migrations = await sm.update_table_schema("Evolving", 2, fields_v2)
+        migrations = await sm.update_table_schema("testns", "Evolving", 2, fields_v2)
 
         assert len(migrations) == 2
-        cols = await sm.get_existing_columns("doc_evolving")
+        cols = await sm.get_existing_columns("testns", "doc_evolving")
         assert {"name", "email", "age"}.issubset(cols)
 
     async def test_existing_data_preserved(self, pg_pool):
@@ -354,13 +354,13 @@ class TestSchemaEvolution:
         sm = SchemaManager(pg_pool)
 
         fields_v1 = make_fields(("name", FieldType.STRING))
-        await sm.create_table("Preserve", 1, fields_v1)
+        await sm.create_table("testns", "Preserve", 1, fields_v1)
 
         # Insert a row
         async with pg_pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO "doc_preserve" (document_id, namespace, template_id,
+                INSERT INTO testns."doc_preserve" (document_id, namespace, template_id,
                     template_version, version, status, identity_hash, name,
                     created_at, data_json)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -374,11 +374,11 @@ class TestSchemaEvolution:
             ("name", FieldType.STRING),
             ("email", FieldType.STRING),
         )
-        await sm.update_table_schema("Preserve", 2, fields_v2)
+        await sm.update_table_schema("testns", "Preserve", 2, fields_v2)
 
         # Verify existing row still there, new column is NULL
         async with pg_pool.acquire() as conn:
-            row = await conn.fetchrow('SELECT name, email FROM "doc_preserve" WHERE document_id = $1', "0190d000-0000-7000-0000-000000000001")
+            row = await conn.fetchrow('SELECT name, email FROM testns."doc_preserve" WHERE document_id = $1', "0190d000-0000-7000-0000-000000000001")
             assert row["name"] == "Alice"
             assert row["email"] is None
 
@@ -388,7 +388,7 @@ class TestSchemaEvolution:
         sm = SchemaManager(pg_pool)
 
         fields = make_fields(("name", FieldType.STRING))
-        await sm.create_table("Tracked", 1, fields)
+        await sm.create_table("testns", "Tracked", 1, fields)
 
         async with pg_pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -415,7 +415,7 @@ class TestSyncStrategies:
         sm = SchemaManager(pg_pool)
         config = ReportingConfig(sync_strategy=SyncStrategy.LATEST_ONLY)
         fields = make_fields(("name", FieldType.STRING))
-        await sm.create_table("Item", 1, fields, config)
+        await sm.create_table("testns", "Item", 1, fields, config)
 
         transformer = DocumentTransformer(config)
 
@@ -423,30 +423,30 @@ class TestSyncStrategies:
         tpl = make_template(("name", "string"))
         doc_v1 = make_document(data={"name": "Original"}, version=1)
         rows = transformer.transform(doc_v1, tpl)
-        sql, values = transformer.generate_upsert_sql("doc_item", rows[0], "latest_only")
+        sql, values = transformer.generate_upsert_sql('testns."doc_item"' , rows[0], "latest_only")
         async with pg_pool.acquire() as conn:
             await conn.execute(sql, *values)
 
         # Insert v2 — should update
         doc_v2 = make_document(data={"name": "Updated"}, version=2)
         rows = transformer.transform(doc_v2, tpl)
-        sql, values = transformer.generate_upsert_sql("doc_item", rows[0], "latest_only")
+        sql, values = transformer.generate_upsert_sql('testns."doc_item"' , rows[0], "latest_only")
         async with pg_pool.acquire() as conn:
             await conn.execute(sql, *values)
 
         async with pg_pool.acquire() as conn:
-            row = await conn.fetchrow('SELECT name, version FROM "doc_item" WHERE document_id = $1', "0190d000-0000-7000-0000-000000000001")
+            row = await conn.fetchrow('SELECT name, version FROM testns."doc_item" WHERE document_id = $1', "0190d000-0000-7000-0000-000000000001")
             assert row["name"] == "Updated"
             assert row["version"] == 2
 
         # Insert v1 again — should be ignored (older version)
         async with pg_pool.acquire() as conn:
             await conn.execute(sql, *transformer.generate_upsert_sql(
-                "doc_item", transformer.transform(doc_v1, tpl)[0], "latest_only"
+                'testns."doc_item"', transformer.transform(doc_v1, tpl)[0], "latest_only"
             )[1])
 
         async with pg_pool.acquire() as conn:
-            row = await conn.fetchrow('SELECT name, version FROM "doc_item" WHERE document_id = $1', "0190d000-0000-7000-0000-000000000001")
+            row = await conn.fetchrow('SELECT name, version FROM testns."doc_item" WHERE document_id = $1', "0190d000-0000-7000-0000-000000000001")
             assert row["version"] == 2  # Still v2
 
     async def test_all_versions_insert(self, pg_pool):
@@ -455,19 +455,19 @@ class TestSyncStrategies:
         sm = SchemaManager(pg_pool)
         config = ReportingConfig(sync_strategy=SyncStrategy.ALL_VERSIONS)
         fields = make_fields(("name", FieldType.STRING))
-        await sm.create_table("VersionedItem", 1, fields, config)
+        await sm.create_table("testns", "VersionedItem", 1, fields, config)
 
         transformer = DocumentTransformer(config)
 
         for v in [1, 2, 3]:
             doc = make_document(data={"name": f"v{v}"}, version=v)
             rows = transformer.transform(doc, make_template(("name", "string")))
-            sql, values = transformer.generate_upsert_sql("doc_versioneditem", rows[0], "all_versions")
+            sql, values = transformer.generate_upsert_sql('testns."doc_versioneditem"' , rows[0], "all_versions")
             async with pg_pool.acquire() as conn:
                 await conn.execute(sql, *values)
 
         async with pg_pool.acquire() as conn:
-            count = await conn.fetchval('SELECT COUNT(*) FROM "doc_versioneditem"')
+            count = await conn.fetchval('SELECT COUNT(*) FROM testns."doc_versioneditem"')
             assert count == 3
 
     async def test_all_versions_duplicate_ignored(self, pg_pool):
@@ -476,17 +476,17 @@ class TestSyncStrategies:
         sm = SchemaManager(pg_pool)
         config = ReportingConfig(sync_strategy=SyncStrategy.ALL_VERSIONS)
         fields = make_fields(("name", FieldType.STRING))
-        await sm.create_table("DupCheck", 1, fields, config)
+        await sm.create_table("testns", "DupCheck", 1, fields, config)
 
         transformer = DocumentTransformer(config)
         doc = make_document(data={"name": "Same"}, version=1)
         rows = transformer.transform(doc, make_template(("name", "string")))
-        sql, values = transformer.generate_upsert_sql("doc_dupcheck", rows[0], "all_versions")
+        sql, values = transformer.generate_upsert_sql('testns."doc_dupcheck"' , rows[0], "all_versions")
 
         async with pg_pool.acquire() as conn:
             await conn.execute(sql, *values)
             await conn.execute(sql, *values)  # Duplicate — should be ignored
-            count = await conn.fetchval('SELECT COUNT(*) FROM "doc_dupcheck"')
+            count = await conn.fetchval('SELECT COUNT(*) FROM testns."doc_dupcheck"')
             assert count == 1
 
 
@@ -507,7 +507,7 @@ class TestTransformAndInsert:
             ("name", FieldType.STRING),
             ("gender", FieldType.TERM),
         )
-        await sm.create_table("TermTest", 1, fields)
+        await sm.create_table("testns", "TermTest", 1, fields)
 
         transformer = DocumentTransformer()
         doc = make_document(
@@ -515,11 +515,11 @@ class TestTransformAndInsert:
             term_references=[{"field_path": "gender", "term_id": "TERM-F-001"}],
         )
         rows = transformer.transform(doc, make_template(("name", "string"), ("gender", "term")))
-        sql, values = transformer.generate_upsert_sql("doc_termtest", rows[0])
+        sql, values = transformer.generate_upsert_sql('testns."doc_termtest"' , rows[0])
 
         async with pg_pool.acquire() as conn:
             await conn.execute(sql, *values)
-            row = await conn.fetchrow('SELECT gender, gender_term_id FROM "doc_termtest" WHERE document_id = $1', "0190d000-0000-7000-0000-000000000001")
+            row = await conn.fetchrow('SELECT gender, gender_term_id FROM testns."doc_termtest" WHERE document_id = $1', "0190d000-0000-7000-0000-000000000001")
             assert row["gender"] == "Female"
             assert row["gender_term_id"] == "TERM-F-001"
 
@@ -530,7 +530,7 @@ class TestTransformAndInsert:
         fields = make_fields(
             ("photo", FieldType.FILE, {"file_config": FileFieldConfig(multiple=False)}),
         )
-        await sm.create_table("FileTest", 1, fields)
+        await sm.create_table("testns", "FileTest", 1, fields)
 
         transformer = DocumentTransformer()
         doc = make_document(
@@ -543,12 +543,12 @@ class TestTransformAndInsert:
             }],
         )
         rows = transformer.transform(doc, make_template(("photo", "file")))
-        sql, values = transformer.generate_upsert_sql("doc_filetest", rows[0])
+        sql, values = transformer.generate_upsert_sql('testns."doc_filetest"' , rows[0])
 
         async with pg_pool.acquire() as conn:
             await conn.execute(sql, *values)
             row = await conn.fetchrow(
-                'SELECT photo_file_id, photo_filename, photo_content_type FROM "doc_filetest"'
+                'SELECT photo_file_id, photo_filename, photo_content_type FROM testns."doc_filetest"'
             )
             assert row["photo_file_id"] == "FILE-001"
             assert row["photo_filename"] == "portrait.jpg"
@@ -562,7 +562,7 @@ class TestTransformAndInsert:
             ("birth_date", FieldType.DATE),
             ("registered_at", FieldType.DATETIME),
         )
-        await sm.create_table("DateTest", 1, fields)
+        await sm.create_table("testns", "DateTest", 1, fields)
 
         transformer = DocumentTransformer()
         doc = make_document(data={
@@ -570,11 +570,11 @@ class TestTransformAndInsert:
             "registered_at": "2026-01-15T14:30:00Z",
         })
         rows = transformer.transform(doc, make_template(("birth_date", "date"), ("registered_at", "datetime")))
-        sql, values = transformer.generate_upsert_sql("doc_datetest", rows[0])
+        sql, values = transformer.generate_upsert_sql('testns."doc_datetest"' , rows[0])
 
         async with pg_pool.acquire() as conn:
             await conn.execute(sql, *values)
-            row = await conn.fetchrow('SELECT birth_date, registered_at FROM "doc_datetest"')
+            row = await conn.fetchrow('SELECT birth_date, registered_at FROM testns."doc_datetest"')
             assert str(row["birth_date"]) == "1990-05-15"
             assert row["registered_at"].year == 2026
 
@@ -583,16 +583,16 @@ class TestTransformAndInsert:
         await init_postgres_schema(pg_pool)
         sm = SchemaManager(pg_pool)
         fields = make_fields(("address", FieldType.OBJECT))
-        await sm.create_table("ObjTest", 1, fields)
+        await sm.create_table("testns", "ObjTest", 1, fields)
 
         transformer = DocumentTransformer()
         doc = make_document(data={"address": {"street": "Main St", "city": "NYC"}})
         rows = transformer.transform(doc, make_template(("address", "object")))
-        sql, values = transformer.generate_upsert_sql("doc_objtest", rows[0])
+        sql, values = transformer.generate_upsert_sql('testns."doc_objtest"' , rows[0])
 
         async with pg_pool.acquire() as conn:
             await conn.execute(sql, *values)
-            row = await conn.fetchrow('SELECT address FROM "doc_objtest"')
+            row = await conn.fetchrow('SELECT address FROM testns."doc_objtest"')
             # asyncpg returns JSONB as Python dict or string depending on version
             addr = row["address"]
             if isinstance(addr, str):
@@ -606,7 +606,7 @@ class TestTransformAndInsert:
         fields = make_fields(
             ("prep_time", FieldType.OBJECT, {"semantic_type": SemanticType.DURATION}),
         )
-        await sm.create_table("DurationTest", 1, fields)
+        await sm.create_table("testns", "DurationTest", 1, fields)
 
         template = {
             "fields": [{"name": "prep_time", "type": "object", "semantic_type": "duration"}],
@@ -617,12 +617,12 @@ class TestTransformAndInsert:
             term_references=[{"field_path": "prep_time.unit", "term_id": "TERM-MIN"}],
         )
         rows = transformer.transform(doc, template)
-        sql, values = transformer.generate_upsert_sql("doc_durationtest", rows[0])
+        sql, values = transformer.generate_upsert_sql('testns."doc_durationtest"' , rows[0])
 
         async with pg_pool.acquire() as conn:
             await conn.execute(sql, *values)
             row = await conn.fetchrow(
-                'SELECT prep_time_seconds, prep_time_unit_term_id FROM "doc_durationtest"'
+                'SELECT prep_time_seconds, prep_time_unit_term_id FROM testns."doc_durationtest"'
             )
             assert float(row["prep_time_seconds"]) == 1800.0  # 30 * 60
             assert row["prep_time_unit_term_id"] == "TERM-MIN"
@@ -636,16 +636,16 @@ class TestTransformAndInsert:
             ("email", FieldType.STRING),
             ("score", FieldType.NUMBER),
         )
-        await sm.create_table("NullTest", 1, fields)
+        await sm.create_table("testns", "NullTest", 1, fields)
 
         transformer = DocumentTransformer()
         doc = make_document(data={"name": "Alice"})  # email and score missing
         rows = transformer.transform(doc, make_template(("name", "string"), ("email", "string"), ("score", "number")))
-        sql, values = transformer.generate_upsert_sql("doc_nulltest", rows[0])
+        sql, values = transformer.generate_upsert_sql('testns."doc_nulltest"' , rows[0])
 
         async with pg_pool.acquire() as conn:
             await conn.execute(sql, *values)
-            row = await conn.fetchrow('SELECT name, email, score FROM "doc_nulltest"')
+            row = await conn.fetchrow('SELECT name, email, score FROM testns."doc_nulltest"')
             assert row["name"] == "Alice"
             assert row["email"] is None
             assert row["score"] is None
@@ -655,7 +655,7 @@ class TestTransformAndInsert:
         await init_postgres_schema(pg_pool)
         sm = SchemaManager(pg_pool)
         fields = make_fields(("name", FieldType.STRING), ("notes", FieldType.STRING))
-        await sm.create_table("SpecialChars", 1, fields)
+        await sm.create_table("testns", "SpecialChars", 1, fields)
 
         transformer = DocumentTransformer()
         doc = make_document(data={
@@ -663,11 +663,11 @@ class TestTransformAndInsert:
             "notes": 'Contains "quotes", backslashes\\, and emoji 🎉',
         })
         rows = transformer.transform(doc, make_template(("name", "string"), ("notes", "string")))
-        sql, values = transformer.generate_upsert_sql("doc_specialchars", rows[0])
+        sql, values = transformer.generate_upsert_sql('testns."doc_specialchars"' , rows[0])
 
         async with pg_pool.acquire() as conn:
             await conn.execute(sql, *values)
-            row = await conn.fetchrow('SELECT name, notes FROM "doc_specialchars"')
+            row = await conn.fetchrow('SELECT name, notes FROM testns."doc_specialchars"')
             assert "O'Brien" in row["name"]
             assert "Müller" in row["name"]
             assert "🎉" in row["notes"]
@@ -680,90 +680,90 @@ class TestTransformAndInsert:
 
 @requires_postgres
 class TestMetadataTables:
-    """Verify metadata tables (terminologies, terms, templates, relationships)."""
+    """Verify metadata tables (terminologies, terms, templates, relations)."""
 
     async def test_terminologies_table_created(self, pg_pool):
         sm = SchemaManager(pg_pool)
-        await sm.ensure_terminologies_table()
-        assert await sm.table_exists("terminologies")
+        await sm.ensure_terminologies_table("testns")
+        assert await sm.table_exists("testns", "terminologies")
 
         async with pg_pool.acquire() as conn:
             # Insert and query
             await conn.execute(
                 """
-                INSERT INTO terminologies (terminology_id, namespace, value, label, status)
+                INSERT INTO testns.terminologies (terminology_id, namespace, value, label, status)
                 VALUES ($1, $2, $3, $4, $5)
                 """,
                 "0190b000-0000-7000-0000-000000000001", "test", "Gender", "Gender", "active",
             )
             row = await conn.fetchrow(
-                "SELECT * FROM terminologies WHERE namespace = $1 AND terminology_id = $2",
+                "SELECT * FROM testns.terminologies WHERE namespace = $1 AND terminology_id = $2",
                 "test", "0190b000-0000-7000-0000-000000000001",
             )
             assert row["value"] == "Gender"
 
     async def test_terms_table_created(self, pg_pool):
         sm = SchemaManager(pg_pool)
-        await sm.ensure_terms_table()
-        assert await sm.table_exists("terms")
+        await sm.ensure_terms_table("testns")
+        assert await sm.table_exists("testns", "terms")
 
         async with pg_pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO terms (term_id, namespace, terminology_id, value, status)
+                INSERT INTO testns.terms (term_id, namespace, terminology_id, value, status)
                 VALUES ($1, $2, $3, $4, $5)
                 """,
                 "0190a000-0000-7000-0000-000000000001", "test", "0190b000-0000-7000-0000-000000000001", "Female", "active",
             )
             row = await conn.fetchrow(
-                "SELECT * FROM terms WHERE namespace = $1 AND term_id = $2",
+                "SELECT * FROM testns.terms WHERE namespace = $1 AND term_id = $2",
                 "test", "0190a000-0000-7000-0000-000000000001",
             )
             assert row["value"] == "Female"
 
     async def test_templates_table_created(self, pg_pool):
         sm = SchemaManager(pg_pool)
-        await sm.ensure_templates_table()
-        assert await sm.table_exists("templates")
+        await sm.ensure_templates_table("testns")
+        assert await sm.table_exists("testns", "templates")
 
         async with pg_pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO templates (template_id, namespace, value, version, status)
+                INSERT INTO testns.templates (template_id, namespace, value, version, status)
                 VALUES ($1, $2, $3, $4, $5)
                 """,
                 "0190c000-0000-7000-0000-000000000001", "test", "Person", 1, "active",
             )
             row = await conn.fetchrow(
-                "SELECT * FROM templates WHERE namespace = $1 AND template_id = $2",
+                "SELECT * FROM testns.templates WHERE namespace = $1 AND template_id = $2",
                 "test", "0190c000-0000-7000-0000-000000000001",
             )
             assert row["value"] == "Person"
             assert row["status"] == "active"
 
-    async def test_term_relationships_table_created(self, pg_pool):
+    async def test_term_relations_table_created(self, pg_pool):
         sm = SchemaManager(pg_pool)
-        await sm.ensure_term_relationships_table()
-        assert await sm.table_exists("term_relationships")
+        await sm.ensure_term_relations_table("testns")
+        assert await sm.table_exists("testns", "term_relations")
 
         async with pg_pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO term_relationships
-                    (namespace, source_term_id, target_term_id, relationship_type, status)
+                INSERT INTO testns.term_relations
+                    (namespace, source_term_id, target_term_id, relation_type, status)
                 VALUES ($1, $2, $3, $4, $5)
                 """,
                 "test", "TERM-A", "TERM-B", "is_a", "active",
             )
-            count = await conn.fetchval("SELECT COUNT(*) FROM term_relationships")
+            count = await conn.fetchval("SELECT COUNT(*) FROM testns.term_relations")
             assert count == 1
 
     async def test_idempotent_table_creation(self, pg_pool):
         """Calling ensure_*_table twice does not error or duplicate."""
         sm = SchemaManager(pg_pool)
-        await sm.ensure_terminologies_table()
-        await sm.ensure_terminologies_table()  # Second call should be safe
-        assert await sm.table_exists("terminologies")
+        await sm.ensure_terminologies_table("testns")
+        await sm.ensure_terminologies_table("testns")  # Second call should be safe
+        assert await sm.table_exists("testns", "terminologies")
 
 
 # =============================================================================
@@ -775,112 +775,78 @@ class TestMetadataTables:
 class TestNamespaceDeletion:
     """Verify DELETE /namespace/{prefix} removes all data for a namespace."""
 
-    async def test_delete_namespace_clears_doc_tables(self, pg_pool):
-        """Namespace deletion removes rows from doc_* tables."""
+    async def test_dropping_schema_removes_only_that_namespace(self, pg_pool):
+        """Namespace deletion is DROP SCHEMA CASCADE (CASE-628): the namespace's
+        doc + metadata tables go, other namespaces are untouched."""
         await init_postgres_schema(pg_pool)
         sm = SchemaManager(pg_pool)
         fields = make_fields(("name", FieldType.STRING))
-        await sm.create_table("Deletable", 1, fields)
+        # Same template value in two namespaces → two schemas.
+        await sm.create_table("keep", "Deletable", 1, fields, identity_fields=["name"])
+        await sm.create_table("delete_me", "Deletable", 1, fields, identity_fields=["name"])
+        await sm.ensure_terminologies_table("delete_me")
 
-        # Insert rows in two namespaces
+        # Delete one namespace the way the endpoint does.
         async with pg_pool.acquire() as conn:
-            for ns in ["keep", "delete_me"]:
+            await conn.execute('DROP SCHEMA "delete_me" CASCADE')
+
+        async with pg_pool.acquire() as conn:
+            gone = await conn.fetchval(
+                "SELECT count(*) FROM pg_namespace WHERE nspname = 'delete_me'"
+            )
+            kept = await conn.fetchval(
+                """
+                SELECT count(*) FROM information_schema.tables
+                WHERE table_schema = 'keep' AND table_name = 'doc_deletable'
+                """
+            )
+        assert gone == 0
+        assert kept == 1  # the other namespace's schema/table survive
+
+    async def test_drop_schema_if_exists_is_idempotent(self, pg_pool):
+        """Deleting a namespace that never got a schema is a safe no-op."""
+        async with pg_pool.acquire() as conn:
+            await conn.execute('DROP SCHEMA IF EXISTS "never_existed" CASCADE')
+
+    async def test_drop_namespace_schema_returns_row_count(self, pg_pool):
+        """drop_namespace_schema counts the rows it removes — the count feeds
+        Registry's int-typed journal (`postgres_rows`), where a null once
+        poisoned the journal and made every namespace DELETE report failure
+        after the deletion had already succeeded."""
+        await init_postgres_schema(pg_pool)
+        sm = SchemaManager(pg_pool)
+        fields = make_fields(("name", FieldType.STRING))
+        await sm.create_table(
+            "count_me", "Countable", 1, fields, identity_fields=["name"]
+        )
+        async with pg_pool.acquire() as conn:
+            for i in range(3):
                 await conn.execute(
                     """
-                    INSERT INTO "doc_deletable"
-                        (document_id, namespace, template_id, template_version,
-                         version, status, identity_hash, name, created_at, data_json)
+                    INSERT INTO "count_me"."doc_countable" (document_id,
+                        namespace, template_id, template_version, version,
+                        status, identity_hash, name, created_at, data_json)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                     """,
-                    f"DOC-{ns}", ns, "0190c000-0000-7000-0000-000000000001", 1, 1, "active", f"hash-{ns}", f"Name-{ns}",
-                    datetime.now(UTC), "{}",
+                    f"0190d000-0000-7000-0000-00000000000{i}", "count_me",
+                    "0190c000-0000-7000-0000-000000000001", 1, 1, "active",
+                    f"hash{i}", f"row {i}", datetime.now(UTC), "{}",
                 )
 
-        # Delete one namespace
+        deleted = await sm.drop_namespace_schema("count_me")
+
+        assert isinstance(deleted, int)
+        assert deleted == 3
         async with pg_pool.acquire() as conn:
-            doc_tables = await conn.fetch(
-                """
-                SELECT table_name FROM information_schema.tables
-                WHERE table_schema = 'public' AND table_name LIKE 'doc_%'
-                """
+            gone = await conn.fetchval(
+                "SELECT count(*) FROM pg_namespace WHERE nspname = 'count_me'"
             )
-            total_deleted = 0
-            for row in doc_tables:
-                result = await conn.execute(
-                    f'DELETE FROM "{row["table_name"]}" WHERE namespace = $1', "delete_me"
-                )
-                total_deleted += int(result.split()[-1])
+        assert gone == 0
 
-        assert total_deleted == 1
-
-        # Verify: "keep" still there, "delete_me" gone
-        async with pg_pool.acquire() as conn:
-            count = await conn.fetchval('SELECT COUNT(*) FROM "doc_deletable"')
-            assert count == 1
-            remaining = await conn.fetchrow('SELECT namespace FROM "doc_deletable"')
-            assert remaining["namespace"] == "keep"
-
-    async def test_delete_namespace_clears_metadata_tables(self, pg_pool):
-        """Namespace deletion removes rows from metadata tables."""
+    async def test_drop_namespace_schema_missing_schema_returns_zero(self, pg_pool):
+        """No schema → 0, never None: the caller records this integer."""
         sm = SchemaManager(pg_pool)
-        await sm.ensure_terminologies_table()
-        await sm.ensure_terms_table()
-        await sm.ensure_templates_table()
-        await sm.ensure_term_relationships_table()
-
-        # Insert metadata in two namespaces
-        async with pg_pool.acquire() as conn:
-            for ns in ["keep", "delete_me"]:
-                await conn.execute(
-                    "INSERT INTO terminologies (terminology_id, namespace, value, status) VALUES ($1, $2, $3, $4)",
-                    f"T-{ns}", ns, f"Vocab-{ns}", "active",
-                )
-                await conn.execute(
-                    "INSERT INTO terms (term_id, namespace, terminology_id, value, status) VALUES ($1, $2, $3, $4, $5)",
-                    f"TRM-{ns}", ns, f"T-{ns}", f"Term-{ns}", "active",
-                )
-                await conn.execute(
-                    "INSERT INTO templates (template_id, namespace, value, version, status) VALUES ($1, $2, $3, $4, $5)",
-                    f"TPL-{ns}", ns, f"Template-{ns}", 1, "active",
-                )
-                await conn.execute(
-                    """INSERT INTO term_relationships
-                        (namespace, source_term_id, target_term_id, relationship_type, status)
-                       VALUES ($1, $2, $3, $4, $5)""",
-                    ns, f"SRC-{ns}", f"TGT-{ns}", "is_a", "active",
-                )
-
-        # Delete one namespace from all metadata tables
-        async with pg_pool.acquire() as conn:
-            total_deleted = 0
-            for table in ("terminologies", "templates", "terms", "term_relationships"):
-                result = await conn.execute(
-                    f'DELETE FROM "{table}" WHERE namespace = $1', "delete_me"
-                )
-                total_deleted += int(result.split()[-1])
-
-        assert total_deleted == 4  # One row per table
-
-        # Verify "keep" namespace untouched
-        async with pg_pool.acquire() as conn:
-            for table in ("terminologies", "terms", "templates", "term_relationships"):
-                count = await conn.fetchval(
-                    f'SELECT COUNT(*) FROM "{table}" WHERE namespace = $1', "keep"
-                )
-                assert count == 1, f"Expected 1 row in {table} for 'keep', got {count}"
-
-    async def test_delete_nonexistent_namespace(self, pg_pool):
-        """Deleting a namespace with no data succeeds with zero deleted."""
-        await init_postgres_schema(pg_pool)
-        sm = SchemaManager(pg_pool)
-        fields = make_fields(("name", FieldType.STRING))
-        await sm.create_table("Empty", 1, fields)
-
-        async with pg_pool.acquire() as conn:
-            result = await conn.execute(
-                'DELETE FROM "doc_empty" WHERE namespace = $1', "nonexistent"
-            )
-            assert int(result.split()[-1]) == 0
+        assert await sm.drop_namespace_schema("never_existed_either") == 0
 
 
 # =============================================================================
@@ -897,7 +863,7 @@ class TestIndexesAndConstraints:
         await init_postgres_schema(pg_pool)
         sm = SchemaManager(pg_pool)
         fields = make_fields(("name", FieldType.STRING))
-        await sm.create_table("Indexed", 1, fields)
+        await sm.create_table("testns", "Indexed", 1, fields)
 
         async with pg_pool.acquire() as conn:
             indexes = await conn.fetch(
@@ -914,11 +880,13 @@ class TestIndexesAndConstraints:
         assert "doc_indexed_ns_identity_hash_idx" in idx_names
 
     async def test_partial_unique_index_latest_only(self, pg_pool):
-        """LATEST_ONLY tables have a partial unique index on active identity_hash."""
+        """LATEST_ONLY tables with declared identity_fields have the
+        partial unique index on active identity_hash. Without
+        identity_fields the index is correctly omitted (CASE-316)."""
         await init_postgres_schema(pg_pool)
         sm = SchemaManager(pg_pool)
         fields = make_fields(("name", FieldType.STRING))
-        await sm.create_table("UniqueIdx", 1, fields)
+        await sm.create_table("testns", "UniqueIdx", 1, fields, identity_fields=["name"])
 
         async with pg_pool.acquire() as conn:
             indexes = await conn.fetch(
@@ -934,7 +902,9 @@ class TestIndexesAndConstraints:
         sm = SchemaManager(pg_pool)
         config = ReportingConfig(sync_strategy=SyncStrategy.ALL_VERSIONS)
         fields = make_fields(("name", FieldType.STRING))
-        await sm.create_table("NoUnique", 1, fields, config)
+        await sm.create_table("testns",
+            "NoUnique", 1, fields, config, identity_fields=["name"],
+        )
 
         async with pg_pool.acquire() as conn:
             indexes = await conn.fetch(
@@ -944,17 +914,45 @@ class TestIndexesAndConstraints:
 
         assert "doc_nounique_ns_active_identity_idx" not in idx_names
 
+    async def test_no_partial_unique_index_for_identity_less_template(
+        self, pg_pool,
+    ):
+        """CASE-316: empty identity_fields = first-class append-only
+        declaration. Postgres-side: the partial-unique index must NOT
+        be created — the existing index would collide on the second
+        insert because every doc gets identity_hash=''. Verify against
+        real postgres."""
+        await init_postgres_schema(pg_pool)
+        sm = SchemaManager(pg_pool)
+        fields = make_fields(("event_type", FieldType.STRING))
+        await sm.create_table("testns",
+            "AppendOnly", 1, fields, identity_fields=[],
+        )
+
+        async with pg_pool.acquire() as conn:
+            indexes = await conn.fetch(
+                "SELECT indexname FROM pg_indexes WHERE tablename = 'doc_appendonly'"
+            )
+            idx_names = {r["indexname"] for r in indexes}
+
+        assert "doc_appendonly_ns_active_identity_idx" not in idx_names
+        # All other indexes still land — they remain useful for reads.
+        assert "doc_appendonly_namespace_idx" in idx_names
+        assert "doc_appendonly_ns_template_id_idx" in idx_names
+        assert "doc_appendonly_ns_status_idx" in idx_names
+        assert "doc_appendonly_ns_identity_hash_idx" in idx_names
+
     async def test_primary_key_enforced_latest_only(self, pg_pool):
         """LATEST_ONLY: duplicate document_id raises UniqueViolation on raw INSERT."""
         await init_postgres_schema(pg_pool)
         sm = SchemaManager(pg_pool)
         fields = make_fields(("name", FieldType.STRING))
-        await sm.create_table("PKTest", 1, fields)
+        await sm.create_table("testns", "PKTest", 1, fields)
 
         async with pg_pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO "doc_pktest" (document_id, namespace, template_id,
+                INSERT INTO testns."doc_pktest" (document_id, namespace, template_id,
                     template_version, version, status, identity_hash, created_at, data_json)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 """,
@@ -964,7 +962,7 @@ class TestIndexesAndConstraints:
             with pytest.raises(asyncpg.UniqueViolationError):
                 await conn.execute(
                     """
-                    INSERT INTO "doc_pktest" (document_id, namespace, template_id,
+                    INSERT INTO testns."doc_pktest" (document_id, namespace, template_id,
                         template_version, version, status, identity_hash, created_at, data_json)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     """,
@@ -997,11 +995,11 @@ class TestEnsureTableForTemplate:
             ],
         }
 
-        table_name = await sm.ensure_table_for_template(template)
-        assert table_name == "doc_observation"
-        assert await sm.table_exists("doc_observation")
+        table_name = await sm.ensure_table_for_template("testns", template)
+        assert table_name == '"testns"."doc_observation"'
+        assert await sm.table_exists("testns", "doc_observation")
 
-        cols = await sm.get_existing_columns("doc_observation")
+        cols = await sm.get_existing_columns("testns", "doc_observation")
         assert {"subject", "recorded_at", "category", "category_term_id"}.issubset(cols)
         # "value" conflicts with system column — should be prefixed
         # Actually "value" is not in SYSTEM_COLUMNS, but let's check
@@ -1018,9 +1016,9 @@ class TestEnsureTableForTemplate:
             "reporting": {"sync_enabled": False},
         }
 
-        table_name = await sm.ensure_table_for_template(template)
+        table_name = await sm.ensure_table_for_template("testns", template)
         assert table_name == ""
-        assert not await sm.table_exists("doc_internal")
+        assert not await sm.table_exists("testns", "doc_internal")
 
     async def test_updates_existing_table(self, pg_pool):
         """Second call with new fields adds columns."""
@@ -1032,7 +1030,7 @@ class TestEnsureTableForTemplate:
             "version": 1,
             "fields": [{"name": "name", "type": "string"}],
         }
-        await sm.ensure_table_for_template(template_v1)
+        await sm.ensure_table_for_template("testns", template_v1)
 
         template_v2 = {
             "value": "Evolving2",
@@ -1042,7 +1040,7 @@ class TestEnsureTableForTemplate:
                 {"name": "email", "type": "string"},
             ],
         }
-        await sm.ensure_table_for_template(template_v2)
+        await sm.ensure_table_for_template("testns", template_v2)
 
-        cols = await sm.get_existing_columns("doc_evolving2")
+        cols = await sm.get_existing_columns("testns", "doc_evolving2")
         assert "email" in cols

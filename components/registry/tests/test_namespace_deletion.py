@@ -408,6 +408,60 @@ class TestNamespaceDeletion:
         assert resp.status_code == 404
 
     @pytest.mark.asyncio
+    async def test_nonforced_delete_journals_synonym_links(self, client: AsyncClient, auth_headers: dict):
+        """A non-forced deletion persists its low-severity inbound refs.
+
+        Synonym links never block deletion, so a non-forced delete is exactly
+        the path where they get broken — the journal must record them, or the
+        deletion is not reconstructable from its own audit trail."""
+        # Namespace being deleted, and a surviving namespace that references it
+        for prefix in ("del-syn-target", "del-syn-source"):
+            await client.post(
+                "/api/registry/namespaces",
+                json={"prefix": prefix, "deletion_mode": "full"},
+                headers=auth_headers,
+            )
+        resp = await client.post(
+            "/api/registry/entries/register",
+            json=[{"namespace": "del-syn-source", "entity_type": "templates",
+                   "composite_key": {"value": "survivor"}, "created_by": "test"}],
+            headers=auth_headers,
+        )
+        entry_id = resp.json()["results"][0]["registry_id"]
+
+        # The surviving entry carries a synonym in the doomed namespace
+        resp = await client.post(
+            "/api/registry/synonyms/add",
+            json=[{"target_id": entry_id,
+                   "synonym_namespace": "del-syn-target",
+                   "synonym_entity_type": "templates",
+                   "synonym_composite_key": {"value": "doomed-alias"}}],
+            headers=auth_headers,
+        )
+        assert resp.json()["results"][0]["status"] == "added"
+
+        # Non-forced delete succeeds (synonym_link is low severity)
+        resp = await client.delete(
+            "/api/registry/namespaces/del-syn-target",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "completed"
+
+        # The journal records what the deletion broke
+        resp = await client.get(
+            "/api/registry/namespaces/del-syn-target/deletion-status",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["force"] is False
+        broken = data["broken_references"]
+        assert len(broken) == 1
+        assert broken[0]["type"] == "synonym_link"
+        assert broken[0]["source_namespace"] == "del-syn-source"
+
+    @pytest.mark.asyncio
     async def test_deleted_namespace_not_in_list(self, client: AsyncClient, auth_headers: dict):
         """After deletion, namespace does not appear in list."""
         await client.post(
@@ -897,3 +951,207 @@ class TestRecreateAfterDeletion:
         )
         counts = resp.json()["entity_counts"]
         assert all(v == 0 for v in counts.values())
+
+
+class TestPostgresRowCountSeam:
+    """The reporting-sync row count must never poison the int-typed journal.
+
+    Under schema-per-namespace reporting, DELETE /namespace/{prefix} on
+    reporting-sync once answered 200 with ``total_deleted: null``; the
+    executor's ``data.get("total_deleted", 0)`` default only covers a
+    MISSING key, so the null flowed into DeletionStep.deleted_count /
+    summary.postgres_rows and every otherwise-successful namespace DELETE
+    returned a pydantic validation error — with the persisted journal left
+    unreadable (deletion-status 500).
+    """
+
+    async def test_null_total_deleted_maps_to_zero_with_degraded_error(
+        self, monkeypatch
+    ):
+        """A present-but-null count → 0 + step.error, never None."""
+        from registry.models.deletion_journal import DeletionStep
+        from registry.services.namespace_deletion import NamespaceDeletionService
+
+        class FakeResponse:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"namespace": "x", "dropped_schema": "x", "total_deleted": None}
+
+        class FakeClient:
+            def __init__(self, *a, **kw): ...
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+            async def delete(self, *a, **kw):
+                return FakeResponse()
+
+        import registry.services.namespace_deletion as mod
+        monkeypatch.setattr(mod.httpx, "AsyncClient", FakeClient)
+
+        svc = NamespaceDeletionService()
+        svc._postgres_url = "http://reporting-sync.test"
+        step = DeletionStep(order=0, store="postgresql")
+
+        deleted = await svc._exec_postgresql_step(step, "probe-ns")
+        assert deleted == 0
+        assert step.error is not None
+        assert "null" in step.error
+
+    async def test_integer_total_deleted_passes_through(self, monkeypatch):
+        """The healthy path stays a real int with no degraded marker."""
+        from registry.models.deletion_journal import DeletionStep
+        from registry.services.namespace_deletion import NamespaceDeletionService
+
+        class FakeResponse:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"namespace": "x", "dropped_schema": "x", "total_deleted": 42}
+
+        class FakeClient:
+            def __init__(self, *a, **kw): ...
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+            async def delete(self, *a, **kw):
+                return FakeResponse()
+
+        import registry.services.namespace_deletion as mod
+        monkeypatch.setattr(mod.httpx, "AsyncClient", FakeClient)
+
+        svc = NamespaceDeletionService()
+        svc._postgres_url = "http://reporting-sync.test"
+        step = DeletionStep(order=0, store="postgresql")
+
+        assert await svc._exec_postgresql_step(step, "probe-ns") == 42
+        assert step.error is None
+
+
+class TestPoisonedJournalHydration:
+    """Journals persisted while the null-count bug was live must stay
+    readable — completed journals are never deleted, and an unreadable
+    audit record (deletion-status 500) is worse than a lost one."""
+
+    def test_step_deleted_count_null_hydrates_to_zero(self):
+        from registry.models.deletion_journal import DeletionStep
+
+        step = DeletionStep.model_validate(
+            {"order": 0, "store": "postgresql", "status": "completed",
+             "deleted_count": None}
+        )
+        assert step.deleted_count == 0
+
+    async def test_summary_null_values_hydrate_to_zero(self, client: AsyncClient):
+        # `client` is unused directly — it forces app startup so Beanie is
+        # initialized; a Document subclass cannot be constructed before that.
+        from registry.models.deletion_journal import DeletionJournal
+
+        journal = DeletionJournal.model_validate(
+            {"namespace": "poisoned", "summary": {"postgres_rows": None,
+                                                  "entries": 7}}
+        )
+        assert journal.summary == {"postgres_rows": 0, "entries": 7}
+
+
+class TestJournalStepPersistence:
+    """The STORED journal must match what the deletion actually did.
+
+    These tests read the journal back fresh (the deletion-status endpoint
+    and a direct find_one both re-query Mongo), never the in-memory object
+    the service returned — the in-memory journal is correct at return time
+    even when the stored one is not, which is exactly how the stored drift
+    stayed invisible to the API-level suite."""
+
+    @pytest.mark.asyncio
+    async def test_all_stored_steps_completed_after_multi_step_deletion(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """Every step's completion must persist, not just the first one's."""
+        await client.post(
+            "/api/registry/namespaces",
+            json={"prefix": "journal-steps", "deletion_mode": "full"},
+            headers=auth_headers,
+        )
+        # Entries + grants ensure the journal has multiple steps before the
+        # final namespace-record step.
+        await client.post(
+            "/api/registry/entries/register",
+            json=[{"namespace": "journal-steps", "entity_type": "documents",
+                   "composite_key": {"value": f"d{i}"}, "created_by": "test"}
+                  for i in range(3)],
+            headers=auth_headers,
+        )
+        await client.post(
+            "/api/registry/namespaces/journal-steps/grants",
+            json=[{"subject": "user@test.com", "subject_type": "user",
+                   "permission": "read"}],
+            headers=auth_headers,
+        )
+
+        resp = await client.delete(
+            "/api/registry/namespaces/journal-steps",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "completed"
+
+        # Fresh read from storage via the status endpoint.
+        resp = await client.get(
+            "/api/registry/namespaces/journal-steps/deletion-status",
+            headers=auth_headers,
+        )
+        steps = resp.json()["steps"]
+        assert len(steps) >= 3
+        pending = [s for s in steps if s["status"] == "pending"]
+        assert pending == [], f"steps stored pending after completion: {pending}"
+        # The counted steps carry their real counts (3 entries, 1 grant).
+        by_coll = {s.get("collection"): s for s in steps if s.get("collection")}
+        assert by_coll["registry_entries"]["deleted_count"] == 3
+        assert by_coll["namespace_grants"]["deleted_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_stored_journal_records_failure_beyond_first_step(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """A failure on step >= 2 must persist that step's failed status and
+        error — not just the journal's top-level failed status."""
+        from unittest.mock import AsyncMock, patch
+
+        from registry.models.deletion_journal import DeletionJournal, DeletionStep
+        from registry.services.namespace_deletion import NamespaceDeletionService
+
+        journal = DeletionJournal(
+            namespace="journal-fail",
+            steps=[
+                DeletionStep(order=1, store="mongodb",
+                             collection="registry_entries",
+                             filter={"namespace": "journal-fail"},
+                             detail="delete entries"),
+                DeletionStep(order=2, store="mongodb",
+                             collection="namespace_grants",
+                             filter={"namespace": "journal-fail"},
+                             detail="second step, made to fail"),
+            ],
+        )
+        await journal.create()
+
+        with (
+            patch.object(
+                NamespaceDeletionService, "_execute_step",
+                AsyncMock(side_effect=[5, RuntimeError("injected step-2 failure")]),
+            ),
+            pytest.raises(RuntimeError, match="injected step-2 failure"),
+        ):
+            await NamespaceDeletionService()._execute_journal(journal)
+
+        stored = await DeletionJournal.find_one({"namespace": "journal-fail"})
+        assert stored.status == "failed"
+        assert stored.steps[0].status == "completed"
+        assert stored.steps[0].deleted_count == 5
+        assert stored.steps[1].status == "failed"
+        assert "injected step-2 failure" in stored.steps[1].error

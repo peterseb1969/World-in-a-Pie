@@ -31,6 +31,7 @@ from ..models import (
     ExportStats,
     Manifest,
     NamespaceConfig,
+    NamespaceEntry,
     ProgressEvent,
 )
 from .closure import compute_closure
@@ -98,6 +99,8 @@ def run_export(
             description=ns_config_data.get("description", ""),
             isolation_mode=ns_config_data.get("isolation_mode", "open"),
             id_config=ns_config_data.get("id_config"),
+            allowed_external_refs=ns_config_data.get("allowed_external_refs"),
+            deletion_mode=ns_config_data.get("deletion_mode"),
         )
 
     # Phase 1a: Collect small entities (fit in memory)
@@ -136,8 +139,8 @@ def run_export(
             f"{before_terms} → {len(terminologies)}"
         )
 
-    # Fetch relationships for all terminologies
-    relationships = collector.fetch_all_relationships(terminologies)
+    # Fetch term-relations for all terminologies
+    term_relations = collector.fetch_all_term_relations(terminologies)
 
     # Tag primary entities
     for entity in terminologies:
@@ -146,7 +149,7 @@ def run_export(
     for entity in terms:
         entity.setdefault("_source", "primary")
         entity.setdefault("_namespace", namespace)
-    for entity in relationships:
+    for entity in term_relations:
         entity.setdefault("_source", "primary")
         entity.setdefault("_namespace", namespace)
     for entity in templates:
@@ -228,7 +231,7 @@ def run_export(
         counts = EntityCounts(
             terminologies=len(terminologies),
             terms=len(terms),
-            relationships=len(relationships),
+            term_relations=len(term_relations),
             templates=len(templates),
             documents=doc_count,
             files=file_count,
@@ -239,14 +242,18 @@ def run_export(
 
     # Phase 1a: Write small entities to archive
     console.print("\n[bold cyan]Phase 1:[/bold cyan] Writing entities to archive")
-    writer = ArchiveWriter(output_path, tmp_dir=tmp_dir)
+    # v3 (CASE-542): single-namespace exporter writes a 1-namespace v3 archive
+    # via the default_namespace convenience — the add_entity calls below stay
+    # unchanged. Migrating this legacy path to explicit multi-namespace is a
+    # tracked follow-up.
+    writer = ArchiveWriter(output_path, tmp_dir=tmp_dir, default_namespace=namespace)
 
     for entity in terminologies:
         writer.add_entity("terminologies", entity)
     for entity in terms:
         writer.add_entity("terms", entity)
-    for entity in relationships:
-        writer.add_entity("relationships", entity)
+    for entity in term_relations:
+        writer.add_entity("term_relations", entity)
     for entity in templates:
         writer.add_entity("templates", entity)
 
@@ -345,7 +352,7 @@ def run_export(
     counts = EntityCounts(
         terminologies=len(terminologies),
         terms=len(terms),
-        relationships=len(relationships),
+        term_relations=len(term_relations),
         templates=len(templates),
         documents=doc_count,
         files=file_count,
@@ -359,6 +366,11 @@ def run_export(
     ))
     manifest = Manifest(
         source_host=client.config.host,
+        namespaces=[
+            NamespaceEntry(
+                prefix=namespace, namespace_config=ns_config, counts=counts
+            )
+        ],
         namespace=namespace,
         namespace_config=ns_config,
         include_inactive=include_inactive,
@@ -489,8 +501,8 @@ def _fetch_synonyms(
 def _print_counts(counts: EntityCounts) -> None:
     console.print(f"  Terminologies:  {counts.terminologies}")
     console.print(f"  Terms:          {counts.terms}")
-    if counts.relationships:
-        console.print(f"  Relationships:  {counts.relationships}")
+    if counts.term_relations:
+        console.print(f"  Term Relations: {counts.term_relations}")
     console.print(f"  Templates:      {counts.templates}")
     console.print(f"  Documents:      {counts.documents}")
     console.print(f"  Files:          {counts.files}")

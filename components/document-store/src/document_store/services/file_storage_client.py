@@ -2,6 +2,7 @@
 
 import os
 from contextlib import asynccontextmanager
+from typing import Any, cast
 
 from aiobotocore.session import get_session
 from botocore.exceptions import ClientError
@@ -98,7 +99,7 @@ class FileStorageClient:
         """
         try:
             async with self._get_client() as client:
-                extra_args = {
+                extra_args: dict[str, Any] = {
                     "ContentType": content_type,
                 }
                 if metadata:
@@ -111,7 +112,7 @@ class FileStorageClient:
                     **extra_args
                 )
         except ClientError as e:
-            raise FileStorageError(f"Failed to upload file: {e}")
+            raise FileStorageError(f"Failed to upload file: {e}") from e
 
     async def download(self, storage_key: str) -> bytes:
         """
@@ -133,12 +134,12 @@ class FileStorageClient:
                     Key=storage_key
                 )
                 async with response["Body"] as stream:
-                    return await stream.read()
+                    return cast(bytes, await stream.read())
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code == "NoSuchKey":
-                raise FileStorageError(f"File not found: {storage_key}")
-            raise FileStorageError(f"Failed to download file: {e}")
+                raise FileStorageError(f"File not found: {storage_key}") from e
+            raise FileStorageError(f"Failed to download file: {e}") from e
 
     async def download_stream(self, storage_key: str, chunk_size: int = 64 * 1024):
         """
@@ -177,8 +178,102 @@ class FileStorageClient:
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code == "NoSuchKey":
-                raise FileStorageError(f"File not found: {storage_key}")
-            raise FileStorageError(f"Failed to download file: {e}")
+                raise FileStorageError(f"File not found: {storage_key}") from e
+            raise FileStorageError(f"Failed to download file: {e}") from e
+
+    async def upload_file(
+        self,
+        storage_key: str,
+        file_path: str,
+        content_type: str = "application/zip",
+    ) -> None:
+        """
+        Upload a local file to storage without buffering it in memory.
+
+        The open file handle is passed as the request body — botocore
+        streams a seekable body in small reads (the reads themselves are
+        sync disk I/O interleaved with the async send; acceptable for
+        archive-sized files, unlike loading multi-GB into RAM).
+
+        Args:
+            storage_key: Key to store the file under
+            file_path: Local filesystem path of the file to upload
+            content_type: MIME type (archives default to application/zip)
+
+        Raises:
+            FileStorageError: If upload fails
+        """
+        try:
+            async with self._get_client() as client:
+                with open(file_path, "rb") as fh:
+                    await client.put_object(
+                        Bucket=self.bucket,
+                        Key=storage_key,
+                        Body=fh,
+                        ContentType=content_type,
+                    )
+        except (ClientError, OSError) as e:
+            raise FileStorageError(f"Failed to upload file {file_path}: {e}") from e
+
+    async def download_to_file(
+        self,
+        storage_key: str,
+        dest_path: str,
+        chunk_size: int = 1024 * 1024,
+    ) -> int:
+        """
+        Stream an object from storage into a local file.
+
+        Args:
+            storage_key: Key of the object to download
+            dest_path: Local filesystem path to write
+            chunk_size: Read size per chunk
+
+        Returns:
+            Bytes written.
+
+        Raises:
+            FileStorageError: If download fails or object not found
+        """
+        written = 0
+        try:
+            with open(dest_path, "wb") as fh:
+                async for chunk in self.download_stream(storage_key, chunk_size):
+                    fh.write(chunk)
+                    written += len(chunk)
+            return written
+        except (FileStorageError, OSError):
+            # Never leave a partial file behind masquerading as an archive.
+            import contextlib
+            import os as _os
+            with contextlib.suppress(OSError):
+                _os.unlink(dest_path)
+            raise
+
+    async def copy_object(self, source_key: str, dest_key: str) -> None:
+        """
+        Server-side copy within the bucket — no bytes travel through this
+        process, so duplicating a multi-GB archive is near-free.
+
+        Args:
+            source_key: Existing object key
+            dest_key: Key for the copy
+
+        Raises:
+            FileStorageError: If the copy fails or the source is missing
+        """
+        try:
+            async with self._get_client() as client:
+                await client.copy_object(
+                    Bucket=self.bucket,
+                    Key=dest_key,
+                    CopySource={"Bucket": self.bucket, "Key": source_key},
+                )
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "NoSuchKey":
+                raise FileStorageError(f"File not found: {source_key}") from e
+            raise FileStorageError(f"Failed to copy object: {e}") from e
 
     async def delete(self, storage_key: str) -> None:
         """
@@ -197,7 +292,7 @@ class FileStorageClient:
                     Key=storage_key
                 )
         except ClientError as e:
-            raise FileStorageError(f"Failed to delete file: {e}")
+            raise FileStorageError(f"Failed to delete file: {e}") from e
 
     async def exists(self, storage_key: str) -> bool:
         """
@@ -220,7 +315,7 @@ class FileStorageClient:
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code in ("404", "NoSuchKey"):
                 return False
-            raise FileStorageError(f"Failed to check file existence: {e}")
+            raise FileStorageError(f"Failed to check file existence: {e}") from e
 
     async def generate_download_url(
         self,
@@ -263,9 +358,9 @@ class FileStorageClient:
                 if self.public_endpoint_url and self.public_endpoint_url != self.endpoint_url:
                     url = url.replace(self.endpoint_url, self.public_endpoint_url, 1)
 
-                return url
+                return cast(str, url)
         except ClientError as e:
-            raise FileStorageError(f"Failed to generate download URL: {e}")
+            raise FileStorageError(f"Failed to generate download URL: {e}") from e
 
     async def get_file_info(self, storage_key: str) -> dict:
         """
@@ -295,8 +390,8 @@ class FileStorageClient:
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code in ("404", "NoSuchKey"):
-                raise FileStorageError(f"File not found: {storage_key}")
-            raise FileStorageError(f"Failed to get file info: {e}")
+                raise FileStorageError(f"File not found: {storage_key}") from e
+            raise FileStorageError(f"Failed to get file info: {e}") from e
 
     async def health_check(self) -> bool:
         """Check if the storage service is healthy."""
@@ -331,7 +426,7 @@ class FileStorageClient:
                         return True
                     raise
         except ClientError as e:
-            raise FileStorageError(f"Failed to ensure bucket exists: {e}")
+            raise FileStorageError(f"Failed to ensure bucket exists: {e}") from e
 
 
 class FileStorageError(Exception):

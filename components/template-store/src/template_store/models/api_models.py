@@ -5,9 +5,19 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Canonical bulk-response models live in wip_auth.bulk_models (CASE-395).
+# Re-exported here under the template-store-facing names so existing
+# callers keep working without re-defining the schema.
+from wip_auth.bulk_models import (
+    TemplateBulkResponse as BulkResponse,  # noqa: F401
+)
+from wip_auth.bulk_models import (
+    TemplateBulkResultItem as BulkResultItem,  # noqa: F401
+)
+
 from .field import FieldDefinition
 from .rule import ValidationRule
-from .template import ReportingConfig, TemplateMetadata
+from .template import ReportingConfig, TemplateMetadata, TemplateUsage
 
 
 class StrictModel(BaseModel):
@@ -31,15 +41,15 @@ class CreateTemplateRequest(StrictModel):
         description="Display label"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="Detailed description"
     )
     template_id: str | None = Field(
-        None,
+        default=None,
         description="Pre-assigned template ID (for restore/migration — Registry uses as-is instead of generating)"
     )
     version: int | None = Field(
-        None,
+        default=None,
         description="Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)"
     )
     namespace: str = Field(
@@ -47,16 +57,40 @@ class CreateTemplateRequest(StrictModel):
         description="Namespace for the template"
     )
     extends: str | None = Field(
-        None,
+        default=None,
         description="Parent template ID for inheritance"
     )
     extends_version: int | None = Field(
-        None,
+        default=None,
         description="Pinned parent version (None = always use latest active parent version)"
     )
     identity_fields: list[str] = Field(
         default_factory=list,
         description="Fields that form the composite identity key"
+    )
+    header_fields: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Fields to include in peer/header projections. "
+            "Bare names → data.<name>; metadata.custom.<name> paths allowed. "
+            "Empty → projection falls back to identity_fields."
+        )
+    )
+    usage: TemplateUsage = Field(
+        default=TemplateUsage.ENTITY,
+        description="Usage class: entity (default), reference, or relationship. Immutable after creation."
+    )
+    source_templates: list[str] = Field(
+        default_factory=list,
+        description="Template values allowed as edge source (required when usage=relationship; ignored otherwise)"
+    )
+    target_templates: list[str] = Field(
+        default_factory=list,
+        description="Template values allowed as edge target (required when usage=relationship; ignored otherwise)"
+    )
+    versioned: bool = Field(
+        default=True,
+        description="True = updates create new versions; False = overwrite in place. Immutable after creation."
     )
     fields: list[FieldDefinition] = Field(
         default_factory=list,
@@ -67,15 +101,15 @@ class CreateTemplateRequest(StrictModel):
         description="Cross-field validation rules"
     )
     metadata: TemplateMetadata | None = Field(
-        None,
+        default=None,
         description="Additional metadata"
     )
     reporting: ReportingConfig | None = Field(
-        None,
+        default=None,
         description="Configuration for PostgreSQL reporting sync"
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system creating this template"
     )
     validate_references: bool = Field(
@@ -92,48 +126,65 @@ class UpdateTemplateRequest(StrictModel):
     """Request to update an existing template."""
 
     value: str | None = Field(
-        None,
+        default=None,
         description="New value (triggers Registry synonym)"
     )
     label: str | None = Field(
-        None,
+        default=None,
         description="New display label"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="New description"
     )
     extends: str | None = Field(
-        None,
+        default=None,
         description="Parent template ID (changing creates new version)"
     )
     extends_version: int | None = Field(
-        None,
+        default=None,
         description="Pinned parent version (None = always use latest active parent version)"
     )
     identity_fields: list[str] | None = Field(
-        None,
+        default=None,
         description="Update identity fields"
     )
+    header_fields: list[str] | None = Field(
+        default=None,
+        description="Update peer-projection fields"
+    )
     fields: list[FieldDefinition] | None = Field(
-        None,
+        default=None,
         description="Update field definitions"
     )
     rules: list[ValidationRule] | None = Field(
-        None,
+        default=None,
         description="Update validation rules"
     )
     metadata: TemplateMetadata | None = Field(
-        None,
+        default=None,
         description="Update metadata"
     )
     reporting: ReportingConfig | None = Field(
-        None,
+        default=None,
         description="Update reporting configuration"
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system updating this template"
+    )
+
+
+class AddEndpointsRequest(StrictModel):
+    """Request to additively widen an edge type's allowed endpoint set."""
+
+    add_source_templates: list[str] = Field(
+        default_factory=list,
+        description="Endpoint template values/IDs to ADD to source_templates (additive-only)",
+    )
+    add_target_templates: list[str] = Field(
+        default_factory=list,
+        description="Endpoint template values/IDs to ADD to target_templates (additive-only)",
     )
 
 
@@ -149,6 +200,11 @@ class TemplateResponse(BaseModel):
     extends: str | None = None
     extends_version: int | None = None
     identity_fields: list[str] = []
+    header_fields: list[str] = []
+    usage: TemplateUsage = TemplateUsage.ENTITY
+    source_templates: list[str] = []
+    target_templates: list[str] = []
+    versioned: bool = True
     fields: list[FieldDefinition] = []
     rules: list[ValidationRule] = []
     metadata: TemplateMetadata
@@ -181,7 +237,7 @@ class TemplateUpdateResponse(BaseModel):
         description="True if a new version was created, False if unchanged"
     )
     previous_version: int | None = Field(
-        None,
+        default=None,
         description="Previous version number if a new version was created"
     )
 
@@ -189,34 +245,8 @@ class TemplateUpdateResponse(BaseModel):
 # =============================================================================
 # BULK OPERATION MODELS
 # =============================================================================
-
-class BulkResultItem(BaseModel):
-    """Result of a bulk operation for a single item."""
-
-    index: int
-    status: str  # created, updated, unchanged, deleted, skipped, error
-    id: str | None = None
-    value: str | None = None
-    version: int | None = None
-    is_new_version: bool | None = None
-    error: str | None = None
-    error_code: str | None = Field(
-        None,
-        description="Machine-readable error code (e.g. 'incompatible_schema')"
-    )
-    details: dict[str, Any] | None = Field(
-        None,
-        description="Structured details for non-error statuses (e.g. compatibility diff for on_conflict=validate)"
-    )
-
-
-class BulkResponse(BaseModel):
-    """Response for bulk operations."""
-
-    results: list[BulkResultItem]
-    total: int
-    succeeded: int
-    failed: int
+# Canonical models live in wip_auth.bulk_models (CASE-395) — imported at
+# the top of this file and re-exported as BulkResponse / BulkResultItem.
 
 
 class UpdateTemplateItem(UpdateTemplateRequest):
@@ -229,10 +259,10 @@ class DeleteItem(StrictModel):
     """Item in a bulk delete request."""
 
     id: str = Field(..., description="ID of entity to delete")
-    version: int | None = Field(None, description="Specific version to delete (default: latest for soft-delete, all for hard-delete)")
+    version: int | None = Field(default=None, description="Specific version to delete (default: latest for soft-delete, all for hard-delete)")
     force: bool = Field(default=False, description="Force deletion even if documents exist")
     hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
-    updated_by: str | None = Field(None, description="User performing deletion")
+    updated_by: str | None = Field(default=None, description="User performing deletion")
 
 
 # =============================================================================

@@ -1,10 +1,13 @@
 """Validation service for document validation against templates."""
 
+import contextlib
 import logging
 import re
 import time
 from datetime import date, datetime
-from typing import Any
+from typing import Any, ClassVar, cast
+
+from wip_auth import split_qualified_value
 
 from .def_store_client import DefStoreError, get_def_store_client
 from .identity_service import IdentityService
@@ -85,7 +88,7 @@ class ValidationService:
     """
 
     # Type validators mapping field type to validation function
-    TYPE_VALIDATORS = {
+    TYPE_VALIDATORS: ClassVar[dict[str, str]] = {
         "string": "_validate_string",
         "number": "_validate_number",
         "integer": "_validate_integer",
@@ -100,7 +103,7 @@ class ValidationService:
     }
 
     # Semantic type validators (called after base type validation)
-    SEMANTIC_VALIDATORS = {
+    SEMANTIC_VALIDATORS: ClassVar[dict[str, str]] = {
         "email": "_validate_semantic_email",
         "url": "_validate_semantic_url",
         "latitude": "_validate_semantic_latitude",
@@ -114,7 +117,7 @@ class ValidationService:
     TIME_UNITS_TERMINOLOGY = "_TIME_UNITS"
 
     # Class-level timing statistics
-    _timing_stats: dict[str, list[float]] = {}
+    _timing_stats: ClassVar[dict[str, list[float]]] = {}
     _validation_count: int = 0
 
     @classmethod
@@ -123,7 +126,7 @@ class ValidationService:
         if cls._validation_count == 0:
             return {"validation_count": 0, "stages": {}}
 
-        stats = {
+        stats: dict[str, Any] = {
             "validation_count": cls._validation_count,
             "stages": {}
         }
@@ -565,7 +568,7 @@ class ValidationService:
             # Try ISO format
             for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S.%fZ"]:
                 try:
-                    datetime.strptime(value.replace("+00:00", "Z").rstrip("Z") + ("" if "." in value else ""), fmt.rstrip("Z"))
+                    datetime.strptime(value.replace("+00:00", "Z").rstrip("Z"), fmt.rstrip("Z"))
                     return
                 except ValueError:
                     continue
@@ -714,14 +717,21 @@ class ValidationService:
             )
             return
 
-        # If template_ref is specified, fetch and validate against that template.
-        # template_ref is a specific template_id (immutable), so use the
-        # permanently cached get_template_resolved() path.
+        # If template_ref is specified, validate against that template at its
+        # PINNED version (CASE-493). template_ref_version is mandatory on the
+        # template schema, so nested data is always validated against an exact
+        # (template_id, version) pair — resolved via the permanent (immutable)
+        # cache, never the 5s "latest" path. This is what stops a parent
+        # document from stranding on PATCH when the nested template later ships
+        # a new, incompatible version.
         template_ref = field.get("template_ref")
         if template_ref:
+            template_ref_version = field.get("template_ref_version")
             try:
                 client = get_template_store_client()
-                nested_template = await client.get_template_resolved(template_ref)
+                nested_template = await client.get_template_resolved(
+                    template_ref, version=template_ref_version
+                )
                 if nested_template:
                     await self._validate_fields(
                         value, nested_template, result, prefix=f"{field_path}."
@@ -772,15 +782,24 @@ class ValidationService:
                 else:
                     template_ref = field.get("array_template_ref")
                     if template_ref:
+                        # CASE-493: validate against the PINNED version, same as
+                        # the object axis. array_template_ref_version is
+                        # mandatory on the schema.
+                        template_ref_version = field.get("array_template_ref_version")
                         try:
                             client = get_template_store_client()
-                            item_template = await client.get_template_resolved(template_ref)
+                            item_template = await client.get_template_resolved(
+                                template_ref, version=template_ref_version
+                            )
                             if item_template:
                                 await self._validate_fields(
                                     item, item_template, result, prefix=f"{item_path}."
                                 )
                         except TemplateStoreError:
-                            pass
+                            result.add_warning(
+                                f"Could not validate array-item template "
+                                f"'{template_ref}' for field '{item_path}'"
+                            )
 
             elif item_type == "string":
                 if not isinstance(item, str):
@@ -803,6 +822,36 @@ class ValidationService:
                     result.add_error(
                         code="invalid_type",
                         message=f"Item at '{item_path}' must be an integer",
+                        field=item_path
+                    )
+
+            elif item_type == "reference":
+                # CASE-550: array-of-references reuse the field's top-level
+                # reference_type slot (the collector reads it there and queues
+                # each item for Stage-5 existence resolution). Mirror the
+                # single-reference Stage-3 type check (_validate_reference):
+                # document refs accept a string or composite dict, the others a
+                # string. reference_type is guaranteed present on templates
+                # authored after the template-store guard; a grandfathered
+                # template may carry None, in which case the per-item type
+                # constraint is skipped (existing soft-link data keeps
+                # validating) — existence resolution still runs when a real
+                # reference_type is present.
+                reference_type = field.get("reference_type")
+                if reference_type == "document":
+                    if not isinstance(item, (str, dict)):
+                        result.add_error(
+                            code="invalid_type",
+                            message=f"Item at '{item_path}' must be a string or object (document reference)",
+                            field=item_path
+                        )
+                elif (
+                    reference_type in ("term", "terminology", "template")
+                    and not isinstance(item, str)
+                ):
+                    result.add_error(
+                        code="invalid_type",
+                        message=f"Item at '{item_path}' must be a string ({reference_type} reference)",
                         field=item_path
                     )
 
@@ -1460,11 +1509,12 @@ class ValidationService:
                     cache[tpl_id] = []
                     continue
 
-                descendants = await client.get_template_descendants(template.get("template_id"))
+                descendants = await client.get_template_descendants(cast(str, template.get("template_id")))
+                desc_refs: list[str]
                 if version_strategy == "pinned":
-                    desc_refs = [d.get("template_id") for d in descendants if d.get("template_id")]
+                    desc_refs = [cast(str, d.get("template_id")) for d in descendants if d.get("template_id")]
                 else:
-                    desc_refs = [d.get("value") for d in descendants if d.get("value")]
+                    desc_refs = [cast(str, d.get("value")) for d in descendants if d.get("value")]
                 cache[tpl_id] = desc_refs
                 expanded.update(desc_refs)
             except TemplateStoreError:
@@ -1507,7 +1557,8 @@ class ValidationService:
                     return None
                 # Skip to template verification below
                 return await self._verify_ref_template_and_build_result(
-                    doc, target_templates, result, field_path, version_strategy
+                    doc, target_templates, result, field_path, version_strategy,
+                    namespace=namespace,
                 )
 
         # Determine lookup method based on value format
@@ -1527,11 +1578,37 @@ class ValidationService:
                 doc = await self._resolve_via_registry(value, namespace, "documents")
             else:
                 # Registry lookup — resolve any identifier (synonym, composite key value, etc.)
-                doc = await self._resolve_via_registry(value, namespace, "documents")
+                # Qualified form: explicit NS:VALUE resolves in the named
+                # namespace (same syntax the resolve layer uses for schema
+                # references); bare values never cross. The resolved reference
+                # still passes the namespace-isolation check downstream, so a
+                # qualified ref into an undeclared namespace surfaces as
+                # reference_violation, not not_found.
+                ref_ns, ref_value = split_qualified_value(value)
+                doc = await self._resolve_via_registry(
+                    ref_value, ref_ns or namespace, "documents"
+                )
 
                 if not doc:
-                    # Fallback: Business key lookup
-                    doc = await self._lookup_by_business_key(value, target_templates)
+                    # CASE-435: the Registry didn't resolve this string reference.
+                    # The old service-local business-key fallback (a direct Mongo
+                    # query on data.<identity_field>) is REMOVED — it could resolve
+                    # a value the Registry doesn't know, a "guardrail that works
+                    # sometimes" (Vision §"References Must Resolve"). String refs
+                    # now resolve through the Registry only. Verified the fallback
+                    # was unreachable for correctly-registered docs: the
+                    # identity-values synonym flattens the value into search_values,
+                    # which the by-id lookup already matches. Log the miss so an
+                    # under-registered target (missing Registry synonym) surfaces
+                    # instead of being silently papered over by a Mongo bypass.
+                    logger.warning(
+                        "CASE-435: string reference %r (field %r, ns %r) did not "
+                        "resolve via the Registry; the business-key Mongo fallback "
+                        "was removed — treating as unresolved. If this should "
+                        "resolve, the target's Registry synonym is missing "
+                        "(registration gap).",
+                        value, field_path, namespace,
+                    )
         elif isinstance(value, dict):
             # Composite business key
             doc = await self._lookup_by_business_key(value, target_templates)
@@ -1557,7 +1634,8 @@ class ValidationService:
             return None
 
         return await self._verify_ref_template_and_build_result(
-            doc, target_templates, result, field_path, version_strategy
+            doc, target_templates, result, field_path, version_strategy,
+            namespace=namespace,
         )
 
     async def _verify_ref_template_and_build_result(
@@ -1566,42 +1644,74 @@ class ValidationService:
         target_templates: list[str],
         result: "ValidationResult",
         field_path: str,
-        version_strategy: str = "latest"
+        version_strategy: str = "latest",
+        namespace: str | None = None,
     ) -> dict[str, Any] | None:
         """Verify referenced document's template and build the resolved result."""
         from ..models.document import DocumentStatus
 
+        # Always look up the template so we can include template_value in
+        # the resolved dict — Phase-2 relationship validation needs it.
+        doc_template: dict[str, Any] | None = None
+        try:
+            client = get_template_store_client()
+            doc_template = await client.get_template(doc.template_id)
+        except TemplateStoreError:
+            doc_template = None
+
         # Verify template matches target_templates
         if target_templates:
-            try:
-                client = get_template_store_client()
-                doc_template = await client.get_template(doc.template_id)
-                if doc_template:
-                    if version_strategy == "pinned":
-                        # Exact template_id match
-                        if doc.template_id not in target_templates:
-                            result.add_error(
-                                code="invalid_reference_template",
-                                message=f"Referenced document uses template '{doc.template_id}', expected one of {target_templates} (pinned)",
-                                field=field_path
-                            )
-                            return None
-                    else:
-                        # latest: resolve stored IDs to family codes, match by code
-                        allowed_codes = set()
-                        for tpl_id in target_templates:
-                            tpl = await client.get_template(template_id=tpl_id)
-                            if tpl:
-                                allowed_codes.add(tpl.get("value"))
-                        if doc_template.get("value") not in allowed_codes:
-                            result.add_error(
-                                code="invalid_reference_template",
-                                message=f"Referenced document uses template '{doc_template.get('value')}', expected family of {list(allowed_codes)}",
-                                field=field_path
-                            )
-                            return None
-            except TemplateStoreError:
+            if doc_template is None:
                 result.add_warning(f"Could not verify template for referenced document in field '{field_path}'")
+            else:
+                if version_strategy == "pinned":
+                    # Exact template_id match
+                    if doc.template_id not in target_templates:
+                        result.add_error(
+                            code="invalid_reference_template",
+                            message=f"Referenced document uses template '{doc.template_id}', expected one of {target_templates} (pinned)",
+                            field=field_path
+                        )
+                        return None
+                else:
+                    # latest: resolve every allowed endpoint to its canonical
+                    # template_id via the Registry, then match the referenced
+                    # doc's template_id by canonical id. value-form, UUID, and
+                    # any synonym resolve identically — References-Must-Resolve
+                    # (CASE-525; docs/design/synonym-resolution-gaps.md). The old
+                    # code called get_template(template_id=entry) namespace-free
+                    # and matched by .value, which 404s on a namespace-scoped
+                    # value-form endpoint → empty family → every edge rejected
+                    # (the add_edge_type_endpoints widen stores endpoints
+                    # value-form). Resolving here closes the gap regardless of the
+                    # stored form, instead of forcing the widen to avoid synonyms.
+                    from .registry_client import RegistryError, get_registry_client
+                    registry = get_registry_client()
+                    allowed_ids: set[str] = set()
+                    for entry in target_templates:
+                        rid = None
+                        try:
+                            rid = await registry.resolve_identifier(
+                                namespace, "templates", entry
+                            )
+                        except RegistryError:
+                            rid = None
+                        if rid:
+                            allowed_ids.add(rid)
+                        elif self._is_uuid7(entry):
+                            # already a canonical id (or Registry briefly
+                            # unavailable) — honour it directly, never drop it.
+                            allowed_ids.add(entry)
+                    if doc.template_id not in allowed_ids:
+                        expected = doc_template.get("value") or doc.template_id
+                        # Report the DECLARED endpoints (human-readable, the form
+                        # the edge type declares) rather than resolved UUIDs.
+                        result.add_error(
+                            code="invalid_reference_template",
+                            message=f"Referenced document uses template '{expected}', expected family of {list(target_templates)}",
+                            field=field_path
+                        )
+                        return None
 
         # Check if document is inactive (warning only)
         if doc.status != DocumentStatus.ACTIVE:
@@ -1611,7 +1721,10 @@ class ValidationService:
             "document_id": doc.document_id,
             "identity_hash": doc.identity_hash,
             "template_id": doc.template_id,
-            "version": doc.version
+            "template_value": doc_template.get("value") if doc_template else None,
+            "version": doc.version,
+            "namespace": doc.namespace,
+            "status": doc.status.value if hasattr(doc.status, "value") else doc.status,
         }
 
     async def _lookup_by_business_key(
@@ -1836,19 +1949,22 @@ class ValidationService:
                     "value": value
                 })
 
-            elif field_type == "array" and field.get("array_item_type") == "reference":
+            elif (
+                field_type == "array"
+                and field.get("array_item_type") == "reference"
+                and isinstance(value, list)
+            ):
                 # Array of references
-                if isinstance(value, list):
-                    for i, item in enumerate(value):
-                        ref_values.append({
-                            "field_path": f"{full_path}[{i}]",
-                            "reference_type": field.get("reference_type"),
-                            "target_templates": field.get("target_templates", []),
-                            "include_subtypes": field.get("include_subtypes", False),
-                            "target_terminologies": field.get("target_terminologies", []),
-                            "version_strategy": field.get("version_strategy", "latest"),
-                            "value": item
-                        })
+                for i, item in enumerate(value):
+                    ref_values.append({
+                        "field_path": f"{full_path}[{i}]",
+                        "reference_type": field.get("reference_type"),
+                        "target_templates": field.get("target_templates", []),
+                        "include_subtypes": field.get("include_subtypes", False),
+                        "target_terminologies": field.get("target_terminologies", []),
+                        "version_strategy": field.get("version_strategy", "latest"),
+                        "value": item
+                    })
 
         return ref_values
 
@@ -1888,15 +2004,11 @@ class ValidationService:
             return actual, expected
         # If one is numeric and the other is a string, try to coerce the string
         if isinstance(actual, (int, float)) and isinstance(expected, str):
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 expected = type(actual)(expected)
-            except (ValueError, TypeError):
-                pass
         elif isinstance(expected, (int, float)) and isinstance(actual, str):
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 actual = type(expected)(actual)
-            except (ValueError, TypeError):
-                pass
         return actual, expected
 
     def _check_condition(
@@ -1909,14 +2021,14 @@ class ValidationService:
         operator = condition.get("operator")
         expected_value = condition.get("value")
 
-        actual_value = IdentityService._get_nested_value(data, field)
+        actual_value = IdentityService._get_nested_value(data, cast(str, field))
 
         if operator == "equals":
             a, e = self._coerce_for_comparison(actual_value, expected_value)
-            return a == e
+            return cast(bool, a == e)
         elif operator == "not_equals":
             a, e = self._coerce_for_comparison(actual_value, expected_value)
-            return a != e
+            return cast(bool, a != e)
         elif operator == "in":
             return actual_value in expected_value if expected_value else False
         elif operator == "not_in":
@@ -1950,7 +2062,7 @@ class ValidationService:
         if not self._check_conditions(data, conditions):
             return
 
-        target_value = IdentityService._get_nested_value(data, target_field)
+        target_value = IdentityService._get_nested_value(data, cast(str, target_field))
 
         if is_required and target_value is None:
             result.add_error(
@@ -1973,7 +2085,7 @@ class ValidationService:
         if not self._check_conditions(data, conditions):
             return
 
-        target_value = IdentityService._get_nested_value(data, target_field)
+        target_value = IdentityService._get_nested_value(data, cast(str, target_field))
 
         if target_value is not None and target_value not in allowed_values:
             result.add_error(
@@ -2013,20 +2125,19 @@ class ValidationService:
         conditions = rule.get("conditions", [])
         target_field = rule.get("target_field")
 
-        target_value = IdentityService._get_nested_value(data, target_field)
+        target_value = IdentityService._get_nested_value(data, cast(str, target_field))
 
         # If target field has value, check that dependency conditions are met
-        if target_value is not None:
-            if not self._check_conditions(data, conditions):
-                # Find missing dependency
-                for condition in conditions:
-                    if not self._check_condition(data, condition):
-                        result.add_error(
-                            code="dependency",
-                            message=rule.get("error_message") or f"Field '{target_field}' requires '{condition['field']}' to be set",
-                            field=target_field
-                        )
-                        break
+        if target_value is not None and not self._check_conditions(data, conditions):
+            # Find missing dependency
+            for condition in conditions:
+                if not self._check_condition(data, condition):
+                    result.add_error(
+                        code="dependency",
+                        message=rule.get("error_message") or f"Field '{target_field}' requires '{condition['field']}' to be set",
+                        field=target_field
+                    )
+                    break
 
     def _compute_identity(
         self,

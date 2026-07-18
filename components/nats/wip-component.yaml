@@ -1,0 +1,49 @@
+api_version: wip.dev/v1
+kind: Component
+metadata:
+  name: nats
+  category: infrastructure
+  description: |
+    NATS JetStream message queue. Carries document change events from
+    Document-Store to Reporting-Sync, and bulk ingestion streams from
+    Ingest-Gateway. Active when either reporting or ingest module is
+    enabled.
+
+spec:
+  image:
+    name: docker.io/library/nats
+    # Alpine variant carries busybox (wget included) so compose's
+    # in-container healthcheck exec has something to probe with. The
+    # scratch-based nats:2 image has no shell/curl/wget — on compose
+    # the probe can't run and NATS is reported unhealthy, which cascades
+    # (reporting-sync + ingest-gateway block on depends_on: service_healthy).
+    # On k8s, probes use kubelet's httpGet (bypasses in-container tooling),
+    # so either tag works there.
+    tag: "2-alpine"
+
+  ports:
+    - {name: nats, container_port: 4222}
+    - {name: monitor, container_port: 8222}
+
+  # `-js` enables JetStream (ingest-gateway + reporting-sync both use
+  # it). `-m 8222` exposes the monitor endpoint for healthchecks.
+  # Full argv (including binary) so k8s's `command:` replacement works;
+  # `nats-server` (PATH-relative) works on nats:2-alpine (binary at
+  # /usr/local/bin/nats-server). The scratch nats:2 image had it at
+  # /nats-server but we switched away from scratch so the compose
+  # healthcheck can exec into the container.
+  command: [nats-server, -js, -m, "8222"]
+
+  storage:
+    - {name: jetstream, mount_path: /data, size: 5Gi}
+
+  healthcheck:
+    endpoint: /healthz
+    port: monitor
+    interval_seconds: 10
+    timeout_seconds: 5
+    start_period_seconds: 10
+    retries: 3
+
+  activation:
+    requires_any_module: [reporting-sync, ingest-gateway]

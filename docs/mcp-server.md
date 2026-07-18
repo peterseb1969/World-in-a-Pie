@@ -22,7 +22,7 @@ The server runs in one of two modes, controlled by the `WIP_MCP_MODE` environmen
 
 ### Normal Mode (default)
 
-All 70+ tools are available — full read/write access to the WIP data model. This is the mode used during application development (Phases 1–4 below).
+All 94 tools are available — full read/write access to the WIP data model. This is the mode used during application development (Phases 1–4 below).
 
 ```bash
 python -m wip_mcp                  # stdio
@@ -31,7 +31,7 @@ python -m wip_mcp --http           # HTTP streamable
 
 ### Read-Only Mode
 
-Set `WIP_MCP_MODE=readonly` to remove all 31 write tools. The server exposes only 38 read-only tools: queries, searches, exports, and reports. The AI physically cannot create, modify, or delete any entities.
+Set `WIP_MCP_MODE=readonly` to remove all 39 write tools. The server exposes only 49 read-only tools: queries, searches, exports, and reports. The AI physically cannot create, modify, or delete any entities.
 
 ```bash
 WIP_MCP_MODE=readonly python -m wip_mcp
@@ -44,22 +44,23 @@ This is a structural safety mechanism — write tools are removed from the MCP t
 - **Shared/multi-tenant deployments** — expose WIP data to agents you don't fully trust
 - **Demo environments** — let users explore without risk of data modification
 
-**Write tools removed (31):**
+**Write tools removed (39):**
 
 | Category | Tools removed |
 |----------|--------------|
 | Terminologies | `create_terminology`, `create_terminologies_bulk`, `update_terminology`, `delete_terminology`, `restore_terminology` |
 | Terms | `create_terms`, `update_term`, `delete_term`, `deprecate_term` |
-| Relationships | `create_relationships`, `delete_relationships` |
-| Templates | `create_template`, `create_templates_bulk`, `activate_template`, `deactivate_template` |
-| Documents | `create_document`, `create_documents_bulk`, `archive_document` |
+| Term Relations | `create_term_relations`, `delete_term_relations` |
+| Templates | `create_template`, `create_templates_bulk`, `create_edge_type`, `update_template`, `activate_template`, `deactivate_template` |
+| Documents | `create_document`, `create_documents_bulk`, `update_document`, `archive_document`, `delete_document` |
 | Files | `upload_file`, `delete_file`, `hard_delete_file` |
 | Import | `import_terminology`, `import_documents_csv` |
 | Replay | `start_replay`, `cancel_replay`, `pause_replay`, `resume_replay` |
+| Backup / Restore | `start_backup`, `start_restore`, `delete_backup_job` |
 | Registry | `add_synonym`, `remove_synonym`, `merge_entries` |
-| Namespace | `delete_namespace` |
+| Namespace | `create_namespace`, `delete_namespace` |
 
-**Read-only tools available (38):**
+**Read-only tools available (49):**
 
 Discovery, listing, get-by-ID, search, query, export, validation, hierarchy, report tables, SQL queries (`run_report_query` — enforces read-only SQL), sync status, file metadata, template fields, and document versions.
 
@@ -93,15 +94,17 @@ Discovery, listing, get-by-ID, search, query, export, validation, hierarchy, rep
 
 ### WIP Service URLs
 
-The MCP server connects **directly** to each service (not via Caddy), because it runs on the same host as the WIP services. These defaults are correct for local development. Application code should use `@wip/client` through the Caddy proxy instead — see `libs/wip-client/README.md`.
+The MCP server can route traffic through a unified proxy (like Caddy) or connect directly to individual services. The unified proxy is the standard approach for both development and production.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REGISTRY_URL` | `http://localhost:8001` | Registry service |
-| `DEF_STORE_URL` | `http://localhost:8002` | Def-Store service |
-| `TEMPLATE_STORE_URL` | `http://localhost:8003` | Template-Store service |
-| `DOCUMENT_STORE_URL` | `http://localhost:8004` | Document-Store service |
-| `REPORTING_SYNC_URL` | `http://localhost:8005` | Reporting-Sync service |
+| `WIP_API_URL` | *(none)* | Base URL for all API requests (e.g., `https://localhost:8443`). If set, overrides the individual service URLs below. |
+| `WIP_VERIFY_TLS` | `true` | Set to `false` when using a self-signed cert for local dev (`https://localhost:8443`). |
+| `REGISTRY_URL` | `http://localhost:8001` | Registry service (used if `WIP_API_URL` is unset) |
+| `DEF_STORE_URL` | `http://localhost:8002` | Def-Store service (used if `WIP_API_URL` is unset) |
+| `TEMPLATE_STORE_URL` | `http://localhost:8003` | Template-Store service (used if `WIP_API_URL` is unset) |
+| `DOCUMENT_STORE_URL` | `http://localhost:8004` | Document-Store service (used if `WIP_API_URL` is unset) |
+| `REPORTING_SYNC_URL` | `http://localhost:8005` | Reporting-Sync service (used if `WIP_API_URL` is unset) |
 
 ### API Key Resolution
 
@@ -241,9 +244,9 @@ Five resources provide baseline context to the AI without tool calls:
 | Resource URI | Description |
 |---|---|
 | `wip://conventions` | Bulk-first API patterns, identity hashing, versioning, pagination, querying |
-| `wip://data-model` | Core entity types: terminologies, terms, templates, documents, files, relationships |
+| `wip://data-model` | Core entity types: terminologies, terms, templates, documents, files, relations |
 | `wip://development-guide` | The 4-phase development process with guidance per phase |
-| `wip://ponifs` | Powerful, Non-Intuitive Features — 6 WIP behaviours that violate conventional expectations, plus the Compactheimer's Warning for AI assistants |
+| `wip://ponifs` | Powerful, Non-Intuitive Features — 8 WIP behaviours that violate conventional expectations (#7 Edge Types and #8 `versioned: false` added 2026-04-25), plus the Compactheimer's Warning for AI assistants |
 | `wip://query-assistant-prompt` | Query assistant prompt for SQL reporting |
 
 ---
@@ -294,16 +297,20 @@ Five resources provide baseline context to the AI without tool calls:
 | `delete_term(id)` | Deactivate (soft-delete) a term. |
 | `deprecate_term(id, reason, replaced_by_term_id?)` | Deprecate with a reason and optional replacement pointer. Term remains queryable but flagged as superseded. |
 
-### Ontology / Relationships (4 tools)
+### Ontology / Term Relations (4 tools)
+
+These connect *terms* (taxonomy edges like `is_a`, `part_of`). Distinct from document-level *relationships* — see the Documents section for `get_document_relationships` / `traverse_documents`.
 
 | Tool | Description |
 |------|-------------|
-| `get_term_hierarchy(term_id, direction)` | Traverse relationships: `children`, `parents`, `ancestors`, `descendants`. Optional `relationship_type` filter. |
-| `list_relationships(term_id, direction?, relationship_type?)` | List relationships for a term. Direction: `outgoing`, `incoming`, or `both`. |
-| `create_relationships(relationships)` | Create typed relationships (`is_a`, `part_of`, `has_part`, `regulates`, etc.). |
-| `delete_relationships(relationships)` | Delete relationships. Each item: `{source_term_id, target_term_id, relationship_type}`. |
+| `get_term_hierarchy(term_id, direction)` | Traverse term relations: `children`, `parents`, `ancestors`, `descendants`. Optional `relation_type` filter. |
+| `list_term_relations(term_id, direction?, relation_type?)` | List term relations. Direction: `outgoing`, `incoming`, or `both`. |
+| `create_term_relations(relations)` | Create typed term relations (`is_a`, `part_of`, `has_part`, `regulates`, etc.). |
+| `delete_term_relations(relations)` | Delete term relations. Each item: `{source_term_id, target_term_id, relation_type}`. |
 
-### Templates (12 tools)
+### Templates (13 tools)
+
+Templates are the schema for entity documents. **Edge types** — schemas for relationships between documents — are also implemented as templates (with `usage: "relationship"`) but get a dedicated creation tool below to surface the conceptual distinction. The other tools work uniformly on both.
 
 | Tool | Description |
 |------|-------------|
@@ -314,13 +321,14 @@ Five resources provide baseline context to the AI without tool calls:
 | `get_template_fields(template_value)` | Clean summary of a template's fields — name, type, mandatory, references. Returns `template_id` for use in queries. |
 | `get_template_versions(template_value?, template_id?)` | List all versions of a template. Provide either value or ID. |
 | `validate_template(template_id)` | Validate a template's references (terminologies, parent templates). Useful before activation. |
-| `create_template(template)` | Create a single template. Supports draft mode. |
+| `create_template(template)` | Create a single entity template. Supports draft mode. For edge types, use `create_edge_type` instead — it validates the edge contract before delegating. |
 | `create_templates_bulk(templates)` | Create multiple templates. |
+| `create_edge_type(value, source_templates, target_templates, fields, ...)` | Create an edge type (a template with `usage: "relationship"`) with the contract validated up front: `source_templates` and `target_templates` non-empty, `source_ref` and `target_ref` reference fields present, `versioned` set explicitly. Thin wrapper over `create_template` — same storage, clearer ingress. |
 | `activate_template(id)` | Activate a draft template with cascading validation. |
 | `deactivate_template(id, version?, force?)` | Soft-delete a template version. Blocked if child templates exist. Use `force=true` to bypass document dependency check. |
 | `get_template_dependencies(id)` | Show child templates and documents that depend on this template. |
 
-### Documents (8 tools)
+### Documents (10 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -332,6 +340,8 @@ Five resources provide baseline context to the AI without tool calls:
 | `archive_document(document_id)` | Archive (soft-delete) a document. |
 | `query_documents(filters)` | Query with complex field-level filters. |
 | `query_by_template(template_value, field_filters?, ...)` | Query by template value code. Auto-resolves template_value to template_id. Field names auto-prefixed with `data.`. |
+| `get_document_relationships(document_id, direction?, template?, namespace?, active_only?, page?, page_size?)` | List relationship documents (instances of edge types — templates with `usage='relationship'`) pointing at or from a document. Indexed on `data.source_ref` / `data.target_ref`. Direction: `incoming`, `outgoing`, or `both` (default `both`). |
+| `traverse_documents(document_id, depth?, types?, direction?, namespace?)` | BFS graph traversal via relationship documents. Capped at `depth=10` and 1000 nodes; sets `truncated=true` when a cap fires. Returns flat node list with `depth`, `path`, and `via_relationship`. |
 
 ### Table View & Export (2 tools)
 
@@ -344,7 +354,7 @@ Five resources provide baseline context to the AI without tool calls:
 
 | Tool | Description |
 |------|-------------|
-| `export_terminology(id)` | Export terminology with terms and optional relationships. JSON or CSV. |
+| `export_terminology(id)` | Export terminology with terms and optional relations. JSON or CSV. |
 | `import_terminology(data)` | Import terminology from JSON. Supports `skip_duplicates` and `update_existing`. |
 
 ### Search (2 tools)
@@ -418,7 +428,7 @@ Configuration for which schemas map to which tools lives in `tools.yaml`.
 ### Error Handling
 
 All errors are caught and returned as formatted strings (not exceptions). The AI receives:
-- `WIP error: <message>` for bulk item failures (`BulkError`)
+- `WIP error [<error_code>]: <message>` for bulk item failures (`BulkError`); the machine-readable `error_code` is included so callers can branch on the code, not the message string (falls back to `WIP error: <message>` when the backend supplied no code)
 - `Error: <message>` for transport/connectivity errors
 
 ---
@@ -430,7 +440,7 @@ The MCP server is designed around a 4-phase process for building applications on
 | Phase | Purpose | Key MCP Tools |
 |-------|---------|---------------|
 | **1. Explore** | Discover existing data model | `get_wip_status`, `list_namespaces`, `list_terminologies`, `list_templates` |
-| **2. Design** | Plan terminologies, templates, relationships | `get_terminology_by_value`, `get_template_by_value`, `get_template_dependencies` |
+| **2. Design** | Plan terminologies, templates, relations | `get_terminology_by_value`, `get_template_by_value`, `get_template_dependencies` |
 | **3. Implement** | Create data model in WIP | `create_terminology`, `create_terms`, `create_template`, `activate_template`, `create_document`, `import_documents_csv` |
 | **4. Build App** | Build frontend (uses @wip/client, not MCP) | MCP used for debugging and `query_by_template`, `run_report_query` |
 

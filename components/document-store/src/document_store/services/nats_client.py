@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ _throttle_delay: float = 0.0  # seconds
 _backpressure_task: asyncio.Task | None = None
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     """Document and file event types."""
     DOCUMENT_CREATED = "document.created"
     DOCUMENT_UPDATED = "document.updated"

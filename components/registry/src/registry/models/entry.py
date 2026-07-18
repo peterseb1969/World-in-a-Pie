@@ -16,7 +16,7 @@ class SourceInfo(BaseModel):
         description="Identifier of the source system"
     )
     endpoint_url: str | None = Field(
-        None,
+        default=None,
         description="API endpoint URL for proxied queries"
     )
 
@@ -41,14 +41,14 @@ class Synonym(BaseModel):
         description="SHA-256 hash of the composite key"
     )
     source_info: SourceInfo | None = Field(
-        None,
+        default=None,
         description="Source system information"
     )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that created this synonym"
     )
 
@@ -99,7 +99,7 @@ class RegistryEntry(Document):
 
     # Source system that owns this entry
     source_info: SourceInfo | None = Field(
-        None,
+        default=None,
         description="Source system information"
     )
 
@@ -114,14 +114,14 @@ class RegistryEntry(Document):
         default_factory=lambda: datetime.now(UTC)
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that created this entry"
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that last updated this entry"
     )
 

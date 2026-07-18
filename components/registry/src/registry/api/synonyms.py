@@ -1,8 +1,12 @@
 """Synonym management API endpoints."""
 
+import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Body, Depends
+from pymongo.errors import DuplicateKeyError
+
+from wip_auth import UserIdentity
 
 from ..models.api_models import (
     AddSynonymItem,
@@ -15,9 +19,13 @@ from ..models.api_models import (
     RemoveSynonymItem,
     RemoveSynonymResponse,
 )
+from ..models.composite_key_claim import CompositeKeyClaim
 from ..models.entry import RegistryEntry, Synonym
 from ..services.auth import require_api_key
+from ..services.claims import resolve_stale_claim
 from ..services.hash import HashService
+
+logger = logging.getLogger("registry.synonyms")
 
 router = APIRouter()
 
@@ -29,7 +37,7 @@ router = APIRouter()
 )
 async def add_synonyms(
     items: list[AddSynonymItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkSynonymAddResponse:
     """Add one or more synonyms to existing registry entries."""
     results = []
@@ -44,32 +52,58 @@ async def add_synonyms(
 
             if not entry:
                 results.append(AddSynonymResponse(
-                    input_index=i, status="target_not_found",
+                    index=i, status="target_not_found",
                 ))
                 continue
 
             # Compute hash for the new synonym
             synonym_hash = HashService.compute_composite_key_hash(item.synonym_composite_key)
 
-            # Check if this synonym already exists anywhere
-            existing = await RegistryEntry.find_one({
-                "$or": [
-                    {"primary_composite_key_hash": synonym_hash},
-                    {"synonyms.composite_key_hash": synonym_hash}
-                ]
-            })
+            # Fast path: this entry already owns the hash (primary or embedded
+            # synonym) → idempotent already_exists, no claim churn.
+            if (
+                entry.primary_composite_key_hash == synonym_hash
+                or entry.find_synonym_by_hash(synonym_hash) is not None
+            ):
+                results.append(AddSynonymResponse(
+                    index=i, status="already_exists",
+                    registry_id=entry.entry_id,
+                ))
+                continue
 
-            if existing:
-                if str(existing.id) == str(entry.id):
+            # Atomic uniqueness gate (CASE-427, two-phase since CASE-554):
+            # claim the hash pending before writing; the unique index is the
+            # lock — no check-then-insert race. Confirmed after the save.
+            claim_conflict = False
+            for attempt in (1, 2):
+                try:
+                    await CompositeKeyClaim.claim(
+                        item.synonym_namespace, item.synonym_entity_type,
+                        synonym_hash, entry.entry_id, "synonym",
+                        state="pending",
+                    )
+                    break
+                except DuplicateKeyError:
+                    existing_claim = await CompositeKeyClaim.find_existing(
+                        item.synonym_namespace, item.synonym_entity_type, synonym_hash
+                    )
+                    owner = existing_claim.owner_entry_id if existing_claim else "?"
+                    if existing_claim and owner == entry.entry_id:
+                        # Self-owned claim (embedded write died mid-flight) —
+                        # safe to reclaim by writing the embedded synonym below.
+                        break
+                    # Stale claim from a dead request or crashed delete? Heal
+                    # inline and retry once; the unique index arbitrates
+                    # racing healers. Genuine owner → never auto-steal.
+                    if attempt == 1 and await resolve_stale_claim(existing_claim):
+                        continue
                     results.append(AddSynonymResponse(
-                        input_index=i, status="already_exists",
-                        registry_id=entry.entry_id,
+                        index=i, status="error",
+                        error=f"Synonym already registered under different entry: {owner}"
                     ))
-                else:
-                    results.append(AddSynonymResponse(
-                        input_index=i, status="error",
-                        error=f"Synonym already registered under different entry: {existing.entry_id}"
-                    ))
+                    claim_conflict = True
+                    break
+            if claim_conflict:
                 continue
 
             synonym = Synonym(
@@ -84,15 +118,34 @@ async def add_synonyms(
             entry.synonyms.append(synonym)
             entry.rebuild_search_values()
             entry.updated_at = datetime.now(UTC)
-            await entry.save()
+            try:
+                await entry.save()
+            except Exception:
+                # Compensate the no-transaction window: release the pending
+                # claim we just took so it doesn't dangle, then re-raise.
+                # Anything this release misses is pending and dies in the
+                # reconcile pass.
+                await CompositeKeyClaim.release(
+                    item.synonym_namespace, item.synonym_entity_type,
+                    synonym_hash, owner_entry_id=entry.entry_id,
+                )
+                raise
+
+            # Entry committed — flip the claim to confirmed. Best-effort: a
+            # failure leaves a pending-but-backed claim for the reconcile
+            # pass; it must not fail the committed synonym.
+            await CompositeKeyClaim.confirm(
+                item.synonym_namespace, item.synonym_entity_type,
+                synonym_hash, entry.entry_id,
+            )
 
             results.append(AddSynonymResponse(
-                input_index=i, status="added", registry_id=entry.entry_id,
+                index=i, status="added", registry_id=entry.entry_id,
             ))
 
         except Exception as e:
             results.append(AddSynonymResponse(
-                input_index=i, status="error", error=str(e)
+                index=i, status="error", error=str(e)
             ))
 
     return BulkSynonymAddResponse(
@@ -109,7 +162,7 @@ async def add_synonyms(
 )
 async def remove_synonyms(
     items: list[RemoveSynonymItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkSynonymRemoveResponse:
     """Remove one or more synonyms from registry entries."""
     results = []
@@ -123,7 +176,7 @@ async def remove_synonyms(
 
             if not entry:
                 results.append(RemoveSynonymResponse(
-                    input_index=i, status="not_found", registry_id=item.target_id,
+                    index=i, status="not_found", registry_id=item.target_id,
                 ))
                 continue
 
@@ -139,7 +192,7 @@ async def remove_synonyms(
 
             if len(entry.synonyms) == original_count:
                 results.append(RemoveSynonymResponse(
-                    input_index=i, status="not_found", registry_id=entry.entry_id,
+                    index=i, status="not_found", registry_id=entry.entry_id,
                     error="Synonym not found in entry"
                 ))
                 continue
@@ -149,13 +202,30 @@ async def remove_synonyms(
             entry.updated_by = item.updated_by
             await entry.save()
 
+            # Release the claim (CASE-427), scoped to this owner so we never
+            # delete a claim that belongs elsewhere. A leftover claim is a
+            # benign orphan reconciliation would clear, so failures here don't
+            # fail the user's remove.
+            try:
+                await CompositeKeyClaim.release(
+                    item.synonym_namespace, item.synonym_entity_type,
+                    synonym_hash, owner_entry_id=entry.entry_id,
+                )
+            except Exception as release_err:
+                logger.warning(
+                    "CASE-427: failed to release claim for %s (%s/%s) on entry "
+                    "%s after synonym removal: %s",
+                    synonym_hash, item.synonym_namespace, item.synonym_entity_type,
+                    entry.entry_id, release_err,
+                )
+
             results.append(RemoveSynonymResponse(
-                input_index=i, status="removed", registry_id=entry.entry_id,
+                index=i, status="removed", registry_id=entry.entry_id,
             ))
 
         except Exception as e:
             results.append(RemoveSynonymResponse(
-                input_index=i, status="error", error=str(e)
+                index=i, status="error", error=str(e)
             ))
 
     return BulkSynonymRemoveResponse(
@@ -172,7 +242,7 @@ async def remove_synonyms(
 )
 async def merge_entries(
     items: list[MergeItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkMergeResponse:
     """Merge two entries, making the deprecated one a synonym of the preferred."""
     results = []
@@ -184,7 +254,7 @@ async def merge_entries(
             })
             if not preferred:
                 results.append(MergeResponse(
-                    input_index=i, status="preferred_not_found",
+                    index=i, status="preferred_not_found",
                     preferred_id=item.preferred_id,
                 ))
                 continue
@@ -194,14 +264,14 @@ async def merge_entries(
             })
             if not deprecated:
                 results.append(MergeResponse(
-                    input_index=i, status="deprecated_not_found",
+                    index=i, status="deprecated_not_found",
                     deprecated_id=item.deprecated_id,
                 ))
                 continue
 
             if str(preferred.id) == str(deprecated.id):
                 results.append(MergeResponse(
-                    input_index=i, status="error",
+                    index=i, status="error",
                     error="Cannot merge an entry with itself"
                 ))
                 continue
@@ -217,11 +287,28 @@ async def merge_entries(
                 created_by=item.updated_by,
             )
             if not any(s.composite_key_hash == entry_id_hash for s in preferred.synonyms):
+                # CASE-427: claim the entry_id-as-synonym for preferred. The
+                # hash is unique to deprecated's id, so a conflict can only be a
+                # prior partial merge of this pair → transfer to preferred.
+                try:
+                    await CompositeKeyClaim.claim(
+                        deprecated.namespace, deprecated.entity_type,
+                        entry_id_hash, preferred.entry_id, "synonym",
+                    )
+                except DuplicateKeyError:
+                    await CompositeKeyClaim.transfer(
+                        deprecated.namespace, deprecated.entity_type,
+                        entry_id_hash, preferred.entry_id,
+                    )
                 preferred.synonyms.append(entry_id_synonym)
 
-            # Transfer all deprecated synonyms
+            # Transfer all deprecated synonyms (claim re-points to preferred).
             for syn in deprecated.synonyms:
                 if not any(s.composite_key_hash == syn.composite_key_hash for s in preferred.synonyms):
+                    await CompositeKeyClaim.transfer(
+                        syn.namespace, syn.entity_type, syn.composite_key_hash,
+                        preferred.entry_id,
+                    )
                     preferred.synonyms.append(syn)
 
             deprecated.status = "inactive"
@@ -235,14 +322,14 @@ async def merge_entries(
             await preferred.save()
 
             results.append(MergeResponse(
-                input_index=i, status="merged",
+                index=i, status="merged",
                 preferred_id=preferred.entry_id,
                 deprecated_id=deprecated.entry_id,
             ))
 
         except Exception as e:
             results.append(MergeResponse(
-                input_index=i, status="error", error=str(e)
+                index=i, status="error", error=str(e)
             ))
 
     return BulkMergeResponse(

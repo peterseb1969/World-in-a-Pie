@@ -1,12 +1,12 @@
 """Replay session model."""
 
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 
-class ReplayStatus(str, Enum):
+class ReplayStatus(StrEnum):
     """Replay session status."""
     PENDING = "pending"
     RUNNING = "running"

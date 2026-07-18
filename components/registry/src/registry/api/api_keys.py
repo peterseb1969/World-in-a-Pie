@@ -5,28 +5,32 @@ Runtime API keys are stored in MongoDB and managed here. Config-file keys
 """
 
 import logging
+import math
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from wip_auth import (
     APIKeyProvider,
     APIKeyRecord,
+    UserIdentity,
     get_auth_config,
     get_identity_string,
     hash_api_key,
 )
 
 from ..models.api_key import (
-    APIKeyCreateRequest,
     APIKeyCreatedResponse,
+    APIKeyCreateRequest,
+    APIKeyListResponse,
     APIKeyResponse,
     APIKeySyncRecord,
     APIKeyUpdateRequest,
     StoredAPIKey,
     generate_plaintext_key,
 )
-from ..services.auth import require_admin_key, require_api_key
+from ..models.grant import NamespaceGrant
+from ..services.auth import require_admin_key, require_groups
 
 logger = logging.getLogger("registry.api_keys")
 
@@ -83,6 +87,7 @@ def _config_key_to_response(record: APIKeyRecord) -> APIKeyResponse:
         namespaces=record.namespaces,
         created_by="config-file",
         source="config",
+        grants=record.grants,
     )
 
 
@@ -98,6 +103,14 @@ async def create_api_key(
 ) -> APIKeyCreatedResponse:
     """Create a new runtime API key. The plaintext is returned once and never stored."""
     provider = _get_provider()
+
+    # CASE-450: grant_permission without a namespace scope is meaningless —
+    # there is nothing to grant on.
+    if request.grant_permission and not request.namespaces:
+        raise HTTPException(
+            status_code=422,
+            detail="grant_permission requires `namespaces` to be set",
+        )
 
     # Reject name collision with config-file keys
     if request.name in _config_key_names:
@@ -148,7 +161,32 @@ async def create_api_key(
     logger.info("Created runtime API key: name=%s owner=%s created_by=%s",
                 doc.name, doc.owner, doc.created_by)
 
+    # CASE-450: optionally create namespace grants for the new key in the
+    # same call, so a scoped key is usable (not read-only) immediately.
+    # Mirrors POST /namespaces/{prefix}/grants semantics with the canonical
+    # api_key subject (bare key name). Namespace existence is intentionally
+    # not enforced — key namespace scoping isn't either, and app
+    # provisioning flows may create the namespace after the key.
+    granted_namespaces: list[str] | None = None
+    if request.grant_permission and request.namespaces:
+        granted_namespaces = []
+        for prefix in request.namespaces:
+            grant = NamespaceGrant(
+                namespace=prefix,
+                subject=doc.name,
+                subject_type="api_key",
+                permission=request.grant_permission,
+                granted_by=get_identity_string(),
+            )
+            await grant.create()
+            granted_namespaces.append(prefix)
+        logger.info(
+            "Granted %s on %s to api_key %s (CASE-450 grant_permission)",
+            request.grant_permission, granted_namespaces, doc.name,
+        )
+
     return APIKeyCreatedResponse(
+        granted_namespaces=granted_namespaces,
         name=doc.name,
         owner=doc.owner,
         groups=doc.groups,
@@ -165,13 +203,20 @@ async def create_api_key(
 
 @router.get(
     "",
-    response_model=list[APIKeyResponse],
+    response_model=APIKeyListResponse,
     summary="List all API keys",
 )
 async def list_api_keys(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=100, description="Items per page (max 100)"),
     _admin: str = Depends(require_admin_key),
-) -> list[APIKeyResponse]:
-    """List all API keys (config + runtime). No hashes returned."""
+) -> APIKeyListResponse:
+    """List all API keys (config + runtime) with pagination.
+
+    Pagination follows the platform-wide convention — see `wip://conventions`.
+    Results are sorted by name (deterministic) and sliced server-side.
+    No hashes returned.
+    """
     provider = _get_provider()
     results: list[APIKeyResponse] = []
 
@@ -185,7 +230,17 @@ async def list_api_keys(
     for doc in runtime_docs:
         results.append(_stored_to_response(doc))
 
-    return results
+    results.sort(key=lambda r: r.name)
+    total = len(results)
+    start = (page - 1) * page_size
+    end = start + page_size
+    return APIKeyListResponse(
+        items=results[start:end],
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=math.ceil(total / page_size) if total > 0 else 0,
+    )
 
 
 @router.get(
@@ -194,13 +249,16 @@ async def list_api_keys(
     summary="Sync endpoint for service key polling",
 )
 async def sync_api_keys(
-    _key: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_groups(["wip-services", "wip-admins"])),
 ) -> list[APIKeySyncRecord]:
     """Return enabled runtime keys with hashes for service polling.
 
     Only returns runtime keys — config keys are already loaded by each service.
-    Requires wip-services or wip-admins group (enforced by require_api_key +
-    the caller must be a service key).
+    Requires the wip-services or wip-admins group — enforced by the
+    require_groups dependency above. This endpoint returns
+    key_hash values, so it must never be reachable by an unprivileged
+    key; the legitimate consumer is each service's key-sync poller, which
+    authenticates with its admin/service-scoped Registry key.
     """
     docs = await StoredAPIKey.find(StoredAPIKey.enabled == True).to_list()  # noqa: E712
     return [

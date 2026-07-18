@@ -3,7 +3,9 @@
 import asyncio
 import logging
 from datetime import UTC, datetime
+from typing import Any, cast
 
+from beanie.odm.enums import SortDirection
 from pymongo.errors import BulkWriteError, DuplicateKeyError
 
 # Import identity helper from wip-auth
@@ -21,20 +23,73 @@ from ..models.api_models import (
 )
 from ..models.audit_log import TermAuditLog
 from ..models.term import Term
-from ..models.term_relationship import TermRelationship
+from ..models.term_relation import TermRelation
 from ..models.terminology import Terminology, TerminologyMetadata
 from .nats_client import (
     EventType as NatsEventType,
 )
 from .nats_client import (
-    publish_relationship_event,
     publish_term_event,
     publish_term_events_bulk,
+    publish_term_relation_event,
     publish_terminology_event,
 )
 from .registry_client import RegistryError, get_registry_client
 
 logger = logging.getLogger(__name__)
+
+
+class EntityExistsError(ValueError):
+    """Duplicate create: the value already exists in scope (CASE-465).
+
+    Subclasses ValueError so every existing handler keeps working (the
+    import/export 409 mapping string-matches "already exists" in the
+    message). Carries the existing entity's ID and the config diff so
+    routes can implement `on_conflict` semantics without string-matching.
+    `changed` empty means the request is an identical re-create.
+    """
+
+    def __init__(self, message: str, existing_id: str, changed: list[str]) -> None:
+        super().__init__(message)
+        self.existing_id = existing_id
+        self.changed = changed
+
+
+def conflict_result(
+    index: int,
+    exc: EntityExistsError,
+    on_conflict: str,
+    value: str | None = None,
+) -> BulkResultItem:
+    """Map a duplicate-create onto a bulk result item per `on_conflict`.
+
+    CASE-465 idempotent bootstrap: 'validate' makes an identical re-create
+    a no-op ('unchanged' + existing id) and a config-divergent re-create a
+    loud, machine-readable error; 'error' (the default) preserves the
+    historical failure but stamps error_code so callers can branch on the
+    code instead of the message string.
+    """
+    if on_conflict == "validate":
+        if not exc.changed:
+            return BulkResultItem(
+                index=index, status="unchanged", id=exc.existing_id, value=value
+            )
+        return BulkResultItem(
+            index=index,
+            status="error",
+            id=exc.existing_id,
+            value=value,
+            error=f"{exc} — existing config differs: {', '.join(exc.changed)}",
+            error_code="incompatible_config",
+            details={"changed": exc.changed},
+        )
+    return BulkResultItem(
+        index=index,
+        status="error",
+        value=value,
+        error=str(exc),
+        error_code="already_exists",
+    )
 
 
 class TerminologyService:
@@ -43,6 +98,44 @@ class TerminologyService:
     # =========================================================================
     # TERMINOLOGY OPERATIONS
     # =========================================================================
+
+    @staticmethod
+    def _terminology_config_diff(
+        existing: Terminology, request: CreateTerminologyRequest
+    ) -> list[str]:
+        """Field names where the existing terminology differs from a
+        creation request — empty list means an identical re-create
+        (CASE-465 on_conflict=validate)."""
+        # mutable implies extensible at create time — compare the
+        # effective value, mirroring create_terminology.
+        effective_extensible = request.extensible or request.mutable
+        checks = {
+            "label": existing.label != request.label,
+            "description": (existing.description or None) != (request.description or None),
+            "case_sensitive": existing.case_sensitive != request.case_sensitive,
+            "allow_multiple": existing.allow_multiple != request.allow_multiple,
+            "extensible": existing.extensible != effective_extensible,
+            "mutable": existing.mutable != request.mutable,
+            "metadata": existing.metadata != (request.metadata or TerminologyMetadata()),
+        }
+        return [name for name, differs in checks.items() if differs]
+
+    @staticmethod
+    def _term_config_diff(existing: Term, request: CreateTermRequest) -> list[str]:
+        """Field names where the existing term differs from a creation
+        request — empty list means an identical re-create (CASE-465)."""
+        # Label defaults to value at create time — compare the effective value.
+        effective_label = request.label or request.value
+        checks = {
+            "label": existing.label != effective_label,
+            "aliases": existing.aliases != request.aliases,
+            "description": (existing.description or None) != (request.description or None),
+            "sort_order": existing.sort_order != request.sort_order,
+            "parent_term_id": existing.parent_term_id != request.parent_term_id,
+            "translations": existing.translations != request.translations,
+            "metadata": existing.metadata != request.metadata,
+        }
+        return [name for name, differs in checks.items() if differs]
 
     @staticmethod
     async def create_terminology(
@@ -57,7 +150,7 @@ class TerminologyService:
 
         Args:
             request: Creation request
-            namespace: Namespace for the terminology (default: wip)
+            namespace: Namespace for the terminology (required — no default)
 
         Returns:
             Created terminology
@@ -69,7 +162,11 @@ class TerminologyService:
         # Check if value already exists within namespace
         existing = await Terminology.find_one({"namespace": namespace, "value": request.value})
         if existing:
-            raise ValueError(f"Terminology with value '{request.value}' already exists in namespace '{namespace}'")
+            raise EntityExistsError(
+                f"Terminology with value '{request.value}' already exists in namespace '{namespace}'",
+                existing_id=existing.terminology_id,
+                changed=TerminologyService._terminology_config_diff(existing, request),
+            )
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -297,11 +394,14 @@ class TerminologyService:
         _track("mutable", terminology.mutable, request.mutable)
 
         # Reject mutable changes if terms exist
-        if request.mutable is not None and request.mutable != terminology.mutable:
-            if terminology.term_count > 0:
-                raise ValueError(
-                    "Cannot change mutable flag on terminology with existing terms"
-                )
+        if (
+            request.mutable is not None
+            and request.mutable != terminology.mutable
+            and terminology.term_count > 0
+        ):
+            raise ValueError(
+                "Cannot change mutable flag on terminology with existing terms"
+            )
 
         # Apply updates
         if request.value is not None:
@@ -363,7 +463,7 @@ class TerminologyService:
         Delete a terminology. Hard-deletes if mutable OR if hard_delete=True
         and namespace deletion_mode is 'full'. Soft-deletes otherwise.
 
-        Also deletes/deactivates all terms and relationships in the terminology.
+        Also deletes/deactivates all terms and relations in the terminology.
 
         Args:
             terminology_id: Terminology to delete
@@ -393,7 +493,7 @@ class TerminologyService:
             should_hard_delete = True
 
         if should_hard_delete:
-            # HARD DELETE: remove terminology, all terms, and all relationships
+            # HARD DELETE: remove terminology, all terms, and all relations
 
             # 1. Get all term IDs in this terminology
             term_ids = [
@@ -401,9 +501,9 @@ class TerminologyService:
                 for t in await Term.find({"terminology_id": terminology_id}).to_list()
             ]
 
-            # 2. Delete all relationships involving these terms
+            # 2. Delete all relations involving these terms
             if term_ids:
-                await TermRelationship.find({
+                await TermRelation.find({
                     "$or": [
                         {"source_term_id": {"$in": term_ids}},
                         {"target_term_id": {"$in": term_ids}}
@@ -554,8 +654,10 @@ class TerminologyService:
             "value": request.value
         })
         if existing:
-            raise ValueError(
-                f"Term with value '{request.value}' already exists in terminology"
+            raise EntityExistsError(
+                f"Term with value '{request.value}' already exists in terminology",
+                existing_id=existing.term_id,
+                changed=TerminologyService._term_config_diff(existing, request),
             )
 
         # Get authenticated identity (not client-provided)
@@ -647,12 +749,324 @@ class TerminologyService:
             changed_by=actor,
         )
 
-        # Invalidate relationship type cache if this is the system terminology
+        # Invalidate relation type cache if this is the system terminology
         if terminology.value == "_ONTOLOGY_RELATIONSHIP_TYPES":
             from .ontology_service import OntologyService
-            OntologyService.invalidate_relationship_type_cache()
+            OntologyService.invalidate_relation_type_cache()
 
         return TerminologyService._to_term_response(term)
+
+    @staticmethod
+    def _partition_term_batch(
+        batch_terms: list[CreateTermRequest],
+        batch_start: int,
+        batch_registry_results: list[dict],
+        existing_by_id: dict[str, Term],
+        existing_by_value: dict[str, Term],
+        results: list[BulkResultItem | None],
+        namespace: str,
+        terminology_id: str,
+        terminology_value: str,
+        actor: str,
+        skip_duplicates: bool,
+        update_existing: bool,
+    ) -> tuple[list[Term], list[int]]:
+        """Partition a batch of term requests into inserts + result rows.
+
+        Walks `batch_terms` paired with their Registry results and decides
+        per item:
+        - Registry returned status='error' → write 'error' result row.
+        - Existing term matched by term_id (from existing_by_id) or by value
+          (from existing_by_value) → write 'skipped' / 'updated' / 'error'
+          row depending on skip_duplicates / update_existing flags. The
+          current behaviour pinned by the CASE-336 test bed: the
+          /terms endpoint hardcodes skip_duplicates=True; the alternative
+          flag combinations are reachable only via the import-export path.
+        - Otherwise → build a Term document and queue it for insert_many.
+
+        Mutates `results` in place (the coordinator owns the list, the
+        helper just fills in slots). Returns (terms_to_insert,
+        insert_indices) where insert_indices maps each insert position
+        back to its global result index for Phase E bookkeeping.
+        """
+        terms_to_insert: list[Term] = []
+        insert_indices: list[int] = []
+
+        for i, (term_req, reg_result) in enumerate(
+            zip(batch_terms, batch_registry_results, strict=False)
+        ):
+            global_idx = batch_start + i
+
+            if reg_result.get("status") == "error":
+                results[global_idx] = BulkResultItem(
+                    index=global_idx,
+                    status="error",
+                    value=term_req.value,
+                    error=reg_result.get("error"),
+                )
+                continue
+
+            term_id = reg_result["registry_id"]
+
+            # Check duplicates by term_id or by value within terminology
+            existing = existing_by_id.get(term_id) or existing_by_value.get(term_req.value)
+            if existing:
+                if skip_duplicates or update_existing:
+                    results[global_idx] = BulkResultItem(
+                        index=global_idx,
+                        status="skipped" if skip_duplicates else "updated",
+                        id=existing.term_id,
+                        value=term_req.value,
+                        error="Already exists" if skip_duplicates else None,
+                    )
+                else:
+                    results[global_idx] = BulkResultItem(
+                        index=global_idx,
+                        status="error",
+                        value=term_req.value,
+                        error=f"Term with value '{term_req.value}' already exists",
+                        error_code="already_exists",
+                    )
+                continue
+
+            # Default label to value if not provided
+            label = term_req.label or term_req.value
+
+            # Build Term document for batch insert
+            term = Term(
+                namespace=namespace,
+                term_id=term_id,
+                terminology_id=terminology_id,
+                terminology_value=terminology_value,
+                value=term_req.value,
+                aliases=term_req.aliases,
+                label=label,
+                description=term_req.description,
+                sort_order=term_req.sort_order,
+                parent_term_id=term_req.parent_term_id,
+                translations=term_req.translations,
+                metadata=term_req.metadata,
+                created_by=actor,
+            )
+            terms_to_insert.append(term)
+            insert_indices.append(global_idx)
+
+        return terms_to_insert, insert_indices
+
+    @staticmethod
+    async def _write_term_batch(
+        terms_to_insert: list[Term],
+        insert_indices: list[int],
+        results: list[BulkResultItem | None],
+        namespace: str,
+        terminology_id: str,
+        terminology_value: str,
+        actor: str,
+        now: datetime,
+        client: Any,
+    ) -> int:
+        """Insert this batch's queued Terms and fire all per-create side effects.
+
+        Phase E (insert_many + BulkWriteError partial-fail handling), Phase F
+        (audit logs), Phase F2 (NATS events), Phase F3 (auto-synonyms). All
+        side-effect phases filter on `results[idx].status == "created"` so
+        partial failures on insert flow through to audit/events/synonyms
+        correctly.
+
+        Mutates `results` in place. Returns the number of terms successfully
+        created in this batch (caller uses it to maintain a running total
+        across batches).
+        """
+        batch_created = 0
+        if terms_to_insert:
+            try:
+                await Term.insert_many(terms_to_insert, ordered=False)
+                # All succeeded
+                for pos, idx in enumerate(insert_indices):
+                    term = terms_to_insert[pos]
+                    results[idx] = BulkResultItem(
+                        index=idx,
+                        status="created",
+                        id=term.term_id,
+                        value=term.value,
+                    )
+                    batch_created += 1
+            except BulkWriteError as bwe:
+                # Some inserts may have failed (e.g. race condition duplicates)
+                failed_indices = {
+                    err["index"] for err in bwe.details.get("writeErrors", [])
+                }
+                error_messages = {
+                    err["index"]: err.get("errmsg", "Insert failed")
+                    for err in bwe.details.get("writeErrors", [])
+                }
+                for pos, idx in enumerate(insert_indices):
+                    term = terms_to_insert[pos]
+                    if pos in failed_indices:
+                        results[idx] = BulkResultItem(
+                            index=idx,
+                            status="error",
+                            value=term.value,
+                            error=error_messages.get(pos, "Insert failed"),
+                        )
+                    else:
+                        results[idx] = BulkResultItem(
+                            index=idx,
+                            status="created",
+                            id=term.term_id,
+                            value=term.value,
+                        )
+                        batch_created += 1
+
+        # Phase F: Batch insert audit logs for this batch
+        audit_entries = [
+            TermAuditLog(
+                namespace=namespace,
+                term_id=terms_to_insert[pos].term_id,
+                terminology_id=terminology_id,
+                action="created",
+                changed_by=actor,
+                changed_at=now,
+                new_values={
+                    "value": terms_to_insert[pos].value,
+                    "aliases": terms_to_insert[pos].aliases,
+                    "label": terms_to_insert[pos].label,
+                },
+            )
+            for pos, idx in enumerate(insert_indices)
+            if (r := results[idx]) is not None and r.status == "created"
+        ]
+        if audit_entries:
+            await TermAuditLog.insert_many(audit_entries)
+
+        # Phase F2: Publish NATS events for created terms
+        created_term_dicts = [
+            TerminologyService._term_to_event_dict(terms_to_insert[pos])
+            for pos, idx in enumerate(insert_indices)
+            if (r := results[idx]) is not None and r.status == "created"
+        ]
+        if created_term_dicts:
+            await publish_term_events_bulk(
+                NatsEventType.TERM_CREATED,
+                created_term_dicts,
+                changed_by=actor,
+            )
+
+        # Phase F3: Register auto-synonyms for created terms
+        synonym_items = [
+            {
+                "target_id": terms_to_insert[pos].term_id,
+                "namespace": namespace,
+                "entity_type": "terms",
+                "composite_key": {
+                    "ns": namespace,
+                    "type": "term",
+                    "terminology": terminology_value,
+                    "value": terms_to_insert[pos].value,
+                },
+                "created_by": actor,
+            }
+            for pos, idx in enumerate(insert_indices)
+            if (r := results[idx]) is not None and r.status == "created"
+        ]
+        if synonym_items:
+            await client.register_auto_synonyms_bulk(synonym_items)
+
+        return batch_created
+
+    @staticmethod
+    async def _process_term_batch(
+        batch_terms: list[CreateTermRequest],
+        batch_start: int,
+        results: list[BulkResultItem | None],
+        terminology: Terminology,
+        namespace: str,
+        actor: str,
+        now: datetime,
+        client: Any,
+        registry_batch_size: int,
+        skip_duplicates: bool,
+        update_existing: bool,
+        batch_num: int,
+    ) -> int:
+        """Run one batch end-to-end: register IDs, query existing, partition, write.
+
+        Phase B (Registry bulk-register, with per-term entry_id pass-through
+        when the request carries one), Phase C (existing-by-id and
+        existing-by-value queries), then dispatch to _partition_term_batch
+        and _write_term_batch. The coordinator owns the chunking loop and
+        the cross-batch counter; this helper owns one batch's worth of work.
+
+        Returns the count of terms successfully created in this batch.
+        """
+        terminology_id = terminology.terminology_id
+
+        # Phase B: Registry call for this batch (with sub-batching)
+        logger.debug(f"Registering {len(batch_terms)} terms with registry...")
+        batch_registry_results = await client.register_terms_bulk(
+            terminology_id=terminology_id,
+            terms=[
+                {"value": t.value, "entry_id": t.term_id}
+                if hasattr(t, "term_id") and t.term_id
+                else {"value": t.value}
+                for t in batch_terms
+            ],
+            created_by=actor,
+            registry_batch_size=registry_batch_size,
+            namespace=namespace,
+        )
+        logger.debug(f"Registry registration complete for batch {batch_num}")
+
+        # Phase C: Duplicate check for this batch
+        batch_ids = [
+            r["registry_id"] for r in batch_registry_results
+            if r.get("status") != "error" and r.get("registry_id")
+        ]
+        batch_values = [t.value for t in batch_terms]
+
+        existing_by_id: dict[str, Term] = {}
+        existing_by_value: dict[str, Term] = {}
+        if batch_ids:
+            existing_terms = await Term.find(
+                {"term_id": {"$in": batch_ids}}
+            ).to_list()
+            existing_by_id = {t.term_id: t for t in existing_terms}
+        if batch_values:
+            value_matches = await Term.find({
+                "namespace": namespace,
+                "terminology_id": terminology_id,
+                "value": {"$in": batch_values},
+            }).to_list()
+            existing_by_value = {t.value: t for t in value_matches}
+
+        # Phase D: Partition this batch into create/skip/error
+        terms_to_insert, insert_indices = TerminologyService._partition_term_batch(
+            batch_terms=batch_terms,
+            batch_start=batch_start,
+            batch_registry_results=batch_registry_results,
+            existing_by_id=existing_by_id,
+            existing_by_value=existing_by_value,
+            results=results,
+            namespace=namespace,
+            terminology_id=terminology_id,
+            terminology_value=terminology.value,
+            actor=actor,
+            skip_duplicates=skip_duplicates,
+            update_existing=update_existing,
+        )
+
+        # Phases E-F3: Insert + per-create side effects
+        return await TerminologyService._write_term_batch(
+            terms_to_insert=terms_to_insert,
+            insert_indices=insert_indices,
+            results=results,
+            namespace=namespace,
+            terminology_id=terminology_id,
+            terminology_value=terminology.value,
+            actor=actor,
+            now=now,
+            client=client,
+        )
 
     @staticmethod
     async def create_terms_bulk(
@@ -718,200 +1132,20 @@ class TerminologyService:
                 f"terms {batch_start+1}-{batch_end} of {total_terms}"
             )
 
-            # Phase B: Registry call for this batch (with sub-batching)
-            logger.debug(f"Registering {len(batch_terms)} terms with registry...")
-            batch_registry_results = await client.register_terms_bulk(
-                terminology_id=terminology_id,
-                terms=[
-                    {"value": t.value, "entry_id": t.term_id}
-                    if hasattr(t, "term_id") and t.term_id
-                    else {"value": t.value}
-                    for t in batch_terms
-                ],
-                created_by=actor,
-                registry_batch_size=registry_batch_size,
+            batch_created = await TerminologyService._process_term_batch(
+                batch_terms=batch_terms,
+                batch_start=batch_start,
+                results=results,
+                terminology=terminology,
                 namespace=namespace,
+                actor=actor,
+                now=now,
+                client=client,
+                registry_batch_size=registry_batch_size,
+                skip_duplicates=skip_duplicates,
+                update_existing=update_existing,
+                batch_num=batch_num,
             )
-            logger.debug(f"Registry registration complete for batch {batch_num}")
-
-            # Phase C: Duplicate check for this batch
-            batch_ids = [
-                r["registry_id"] for r in batch_registry_results
-                if r.get("status") != "error" and r.get("registry_id")
-            ]
-            batch_values = [t.value for t in batch_terms]
-
-            existing_by_id = {}
-            existing_by_value = {}
-            if batch_ids:
-                existing_terms = await Term.find(
-                    {"term_id": {"$in": batch_ids}}
-                ).to_list()
-                existing_by_id = {t.term_id: t for t in existing_terms}
-            if batch_values:
-                value_matches = await Term.find({
-                    "namespace": namespace,
-                    "terminology_id": terminology_id,
-                    "value": {"$in": batch_values}
-                }).to_list()
-                existing_by_value = {t.value: t for t in value_matches}
-
-            # Phase D: Partition this batch into create/skip/error
-            terms_to_insert: list[Term] = []
-            insert_indices: list[int] = []  # maps insert position -> global index
-
-            for i, (term_req, reg_result) in enumerate(zip(batch_terms, batch_registry_results, strict=False)):
-                global_idx = batch_start + i
-
-                if reg_result.get("status") == "error":
-                    results[global_idx] = BulkResultItem(
-                        index=global_idx,
-                        status="error",
-                        value=term_req.value,
-                        error=reg_result.get("error")
-                    )
-                    continue
-
-                term_id = reg_result["registry_id"]
-
-                # Check duplicates by term_id or by value within terminology
-                existing = existing_by_id.get(term_id) or existing_by_value.get(term_req.value)
-                if existing:
-                    if skip_duplicates or update_existing:
-                        results[global_idx] = BulkResultItem(
-                            index=global_idx,
-                            status="skipped" if skip_duplicates else "updated",
-                            id=existing.term_id,
-                            value=term_req.value,
-                            error="Already exists" if skip_duplicates else None
-                        )
-                    else:
-                        results[global_idx] = BulkResultItem(
-                            index=global_idx,
-                            status="error",
-                            value=term_req.value,
-                            error=f"Term with value '{term_req.value}' already exists"
-                        )
-                    continue
-
-                # Default label to value if not provided
-                label = term_req.label or term_req.value
-
-                # Build Term document for batch insert
-                term = Term(
-                    namespace=namespace,
-                    term_id=term_id,
-                    terminology_id=terminology_id,
-                    terminology_value=terminology.value,
-                    value=term_req.value,
-                    aliases=term_req.aliases,
-                    label=label,
-                    description=term_req.description,
-                    sort_order=term_req.sort_order,
-                    parent_term_id=term_req.parent_term_id,
-                    translations=term_req.translations,
-                    metadata=term_req.metadata,
-                    created_by=actor,
-                )
-                terms_to_insert.append(term)
-                insert_indices.append(global_idx)
-
-            # Phase E: Batch insert terms for this batch
-            batch_created = 0
-            if terms_to_insert:
-                try:
-                    await Term.insert_many(terms_to_insert, ordered=False)
-                    # All succeeded
-                    for pos, idx in enumerate(insert_indices):
-                        term = terms_to_insert[pos]
-                        results[idx] = BulkResultItem(
-                            index=idx,
-                            status="created",
-                            id=term.term_id,
-                            value=term.value,
-                        )
-                        batch_created += 1
-                except BulkWriteError as bwe:
-                    # Some inserts may have failed (e.g. race condition duplicates)
-                    failed_indices = {
-                        err["index"] for err in bwe.details.get("writeErrors", [])
-                    }
-                    error_messages = {
-                        err["index"]: err.get("errmsg", "Insert failed")
-                        for err in bwe.details.get("writeErrors", [])
-                    }
-                    for pos, idx in enumerate(insert_indices):
-                        term = terms_to_insert[pos]
-                        if pos in failed_indices:
-                            results[idx] = BulkResultItem(
-                                index=idx,
-                                status="error",
-                                value=term.value,
-                                error=error_messages.get(pos, "Insert failed"),
-                            )
-                        else:
-                            results[idx] = BulkResultItem(
-                                index=idx,
-                                status="created",
-                                id=term.term_id,
-                                value=term.value,
-                            )
-                            batch_created += 1
-
-            # Phase F: Batch insert audit logs for this batch
-            audit_entries = [
-                TermAuditLog(
-                    namespace=namespace,
-                    term_id=terms_to_insert[pos].term_id,
-                    terminology_id=terminology_id,
-                    action="created",
-                    changed_by=actor,
-                    changed_at=now,
-                    new_values={
-                        "value": terms_to_insert[pos].value,
-                        "aliases": terms_to_insert[pos].aliases,
-                        "label": terms_to_insert[pos].label,
-                    },
-                )
-                for pos, idx in enumerate(insert_indices)
-                if results[idx] is not None and results[idx].status == "created"
-            ]
-            if audit_entries:
-                await TermAuditLog.insert_many(audit_entries)
-
-            # Phase F2: Publish NATS events for created terms
-            created_term_dicts = [
-                TerminologyService._term_to_event_dict(terms_to_insert[pos])
-                for pos, idx in enumerate(insert_indices)
-                if results[idx] is not None and results[idx].status == "created"
-            ]
-            if created_term_dicts:
-                await publish_term_events_bulk(
-                    NatsEventType.TERM_CREATED,
-                    created_term_dicts,
-                    changed_by=actor,
-                )
-
-            # Phase F3: Register auto-synonyms for created terms
-            synonym_items = [
-                {
-                    "target_id": terms_to_insert[pos].term_id,
-                    "namespace": namespace,
-                    "entity_type": "terms",
-                    "composite_key": {
-                        "ns": namespace,
-                        "type": "term",
-                        "terminology": terminology.value,
-                        "value": terms_to_insert[pos].value,
-                    },
-                    "created_by": actor,
-                }
-                for pos, idx in enumerate(insert_indices)
-                if results[idx] is not None and results[idx].status == "created"
-            ]
-            if synonym_items:
-                await client.register_auto_synonyms_bulk(synonym_items)
-
             total_created += batch_created
             logger.info(
                 f"Batch {batch_num}/{num_batches} complete: "
@@ -929,15 +1163,15 @@ class TerminologyService:
             terminology.updated_at = now
             await terminology.save()
 
-        # Invalidate relationship type cache if this is the system terminology
+        # Invalidate relation type cache if this is the system terminology
         if total_created > 0 and terminology.value == "_ONTOLOGY_RELATIONSHIP_TYPES":
             from .ontology_service import OntologyService
-            OntologyService.invalidate_relationship_type_cache()
+            OntologyService.invalidate_relation_type_cache()
 
         logger.info(
             f"Bulk import complete: {total_created} terms created out of {total_terms} submitted"
         )
-        return results
+        return cast(list[BulkResultItem], results)
 
     @staticmethod
     async def get_term(
@@ -1004,7 +1238,7 @@ class TerminologyService:
         # Get paginated results
         skip = (page - 1) * page_size
         terms = await Term.find(query) \
-            .sort([("sort_order", 1), ("value", 1)]) \
+            .sort([("sort_order", SortDirection.ASCENDING), ("value", SortDirection.ASCENDING)]) \
             .skip(skip) \
             .limit(page_size) \
             .to_list()
@@ -1026,9 +1260,9 @@ class TerminologyService:
             return None
 
         # Track changes for audit log
-        changed_fields = []
-        previous_values = {}
-        new_values = {}
+        changed_fields: list[str] = []
+        previous_values: dict[str, Any] = {}
+        new_values: dict[str, Any] = {}
 
         # Check value uniqueness if value is changing
         if request.value is not None and request.value != term.value:
@@ -1188,33 +1422,33 @@ class TerminologyService:
             should_hard_delete = True
 
         if should_hard_delete:
-            # HARD DELETE: remove term and cascade relationships
+            # HARD DELETE: remove term and cascade relations
 
-            # 1. Find and delete relationships involving this term
-            relationships = await TermRelationship.find({
+            # 1. Find and delete relations involving this term
+            relations = await TermRelation.find({
                 "$or": [
                     {"source_term_id": term_id},
                     {"target_term_id": term_id}
                 ]
             }).to_list()
 
-            if relationships:
-                # Publish relationship.deleted events before removing
-                for rel in relationships:
-                    await publish_relationship_event(
-                        NatsEventType.RELATIONSHIP_DELETED,
+            if relations:
+                # Publish relation.deleted events before removing
+                for rel in relations:
+                    await publish_term_relation_event(
+                        NatsEventType.TERM_RELATION_DELETED,
                         {
                             "namespace": rel.namespace,
                             "source_term_id": rel.source_term_id,
                             "target_term_id": rel.target_term_id,
-                            "relationship_type": rel.relationship_type,
+                            "relation_type": rel.relation_type,
                             "hard_delete": True,
                         },
                         changed_by=actor,
                     )
 
-                # Delete relationships from MongoDB
-                await TermRelationship.find({
+                # Delete relations from MongoDB
+                await TermRelation.find({
                     "$or": [
                         {"source_term_id": term_id},
                         {"target_term_id": term_id}

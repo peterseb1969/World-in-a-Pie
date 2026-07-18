@@ -2,7 +2,7 @@
 
 import os
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -88,10 +88,10 @@ class DefStoreClient:
             "DEF_STORE_URL",
             "http://localhost:8002"
         )
-        self.api_key = api_key or os.getenv(
+        self.api_key = cast(str, api_key or os.getenv(
             "DEF_STORE_API_KEY",
             "dev_master_key_for_testing"
-        )
+        ))
         self.timeout = timeout
 
         # Cache for complete terminologies (refreshed every TTL seconds)
@@ -191,10 +191,10 @@ class DefStoreClient:
                 terminology["terms"] = all_terms
                 terminology["_lookup"] = self._build_term_lookup(all_terms)
 
-                return terminology
+                return cast(dict[str, Any] | None, terminology)
 
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {e!s}")
+            raise DefStoreError(f"Request failed: {e!s}") from e
 
     def _build_term_lookup(self, terms: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """
@@ -428,9 +428,9 @@ class DefStoreClient:
                         f"Failed to get term: {response.status_code} - {response.text}"
                     )
 
-                return response.json()
+                return cast(dict[str, Any] | None, response.json())
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {e!s}")
+            raise DefStoreError(f"Request failed: {e!s}") from e
 
     async def health_check(self) -> bool:
         """Check if the Def-Store service is healthy."""

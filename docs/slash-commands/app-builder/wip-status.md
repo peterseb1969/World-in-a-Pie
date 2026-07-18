@@ -21,8 +21,8 @@ You have no memory between sessions. Without running this command, you risk recr
    - For each active template: `query_by_template(template_value)` and report the total count
    - Display total document count per template
 
-5. Check for relevant ontology relationships (if any terminologies use ontology features):
-   - Call `list_relationships(term_id)` or `get_term_hierarchy(term_id)` for relevant terms if applicable
+5. Check for relevant ontology relations (if any terminologies use ontology features):
+   - Call `list_relations(term_id)` or `get_term_hierarchy(term_id)` for relevant terms if applicable
 
 6. Summarize:
    - Total terminologies (active/inactive)
@@ -33,6 +33,6 @@ You have no memory between sessions. Without running this command, you risk recr
 
 ### When to Run
 - **Always** at the start of a new Claude Code session
-- Before running `/design-model` for a new app
-- Before running `/add-app` to add a constellation app
+- Before running `/wip-design-model` for a new app
+- Before running `/wip-add-app` to add a constellation app
 - Whenever you're unsure what state WIP is in

@@ -52,7 +52,7 @@ A deployable application built on top of WIP, using WIP's APIs for document stor
 The action of marking an entity as [inactive](#inactive-status). In WIP, nothing is ever truly deleted—only deactivated. This preserves audit trails and enables reference resolution. Exception: files support hard-delete to reclaim MinIO storage.
 
 ### Def-Store
-The service managing [terminologies](#terminology), [terms](#term), and [ontology relationships](#relationship). Provides controlled vocabularies that [templates](#template) reference for term-type fields. Supports OBO Graph JSON import for standard ontologies. API: `http://localhost:8002/api/def-store/`.
+The service managing [terminologies](#terminology), [terms](#term), and [ontology relations](#relation). Provides controlled vocabularies that [templates](#template) reference for term-type fields. Supports OBO Graph JSON import for standard ontologies. API: `http://localhost:8002/api/def-store/`.
 
 ### Dex
 The OIDC provider used in WIP for user authentication. Lightweight (~30MB RAM), works over HTTP, and supports static user configuration via YAML. Provides JWT tokens for authenticated users.
@@ -116,7 +116,7 @@ An endpoint (`GET /health`) that reports service status. Used by the setup scrip
 ## I
 
 ### Identity
-The unique "fingerprint" of a document, computed from its [identity fields](#identity-fields). Two documents with the same identity are considered versions of the same entity.
+The unique "fingerprint" of a document, computed from its [identity fields](#identity-fields). Two documents with the same identity *under the same template* are considered versions of the same entity. Identity is **template-scoped** — two templates may share identity_fields without their documents colliding. Lookups by identity_hash must always be scoped to a `template_id`; namespace-wide identity_hash lookups can silently re-parent documents when templates share identity_fields.
 
 ### Identity Fields
 The template-defined fields that form the [composite key](#composite-key). Specified in the template's `identity_fields` array. Must be mandatory fields.
@@ -193,14 +193,14 @@ Lightweight message queue used by WIP. ~30MB RAM footprint with JetStream enable
 OpenID Connect. The authentication protocol used by [Dex](#dex). Provides secure user login with JWT tokens.
 
 ### Ontology
-A formal representation of knowledge as a set of concepts and typed [relationships](#relationship). In WIP, ontologies are represented using [terminologies](#terminology) (for concepts/terms) and [relationships](#relationship) (for typed edges like `is_a`, `part_of`). Standard ontologies can be imported from OBO Graph JSON format. Relationship types are validated against the `_ONTOLOGY_RELATIONSHIP_TYPES` system terminology.
+A formal representation of knowledge as a set of concepts and typed [relations](#relation). In WIP, ontologies are represented using [terminologies](#terminology) (for concepts/terms) and [relations](#relation) (for typed edges like `is_a`, `part_of`). Standard ontologies can be imported from OBO Graph JSON format. Relation types are validated against the `_ONTOLOGY_RELATIONSHIP_TYPES` system terminology.
 
 ---
 
 ## P
 
 ### PoNIF
-Powerful, Non-Intuitive Feature. A WIP behavior that is correct by design but surprises new users. Six PoNIFs are documented in the `wip://ponifs` MCP resource.
+Powerful, Non-Intuitive Feature. A WIP behavior that is correct by design but surprises new users. Eight PoNIFs are documented in the `wip://ponifs` MCP resource (#7 Edge Types and #8 `versioned: false` added 2026-04-25 alongside the document-relationships implementation).
 
 ### Podman
 Container runtime used by WIP. Compatible with Docker commands (`podman-compose`). Supports rootless containers on Linux.
@@ -233,7 +233,7 @@ Role-Based Access Control. Authorization based on [groups](#groups) from JWT tok
 ### Registry
 Service providing ID generation and namespace management. Maps [composite keys](#composite-key) to standardized IDs. Must be initialized before other services. API: `http://localhost:8001/api/registry/`.
 
-### Relationship
+### Relation
 A typed, directed edge between two [terms](#term), optionally across [terminologies](#terminology). Used for ontology structure (e.g., `is_a`, `part_of`, `regulates`). Stored in Def-Store and synced to PostgreSQL for reporting.
 
 ### Reporting Layer
@@ -250,7 +250,7 @@ Service that consumes [events](#event) from NATS and synchronizes data to Postgr
 A field-level type hint that triggers format-specific validation and reporting behavior. Types: `email`, `url`, `latitude`, `longitude`, `percentage`, `duration`, `geo_point`. Specified via `semantic_type` on template fields.
 
 ### Setup Script
-The `scripts/setup.sh` script that automates WIP deployment. Auto-detects platform, generates configuration, and starts all services.
+`wip-deploy install --preset standard --target compose --hostname <X>` is the canonical installer. Generates manifests + `.env`, brings the stack up. Replaces the legacy `scripts/setup.sh` + `scripts/setup-wip.sh` pair (retired and deleted, commit `69f7036`). See [WIP Guide](wip-guide.md).
 
 ### Status
 Lifecycle state of an entity. Values for documents: `active`, `inactive`, `archived`. Values for terms: `active`, `deprecated` (with reason and optional replacement), `inactive` (soft-delete). Values for templates: `draft`, `active`, `inactive`.

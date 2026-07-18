@@ -1,0 +1,701 @@
+"""Tests for render_compose — the end-to-end compose renderer.
+
+Tests take real manifests + a synthetic Deployment and verify the shape
+of the rendered output. Uses yaml.safe_load to parse the result rather
+than string matching, so small formatting changes don't break tests.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import yaml
+
+from wip_deploy.discovery import Discovery, discover
+from wip_deploy.renderers import render_compose
+from wip_deploy.secrets import ensure_secrets
+from wip_deploy.secrets_backend import FileSecretBackend, ResolvedSecrets
+from wip_deploy.spec import (
+    AppRef,
+    AuthSpec,
+    ComposePlatform,
+    Deployment,
+    DeploymentMetadata,
+    DeploymentSpec,
+    ImagesSpec,
+    K8sPlatform,
+    NetworkSpec,
+    PlatformSpec,
+    SecretsSpec,
+)
+
+REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent.resolve()
+
+
+@pytest.fixture(scope="session")
+def real_discovery() -> Discovery:
+    return discover(REPO_ROOT)
+
+
+def _minimal_compose(
+    *,
+    registry: str | None = "ghcr.io/peterseb1969",
+    modules: list[str] | None = None,
+    apps: list[str] | None = None,
+) -> Deployment:
+    return Deployment(
+        metadata=DeploymentMetadata(name="t"),
+        spec=DeploymentSpec(
+            target="compose",
+            modules={"optional": modules or ["mcp-server"]},  # type: ignore[arg-type]
+            apps=[AppRef(name=n) for n in (apps or [])],
+            auth=AuthSpec(mode="oidc", gateway=True),
+            network=NetworkSpec(hostname="wip.local"),
+            images=ImagesSpec(registry=registry, tag="v2.0.0"),
+            platform=PlatformSpec(compose=ComposePlatform(data_dir="/tmp/d")),
+            secrets=SecretsSpec(backend="file", location="/tmp/s"),
+        ),
+    )
+
+
+def _secrets(
+    tmp_path: Path, deployment: Deployment, discovery: Discovery
+) -> ResolvedSecrets:
+    return ensure_secrets(
+        deployment,
+        discovery.components,
+        discovery.apps,
+        FileSecretBackend(tmp_path / "secrets"),
+    )
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tree shape
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestTreeShape:
+    def test_standard_emits_all_four_files(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        d = _minimal_compose()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+
+        paths = {str(p) for p in tree.paths()}
+        assert paths == {
+            "docker-compose.yaml",
+            ".env",
+            "config/caddy/Caddyfile",
+            "config/dex/config.yaml",
+            "config/router/Caddyfile",
+        }
+
+    def test_api_key_only_omits_dex(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        d = _minimal_compose()
+        d.spec.auth.gateway = False
+        d.spec.auth.mode = "api-key-only"
+        d.spec.auth.users = []
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        assert Path("config/dex/config.yaml") not in tree.files
+
+    def test_env_file_has_0600_mode(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        d = _minimal_compose()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        assert tree.files[Path(".env")].mode == 0o600
+
+
+# ────────────────────────────────────────────────────────────────────
+# docker-compose.yaml shape
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestComposeYaml:
+    def _render_compose(
+        self, tmp_path: Path, discovery: Discovery, **overrides: object
+    ) -> dict:  # type: ignore[type-arg]
+        d = _minimal_compose(**overrides)  # type: ignore[arg-type]
+        s = _secrets(tmp_path, d, discovery)
+        tree = render_compose(d, discovery.components, discovery.apps, s)
+        return yaml.safe_load(tree.files[Path("docker-compose.yaml")].content)
+
+    def test_caddy_is_always_included(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        doc = self._render_compose(tmp_path, real_discovery)
+        assert "caddy" in doc["services"]
+
+    def test_caddy_exposes_https_port(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        doc = self._render_compose(tmp_path, real_discovery)
+        ports = doc["services"]["caddy"]["ports"]
+        assert any("8443:8443" in p for p in ports)
+
+    def test_registry_prefix_applied_to_wip_services(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        # Pick def-store: it has no per-component tag override, so it
+        # inherits the global ImagesSpec.tag. Components like registry or
+        # mcp-server pin their own tags for cache invalidation (CASE-293
+        # makes that workaround unnecessary going forward, but the pins
+        # stay around as version markers).
+        doc = self._render_compose(
+            tmp_path, real_discovery, registry="ghcr.io/example"
+        )
+        ds = doc["services"]["def-store"]
+        assert ds["image"] == "ghcr.io/example/def-store:v2.0.0"
+
+    def test_fully_qualified_infrastructure_images_untouched(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        doc = self._render_compose(tmp_path, real_discovery)
+        # mongodb uses `docker.io/library/mongo:7` regardless of spec.images
+        assert doc["services"]["mongodb"]["image"] == "docker.io/library/mongo:7"
+        # Dex similarly pins its own version
+        assert doc["services"]["dex"]["image"] == "ghcr.io/dexidp/dex:v2.45.0"
+
+    def test_compose_target_does_not_bind_mount_wip_auth(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-301 regression guard: only the dev target bind-mounts
+        libs/wip-auth/src for live library editing. Compose target
+        keeps the build-time pip install (production fidelity)."""
+        doc = self._render_compose(tmp_path, real_discovery)
+        for svc_name, svc in doc["services"].items():
+            volumes = svc.get("volumes", [])
+            wip_auth_mounts = [v for v in volumes if "/wip-auth/" in v or v.endswith("/wip-auth")]
+            assert not wip_auth_mounts, (
+                f"{svc_name} should not have wip-auth volumes in compose mode; "
+                f"found {wip_auth_mounts}"
+            )
+            env = svc.get("environment", {})
+            # PYTHONPATH should not be set as a runtime override in compose
+            # (image's ENV PYTHONPATH=/app/src baked at build time stands).
+            assert "PYTHONPATH" not in env, (
+                f"{svc_name} should not have a PYTHONPATH override in compose mode"
+            )
+
+    def test_inactive_components_absent(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        doc = self._render_compose(tmp_path, real_discovery)
+        assert "postgres" not in doc["services"]
+        assert "nats" not in doc["services"]
+        assert "minio" not in doc["services"]
+        assert "reporting-sync" not in doc["services"]
+
+    def test_minio_active_caddy_emits_handle_path_with_strip_prefix(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-54: MinIO's /minio route has strip_prefix=true so Caddy
+        must emit `handle_path` (prefix-stripping) instead of `handle`.
+        Presigned URL signatures are computed over the bucket+key path
+        at MinIO's root — the /minio public prefix has to be stripped
+        before MinIO verifies the sig."""
+        d = _minimal_compose(modules=["minio"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        # The /minio/* block uses handle_path (strip), not handle.
+        assert "handle_path /minio/* {" in caddyfile
+        # And non-strip routes still use `handle /path/*`.
+        assert "handle /api/document-store/* {" in caddyfile
+
+    def test_api_fallthrough_404_guard_emitted(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-513: a stale aggregate /api path (no /api/<svc>/* route) must
+        404, not fall through to Caddy's default empty-200 (CLAUDE.md §14).
+        The guard is emitted even on a backend-only install (no `/` catch-all),
+        and sits AFTER the service handles so Caddy's longest-match keeps
+        /api/<svc>/* winning over the less-specific /api/* guard."""
+        d = _minimal_compose()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        assert "handle /api/* {" in caddyfile
+        guard_at = caddyfile.index("handle /api/* {")
+        assert "respond 404" in caddyfile[guard_at : guard_at + 80]
+        # Less specific than the service handles — must be emitted after them.
+        assert guard_at > caddyfile.index("handle /api/document-store/* {")
+
+    def test_root_redirect_block_emitted_with_app(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-368: with an app enabled, the Caddyfile redirects bare `/`
+        to the app's prefix. Uses `handle /` (exact root) + an explicit `*`
+        matcher on redir so Caddy doesn't parse the leading-/ destination
+        as a matcher."""
+        d = _minimal_compose(apps=["react-console"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        assert "handle / {" in caddyfile
+        assert "redir * /apps/rc/ permanent" in caddyfile
+
+    def test_root_redirect_to_login_without_apps(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """No apps + gateway on → bare `/` redirects to /auth/login."""
+        d = _minimal_compose()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        assert "redir * /auth/login permanent" in caddyfile
+
+    def test_no_root_redirect_without_apps_or_gateway(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """No apps + gateway off → nothing to point `/` at, no root redirect.
+
+        `handle / {` is the exact-root block unique to the root redirect;
+        per-route bare-path redirects use `handle /api/registry {` etc., so
+        this discriminates the root redirect from those (which still emit
+        their own `permanent` redirs)."""
+        d = _minimal_compose()
+        d.spec.auth.gateway = False
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        assert "handle / {" not in caddyfile
+
+    def test_minio_active_document_store_gets_public_endpoint_env(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-54: WIP_FILE_STORAGE_PUBLIC_ENDPOINT must be injected
+        into document-store's env, pointing at the public Caddy-routed
+        URL for MinIO so presigned-URL rewrites produce a reachable host."""
+        doc = self._render_compose(
+            tmp_path, real_discovery, modules=["minio"],
+        )
+        env = doc["services"]["document-store"]["environment"]
+        assert env["WIP_FILE_STORAGE_PUBLIC_ENDPOINT"].endswith("/minio"), env
+        # Not the internal endpoint.
+        assert env["WIP_FILE_STORAGE_PUBLIC_ENDPOINT"] != env["WIP_FILE_STORAGE_ENDPOINT"]
+
+    def test_reporting_active_pulls_in_postgres_and_nats(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        doc = self._render_compose(
+            tmp_path, real_discovery,
+            modules=["reporting-sync"],
+        )
+        assert "postgres" in doc["services"]
+        assert "nats" in doc["services"]
+        assert "reporting-sync" in doc["services"]
+
+    def test_full_argv_split_into_entrypoint_plus_command(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Components declare full argv (binary + args) in `spec.command`
+        so k8s's command-replaces-ENTRYPOINT semantics work. Compose's
+        `command:` only overrides CMD, so a full argv would execute as
+        `<ENTRYPOINT> <full argv>` — producing, e.g., NATS errors with
+        `unrecognized command: /nats-server`. The compose renderer splits
+        the declared argv into `entrypoint: [<binary>]` + `command: [args]`
+        to match k8s behavior exactly.
+        """
+        doc = self._render_compose(
+            tmp_path, real_discovery,
+            modules=["reporting-sync"],  # activates nats + postgres
+        )
+        nats = doc["services"]["nats"]
+        assert nats["entrypoint"] == ["nats-server"]
+        assert nats["command"] == ["-js", "-m", "8222"]
+
+        # MinIO too (full argv including the binary).
+        doc2 = self._render_compose(
+            tmp_path, real_discovery,
+            modules=["reporting-sync", "minio"],
+        )
+        minio = doc2["services"]["minio"]
+        assert minio["entrypoint"] == ["minio"]
+        assert minio["command"] == ["server", "/data", "--console-address", ":9001"]
+
+    def test_healthcheck_http_emits_cmd_shell_with_curl(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """HTTP probes render via CMD-SHELL so podman-compose's shell
+        flattening doesn't break shell-metacharacter URLs. Default
+        `probe: auto` emits a shell-chained curl-or-wget so images with
+        either tool succeed."""
+        doc = self._render_compose(tmp_path, real_discovery)
+        reg = doc["services"]["registry"]
+        test = reg["healthcheck"]["test"]
+        assert test[0] == "CMD-SHELL"
+        # Default `auto` probe: curl preferred, wget fallback.
+        assert "curl -fsS" in test[1]
+        assert "wget -qO-" in test[1]
+        assert "http://localhost:8001/health" in test[1]
+
+    def test_healthcheck_probe_curl_forces_curl_only(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Explicit `probe: curl` emits a curl-only probe (no wget
+        fallback) — slightly smaller command for images known to
+        ship curl."""
+        # Override registry's probe to `curl`; render; assert.
+        for c in real_discovery.components:
+            if c.metadata.name == "registry" and c.spec.healthcheck:
+                c.spec.healthcheck.probe = "curl"
+        try:
+            doc = self._render_compose(tmp_path, real_discovery)
+            test = doc["services"]["registry"]["healthcheck"]["test"]
+            assert "curl -fsS" in test[1]
+            assert "wget" not in test[1]
+        finally:
+            for c in real_discovery.components:
+                if c.metadata.name == "registry" and c.spec.healthcheck:
+                    c.spec.healthcheck.probe = "auto"
+
+    def test_healthcheck_probe_wget_forces_wget_only(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Explicit `probe: wget` emits a wget-only probe — for images
+        that ship wget without curl (e.g., current v1.1.x apps)."""
+        for c in real_discovery.components:
+            if c.metadata.name == "registry" and c.spec.healthcheck:
+                c.spec.healthcheck.probe = "wget"
+        try:
+            doc = self._render_compose(tmp_path, real_discovery)
+            test = doc["services"]["registry"]["healthcheck"]["test"]
+            assert "wget -qO-" in test[1]
+            assert "curl" not in test[1]
+        finally:
+            for c in real_discovery.components:
+                if c.metadata.name == "registry" and c.spec.healthcheck:
+                    c.spec.healthcheck.probe = "auto"
+
+    def test_healthcheck_command_emits_cmd_shell_quoted(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Command probes render CMD-SHELL with shlex-joined args so
+        shell metacharacters (redirections, quotes) are preserved."""
+        doc = self._render_compose(tmp_path, real_discovery)
+        mongo = doc["services"]["mongodb"]
+        test = mongo["healthcheck"]["test"]
+        assert test[0] == "CMD-SHELL"
+        # bash -c 'exec 3<>/dev/tcp/...' — the <> redirection must survive
+        # shlex quoting intact.
+        assert "bash" in test[1]
+        assert "3<>/dev/tcp/127.0.0.1/27017" in test[1]
+        # The healthcheck must NOT fork a mongosh (full Node.js) per probe —
+        # that shape amplified a slow VM into an unresponsive one.
+        assert "mongosh" not in test[1]
+
+    def test_env_secrets_go_via_env_file(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        doc = self._render_compose(tmp_path, real_discovery)
+        reg = doc["services"]["registry"]
+        # MASTER_API_KEY references a secret → ${API_KEY} interpolation
+        assert reg["environment"]["MASTER_API_KEY"] == "${API_KEY}"
+        assert reg["env_file"] == [".env"]
+
+    def test_env_literals_go_inline(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        doc = self._render_compose(tmp_path, real_discovery)
+        reg = doc["services"]["registry"]
+        # DATABASE_NAME is a literal, not a secret
+        assert reg["environment"]["DATABASE_NAME"] == "wip_registry"
+
+    def test_no_depends_on_emitted(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Parallel-start: compose containers start simultaneously and
+        services use their startup retry logic to handle dep races.
+        The renderer emits no depends_on blocks at all — earlier we
+        used depends_on: service_healthy to serialize, but that gate
+        is redundant now that every service retries its real
+        dependencies (Mongo, Postgres, NATS, cross-service HTTP).
+        """
+        doc = self._render_compose(tmp_path, real_discovery)
+        for name, svc in doc["services"].items():
+            assert "depends_on" not in svc, (
+                f"Service {name!r} still has depends_on: {svc.get('depends_on')}"
+            )
+
+    def test_network_declared(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        doc = self._render_compose(tmp_path, real_discovery)
+        assert "wip-network" in doc["networks"]
+
+    def test_volumes_for_stateful_services(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        doc = self._render_compose(tmp_path, real_discovery)
+        # MongoDB has storage named "data"
+        assert "wip-mongodb-data" in doc["volumes"]
+
+    def test_apps_contribute_services(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        doc = self._render_compose(tmp_path, real_discovery, apps=["dnd"])
+        assert "dnd" in doc["services"]
+
+    def test_optional_from_secret_skipped_when_secret_not_collected(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """react-console's ANTHROPIC_API_KEY is optional + `from_secret:
+        anthropic-api-key`. When no anthropic-api-key is collected (the
+        user didn't supply one), the env var must be omitted — not
+        emitted as ${ANTHROPIC_API_KEY} → empty string."""
+        doc = self._render_compose(
+            tmp_path, real_discovery, apps=["react-console"]
+        )
+        rc = doc["services"]["react-console"]
+        env = rc.get("environment", {})
+        # The optional anthropic-api-key isn't collected by default, so
+        # the env var should not appear at all.
+        assert "ANTHROPIC_API_KEY" not in env
+
+
+# ────────────────────────────────────────────────────────────────────
+# .env
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestDotEnv:
+    def test_every_secret_appears_as_shell_var(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        d = _minimal_compose()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        env_content = tree.files[Path(".env")].content
+
+        for name in s.values:
+            shell_var = name.upper().replace("-", "_")
+            assert f"{shell_var}=" in env_content
+
+
+# ────────────────────────────────────────────────────────────────────
+# Dex config
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestDexRender:
+    def test_dex_config_parses_as_yaml(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        d = _minimal_compose()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        dex_yaml = yaml.safe_load(
+            tree.files[Path("config/dex/config.yaml")].content
+        )
+        assert dex_yaml["issuer"] == "https://wip.local:8443/dex"
+        assert dex_yaml["storage"]["type"] == "sqlite3"
+
+    def test_dex_users_have_bcrypt_hashes(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        d = _minimal_compose()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        dex_yaml = yaml.safe_load(
+            tree.files[Path("config/dex/config.yaml")].content
+        )
+        for user in dex_yaml["staticPasswords"]:
+            # bcrypt hashes start with $2a$, $2b$, or $2y$
+            assert user["hash"].startswith(("$2a$", "$2b$", "$2y$"))
+
+
+# ────────────────────────────────────────────────────────────────────
+# Caddyfile
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestCaddyfile:
+    def test_api_routes_have_no_forward_auth(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """API routes use API-key auth (service-level). No gateway
+        forward_auth — that's only for browser-facing app routes."""
+        d = _minimal_compose()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        assert "/api/registry/*" in caddyfile
+        registry_block_start = caddyfile.index("handle /api/registry/*")
+        registry_block = caddyfile[registry_block_start : registry_block_start + 300]
+        assert "forward_auth" not in registry_block
+
+    def test_app_routes_have_forward_auth(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """App routes (/apps/*) are gateway-protected."""
+        d = _minimal_compose(apps=["react-console"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        rc_start = caddyfile.index("handle /apps/rc/*")
+        rc_block = caddyfile[rc_start : rc_start + 400]
+        assert "forward_auth wip-auth-gateway:4180" in rc_block
+
+    def test_forward_auth_wraps_401_in_login_redirect(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Gateway returns 401 on unauthenticated requests. Caddy must
+        catch that and redirect the browser to /auth/login — otherwise
+        users see a bare 401 page instead of the login flow.
+
+        The redir MUST carry the explicit `*` matcher: Caddyfile parses
+        a first argument starting with `/` as a path matcher, so the
+        unmatchered form `redir /auth/login... 302` compiles to
+        match-path + destination "302" and the redirect never fires
+        (browsers got Caddy's default empty 200). This test pins the
+        disambiguated token shape, not just the substring.
+        """
+        d = _minimal_compose(apps=["react-console"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        rc_start = caddyfile.index("handle /apps/rc/*")
+        rc_block = caddyfile[rc_start : rc_start + 500]
+        assert "@unauth status 401" in rc_block
+        assert "handle_response @unauth" in rc_block
+        assert "redir * /auth/login?return_to={http.request.uri} 302" in rc_block
+        # The broken form must not resurface anywhere in the file.
+        assert "redir /auth/login" not in caddyfile
+
+    def test_bare_path_redirects_to_trailing_slash(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-53 regression: every route must emit a bare-path handler
+        that 301s to the trailing-slash form. Without this, `/apps/rc`
+        (without slash) falls through Caddy's /apps/rc/* glob and 404s.
+        The old setup-wip.sh had this per-app; the v2 port missed it.
+        """
+        d = _minimal_compose(apps=["react-console"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        # Apps — the symptom in the case. Note the `*` matcher before
+        # the destination: Caddyfile's `redir` parses a leading `/arg` as
+        # a matcher, not a destination, so `redir /apps/rc/ permanent`
+        # would silently produce Location: "permanent". The `*` matcher
+        # disambiguates match-all.
+        assert "handle /apps/rc {" in caddyfile
+        rc_bare = caddyfile[caddyfile.index("handle /apps/rc {"):]
+        assert "redir * /apps/rc/ permanent" in rc_bare[:120]
+
+        # API routes get the same treatment (consistency)
+        assert "handle /api/registry {" in caddyfile
+        api_bare = caddyfile[caddyfile.index("handle /api/registry {"):]
+        assert "redir * /api/registry/ permanent" in api_bare[:120]
+
+    def test_route_with_redirect_bare_path_false_skips_redirect(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """MCP opt-out: its StreamableHTTP transport does its own slash
+        canonicalization (307s /mcp/ → /mcp). Caddys default bare-path
+        redirect goes the opposite way, creating an infinite loop.
+        mcp-servers manifest sets redirect_bare_path=false to skip it.
+        """
+        d = _minimal_compose(modules=["mcp-server"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        # No bare-path REDIRECT for /mcp (the conditional redirect block
+        # that would land at `handle /mcp { redir * /mcp/ permanent }`).
+        assert "redir * /mcp/ permanent" not in caddyfile
+        # CASE-312: a SIBLING handle block serves bare /mcp instead of
+        # redirecting it. Both bare and wildcard reach the backend.
+        assert "handle /mcp {" in caddyfile
+        assert "handle /mcp/* {" in caddyfile
+        assert "reverse_proxy wip-mcp-server:8007" in caddyfile
+        # The bare /mcp block forwards directly (no redirect inside).
+        mcp_bare = caddyfile[caddyfile.index("handle /mcp {"):]
+        bare_block_end = mcp_bare.index("}")
+        assert "reverse_proxy" in mcp_bare[:bare_block_end]
+        assert "redir " not in mcp_bare[:bare_block_end]
+
+        # Other routes retain the default behavior — /api/registry
+        # still gets its redirect AND its wildcard matcher.
+        assert "handle /api/registry {" in caddyfile
+        registry_bare = caddyfile[caddyfile.index("handle /api/registry {"):]
+        assert "redir * /api/registry/ permanent" in registry_bare[:120]
+        assert "handle /api/registry/* {" in caddyfile
+
+    def test_redirect_bare_path_false_emits_bare_handle_block(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-312 regression guard.
+
+        When a route opts out of the bare-path redirect (redirect_bare_path:
+        False), the renderer must emit a SIBLING handle block for the bare
+        path that forwards directly to the backend — NOT redirect to
+        `<path>/`. Without it, bare requests fall through to Caddy's
+        200-empty default. That's what crashed the MCP StreamableHTTP
+        transport with "Unexpected content type: null", silently breaking
+        the dev askBar and any external HTTP MCP client.
+        """
+        d = _minimal_compose(modules=["mcp-server"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        # Bare handle block forwards to backend without redirecting.
+        bare_idx = caddyfile.index("handle /mcp {")
+        bare_block = caddyfile[bare_idx : bare_idx + 200]
+        assert "reverse_proxy wip-mcp-server:8007" in bare_block
+        assert "redir" not in bare_block.split("\n}")[0]
+        # Wildcard block also exists (redirects + wildcard for the
+        # subpath case the SDK doesn't hit but external clients might).
+        assert "handle /mcp/* {" in caddyfile
+
+    def test_streaming_route_sets_flush_interval(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        d = _minimal_compose()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        # document-store is streaming
+        ds_start = caddyfile.index("handle /api/document-store/*")
+        ds_block = caddyfile[ds_start : ds_start + 300]
+        assert "flush_interval -1" in ds_block
+
+# ────────────────────────────────────────────────────────────────────
+# Target check
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestTargetGuard:
+    def test_render_compose_rejects_k8s_target(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        d = Deployment(
+            metadata=DeploymentMetadata(name="t"),
+            spec=DeploymentSpec(
+                target="k8s",
+                auth=AuthSpec(mode="oidc", gateway=True),
+                network=NetworkSpec(hostname="wip-kubi.local"),
+                platform=PlatformSpec(k8s=K8sPlatform()),
+                secrets=SecretsSpec(backend="k8s-secret"),
+            ),
+        )
+        with pytest.raises(ValueError, match="target=compose"):
+            render_compose(d, real_discovery.components, real_discovery.apps, ResolvedSecrets({}))

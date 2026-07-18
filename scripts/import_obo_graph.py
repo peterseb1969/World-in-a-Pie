@@ -3,7 +3,7 @@
 Import OBO Graph JSON ontologies into World In a Pie.
 
 Parses OBO Graph JSON files (HP, GO, CHEBI, etc.) and imports them as
-WIP terminologies with terms and relationships via the def-store API.
+WIP terminologies with terms and relations via the def-store API.
 
 Usage:
     # Import Human Phenotype Ontology
@@ -61,7 +61,7 @@ OBO_PREDICATE_MAP: dict[str, str] = {
     "http://purl.obolibrary.org/obo/RO_0002332": "regulates_activity_of",
 }
 
-# Predicates to skip (property-level axioms, not concept relationships)
+# Predicates to skip (property-level axioms, not concept relations)
 OBO_SKIP_PREDICATES = {"subPropertyOf"}
 
 
@@ -86,7 +86,7 @@ def detect_prefix(graph: dict) -> str | None:
 
 
 def map_predicate(pred: str) -> str | None:
-    """Map OBO predicate to WIP relationship type. Returns None to skip."""
+    """Map OBO predicate to WIP relation type. Returns None to skip."""
     if pred in OBO_SKIP_PREDICATES:
         return None
     if pred in OBO_PREDICATE_MAP:
@@ -111,7 +111,7 @@ def parse_obo_graph(
         {
             "ontology_meta": {...},
             "nodes": {uri: {value, label, description, aliases, metadata, deprecated}},
-            "edges": [{source_uri, target_uri, relationship_type, raw_pred}],
+            "edges": [{source_uri, target_uri, relation_type, raw_pred}],
             "stats": {...}
         }
     """
@@ -233,7 +233,7 @@ def parse_obo_graph(
         edges.append({
             "source_uri": sub,
             "target_uri": obj,
-            "relationship_type": rel_type,
+            "relation_type": rel_type,
             "raw_pred": pred,
         })
 
@@ -409,14 +409,14 @@ def import_terms(
     return value_to_id
 
 
-def import_relationships(
+def import_relations(
     client: WipClient,
     nodes: dict[str, dict],
     edges: list[dict],
     value_to_id: dict[str, str],
     batch_size: int,
 ) -> int:
-    """Import relationships in batches. Returns count of successful imports."""
+    """Import relations in batches. Returns count of successful imports."""
     # Build URI→term_id mapping
     uri_to_id: dict[str, str] = {}
     for uri, info in nodes.items():
@@ -433,7 +433,7 @@ def import_relationships(
             rel_items.append({
                 "source_term_id": src_id,
                 "target_term_id": tgt_id,
-                "relationship_type": e["relationship_type"],
+                "relation_type": e["relation_type"],
             })
         else:
             skipped += 1
@@ -447,7 +447,7 @@ def import_relationships(
     for i in range(0, len(rel_items), batch_size):
         batch = rel_items[i:i + batch_size]
         resp = client.post(
-            "/ontology/relationships",
+            "/ontology/term-relations",
             json=batch,
             params={"namespace": client.namespace},
             timeout=120,
@@ -459,7 +459,7 @@ def import_relationships(
         )
         total_ok += batch_ok
         batch_num = i // batch_size + 1
-        print(f"  Relationships batch {batch_num}/{total_batches}: {batch_ok}/{len(batch)} OK")
+        print(f"  Relations batch {batch_num}/{total_batches}: {batch_ok}/{len(batch)} OK")
 
     return total_ok
 
@@ -483,7 +483,7 @@ def main():
     parser.add_argument("--include-deprecated", action="store_true", help="Import deprecated/obsolete nodes")
     parser.add_argument("--max-synonyms", type=int, default=10, help="Max aliases per term (default: 10)")
     parser.add_argument("--term-batch-size", type=int, default=1000, help="Terms per batch (default: 1000)")
-    parser.add_argument("--relationship-batch-size", type=int, default=500, help="Relationships per batch (default: 500)")
+    parser.add_argument("--relation-batch-size", type=int, default=500, help="Relations per batch (default: 500)")
     parser.add_argument("--registry-batch-size", type=int, default=50, help="Registry calls per batch (default: 50)")
     parser.add_argument("--dry-run", action="store_true", help="Parse and report stats without importing")
 
@@ -534,7 +534,7 @@ def main():
     print(f"    Missing endpoint: {stats['filtered_edges_missing_endpoint']} (skipped)")
     print(f"    Skipped pred:     {stats['filtered_edges_skipped_pred']} (skipped)")
     print(f"    Imported:         {stats['edges_imported']}")
-    print(f"\n  Relationship types:")
+    print(f"\n  Relation types:")
     for pred, count in stats["predicate_distribution"].items():
         print(f"    {pred}: {count}")
 
@@ -582,21 +582,21 @@ def main():
     t_terms = time.time() - t2
     print(f"  {len(value_to_id)} terms in {t_terms:.1f}s")
 
-    # --- Import relationships ---
+    # --- Import relations ---
     if parsed["edges"]:
-        print(f"\n--- Importing {len(parsed['edges'])} relationships ---")
+        print(f"\n--- Importing {len(parsed['edges'])} relations ---")
         t3 = time.time()
-        rel_ok = import_relationships(
+        rel_ok = import_relations(
             client,
             parsed["nodes"],
             parsed["edges"],
             value_to_id,
-            batch_size=args.relationship_batch_size,
+            batch_size=args.relation_batch_size,
         )
         t_rels = time.time() - t3
-        print(f"  {rel_ok} relationships in {t_rels:.1f}s")
+        print(f"  {rel_ok} relations in {t_rels:.1f}s")
     else:
-        print("\n  No relationships to import")
+        print("\n  No relations to import")
 
     # --- Summary ---
     total_time = time.time() - t0
@@ -604,7 +604,7 @@ def main():
     print(f"Import complete: {total_time:.1f}s total")
     print(f"  Terminology: {term_value} ({terminology_id[:12]}...)")
     print(f"  Terms:         {len(value_to_id)}")
-    print(f"  Relationships: {stats['edges_imported']}")
+    print(f"  Relations: {stats['edges_imported']}")
     print(f"  Synonyms:      {stats['total_synonyms']}")
     print(f"{'=' * 60}")
 

@@ -8,19 +8,22 @@ Validates documents against templates and manages document versioning.
 import os
 from contextlib import asynccontextmanager
 
-from beanie import init_beanie
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import (
+    declare_api_key_security,
     RejectUnknownQueryParamsMiddleware,
+    build_metadata,
     check_production_security,
+    init_beanie_with_retry,
     setup_auth,
     setup_key_sync,
     setup_rate_limiting,
 )
 
+from . import __version__
 from .api import api_router
 from .api.auth import require_api_key
 from .models.backup_job import BackupJob
@@ -81,12 +84,14 @@ async def lifespan(app: FastAPI):
 
     # Initialize MongoDB connection
     print(f"Connecting to MongoDB at {settings.MONGO_URI}...")
-    client = AsyncIOMotorClient(settings.MONGO_URI)
+    client: AsyncIOMotorClient = AsyncIOMotorClient(settings.MONGO_URI)
 
-    # Initialize Beanie ODM with document models
-    await init_beanie(
+    # Initialize Beanie ODM with retry — tolerates MongoDB not being ready
+    # yet on fresh k8s boot, node drain, pod reschedule.
+    await init_beanie_with_retry(
         database=client[settings.DATABASE_NAME],
-        document_models=[Document, File, BackupJob]
+        document_models=[Document, File, BackupJob],
+        description=f"MongoDB init ({settings.DATABASE_NAME})",
     )
     print("MongoDB connection and Beanie initialization successful.")
 
@@ -187,7 +192,7 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning(f"Integrity check found {len(result.issues)} issues:")
             # Group issues by type
-            issue_counts = {}
+            issue_counts: dict[str, int] = {}
             for issue in result.issues:
                 issue_counts[issue.type] = issue_counts.get(issue.type, 0) + 1
             for issue_type, count in issue_counts.items():
@@ -264,8 +269,10 @@ All endpoints require API key authentication via the `X-API-Key` header.
     redoc_url="/redoc",
 )
 
-# Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY)
-_providers = setup_auth(app)
+# Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY).
+# public_paths exempts the api-prefixed /health route from auth so external
+# monitors and stale-key clients can probe it without a 401 (CASE-60).
+_providers = setup_auth(app, public_paths=["/api/document-store/health"])
 
 # Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
 setup_rate_limiting(app)
@@ -286,13 +293,26 @@ app.add_middleware(
 app.include_router(api_router)
 
 
-# Root endpoint
+# Declare the X-API-Key requirement in the OpenAPI contract — the shared
+# wip_auth helper replaces this service's original inline override so all
+# five service schemas use one implementation and cannot drift.
+declare_api_key_security(app)
+
+
+# Root endpoint. The prefixed alias matters: Caddy preserves the
+# /api/document-store prefix on the way to this app, so the bare "/" is
+# reachable only container-direct — without the alias, router-side consumers
+# (the console's build-provenance probe at /api/document-store/) get a 404
+# and the dashboard shows no build info for this service.
 @app.get("/", tags=["Health"])
+@app.get("/api/document-store/", include_in_schema=False, tags=["Health"])
 async def root():
     """Root endpoint with service information."""
     return {
         "service": "WIP Document Store",
-        "version": "0.2.0",
+        "version": __version__,
+        # Uniform build-provenance block (sha/built_at/image_tag).
+        "build": build_metadata(__version__),
         "documentation": "/docs",
         "health": "/health",
     }
@@ -348,6 +368,13 @@ async def health_check():
         "nats": nats_status,
         "file_storage": file_storage_status,
     }
+
+
+# Also expose /health under the api-prefix so external callers through
+# Caddy can reach it. Root /health stays for direct container probes.
+app.add_api_route(
+    "/api/document-store/health", health_check, methods=["GET"], tags=["Health"]
+)
 
 
 # Ready check endpoint (for Kubernetes)

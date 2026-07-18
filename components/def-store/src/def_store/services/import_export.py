@@ -1,5 +1,6 @@
 """Import/Export service for terminologies and terms."""
 
+import contextlib
 import csv
 import io
 import json
@@ -7,16 +8,16 @@ import logging
 import time
 from collections import Counter
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from ..models.api_models import (
     BulkResultItem,
-    CreateRelationshipRequest,
     CreateTerminologyRequest,
+    CreateTermRelationRequest,
     CreateTermRequest,
 )
 from ..models.term import Term, TermTranslation
-from ..models.term_relationship import TermRelationship
+from ..models.term_relation import TermRelation
 from ..models.terminology import Terminology, TerminologyMetadata
 from .ontology_service import OntologyService
 from .terminology_service import TerminologyService
@@ -38,7 +39,7 @@ class ImportExportService:
         format: str = "json",
         include_metadata: bool = True,
         include_inactive: bool = False,
-        include_relationships: bool = False,
+        include_relations: bool = False,
         languages: list[str] | None = None
     ) -> dict[str, Any]:
         """
@@ -50,7 +51,7 @@ class ImportExportService:
             format: Export format (json, csv)
             include_metadata: Include metadata in export
             include_inactive: Include inactive/deprecated terms
-            include_relationships: Include ontology relationships
+            include_relations: Include ontology relations
             languages: Languages to include for translations
 
         Returns:
@@ -82,18 +83,18 @@ class ImportExportService:
                     if t.language in languages
                 ]
 
-        # Get relationships if requested
-        relationships: list[TermRelationship] = []
-        if include_relationships and format != "csv":
+        # Get relations if requested
+        relations: list[TermRelation] = []
+        if include_relations and format != "csv":
             rel_query: dict[str, Any] = {
                 "namespace": terminology.namespace,
                 "source_terminology_id": terminology.terminology_id,
             }
             if not include_inactive:
                 rel_query["status"] = "active"
-            relationships = await TermRelationship.find(rel_query).to_list()
+            relations = await TermRelation.find(rel_query).to_list()
 
-            # Also get relationships where target is in this terminology
+            # Also get relations where target is in this terminology
             # but source is from another (cross-terminology links)
             cross_query: dict[str, Any] = {
                 "namespace": terminology.namespace,
@@ -102,14 +103,14 @@ class ImportExportService:
             }
             if not include_inactive:
                 cross_query["status"] = "active"
-            cross_rels = await TermRelationship.find(cross_query).to_list()
-            relationships.extend(cross_rels)
+            cross_rels = await TermRelation.find(cross_query).to_list()
+            relations.extend(cross_rels)
 
         if format == "csv":
             return ImportExportService._export_csv(terminology, terms, include_metadata)
         else:
             return ImportExportService._export_json(
-                terminology, terms, include_metadata, relationships
+                terminology, terms, include_metadata, relations
             )
 
     @staticmethod
@@ -117,10 +118,10 @@ class ImportExportService:
         terminology: Terminology,
         terms: list[Term],
         include_metadata: bool,
-        relationships: list["TermRelationship"] | None = None,
+        relations: list["TermRelation"] | None = None,
     ) -> dict[str, Any]:
         """Export as JSON."""
-        # Build term_id → value lookup for relationship denormalization
+        # Build term_id → value lookup for relation denormalization
         term_id_to_value: dict[str, str] = {}
         term_data = []
         for t in terms:
@@ -174,14 +175,14 @@ class ImportExportService:
                 "custom": terminology.metadata.custom
             }
 
-        # Include relationships if provided
-        if relationships:
+        # Include relations if provided
+        if relations:
             rel_data = []
-            for r in relationships:
+            for r in relations:
                 rel_dict: dict[str, Any] = {
                     "source_term_value": term_id_to_value.get(r.source_term_id, r.source_term_id),
                     "target_term_value": term_id_to_value.get(r.target_term_id, r.target_term_id),
-                    "relationship_type": r.relationship_type,
+                    "relation_type": r.relation_type,
                 }
                 if r.metadata:
                     rel_dict["metadata"] = r.metadata
@@ -190,7 +191,7 @@ class ImportExportService:
                 if r.target_terminology_id != terminology.terminology_id:
                     rel_dict["target_terminology_id"] = r.target_terminology_id
                 rel_data.append(rel_dict)
-            result["relationships"] = rel_data
+            result["relations"] = rel_data
 
         return result
 
@@ -237,10 +238,22 @@ class ImportExportService:
     @staticmethod
     async def export_all_terminologies(
         format: str = "json",
-        include_inactive: bool = False
+        include_inactive: bool = False,
+        namespaces: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Export all terminologies."""
-        query = {} if include_inactive else {"status": "active"}
+        """Export all terminologies.
+
+        Args:
+            namespaces: When set, restrict the export to terminologies in
+                these namespaces. None means no namespace filter
+                (caller is superadmin or has equivalent access).
+                Added by CASE-384 so the API layer can pass the caller's
+                accessible-namespaces list without leaking entities the
+                caller has no permission on.
+        """
+        query: dict[str, Any] = {} if include_inactive else {"status": "active"}
+        if namespaces is not None:
+            query["namespace"] = {"$in": namespaces}
         terminologies = await Terminology.find(query).to_list()
 
         results = []
@@ -262,7 +275,8 @@ class ImportExportService:
     async def import_terminology(
         data: dict[str, Any],
         format: str = "json",
-        options: dict[str, Any] | None = None
+        options: dict[str, Any] | None = None,
+        namespace: str | None = None,
     ) -> dict[str, Any]:
         """
         Import a terminology with terms.
@@ -274,6 +288,10 @@ class ImportExportService:
                 - skip_duplicates: Skip terms that already exist
                 - update_existing: Update existing terms
                 - created_by: User performing import
+            namespace: Destination namespace, resolved by the API layer
+                (query param / JSON body / single-namespace-key derivation)
+                and already permission-checked there. When set it wins;
+                the CSV payload never carries one.
 
         Returns:
             Import results
@@ -284,7 +302,7 @@ class ImportExportService:
         created_by = options.get("created_by")
 
         if format == "csv":
-            return await ImportExportService._import_csv(data, options)
+            return await ImportExportService._import_csv(data, options, namespace)
 
         # JSON import
         terminology_data = data.get("terminology")
@@ -297,10 +315,26 @@ class ImportExportService:
         if not terminology_data.get("label"):
             raise ValueError("Missing 'terminology.label' field in import data")
 
+        if namespace:
+            terminology_data["namespace"] = namespace
+        target_namespace = terminology_data.get("namespace")
+        if not target_namespace:
+            # The API layer always resolves one; direct service callers must
+            # supply it too — an import without a destination namespace used
+            # to die later as a bare KeyError on the create path.
+            raise ValueError("Missing terminology namespace for import")
+
         terms_data = data.get("terms", [])
 
-        # Check if terminology exists
-        existing_terminology = await Terminology.find_one({"value": terminology_data.get("value")})
+        # Check if terminology exists — scoped to the destination namespace.
+        # (namespace, value) is the terminology's identity; an unscoped
+        # value-only lookup could match a same-named terminology in ANOTHER
+        # namespace and attach the imported terms there, sidestepping the
+        # permission check that gated only the destination.
+        existing_terminology = await Terminology.find_one({
+            "value": terminology_data.get("value"),
+            "namespace": target_namespace,
+        })
 
         if existing_terminology:
             if not update_existing:
@@ -318,15 +352,16 @@ class ImportExportService:
                 value=terminology_data["value"],
                 label=terminology_data["label"],
                 description=terminology_data.get("description"),
-                namespace=terminology_data["namespace"],
+                namespace=target_namespace,
                 case_sensitive=terminology_data.get("case_sensitive", False),
                 allow_multiple=terminology_data.get("allow_multiple", False),
                 extensible=terminology_data.get("extensible", False),
                 metadata=TerminologyMetadata(**metadata) if metadata else None,
                 created_by=created_by
             )
-            namespace = terminology_data["namespace"]
-            terminology_response = await TerminologyService.create_terminology(create_req, namespace)
+            terminology_response = await TerminologyService.create_terminology(
+                create_req, target_namespace
+            )
             terminology_id = terminology_response.terminology_id
             terminology_status = "created"
 
@@ -373,15 +408,14 @@ class ImportExportService:
             else terminology_data.get("label")
         )
 
-        # Import relationships if present
-        relationships_data = data.get("relationships", [])
+        # Import relations if present
+        relations_data = data.get("relations", [])
         rel_result = None
-        if relationships_data:
-            namespace = terminology_data["namespace"]
-            rel_result = await ImportExportService._import_relationships(
-                relationships_data,
+        if relations_data:
+            rel_result = await ImportExportService._import_term_relations(
+                relations_data,
                 terminology_id=terminology_id,
-                namespace=namespace,
+                namespace=target_namespace,
                 term_results=term_results,
                 options=options,
             )
@@ -402,15 +436,23 @@ class ImportExportService:
             }
         }
         if rel_result:
-            result["relationships_result"] = rel_result
+            result["relations_result"] = rel_result
         return result
 
     @staticmethod
     async def _import_csv(
         data: dict[str, Any],
-        options: dict[str, Any]
+        options: dict[str, Any],
+        namespace: str | None = None,
     ) -> dict[str, Any]:
-        """Import from CSV format."""
+        """Import from CSV format.
+
+        The flat CSV payload carries no namespace by design — the caller
+        resolves the destination namespace (API layer: query param or
+        single-namespace-key derivation) and passes it here. Without it,
+        creating a new terminology from CSV was impossible: the rebuilt
+        JSON block had no namespace and the create path requires one.
+        """
         terminology_value = data.get("terminology_value")
         terminology_label = data.get("terminology_label", terminology_value)
         csv_content = data.get("csv_content", "")
@@ -430,10 +472,8 @@ class ImportExportService:
                 "sort_order": int(row.get("sort_order", 0) or 0),
             }
             if row.get("metadata"):
-                try:
+                with contextlib.suppress(json.JSONDecodeError):
                     term["metadata"] = json.loads(row["metadata"])
-                except json.JSONDecodeError:
-                    pass
 
             if term["value"]:
                 terms_data.append(term)
@@ -447,23 +487,25 @@ class ImportExportService:
             "terms": terms_data
         }
 
-        return await ImportExportService.import_terminology(json_data, "json", options)
+        return await ImportExportService.import_terminology(
+            json_data, "json", options, namespace=namespace
+        )
 
     @staticmethod
-    async def _import_relationships(
-        relationships_data: list[dict[str, Any]],
+    async def _import_term_relations(
+        relations_data: list[dict[str, Any]],
         terminology_id: str,
         namespace: str,
         term_results: list[BulkResultItem],
         options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
-        Import relationships from export format (source_term_value/target_term_value).
+        Import relations from export format (source_term_value/target_term_value).
 
-        Resolves term values to IDs and creates relationships in batches.
+        Resolves term values to IDs and creates relations in batches.
         """
         options = options or {}
-        relationship_batch_size = options.get("relationship_batch_size", 500)
+        relation_batch_size = options.get("relation_batch_size", 500)
 
         # Build value→term_id from creation results
         value_to_id: dict[str, str] = {}
@@ -479,32 +521,32 @@ class ImportExportService:
             }):
                 value_to_id[term.value] = term.term_id
 
-        # Ensure relationship types exist
-        rel_types = {r["relationship_type"] for r in relationships_data if r.get("relationship_type")}
-        await ImportExportService._ensure_relationship_types(rel_types)
+        # Ensure relation types exist
+        rel_types = {r["relation_type"] for r in relations_data if r.get("relation_type")}
+        await ImportExportService._ensure_relation_types(rel_types)
 
-        # Build and batch-create relationships
+        # Build and batch-create relations
         rel_created = 0
         rel_skipped = 0
         rel_errors = 0
         rel_error_samples: list[str] = []
 
-        for i in range(0, len(relationships_data), relationship_batch_size):
-            batch = relationships_data[i:i + relationship_batch_size]
-            rel_requests: list[CreateRelationshipRequest] = []
+        for i in range(0, len(relations_data), relation_batch_size):
+            batch = relations_data[i:i + relation_batch_size]
+            rel_requests: list[CreateTermRelationRequest] = []
             for rd in batch:
                 src_id = value_to_id.get(rd.get("source_term_value", ""))
                 tgt_id = value_to_id.get(rd.get("target_term_value", ""))
                 if src_id and tgt_id:
-                    rel_requests.append(CreateRelationshipRequest(
+                    rel_requests.append(CreateTermRelationRequest(
                         source_term_id=src_id,
                         target_term_id=tgt_id,
-                        relationship_type=rd["relationship_type"],
+                        relation_type=rd["relation_type"],
                         metadata=rd.get("metadata") or {},
                     ))
 
             if rel_requests:
-                results = await OntologyService.create_relationships(namespace, rel_requests)
+                results = await OntologyService.create_term_relations(namespace, rel_requests)
                 for r in results:
                     if r.status == "created":
                         rel_created += 1
@@ -516,7 +558,7 @@ class ImportExportService:
                             rel_error_samples.append(r.error)
 
         return {
-            "total": len(relationships_data),
+            "total": len(relations_data),
             "created": rel_created,
             "skipped": rel_skipped,
             "errors": rel_errors,
@@ -562,8 +604,8 @@ class ImportExportService:
     # OBO GRAPH JSON IMPORT
     # =========================================================================
 
-    # Predicate URI → WIP relationship type
-    OBO_PREDICATE_MAP: dict[str, str] = {
+    # Predicate URI → WIP relation type
+    OBO_PREDICATE_MAP: ClassVar[dict[str, str]] = {
         "is_a": "is_a",
         "http://purl.obolibrary.org/obo/BFO_0000050": "part_of",
         "http://purl.obolibrary.org/obo/BFO_0000051": "has_part",
@@ -577,7 +619,7 @@ class ImportExportService:
         "http://purl.obolibrary.org/obo/RO_0002331": "involved_in",
         "http://purl.obolibrary.org/obo/RO_0002332": "regulates_activity_of",
     }
-    OBO_SKIP_PREDICATES = {"subPropertyOf"}
+    OBO_SKIP_PREDICATES: ClassVar[set[str]] = {"subPropertyOf"}
 
     @staticmethod
     def _uri_to_value(uri: str) -> str:
@@ -595,7 +637,7 @@ class ImportExportService:
 
     @classmethod
     def _map_predicate(cls, pred: str) -> str | None:
-        """Map OBO predicate to WIP relationship type."""
+        """Map OBO predicate to WIP relation type."""
         if pred in cls.OBO_SKIP_PREDICATES:
             return None
         if pred in cls.OBO_PREDICATE_MAP:
@@ -679,7 +721,7 @@ class ImportExportService:
             edges.append({
                 "source_uri": sub,
                 "target_uri": obj,
-                "relationship_type": rel_type,
+                "relation_type": rel_type,
             })
 
         return {
@@ -695,31 +737,31 @@ class ImportExportService:
         }
 
     @staticmethod
-    async def _ensure_relationship_types(needed_types: set[str]) -> None:
+    async def _ensure_relation_types(needed_types: set[str]) -> None:
         """
-        Ensure all needed relationship types exist in _ONTOLOGY_RELATIONSHIP_TYPES.
+        Ensure all needed relation types exist in _ONTOLOGY_RELATIONSHIP_TYPES.
 
         Auto-creates any missing types as new terms in the system terminology.
         Invalidates the OntologyService cache after adding new types.
         """
-        from .system_terminologies import RELATIONSHIP_TYPES_TERMINOLOGY_VALUE
+        from .system_terminologies import TERM_RELATION_TYPES_TERMINOLOGY_VALUE
 
-        valid_types = await OntologyService.get_valid_relationship_types()
+        valid_types = await OntologyService.get_valid_relation_types()
         missing = needed_types - set(valid_types.keys())
 
         if not missing:
             return
 
-        logger.info(f"Auto-creating {len(missing)} missing relationship types: {missing}")
+        logger.info(f"Auto-creating {len(missing)} missing relation types: {missing}")
 
         # Find the _ONTOLOGY_RELATIONSHIP_TYPES terminology
         terminology = await Terminology.find_one({
-            "value": RELATIONSHIP_TYPES_TERMINOLOGY_VALUE,
+            "value": TERM_RELATION_TYPES_TERMINOLOGY_VALUE,
         })
         if not terminology:
             logger.error(
-                f"Cannot auto-create relationship types: "
-                f"{RELATIONSHIP_TYPES_TERMINOLOGY_VALUE} terminology not found"
+                f"Cannot auto-create relation types: "
+                f"{TERM_RELATION_TYPES_TERMINOLOGY_VALUE} terminology not found"
             )
             return
 
@@ -750,10 +792,10 @@ class ImportExportService:
                 skip_duplicates=True,
             )
             created = sum(1 for r in results if r.status == "created")
-            logger.info(f"Created {created} new relationship types")
+            logger.info(f"Created {created} new relation types")
 
-            # Invalidate cache so create_relationships picks up the new types
-            OntologyService.invalidate_relationship_type_cache()
+            # Invalidate cache so create_relations picks up the new types
+            OntologyService.invalidate_relation_type_cache()
 
     @staticmethod
     async def import_ontology(
@@ -767,11 +809,11 @@ class ImportExportService:
             data: OBO Graph JSON data (with "graphs" array)
             options: Import options (terminology_value, terminology_label,
                      prefix_filter, include_deprecated, max_synonyms,
-                     batch_size, registry_batch_size, relationship_batch_size,
+                     batch_size, registry_batch_size, relation_batch_size,
                      namespace, skip_duplicates, update_existing, created_by)
 
         Returns:
-            Import summary with terminology, term, and relationship stats.
+            Import summary with terminology, term, and relation stats.
         """
         t0 = time.perf_counter()
 
@@ -779,7 +821,7 @@ class ImportExportService:
         created_by = options.get("created_by")
         batch_size = options.get("batch_size", 1000)
         registry_batch_size = options.get("registry_batch_size", 50)
-        relationship_batch_size = options.get("relationship_batch_size", 500)
+        relation_batch_size = options.get("relation_batch_size", 500)
         skip_duplicates = options.get("skip_duplicates", True)
         update_existing = options.get("update_existing", False)
 
@@ -856,7 +898,7 @@ class ImportExportService:
         # Build value→term_id mapping
         value_to_id: dict[str, str] = {}
         for r in term_results:
-            if r.id:
+            if r.id and r.value:
                 value_to_id[r.value] = r.id
 
         # Resolve IDs for skipped terms
@@ -867,7 +909,7 @@ class ImportExportService:
             }):
                 value_to_id[term.value] = term.term_id
 
-        # Build URI→term_id mapping and import relationships
+        # Build URI→term_id mapping and import relations
         uri_to_id: dict[str, str] = {}
         for uri, info in nodes.items():
             tid = value_to_id.get(info["value"])
@@ -879,30 +921,30 @@ class ImportExportService:
             f"uri_to_id={len(uri_to_id)}, nodes={len(nodes)}, edges={len(edges)}"
         )
 
-        # Ensure all relationship types exist in _ONTOLOGY_RELATIONSHIP_TYPES
-        edge_rel_types = {e["relationship_type"] for e in edges}
-        await ImportExportService._ensure_relationship_types(edge_rel_types)
+        # Ensure all relation types exist in _ONTOLOGY_RELATIONSHIP_TYPES
+        edge_rel_types = {e["relation_type"] for e in edges}
+        await ImportExportService._ensure_relation_types(edge_rel_types)
 
         rel_created = 0
         rel_skipped = 0
         rel_errors = 0
         rel_error_samples: list[str] = []
 
-        for i in range(0, len(edges), relationship_batch_size):
-            batch_edges = edges[i:i + relationship_batch_size]
-            rel_requests: list[CreateRelationshipRequest] = []
+        for i in range(0, len(edges), relation_batch_size):
+            batch_edges = edges[i:i + relation_batch_size]
+            rel_requests: list[CreateTermRelationRequest] = []
             for e in batch_edges:
                 src_id = uri_to_id.get(e["source_uri"])
                 tgt_id = uri_to_id.get(e["target_uri"])
                 if src_id and tgt_id:
-                    rel_requests.append(CreateRelationshipRequest(
+                    rel_requests.append(CreateTermRelationRequest(
                         source_term_id=src_id,
                         target_term_id=tgt_id,
-                        relationship_type=e["relationship_type"],
+                        relation_type=e["relation_type"],
                     ))
 
             if rel_requests:
-                results = await OntologyService.create_relationships(namespace, rel_requests)
+                results = await OntologyService.create_term_relations(namespace, rel_requests)
                 for r in results:
                     if r.status == "created":
                         rel_created += 1
@@ -915,7 +957,7 @@ class ImportExportService:
 
             if i == 0:
                 logger.info(
-                    f"First relationship batch: {len(rel_requests)} requests, "
+                    f"First relation batch: {len(rel_requests)} requests, "
                     f"created={rel_created}, errors={rel_errors}, "
                     f"samples={rel_error_samples}"
                 )
@@ -926,7 +968,7 @@ class ImportExportService:
         terms_errors = sum(1 for r in term_results if r.status == "error")
 
         if rel_error_samples:
-            logger.warning(f"Relationship error samples: {rel_error_samples}")
+            logger.warning(f"Relation error samples: {rel_error_samples}")
 
         return {
             "terminology": {
@@ -941,7 +983,7 @@ class ImportExportService:
                 "skipped": terms_skipped,
                 "errors": terms_errors,
             },
-            "relationships": {
+            "relations": {
                 "total": len(edges),
                 "created": rel_created,
                 "skipped": rel_skipped,

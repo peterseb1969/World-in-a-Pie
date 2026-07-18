@@ -1,0 +1,63 @@
+api_version: wip.dev/v1
+kind: App
+metadata:
+  name: dnd
+  category: optional
+  description: |
+    D&D Compendium — demo app for WIP. Stores campaigns, characters,
+    monsters, and spells as WIP documents. Uses the MCP server for
+    natural-language queries via Anthropic's API.
+
+spec:
+  image:
+    name: dnd-compendium
+
+  ports:
+    - {name: http, container_port: 3012}
+    # CASE-375: Vite dev-server. Used only when --app-source is active.
+    # The dev_simple renderer routes /apps/dnd/* to this port instead of
+    # 3012 (which only serves the API in dev). Ignored on compose/k8s and
+    # on dev without the override. 3010 keeps the dev port unique on
+    # multi-app dev installs (KB 5173, RC 5174, AA 5180).
+    - {name: dev, container_port: 3010}
+
+  env:
+    required:
+      - {name: WIP_BASE_URL, source: {from_component: router}}
+      - {name: WIP_API_KEY, source: {from_secret: api-key}}
+      - {name: APP_BASE_PATH, source: {literal: /apps/dnd}}
+      - {name: PORT, source: {literal: "3012"}}
+      - {name: WIP_NAMESPACE, source: {literal: dnd}}
+      - {name: NODE_ENV, source: {literal: production}}
+    optional:
+      # MCP is a soft dep — dnd works without it, just no NL query.
+      # Env only set when mcp-server is active in the deployment.
+      - {name: MCP_URL, source: {from_component: mcp-server}}
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+
+  routes:
+    - {path: /apps/dnd, auth_required: true}
+
+  # mcp-server is a SOFT dependency — dnd's AI query feature degrades
+  # gracefully if MCP is unavailable. Only document-store is a hard
+  # start-order requirement.
+  depends_on: [document-store]
+
+  healthcheck:
+    # Locally answerable (no WIP dependency), and includes the base path —
+    # the app mounts ALL routes under APP_BASE_PATH (no prefix stripping).
+    endpoint: /apps/dnd/health
+    probe: auto
+    start_period_seconds: 15
+
+  oidc_client:
+    # dnd validates tokens directly rather than relying solely on
+    # gateway-forwarded headers — useful for MCP tool calls that go
+    # straight to the app.
+    client_id: dnd
+    redirect_paths: [/auth/callback]
+
+app_metadata:
+  display_name: D&D Compendium
+  route_prefix: /apps/dnd
+  ui_only: false

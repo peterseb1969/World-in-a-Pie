@@ -1,4 +1,4 @@
-"""Extended import/export tests: relationships, mutable flag, aliases, metadata."""
+"""Extended import/export tests: relations, mutable flag, aliases, metadata."""
 
 import pytest
 from httpx import AsyncClient
@@ -38,14 +38,14 @@ async def create_term(client, auth_headers, terminology_id, value, **extra):
     return data["results"][0]["id"]
 
 
-async def create_relationship(client, auth_headers, source_id, target_id, rel_type="is_a", namespace="wip"):
-    """Create a relationship and return the response."""
+async def create_relation(client, auth_headers, source_id, target_id, rel_type="is_a", namespace="wip"):
+    """Create a relation and return the response."""
     resp = await client.post(
-        f"{API}/ontology/relationships",
+        f"{API}/ontology/term-relations",
         json=[{
             "source_term_id": source_id,
             "target_term_id": target_id,
-            "relationship_type": rel_type,
+            "relation_type": rel_type,
         }],
         headers=auth_headers,
         params={"namespace": namespace},
@@ -145,81 +145,81 @@ class TestMutableFlagRoundTrip:
 # RELATIONSHIP EXPORT/IMPORT
 # =============================================================================
 
-class TestRelationshipExport:
-    """Tests for relationship inclusion in export."""
+class TestRelationExport:
+    """Tests for relation inclusion in export."""
 
     @pytest.mark.asyncio
-    async def test_export_with_relationships(self, client: AsyncClient, auth_headers: dict):
-        """Create terminology with terms and relationships, export with include_relationships=true."""
+    async def test_export_with_relations(self, client: AsyncClient, auth_headers: dict):
+        """Create terminology with terms and relations, export with include_relations=true."""
         tid = await create_terminology(
             client, auth_headers,
-            value="REL_EXPORT", label="Relationship Export Test",
+            value="REL_EXPORT", label="Relation Export Test",
         )
         parent = await create_term(client, auth_headers, tid, "Disease")
         child = await create_term(client, auth_headers, tid, "Pneumonia")
-        await create_relationship(client, auth_headers, child, parent, "is_a")
+        await create_relation(client, auth_headers, child, parent, "is_a")
 
         data = await export_terminology(
             client, auth_headers, tid,
-            include_relationships="true",
+            include_relations="true",
         )
 
-        assert "relationships" in data
-        assert len(data["relationships"]) == 1
-        rel = data["relationships"][0]
+        assert "relations" in data
+        assert len(data["relations"]) == 1
+        rel = data["relations"][0]
         assert rel["source_term_value"] == "Pneumonia"
         assert rel["target_term_value"] == "Disease"
-        assert rel["relationship_type"] == "is_a"
+        assert rel["relation_type"] == "is_a"
 
     @pytest.mark.asyncio
-    async def test_export_without_relationships(self, client: AsyncClient, auth_headers: dict):
-        """Export without include_relationships — no relationships in output."""
+    async def test_export_without_relations(self, client: AsyncClient, auth_headers: dict):
+        """Export without include_relations — no relations in output."""
         tid = await create_terminology(
             client, auth_headers,
-            value="REL_NO_EXPORT", label="No Relationship Export",
+            value="REL_NO_EXPORT", label="No Relation Export",
         )
         parent = await create_term(client, auth_headers, tid, "Animal")
         child = await create_term(client, auth_headers, tid, "Cat")
-        await create_relationship(client, auth_headers, child, parent, "is_a")
+        await create_relation(client, auth_headers, child, parent, "is_a")
 
         data = await export_terminology(client, auth_headers, tid)
 
-        # Without include_relationships, the key should be absent
-        assert "relationships" not in data
+        # Without include_relations, the key should be absent
+        assert "relations" not in data
 
     @pytest.mark.asyncio
-    async def test_export_multiple_relationships(self, client: AsyncClient, auth_headers: dict):
-        """Export with multiple relationships of different types."""
+    async def test_export_multiple_relations(self, client: AsyncClient, auth_headers: dict):
+        """Export with multiple relations of different types."""
         tid = await create_terminology(
             client, auth_headers,
-            value="REL_MULTI", label="Multi Relationship Export",
+            value="REL_MULTI", label="Multi Relation Export",
         )
         a = await create_term(client, auth_headers, tid, "Body")
         b = await create_term(client, auth_headers, tid, "Organ")
         c = await create_term(client, auth_headers, tid, "Heart")
-        await create_relationship(client, auth_headers, b, a, "is_a")
-        await create_relationship(client, auth_headers, c, b, "is_a")
+        await create_relation(client, auth_headers, b, a, "is_a")
+        await create_relation(client, auth_headers, c, b, "is_a")
 
         data = await export_terminology(
             client, auth_headers, tid,
-            include_relationships="true",
+            include_relations="true",
         )
 
-        assert len(data["relationships"]) == 2
-        rel_types = {r["relationship_type"] for r in data["relationships"]}
+        assert len(data["relations"]) == 2
+        rel_types = {r["relation_type"] for r in data["relations"]}
         assert "is_a" in rel_types
 
 
-class TestRelationshipImport:
-    """Tests for importing terminologies with relationships."""
+class TestRelationImport:
+    """Tests for importing terminologies with relations."""
 
     @pytest.mark.asyncio
-    async def test_import_with_relationships(self, client: AsyncClient, auth_headers: dict):
-        """Import terminology with relationships in the JSON payload."""
+    async def test_import_with_relations(self, client: AsyncClient, auth_headers: dict):
+        """Import terminology with relations in the JSON payload."""
         import_data = {
             "terminology": {
                 "value": "REL_IMPORT",
-                "label": "Relationship Import Test",
+                "label": "Relation Import Test",
                 "namespace": "wip",
             },
             "terms": [
@@ -227,16 +227,16 @@ class TestRelationshipImport:
                 {"value": "Car", "label": "Car", "sort_order": 2},
                 {"value": "Truck", "label": "Truck", "sort_order": 3},
             ],
-            "relationships": [
+            "relations": [
                 {
                     "source_term_value": "Car",
                     "target_term_value": "Vehicle",
-                    "relationship_type": "is_a",
+                    "relation_type": "is_a",
                 },
                 {
                     "source_term_value": "Truck",
                     "target_term_value": "Vehicle",
-                    "relationship_type": "is_a",
+                    "relation_type": "is_a",
                 },
             ],
         }
@@ -245,40 +245,40 @@ class TestRelationshipImport:
 
         assert result["terminology"]["status"] == "created"
         assert result["terms_result"]["succeeded"] == 3
-        # Relationships should have been imported
-        assert "relationships_result" in result
-        assert result["relationships_result"]["created"] == 2
+        # Relations should have been imported
+        assert "relations_result" in result
+        assert result["relations_result"]["created"] == 2
 
     @pytest.mark.asyncio
-    async def test_export_import_relationships_round_trip(self, client: AsyncClient, auth_headers: dict):
-        """Create terminology with relationships, export, re-import under new name."""
+    async def test_export_import_relations_round_trip(self, client: AsyncClient, auth_headers: dict):
+        """Create terminology with relations, export, re-import under new name."""
         # Create original
         tid = await create_terminology(
             client, auth_headers,
-            value="REL_RT_ORIG", label="Relationship Round Trip Original",
+            value="REL_RT_ORIG", label="Relation Round Trip Original",
         )
         parent = await create_term(client, auth_headers, tid, "Fruit")
         child = await create_term(client, auth_headers, tid, "Apple")
-        await create_relationship(client, auth_headers, child, parent, "is_a")
+        await create_relation(client, auth_headers, child, parent, "is_a")
 
-        # Export with relationships
+        # Export with relations
         exported = await export_terminology(
             client, auth_headers, tid,
-            include_relationships="true",
+            include_relations="true",
         )
 
-        assert "relationships" in exported
-        assert len(exported["relationships"]) == 1
+        assert "relations" in exported
+        assert len(exported["relations"]) == 1
 
         # Modify for re-import under new name
         exported["terminology"]["value"] = "REL_RT_COPY"
-        exported["terminology"]["label"] = "Relationship Round Trip Copy"
+        exported["terminology"]["label"] = "Relation Round Trip Copy"
 
         result = await import_terminology(client, auth_headers, exported)
 
         assert result["terminology"]["status"] == "created"
         assert result["terms_result"]["succeeded"] == 2
-        assert result["relationships_result"]["created"] == 1
+        assert result["relations_result"]["created"] == 1
 
 
 # =============================================================================

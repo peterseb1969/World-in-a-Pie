@@ -28,13 +28,13 @@ os.environ.setdefault("WIP_AUTH_MODE", "api_key_only")
 os.environ.setdefault("REGISTRY_API_KEY", "test_api_key")
 
 from registry.main import app as registry_app  # noqa: E402
+from registry.models.composite_key_claim import CompositeKeyClaim  # noqa: E402
 from registry.models.deletion_journal import DeletionJournal  # noqa: E402
 from registry.models.entry import RegistryEntry  # noqa: E402
 from registry.models.grant import NamespaceGrant  # noqa: E402
 from registry.models.id_counter import IdCounter  # noqa: E402
 from registry.models.namespace import Namespace  # noqa: E402
 from registry.services.auth import AuthService  # noqa: E402
-
 from wip_auth.fastapi_helpers import (  # noqa: E402
     _derive_namespace_from_identity,
     resolve_or_404,
@@ -68,13 +68,17 @@ async def registry():
 
     await init_beanie(
         database=mongo_client["wip_auth_helpers_test"],
-        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal],
+        document_models=[
+            Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal,
+            CompositeKeyClaim,
+        ],
     )
     await RegistryEntry.delete_all()
     await Namespace.delete_all()
     await IdCounter.delete_all()
     await NamespaceGrant.delete_all()
     await DeletionJournal.delete_all()
+    await CompositeKeyClaim.delete_all()
 
     registry_app.state.mongodb_client = mongo_client
     AuthService.initialize(master_key=os.environ.get("MASTER_API_KEY", "test_api_key"))
@@ -190,3 +194,49 @@ class TestResolveOr404NamespaceDerivation:
 
         result = await resolve_or_404("AA_CHAPTER", "template", None)
         assert result == "AA_CHAPTER"  # raw, unresolved
+
+
+class TestResolveOr404Strict:
+    """strict=True: no-namespace-context on a non-UUID value is a loud 422,
+    not a silent pass-through (CASE-457)."""
+
+    @pytest.mark.asyncio
+    async def test_strict_multi_namespace_key_raises_422(self, registry):
+        """Multi-namespace key + non-UUID value + no namespace → 422, not raw."""
+        set_current_identity(_make_identity(namespaces=["ns-a", "ns-b"]))
+
+        with pytest.raises(HTTPException) as exc_info:
+            await resolve_or_404(
+                "AA_CHAPTER", "template", None,
+                param_name="template_id", strict=True,
+            )
+        assert exc_info.value.status_code == 422
+        assert "template_id" in exc_info.value.detail
+        assert "namespace" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_strict_unscoped_key_raises_422(self, registry):
+        """Unscoped key + non-UUID value + no namespace → 422."""
+        set_current_identity(_make_identity(namespaces=None))
+
+        with pytest.raises(HTTPException) as exc_info:
+            await resolve_or_404("AA_CHAPTER", "template", None, strict=True)
+        assert exc_info.value.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_strict_uuid_passes_through(self, registry):
+        """A canonical UUID is self-resolving — strict must not 422 it."""
+        set_current_identity(_make_identity(namespaces=["ns-a", "ns-b"]))
+
+        uuid = "019abc12-def3-7abc-8def-123456789abc"
+        result = await resolve_or_404(uuid, "template", None, strict=True)
+        assert result == uuid
+
+    @pytest.mark.asyncio
+    async def test_strict_single_namespace_key_still_resolves(self, registry):
+        """When the namespace IS derivable, strict resolves normally (no 422)."""
+        expected_id = registry
+        set_current_identity(_make_identity(namespaces=["aa"]))
+
+        result = await resolve_or_404("AA_CHAPTER", "template", None, strict=True)
+        assert result == expected_id

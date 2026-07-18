@@ -2,7 +2,7 @@
 NATS client for publishing def-store events.
 
 Publishes events to NATS JetStream for consumption by the Reporting Sync service.
-Events are published after successful ontology operations (relationship create/delete).
+Events are published after successful ontology operations (term-relation create/delete).
 """
 
 import json
@@ -29,8 +29,8 @@ class EventType(str, Enum):
     TERM_UPDATED = "term.updated"
     TERM_DEPRECATED = "term.deprecated"
     TERM_DELETED = "term.deleted"
-    RELATIONSHIP_CREATED = "relationship.created"
-    RELATIONSHIP_DELETED = "relationship.deleted"
+    TERM_RELATION_CREATED = "term_relation.created"
+    TERM_RELATION_DELETED = "term_relation.deleted"
 
 
 async def configure_nats_client(nats_url: str) -> bool:
@@ -57,7 +57,7 @@ async def configure_nats_client(nats_url: str) -> bool:
         required_subjects = [
             "wip.terminologies.>",
             "wip.terms.>",
-            "wip.relationships.>",
+            "wip.term_relations.>",
         ]
 
         # Ensure stream exists with all def-store subjects
@@ -82,7 +82,7 @@ async def configure_nats_client(nats_url: str) -> bool:
                     "wip.files.>",
                     "wip.terminologies.>",
                     "wip.terms.>",
-                    "wip.relationships.>",
+                    "wip.term_relations.>",
                 ],
                 retention=RetentionPolicy.LIMITS,
                 max_msgs=1000000,
@@ -127,17 +127,17 @@ def is_nats_enabled() -> bool:
     return _nats_enabled
 
 
-async def publish_relationship_event(
+async def publish_term_relation_event(
     event_type: EventType,
-    relationship: dict[str, Any],
+    term_relation: dict[str, Any],
     changed_by: str | None = None,
 ) -> bool:
     """
-    Publish a relationship event to NATS.
+    Publish a term-relation event to NATS.
 
     Args:
         event_type: Type of event (created, deleted)
-        relationship: Full relationship data
+        term_relation: Full term-relation data
         changed_by: User/system that made the change
 
     Returns:
@@ -154,21 +154,21 @@ async def publish_relationship_event(
             "event_type": event_type.value,
             "timestamp": datetime.now(UTC).isoformat(),
             "changed_by": changed_by,
-            "relationship": relationship,
+            "term_relation": term_relation,
         }
 
-        # Subject: wip.relationships.<source_terminology_id>.<action>
-        terminology_id = relationship.get("source_terminology_id", "unknown")
+        # Subject: wip.term_relations.<source_terminology_id>.<action>
+        terminology_id = term_relation.get("source_terminology_id", "unknown")
         action = event_type.value.split(".")[1]
-        subject = f"wip.relationships.{terminology_id}.{action}"
+        subject = f"wip.term_relations.{terminology_id}.{action}"
 
         payload = json.dumps(event).encode()
         ack = await _jetstream.publish(subject, payload)
 
         logger.debug(
             f"Published {event_type.value} event: "
-            f"{relationship.get('source_term_id')} --{relationship.get('relationship_type')}--> "
-            f"{relationship.get('target_term_id')} (seq={ack.seq})"
+            f"{term_relation.get('source_term_id')} --{term_relation.get('relation_type')}--> "
+            f"{term_relation.get('target_term_id')} (seq={ack.seq})"
         )
         return True
 

@@ -11,13 +11,14 @@ import type {
   CreateTemplateRequest,
   UpdateTemplateRequest,
   ActivateTemplateResponse,
+  Template,
   CreateDocumentRequest,
   PatchDocumentRequest,
   FileUploadMetadata,
   FileEntity,
   UpdateFileMetadataRequest,
-  CreateRelationshipRequest,
-  DeleteRelationshipRequest,
+  CreateTermRelationRequest,
+  DeleteTermRelationRequest,
   CreateNamespaceRequest,
   UpdateNamespaceRequest,
   Namespace,
@@ -227,6 +228,47 @@ export function useActivateTemplate(
   })
 }
 
+export function useReactivateTemplate(
+  options?: Omit<UseMutationOptions<Template, Error, { id: string; version: number; namespace: string }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ id, version, ...opts }: { id: string; version: number; namespace: string }) =>
+      client.templates.reactivateTemplate(id, version, opts),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.templates.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useAddEdgeTypeEndpoints(
+  options?: Omit<
+    UseMutationOptions<
+      Template,
+      Error,
+      { id: string; namespace: string; addSourceTemplates?: string[]; addTargetTemplates?: string[] }
+    >,
+    'mutationFn'
+  >,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ id, ...opts }: { id: string; namespace: string; addSourceTemplates?: string[]; addTargetTemplates?: string[] }) =>
+      client.templates.addEdgeTypeEndpoints(id, opts),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.templates.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
 // ============================================================================
 // DOCUMENT HOOKS
 // ============================================================================
@@ -275,7 +317,17 @@ export function useUpdateDocument(
     UseMutationOptions<
       BulkResultItem,
       Error,
-      { documentId: string; patch: Record<string, unknown>; ifMatch?: number }
+      {
+        documentId: string
+        patch: Record<string, unknown>
+        ifMatch?: number
+        /**
+         * RFC 7396 merge patch for `metadata.custom`. Metadata versions
+         * like data (a metadata-only change mints a new version); pass
+         * `patch: {}` for a metadata-only update.
+         */
+        metadataPatch?: Record<string, unknown>
+      }
     >,
     'mutationFn'
   >,
@@ -285,8 +337,8 @@ export function useUpdateDocument(
   const queryClient = useQueryClient()
   return useMutation({
     ...restOptions,
-    mutationFn: ({ documentId, patch, ifMatch }) =>
-      client.documents.updateDocument(documentId, patch, { ifMatch }),
+    mutationFn: ({ documentId, patch, ifMatch, metadataPatch }) =>
+      client.documents.updateDocument(documentId, patch, { ifMatch, metadataPatch }),
     onSuccess: (...args) => {
       const variables = args[1]
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.detail(variables.documentId) })
@@ -355,14 +407,15 @@ export function useArchiveDocument(
 // ============================================================================
 
 export function useUploadFile(
-  options?: Omit<UseMutationOptions<FileEntity, Error, { file: File | Blob; filename?: string; metadata?: FileUploadMetadata }>, 'mutationFn'>,
+  options?: Omit<UseMutationOptions<FileEntity, Error, { file: File | Blob; filename?: string; metadata?: FileUploadMetadata; namespace?: string }>, 'mutationFn'>,
 ) {
   const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
     ...restOptions,
-    mutationFn: ({ file, filename, metadata }) => client.files.uploadFile(file, filename, metadata),
+    mutationFn: ({ file, filename, metadata, namespace }) =>
+      client.files.uploadFile(file, filename, metadata, namespace),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.files.all })
       onSuccess?.(...args)
@@ -436,19 +489,26 @@ export function useHardDeleteFile(
 }
 
 // ============================================================================
-// ONTOLOGY / RELATIONSHIP HOOKS
+// ONTOLOGY / TERM-RELATION HOOKS
 // ============================================================================
+// The platform renamed this surface in WIP commit 2eeb872 (Phase 0 of
+// the document-relationships work, 2026-04-25): "relationship" now
+// refers to document-to-document edges; "term-relation" refers to the
+// term-ontology edges (is_a, part_of, ...). @wip/client@0.13.0 carried
+// the rename; @wip/react was the trailing gap (CASE-167) and follows
+// it here. No backward-compat aliases — fresh-instance restart is the
+// recovery path.
 
-export function useCreateRelationships(
-  options?: Omit<UseMutationOptions<BulkResponse, Error, { items: CreateRelationshipRequest[]; namespace: string }>, 'mutationFn'>,
+export function useCreateTermRelations(
+  options?: Omit<UseMutationOptions<BulkResponse, Error, { items: CreateTermRelationRequest[]; namespace: string }>, 'mutationFn'>,
 ) {
   const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
     ...restOptions,
-    mutationFn: ({ items, namespace }: { items: CreateRelationshipRequest[]; namespace: string }) =>
-      client.defStore.createRelationships(items, namespace),
+    mutationFn: ({ items, namespace }: { items: CreateTermRelationRequest[]; namespace: string }) =>
+      client.defStore.createTermRelations(items, namespace),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.terms.all })
       onSuccess?.(...args)
@@ -456,16 +516,16 @@ export function useCreateRelationships(
   })
 }
 
-export function useDeleteRelationships(
-  options?: Omit<UseMutationOptions<BulkResponse, Error, { items: DeleteRelationshipRequest[]; namespace: string }>, 'mutationFn'>,
+export function useDeleteTermRelations(
+  options?: Omit<UseMutationOptions<BulkResponse, Error, { items: DeleteTermRelationRequest[]; namespace: string }>, 'mutationFn'>,
 ) {
   const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
     ...restOptions,
-    mutationFn: ({ items, namespace }: { items: DeleteRelationshipRequest[]; namespace: string }) =>
-      client.defStore.deleteRelationships(items, namespace),
+    mutationFn: ({ items, namespace }: { items: DeleteTermRelationRequest[]; namespace: string }) =>
+      client.defStore.deleteTermRelations(items, namespace),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.terms.all })
       onSuccess?.(...args)

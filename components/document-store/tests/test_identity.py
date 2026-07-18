@@ -177,3 +177,14 @@ class TestIdentityService:
         hash_value = IdentityService.compute_hash(values)
         assert hash_value is not None
         assert len(hash_value) == 64
+
+    def test_matches_published_doc_digest(self):
+        """Identity hash must match the published worked example in
+        docs/data-models.md (CASE-401 / CASE-402). If this fails, either the
+        algorithm changed (update the doc) or IdentityService drifted from
+        the canonical wip_auth.document_identity module (fix the wrapper)."""
+        data = {"first_name": "Alice", "email": "alice@example.com"}
+        digest = IdentityService.compute_identity_hash(data, ["email"])
+        assert digest == (
+            "9327398c303b9282f3826f9d3a65a17c63d720e4ce06651dad2b3edfa2892697"
+        )

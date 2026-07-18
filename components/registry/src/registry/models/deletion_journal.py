@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal
 
 from beanie import Document
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pymongo import IndexModel
 
 
@@ -23,10 +23,28 @@ class DeletionStep(BaseModel):
     detail: str | None = None
     filter: dict[str, Any] | None = None
     storage_keys: list[str] | None = None
-    status: Literal["pending", "completed", "failed"] = "pending"
+    # completed_with_errors: the step ran to completion under best-effort
+    # semantics (MinIO/PostgreSQL cleanup must not block namespace deletion —
+    # MongoDB is the system of record) but swallowed a failure, so data may
+    # remain in that store. error carries the reason. A resumed journal
+    # re-runs such steps (deletes are idempotent), unlike "completed" ones.
+    status: Literal[
+        "pending", "completed", "completed_with_errors", "failed"
+    ] = "pending"
     deleted_count: int = 0
     error: str | None = None
     completed_at: datetime | None = None
+
+    @field_validator("deleted_count", mode="before")
+    @classmethod
+    def _null_count_reads_as_zero(cls, v: Any) -> Any:
+        """Journals persisted while reporting-sync returned a null row count
+        carry ``deleted_count: null`` in MongoDB. The journal is the audit
+        trail and completed journals are never deleted, so those documents
+        must stay readable — hydrating them to 0 beats a 500 on every
+        deletion-status read. The write path never produces None anymore
+        (the executor maps a null upstream count to 0 + step.error)."""
+        return 0 if v is None else v
 
 
 class InboundReference(BaseModel):
@@ -47,7 +65,14 @@ class DeletionJournal(Document):
     """
 
     namespace: str = Field(..., description="Namespace being deleted")
-    status: Literal["in_progress", "completed", "failed"] = "in_progress"
+    # completed_with_warnings: every step executed, but at least one
+    # best-effort step (MinIO/PostgreSQL) degraded — data may remain in a
+    # secondary store. Terminal, like "completed"; the per-step error fields
+    # say what degraded. Operators must not read bare "completed" semantics
+    # into it.
+    status: Literal[
+        "in_progress", "completed", "completed_with_warnings", "failed"
+    ] = "in_progress"
     requested_by: str | None = None
     requested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     completed_at: datetime | None = None
@@ -55,6 +80,16 @@ class DeletionJournal(Document):
     broken_references: list[InboundReference] = Field(default_factory=list)
     steps: list[DeletionStep] = Field(default_factory=list)
     summary: dict[str, int] | None = None
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _null_summary_counts_read_as_zero(cls, v: Any) -> Any:
+        """Same tolerance as DeletionStep.deleted_count, for the summary dict:
+        a stored ``postgres_rows: null`` must hydrate (as 0) rather than make
+        the journal unreadable. New writes never contain None values."""
+        if isinstance(v, dict):
+            return {k: (0 if val is None else val) for k, val in v.items()}
+        return v
 
     class Settings:
         name = "namespace_deletions"

@@ -31,12 +31,14 @@ Templates define `identity_fields` (e.g., `["email"]`). When you create a docume
 // First call: creates version 1
 await client.documents.createDocument({
   template_id: 'PATIENT_RECORD',
+  namespace: 'wip',
   data: { email: 'jane@example.com', name: 'Jane' },
 })
 
 // Second call with same email: creates version 2 of the SAME document (NOT a new document)
 await client.documents.createDocument({
   template_id: 'PATIENT_RECORD',
+  namespace: 'wip',
   data: { email: 'jane@example.com', name: 'Jane Doe' },  // name changed
 })
 ```
@@ -63,7 +65,7 @@ const docs = await client.documents.listDocuments({
 
 ### Soft Delete: Nothing Is Really Deleted
 
-All delete operations set `status: "inactive"` — records remain in the database. The only exception is `files.hardDeleteFile()` which permanently removes the file from MinIO storage.
+All delete operations default to setting `status: "inactive"` — records remain in the database. The exceptions are opt-in: `files.hardDeleteFile()` permanently removes the file from MinIO storage, and `deleteDocument` / `deleteTemplate` / `deleteTerminology` / `deleteTerm` accept a `hardDelete` option (subject to the namespace's `deletion_mode` and, for terms, the terminology's `mutable` flag).
 
 ### Retry Behavior
 
@@ -88,6 +90,7 @@ const terminologies = await client.defStore.listTerminologies({ status: 'active'
 const result = await client.defStore.createTerminology({
   value: 'GENDER',
   label: 'Gender',
+  namespace: 'wip',
 })
 console.log(result.id) // UUID7
 
@@ -95,7 +98,7 @@ console.log(result.id) // UUID7
 const bulkResult = await client.defStore.createTerms('GENDER', [
   { value: 'MALE', label: 'Male' },
   { value: 'FEMALE', label: 'Female' },
-])
+], { namespace: 'wip' })
 console.log(bulkResult.succeeded) // 2
 ```
 
@@ -153,7 +156,7 @@ client.setAuth(new OidcAuthProvider(() => oidcManager.getAccessToken()))
 
 The `OidcAuthProvider` takes a callback, not a static token. It calls your function on every request, so token refresh is handled by your OIDC library. The provider has **zero OIDC dependencies** — bring your own library (oidc-client-ts, Auth0, etc.).
 
-API key auth headers are cached internally for performance. OIDC headers call the callback fresh each time.
+API key auth headers are cached internally for performance (the key is static; the cache clears on a 401/403 or `setAuth()`). OIDC headers call your `getToken` callback fresh on every request, so a token your OIDC library rotates is always current — the transport never pins a stale bearer.
 
 ---
 
@@ -195,13 +198,14 @@ const result = await client.defStore.createTerminology({
   value: 'COUNTRY',
   label: 'Country',
   description: 'ISO 3166 countries',
+  namespace: 'wip',
 })
 // result: { index: 0, status: "created", id: "...", value: "COUNTRY" }
 
 // Bulk create (returns BulkResponse)
 const bulk = await client.defStore.createTerminologies([
-  { value: 'GENDER', label: 'Gender' },
-  { value: 'SALUTATION', label: 'Salutation' },
+  { value: 'GENDER', label: 'Gender', namespace: 'wip' },
+  { value: 'SALUTATION', label: 'Salutation', namespace: 'wip' },
 ])
 
 // Update
@@ -230,10 +234,11 @@ await client.defStore.createTerm('COUNTRY', {
   value: 'US',
   label: 'United States',
   aliases: ['USA', 'U.S.A.'],
-})
+}, { namespace: 'wip' })
 
 // Bulk create terms with tuning options
 const bulk = await client.defStore.createTerms('COUNTRY', terms, {
+  namespace: 'wip',
   batch_size: 1000,             // items per batch (default: server-side)
   registry_batch_size: 50,      // registry calls per sub-batch
 })
@@ -288,7 +293,7 @@ const imported = await client.defStore.importTerminology({
 // Export
 const exported = await client.defStore.exportTerminology('COUNTRY', {
   format: 'json',              // or 'csv'
-  includeRelationships: true,
+  includeRelations: true,
   includeInactive: false,
   includeMetadata: true,
 })
@@ -301,40 +306,49 @@ const ontology = await client.defStore.importOntology(oboGraphJson, {
   batch_size: 1000,
   registry_batch_size: 50,
 })
-// ontology.terms.created, ontology.relationships.created, ontology.elapsed_seconds
+// ontology.terms.created, ontology.relations.created, ontology.elapsed_seconds
 ```
 
-### Ontology Relationships
+### Ontology Term Relations
+
+Term-ontology edges are "relations" (`relation_type`); document-to-document edges are "relationships" — different APIs, deliberately distinct names.
 
 ```typescript
-// List relationships for a term
-const rels = await client.defStore.listRelationships({
+// List relations for a term
+const rels = await client.defStore.listTermRelations({
   term_id: 'ALZHEIMERS_DISEASE',
   direction: 'outgoing',        // 'incoming', 'outgoing', or 'both'
-  relationship_type: 'is_a',
+  relation_type: 'is_a',
 })
 
-// List all relationships across all terminologies
-const allRels = await client.defStore.listAllRelationships({
-  relationship_type: 'is_a',
+// List all relations across all terminologies
+const allRels = await client.defStore.listAllTermRelations({
+  relation_type: 'is_a',
   status: 'active',
   page: 1,
   page_size: 50,
 })
 
-// Create relationships
-await client.defStore.createRelationships([
-  { source_term_id: 'ALZHEIMERS_DISEASE', target_term_id: 'NEUROLOGY', relationship_type: 'is_a' },
-])
+// Create relations (bulk-first; namespace is required)
+await client.defStore.createTermRelations([
+  { source_term_id: 'ALZHEIMERS_DISEASE', target_term_id: 'NEUROLOGY', relation_type: 'is_a' },
+], 'wip')
 
 // Traversal
 const ancestors = await client.defStore.getAncestors('ALZHEIMERS_DISEASE', {
-  relationship_type: 'is_a',
+  relation_type: 'is_a',
   max_depth: 10,
 })
 const descendants = await client.defStore.getDescendants('NEUROLOGY', { max_depth: 3 })
-const parents = await client.defStore.getParents('ALZHEIMERS_DISEASE')
-const children = await client.defStore.getChildren('NEUROLOGY')
+
+// Direct neighbors (depth 1 by definition — no max_depth).
+// relation_type defaults to is_a on the server; pass another type to
+// follow part_of / regulates / ... links instead.
+const parents = await client.defStore.getParents('ALZHEIMERS_DISEASE', { namespace: 'wip' })
+const children = await client.defStore.getChildren('NEUROLOGY', {
+  relation_type: 'part_of',
+  namespace: 'wip',
+})
 ```
 
 ---
@@ -367,12 +381,13 @@ const v2 = await client.templates.getTemplateByValueAndVersion('PATIENT_RECORD',
 
 // Raw variants (without resolving inheritance)
 const raw = await client.templates.getTemplateRaw('PATIENT_RECORD')
-const rawByValue = await client.templates.getTemplateByValueRaw('PATIENT_RECORD')
+const rawByValue = await client.templates.getTemplateByValueRaw('PATIENT_RECORD', 'wip')
 
 // Create a template
 await client.templates.createTemplate({
   value: 'LAB_RESULT',
   label: 'Lab Result',
+  namespace: 'wip',
   identity_fields: ['patient_email', 'test_date'],
   fields: [
     { name: 'patient_email', label: 'Patient Email', type: 'string',
@@ -411,11 +426,12 @@ const allDescendants = await client.templates.getDescendants('BASE_RECORD')
 await client.templates.createTemplate({
   value: 'DRAFT_TPL',
   label: 'Draft',
+  namespace: 'wip',
   status: 'draft',              // skip reference validation
   fields: [/* ... */],
 })
-await client.templates.activateTemplate('DRAFT_TPL', { dry_run: true })  // preview
-await client.templates.activateTemplate('DRAFT_TPL')                     // activate
+await client.templates.activateTemplate('DRAFT_TPL', { namespace: 'wip', dry_run: true })  // preview
+await client.templates.activateTemplate('DRAFT_TPL', { namespace: 'wip' })                 // activate
 ```
 
 ### Field Types
@@ -511,6 +527,17 @@ const results = await client.documents.queryDocuments({
 
 **Available filter operators:** `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `nin`, `exists`, `regex`.
 
+**Scoping reads to a namespace.** Under a **multi-namespace key** (e.g. the install admin key), a value-form `template_id` / `template_value` has no namespace context to resolve against — the query then returns an explicit 422 (a loud failure; it used to be a silent `total: 0`). Pass the namespace as the second argument; it rides the `?namespace=` query param (it cannot go in the body — that is rejected `extra_forbidden`):
+
+```typescript
+const results = await client.documents.queryDocuments(
+  { template_value: 'PATIENT_RECORD', filters: [] },
+  'my-namespace',
+)
+```
+
+`getDocument(id, version?, namespace?)` and `getDocumentByIdentity(hash, includeInactive?, namespace?)` take the same optional trailing argument. A **single-namespace key** derives the namespace automatically, so you can omit it.
+
 ### Table View & CSV Export
 
 ```typescript
@@ -529,6 +556,34 @@ const csv = await client.documents.exportTableCsv('PATIENT_RECORD', {
   status: 'active',
   include_metadata: true,
 })
+```
+
+### Migrating Documents Across Template Versions
+
+A validated, identity-preserving bulk re-pin of a cohort from one template
+version to another. The two versions must declare the same `identity_fields`
+(an identity-changing move is a fork, not a migrate, and is rejected).
+Dry-run first — a dry-run with `failed === 0` guarantees a successful apply,
+barring concurrent writes:
+
+```typescript
+const preview = await client.documents.migrateDocuments({
+  template_id: 'PATIENT_RECORD',   // UUID or registered value/synonym
+  from_version: 1,
+  to_version: 2,
+  // dry_run defaults to true
+})
+
+if (preview.failed === 0) {
+  await client.documents.migrateDocuments({
+    template_id: 'PATIENT_RECORD',
+    from_version: 1,
+    to_version: 2,
+    dry_run: false,
+  })
+}
+// Per-document outcome in results[i]: status 'updated' | 'error'
+// (error_code 'validation_failed' | 'identity_fields_changed')
 ```
 
 ---
@@ -624,9 +679,11 @@ const results = await client.registry.unifiedSearch({
   namespaces: ['wip'],
   entity_types: ['documents'],
 })
-const searchResults = await client.registry.searchEntries('patient record', {
+// Breaking in 0.28.0: returns { hits, total } (RegistryByTermHit[]), adds limit
+const { hits, total } = await client.registry.searchEntries('patient record', {
   namespaces: ['wip'],
   entityTypes: ['documents'],
+  limit: 20,
 })
 
 // Synonyms: map multiple keys to the same entity
@@ -713,7 +770,7 @@ All errors extend `WipError`:
 | Error Class | HTTP Status | When |
 |-------------|------------|------|
 | `WipNotFoundError` | 404 | Entity doesn't exist |
-| `WipValidationError` | 400, 422 | Invalid request data |
+| `WipValidationError` | 400, 422 | Invalid request data (note: `err.statusCode` always reads 422, even when the server returned 400) |
 | `WipConflictError` | 409 | Conflict (rare — most conflicts are per-item in BulkResponse) |
 | `WipAuthError` | 401, 403 | Bad/missing credentials or insufficient permissions |
 | `WipServerError` | 5xx | Server-side error |
@@ -888,9 +945,10 @@ import type {
 
   // Registry
   Namespace, RegistryEntryFull, RegistryLookupResponse, RegistrySearchResponse,
+  RegistryByTermHit,
 
   // Ontology
-  Relationship, TraversalResponse,
+  TermRelation, TermRelationListResponse, CreateTermRelationRequest, TraversalResponse,
 
   // Reporting
   IntegrityCheckResult, SearchResponse, ActivityResponse,

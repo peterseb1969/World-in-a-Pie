@@ -5,7 +5,7 @@ import { WipProvider } from '../src/provider'
 import { useTerminologies, useTerminology } from '../src/hooks/use-terminologies'
 import { useTerms, useTerm } from '../src/hooks/use-terms'
 import { useTemplates, useTemplate } from '../src/hooks/use-templates'
-import { useDocuments, useDocument } from '../src/hooks/use-documents'
+import { useDocuments, useDocument, useTableView } from '../src/hooks/use-documents'
 import { useFiles, useFile } from '../src/hooks/use-files'
 import {
   useCreateTerminology,
@@ -17,6 +17,8 @@ import {
   useUpdateDocuments,
   useDeleteDocument,
   useUploadFile,
+  useCreateTermRelations,
+  useDeleteTermRelations,
 } from '../src/hooks/use-mutations'
 import { wipKeys } from '../src/utils/keys'
 import type { WipClient } from '@wip/client'
@@ -37,6 +39,8 @@ function createMockClient() {
       getTerm: vi.fn().mockResolvedValue({ entity_id: 'term1', value: 'Term' }),
       createTerm: vi.fn().mockResolvedValue({ entity_id: 'term1', status: 'created' }),
       deleteTerm: vi.fn().mockResolvedValue({ entity_id: 'term1', status: 'deleted' }),
+      createTermRelations: vi.fn().mockResolvedValue({ results: [], total: 0, succeeded: 0, failed: 0 }),
+      deleteTermRelations: vi.fn().mockResolvedValue({ results: [], total: 0, succeeded: 0, failed: 0 }),
     },
     templates: {
       listTemplates: vi.fn().mockResolvedValue({ items: [], total: 0 }),
@@ -49,6 +53,11 @@ function createMockClient() {
       getDocument: vi.fn().mockResolvedValue({ entity_id: 'doc1', data: {} }),
       queryDocuments: vi.fn().mockResolvedValue({ items: [], total: 0 }),
       getVersions: vi.fn().mockResolvedValue({ versions: [] }),
+      getTableView: vi.fn().mockResolvedValue({
+        columns: [{ name: 'field_a', label: 'Field A' }],
+        rows: [{ field_a: 'v1' }],
+        total: 1,
+      }),
       createDocument: vi.fn().mockResolvedValue({ entity_id: 'doc1', status: 'created' }),
       createDocuments: vi.fn().mockResolvedValue({ items: [] }),
       updateDocument: vi.fn().mockResolvedValue({ index: 0, status: 'updated', document_id: 'doc1', version: 2 }),
@@ -298,6 +307,37 @@ describe('Query hooks', () => {
     })
   })
 
+  describe('useTableView', () => {
+    it('calls client.documents.getTableView with templateId and params', async () => {
+      const { Wrapper } = createWrapper(mockClient)
+      const params = { status: 'active', page: 1 }
+      const { result } = renderHook(() => useTableView('tpl1', params), { wrapper: Wrapper })
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true))
+      expect(mockClient.documents.getTableView).toHaveBeenCalledWith('tpl1', params)
+      expect(result.current.data).toMatchObject({ total: 1 })
+    })
+
+    it('is disabled when templateId is empty string', () => {
+      const { Wrapper } = createWrapper(mockClient)
+      const { result } = renderHook(() => useTableView(''), { wrapper: Wrapper })
+
+      expect(result.current.fetchStatus).toBe('idle')
+      expect(mockClient.documents.getTableView).not.toHaveBeenCalled()
+    })
+
+    it('uses the tableView query key so external invalidation reaches it', async () => {
+      const { Wrapper, queryClient } = createWrapper(mockClient)
+      const params = { status: 'active' }
+      const { result } = renderHook(() => useTableView('tpl1', params), { wrapper: Wrapper })
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true))
+      expect(
+        queryClient.getQueryData(wipKeys.documents.tableView('tpl1', params)),
+      ).toBeDefined()
+    })
+  })
+
   // ---- Files ----
 
   describe('useFiles', () => {
@@ -539,7 +579,15 @@ describe('Mutation hooks', () => {
         result.current.mutateAsync({ file, filename: 'test.txt', metadata: metadata as any }),
       )
 
-      expect(mockClient.files.uploadFile).toHaveBeenCalledWith(file, 'test.txt', metadata)
+      // The hook's mutationFn destructures `{ file, filename, metadata, namespace }`
+      // and forwards all four positionally — when the caller omits namespace it
+      // arrives as `undefined`, which still appears in the spy's call record.
+      expect(mockClient.files.uploadFile).toHaveBeenCalledWith(
+        file,
+        'test.txt',
+        metadata,
+        undefined,
+      )
     })
 
     it('invalidates files cache on success', async () => {
@@ -552,6 +600,66 @@ describe('Mutation hooks', () => {
 
       expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: wipKeys.files.all,
+      })
+    })
+  })
+
+  // Renamed from useCreateRelationships / useDeleteRelationships in the
+  // Phase-0 ontology rename wave (CASE-67 for @wip/client; CASE-167 for
+  // @wip/react). Tests pinned so a future rename cannot silently break
+  // the contract this hook exposes to consumers.
+  describe('useCreateTermRelations', () => {
+    it('calls client.defStore.createTermRelations with items + namespace', async () => {
+      const { Wrapper } = createWrapper(mockClient)
+      const { result } = renderHook(() => useCreateTermRelations(), { wrapper: Wrapper })
+
+      const items = [{ source_term_id: 's', target_term_id: 't', relation_type: 'is_a' }]
+      await act(() =>
+        result.current.mutateAsync({ items: items as any, namespace: 'wip' }),
+      )
+
+      expect(mockClient.defStore.createTermRelations).toHaveBeenCalledWith(items, 'wip')
+    })
+
+    it('invalidates terms cache on success', async () => {
+      const { Wrapper, queryClient } = createWrapper(mockClient)
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+      const { result } = renderHook(() => useCreateTermRelations(), { wrapper: Wrapper })
+
+      await act(() =>
+        result.current.mutateAsync({ items: [] as any, namespace: 'wip' }),
+      )
+
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: wipKeys.terms.all,
+      })
+    })
+  })
+
+  describe('useDeleteTermRelations', () => {
+    it('calls client.defStore.deleteTermRelations with items + namespace', async () => {
+      const { Wrapper } = createWrapper(mockClient)
+      const { result } = renderHook(() => useDeleteTermRelations(), { wrapper: Wrapper })
+
+      const items = [{ source_term_id: 's', target_term_id: 't', relation_type: 'is_a' }]
+      await act(() =>
+        result.current.mutateAsync({ items: items as any, namespace: 'wip' }),
+      )
+
+      expect(mockClient.defStore.deleteTermRelations).toHaveBeenCalledWith(items, 'wip')
+    })
+
+    it('invalidates terms cache on success', async () => {
+      const { Wrapper, queryClient } = createWrapper(mockClient)
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+      const { result } = renderHook(() => useDeleteTermRelations(), { wrapper: Wrapper })
+
+      await act(() =>
+        result.current.mutateAsync({ items: [] as any, namespace: 'wip' }),
+      )
+
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: wipKeys.terms.all,
       })
     })
   })

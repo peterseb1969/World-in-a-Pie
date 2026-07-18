@@ -10,7 +10,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -49,12 +49,12 @@ def count_shellcheck(raw_dir: Path) -> int:
 
 def count_vulture(raw_dir: Path) -> int:
     text = load_text(raw_dir / "vulture.txt")
-    return len([l for l in text.splitlines() if l.strip()]) if text else 0
+    return len([line for line in text.splitlines() if line.strip()]) if text else 0
 
 
 def count_ts_prune(raw_dir: Path) -> int:
     text = load_text(raw_dir / "ts-prune.txt")
-    return len([l for l in text.splitlines() if l.strip()]) if text else 0
+    return len([line for line in text.splitlines() if line.strip()]) if text else 0
 
 
 def count_mypy(raw_dir: Path) -> tuple[int, dict]:
@@ -80,6 +80,25 @@ def count_eslint(raw_dir: Path) -> int:
 
 def get_api_consistency(raw_dir: Path) -> dict:
     return load_json(raw_dir / "api-consistency.json", {"total_violations": 0, "services": {}})
+
+
+def count_api_consistency(raw_dir: Path) -> int:
+    """Total violation count for baseline + CI gating (CASE-400).
+
+    Distinct from `get_api_consistency` which returns the full report dict
+    (used by the report-rendering path). This is the gate-side reader."""
+    data = load_json(raw_dir / "api-consistency.json", {"total_violations": 0})
+    return int(data.get("total_violations", 0))
+
+
+def count_radon_cc_high(raw_dir: Path) -> int:
+    """Count of functions with cyclomatic complexity rank C or worse — i.e.,
+    the high-complexity tail the audit's REPORT.md surfaces as a "Top N"
+    block (CASE-400). Radon's rank scale: A (1-5), B (6-10), C (11-20),
+    D (21-30), E (31-40), F (41+). Anything C+ is the gate-relevant set."""
+    return sum(
+        1 for item in get_radon(raw_dir) if item["rank"] not in ("A", "B")
+    )
 
 
 def get_radon(raw_dir: Path) -> list:
@@ -152,7 +171,7 @@ def delta_str(count, baseline_count) -> str:
 def generate_report(raw_dir: Path, mode: str, baseline: dict | None) -> str:
     """Generate the REPORT.md content."""
     sha = get_git_sha()
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     dims = baseline.get("dimensions", {}) if baseline else {}
 
     # Gather counts
@@ -244,7 +263,7 @@ def generate_report(raw_dir: Path, mode: str, baseline: dict | None) -> str:
         w("")
         # Show top errors
         all_errors = []
-        for comp, data in mypy_details.items():
+        for _comp, data in mypy_details.items():
             for err in data.get("errors", [])[:5]:
                 all_errors.append(err)
         if all_errors:
@@ -326,20 +345,47 @@ def generate_report(raw_dir: Path, mode: str, baseline: dict | None) -> str:
     else:
         w("### Python")
         w("")
+        import glob
         if coverage:
             w("| Component | Stmts | Miss | Cover% |")
             w("|-----------|-------|------|--------|")
             for c in coverage:
                 w(f"| {c['component']} | {c['statements']} | {c['missing']} | {c['coverage']:.1f}% |")
         else:
-            w("No coverage data available (requires MongoDB for service tests).")
+            # Distinguish failure modes per CASE-332 Fix C.
+            # If pytest-cov-*.stderr files exist with non-empty content,
+            # Step 9 invoked pytest but it errored out (most often: missing
+            # pytest-cov plugin pre-CASE-326 fix, or test-container/fixture
+            # failures). Otherwise: Step 9 never produced output.
+            stderr_files = list(glob.glob(str(raw_dir / "pytest-cov-*.stderr")))
+            failed_components = [
+                os.path.basename(f).replace("pytest-cov-", "").replace(".stderr", "")
+                for f in stderr_files
+                if os.path.getsize(f) > 0
+            ]
+            if failed_components:
+                w(f"**Python coverage failed for {len(failed_components)} component(s):** "
+                  f"{', '.join(failed_components)}.")
+                w("")
+                w("See `raw/pytest-cov-<component>.stderr` for the per-component failure detail. "
+                  "Common causes:")
+                w("- `pytest-cov` plugin not installed (re-run with `--install-deps`)")
+                w("- Test containers not provisioned (Step 9 delegates to `wip-test.sh` which "
+                  "auto-starts test-mongo/test-postgres/test-nats — if delegation is bypassed, "
+                  "fixtures error at setup)")
+                w("- Component-specific test failures (run `bash scripts/wip-test.sh <component>` "
+                  "to see them in isolation)")
+            else:
+                w("No coverage data available. Step 9 may not have run (check audit log).")
         w("")
 
         w("### TypeScript")
         w("")
-        # Check for vitest coverage
+        # Read coverage-summary.json (vitest's `--coverage.reporter=json-summary`
+        # output). The audit script writes both `coverage-final.json` (per-file
+        # detail) and `coverage-summary.json` (aggregated totals); we use the
+        # summary here. CASE-333.
         has_ts_cov = False
-        import glob
         for f in glob.glob(str(raw_dir / "vitest-cov-*" / "coverage-summary.json")):
             has_ts_cov = True
             lib_name = Path(f).parent.name.replace("vitest-cov-", "")
@@ -349,7 +395,23 @@ def generate_report(raw_dir: Path, mode: str, baseline: dict | None) -> str:
             branches = totals.get("branches", {})
             w(f"| {lib_name} | Stmts: {stmts.get('pct', 0):.1f}% | Branches: {branches.get('pct', 0):.1f}% |")
         if not has_ts_cov:
-            w("No TypeScript coverage data available.")
+            # Same failure-mode distinction as Python. If `coverage-final.json`
+            # exists but `coverage-summary.json` doesn't, Step 10 ran but
+            # didn't request the summary reporter (pre-CASE-333 fix).
+            final_files = list(glob.glob(str(raw_dir / "vitest-cov-*" / "coverage-final.json")))
+            if final_files:
+                libs_with_partial = [
+                    Path(f).parent.name.replace("vitest-cov-", "")
+                    for f in final_files
+                ]
+                w(f"**TypeScript coverage partial:** `coverage-final.json` present for "
+                  f"{', '.join(libs_with_partial)} but `coverage-summary.json` missing.")
+                w("")
+                w("This indicates Step 10 didn't request the `json-summary` reporter "
+                  "(CASE-333 Fix A — should be fixed in audit script). Per-file detail "
+                  "is in `raw/vitest-cov-<lib>/coverage-final.json`.")
+            else:
+                w("No TypeScript coverage data available. Step 10 may not have run.")
     w("")
 
     # Section 5: Complexity
@@ -453,7 +515,7 @@ def main():
     if args.update_baseline and args.baseline:
         dims = baseline.get("dimensions", {}) if baseline else {}
         new_baseline = {
-            "generated": datetime.now(timezone.utc).isoformat(),
+            "generated": datetime.now(UTC).isoformat(),
             "commit": get_git_sha(),
             "dimensions": {
                 "ruff": {"count": count_ruff(raw_dir)},
@@ -463,6 +525,11 @@ def main():
                 "shellcheck": {"count": count_shellcheck(raw_dir)},
                 "vue-tsc": {"count": count_vue_tsc(raw_dir)},
                 "ts-prune": {"count": count_ts_prune(raw_dir)},
+                # CASE-400: api-consistency + radon CC>=C now gated. The
+                # audit always measured these; the baseline schema didn't
+                # include them, so regressions slid silently.
+                "api-consistency": {"count": count_api_consistency(raw_dir)},
+                "radon-cc-c-plus": {"count": count_radon_cc_high(raw_dir)},
             },
         }
         Path(args.baseline).write_text(json.dumps(new_baseline, indent=2) + "\n")
@@ -480,6 +547,9 @@ def main():
             ("shellcheck", count_shellcheck(raw_dir)),
             ("vue-tsc", count_vue_tsc(raw_dir)),
             ("ts-prune", count_ts_prune(raw_dir)),
+            # CASE-400: gate the two previously-measured-but-ungated dimensions.
+            ("api-consistency", count_api_consistency(raw_dir)),
+            ("radon-cc-c-plus", count_radon_cc_high(raw_dir)),
         ]
         for key, current in checks:
             bl = dims.get(key, {}).get("count")
@@ -487,7 +557,7 @@ def main():
                 failures.append(f"{key}: {current} (baseline: {bl})")
 
         if failures:
-            print(f"CI FAILURE — regressions detected:", file=sys.stderr)
+            print("CI FAILURE — regressions detected:", file=sys.stderr)
             for f in failures:
                 print(f"  - {f}", file=sys.stderr)
             sys.exit(1)

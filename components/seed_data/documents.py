@@ -7,8 +7,8 @@ helpers for generating batches of documents.
 from __future__ import annotations
 
 from typing import Any
-from . import generators
 
+from . import generators
 
 # Document counts per template for each profile
 DOCUMENT_PROFILES = {
@@ -119,6 +119,35 @@ def get_total_documents(profile: str) -> int:
     """Get total document count for a profile."""
     counts = get_document_counts(profile)
     return sum(counts.values())
+
+
+# Relationship-document counts per template for each profile. Kept
+# separate from DOCUMENT_PROFILES because relationship documents need
+# real source/target document_ids and are seeded by a dedicated phase
+# after entity documents land. See seed_comprehensive.py:seed_relationship_documents.
+RELATIONSHIP_PROFILES = {
+    "minimal": {
+        "EMPLOYEE_MANAGES": 5,
+        "ORDER_CONTAINS": 10,
+    },
+    "standard": {
+        "EMPLOYEE_MANAGES": 25,
+        "ORDER_CONTAINS": 100,
+    },
+    "full": {
+        "EMPLOYEE_MANAGES": 80,
+        "ORDER_CONTAINS": 400,
+    },
+    "performance": {
+        "EMPLOYEE_MANAGES": 1500,
+        "ORDER_CONTAINS": 8000,
+    },
+}
+
+
+def get_relationship_counts(profile: str) -> dict[str, int]:
+    """Get relationship-document counts per template for a profile."""
+    return RELATIONSHIP_PROFILES.get(profile, RELATIONSHIP_PROFILES["standard"])
 
 
 def generate_documents_for_template(

@@ -1,12 +1,12 @@
 """Unit tests for ReplayService — mocks NATS and MongoDB."""
 
 import asyncio
-from unittest.mock import AsyncMock, patch, MagicMock, PropertyMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from document_store.services.replay_service import ReplayService
 from document_store.models.replay import ReplayStatus
+from document_store.services.replay_service import ReplayService
 
 
 @pytest.mark.asyncio
@@ -50,7 +50,7 @@ async def test_cancel_unknown_session():
 @pytest.mark.asyncio
 async def test_pause_resume_lifecycle():
     """Test pause/resume on a manually injected session."""
-    from document_store.models.replay import ReplaySession, ReplayFilter
+    from document_store.models.replay import ReplayFilter, ReplaySession
 
     service = ReplayService()
     session = ReplaySession(
@@ -91,7 +91,7 @@ async def test_pause_resume_lifecycle():
 @pytest.mark.asyncio
 async def test_cancel_running_session():
     """Cancel a running session cleans up."""
-    from document_store.models.replay import ReplaySession, ReplayFilter
+    from document_store.models.replay import ReplayFilter, ReplaySession
 
     service = ReplayService()
     session = ReplaySession(
@@ -127,7 +127,7 @@ async def test_cancel_running_session():
 @pytest.mark.asyncio
 async def test_cancel_completed_session():
     """Cancel a completed session still marks as cancelled."""
-    from document_store.models.replay import ReplaySession, ReplayFilter
+    from document_store.models.replay import ReplayFilter, ReplaySession
 
     service = ReplayService()
     session = ReplaySession(

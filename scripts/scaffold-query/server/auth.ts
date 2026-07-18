@@ -29,6 +29,12 @@ const ALLOWED_GROUPS = process.env.ALLOWED_GROUPS
   ? process.env.ALLOWED_GROUPS.split(',').map(g => g.trim()).filter(Boolean)
   : []
 
+/** Comma-separated Dex groups treated as admins for privileged config endpoints
+ *  (e.g. setting the runtime Anthropic key — CASE-509). Defaults to wip-admins. */
+const ADMIN_GROUPS = process.env.ADMIN_GROUPS
+  ? process.env.ADMIN_GROUPS.split(',').map(g => g.trim()).filter(Boolean)
+  : ['wip-admins']
+
 /** Public paths that skip authentication */
 const PUBLIC_PATHS = ['/api/health', '/auth/callback', '/auth/logout']
 
@@ -116,6 +122,29 @@ export function requireAuth(): RequestHandler {
       const authUrl = `${oidcConfig!.serverMetadata().authorization_endpoint}?${params}`
       res.redirect(authUrl)
     }).catch(next)
+  }
+}
+
+/**
+ * Require the caller to be an administrator (member of ADMIN_GROUPS) for
+ * privileged config endpoints. Reads groups from the upstream gateway headers
+ * (x-wip-groups) when present, else the OIDC session. Dev mode — no OIDC and no
+ * gateway user — is open, mirroring requireAuth's pass-through so local dev
+ * isn't locked out. Mount AFTER requireAuth so identity is populated.
+ */
+export function requireAdmin(): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const gwUser = req.headers['x-wip-user'] as string | undefined
+    const gwGroups = (req.headers['x-wip-groups'] as string || '')
+      .split(',').map(g => g.trim()).filter(Boolean)
+    const sessionGroups = req.session?.user?.groups || []
+    const groups = gwGroups.length ? gwGroups : sessionGroups
+
+    const authEnabled = !!oidcConfig || !!gwUser
+    if (!authEnabled) { next(); return }  // open dev mode
+
+    if (groups.some(g => ADMIN_GROUPS.includes(g))) { next(); return }
+    res.status(403).json({ error: 'Administrator access required' })
   }
 }
 

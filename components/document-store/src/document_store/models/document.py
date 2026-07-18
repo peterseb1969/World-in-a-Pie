@@ -1,15 +1,15 @@
 """Document model for the Document Store service."""
 
 from datetime import UTC, datetime
-from enum import Enum
-from typing import Any
+from enum import StrEnum
+from typing import Any, ClassVar
 
 from beanie import Document as BeanieDocument
 from pydantic import BaseModel, Field
 from pymongo import DESCENDING, IndexModel
 
 
-class DocumentStatus(str, Enum):
+class DocumentStatus(StrEnum):
     """Status values for documents."""
     ACTIVE = "active"
     INACTIVE = "inactive"
@@ -20,7 +20,7 @@ class DocumentMetadata(BaseModel):
     """Additional metadata for a document."""
 
     source_system: str | None = Field(
-        None,
+        default=None,
         description="System that created this document"
     )
     warnings: list[str] = Field(
@@ -67,7 +67,7 @@ class Document(BeanieDocument):
         description="Version of template used for validation"
     )
     template_value: str | None = Field(
-        None,
+        default=None,
         description="Template value (e.g., PLANNED_VISIT) for easier identification"
     )
 
@@ -119,14 +119,14 @@ class Document(BeanieDocument):
         default_factory=lambda: datetime.now(UTC)
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that created this document"
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that last updated this document"
     )
 
@@ -138,7 +138,9 @@ class Document(BeanieDocument):
 
     class Settings:
         name = "documents"
-        indexes = [
+        # ClassVar signals to ruff that this is class-level state (Beanie
+        # convention — read at metaclass init), not an instance default.
+        indexes: ClassVar[list] = [
             # Unique (document_id, version) within namespace — stable ID across versions
             IndexModel([("namespace", 1), ("document_id", 1), ("version", 1)], unique=True, name="ns_document_id_version_unique_idx"),
             # Version lookup by identity within namespace

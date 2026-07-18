@@ -15,6 +15,15 @@ from .identity import reset_current_identity, set_current_identity
 from .models import UserIdentity
 from .providers.base import AuthProvider
 
+# Universal lifecycle endpoints — health probes, OpenAPI docs, the bare
+# root. The middleware skips provider iteration for these so a wrong
+# (but-present) credential header doesn't 401 a route that's meant to
+# be reachable by external monitors and pre-configured clients with a
+# stale key. Per CASE-60.
+_DEFAULT_PUBLIC_PATHS = frozenset({
+    "/", "/health", "/ready", "/docs", "/redoc", "/openapi.json",
+})
+
 
 class AuthMiddleware(BaseHTTPMiddleware):
     """Middleware that authenticates requests using configured providers.
@@ -27,17 +36,35 @@ class AuthMiddleware(BaseHTTPMiddleware):
     The middleware does NOT reject unauthenticated requests - that's the
     responsibility of route-level dependencies (require_identity, etc.).
     This allows mixing public and protected routes.
+
+    For paths in `public_paths`, the middleware skips provider iteration
+    entirely — useful for health probes that must be reachable even when
+    a caller sends a stale or wrong API key (CASE-60). Universal endpoints
+    (`/health`, `/ready`, `/docs`, ...) are always public; pass
+    `public_paths` to add service-specific routes (e.g., the api-prefixed
+    `/api/<svc>/health`).
     """
 
-    def __init__(self, app, providers: Sequence[AuthProvider]):
+    def __init__(
+        self,
+        app,
+        providers: Sequence[AuthProvider],
+        public_paths: Sequence[str] | None = None,
+    ):
         """Initialize the middleware.
 
         Args:
             app: The FastAPI application
             providers: List of auth providers to try in order
+            public_paths: Additional paths (exact match) for which the
+                middleware skips provider iteration. Universal endpoints
+                are always added.
         """
         super().__init__(app)
         self.providers = list(providers)
+        self.public_paths: frozenset[str] = _DEFAULT_PUBLIC_PATHS | frozenset(
+            public_paths or []
+        )
 
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
@@ -51,6 +78,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
         Returns:
             The response from downstream handlers
         """
+        # Public paths skip provider iteration. A wrong X-API-Key on
+        # /health (or any other public route) should not 401 — those
+        # routes are meant for external monitors and stale-key clients
+        # (CASE-60).
+        if request.url.path in self.public_paths:
+            token = set_current_identity(None)
+            try:
+                return await call_next(request)
+            finally:
+                reset_current_identity(token)
+
         identity: UserIdentity | None = None
 
         # Try each provider until one authenticates
@@ -85,6 +123,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 def create_auth_middleware(
     providers: Sequence[AuthProvider],
+    public_paths: Sequence[str] | None = None,
 ) -> type[AuthMiddleware]:
     """Create a configured auth middleware class.
 
@@ -93,16 +132,23 @@ def create_auth_middleware(
 
     Args:
         providers: List of auth providers to use
+        public_paths: Additional paths (beyond the universal lifecycle
+            endpoints) for which the middleware skips provider iteration.
+            Pass the api-prefixed health route here, e.g.,
+            `["/api/registry/health"]`. See CASE-60.
 
     Returns:
         Configured middleware class
 
     Example:
         providers = [APIKeyProvider(keys), OIDCProvider(issuer_url="...")]
-        app.add_middleware(create_auth_middleware(providers))
+        app.add_middleware(create_auth_middleware(
+            providers,
+            public_paths=["/api/registry/health"],
+        ))
     """
     class ConfiguredAuthMiddleware(AuthMiddleware):
         def __init__(self, app):
-            super().__init__(app, providers)
+            super().__init__(app, providers, public_paths)
 
     return ConfiguredAuthMiddleware

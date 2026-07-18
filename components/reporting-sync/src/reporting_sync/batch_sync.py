@@ -13,7 +13,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 import httpx
@@ -49,7 +49,7 @@ class BatchSyncService:
                     timeout=30.0,
                 )
                 if response.status_code == 200:
-                    return response.json()
+                    return cast(dict[str, Any] | None, response.json())
                 logger.error(f"Failed to fetch template {template_id}: {response.status_code}")
                 return None
         except Exception as e:
@@ -66,7 +66,7 @@ class BatchSyncService:
                     timeout=30.0,
                 )
                 if response.status_code == 200:
-                    return response.json()
+                    return cast(dict[str, Any] | None, response.json())
                 logger.error(f"Failed to fetch template by code {template_value}: {response.status_code}")
                 return None
         except Exception as e:
@@ -250,24 +250,23 @@ class BatchSyncService:
                 job.completed_at = datetime.now(UTC)
                 return
 
-            # Ensure table exists
-            table_name = await self.schema_manager.ensure_table_for_template(template)
-            if not table_name:
-                job.status = BatchSyncStatus.FAILED
-                job.error_message = "Failed to create table"
-                job.completed_at = datetime.now(UTC)
-                return
+            # Documents route to their own namespace's schema (CASE-628), so a
+            # single template can fill several tables. Ensure lazily per
+            # namespace as pages stream in. The pre-CASE-628 "skip if the table
+            # already has data unless force" guard is dropped: with lazily
+            # created per-namespace tables there is no single table to probe,
+            # and a rebuild runs with force in practice.
+            ns_tables: dict[str, str] = {}
 
-            # Check if table already has data (unless force)
-            if not force:
-                async with self.pool.acquire() as conn:
-                    count = await conn.fetchval(f'SELECT COUNT(*) FROM "{table_name}"')
-                    if count > 0:
-                        job.status = BatchSyncStatus.COMPLETED
-                        job.documents_synced = count
-                        job.error_message = f"Table already has {count} rows. Use force=true to re-sync."
-                        job.completed_at = datetime.now(UTC)
-                        return
+            # Eagerly ensure the table in the template's own namespace even
+            # when there are zero documents: a freshly bootstrapped namespace
+            # (templates, no docs yet) must be SQL-queryable — "no rows yet"
+            # is an empty table, not relation-does-not-exist. Documents from
+            # other namespaces still materialise their tables lazily below.
+            tpl_ns = template.get("namespace") or "wip"
+            tpl_table = await self.schema_manager.ensure_table_for_template(tpl_ns, template)
+            if tpl_table:
+                ns_tables[tpl_ns] = tpl_table
 
             template_id = template["template_id"]
             transformer = DocumentTransformer(config)
@@ -280,7 +279,10 @@ class BatchSyncService:
             if total == 0:
                 job.status = BatchSyncStatus.COMPLETED
                 job.completed_at = datetime.now(UTC)
-                logger.info(f"No documents to sync for {job.template_value}")
+                logger.info(
+                    f"No documents to sync for {job.template_value} "
+                    f"(table {tpl_table} ensured empty)"
+                )
                 return
 
             logger.info(f"Starting batch sync for {job.template_value}: {total} documents")
@@ -296,10 +298,22 @@ class BatchSyncService:
 
                 job.current_page = page
 
-                # Process documents in this page
+                # Ensure a table for each namespace present in this page.
+                # ensure_table_for_template uses its own pooled connection, so
+                # do it before holding a connection for the upserts.
+                for document in documents:
+                    ns = document.get("namespace") or "wip"
+                    if ns not in ns_tables:
+                        ns_tables[ns] = await self.schema_manager.ensure_table_for_template(
+                            ns, template
+                        )
+
+                # Process documents in this page, routing each to its schema.
                 async with self.pool.acquire() as conn:
                     for document in documents:
                         try:
+                            ns = document.get("namespace") or "wip"
+                            table_name = ns_tables[ns]
                             rows = transformer.transform(document, template)
                             for row in rows:
                                 sql, values = transformer.generate_upsert_sql(
@@ -409,7 +423,8 @@ class BatchSyncService:
         Returns:
             Dict with sync results (synced, failed, total)
         """
-        table_name = await self.schema_manager.ensure_terminologies_table()
+        # Rows route to their own namespace's schema (CASE-628).
+        ns_tables: dict[str, str] = {}
         synced = 0
         failed = 0
 
@@ -436,12 +451,19 @@ class BatchSyncService:
                     if not items:
                         break
 
+                    # Ensure a table per namespace present in this page.
+                    for t in items:
+                        ns = t.get("namespace") or namespace or "wip"
+                        if ns not in ns_tables:
+                            ns_tables[ns] = await self.schema_manager.ensure_terminologies_table(ns)
+
                     async with self.pool.acquire() as conn:
                         for t in items:
                             try:
+                                table_name = ns_tables[t.get("namespace") or namespace or "wip"]
                                 await conn.execute(
                                     f"""
-                                    INSERT INTO "{table_name}" (
+                                    INSERT INTO {table_name} (
                                         "terminology_id", "namespace", "value", "label",
                                         "description", "case_sensitive", "allow_multiple",
                                         "extensible", "mutable", "status", "term_count",
@@ -504,7 +526,8 @@ class BatchSyncService:
         Returns:
             Dict with sync results (synced, failed, total)
         """
-        table_name = await self.schema_manager.ensure_templates_table()
+        # Rows route to their own namespace's schema (CASE-628).
+        ns_tables: dict[str, str] = {}
         synced = 0
         failed = 0
 
@@ -513,7 +536,15 @@ class BatchSyncService:
                 page = 1
 
                 while True:
-                    params: dict = {"page": page, "page_size": page_size}
+                    # latest_only: the templates table keys one row per
+                    # (namespace, template_id) — the same row the live event
+                    # path last wrote. Without it the list returns every
+                    # version and the final upserted row depends on page
+                    # ordering, not on which version is actually latest.
+                    params: dict = {
+                        "page": page, "page_size": page_size,
+                        "latest_only": "true",
+                    }
                     if namespace:
                         params["namespace"] = namespace
                     resp = await client.get(
@@ -531,12 +562,19 @@ class BatchSyncService:
                     if not items:
                         break
 
+                    # Ensure a table per namespace present in this page.
+                    for t in items:
+                        ns = t.get("namespace") or namespace or "wip"
+                        if ns not in ns_tables:
+                            ns_tables[ns] = await self.schema_manager.ensure_templates_table(ns)
+
                     async with self.pool.acquire() as conn:
                         for t in items:
                             try:
+                                table_name = ns_tables[t.get("namespace") or namespace or "wip"]
                                 await conn.execute(
                                     f"""
-                                    INSERT INTO "{table_name}" (
+                                    INSERT INTO {table_name} (
                                         "template_id", "namespace", "value", "label",
                                         "description", "version", "status", "extends",
                                         "extends_version", "created_at", "created_by",
@@ -597,7 +635,8 @@ class BatchSyncService:
         Returns:
             Dict with sync results (synced, failed, total)
         """
-        table_name = await self.schema_manager.ensure_terms_table()
+        # Rows route to their own namespace's schema (CASE-628).
+        ns_tables: dict[str, str] = {}
         synced = 0
         failed = 0
 
@@ -648,12 +687,19 @@ class BatchSyncService:
                         if not items:
                             break
 
+                        # Ensure a table per namespace present in this page.
+                        for t in items:
+                            ns = t.get("namespace") or namespace or "wip"
+                            if ns not in ns_tables:
+                                ns_tables[ns] = await self.schema_manager.ensure_terms_table(ns)
+
                         async with self.pool.acquire() as conn:
                             for t in items:
                                 try:
+                                    table_name = ns_tables[t.get("namespace") or namespace or "wip"]
                                     await conn.execute(
                                         f"""
-                                        INSERT INTO "{table_name}" (
+                                        INSERT INTO {table_name} (
                                             "term_id", "namespace", "terminology_id",
                                             "terminology_value", "value", "aliases",
                                             "label", "description", "sort_order",
@@ -714,21 +760,33 @@ class BatchSyncService:
         logger.info(f"Term batch sync: {synced} synced, {failed} failed")
         return {"synced": synced, "failed": failed, "total": synced + failed}
 
-    async def batch_sync_relationships(
+    async def batch_sync_term_relations(
         self,
-        namespace: str,
+        namespace: str | None = None,
         page_size: int = 100,
     ) -> dict:
         """
-        Batch sync all term relationships from Def-Store to PostgreSQL.
+        Batch sync all term-relations from Def-Store to PostgreSQL.
 
-        Uses the /ontology/relationships/all endpoint for efficient pagination
-        across all relationships (no per-term iteration needed).
+        Uses the /ontology/term-relations/all endpoint for efficient pagination
+        across all term_relations (no per-term iteration needed). With an
+        explicit namespace, syncs that namespace only; without one, syncs
+        relations across all accessible namespaces — the startup/rebuild path,
+        where relations must be backfilled for every namespace or a rebuilt
+        reporting database silently loses them.
 
         Returns:
             Dict with sync results (synced, failed, total)
         """
-        table_name = await self.schema_manager.ensure_term_relationships_table()
+        # Rows route to their own namespace's schema (CASE-628). An explicit
+        # namespace ensures its table eagerly (so the table exists for SQL
+        # readers even when there are zero relations); the namespace-less
+        # sweep ensures tables lazily per namespace seen.
+        ns_tables: dict[str, str] = {}
+        if namespace:
+            ns_tables[namespace] = await self.schema_manager.ensure_term_relations_table(
+                namespace
+            )
         synced = 0
         failed = 0
 
@@ -737,17 +795,16 @@ class BatchSyncService:
                 page = 1
 
                 while True:
+                    params: dict = {"page": page, "page_size": page_size}
+                    if namespace:
+                        params["namespace"] = namespace
                     resp = await client.get(
-                        f"{settings.def_store_url}/api/def-store/ontology/relationships/all",
-                        params={
-                            "namespace": namespace,
-                            "page": page,
-                            "page_size": page_size,
-                        },
+                        f"{settings.def_store_url}/api/def-store/ontology/term-relations/all",
+                        params=params,
                         headers={"X-API-Key": settings.api_key},
                     )
                     if resp.status_code != 200:
-                        logger.error(f"Failed to list relationships: {resp.status_code}")
+                        logger.error(f"Failed to list term_relations: {resp.status_code}")
                         break
 
                     data = resp.json()
@@ -756,28 +813,35 @@ class BatchSyncService:
                     if not items:
                         break
 
+                    for rel in items:
+                        ns = rel.get("namespace") or namespace or "wip"
+                        if ns not in ns_tables:
+                            ns_tables[ns] = await self.schema_manager.ensure_term_relations_table(ns)
+
                     async with self.pool.acquire() as conn:
                         for rel in items:
+                            ns = rel.get("namespace") or namespace or "wip"
+                            table_name = ns_tables[ns]
                             try:
                                 await conn.execute(
                                     f"""
-                                    INSERT INTO "{table_name}" (
+                                    INSERT INTO {table_name} (
                                         "namespace", "source_term_id", "target_term_id",
-                                        "relationship_type", "source_term_value", "target_term_value",
+                                        "relation_type", "source_term_value", "target_term_value",
                                         "source_terminology_id", "target_terminology_id",
                                         "metadata", "status", "created_at", "created_by"
                                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                                    ON CONFLICT ("namespace", "source_term_id", "target_term_id", "relationship_type")
+                                    ON CONFLICT ("namespace", "source_term_id", "target_term_id", "relation_type")
                                     DO UPDATE SET
                                         "status" = EXCLUDED."status",
                                         "source_term_value" = EXCLUDED."source_term_value",
                                         "target_term_value" = EXCLUDED."target_term_value",
                                         "metadata" = EXCLUDED."metadata"
                                     """,
-                                    rel.get("namespace", namespace),
+                                    ns,
                                     rel["source_term_id"],
                                     rel["target_term_id"],
-                                    rel["relationship_type"],
+                                    rel["relation_type"],
                                     rel.get("source_term_value"),
                                     rel.get("target_term_value"),
                                     rel.get("source_terminology_id"),
@@ -789,7 +853,7 @@ class BatchSyncService:
                                 )
                                 synced += 1
                             except Exception as e:
-                                logger.error(f"Error syncing relationship: {e}")
+                                logger.error(f"Error syncing term_relation: {e}")
                                 failed += 1
 
                     if page >= data.get("pages", 1):
@@ -798,9 +862,9 @@ class BatchSyncService:
                     await asyncio.sleep(0.05)  # Small delay between pages
 
         except Exception as e:
-            logger.error(f"Batch relationship sync error: {e}", exc_info=True)
+            logger.error(f"Batch term_relation sync error: {e}", exc_info=True)
 
-        logger.info(f"Relationship batch sync: {synced} synced, {failed} failed")
+        logger.info(f"TermRelation batch sync: {synced} synced, {failed} failed")
         return {"synced": synced, "failed": failed, "total": synced + failed}
 
     def clear_completed_jobs(self) -> int:

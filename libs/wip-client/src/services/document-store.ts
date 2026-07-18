@@ -8,6 +8,8 @@ import type {
   DocumentQueryRequest,
   DocumentValidationResponse,
   ValidateDocumentRequest,
+  ValidateDocumentsRequest,
+  BulkValidationResponse,
   DocumentVersionResponse,
   PatchDocumentRequest,
   TableViewResponse,
@@ -17,6 +19,11 @@ import type {
   ImportDocumentsOptions,
   ReplayRequest,
   ReplaySessionResponse,
+  DocumentRelationshipsParams,
+  DocumentTraverseParams,
+  DocumentTraverseResponse,
+  DocumentMigrateRequest,
+  DocumentMigrateResponse,
 } from '../types/document.js'
 import type {
   BackupJobSnapshot,
@@ -37,8 +44,19 @@ export class DocumentStoreService extends BaseService {
     return this.get('/documents', params)
   }
 
-  async getDocument(id: string, version?: number): Promise<Document> {
-    return this.get(`/documents/${id}`, version !== undefined ? { version } : undefined)
+  /**
+   * Fetch a document by ID (or any synonym/value the Registry resolves).
+   *
+   * `namespace` (CASE-457): under a MULTI-namespace key (e.g. the install admin
+   * key), a value-form `id` has no namespace context to resolve against — pass
+   * `namespace` to scope it. Maps to the `?namespace=` query param the endpoint
+   * accepts. Single-namespace keys derive it automatically and can omit it.
+   */
+  async getDocument(id: string, version?: number, namespace?: string): Promise<Document> {
+    const params: Record<string, unknown> = {}
+    if (version !== undefined) params.version = version
+    if (namespace !== undefined) params.namespace = namespace
+    return this.get(`/documents/${id}`, Object.keys(params).length ? params : undefined)
   }
 
   async createDocument(data: CreateDocumentRequest): Promise<BulkResultItem> {
@@ -63,11 +81,14 @@ export class DocumentStoreService extends BaseService {
   async updateDocument(
     documentId: string,
     patch: Record<string, unknown>,
-    options?: { ifMatch?: number },
+    options?: { ifMatch?: number; metadataPatch?: Record<string, unknown> },
   ): Promise<BulkResultItem> {
     const item: PatchDocumentRequest = { document_id: documentId, patch }
     if (options?.ifMatch !== undefined) {
       item.if_match = options.ifMatch
+    }
+    if (options?.metadataPatch !== undefined) {
+      item.metadata_patch = options.metadataPatch
     }
     return this.bulkWriteOne('/documents', item, 'PATCH')
   }
@@ -94,6 +115,15 @@ export class DocumentStoreService extends BaseService {
     }, 'DELETE')
   }
 
+  async deleteDocuments(ids: string[], options?: {
+    hardDelete?: boolean
+  }): Promise<BulkResponse> {
+    return this.bulkWrite('/documents', ids.map(id => ({
+      id,
+      hard_delete: options?.hardDelete,
+    })), 'DELETE')
+  }
+
   async archiveDocument(id: string, archivedBy?: string): Promise<BulkResultItem> {
     return this.bulkWriteOne('/documents/archive', { id, archived_by: archivedBy })
   }
@@ -104,6 +134,15 @@ export class DocumentStoreService extends BaseService {
 
   async validateDocument(data: ValidateDocumentRequest): Promise<DocumentValidationResponse> {
     return this.post('/validation/validate', data)
+  }
+
+  /**
+   * Bulk validate (CASE-419): validate many data payloads against ONE template
+   * without saving. Side-effect-free — no documents/versions/identity-hash
+   * registrations. Returns per-item results in input order.
+   */
+  async validateDocuments(request: ValidateDocumentsRequest): Promise<BulkValidationResponse> {
+    return this.post('/validation/validate-bulk', request)
   }
 
   // ---- Versions ----
@@ -138,12 +177,86 @@ export class DocumentStoreService extends BaseService {
   async getDocumentByIdentity(
     identityHash: string,
     includeInactive?: boolean,
+    namespace?: string,
   ): Promise<Document> {
-    return this.get(`/documents/by-identity/${identityHash}`, includeInactive !== undefined ? { include_inactive: includeInactive } : undefined)
+    const params: Record<string, unknown> = {}
+    if (includeInactive !== undefined) params.include_inactive = includeInactive
+    // namespace (CASE-457) scopes identity-hash resolution under a multi-namespace key.
+    if (namespace !== undefined) params.namespace = namespace
+    return this.get(`/documents/by-identity/${identityHash}`, Object.keys(params).length ? params : undefined)
   }
 
-  async queryDocuments(body: DocumentQueryRequest): Promise<DocumentListResponse> {
-    return this.post('/documents/query', body)
+  /**
+   * Query documents by template + filters (POST /documents/query).
+   *
+   * `namespace` (CASE-457): the read fails SILENTLY (total: 0, no error pre-fix)
+   * when a value-form `template_id`/`template_value` can't resolve for lack of
+   * namespace context — i.e. a MULTI-namespace key (the install admin key) with
+   * no scope. Pass `namespace` to supply it. It maps to the `?namespace=` QUERY
+   * PARAM, NOT the body — `namespace` in the JSON body is rejected
+   * `extra_forbidden` (StrictModel). Single-namespace keys derive it and can omit.
+   */
+  async queryDocuments(body: DocumentQueryRequest, namespace?: string): Promise<DocumentListResponse> {
+    return this.post('/documents/query', body, namespace !== undefined ? { namespace } : undefined)
+  }
+
+  // ---- Relationship-graph queries (Phase 4 / CASE-296) ----
+
+  /**
+   * List relationship documents touching a document.
+   *
+   * Returns relationship documents (templates with `usage: 'relationship'`)
+   * that point at (incoming) or from (outgoing) the given document.
+   *
+   * Backed by Mongo indexes on `(template_id, data.source_ref)` and
+   * `(template_id, data.target_ref)` — query is O(matches), not
+   * O(documents).
+   *
+   * @param documentId Seed document ID (or any synonym/value the Registry resolves).
+   * @param params Filter, pagination, and namespace overrides.
+   */
+  async getDocumentRelationships(
+    documentId: string,
+    params?: DocumentRelationshipsParams,
+  ): Promise<DocumentListResponse> {
+    return this.get(`/documents/${documentId}/relationships`, params)
+  }
+
+  /**
+   * BFS traversal through relationship documents from a seed document.
+   *
+   * Capped at `depth=10` and `max_nodes=1000` (safety bounds). When a
+   * cap fires, the response sets `truncated: true`.
+   *
+   * @param documentId Seed document ID.
+   * @param params Depth (1..10), type filter, direction, namespace.
+   */
+  async traverseDocuments(
+    documentId: string,
+    params?: DocumentTraverseParams,
+  ): Promise<DocumentTraverseResponse> {
+    return this.get(`/documents/${documentId}/traverse`, params)
+  }
+
+  // ---- Migration ----
+
+  /**
+   * Migrate a cohort of documents from one template version to another —
+   * a validated, identity-preserving bulk re-pin.
+   *
+   * `dry_run` defaults to true on the server: run it first and check
+   * `failed === 0` before applying. Bulk-first: always HTTP 200,
+   * per-document outcome in `results`. Operation-level problems (bad
+   * versions, identity-fields mismatch, inactive target) throw as 4xx.
+   *
+   * @param request Template (UUID or value/synonym), from/to versions, dry_run.
+   * @param namespace Cohort namespace. Omittable only for single-namespace keys.
+   */
+  async migrateDocuments(
+    request: DocumentMigrateRequest,
+    namespace?: string,
+  ): Promise<DocumentMigrateResponse> {
+    return this.post('/documents/migrate', request, namespace ? { namespace } : undefined)
   }
 
   // ---- Import ----
@@ -217,9 +330,12 @@ export class DocumentStoreService extends BaseService {
    * Restore a namespace from an uploaded archive. The archive is streamed
    * to disk on the server, so multi-GB uploads do not buffer in memory.
    *
-   * **Mode gotcha:** `mode: 'restore'` writes back into the archive's source
-   * namespace and ignores `target_namespace`. Use `mode: 'fresh'` when
-   * restoring into a different namespace.
+   * **Mode gotcha (CASE-569):** omitting `mode` defers to the server default
+   * `'restore'`, which writes back into the archive's source namespace
+   * (a single-namespace archive honours `target_namespace`; a multi-namespace
+   * one restores each to itself). `'fresh'` is not yet implemented server-side
+   * — the backend 400s on it. Pass `mode: 'restore'` explicitly when the
+   * namespace outcome matters; see `RestoreOptions`.
    */
   async startRestore(
     namespace: string,

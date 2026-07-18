@@ -6,6 +6,7 @@ import type {
   UpdateNamespaceRequest,
   RegistryEntryListResponse,
   RegistryLookupResponse,
+  RegistryByTermHit,
   RegistryEntryFull,
   RegistryBrowseParams,
   RegistrySearchResponse,
@@ -21,8 +22,10 @@ import type {
   GrantBulkResponse,
   GrantRevokeBulkResponse,
   APIKeyInfo,
+  APIKeyListResponse,
   CreateAPIKeyRequest,
   CreateAPIKeyResponse,
+  ListAPIKeysParams,
   UpdateAPIKeyRequest,
 } from '../types/registry.js'
 
@@ -102,21 +105,35 @@ export class RegistryService extends BaseService {
     return resp.results[0]
   }
 
+  /**
+   * Free-text search across composite key values (CASE-572, breaking in 0.28.0).
+   *
+   * Returns `{ hits, total }`: `total` is the full server-side match count
+   * even when `limit` bounds the returned hits. `limit` requires a backend
+   * that accepts it (registry rejects unknown fields with 422 — ships
+   * together with this client change).
+   */
   async searchEntries(term: string, options?: {
     namespaces?: string[]
     entityTypes?: string[]
     includeInactive?: boolean
-  }): Promise<RegistryLookupResponse[]> {
-    const resp = await this.post<{ results: Array<{ results: Array<Record<string, unknown>> }> }>(
-      '/entries/search/by-term',
+    limit?: number
+  }): Promise<{ hits: RegistryByTermHit[]; total: number }> {
+    // CASE-568 follow-on: the route is /api/registry/search/by-term — under
+    // the search router, NOT /entries. The old '/entries/search/by-term'
+    // path 404'd on every call.
+    const resp = await this.post<{ results: Array<{ results: RegistryByTermHit[]; total_matches: number }> }>(
+      '/search/by-term',
       [{
         term,
         restrict_to_namespaces: options?.namespaces,
         restrict_to_entity_types: options?.entityTypes,
         include_inactive: options?.includeInactive ?? false,
+        ...(options?.limit !== undefined ? { limit: options.limit } : {}),
       }],
     )
-    return (resp.results[0]?.results ?? []) as unknown as RegistryLookupResponse[]
+    const first = resp.results[0]
+    return { hits: first?.results ?? [], total: first?.total_matches ?? 0 }
   }
 
   async unifiedSearch(params: RegistrySearchParams): Promise<RegistrySearchResponse> {
@@ -199,8 +216,20 @@ export class RegistryService extends BaseService {
 
   // ---- API Keys ----
 
-  async listAPIKeys(): Promise<APIKeyInfo[]> {
-    return this.get('/api-keys')
+  /**
+   * List API keys with pagination (CASE-335).
+   *
+   * Breaking change in @wip/client 0.19.0: the response shape is now a
+   * `PaginatedResponse<APIKeyInfo>` (envelope with `items`/`total`/`page`/
+   * `page_size`/`pages`) instead of a bare `APIKeyInfo[]`. Callers using
+   * `.map(...)` on the result must switch to `.items.map(...)`.
+   */
+  async listAPIKeys(params?: ListAPIKeysParams): Promise<APIKeyListResponse> {
+    const qs = new URLSearchParams()
+    if (params?.page !== undefined) qs.set('page', String(params.page))
+    if (params?.page_size !== undefined) qs.set('page_size', String(params.page_size))
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return this.get(`/api-keys${suffix}`)
   }
 
   async createAPIKey(request: CreateAPIKeyRequest): Promise<CreateAPIKeyResponse> {

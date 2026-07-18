@@ -3,12 +3,19 @@
 import asyncio
 import math
 
+from beanie.odm.enums import SortDirection
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from wip_auth import check_namespace_permission, get_current_identity, resolve_namespace_filter
+from wip_auth import (
+    UserIdentity,
+    check_namespace_permission,
+    resolve_accessible_namespaces,
+    resolve_namespace_filter,
+)
 from wip_auth.fastapi_helpers import resolve_bulk_ids, resolve_or_404
+from wip_auth.permissions import _is_superadmin
 
 from ..models.api_models import (
     BulkResponse,
@@ -87,10 +94,9 @@ async def upload_file(
     tags: str | None = Form(None, description="Comma-separated tags"),
     category: str | None = Form(None, description="Classification category"),
     allowed_templates: str | None = Form(None, description="Comma-separated template values"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Upload a file to storage."""
-    identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "write")
 
     service = get_file_service()
@@ -98,18 +104,18 @@ async def upload_file(
     # Read file content with size limit to prevent OOM on resource-constrained devices
     from ..main import settings as app_settings
     max_size = app_settings.MAX_UPLOAD_SIZE
-    content = bytearray()
+    buffer = bytearray()
     while True:
         chunk = await file.read(65536)  # 64KB chunks
         if not chunk:
             break
-        content.extend(chunk)
-        if len(content) > max_size:
+        buffer.extend(chunk)
+        if len(buffer) > max_size:
             raise HTTPException(
                 status_code=413,
                 detail=f"File too large. Maximum upload size is {max_size // (1024 * 1024)}MB"
             )
-    content = bytes(content)
+    content: bytes = bytes(buffer)
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
 
@@ -156,10 +162,9 @@ async def list_files(
     uploaded_by: str | None = Query(None, description="Filter by uploader"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """List files with pagination."""
-    identity = get_current_identity()
     ns_filter = await resolve_namespace_filter(identity, namespace)
 
     service = get_file_service()
@@ -188,7 +193,7 @@ async def list_files(
 async def get_file(
     file_id: str,
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Get file metadata by ID."""
     file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
@@ -204,7 +209,6 @@ async def get_file(
     # Check namespace permission (File model has namespace, FileResponse doesn't)
     file_doc = await FileModel.find_one({"file_id": file_id})
     if file_doc:
-        identity = get_current_identity()
         await check_namespace_permission(identity, file_doc.namespace, "read")
 
     return file_response
@@ -226,7 +230,7 @@ async def get_download_url(
     file_id: str,
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     expires_in: int = Query(3600, ge=60, le=86400, description="URL expiration in seconds (1 min to 24 hours)"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Get a pre-signed download URL for a file."""
     file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
@@ -238,7 +242,6 @@ async def get_download_url(
     file_doc = await FileModel.find_one({"file_id": file_id})
     if not file_doc:
         raise HTTPException(status_code=404, detail="File not found")
-    identity = get_current_identity()
     await check_namespace_permission(identity, file_doc.namespace, "read")
 
     try:
@@ -259,7 +262,7 @@ async def get_download_url(
 async def download_file_content(
     file_id: str,
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Download file content directly, streamed from storage."""
     file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
@@ -276,7 +279,6 @@ async def download_file_content(
         raise HTTPException(status_code=400, detail="File has been deleted")
 
     # Check namespace permission
-    identity = get_current_identity()
     await check_namespace_permission(identity, file_doc.namespace, "read")
 
     # Stream chunks directly from MinIO → browser (no full buffering)
@@ -301,13 +303,12 @@ async def download_file_content(
 async def update_files_metadata(
     items: list[UpdateFileItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Update metadata for one or more files."""
     await resolve_bulk_ids(items, "file_id", "file", namespace=namespace)
 
     from ..models.file import File as FileModel
-    identity = get_current_identity()
     service = get_file_service()
     results = []
     for i, item in enumerate(items):
@@ -343,13 +344,12 @@ async def update_files_metadata(
 async def delete_files(
     items: list[DeleteItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Soft-delete one or more files."""
     await resolve_bulk_ids(items, "id", "file", namespace=namespace)
 
     from ..models.file import File as FileModel
-    identity = get_current_identity()
     service = get_file_service()
     results = []
     for i, item in enumerate(items):
@@ -390,7 +390,7 @@ async def get_file_documents(
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(10, ge=1, le=100, description="Items per page"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """List documents that reference this file."""
     file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
@@ -403,7 +403,6 @@ async def get_file_documents(
     if not file_doc:
         raise HTTPException(status_code=404, detail="File not found")
 
-    identity = get_current_identity()
     await check_namespace_permission(identity, file_doc.namespace, "read")
 
     # Query documents with this file_id in file_references
@@ -415,7 +414,7 @@ async def get_file_documents(
     total = await DocumentModel.find(query).count()
     skip = (page - 1) * page_size
     docs = await DocumentModel.find(query).skip(skip).limit(page_size).sort(
-        [("created_at", -1)]
+        [("created_at", SortDirection.DESCENDING)]
     ).to_list()
 
     items = []
@@ -429,7 +428,7 @@ async def get_file_documents(
         items.append(FileDocumentRef(
             document_id=doc.document_id,
             template_id=doc.template_id,
-            template_value=None,  # Could be populated from document.template_value
+            template_value=doc.template_value,
             field_path=", ".join(field_paths) if field_paths else "unknown",
             status=doc.status.value if hasattr(doc.status, 'value') else doc.status,
             created_at=doc.created_at.isoformat() if doc.created_at else None,
@@ -457,7 +456,7 @@ Only works on files with status 'inactive'. Use soft-delete first.
 async def hard_delete_file(
     file_id: str,
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Permanently delete a file."""
     file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
@@ -469,7 +468,6 @@ async def hard_delete_file(
     file_doc = await FileModel.find_one({"file_id": file_id})
     if not file_doc:
         raise HTTPException(status_code=404, detail="File not found")
-    identity = get_current_identity()
     await check_namespace_permission(identity, file_doc.namespace, "admin")
 
     try:
@@ -488,17 +486,27 @@ async def hard_delete_file(
     description="""
 List files that are not referenced by any active document.
 
-Useful for cleanup operations. By default, only returns orphans older than 24 hours
-to allow time for documents to be created after file upload.
+Useful for cleanup operations. By default returns all orphans
+(older_than_hours=0); pass older_than_hours=N to exclude recent uploads
+and allow time for documents to be created after file upload.
     """,
     dependencies=[Depends(require_file_storage)]
 )
 async def list_orphan_files(
     older_than_hours: int = Query(0, ge=0, le=720, description="Only return orphans older than N hours (0 = all)"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number to return"),
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
-    """List orphan files."""
+    """List orphan files. Admin-only (operational cleanup endpoint)."""
+    # CASE-384 — operational/maintenance endpoint that lists files across
+    # all namespaces. Restrict to superadmin; non-admin keys cannot
+    # enumerate files outside their own scope.
+    if not _is_superadmin(identity):
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=403,
+            detail="Orphan listing is an admin-only operation",
+        )
     service = get_file_service()
     return await service.find_orphans(older_than_hours=older_than_hours, limit=limit)
 
@@ -512,11 +520,17 @@ async def list_orphan_files(
 )
 async def find_by_checksum(
     checksum: str,
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
-    """Find files by checksum."""
+    """Find files by checksum (within the caller's accessible namespaces)."""
+    # CASE-384 — restrict checksum search to namespaces the caller has
+    # access to. Superadmin gets None and the service treats that as
+    # no filter. Otherwise, only files in the caller's scoped namespaces
+    # are returned — cross-namespace checksum lookup would leak file
+    # existence to unauthorised callers.
+    accessible = await resolve_accessible_namespaces(identity)
     service = get_file_service()
-    return await service.get_by_checksum(checksum)
+    return await service.get_by_checksum(checksum, namespaces=accessible)
 
 
 @router.get(
@@ -534,8 +548,15 @@ Detects:
     dependencies=[Depends(require_file_storage)]
 )
 async def check_file_integrity(
-    _: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
-    """Check file integrity."""
+    """Check file integrity. Admin-only (system-wide operational check)."""
+    # CASE-384 — system-wide integrity check; restrict to superadmin.
+    if not _is_superadmin(identity):
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=403,
+            detail="File integrity check is an admin-only operation",
+        )
     service = get_file_service()
     return await service.check_integrity()

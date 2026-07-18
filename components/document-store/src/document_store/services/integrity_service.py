@@ -11,6 +11,7 @@ Uses batched cursor iteration to avoid loading all documents into memory.
 import asyncio
 from datetime import UTC, datetime
 from typing import Any
+from beanie.odm.enums import SortDirection
 
 from pydantic import BaseModel, Field
 
@@ -37,7 +38,7 @@ class IntegrityIssue(BaseModel):
     template_id: str = Field(..., description="Template ID of the document")
     version: int = Field(..., description="Document version")
     field_path: str | None = Field(
-        None,
+        default=None,
         description="Field path (e.g., 'gender', 'addresses[0].country')"
     )
     reference: str = Field(..., description="The reference value")
@@ -260,6 +261,7 @@ async def check_all_documents(
         filters.append(Document.template_id == template_id_filter)
 
     # Combine filters
+    query: Any
     if filters:
         query = filters[0]
         for f in filters[1:]:
@@ -283,14 +285,14 @@ async def check_all_documents(
         batch_size = min(BATCH_SIZE, effective_limit - documents_checked)
         find_q = Document.find(query).skip(skip).limit(batch_size)
         if recent_first:
-            find_q = find_q.sort([("created_at", -1)])
+            find_q = find_q.sort([("created_at", SortDirection.DESCENDING)])
         batch = await find_q.to_list()
 
         if not batch:
             break
 
         for document in batch:
-            issues = []
+            issues: list[IntegrityIssue] = []
 
             # Always check template reference
             await check_template_reference(document.template_id, document, issues)

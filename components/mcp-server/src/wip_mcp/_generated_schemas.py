@@ -4,7 +4,7 @@ Regenerate with: python -m scripts.generate_schemas [--fetch]
 """
 
 
-TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'properties': {'source_term_id': {'type': 'string',
+TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'properties': {'source_term_id': {'type': 'string',
                                                                            'description': 'The '
                                                                                           'subject '
                                                                                           'term '
@@ -14,13 +14,13 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                           'object '
                                                                                           'term '
                                                                                           'ID'},
-                                                        'relationship_type': {'type': 'string',
-                                                                              'description': 'Relationship '
-                                                                                             'type '
-                                                                                             'value '
-                                                                                             '(e.g., '
-                                                                                             "'is_a', "
-                                                                                             "'part_of')"},
+                                                        'relation_type': {'type': 'string',
+                                                                          'description': 'Relation '
+                                                                                         'type '
+                                                                                         'value '
+                                                                                         '(e.g., '
+                                                                                         "'is_a', "
+                                                                                         "'part_of')"},
                                                         'metadata': {'additionalProperties': True,
                                                                      'type': 'object',
                                                                      'description': 'Provenance, '
@@ -31,18 +31,24 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                       'system '
                                                                                       'creating '
                                                                                       'this '
-                                                                                      'relationship'}},
+                                                                                      'relation'}},
                                          'additionalProperties': False,
                                          'type': 'object',
                                          'required': ['source_term_id',
                                                       'target_term_id',
-                                                      'relationship_type'],
-                                         'description': 'Request to create a typed relationship '
+                                                      'relation_type'],
+                                         'description': 'Request to create a typed relation '
                                                         'between two terms.'},
  'def-store#CreateTermRequest': {'properties': {'value': {'type': 'string',
                                                           'description': 'The value stored in '
                                                                          'documents (unique within '
                                                                          'terminology)'},
+                                                'term_id': {'type': 'string',
+                                                            'description': 'Pre-assigned term ID '
+                                                                           '(for restore/migration '
+                                                                           '— Registry uses as-is '
+                                                                           'instead of '
+                                                                           'generating)'},
                                                 'aliases': {'items': {'type': 'string'},
                                                             'type': 'array',
                                                             'description': 'Alternative values '
@@ -107,6 +113,18 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                        'description': {'type': 'string',
                                                                        'description': 'Detailed '
                                                                                       'description'},
+                                                       'terminology_id': {'type': 'string',
+                                                                          'description': 'Pre-assigned '
+                                                                                         'terminology '
+                                                                                         'ID (for '
+                                                                                         'restore/migration '
+                                                                                         '— '
+                                                                                         'Registry '
+                                                                                         'uses '
+                                                                                         'as-is '
+                                                                                         'instead '
+                                                                                         'of '
+                                                                                         'generating)'},
                                                        'namespace': {'type': 'string',
                                                                      'description': 'Namespace for '
                                                                                     'the '
@@ -132,6 +150,15 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                      'terms at '
                                                                                      'runtime',
                                                                       'default': False},
+                                                       'mutable': {'type': 'boolean',
+                                                                   'description': 'Whether terms '
+                                                                                  'can be '
+                                                                                  'hard-deleted '
+                                                                                  '(vs '
+                                                                                  'deprecated). '
+                                                                                  'Implies '
+                                                                                  'extensible=True.',
+                                                                   'default': False},
                                                        'metadata': {'properties': {'source': {'type': 'string',
                                                                                               'description': 'Source '
                                                                                                              'of '
@@ -177,7 +204,7 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                      'terminology'}},
                                         'additionalProperties': False,
                                         'type': 'object',
-                                        'required': ['value', 'label'],
+                                        'required': ['value', 'label', 'namespace'],
                                         'description': 'Request to create a new terminology.'},
  'document-store#DocumentCreateRequest': {'properties': {'template_id': {'type': 'string',
                                                                          'description': 'Template '
@@ -245,10 +272,82 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                      'this '
                                                                                      'document in '
                                                                                      'the '
-                                                                                     'Registry'}},
+                                                                                     'Registry'},
+                                                         'on_synonym_conflict': {'type': 'string',
+                                                                                 'enum': ['fail',
+                                                                                          'warn'],
+                                                                                 'description': 'How '
+                                                                                                'to '
+                                                                                                'handle '
+                                                                                                'an '
+                                                                                                'inline '
+                                                                                                'synonym '
+                                                                                                'that '
+                                                                                                'the '
+                                                                                                'Registry '
+                                                                                                'refuses '
+                                                                                                '(e.g. '
+                                                                                                'already '
+                                                                                                'owned '
+                                                                                                'by '
+                                                                                                'a '
+                                                                                                'different '
+                                                                                                'entry). '
+                                                                                                "'fail' "
+                                                                                                '(default): '
+                                                                                                'the '
+                                                                                                'whole '
+                                                                                                'create '
+                                                                                                'fails, '
+                                                                                                'the '
+                                                                                                'document '
+                                                                                                'is '
+                                                                                                'NOT '
+                                                                                                'created, '
+                                                                                                'and '
+                                                                                                'any '
+                                                                                                'synonyms/entry '
+                                                                                                'allocated '
+                                                                                                'for '
+                                                                                                'it '
+                                                                                                'are '
+                                                                                                'rolled '
+                                                                                                'back '
+                                                                                                '— '
+                                                                                                'use '
+                                                                                                'this '
+                                                                                                'when '
+                                                                                                'the '
+                                                                                                'synonyms '
+                                                                                                'are '
+                                                                                                'load-bearing '
+                                                                                                '(e.g. '
+                                                                                                'you '
+                                                                                                'rely '
+                                                                                                'on '
+                                                                                                'original '
+                                                                                                'IDs '
+                                                                                                'to '
+                                                                                                'resolve '
+                                                                                                'after '
+                                                                                                'import). '
+                                                                                                "'warn': "
+                                                                                                'the '
+                                                                                                'document '
+                                                                                                'is '
+                                                                                                'created '
+                                                                                                'and '
+                                                                                                'the '
+                                                                                                'refused '
+                                                                                                'synonyms '
+                                                                                                'are '
+                                                                                                'reported '
+                                                                                                'in '
+                                                                                                '`warnings`.',
+                                                                                 'default': 'fail'}},
                                           'additionalProperties': False,
                                           'type': 'object',
-                                          'required': ['template_id', 'data'],
+                                          'required': ['template_id', 'namespace', 'data'],
                                           'description': 'Request to create or update a document.'},
  'template-store#CreateTemplateRequest': {'properties': {'value': {'type': 'string',
                                                                    'description': 'Human-readable '
@@ -312,6 +411,108 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                             'composite '
                                                                                             'identity '
                                                                                             'key'},
+                                                         'header_fields': {'items': {'type': 'string'},
+                                                                           'type': 'array',
+                                                                           'description': 'Fields '
+                                                                                          'to '
+                                                                                          'include '
+                                                                                          'in '
+                                                                                          'peer/header '
+                                                                                          'projections. '
+                                                                                          'Bare '
+                                                                                          'names → '
+                                                                                          'data.<name>; '
+                                                                                          'metadata.custom.<name> '
+                                                                                          'paths '
+                                                                                          'allowed. '
+                                                                                          'Empty → '
+                                                                                          'projection '
+                                                                                          'falls '
+                                                                                          'back to '
+                                                                                          'identity_fields.'},
+                                                         'usage': {'type': 'string',
+                                                                   'enum': ['entity',
+                                                                            'reference',
+                                                                            'relationship'],
+                                                                   'description': 'How a '
+                                                                                  "template's "
+                                                                                  'documents are '
+                                                                                  'intended to be '
+                                                                                  'used.\n'
+                                                                                  '\n'
+                                                                                  '- entity '
+                                                                                  '(default): full '
+                                                                                  'document '
+                                                                                  'lifecycle, the '
+                                                                                  'v1.x '
+                                                                                  'behaviour.\n'
+                                                                                  '- reference: '
+                                                                                  'lightweight '
+                                                                                  'controlled-vocabulary '
+                                                                                  'documents '
+                                                                                  '(LOV).\n'
+                                                                                  '  Reserved for '
+                                                                                  'a future phase; '
+                                                                                  'currently '
+                                                                                  'behaves like '
+                                                                                  'entity.\n'
+                                                                                  '- relationship: '
+                                                                                  'typed, '
+                                                                                  'property-carrying '
+                                                                                  'edge between '
+                                                                                  'two\n'
+                                                                                  '  documents. '
+                                                                                  'Requires '
+                                                                                  'source_templates '
+                                                                                  '/ '
+                                                                                  'target_templates '
+                                                                                  'to be set\n'
+                                                                                  '  and a '
+                                                                                  'source_ref / '
+                                                                                  'target_ref '
+                                                                                  'reference field '
+                                                                                  'on the '
+                                                                                  'template.\n'
+                                                                                  '  See '
+                                                                                  'docs/design/document-relationships.md.'},
+                                                         'source_templates': {'items': {'type': 'string'},
+                                                                              'type': 'array',
+                                                                              'description': 'Template '
+                                                                                             'values '
+                                                                                             'allowed '
+                                                                                             'as '
+                                                                                             'edge '
+                                                                                             'source '
+                                                                                             '(required '
+                                                                                             'when '
+                                                                                             'usage=relationship; '
+                                                                                             'ignored '
+                                                                                             'otherwise)'},
+                                                         'target_templates': {'items': {'type': 'string'},
+                                                                              'type': 'array',
+                                                                              'description': 'Template '
+                                                                                             'values '
+                                                                                             'allowed '
+                                                                                             'as '
+                                                                                             'edge '
+                                                                                             'target '
+                                                                                             '(required '
+                                                                                             'when '
+                                                                                             'usage=relationship; '
+                                                                                             'ignored '
+                                                                                             'otherwise)'},
+                                                         'versioned': {'type': 'boolean',
+                                                                       'description': 'True = '
+                                                                                      'updates '
+                                                                                      'create new '
+                                                                                      'versions; '
+                                                                                      'False = '
+                                                                                      'overwrite '
+                                                                                      'in place. '
+                                                                                      'Immutable '
+                                                                                      'after '
+                                                                                      'creation.',
+                                                                       'default': True},
                                                          'fields': {'items': {'properties': {'name': {'type': 'string',
                                                                                                       'description': 'Field '
                                                                                                                      'name '
@@ -379,6 +580,18 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                                                              'value '
                                                                                                                              'at '
                                                                                                                              'creation)'},
+                                                                                             'template_ref_version': {'type': 'integer',
+                                                                                                                      'description': 'Pinned '
+                                                                                                                                     'version '
+                                                                                                                                     'of '
+                                                                                                                                     'the '
+                                                                                                                                     'nested '
+                                                                                                                                     'template '
+                                                                                                                                     '(mandatory '
+                                                                                                                                     'when '
+                                                                                                                                     'template_ref '
+                                                                                                                                     'is '
+                                                                                                                                     'set)'},
                                                                                              'reference_type': {'type': 'string',
                                                                                                                 'enum': ['document',
                                                                                                                          'term',
@@ -539,6 +752,18 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                                                                    'value '
                                                                                                                                    'at '
                                                                                                                                    'creation)'},
+                                                                                             'array_template_ref_version': {'type': 'integer',
+                                                                                                                            'description': 'Pinned '
+                                                                                                                                           'version '
+                                                                                                                                           'of '
+                                                                                                                                           'the '
+                                                                                                                                           'array-item '
+                                                                                                                                           'template '
+                                                                                                                                           '(mandatory '
+                                                                                                                                           'when '
+                                                                                                                                           'array_template_ref '
+                                                                                                                                           'is '
+                                                                                                                                           'set)'},
                                                                                              'array_file_config': {'properties': {'allowed_types': {'items': {'type': 'string'},
                                                                                                                                                     'type': 'array',
                                                                                                                                                     'description': 'Allowed '
@@ -641,6 +866,34 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                                                               'url, '
                                                                                                                               'latitude, '
                                                                                                                               'etc.)'},
+                                                                                             'full_text_indexed': {'type': 'boolean',
+                                                                                                                   'description': 'Enable '
+                                                                                                                                  'PostgreSQL '
+                                                                                                                                  'full-text '
+                                                                                                                                  'indexing '
+                                                                                                                                  'on '
+                                                                                                                                  'this '
+                                                                                                                                  'field. '
+                                                                                                                                  'Only '
+                                                                                                                                  'valid '
+                                                                                                                                  'for '
+                                                                                                                                  'type=string '
+                                                                                                                                  'and '
+                                                                                                                                  'requires '
+                                                                                                                                  'template '
+                                                                                                                                  'reporting.sync_enabled=true. '
+                                                                                                                                  'Future: '
+                                                                                                                                  'language '
+                                                                                                                                  'codes '
+                                                                                                                                  "('en', "
+                                                                                                                                  "'de') "
+                                                                                                                                  'will '
+                                                                                                                                  'be '
+                                                                                                                                  'accepted; '
+                                                                                                                                  'v1 '
+                                                                                                                                  'is '
+                                                                                                                                  'bool '
+                                                                                                                                  'only.'},
                                                                                              'inherited': {'type': 'boolean',
                                                                                                            'description': 'Whether '
                                                                                                                           'this '
@@ -909,7 +1162,7 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                    'validation)'}},
                                           'additionalProperties': False,
                                           'type': 'object',
-                                          'required': ['value', 'label'],
+                                          'required': ['value', 'label', 'namespace'],
                                           'description': 'Request to create a new template.'},
  'template-store#FieldDefinition': {'properties': {'name': {'type': 'string',
                                                             'description': 'Field name (used in '
@@ -958,6 +1211,17 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                    '(resolved from '
                                                                                    'value at '
                                                                                    'creation)'},
+                                                   'template_ref_version': {'type': 'integer',
+                                                                            'description': 'Pinned '
+                                                                                           'version '
+                                                                                           'of the '
+                                                                                           'nested '
+                                                                                           'template '
+                                                                                           '(mandatory '
+                                                                                           'when '
+                                                                                           'template_ref '
+                                                                                           'is '
+                                                                                           'set)'},
                                                    'reference_type': {'type': 'string',
                                                                       'enum': ['document',
                                                                                'term',
@@ -1104,6 +1368,18 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                          'from '
                                                                                          'value at '
                                                                                          'creation)'},
+                                                   'array_template_ref_version': {'type': 'integer',
+                                                                                  'description': 'Pinned '
+                                                                                                 'version '
+                                                                                                 'of '
+                                                                                                 'the '
+                                                                                                 'array-item '
+                                                                                                 'template '
+                                                                                                 '(mandatory '
+                                                                                                 'when '
+                                                                                                 'array_template_ref '
+                                                                                                 'is '
+                                                                                                 'set)'},
                                                    'array_file_config': {'properties': {'allowed_types': {'items': {'type': 'string'},
                                                                                                           'type': 'array',
                                                                                                           'description': 'Allowed '
@@ -1202,6 +1478,30 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                     '(email, url, '
                                                                                     'latitude, '
                                                                                     'etc.)'},
+                                                   'full_text_indexed': {'type': 'boolean',
+                                                                         'description': 'Enable '
+                                                                                        'PostgreSQL '
+                                                                                        'full-text '
+                                                                                        'indexing '
+                                                                                        'on this '
+                                                                                        'field. '
+                                                                                        'Only '
+                                                                                        'valid for '
+                                                                                        'type=string '
+                                                                                        'and '
+                                                                                        'requires '
+                                                                                        'template '
+                                                                                        'reporting.sync_enabled=true. '
+                                                                                        'Future: '
+                                                                                        'language '
+                                                                                        'codes '
+                                                                                        "('en', "
+                                                                                        "'de') "
+                                                                                        'will be '
+                                                                                        'accepted; '
+                                                                                        'v1 is '
+                                                                                        'bool '
+                                                                                        'only.'},
                                                    'inherited': {'type': 'boolean',
                                                                  'description': 'Whether this '
                                                                                 'field is '
@@ -1242,11 +1542,12 @@ template_id (string, REQUIRED): Template ID to validate against
 template_version (integer): Specific template version to validate against (default: latest)
 document_id (string): Pre-assigned document ID (for restore/migration — Registry uses as-is instead of generating)
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with document_id)
-namespace (string): Namespace for the document
+namespace (string, REQUIRED): Namespace for the document
 data (object, REQUIRED): Document content
 created_by (string): User or system creating this document
 metadata (object): Custom metadata
-synonyms (array of object): Optional synonym composite keys to register for this document in the Registry""",
+synonyms (array of object): Optional synonym composite keys to register for this document in the Registry
+on_synonym_conflict (enum, default: "fail"): One of: fail, warn. How to handle an inline synonym that the Registry refuses (e.g. already owned by a different entry). 'fail' (default): the whole create fails, the document is NOT created, and any synonyms/entry allocated for it are rolled back — use this when the synonyms are load-bearing (e.g. you rely on original IDs to resolve after import). 'warn': the document is created and the refused synonyms are reported in `warnings`.""",
     'create_documents_bulk': """Create multiple documents at once. Returns per-item results.
 
 Each item follows the same schema as create_document.
@@ -1256,23 +1557,12 @@ template_id (string, REQUIRED): Template ID to validate against
 template_version (integer): Specific template version to validate against (default: latest)
 document_id (string): Pre-assigned document ID (for restore/migration — Registry uses as-is instead of generating)
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with document_id)
-namespace (string): Namespace for the document
+namespace (string, REQUIRED): Namespace for the document
 data (object, REQUIRED): Document content
 created_by (string): User or system creating this document
 metadata (object): Custom metadata
-synonyms (array of object): Optional synonym composite keys to register for this document in the Registry""",
-    'create_relationships': """Create ontology relationships between terms.
-
-Relationship types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
-Use source_term_id (subject) and target_term_id (object).
-Example: "Lung cancer" --is_a--> "Cancer"
-
-Fields (from OpenAPI — these are the exact field names):
-source_term_id (string, REQUIRED): The subject term ID
-target_term_id (string, REQUIRED): The object term ID
-relationship_type (string, REQUIRED): Relationship type value (e.g., 'is_a', 'part_of')
-metadata (object): Provenance, confidence, OWL axioms
-created_by (string): User or system creating this relationship""",
+synonyms (array of object): Optional synonym composite keys to register for this document in the Registry
+on_synonym_conflict (enum, default: "fail"): One of: fail, warn. How to handle an inline synonym that the Registry refuses (e.g. already owned by a different entry). 'fail' (default): the whole create fails, the document is NOT created, and any synonyms/entry allocated for it are rolled back — use this when the synonyms are load-bearing (e.g. you rely on original IDs to resolve after import). 'warn': the document is created and the refused synonyms are reported in `warnings`.""",
     'create_template': """Create a template (document schema).
 
 IMPORTANT field naming:
@@ -1288,10 +1578,23 @@ label (string, REQUIRED): Display label
 description (string): Detailed description
 template_id (string): Pre-assigned template ID (for restore/migration — Registry uses as-is instead of generating)
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)
-namespace (string): Namespace for the template
+namespace (string, REQUIRED): Namespace for the template
 extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version (None = always use latest active parent version)
 identity_fields (array of string): Fields that form the composite identity key
+header_fields (array of string): Fields to include in peer/header projections. Bare names → data.<name>; metadata.custom.<name> paths allowed. Empty → projection falls back to identity_fields.
+usage (enum): One of: entity, reference, relationship. How a template's documents are intended to be used.
+
+- entity (default): full document lifecycle, the v1.x behaviour.
+- reference: lightweight controlled-vocabulary documents (LOV).
+  Reserved for a future phase; currently behaves like entity.
+- relationship: typed, property-carrying edge between two
+  documents. Requires source_templates / target_templates to be set
+  and a source_ref / target_ref reference field on the template.
+  See docs/design/document-relationships.md.
+source_templates (array of string): Template values allowed as edge source (required when usage=relationship; ignored otherwise)
+target_templates (array of string): Template values allowed as edge target (required when usage=relationship; ignored otherwise)
+versioned (boolean, default: true): True = updates create new versions; False = overwrite in place. Immutable after creation.
 fields (array of object): Field definitions
   Each item:
     name (string, REQUIRED): Field name (used in data)
@@ -1301,6 +1604,7 @@ fields (array of object): Field definitions
     default_value (object): Default value if not provided
     terminology_ref (string): Canonical terminology_id for term validation (resolved from value at creation)
     template_ref (string): Canonical template_id for nested template (resolved from value at creation)
+    template_ref_version (integer): Pinned version of the nested template (mandatory when template_ref is set)
     reference_type (enum): One of: document, term, terminology, template. Type of entity being referenced (for reference type)
     target_templates (array of string): Canonical template_ids for allowed document reference targets (resolved from values at creation)
     include_subtypes (boolean): When true, target_templates also accepts documents from child templates (via inheritance)
@@ -1311,11 +1615,13 @@ fields (array of object): Field definitions
     array_item_type (enum): One of: string, number, integer, boolean, date, datetime, term, reference, file, object, array. Type of array items (for array type)
     array_terminology_ref (string): Canonical terminology_id for array item term validation (resolved from value at creation)
     array_template_ref (string): Canonical template_id for array item template (resolved from value at creation)
+    array_template_ref_version (integer): Pinned version of the array-item template (mandatory when array_template_ref is set)
     array_file_config (object): File configuration for array items if file type
       (nested object — see full schema)
     validation (object): Field-level validation rules
       (nested object — see full schema)
     semantic_type (enum): One of: email, url, latitude, longitude, percentage, duration, geo_point. Semantic type for additional validation (email, url, latitude, etc.)
+    full_text_indexed (boolean): Enable PostgreSQL full-text indexing on this field. Only valid for type=string and requires template reporting.sync_enabled=true. Future: language codes ('en', 'de') will be accepted; v1 is bool only.
     inherited (boolean): Whether this field is inherited from a parent template (set during resolution)
     inherited_from (string): Template ID of the parent template this field was inherited from
     metadata (object): Additional field metadata
@@ -1358,6 +1664,7 @@ FieldDefinition fields:
   default_value (object): Default value if not provided
   terminology_ref (string): Canonical terminology_id for term validation (resolved from value at creation)
   template_ref (string): Canonical template_id for nested template (resolved from value at creation)
+  template_ref_version (integer): Pinned version of the nested template (mandatory when template_ref is set)
   reference_type (enum): One of: document, term, terminology, template. Type of entity being referenced (for reference type)
   target_templates (array of string): Canonical template_ids for allowed document reference targets (resolved from values at creation)
   include_subtypes (boolean): When true, target_templates also accepts documents from child templates (via inheritance)
@@ -1368,11 +1675,13 @@ FieldDefinition fields:
   array_item_type (enum): One of: string, number, integer, boolean, date, datetime, term, reference, file, object, array. Type of array items (for array type)
   array_terminology_ref (string): Canonical terminology_id for array item term validation (resolved from value at creation)
   array_template_ref (string): Canonical template_id for array item template (resolved from value at creation)
+  array_template_ref_version (integer): Pinned version of the array-item template (mandatory when array_template_ref is set)
   array_file_config (object): File configuration for array items if file type
     (nested object — see full schema)
   validation (object): Field-level validation rules
     (nested object — see full schema)
   semantic_type (enum): One of: email, url, latitude, longitude, percentage, duration, geo_point. Semantic type for additional validation (email, url, latitude, etc.)
+  full_text_indexed (boolean): Enable PostgreSQL full-text indexing on this field. Only valid for type=string and requires template reporting.sync_enabled=true. Future: language codes ('en', 'de') will be accepted; v1 is bool only.
   inherited (boolean): Whether this field is inherited from a parent template (set during resolution)
   inherited_from (string): Template ID of the parent template this field was inherited from
   metadata (object): Additional field metadata""",
@@ -1387,10 +1696,23 @@ label (string, REQUIRED): Display label
 description (string): Detailed description
 template_id (string): Pre-assigned template ID (for restore/migration — Registry uses as-is instead of generating)
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)
-namespace (string): Namespace for the template
+namespace (string, REQUIRED): Namespace for the template
 extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version (None = always use latest active parent version)
 identity_fields (array of string): Fields that form the composite identity key
+header_fields (array of string): Fields to include in peer/header projections. Bare names → data.<name>; metadata.custom.<name> paths allowed. Empty → projection falls back to identity_fields.
+usage (enum): One of: entity, reference, relationship. How a template's documents are intended to be used.
+
+- entity (default): full document lifecycle, the v1.x behaviour.
+- reference: lightweight controlled-vocabulary documents (LOV).
+  Reserved for a future phase; currently behaves like entity.
+- relationship: typed, property-carrying edge between two
+  documents. Requires source_templates / target_templates to be set
+  and a source_ref / target_ref reference field on the template.
+  See docs/design/document-relationships.md.
+source_templates (array of string): Template values allowed as edge source (required when usage=relationship; ignored otherwise)
+target_templates (array of string): Template values allowed as edge target (required when usage=relationship; ignored otherwise)
+versioned (boolean, default: true): True = updates create new versions; False = overwrite in place. Immutable after creation.
 fields (array of object): Field definitions
   Each item:
     name (string, REQUIRED): Field name (used in data)
@@ -1400,6 +1722,7 @@ fields (array of object): Field definitions
     default_value (object): Default value if not provided
     terminology_ref (string): Canonical terminology_id for term validation (resolved from value at creation)
     template_ref (string): Canonical template_id for nested template (resolved from value at creation)
+    template_ref_version (integer): Pinned version of the nested template (mandatory when template_ref is set)
     reference_type (enum): One of: document, term, terminology, template. Type of entity being referenced (for reference type)
     target_templates (array of string): Canonical template_ids for allowed document reference targets (resolved from values at creation)
     include_subtypes (boolean): When true, target_templates also accepts documents from child templates (via inheritance)
@@ -1410,11 +1733,13 @@ fields (array of object): Field definitions
     array_item_type (enum): One of: string, number, integer, boolean, date, datetime, term, reference, file, object, array. Type of array items (for array type)
     array_terminology_ref (string): Canonical terminology_id for array item term validation (resolved from value at creation)
     array_template_ref (string): Canonical template_id for array item template (resolved from value at creation)
+    array_template_ref_version (integer): Pinned version of the array-item template (mandatory when array_template_ref is set)
     array_file_config (object): File configuration for array items if file type
       (nested object — see full schema)
     validation (object): Field-level validation rules
       (nested object — see full schema)
     semantic_type (enum): One of: email, url, latitude, longitude, percentage, duration, geo_point. Semantic type for additional validation (email, url, latitude, etc.)
+    full_text_indexed (boolean): Enable PostgreSQL full-text indexing on this field. Only valid for type=string and requires template reporting.sync_enabled=true. Future: language codes ('en', 'de') will be accepted; v1 is bool only.
     inherited (boolean): Whether this field is inherited from a parent template (set during resolution)
     inherited_from (string): Template ID of the parent template this field was inherited from
     metadata (object): Additional field metadata
@@ -1457,6 +1782,7 @@ FieldDefinition fields:
   default_value (object): Default value if not provided
   terminology_ref (string): Canonical terminology_id for term validation (resolved from value at creation)
   template_ref (string): Canonical template_id for nested template (resolved from value at creation)
+  template_ref_version (integer): Pinned version of the nested template (mandatory when template_ref is set)
   reference_type (enum): One of: document, term, terminology, template. Type of entity being referenced (for reference type)
   target_templates (array of string): Canonical template_ids for allowed document reference targets (resolved from values at creation)
   include_subtypes (boolean): When true, target_templates also accepts documents from child templates (via inheritance)
@@ -1467,14 +1793,28 @@ FieldDefinition fields:
   array_item_type (enum): One of: string, number, integer, boolean, date, datetime, term, reference, file, object, array. Type of array items (for array type)
   array_terminology_ref (string): Canonical terminology_id for array item term validation (resolved from value at creation)
   array_template_ref (string): Canonical template_id for array item template (resolved from value at creation)
+  array_template_ref_version (integer): Pinned version of the array-item template (mandatory when array_template_ref is set)
   array_file_config (object): File configuration for array items if file type
     (nested object — see full schema)
   validation (object): Field-level validation rules
     (nested object — see full schema)
   semantic_type (enum): One of: email, url, latitude, longitude, percentage, duration, geo_point. Semantic type for additional validation (email, url, latitude, etc.)
+  full_text_indexed (boolean): Enable PostgreSQL full-text indexing on this field. Only valid for type=string and requires template reporting.sync_enabled=true. Future: language codes ('en', 'de') will be accepted; v1 is bool only.
   inherited (boolean): Whether this field is inherited from a parent template (set during resolution)
   inherited_from (string): Template ID of the parent template this field was inherited from
   metadata (object): Additional field metadata""",
+    'create_term_relations': """Create ontology term-relations between terms.
+
+Relation types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
+Use source_term_id (subject) and target_term_id (object).
+Example: "Lung cancer" --is_a--> "Cancer"
+
+Fields (from OpenAPI — these are the exact field names):
+source_term_id (string, REQUIRED): The subject term ID
+target_term_id (string, REQUIRED): The object term ID
+relation_type (string, REQUIRED): Relation type value (e.g., 'is_a', 'part_of')
+metadata (object): Provenance, confidence, OWL axioms
+created_by (string): User or system creating this relation""",
     'create_terminologies_bulk': """Create multiple terminologies at once.
 
 Each item follows the same schema as create_terminology.
@@ -1483,10 +1823,12 @@ Fields (from OpenAPI — these are the exact field names):
 value (string, REQUIRED): Human-readable value (e.g., 'DOC_STATUS')
 label (string, REQUIRED): Display label
 description (string): Detailed description
-namespace (string): Namespace for the terminology
+terminology_id (string): Pre-assigned terminology ID (for restore/migration — Registry uses as-is instead of generating)
+namespace (string, REQUIRED): Namespace for the terminology
 case_sensitive (boolean, default: false): Whether term values are case-sensitive
 allow_multiple (boolean, default: false): Whether multiple terms can be selected
 extensible (boolean, default: false): Whether users can add new terms at runtime
+mutable (boolean, default: false): Whether terms can be hard-deleted (vs deprecated). Implies extensible=True.
 metadata (object): Additional metadata
   source (string): Source of the terminology (e.g., 'ISO 3166', 'internal')
   source_url (string): URL to the source specification
@@ -1503,10 +1845,12 @@ Fields (from OpenAPI — these are the exact field names):
 value (string, REQUIRED): Human-readable value (e.g., 'DOC_STATUS')
 label (string, REQUIRED): Display label
 description (string): Detailed description
-namespace (string): Namespace for the terminology
+terminology_id (string): Pre-assigned terminology ID (for restore/migration — Registry uses as-is instead of generating)
+namespace (string, REQUIRED): Namespace for the terminology
 case_sensitive (boolean, default: false): Whether term values are case-sensitive
 allow_multiple (boolean, default: false): Whether multiple terms can be selected
 extensible (boolean, default: false): Whether users can add new terms at runtime
+mutable (boolean, default: false): Whether terms can be hard-deleted (vs deprecated). Implies extensible=True.
 metadata (object): Additional metadata
   source (string): Source of the terminology (e.g., 'ISO 3166', 'internal')
   source_url (string): URL to the source specification
@@ -1522,6 +1866,7 @@ Optional: aliases (list of strings), label, description, sort_order.
 
 Fields (from OpenAPI — these are the exact field names):
 value (string, REQUIRED): The value stored in documents (unique within terminology)
+term_id (string): Pre-assigned term ID (for restore/migration — Registry uses as-is instead of generating)
 aliases (array of string): Alternative values that resolve to this term (e.g., ['MR.', 'mr'])
 label (string): Display label for UI. Defaults to value if not provided.
 description (string): Detailed description
@@ -1534,6 +1879,12 @@ translations (array of object): Translations
     description (string): Translated description
 metadata (object): Custom metadata
 created_by (string): User or system creating this term""",
+    'delete_documents_bulk': """Delete multiple documents at once. Returns per-item results.
+
+Prefer this over repeated delete_document calls when clearing many
+documents (e.g. before a re-import). Soft-delete by default; set
+hard_delete=true to permanently remove (requires namespace
+deletion_mode='full'). hard_delete applies uniformly to every id.""",
     'get_replay_status': """Get the status of a replay session.""",
     'get_template_fields': """Get a clean summary of a template's fields for querying or document creation.
 
@@ -1549,7 +1900,7 @@ Term fields: use human-readable values in the CSV.""",
 The import format matches the export format from export_terminology.""",
     'list_report_tables': """List available PostgreSQL reporting tables and their schemas.
 
-Returns doc_* tables (one per template) plus terminologies, terms, term_relationships.
+Returns doc_* tables (one per template) plus terminologies, terms, term_relations.
 Use this before run_report_query to understand available tables and columns.""",
     'query_by_template': """Query documents by template value with easy field filtering.
 
@@ -1580,4 +1931,13 @@ Use get_replay_status to track progress, cancel_replay to stop.""",
 Reads a file from disk and uploads it to WIP's MinIO-backed file storage.
 Supports any file type. Returns file_id for use in document file fields.
 Tags are comma-separated (e.g., "receipt,2024,tax").""",
+    'validate_documents': """Validate many documents against one template without saving. Returns per-item results.
+
+Bulk, side-effect-free dry run. Prefer this over repeated
+validate_document calls when checking a whole dataset — one call instead
+of one per row. All items validate against a single template_id/namespace;
+the template is warmed into cache once. Returns {"results": [...]} in input
+order. A document being invalid is reported by that item's valid=false +
+errors; an unresolvable template_id fails the whole call. No documents,
+versions, or identity-hash registrations are created.""",
 }

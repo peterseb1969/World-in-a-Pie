@@ -12,12 +12,76 @@ Responsibilities:
 import contextlib
 import json
 import logging
+import re
 from datetime import date, datetime
 from typing import Any, ClassVar
 
 from .models import ReportingConfig, SemanticType
 
 logger = logging.getLogger(__name__)
+
+
+# Markdown preprocessing for full-text indexing. Runs in Python at sync
+# time before the GENERATED tsvector column tokenises. Goal: feed
+# to_tsvector plain prose, not link/heading/bullet syntax. **Code-block
+# contents are preserved** — fences are stripped but the code itself
+# stays so a search for `tsvector` finds it inside code samples (this is
+# a deliberate v1 design call from the FTS fireside).
+_MD_HEADING = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+", re.MULTILINE)
+_MD_CODE_FENCE = re.compile(r"^[ \t]{0,3}```[^\n]*\n", re.MULTILINE)
+_MD_CODE_FENCE_CLOSE = re.compile(r"\n[ \t]{0,3}```[ \t]*$", re.MULTILINE)
+_MD_INLINE_CODE = re.compile(r"`([^`\n]+)`")
+_MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_MD_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]+\)")
+_MD_BOLD = re.compile(r"\*\*([^*\n]+)\*\*")
+_MD_ITALIC = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
+_MD_BOLD_UNDER = re.compile(r"__([^_\n]+)__")
+_MD_ITALIC_UNDER = re.compile(r"(?<!_)_([^_\n]+)_(?!_)")
+_MD_BULLET = re.compile(r"^[ \t]{0,3}[-*+][ \t]+", re.MULTILINE)
+_MD_NUMBERED = re.compile(r"^[ \t]{0,3}\d+\.[ \t]+", re.MULTILINE)
+_MD_BLOCKQUOTE = re.compile(r"^[ \t]{0,3}>[ \t]?", re.MULTILINE)
+_MD_HR = re.compile(r"^[ \t]{0,3}(-{3,}|\*{3,}|_{3,})[ \t]*$", re.MULTILINE)
+
+
+def _strip_md(text: str | None) -> str | None:
+    """Strip common markdown syntax for full-text-search preprocessing.
+
+    Preserves code-block contents (fence delimiters removed, code kept).
+    Replaces links/images with their visible text. Removes inline
+    formatting markers (bold, italic, headings, bullets, blockquotes).
+
+    Returns the original input verbatim if not a string. None passes
+    through as None.
+    """
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        return text
+    if not text:
+        return text
+
+    s = text
+    # Code fences: drop the fence lines but keep the code between them.
+    s = _MD_CODE_FENCE.sub("", s)
+    s = _MD_CODE_FENCE_CLOSE.sub("", s)
+    # Images first (so the !\[ doesn't get caught by the link rule).
+    s = _MD_IMAGE.sub(r"\1", s)
+    # Links: keep visible text, drop URL.
+    s = _MD_LINK.sub(r"\1", s)
+    # Inline code: keep contents.
+    s = _MD_INLINE_CODE.sub(r"\1", s)
+    # Emphasis markers.
+    s = _MD_BOLD.sub(r"\1", s)
+    s = _MD_BOLD_UNDER.sub(r"\1", s)
+    s = _MD_ITALIC.sub(r"\1", s)
+    s = _MD_ITALIC_UNDER.sub(r"\1", s)
+    # Block-level prefixes.
+    s = _MD_HEADING.sub("", s)
+    s = _MD_BULLET.sub("", s)
+    s = _MD_NUMBERED.sub("", s)
+    s = _MD_BLOCKQUOTE.sub("", s)
+    s = _MD_HR.sub("", s)
+    return s
 
 
 # Time unit factors for computing duration seconds
@@ -312,17 +376,28 @@ class DocumentTransformer:
         # Build field type map and semantic type map from template
         field_types: dict[str, str] = {}
         semantic_types: dict[str, SemanticType] = {}
+        # File-field multiplicity decides the column shape, mirroring the
+        # schema_manager DDL: multiple -> one bare JSONB column; single ->
+        # three columns (<name>_file_id/_filename/_content_type), NO bare
+        # column at all.
+        single_file_fields: set[str] = set()
+        multiple_file_fields: set[str] = set()
         for field in template.get("fields", []):
             field_types[field["name"]] = field.get("type", "string")
             if field.get("semantic_type"):
                 with contextlib.suppress(ValueError):
                     semantic_types[field["name"]] = SemanticType(field["semantic_type"])
+            if field.get("type") == "file":
+                if (field.get("file_config") or {}).get("multiple"):
+                    multiple_file_fields.add(field["name"])
+                else:
+                    single_file_fields.add(field["name"])
         file_references_list = document.get("file_references", [])
 
         # Convert array format to dict for compatibility with existing flattening logic
         # Array format: [{"field_path": "gender", "term_id": "019abc42-..."}, ...]
         # Dict format: {"gender": "019abc42-...", ...}
-        term_references = {}
+        term_references: dict[str, Any] = {}
         for ref in term_references_list:
             field_path = ref.get("field_path", "")
             term_id = ref.get("term_id", "")
@@ -338,7 +413,7 @@ class DocumentTransformer:
 
         # Convert file_references to dict for column mapping
         # Array format: [{"field_path": "photo", "file_id": "FILE-001", "filename": "...", "content_type": "..."}, ...]
-        file_references = {}
+        file_references: dict[str, Any] = {}
         for ref in file_references_list:
             field_path = ref.get("field_path", "")
             if field_path:
@@ -371,9 +446,35 @@ class DocumentTransformer:
                 "updated_by": document.get("updated_by"),
             })
 
+        # Phase 6/7 — relationship templates carry extra resolution
+        # metadata in event-payload data (source_ref_resolved,
+        # target_ref_resolved, source_template_value, target_template_value).
+        # These are NOT template fields — they're event enrichment — so
+        # exclude them from the flatten step or the row will end up with
+        # columns the table doesn't have.
+        is_relationship = template.get("usage") == "relationship"
+        flatten_input = data
+        if is_relationship:
+            flatten_input = {
+                k: v for k, v in data.items()
+                if k not in (
+                    "source_ref_resolved", "target_ref_resolved",
+                    "source_template_value", "target_template_value",
+                )
+            }
+
         # Flatten the data
-        flattened_data = self._flatten_object(data, "", term_references, field_types=field_types)
+        flattened_data = self._flatten_object(
+            flatten_input, "", term_references, field_types=field_types,
+        )
         base_row.update(flattened_data)
+
+        # Single-file fields have no bare column — the DDL creates the
+        # three-column form instead. The generic flatten just emitted the
+        # raw data value under the bare name; drop it, or the INSERT
+        # references a column that does not exist and the row is lost.
+        for name in single_file_fields:
+            base_row.pop(self._safe_column_name(name), None)
 
         # Process semantic types if template is provided
         if semantic_types:
@@ -387,22 +488,63 @@ class DocumentTransformer:
                 if col_name not in base_row:
                     base_row[col_name] = term_id
 
-        # Add file columns for file references
+        # Add file columns for file references. Branch on the TEMPLATE's
+        # declared multiplicity (the same thing the DDL branched on), not on
+        # the reference payload's shape — a lone indexed ref on a multiple
+        # field arrives as a one-element list, and a shape-based branch would
+        # write three columns the table doesn't have.
         for field_path, file_ref in file_references.items():
             safe_field = self._safe_column_name(field_path)
-            if isinstance(file_ref, list):
-                # Multiple files - store as JSON
+            refs = file_ref if isinstance(file_ref, list) else [file_ref]
+            if field_path in multiple_file_fields:
+                base_row[safe_field] = json.dumps(refs)
+            elif field_path in single_file_fields:
+                base_row[f"{safe_field}_file_id"] = refs[0].get("file_id")
+                base_row[f"{safe_field}_filename"] = refs[0].get("filename")
+                base_row[f"{safe_field}_content_type"] = refs[0].get("content_type")
+            elif isinstance(file_ref, list):
+                # Field not in this template version (e.g. ref from an older
+                # data shape) — keep the pre-existing shape-based behavior.
                 base_row[safe_field] = json.dumps(file_ref)
             else:
-                # Single file - separate columns
                 base_row[f"{safe_field}_file_id"] = file_ref.get("file_id")
                 base_row[f"{safe_field}_filename"] = file_ref.get("filename")
                 base_row[f"{safe_field}_content_type"] = file_ref.get("content_type")
+
+        # Full-text-indexed fields: populate <field>_search with the
+        # markdown-stripped value. The schema_manager creates a
+        # GENERATED tsvector column from this — we don't write the
+        # tsvector itself. Only top-level string fields are eligible
+        # (validator at template-creation enforces type=string).
+        for f in template.get("fields", []):
+            if not f.get("full_text_indexed"):
+                continue
+            if f.get("type") != "string":
+                continue
+            field_name = f["name"]
+            raw = data.get(field_name)
+            search_col = f"{self._safe_column_name(field_name)}_search"
+            base_row[search_col] = _strip_md(raw) if isinstance(raw, str) else None
 
         # Store original JSON
         base_row["data_json"] = json.dumps(data)
         base_row["term_references_json"] = json.dumps(term_references_list)
         base_row["file_references_json"] = json.dumps(file_references_list)
+
+        # Phase 7 — relationship templates carry source_ref_id and
+        # target_ref_id columns populated from the Phase-6 enriched
+        # event payload (data.source_ref_resolved / data.target_ref_resolved).
+        # Fall back to the raw refs for resilience: if the producer was
+        # pre-Phase-6, the resolved keys won't exist, but the columns
+        # are still useful for JOINs against documents whose document_id
+        # equals the source_ref / target_ref value.
+        if is_relationship:
+            base_row["source_ref_id"] = (
+                data.get("source_ref_resolved") or data.get("source_ref")
+            )
+            base_row["target_ref_id"] = (
+                data.get("target_ref_resolved") or data.get("target_ref")
+            )
 
         # Expand arrays if configured
         rows = self._expand_arrays(base_row, data, term_references)
@@ -419,7 +561,10 @@ class DocumentTransformer:
         Generate an UPSERT SQL statement for a row.
 
         Args:
-            table_name: Target PostgreSQL table
+            table_name: Target PostgreSQL table — the schema-qualified,
+                quote-safe reference (e.g. ``"clinicA"."doc_patient"``) as
+                returned by ``SchemaManager.qualified_name`` / the ensure_*
+                helpers. Interpolated verbatim; not re-quoted here.
             row: Flattened row dictionary
             strategy: "latest_only" (upsert) or "all_versions" (insert)
 
@@ -443,16 +588,16 @@ class DocumentTransformer:
             update_clause = ", ".join(update_cols)
 
             sql = f"""
-                INSERT INTO "{table_name}" ({', '.join(quoted_columns)})
+                INSERT INTO {table_name} ({', '.join(quoted_columns)})
                 VALUES ({', '.join(placeholders)})
                 ON CONFLICT (document_id)
                 DO UPDATE SET {update_clause}
-                WHERE "{table_name}".version < EXCLUDED.version
+                WHERE {table_name}.version < EXCLUDED.version
             """
         else:
             # INSERT for all_versions strategy — composite PK (document_id, version)
             sql = f"""
-                INSERT INTO "{table_name}" ({', '.join(quoted_columns)})
+                INSERT INTO {table_name} ({', '.join(quoted_columns)})
                 VALUES ({', '.join(placeholders)})
                 ON CONFLICT (document_id, version) DO NOTHING
             """

@@ -21,8 +21,14 @@ ignore = [
     "B008",  # do not perform function call in argument defaults — FastAPI Depends()
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# Typer CLI signatures use `list[str] = []` for repeatable options; B006
+# (mutable default) is not applicable — Typer binds a fresh list per
+# invocation, no state leaks across calls.
+"deployer/src/wip_deploy/cli.py" = ["B006"]
+
 [tool.ruff.lint.isort]
-known-first-party = ["registry", "def_store", "template_store", "document_store", "reporting_sync", "ingest_gateway", "wip_auth", "mcp_server"]
+known-first-party = ["registry", "def_store", "template_store", "document_store", "reporting_sync", "ingest_gateway", "wip_auth", "wip_deploy", "mcp_server"]
 
 [tool.mypy]
 python_version = "3.11"

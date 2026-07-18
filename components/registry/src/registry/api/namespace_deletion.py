@@ -5,8 +5,11 @@ crash-safe namespace deletion with persistent journals.
 """
 
 from datetime import UTC, datetime
+from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+
+from wip_auth import UserIdentity
 
 from ..models.namespace import Namespace
 from ..services.auth import require_admin_key, require_api_key
@@ -72,9 +75,12 @@ async def delete_namespace(
     except ValueError as e:
         raise HTTPException(400, str(e)) from None
 
-    if journal.status == "completed":
+    # Both terminal-success states carry the summary; completed_with_warnings
+    # additionally means a best-effort MinIO/PostgreSQL step degraded — the
+    # per-step errors are in the deletion-status journal view.
+    if journal.status in ("completed", "completed_with_warnings"):
         return {
-            "status": "completed",
+            "status": journal.status,
             "namespace": prefix,
             "summary": journal.summary,
         }
@@ -93,7 +99,7 @@ async def delete_namespace(
 )
 async def deletion_status(
     prefix: str,
-    api_key: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Get the current journal state for an in-progress or completed deletion."""
     journal = await _deletion_service.get_deletion_status(prefix)
@@ -172,7 +178,7 @@ async def update_deletion_mode(
             "Changing from 'retain' to 'full' requires confirm_enable_deletion=true"
         )
 
-    ns.deletion_mode = deletion_mode
+    ns.deletion_mode = cast(Literal["retain", "full"], deletion_mode)
     ns.updated_at = datetime.now(UTC)
     ns.updated_by = updated_by
     await ns.save()

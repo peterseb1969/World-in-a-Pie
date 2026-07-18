@@ -6,13 +6,12 @@ import json
 import shutil
 import tempfile
 import zipfile
+from collections.abc import Iterator
 from contextlib import contextmanager
-from io import BytesIO
 from pathlib import Path
-from typing import Any, BinaryIO, Iterator, TextIO
+from typing import Any, BinaryIO, TextIO
 
 from .models import Manifest
-
 
 # JSONL file names within the archive
 MANIFEST_FILE = "manifest.json"
@@ -21,7 +20,7 @@ TERMS_FILE = "terms.jsonl"
 TEMPLATES_FILE = "templates.jsonl"
 DOCUMENTS_FILE = "documents.jsonl"
 FILES_FILE = "files.jsonl"
-RELATIONSHIPS_FILE = "relationships.jsonl"
+TERM_RELATIONS_FILE = "term_relations.jsonl"
 SYNONYMS_FILE = "synonyms.jsonl"
 REGISTRY_ENTRIES_FILE = "registry_entries.jsonl"
 BLOBS_DIR = "blobs/"
@@ -29,12 +28,22 @@ BLOBS_DIR = "blobs/"
 ENTITY_FILES = {
     "terminologies": TERMINOLOGIES_FILE,
     "terms": TERMS_FILE,
-    "relationships": RELATIONSHIPS_FILE,
+    "term_relations": TERM_RELATIONS_FILE,
     "templates": TEMPLATES_FILE,
     "documents": DOCUMENTS_FILE,
     "files": FILES_FILE,
     "registry_entries": REGISTRY_ENTRIES_FILE,
 }
+
+# v3 (CASE-542): entity JSONL lives under a per-namespace subtree. Blobs stay
+# flat at blobs/<file_id> (file_ids are globally-unique UUID7, so no collision
+# across namespaces — keeps blob I/O namespace-agnostic, zero regression).
+NAMESPACES_DIR = "namespaces"
+
+
+def _entity_path(namespace: str, entity_type: str) -> str:
+    """In-archive path for one namespace's entity JSONL (v3 layout)."""
+    return f"{NAMESPACES_DIR}/{namespace}/{ENTITY_FILES[entity_type]}"
 
 
 class ArchiveWriter:
@@ -55,31 +64,53 @@ class ArchiveWriter:
         self,
         output_path: str | Path,
         tmp_dir: str | Path | None = None,
+        default_namespace: str = "",
     ) -> None:
         self.output_path = Path(output_path)
         self._tmp_dir = tempfile.mkdtemp(
             prefix="wip-export-",
             dir=str(tmp_dir) if tmp_dir else None,
         )
-        self._handles: dict[str, TextIO] = {}
-        self._counts: dict[str, int] = {name: 0 for name in ENTITY_FILES}
+        # v3: handles + counts are keyed by (namespace, entity_type). A caller
+        # that omits the namespace falls back to default_namespace — the
+        # single-namespace convenience that keeps legacy callers working while
+        # still producing a v3 archive (a 1-namespace one).
+        self._default_namespace = default_namespace
+        self._handles: dict[tuple[str, str], TextIO] = {}
+        self._counts: dict[tuple[str, str], int] = {}
+        self._namespaces: list[str] = []  # insertion order
         self._blobs_dir = Path(self._tmp_dir) / "blobs"
         self._blobs_dir.mkdir()
 
-    def _get_handle(self, entity_type: str) -> TextIO:
-        """Get or create the temp file handle for an entity type."""
-        if entity_type not in self._handles:
-            filename = ENTITY_FILES[entity_type]
-            path = Path(self._tmp_dir) / filename
-            self._handles[entity_type] = open(path, "w", encoding="utf-8")
-        return self._handles[entity_type]
+    def _resolve_ns(self, namespace: str) -> str:
+        ns = namespace or self._default_namespace
+        if not ns:
+            raise ValueError(
+                "ArchiveWriter (v3) requires a namespace: pass namespace= or "
+                "construct with default_namespace="
+            )
+        if ns not in self._namespaces:
+            self._namespaces.append(ns)
+        return ns
 
-    def add_entity(self, entity_type: str, entity: dict[str, Any]) -> None:
-        """Append an entity as a JSONL line to the temp file."""
-        fh = self._get_handle(entity_type)
+    def _get_handle(self, namespace: str, entity_type: str) -> TextIO:
+        """Get or create the temp file handle for (namespace, entity type)."""
+        key = (namespace, entity_type)
+        if key not in self._handles:
+            d = Path(self._tmp_dir) / NAMESPACES_DIR / namespace
+            d.mkdir(parents=True, exist_ok=True)
+            self._handles[key] = open(d / ENTITY_FILES[entity_type], "w", encoding="utf-8")
+        return self._handles[key]
+
+    def add_entity(
+        self, entity_type: str, entity: dict[str, Any], *, namespace: str = ""
+    ) -> None:
+        """Append an entity as a JSONL line under its namespace's subtree."""
+        ns = self._resolve_ns(namespace)
+        fh = self._get_handle(ns, entity_type)
         fh.write(json.dumps(entity, default=str))
         fh.write("\n")
-        self._counts[entity_type] = self._counts.get(entity_type, 0) + 1
+        self._counts[(ns, entity_type)] = self._counts.get((ns, entity_type), 0) + 1
 
     @contextmanager
     def open_blob(self, file_id: str) -> Iterator[BinaryIO]:
@@ -103,9 +134,14 @@ class ArchiveWriter:
         """
         (self._blobs_dir / file_id).write_bytes(data)
 
-    def entity_count(self, entity_type: str) -> int:
-        """Return the number of entities added for a given type."""
-        return self._counts.get(entity_type, 0)
+    def entity_count(self, entity_type: str, *, namespace: str = "") -> int:
+        """Return the number of entities added for (namespace, entity type)."""
+        ns = namespace or self._default_namespace
+        return self._counts.get((ns, entity_type), 0)
+
+    def namespaces(self) -> list[str]:
+        """Namespaces written to this archive, in first-seen order."""
+        return list(self._namespaces)
 
     def write(self, manifest: Manifest) -> Path:
         """Flush temp files and assemble the ZIP archive."""
@@ -123,18 +159,21 @@ class ArchiveWriter:
                 manifest.model_dump_json(indent=2),
             )
 
-            # Write JSONL files from temp dir
-            for entity_type, filename in ENTITY_FILES.items():
-                tmp_path = Path(self._tmp_dir) / filename
-                if tmp_path.exists() and tmp_path.stat().st_size > 0:
-                    zf.write(tmp_path, filename)
+            # Write per-namespace JSONL files (v3 layout: namespaces/<ns>/…)
+            for ns in self._namespaces:
+                for entity_type in ENTITY_FILES:
+                    tmp_path = (
+                        Path(self._tmp_dir) / NAMESPACES_DIR / ns / ENTITY_FILES[entity_type]
+                    )
+                    if tmp_path.exists() and tmp_path.stat().st_size > 0:
+                        zf.write(tmp_path, _entity_path(ns, entity_type))
 
-            # Write synonyms.jsonl if present
+            # Write synonyms.jsonl if present (legacy single-file; toolkit path)
             synonyms_path = Path(self._tmp_dir) / SYNONYMS_FILE
             if synonyms_path.exists() and synonyms_path.stat().st_size > 0:
                 zf.write(synonyms_path, SYNONYMS_FILE)
 
-            # Write blobs (streamed from per-file tempfiles)
+            # Write blobs (streamed from per-file tempfiles; flat, namespace-agnostic)
             for blob_file in sorted(self._blobs_dir.iterdir()):
                 zf.write(blob_file, f"{BLOBS_DIR}{blob_file.name}")
 
@@ -189,11 +228,49 @@ class ArchiveReader:
         data = json.loads(self._zf.read(MANIFEST_FILE))
         return Manifest(**data)
 
-    def read_entities(self, entity_type: str) -> Iterator[dict[str, Any]]:
-        """Iterate over entities of a given type."""
-        filename = ENTITY_FILES[entity_type]
+    def list_namespaces(self) -> list[str]:
+        """The namespaces present in this v3 archive, sorted.
+
+        Derived from the ``namespaces/<ns>/…`` entries in the ZIP, so it works
+        even without parsing the manifest.
+        """
+        found: set[str] = set()
+        prefix = f"{NAMESPACES_DIR}/"
+        for name in self._zf.namelist():
+            if name.startswith(prefix):
+                parts = name.split("/")
+                if len(parts) >= 3 and parts[1]:  # namespaces/<ns>/<file>
+                    found.add(parts[1])
+        return sorted(found)
+
+    def _resolve_ns(self, namespace: str) -> str | None:
+        """Resolve an optional namespace to a concrete one.
+
+        Explicit namespace passes through. Omitted: a single-namespace archive
+        resolves to its sole namespace (the legacy-caller convenience); an
+        empty archive resolves to None (callers yield nothing); a multi-
+        namespace archive raises — the caller must say which.
+        """
+        if namespace:
+            return namespace
+        nss = self.list_namespaces()
+        if len(nss) == 1:
+            return nss[0]
+        if not nss:
+            return None
+        raise ValueError(
+            f"archive carries {len(nss)} namespaces {nss}; pass namespace= to pick one"
+        )
+
+    def read_entities(
+        self, entity_type: str, *, namespace: str = ""
+    ) -> Iterator[dict[str, Any]]:
+        """Iterate entities of a given type within a namespace."""
+        ns = self._resolve_ns(namespace)
+        if ns is None:
+            return
         try:
-            content = self._zf.read(filename).decode("utf-8")
+            content = self._zf.read(_entity_path(ns, entity_type)).decode("utf-8")
         except KeyError:
             return
 
@@ -234,11 +311,13 @@ class ArchiveReader:
             if name.startswith(prefix) and len(name) > len(prefix)
         ]
 
-    def entity_count(self, entity_type: str) -> int:
-        """Count entities of a given type without loading all into memory."""
-        filename = ENTITY_FILES[entity_type]
+    def entity_count(self, entity_type: str, *, namespace: str = "") -> int:
+        """Count entities of a type within a namespace, without loading them."""
+        ns = self._resolve_ns(namespace)
+        if ns is None:
+            return 0
         try:
-            content = self._zf.read(filename).decode("utf-8")
+            content = self._zf.read(_entity_path(ns, entity_type)).decode("utf-8")
         except KeyError:
             return 0
         return sum(1 for line in content.splitlines() if line.strip())

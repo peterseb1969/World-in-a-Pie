@@ -3,7 +3,7 @@
 Covers:
 - Hard-delete immutable terminology in 'full' namespace
 - Hard-delete term in 'full' namespace
-- Hard-delete relationship in 'full' namespace
+- Hard-delete relation in 'full' namespace
 - Registry cleanup after hard-delete
 - Rejection in 'retain' namespace
 - Soft-delete regression (unchanged when hard_delete=False)
@@ -63,21 +63,21 @@ async def create_term(client, auth_headers, terminology_id, value, label=None):
     return data["results"][0]["id"]
 
 
-async def create_relationship(client, auth_headers, source_id, target_id, rel_type="is_a"):
-    """Create a relationship between two terms."""
+async def create_relation(client, auth_headers, source_id, target_id, rel_type="is_a"):
+    """Create a relation between two terms."""
     response = await client.post(
-        "/api/def-store/ontology/relationships",
+        "/api/def-store/ontology/term-relations",
         headers=auth_headers,
         params={"namespace": "wip"},
         json=[{
             "source_term_id": source_id,
             "target_term_id": target_id,
-            "relationship_type": rel_type,
+            "relation_type": rel_type,
         }],
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["succeeded"] >= 1, f"Failed to create relationship: {data}"
+    assert data["succeeded"] >= 1, f"Failed to create relation: {data}"
 
 
 async def delete_terminology(client, auth_headers, terminology_id, force=False, hard_delete=False):
@@ -115,11 +115,11 @@ async def delete_term_bulk(client, auth_headers, term_id, hard_delete=False):
     return response.json()
 
 
-async def delete_relationships(client, auth_headers, namespace, items):
-    """Delete relationships via bulk endpoint."""
+async def delete_relations(client, auth_headers, namespace, items):
+    """Delete relations via bulk endpoint."""
     response = await client.request(
         "DELETE",
-        f"/api/def-store/ontology/relationships?namespace={namespace}",
+        f"/api/def-store/ontology/term-relations?namespace={namespace}",
         headers=auth_headers,
         json=items,
     )
@@ -181,13 +181,13 @@ class TestHardDeleteTerminology:
         assert get_resp.json()["status"] == "active"
 
     @pytest.mark.asyncio
-    async def test_hard_delete_cascades_relationships(self, client, auth_headers):
-        """Hard-deleting a terminology also removes all relationships involving its terms."""
+    async def test_hard_delete_cascades_relations(self, client, auth_headers):
+        """Hard-deleting a terminology also removes all relations involving its terms."""
 
         tid = await create_terminology(client, auth_headers, "HD_CASCADE", "Cascade Test", mutable=True)
         t1 = await create_term(client, auth_headers, tid, "PARENT", "Parent")
         t2 = await create_term(client, auth_headers, tid, "CHILD", "Child")
-        await create_relationship(client, auth_headers, t2, t1, "is_a")
+        await create_relation(client, auth_headers, t2, t1, "is_a")
 
         # Mutable terminologies hard-delete without needing deletion_mode check
         data = await delete_terminology(client, auth_headers, tid, force=True)
@@ -229,15 +229,15 @@ class TestHardDeleteTerm:
         assert resp.json()["status"] == "active"
 
     @pytest.mark.asyncio
-    async def test_hard_delete_term_cascades_relationships(self, client, auth_headers):
-        """Hard-deleting a term removes relationships where it's source or target."""
+    async def test_hard_delete_term_cascades_relations(self, client, auth_headers):
+        """Hard-deleting a term removes relations where it's source or target."""
 
         tid = await create_terminology(client, auth_headers, "HD_TERM_REL", "Term Rel HD", mutable=True)
         t1 = await create_term(client, auth_headers, tid, "A")
         t2 = await create_term(client, auth_headers, tid, "B")
         t3 = await create_term(client, auth_headers, tid, "C")
-        await create_relationship(client, auth_headers, t1, t2, "is_a")
-        await create_relationship(client, auth_headers, t3, t1, "is_a")
+        await create_relation(client, auth_headers, t1, t2, "is_a")
+        await create_relation(client, auth_headers, t3, t1, "is_a")
 
         # Delete t1 (mutable = auto hard-delete)
         data = await delete_term_bulk(client, auth_headers, t1)
@@ -264,35 +264,35 @@ class TestHardDeleteTerm:
 
 
 # =========================================================================
-# Hard-Delete Relationship
+# Hard-Delete Relation
 # =========================================================================
 
 
-class TestHardDeleteRelationship:
-    """Tests for hard-deleting relationships."""
+class TestHardDeleteRelation:
+    """Tests for hard-deleting relations."""
 
     @pytest.mark.asyncio
-    async def test_hard_delete_relationship_in_full_namespace(
+    async def test_hard_delete_relation_in_full_namespace(
         self, client, auth_headers, full_deletion_namespace
     ):
-        """Relationship can be hard-deleted when namespace has deletion_mode='full'."""
+        """Relation can be hard-deleted when namespace has deletion_mode='full'."""
         tid = await create_terminology(client, auth_headers, "HD_REL_NS", "Rel HD NS")
         t1 = await create_term(client, auth_headers, tid, "SRC")
         t2 = await create_term(client, auth_headers, tid, "TGT")
-        await create_relationship(client, auth_headers, t1, t2, "is_a")
+        await create_relation(client, auth_headers, t1, t2, "is_a")
 
-        data = await delete_relationships(client, auth_headers, "wip", [{
+        data = await delete_relations(client, auth_headers, "wip", [{
             "source_term_id": t1,
             "target_term_id": t2,
-            "relationship_type": "is_a",
+            "relation_type": "is_a",
             "hard_delete": True,
         }])
 
         assert data["succeeded"] == 1
 
-        # Verify relationship is gone by listing
+        # Verify relation is gone by listing
         list_resp = await client.get(
-            "/api/def-store/ontology/relationships",
+            "/api/def-store/ontology/term-relations",
             headers=auth_headers,
             params={"namespace": "wip", "term_id": t1, "direction": "both"},
         )
@@ -301,18 +301,18 @@ class TestHardDeleteRelationship:
         assert len(items) == 0
 
     @pytest.mark.asyncio
-    async def test_hard_delete_relationship_rejected_in_retain(self, client, auth_headers):
-        """Hard-delete relationship fails when namespace is 'retain'."""
+    async def test_hard_delete_relation_rejected_in_retain(self, client, auth_headers):
+        """Hard-delete relation fails when namespace is 'retain'."""
         tid = await create_terminology(client, auth_headers, "HD_REL_RETAIN", "Rel Retain")
         t1 = await create_term(client, auth_headers, tid, "SRC_R")
         t2 = await create_term(client, auth_headers, tid, "TGT_R")
-        await create_relationship(client, auth_headers, t1, t2, "is_a")
+        await create_relation(client, auth_headers, t1, t2, "is_a")
 
         # Default namespace deletion_mode is 'retain' — no fixture needed
-        data = await delete_relationships(client, auth_headers, "wip", [{
+        data = await delete_relations(client, auth_headers, "wip", [{
             "source_term_id": t1,
             "target_term_id": t2,
-            "relationship_type": "is_a",
+            "relation_type": "is_a",
             "hard_delete": True,
         }])
 

@@ -29,6 +29,10 @@ export const wipKeys = {
     versions: (id: string) => ['wip', 'documents', 'versions', id] as const,
     tableView: (templateId: string, params?: object) =>
       ['wip', 'documents', 'table', templateId, params] as const,
+    relationships: (id: string, params?: object) =>
+      ['wip', 'documents', 'relationships', id, params] as const,
+    traverse: (id: string, params?: object) =>
+      ['wip', 'documents', 'traverse', id, params] as const,
   },
 
   files: {
@@ -52,6 +56,13 @@ export const wipKeys = {
     integrity: (params?: object) => ['wip', 'reporting', 'integrity', params] as const,
     activity: (params?: object) => ['wip', 'reporting', 'activity', params] as const,
     search: (params?: object) => ['wip', 'reporting', 'search', params] as const,
-    query: (sql: string, params?: unknown[]) => ['wip', 'reporting', 'query', sql, params] as const,
+    // namespace is part of the key: the same SQL against two namespaces
+    // returns different data (per-namespace PG schemas), so a
+    // namespace-blind key would serve stale cross-namespace cache hits.
+    query: (sql: string, params?: unknown[], namespace?: string) =>
+      ['wip', 'reporting', 'query', sql, params, namespace] as const,
+    syncStatus: () => ['wip', 'reporting', 'sync-status'] as const,
+    batchJobs: () => ['wip', 'reporting', 'batch-jobs'] as const,
+    batchJob: (jobId: string) => ['wip', 'reporting', 'batch-jobs', jobId] as const,
   },
 } as const

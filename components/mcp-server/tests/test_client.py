@@ -99,23 +99,29 @@ async def test_upload_file_with_optional_fields():
 
 
 @pytest.mark.asyncio
-async def test_upload_file_uses_api_key_header():
-    """upload_file overrides Content-Type header with just X-API-Key."""
-    mock_http = _mock_http(_mock_response({"file_id": "FILE-003"}))
+async def test_upload_file_sends_multipart_content_type():
+    """The real httpx client must emit multipart, not JSON, for upload_file.
 
+    CASE-449: a client-level Content-Type default silently overrode the
+    multipart boundary httpx derives from files=, so every upload arrived
+    at the API declared as application/json and 422'd. The old test here
+    asserted a per-request headers kwarg (the gesture); this one builds
+    the request through the actual configured client and asserts the wire
+    Content-Type (the outcome).
+    """
     client = _make_client()
-    with patch.object(client, "_get_client", return_value=mock_http):
-        await client.upload_file(
-            file_content=b"x",
-            filename="x.bin",
-            content_type="application/octet-stream",
-            namespace="wip",
-        )
-
-    headers = mock_http.post.call_args.kwargs["headers"]
-    assert headers == {"X-API-Key": "test_key"}
-    # Should NOT have Content-Type (multipart sets its own)
-    assert "Content-Type" not in headers
+    http = await client._get_client()
+    req = http.build_request(
+        "POST", "http://x/api/document-store/files",
+        files={"file": ("x.bin", b"x", "application/octet-stream")},
+        data={"namespace": "wip"},
+    )
+    assert req.headers["content-type"].startswith("multipart/form-data; boundary=")
+    assert req.headers["x-api-key"] == "test_key"
+    # json= bodies must still come out as JSON without a client-level default
+    req_json = http.build_request("POST", "http://x/y", json=[{"a": 1}])
+    assert req_json.headers["content-type"] == "application/json"
+    await client.close()
 
 
 # =========================================================================
@@ -605,6 +611,180 @@ async def test_delete_backup_job():
     call = mock_http.request.call_args
     assert call.args[0] == "DELETE"
     assert "/api/document-store/backup/jobs/bkp-1" in call.args[1]
+
+
+# =========================================================================
+# CASE-05: delete_documents — bulk DELETE, full BulkResponse unwrap
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_delete_documents_sends_full_list_and_unwraps_bulk():
+    """delete_documents posts the whole item list to the bulk DELETE endpoint
+    and returns the full BulkResponse — not a single unwrapped result."""
+    bulk = {
+        "total": 2,
+        "succeeded": 2,
+        "failed": 0,
+        "results": [
+            {"index": 0, "status": "deleted", "id": "D-001"},
+            {"index": 1, "status": "deleted", "id": "D-002"},
+        ],
+    }
+    mock_http = _mock_http(_mock_response(bulk))
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        result = await client.delete_documents(
+            [{"id": "D-001", "hard_delete": True},
+             {"id": "D-002", "hard_delete": True}],
+            namespace="aa",
+        )
+
+    assert result["succeeded"] == 2
+    assert len(result["results"]) == 2
+    call = mock_http.request.call_args
+    assert call.args[0] == "DELETE"
+    assert "/api/document-store/documents" in call.args[1]
+    assert call.kwargs["json"] == [
+        {"id": "D-001", "hard_delete": True},
+        {"id": "D-002", "hard_delete": True},
+    ]
+    assert call.kwargs["params"] == {"namespace": "aa"}
+
+
+# =========================================================================
+# CASE-419: validate_documents — bulk dry-run validate, single template
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_validate_documents_posts_items_to_validate_bulk():
+    """validate_documents posts the item list to the bulk validate endpoint
+    and returns the full {results: [...]} envelope."""
+    bulk = {
+        "results": [
+            {"valid": True, "errors": []},
+            {"valid": False, "errors": [{"field": "data.name", "code": "required", "message": "required"}]},
+        ]
+    }
+    mock_http = _mock_http(_mock_response(bulk))
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        result = await client.validate_documents(
+            template_id="PERSON",
+            items=[{"name": "Ada"}, {}],
+            namespace="wip",
+        )
+
+    assert len(result["results"]) == 2
+    assert result["results"][0]["valid"] is True
+    assert result["results"][1]["valid"] is False
+    call = mock_http.post.call_args
+    assert "/api/document-store/validation/validate-bulk" in call.args[0]
+    assert call.kwargs["json"] == {
+        "template_id": "PERSON",
+        "namespace": "wip",
+        "items": [{"name": "Ada"}, {}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_validate_documents_includes_template_version_when_set():
+    """template_version is forwarded only when provided (omitted otherwise)."""
+    mock_http = _mock_http(_mock_response({"results": [{"valid": True, "errors": []}]}))
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.validate_documents(
+            template_id="PERSON", items=[{"name": "Ada"}], namespace="wip",
+            template_version=2,
+        )
+
+    call = mock_http.post.call_args
+    assert call.kwargs["json"]["template_version"] == 2
+
+
+# =========================================================================
+# CASE-290: upsert_namespace — PUT body filters None fields
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_upsert_namespace_filters_none_from_body():
+    """Client.upsert_namespace must not forward None-valued fields.
+
+    Partial-update semantics depend on this: a caller flipping only
+    `deletion_mode` should send `{"deletion_mode": "full"}`, not
+    `{"description": null, "isolation_mode": null, "deletion_mode": "full", ...}`.
+    The registry's `exclude_unset=True` would treat None-fields as
+    explicitly-set, potentially overwriting other state."""
+    mock_http = _mock_http(_mock_response({"prefix": "dev-kb", "deletion_mode": "full"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.upsert_namespace(prefix="dev-kb", deletion_mode="full")
+
+    mock_http.put.assert_awaited_once()
+    call = mock_http.put.call_args
+    assert "/api/registry/namespaces/dev-kb" in call.args[0]
+    body = call.kwargs["json"]
+    assert body == {"deletion_mode": "full"}
+    assert "description" not in body
+    assert "isolation_mode" not in body
+    assert "allowed_external_refs" not in body
+
+
+@pytest.mark.asyncio
+async def test_upsert_namespace_forwards_all_supplied_fields():
+    """All non-None fields appear in the PUT body."""
+    mock_http = _mock_http(_mock_response({"prefix": "dev-kb"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.upsert_namespace(
+            prefix="dev-kb",
+            description="KB dev",
+            isolation_mode="strict",
+            deletion_mode="retain",
+            allowed_external_refs=["wip", "shared"],
+        )
+
+    body = mock_http.put.call_args.kwargs["json"]
+    assert body == {
+        "description": "KB dev",
+        "isolation_mode": "strict",
+        "deletion_mode": "retain",
+        "allowed_external_refs": ["wip", "shared"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_upsert_namespace_forwards_confirm_enable_deletion():
+    """CASE-291: confirm_enable_deletion lands in the PUT body when set.
+
+    The registry only consults the field when a retain→full transition
+    is in flight, but the client must put it on the wire whenever the
+    caller passes a value (True or False). Default is None — omitted
+    from the body."""
+    mock_http = _mock_http(_mock_response({"prefix": "dev-kb"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.upsert_namespace(
+            prefix="dev-kb",
+            deletion_mode="full",
+            confirm_enable_deletion=True,
+        )
+
+    body = mock_http.put.call_args.kwargs["json"]
+    assert body == {"deletion_mode": "full", "confirm_enable_deletion": True}
+
+    # Without confirm_enable_deletion, the field stays out of the body.
+    mock_http2 = _mock_http(_mock_response({"prefix": "dev-kb"}))
+    with patch.object(client, "_get_client", return_value=mock_http2):
+        await client.upsert_namespace(prefix="dev-kb", description="X")
+
+    body2 = mock_http2.put.call_args.kwargs["json"]
+    assert "confirm_enable_deletion" not in body2
 
 
 # =========================================================================

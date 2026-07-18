@@ -8,11 +8,20 @@ own namespace and "wip" namespace are allowed.
 
 import logging
 import os
-from typing import Any
+import time
+from typing import Any, cast
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Staleness window for cached namespace config (isolation_mode,
+# allowed_external_refs). Mirrors the template cache's 5 s TTL
+# (wip://conventions): namespace-config changes take effect within this
+# window without a service restart. The 404-negative expires on the same
+# clock, so a namespace created after being first probed becomes visible
+# too (CASE-607).
+NAMESPACE_CACHE_TTL_SECONDS = 5.0
 
 
 class ReferenceValidationError(Exception):
@@ -28,13 +37,14 @@ class ReferenceValidator:
 
     def __init__(self, registry_url: str | None = None, api_key: str | None = None):
         self.registry_url = registry_url or os.getenv("REGISTRY_URL", "http://localhost:8001")
-        self.api_key = api_key or os.getenv("WIP_AUTH_LEGACY_API_KEY", "")
-        self._namespace_cache: dict[str, dict[str, Any]] = {}
+        self.api_key = cast(str, api_key or os.getenv("WIP_AUTH_LEGACY_API_KEY", ""))
+        self._namespace_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     async def _get_namespace(self, namespace: str) -> dict[str, Any] | None:
-        """Get namespace info from the registry."""
-        if namespace in self._namespace_cache:
-            return self._namespace_cache[namespace]
+        """Get namespace info from the registry (cached, TTL-bounded)."""
+        cached = self._namespace_cache.get(namespace)
+        if cached is not None and (time.monotonic() - cached[0]) < NAMESPACE_CACHE_TTL_SECONDS:
+            return cached[1]
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -44,12 +54,13 @@ class ReferenceValidator:
                 )
                 if response.status_code == 200:
                     ns_data = response.json()
-                    self._namespace_cache[namespace] = ns_data
-                    return ns_data
+                    self._namespace_cache[namespace] = (time.monotonic(), ns_data)
+                    return cast(dict[str, Any] | None, ns_data)
                 elif response.status_code == 404:
                     # No namespace found - treat as open mode
-                    self._namespace_cache[namespace] = {"isolation_mode": "open"}
-                    return self._namespace_cache[namespace]
+                    ns_data = {"isolation_mode": "open"}
+                    self._namespace_cache[namespace] = (time.monotonic(), ns_data)
+                    return ns_data
         except Exception as e:
             logger.warning(f"Failed to fetch namespace '{namespace}': {e}")
 
@@ -81,6 +92,7 @@ class ReferenceValidator:
         template_namespace: str,
         extends_template_namespace: str | None = None,
         terminology_namespaces: list[str] | None = None,
+        template_ref_namespaces: list[str] | None = None,
     ) -> None:
         """
         Validate that template references comply with isolation rules.
@@ -89,6 +101,8 @@ class ReferenceValidator:
             template_namespace: Namespace of the template being created/updated
             extends_template_namespace: Namespace of parent template (if any)
             terminology_namespaces: List of terminology namespaces referenced
+            template_ref_namespaces: Namespaces of referenced templates
+                (template_ref / array_template_ref / target_templates)
 
         Raises:
             ReferenceValidationError: If any references violate isolation rules
@@ -119,6 +133,18 @@ class ReferenceValidator:
                             "type": "terminology",
                             "namespace": term_ns,
                             "message": f"Terminology namespace '{term_ns}' is not accessible from '{template_namespace}' namespace",
+                        })
+
+        # Check template references (template_ref / array_template_ref /
+        # target_templates)
+        if template_ref_namespaces:
+            for tpl_ns in set(template_ref_namespaces):
+                if tpl_ns != template_namespace:
+                    if not self._is_allowed_reference(tpl_ns, ns_data, is_strict):
+                        violations.append({
+                            "type": "template",
+                            "namespace": tpl_ns,
+                            "message": f"Template namespace '{tpl_ns}' is not accessible from '{template_namespace}' namespace",
                         })
 
         if violations:

@@ -20,10 +20,10 @@ import type {
   AuditLogResponse,
 } from '../types/terminology.js'
 import type {
-  Relationship,
-  RelationshipListResponse,
-  CreateRelationshipRequest,
-  DeleteRelationshipRequest,
+  TermRelation,
+  TermRelationListResponse,
+  CreateTermRelationRequest,
+  DeleteTermRelationRequest,
   TraversalResponse,
 } from '../types/ontology.js'
 
@@ -136,7 +136,13 @@ export class DefStoreService extends BaseService {
   async importTerminology(data: ImportTerminologyRequest): Promise<{
     terminology: Terminology
     terms_result: BulkResponse
-    relationships_result?: { total: number; created: number; skipped: number; errors: number }
+    // The wire key is `relations_result` (import_export.py sets it only when
+    // the payload carried relations), matching the platform's post-2eeb872
+    // "relation" = term-ontology-edge terminology. The old `relationships_result`
+    // was undefined on every response that did include relation stats.
+    relations_result?: {
+      total: number; created: number; skipped: number; errors: number; error_samples: string[]
+    }
   }> {
     return this.post('/import-export/import', data)
   }
@@ -146,7 +152,7 @@ export class DefStoreService extends BaseService {
     options?: {
       format?: 'json' | 'csv'
       includeInactive?: boolean
-      includeRelationships?: boolean
+      includeRelations?: boolean
       includeMetadata?: boolean
       languages?: string[]
     },
@@ -154,7 +160,7 @@ export class DefStoreService extends BaseService {
     return this.get(`/import-export/export/${terminologyId}`, {
       format: options?.format ?? 'json',
       include_inactive: options?.includeInactive,
-      include_relationships: options?.includeRelationships,
+      include_relations: options?.includeRelations,
       include_metadata: options?.includeMetadata,
       languages: options?.languages,
     })
@@ -171,17 +177,17 @@ export class DefStoreService extends BaseService {
       max_synonyms?: number
       batch_size?: number
       registry_batch_size?: number
-      relationship_batch_size?: number
+      relation_batch_size?: number
       skip_duplicates?: boolean
       update_existing?: boolean
     },
   ): Promise<{
     terminology: { terminology_id: string; value: string; label: string; status: string }
     terms: { total: number; created: number; skipped: number; errors: number }
-    relationships: {
+    relations: {
       total: number; created: number; skipped: number; errors: number
       predicate_distribution: Record<string, number>
-      error_samples?: string[]
+      error_samples: string[]
     }
     elapsed_seconds: number
   }> {
@@ -198,39 +204,46 @@ export class DefStoreService extends BaseService {
     return this.post('/validate/bulk', data)
   }
 
-  // ---- Ontology / Relationships ----
+  // ---- Ontology / Term Relations ----
+  //
+  // The platform renamed this surface in WIP commit 2eeb872 (Phase 0 of
+  // the document-relationships work, 2026-04-25): "relationship" now
+  // refers to document-to-document edges; "relation" / "term-relation"
+  // refers to the term-ontology edges (is_a, part_of, ...). HTTP path,
+  // wire field, and these client method names all moved together — no
+  // backward-compat aliases.
 
-  async listRelationships(params: {
+  async listTermRelations(params: {
     term_id: string
     direction?: string
-    relationship_type?: string
+    relation_type?: string
     namespace?: string
     page?: number
     page_size?: number
-  }): Promise<RelationshipListResponse> {
-    return this.get('/ontology/relationships', params)
+  }): Promise<TermRelationListResponse> {
+    return this.get('/ontology/term-relations', params)
   }
 
-  async listAllRelationships(params?: {
+  async listAllTermRelations(params?: {
     namespace?: string
-    relationship_type?: string
+    relation_type?: string
     status?: string
     page?: number
     page_size?: number
-  }): Promise<RelationshipListResponse> {
-    return this.get('/ontology/relationships/all', params)
+  }): Promise<TermRelationListResponse> {
+    return this.get('/ontology/term-relations/all', params)
   }
 
-  async createRelationships(items: CreateRelationshipRequest[], namespace: string): Promise<BulkResponse> {
-    return this.post('/ontology/relationships', items, { namespace })
+  async createTermRelations(items: CreateTermRelationRequest[], namespace: string): Promise<BulkResponse> {
+    return this.post('/ontology/term-relations', items, { namespace })
   }
 
-  async deleteRelationships(items: DeleteRelationshipRequest[], namespace: string): Promise<BulkResponse> {
-    return this.del('/ontology/relationships', items, { namespace })
+  async deleteTermRelations(items: DeleteTermRelationRequest[], namespace: string): Promise<BulkResponse> {
+    return this.del('/ontology/term-relations', items, { namespace })
   }
 
   async getAncestors(termId: string, params?: {
-    relationship_type?: string
+    relation_type?: string
     namespace?: string
     max_depth?: number
   }): Promise<TraversalResponse> {
@@ -238,19 +251,25 @@ export class DefStoreService extends BaseService {
   }
 
   async getDescendants(termId: string, params?: {
-    relationship_type?: string
+    relation_type?: string
     namespace?: string
     max_depth?: number
   }): Promise<TraversalResponse> {
     return this.get(`/ontology/terms/${termId}/descendants`, params)
   }
 
-  async getParents(termId: string, namespace: string): Promise<Relationship[]> {
-    return this.get(`/ontology/terms/${termId}/parents`, { namespace })
+  async getParents(termId: string, params?: {
+    relation_type?: string
+    namespace?: string
+  }): Promise<TermRelation[]> {
+    return this.get(`/ontology/terms/${termId}/parents`, params)
   }
 
-  async getChildren(termId: string, namespace: string): Promise<Relationship[]> {
-    return this.get(`/ontology/terms/${termId}/children`, { namespace })
+  async getChildren(termId: string, params?: {
+    relation_type?: string
+    namespace?: string
+  }): Promise<TermRelation[]> {
+    return this.get(`/ontology/terms/${termId}/children`, params)
   }
 
   // ---- Audit Log ----

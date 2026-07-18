@@ -1,9 +1,8 @@
 """Tests for the backup/restore REST endpoints (CASE-23 Phase 3 STEP 5).
 
-These tests mock ``backup_service.start_job`` so no worker thread actually
-runs the toolkit; the async/sync bridge itself is covered by
-``test_backup_service.py`` and the loopback factories by
-``test_backup_loopback.py``. The focus here is endpoint wiring:
+These tests mock ``backup_service.start_async_job`` so no engine actually
+runs; the job pipeline itself is covered by ``test_backup_service.py``.
+The focus here is endpoint wiring:
 
 * request parsing and validation
 * BackupJob record creation + archive path bookkeeping
@@ -99,7 +98,7 @@ async def test_start_backup_creates_job_and_returns_snapshot(
         patch(
             "document_store.api.backup.backup_service.start_async_job",
             new=AsyncMock(return_value=fake_task),
-        ) as start_job,
+        ) as start_async_job,
     ):
         resp = await client.post(
             "/api/document-store/backup/namespaces/wip/backup",
@@ -119,9 +118,9 @@ async def test_start_backup_creates_job_and_returns_snapshot(
     # Runner factory received the snapshot options; start_async_job was called once.
     assert mk_runner.called
     _, kwargs = mk_runner.call_args
-    assert kwargs["namespace"] == "wip"
+    assert kwargs["namespaces"] == ["wip"]
     assert kwargs["options"]["include_files"] is True
-    start_job.assert_awaited_once()
+    start_async_job.assert_awaited_once()
 
     # The BackupJob was persisted.
     stored = await BackupJob.find_one(BackupJob.job_id == body["job_id"])
@@ -165,6 +164,9 @@ async def test_start_restore_streams_upload_and_creates_job(
     body = resp.json()
     assert body["kind"] == "restore"
     assert body["namespace"] == "wip"
+    # Unreadable manifest → prefixes is empty, so namespaces falls back to the
+    # scalar namespace rather than staying blank (CASE-547).
+    assert body["namespaces"] == ["wip"]
     assert body["archive_size"] == len(payload)
     assert body["options"]["mode"] == "restore"
 
@@ -317,18 +319,45 @@ async def test_download_complete_backup(
 
 
 @pytest.mark.asyncio
-async def test_download_rejects_non_backup_job(
-    client: AsyncClient, auth_headers: dict
+async def test_download_serves_restore_job_archive(
+    client: AsyncClient, auth_headers: dict, tmp_path
 ):
+    """Restore jobs' retained INPUT archives are downloadable — the old
+    kind guard destroyed them on delete but refused to serve them. The
+    input is valid regardless of job outcome, so even FAILED works."""
+    archive = tmp_path / "restore-input.zip"
+    archive.write_bytes(b"PK\x03\x04RESTOREINPUT")
     job = await _make_persisted_job(
         kind=BackupJobKind.RESTORE,
-        status=BackupJobStatus.COMPLETE,
+        status=BackupJobStatus.FAILED,
+        archive_path=str(archive),
+        archive_size=archive.stat().st_size,
     )
     resp = await client.get(
         f"/api/document-store/backup/jobs/{job.job_id}/download",
         headers=auth_headers,
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 200, resp.text
+    assert resp.content == b"PK\x03\x04RESTOREINPUT"
+
+
+@pytest.mark.asyncio
+async def test_download_restore_job_archive_gone_is_410(
+    client: AsyncClient, auth_headers: dict, tmp_path
+):
+    """Without file storage, restore inputs are deleted at job completion —
+    the download then reports the non-retention contract, not a 400."""
+    job = await _make_persisted_job(
+        kind=BackupJobKind.RESTORE,
+        status=BackupJobStatus.COMPLETE,
+        archive_path=str(tmp_path / "already-deleted.zip"),
+    )
+    resp = await client.get(
+        f"/api/document-store/backup/jobs/{job.job_id}/download",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 410
+    assert "retained" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio

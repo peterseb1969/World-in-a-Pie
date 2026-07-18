@@ -56,6 +56,12 @@ The correct default is in the client library: `@wip/client` should require `temp
 
 For `updateTemplate()`, the default should be to keep the previous version active (preserving the PoNIF's power) but return a clear message: *"Template X updated to v2. Previous version v1 is still active. Pass `{ deactivatePrevious: true }` to deactivate it, or pin `template_version: 2` in document creation calls."*
 
+**Corollary — existing documents survive template updates.** The identity_hash scopes to `template_id` (see PoNIF #3), and `template_id` is canonical — stable across versions. This is the exception to WIP's "new version → new ID" pattern: templates carry one ID across all their versions, so existing docs remain matchable through future template updates. Add a non-identity field to a template, re-mirror an existing doc with the same identity values, and you get an UPDATE (new doc version, populated new field) rather than a CREATE — no data migration step needed, just a backfill pass. CASE-404's schema-extension plan rests on this corollary: 290+ existing CASE_RECORDs receive new `data.*` fields via a single `kb-bulk-mirror.py --nodes` pass, no duplicates created.
+
+**Moving a cohort forward (CASE-491).** The corollary handles *additive* schema changes for free. When you instead need to actively re-pin existing documents onto a newer version, that is now a first-class, validated, identity-preserving bulk operation: `migrate_documents` (MCP) / `POST /api/document-store/documents/migrate`. Dry-run first (the default) — it validates each document's existing data against the **target** version and returns a per-document readiness report (`failed == 0` ⇒ apply will succeed); apply then writes a new document version pinned to the target, keeping the same `document_id` and `identity_hash`. The source version may be inactive (frozen) — migration validates against the target, not the source — so it composes with the freeze/thaw half of the lifecycle (deactivate as a migration lock; `reactivate_template` as the safety valve, CASE-490). Migration is still never **automatic** — the system will not silently move your data; that is the PoNIF. And an *identity-changing* move is a fork (create new documents under the new template), not a migrate, and is rejected with `identity_fields_changed`.
+
+**v2 caveat.** v2's template-ID redesign (Day 29 fireside on template ID management — see `docs/design/v2-index.md`) plans to make `template_id` version-specific and route logical identity through `(namespace, template_value)`. The corollary above HOLDS in both v1 and v2 — identity stays stable across schema updates by design — but the mechanism changes. Code that names `template_id` as the canonical handle will need a rename pass when v2 lands.
+
 ### 3. Document Identity — The Registry Decides
 
 **The feature:** Documents don't need an explicit ID to be updated. Instead, templates define identity fields. When a document is submitted, WIP computes an identity hash from those fields. If a document with the same hash exists, it's a new version (update). If not, it's a new document (create). The same endpoint handles both — it's an upsert, not a create-or-update decision.
@@ -73,6 +79,15 @@ For `updateTemplate()`, the default should be to keep the previous version activ
 - A template has no identity fields. The developer tries to "update" a document and gets a duplicate instead.
 
 **Sensible default:** `@wip/client` should warn (not error) when creating a document against a template with zero identity fields. The warning should say: *"Template X has no identity fields. Every submission will create a new document. If you intend updates, add identity fields to the template."*
+
+**What's NOT in the identity hash:**
+
+- `template_version` — see PoNIF #2's corollary; the same canonical entity carries forward across template versions cleanly.
+- `namespace` — scoped externally via the platform's composite key `(namespace, identity_hash, template_id)`. The same `identity_hash` in two different namespaces is two different entities, not a collision.
+
+**Adding to `identity_fields` IS breaking.** Every existing doc would hash differently on next write, creating parallel orphan docs. The CASE-316 / 317 / 318 family is the canonical example: an external loader (`kb-bulk-mirror.py`) computed identity from `metadata.custom.case_number` while the template declared `identity_fields=[]`, hashes all collided to an empty key, 213 of 214 records silently dropped on the reporting-sync side. The fix (CASE-318) was to extend `identity_fields` on the template AND backfill — the additive-to-identity case requires coordinated data migration, not just a re-mirror.
+
+**Adding to `data.*` outside `identity_fields` is non-breaking.** Existing docs receive the new field's value on the next backfill (see PoNIF #2's corollary). This is the path CASE-404 takes for the CASE_RECORD schema extension.
 
 ### 4. Bulk First — 200 OK Always
 
@@ -116,6 +131,8 @@ An entity can have multiple WIP IDs. This is not a bug or an edge case — it's 
 
 **Sensible default:** `@wip/client` should surface the resolution path in reference errors: *"Reference 'CUS-001' for field 'customer' could not be resolved. Attempted: direct ID (not a UUID), Registry synonym (not found), business key on CUSTOMER template (no match)."* The developer needs to know *why* resolution failed, not just *that* it failed.
 
+**Corollary — synonyms work identically to canonical IDs at every comparison site, not just at lookup.** The Registry resolves a value-form, a UUID-form, and any registered synonym to the same canonical ID. That equivalence must hold at every place the platform compares references — not only when a write resolves an input, but also when a comparator checks "did this reference change?" The template compatibility checker (`POST /templates?on_conflict=validate`) resolves each reference-typed property on both sides before diffing; a stored canonical UUID vs a freshly-submitted value-form for the same entity is *not* a modification. CASE-406 closed the comparator gap that previously flagged these as phantom `modified_existing`. The principle generalizes: any new comparison site that handles references must canonicalize before comparing (`docs/Vision.md` §"References Must Resolve", `docs/design/synonym-resolution-gaps.md`).
+
 ### 6. Template Field Resolution Timing
 
 **The feature:** Template metadata (like `file_config.allowed_types`) is resolved at document validation time, not at template creation time. The document store caches the resolved template and uses it for all subsequent validations until the cache expires or the service restarts.
@@ -129,6 +146,53 @@ An entity can have multiple WIP IDs. This is not a bug or an edge case — it's 
 **Sensible default:** This was fixed during the experiment: versioned template lookups are cached permanently (immutable), "latest" resolution uses a 5-second TTL. But the incident demonstrates that cache invalidation is a PoNIF in its own right — the developer expects changes to take effect immediately, the system serves stale data until the cache expires.
 
 *This PoNIF was identified by Constellation-Claude during its review of this document — itself an example of the collaborative review process catching gaps.*
+
+### 7. Edge Types Are Stored as Templates
+
+**The feature:** WIP has two conceptually distinct schemas that share a storage representation: **entity templates** (the default — `usage: "entity"`) and **edge types** (`usage: "relationship"`). Both live in the same `templates` collection and flow through the same APIs, but document-store treats edge-type writes differently — extra cross-namespace and not-archived validation, lazy MongoDB indexes on `data.source_ref` / `data.target_ref`, two query endpoints (`/relationships`, `/traverse`), and reporting-sync columns (`source_ref_id` / `target_ref_id`). The MCP tool `create_edge_type` exists specifically to surface this distinction at the agent-facing API ingress.
+
+The contract that makes an edge type *be* an edge type:
+
+- `usage: "relationship"` (immutable after creation)
+- non-empty `source_templates` and `target_templates` lists declaring which templates can sit at each endpoint. These are **append-only**, not frozen: widen the allowed-endpoint set with `add_edge_type_endpoints` (or `POST /templates/{id}/endpoints`) — an additive, in-place, edge-preserving op — rather than the delete+recreate that would strand existing edges. Removal stays unsupported (it would orphan edges). No reindex or reporting migration is needed; the relationship indexes and `source_ref_id`/`target_ref_id` columns are generic.
+- two reference fields named **exactly** `source_ref` and `target_ref` (template-store enforces the names)
+
+The motivation comes from a class of data that fits nowhere else cleanly: properties that belong to the *interaction* between two documents. An experiment uses bevacizumab — but the quantity, the role (treatment vs. control), the lot number — none of those belong to the experiment, and none belong to bevacizumab. They belong to *how* the experiment uses bevacizumab. An edge type holds them.
+
+**Why it's powerful:** Models the interaction without forcing the edge data into either endpoint or duplicating fields across both. The query APIs (`/relationships`, `/traverse`) operate over typed edges with full schema validation. Reporting-sync's resolved `source_ref_id` / `target_ref_id` columns enable SQL JOINs that follow the graph in PostgreSQL.
+
+**Why it's non-intuitive:** Conventional ORMs and graph DBs split entities and relationships into different storage with different APIs. WIP unifies them via a single `usage` annotation — edge types *are* templates, relationship documents *are* documents. Same storage, different conceptual layer. The flag is easy to miss when reading a template definition.
+
+**What goes wrong:**
+
+- Developers see a template with two `reference_type: document` fields and assume it's an entity template with foreign keys. The `usage` flag tells you which conceptual type it is — and the validation, indexing, and query surface all change with it.
+- Developers create `usage: "entity"` templates with `source_ref` / `target_ref` fields and try to use them as relationships. The `/relationships` and `/traverse` endpoints require `usage: "relationship"`; the queries return nothing useful against entity templates.
+- Developers name their reference fields anything other than `source_ref` and `target_ref`. Template-store rejects the create. The naming is a contract, not a convention.
+
+**Sensible default:** `create_edge_type` exists as a separate MCP tool precisely so the agent-facing API can't accidentally treat an edge type as an entity template. The library / MCP layer should keep surfacing `usage` in any tool output that describes a template, so the conceptual layer is visible at the ingress, not buried in a JSON blob.
+
+See `docs/design/document-relationships.md` for the full design rationale, validation rules, and query semantics.
+
+### 8. `versioned: false` — Updates Overwrite In Place
+
+**The feature:** Setting `versioned: false` on an edge type (PoNIF #7) makes updates **overwrite the existing payload** instead of creating a new version. Documents under such an edge type stay at `version: 1` forever. The previous data is gone after a successful update.
+
+This is a deliberate exception to PoNIF #2 ("Template Versioning — Update Does NOT Replace"). It applies only to edge types today; the flag is immutable after template creation.
+
+**Why it's powerful:** Some relationships have identity but not history. "Monster has spell" in a bestiary changes when the bestiary author tweaks a spell list — there's no audit interest in "what spells did this monster have last year." Versioning every edge update wastes storage and obscures the current state.
+
+**Why it's non-intuitive:** Every other entity in WIP versions on update — that's PoNIF #1 ("Nothing Ever Dies") combined with PoNIF #2. A reader who has internalised those rules will apply them universally and miss this exception. PoNIF #7 + PoNIF #8 together break two invariants the reader has just learned to trust.
+
+**What goes wrong:**
+
+- Code that loads `version=N-1` to compute a diff against `version=N` returns nothing on a `versioned: false` edge type — there is no previous version.
+- `get_document_versions(id)` returns a list of length 1 forever. Code that paginates or filters this list silently does the wrong thing.
+- Audit-trail assumptions (compliance flows, change history UIs) treat `versioned: false` data the same as everything else and produce gaps.
+- Concurrency on the in-place path needs `if_match` (existing OCC token); naive overwrite logic loses concurrent updates.
+
+**Sensible default:** `template.versioned` defaults to `true` — the conservative default that preserves history. Code reading documents should check `template.versioned` (or equivalently, that `get_document_versions` returns more than one row) before assuming history exists. If you need history on a relationship, build the edge type with `versioned: true`. The flag is immutable after creation, so the choice is permanent — pick deliberately.
+
+See `docs/design/document-relationships.md` §"Versioning" for the rationale and the implementation contract.
 
 ---
 
@@ -184,8 +248,12 @@ WIP's PoNIFs are a mix of both. The defaults (especially in `@wip/client`) need 
 | Bulk first / 200 OK always | CLAUDE.md WIP Access Rules | `@wip/client` wraps singles; needs `hasErrors()` helper | Partial |
 | Registry synonyms | AI-Assisted-Dev.md | Surface resolution path in errors | Pending |
 | Template resolution timing | This document, Entry 019 | Cache with TTL (implemented) | ✓ Fixed |
+| Edge types as templates | This document, `document-relationships.md` | `create_edge_type` MCP tool surfaces the distinction; `usage` always shown in tool outputs | ✓ Documented |
+| `versioned: false` overwrite | This document, `document-relationships.md` | Default `versioned: true`; flag immutable after creation | ✓ Documented |
 | Compactheimer's drift | This document | PoNIF checkpoints in slash commands | Pending |
 
 ---
 
 *This document emerged from Day 4 of the WIP Constellation experiment, after repeated encounters with the same pattern: a correct-but-surprising WIP behaviour causing confusion for AI assistants and requiring explicit correction. The term "PoNIF" was coined by Peter to name the pattern and make it discussable. Every bug in the experiment that wasn't a real bug — every "fix" that was actually a misunderstanding — traces back to a PoNIF that wasn't yet documented or defaulted.*
+
+*PoNIFs #7 (Edge Types) and #8 (`versioned: false`) were added Day 42 (2026-04-25) alongside the document-relationships implementation — the first net-new PoNIFs since the original Day 4 list. They follow the same pattern: a powerful capability (typed property-carrying edges between documents) with non-intuitive consequences (a class of templates that is also a class of relationships; a class of documents that opts out of versioning). The fact that two new PoNIFs landed simultaneously is itself instructive — capabilities that violate two reader invariants at once need both invariants spelled out, not just one.*

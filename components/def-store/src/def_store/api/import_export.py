@@ -5,7 +5,12 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from wip_auth import check_namespace_permission, get_current_identity, resolve_or_404
+from wip_auth import (
+    UserIdentity,
+    check_namespace_permission,
+    resolve_accessible_namespaces,
+    resolve_or_404,
+)
 
 from ..services.import_export import ImportExportService
 from .auth import require_api_key
@@ -23,17 +28,25 @@ async def export_terminology(
     format: str = Query("json", description="Export format: json, csv"),
     include_metadata: bool = Query(True, description="Include metadata"),
     include_inactive: bool = Query(False, description="Include inactive terms"),
-    include_relationships: bool = Query(False, description="Include ontology relationships"),
+    include_relations: bool = Query(False, description="Include ontology relations"),
     languages: str | None = Query(None, description="Comma-separated language codes"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """
     Export a terminology with all its terms.
 
-    Supports JSON and CSV formats. Use include_relationships=true to include
-    ontology relationships (is_a, part_of, etc.) in JSON exports.
+    Supports JSON and CSV formats. Use include_relations=true to include
+    ontology relations (is_a, part_of, etc.) in JSON exports.
     """
     terminology_id = await resolve_or_404(terminology_id, "terminology", namespace=namespace, param_name="terminology_id")
+
+    # CASE-384 — gate export by read permission on the terminology's
+    # namespace. Without this, any authenticated key could exfiltrate
+    # any terminology by ID.
+    from ..models.terminology import Terminology as _T
+    existing = await _T.find_one({"terminology_id": terminology_id})
+    if existing:
+        await check_namespace_permission(identity, existing.namespace, "read")
 
     try:
         language_list = languages.split(",") if languages else None
@@ -43,7 +56,7 @@ async def export_terminology(
             format=format,
             include_metadata=include_metadata,
             include_inactive=include_inactive,
-            include_relationships=include_relationships,
+            include_relations=include_relations,
             languages=language_list
         )
 
@@ -59,7 +72,7 @@ async def export_terminology(
         return JSONResponse(content=result)
 
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.get(
@@ -69,12 +82,19 @@ async def export_terminology(
 async def export_all_terminologies(
     format: str = Query("json", description="Export format: json"),
     include_inactive: bool = Query(False, description="Include inactive terminologies"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """Export all terminologies with their terms."""
+    # CASE-384 — restrict to namespaces the caller can read. Superadmin
+    # gets None back from resolve_accessible_namespaces and the service
+    # treats that as "no filter" (all namespaces). Non-admin scoped keys
+    # get only their own namespaces' terminologies.
+    accessible = await resolve_accessible_namespaces(identity)
+
     results = await ImportExportService.export_all_terminologies(
         format=format,
-        include_inactive=include_inactive
+        include_inactive=include_inactive,
+        namespaces=accessible,
     )
     return JSONResponse(content={"terminologies": results, "count": len(results)})
 
@@ -86,6 +106,15 @@ async def export_all_terminologies(
 async def import_terminology(
     data: dict[str, Any] = Body(...),
     format: str = Query("json", description="Import format: json, csv"),
+    namespace: str | None = Query(
+        None,
+        description=(
+            "Destination namespace. Required for CSV imports unless the "
+            "API key is scoped to exactly one namespace (then derived). "
+            "For JSON imports it must match terminology.namespace when "
+            "both are provided."
+        ),
+    ),
     skip_duplicates: bool = Query(True, description="Skip existing terms"),
     update_existing: bool = Query(False, description="Update existing terms"),
     created_by: str | None = Query(None, description="User performing import"),
@@ -98,7 +127,7 @@ async def import_terminology(
         description="Number of terms per registry HTTP call (default 100). "
         "Reduce if experiencing timeouts on large imports."
     ),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """
     Import a terminology with terms.
@@ -120,7 +149,10 @@ async def import_terminology(
     ```
 
     CSV format requires terminology_value and terminology_label in the data,
-    plus csv_content with columns: value, label, description, sort_order
+    plus csv_content with columns: value, label, description, sort_order.
+    The destination namespace comes from the `namespace` query parameter
+    (or is derived when the key is scoped to a single namespace) — the CSV
+    payload itself carries no namespace field by design.
 
     For very large imports (100k+ terms), you may need to tune the batch sizes:
     - `batch_size`: Controls MongoDB batch size (default 1000)
@@ -128,6 +160,50 @@ async def import_terminology(
 
     If you experience timeouts, try reducing `registry_batch_size` to 50 or lower.
     """
+    # Resolve the destination namespace from its three legitimate sources,
+    # then gate the write on it UNCONDITIONALLY. The old form only checked
+    # when data.terminology.namespace existed — the CSV payload is flat by
+    # design (no terminology block), so every CSV import silently skipped
+    # the write-permission check.
+    body_namespace: str | None = None
+    if isinstance(data, dict):
+        terminology_block = data.get("terminology")
+        if isinstance(terminology_block, dict):
+            ns_val = terminology_block.get("namespace")
+            if isinstance(ns_val, str):
+                body_namespace = ns_val
+
+    # Two explicit sources must agree — silently preferring one would let a
+    # payload smuggle the write past a differently-scoped query param.
+    if namespace and body_namespace and namespace != body_namespace:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"namespace query parameter ({namespace!r}) contradicts "
+                f"terminology.namespace in the body ({body_namespace!r})"
+            ),
+        )
+
+    target_namespace = namespace or body_namespace
+    if target_namespace is None:
+        # Platform convention: a key scoped to exactly one namespace
+        # implies it; multi-namespace keys must say where the import goes.
+        key_namespaces = (identity.raw_claims or {}).get("namespaces")
+        if isinstance(key_namespaces, list) and len(key_namespaces) == 1:
+            target_namespace = key_namespaces[0]
+
+    if target_namespace is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Destination namespace is required: pass ?namespace=, "
+                "include terminology.namespace in a JSON body, or use an "
+                "API key scoped to a single namespace"
+            ),
+        )
+
+    await check_namespace_permission(identity, target_namespace, "write")
+
     try:
         options = {
             "skip_duplicates": skip_duplicates,
@@ -140,7 +216,8 @@ async def import_terminology(
         result = await ImportExportService.import_terminology(
             data=data,
             format=format,
-            options=options
+            options=options,
+            namespace=target_namespace,
         )
 
         return JSONResponse(content=result)
@@ -148,9 +225,9 @@ async def import_terminology(
     except ValueError as e:
         msg = str(e)
         status = 409 if "already exists" in msg else 400
-        raise HTTPException(status_code=status, detail=msg)
+        raise HTTPException(status_code=status, detail=msg) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Import failed: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {e!s}") from e
 
 
 @router.post(
@@ -167,23 +244,22 @@ async def import_ontology(
     max_synonyms: int = Query(10, description="Max aliases per term"),
     batch_size: int = Query(1000, description="Terms per MongoDB batch"),
     registry_batch_size: int = Query(50, description="Terms per registry HTTP call"),
-    relationship_batch_size: int = Query(500, description="Relationships per batch"),
+    relation_batch_size: int = Query(500, description="Relations per batch"),
     skip_duplicates: bool = Query(True, description="Skip existing terms"),
     update_existing: bool = Query(False, description="Update existing terms"),
     created_by: str | None = Query(None, description="User performing import"),
-    api_key: str = Depends(require_api_key),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """
     Import an OBO Graph JSON ontology (HP, GO, CHEBI, etc.).
 
     Accepts standard OBO Graph JSON format with `graphs[0].nodes[]` and
-    `graphs[0].edges[]`. Parses nodes into terms and edges into relationships.
+    `graphs[0].edges[]`. Parses nodes into terms and edges into relations.
 
     Auto-detects the ontology prefix and metadata from the graph structure.
     For large ontologies, use the CLI script `scripts/import_obo_graph.py` instead.
     """
     try:
-        identity = get_current_identity()
         await check_namespace_permission(identity, namespace, "write")
 
         if "graphs" not in data or not data["graphs"]:
@@ -198,7 +274,7 @@ async def import_ontology(
             "max_synonyms": max_synonyms,
             "batch_size": batch_size,
             "registry_batch_size": registry_batch_size,
-            "relationship_batch_size": relationship_batch_size,
+            "relation_batch_size": relation_batch_size,
             "skip_duplicates": skip_duplicates,
             "update_existing": update_existing,
             "created_by": created_by,
@@ -208,9 +284,9 @@ async def import_ontology(
         return JSONResponse(content=result)
 
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ontology import failed: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Ontology import failed: {e!s}") from e
 
 
 @router.post(
@@ -234,7 +310,7 @@ async def import_from_url(
         description="Number of terms per registry HTTP call (default 100). "
         "Reduce if experiencing timeouts on large imports."
     ),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ):
     """
     Import a terminology from a URL.
@@ -245,6 +321,28 @@ async def import_from_url(
     - `batch_size`: Controls MongoDB batch size (default 1000)
     - `registry_batch_size`: Controls registry HTTP call batch size (default 100)
     """
+    # CASE-384 — URL imports don't expose the destination namespace at the
+    # API layer (it comes from the fetched payload). The service-side
+    # validation will surface 4xx if the payload is missing namespace,
+    # but we can't pre-authorise without fetching the URL ourselves —
+    # which would double the work. Conservative compromise: require the
+    # caller to be a privileged identity (admin/services group) until
+    # the service grows a "pre-flight namespace extraction" hook.
+    # Filed as a follow-up consideration in CASE-384.
+    from wip_auth.permissions import _is_superadmin
+    if not _is_superadmin(identity):
+        # Non-admin URL imports are refused. Operators with scoped keys
+        # should fetch the URL locally, then call POST /import with the
+        # body so the namespace is visible at the API layer.
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "URL imports require admin privileges. Fetch the URL and "
+                "POST the body to /import-export/import to allow per-namespace "
+                "permission checking."
+            ),
+        )
+
     try:
         options = {
             "skip_duplicates": skip_duplicates,
@@ -267,6 +365,6 @@ async def import_from_url(
     except ValueError as e:
         msg = str(e)
         status = 409 if "already exists" in msg else 400
-        raise HTTPException(status_code=status, detail=msg)
+        raise HTTPException(status_code=status, detail=msg) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Import failed: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {e!s}") from e

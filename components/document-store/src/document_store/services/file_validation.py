@@ -12,6 +12,8 @@ from fastapi import HTTPException
 # (comma-separated, e.g. "image/*,application/pdf,text/*").
 _DEFAULT_ALLOWED = (
     "image/*,"
+    "audio/*,"
+    "video/*,"
     "application/pdf,"
     "application/json,"
     "application/xml,"

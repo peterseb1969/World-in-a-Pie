@@ -23,8 +23,10 @@ from fastapi.responses import StreamingResponse
 from nats.js import JetStreamContext
 from pydantic import BaseModel, Field
 
+from wip_auth import build_metadata, declare_api_key_security
 from wip_auth.ratelimit import setup_rate_limiting
 from wip_auth.security import check_production_security
+from wip_auth.startup import retry_async
 
 from . import __version__
 from .batch_sync import BatchSyncService
@@ -40,6 +42,8 @@ from .models import (
     MetricsResponse,
     SyncStatus,
 )
+from .parity import NamespaceParityResult, check_namespace_parity
+from .schema_manager import SchemaManager
 from .search_service import (
     ActivityResponse,
     EntityReferencesResponse,
@@ -68,6 +72,7 @@ class AppState:
     postgres_pool: asyncpg.Pool | None = None
     sync_task: asyncio.Task | None = None
     alert_check_task: asyncio.Task | None = None
+    initial_sync_task: asyncio.Task | None = None
     batch_sync_service: BatchSyncService | None = None
     search_service: SearchService | None = None
     sync_status: SyncStatus = SyncStatus(
@@ -124,6 +129,7 @@ async def run_alert_check_loop() -> None:
             # Quick postgres check
             if postgres_ok:
                 try:
+                    assert state.postgres_pool is not None  # narrowed by postgres_ok check above
                     async with state.postgres_pool.acquire() as conn:
                         await conn.fetchval("SELECT 1")
                 except Exception:
@@ -142,10 +148,35 @@ async def run_alert_check_loop() -> None:
             await asyncio.sleep(10)  # Back off on error
 
 
+# CASE-52: NATS client callbacks. Update sync_status on connection
+# lifecycle events so the /status endpoint reflects reality, not just
+# "did we connect at startup." Belt-and-suspenders: the status endpoint
+# also does a live is_connected check, so missed callbacks don't leave
+# a stale flag.
+async def _on_nats_disconnected() -> None:
+    logger.warning("NATS connection dropped")
+    state.sync_status.connected_to_nats = False
+
+
+async def _on_nats_reconnected() -> None:
+    logger.info("NATS connection re-established")
+    state.sync_status.connected_to_nats = True
+
+
+async def _on_nats_closed() -> None:
+    logger.warning("NATS connection closed")
+    state.sync_status.connected_to_nats = False
+
+
 async def connect_nats() -> tuple[nats.NATS, JetStreamContext]:
     """Connect to NATS and get JetStream context."""
     logger.info(f"Connecting to NATS at {settings.nats_url}...")
-    nc = await nats.connect(settings.nats_url)
+    nc = await nats.connect(
+        settings.nats_url,
+        disconnected_cb=_on_nats_disconnected,
+        reconnected_cb=_on_nats_reconnected,
+        closed_cb=_on_nats_closed,
+    )
     js = nc.jetstream()
 
     # Ensure the stream exists
@@ -162,7 +193,7 @@ async def connect_nats() -> tuple[nats.NATS, JetStreamContext]:
                 "wip.templates.>",
                 "wip.terminologies.>",
                 "wip.terms.>",
-                "wip.relationships.>",
+                "wip.term_relations.>",
             ],
             retention="limits",
             max_msgs=1_000_000,
@@ -195,29 +226,96 @@ async def connect_postgres() -> asyncpg.Pool:
 async def init_postgres_schema(pool: asyncpg.Pool) -> None:
     """Initialize PostgreSQL schema (migration tracking table, etc.)."""
     async with pool.acquire() as conn:
-        # Create schema migrations tracking table
+        # Create schema migrations tracking table. Keyed on
+        # (namespace, template_value, version): template_value is unique only
+        # per namespace (CASE-628), so the namespace is part of the key.
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS _wip_schema_migrations (
+                namespace VARCHAR(255) NOT NULL DEFAULT 'wip',
                 template_value TEXT NOT NULL,
                 template_version INTEGER NOT NULL,
                 migration_sql TEXT NOT NULL,
                 applied_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                PRIMARY KEY (template_value, template_version)
+                PRIMARY KEY (namespace, template_value, template_version)
             )
         """)
 
-        # Create sync status tracking table
+        # Create sync status tracking table. Keyed on (namespace,
+        # template_value) — template_value is unique only per namespace
+        # (CASE-628).
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS _wip_sync_status (
-                template_value TEXT PRIMARY KEY,
+                namespace VARCHAR(255) NOT NULL DEFAULT 'wip',
+                template_value TEXT NOT NULL,
                 last_sync_at TIMESTAMP WITH TIME ZONE,
                 documents_synced BIGINT DEFAULT 0,
                 last_error TEXT,
-                last_error_at TIMESTAMP WITH TIME ZONE
+                last_error_at TIMESTAMP WITH TIME ZONE,
+                PRIMARY KEY (namespace, template_value)
             )
         """)
 
         logger.info("PostgreSQL schema initialized")
+
+
+async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
+    """Background: wait for def-store to be healthy, then batch-sync metadata.
+
+    The batch syncs (`batch_sync_terminologies`, `batch_sync_terms`,
+    `batch_sync_term_relations`) swallow connection errors internally and
+    return empty results — a single attempt against a not-yet-ready
+    def-store silently yields 0-row tables. Polling def-store's /health
+    first and only then calling the batch syncs makes them succeed on the
+    first attempt rather than silently fail.
+    """
+    async def _verify_def_store_ready() -> None:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{settings.def_store_url}/health")
+            resp.raise_for_status()
+
+    try:
+        await retry_async(
+            _verify_def_store_ready,
+            retry_on=(
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.ReadTimeout,
+                httpx.HTTPStatusError,
+            ),
+            description="Def-Store health check (initial metadata sync)",
+        )
+        logger.info("Def-Store healthy, running initial metadata sync...")
+    except TimeoutError as e:
+        logger.error(f"Def-Store never became healthy: {e}")
+        logger.error(
+            "Initial metadata sync skipped; trigger "
+            "POST /api/reporting-sync/sync/batch/terminologies?namespace=<ns>, "
+            "POST /api/reporting-sync/sync/batch/terms?namespace=<ns>, "
+            "POST /api/reporting-sync/sync/batch/term_relations?namespace=<ns>, and "
+            "POST /api/reporting-sync/sync/batch/templates?namespace=<ns> "
+            "manually once the services are reachable."
+        )
+        return
+
+    try:
+        t_result = await batch_sync_service.batch_sync_terminologies()
+        logger.info(f"Initial terminology sync: {t_result}")
+        t_result = await batch_sync_service.batch_sync_terms()
+        logger.info(f"Initial term sync: {t_result}")
+        # Term relations must be part of the startup backfill: they only
+        # otherwise sync on live NATS events, so a rebuilt reporting database
+        # (fresh Postgres + re-sync) would silently lose all historical
+        # relations until the next relation write.
+        t_result = await batch_sync_service.batch_sync_term_relations()
+        logger.info(f"Initial term-relation sync: {t_result}")
+        # Templates metadata has the same rebuild-loss shape as term
+        # relations: live sync happens only on template events, so a rebuilt
+        # reporting database holds no template metadata until each
+        # template's next write. Backfill it here too.
+        t_result = await batch_sync_service.batch_sync_templates()
+        logger.info(f"Initial template metadata sync: {t_result}")
+    except Exception as e:
+        logger.error(f"Initial metadata sync failed: {e}")
 
 
 @asynccontextmanager
@@ -228,28 +326,31 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.service_name} v{__version__}...")
 
     try:
-        # Connect to NATS
-        state.nats_client, state.jetstream = await connect_nats()
+        # Connect to NATS with retry — tolerates NATS not being ready yet
+        # on fresh k8s boot, node drain, pod reschedule.
+        state.nats_client, state.jetstream = await retry_async(
+            connect_nats,
+            retry_on=(ConnectionRefusedError, OSError, nats.errors.NoServersError),
+            description="NATS connect",
+        )
         state.sync_status.connected_to_nats = True
     except Exception as e:
         logger.error(f"Failed to connect to NATS: {e}")
         state.sync_status.connected_to_nats = False
 
     try:
-        # Connect to PostgreSQL
-        state.postgres_pool = await connect_postgres()
+        # Connect to PostgreSQL with retry — same reasoning as NATS above.
+        state.postgres_pool = await retry_async(
+            connect_postgres,
+            retry_on=(ConnectionRefusedError, OSError),
+            description="PostgreSQL connect",
+        )
         state.sync_status.connected_to_postgres = True
 
-        # Initialize schema
+        # Initialize schema (bookkeeping tables only). Per-namespace metadata
+        # and document tables are created lazily inside each namespace's schema
+        # on first sync (CASE-628) — there is no global pre-creation.
         await init_postgres_schema(state.postgres_pool)
-
-        # Ensure metadata tables exist
-        from .schema_manager import SchemaManager
-        sm = SchemaManager(state.postgres_pool)
-        await sm.ensure_terminologies_table()
-        await sm.ensure_terms_table()
-        await sm.ensure_templates_table()
-        await sm.ensure_term_relationships_table()
     except Exception as e:
         logger.error(f"Failed to connect to PostgreSQL: {e}")
         state.sync_status.connected_to_postgres = False
@@ -259,15 +360,16 @@ async def lifespan(app: FastAPI):
         state.batch_sync_service = BatchSyncService(state.postgres_pool)
         logger.info("Batch sync service initialized")
 
-        # Run initial terminology and term sync
-        try:
-            logger.info("Running initial terminology batch sync...")
-            t_result = await state.batch_sync_service.batch_sync_terminologies()
-            logger.info(f"Initial terminology sync: {t_result}")
-            t_result = await state.batch_sync_service.batch_sync_terms()
-            logger.info(f"Initial term sync: {t_result}")
-        except Exception as e:
-            logger.error(f"Initial terminology/term sync failed: {e}")
+        # Initial metadata sync runs as a background task. Waits for
+        # def-store to be healthy before firing batch_sync_terminologies/
+        # batch_sync_terms, because those methods swallow connection
+        # errors internally — a single attempt against a not-yet-ready
+        # def-store silently yields empty tables. Backgrounded so it
+        # doesn't block the HTTP listener either.
+        state.initial_sync_task = asyncio.create_task(
+            _initial_metadata_sync(state.batch_sync_service)
+        )
+        logger.info("Initial metadata sync scheduled (background)")
 
     # Initialize search service (works with or without PostgreSQL)
     state.search_service = SearchService(state.postgres_pool)
@@ -275,6 +377,8 @@ async def lifespan(app: FastAPI):
 
     # Start the sync worker task if both connections are up
     if state.sync_status.connected_to_nats and state.sync_status.connected_to_postgres:
+        assert state.nats_client is not None  # narrowed by connected_to_nats
+        assert state.jetstream is not None  # narrowed by connected_to_nats
         state.sync_task = asyncio.create_task(
             run_sync_worker(
                 state.nats_client,
@@ -311,6 +415,12 @@ async def lifespan(app: FastAPI):
         with contextlib.suppress(asyncio.CancelledError):
             await state.sync_task
 
+    # Cancel initial metadata sync task (if still running)
+    if state.initial_sync_task and not state.initial_sync_task.done():
+        state.initial_sync_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await state.initial_sync_task
+
     # Close connections
     if state.postgres_pool:
         await state.postgres_pool.close()
@@ -329,6 +439,7 @@ app = FastAPI(
     description="Syncs documents from MongoDB to PostgreSQL for reporting",
     version=__version__,
     lifespan=lifespan,
+    docs_url="/docs",
 )
 
 # Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
@@ -346,6 +457,7 @@ async def health_check() -> HealthResponse:
     # Quick postgres check
     if postgres_ok:
         try:
+            assert state.postgres_pool is not None  # narrowed by postgres_ok check above
             async with state.postgres_pool.acquire() as conn:
                 await conn.fetchval("SELECT 1")
         except Exception:
@@ -372,10 +484,74 @@ async def health_check() -> HealthResponse:
     )
 
 
+# Also expose /health under the api-prefix so external callers through
+# Caddy can reach it. Root /health stays for direct container probes.
+router.add_api_route(
+    "/health", health_check, methods=["GET"], response_model=HealthResponse,
+)
+
+
 @router.get("/status", response_model=SyncStatus)
 async def get_sync_status() -> SyncStatus:
-    """Get current sync worker status."""
+    """Get current sync worker status.
+
+    Refreshes the connection flags from live state on every call.
+    The lifespan startup sets them once; NATS callbacks (if connected
+    to a client that fires them) update on disconnect/reconnect; this
+    endpoint is the final authority that a caller sees reality, not a
+    latched startup flag. Postgres is probed with a short-timeout
+    `SELECT 1` — asyncpg has no cheap liveness property.
+    """
+    state.sync_status.connected_to_nats = bool(
+        state.nats_client and state.nats_client.is_connected
+    )
+    state.sync_status.connected_to_postgres = await _postgres_live_check()
     return state.sync_status
+
+
+async def _postgres_live_check() -> bool:
+    """Probe the PostgreSQL pool with a 1-second-timeout SELECT 1."""
+    if not state.postgres_pool:
+        return False
+    try:
+        assert state.postgres_pool is not None  # narrowed by postgres_ok check above
+        async with state.postgres_pool.acquire() as conn:
+            await asyncio.wait_for(conn.fetchval("SELECT 1"), timeout=1.0)
+        return True
+    except Exception:
+        return False
+
+
+@router.get("/parity", response_model=NamespaceParityResult)
+async def reporting_parity(
+    namespace: str = Query(..., description="Namespace to verify"),
+    include_counts: bool = Query(
+        True,
+        description=(
+            "Include expected-vs-actual row counts (mongo-derived, same "
+            "query the batch sync consumes). Pass false for the cheap "
+            "structure-only form used between restore phases."
+        ),
+    ),
+) -> NamespaceParityResult:
+    """Does postgres reflect what sync should have built for this namespace?
+
+    Per sync-enabled template: table present in the namespace's schema,
+    columns matching the schema manager's own derivation, bookkeeping row
+    recorded, and (optionally) row-count parity against the active-document
+    total. Also reports namespace-level state — schema presence, table
+    count, and whether the bookkeeping tables are namespace-keyed at all.
+
+    The one-request answer to "why does the reporting layer look empty":
+    a stale/fossil schema shows structural issues, a dead sync worker or
+    blocked doc-type sync shows count mismatches, and a pre-namespace-keying
+    database is named explicitly with remediation.
+    """
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+    return await check_namespace_parity(
+        state.postgres_pool, namespace, include_counts=include_counts
+    )
 
 
 # =============================================================================
@@ -402,6 +578,7 @@ async def get_metrics() -> MetricsResponse:
     # Quick postgres check
     if postgres_ok:
         try:
+            assert state.postgres_pool is not None  # narrowed by postgres_ok check above
             async with state.postgres_pool.acquire() as conn:
                 await conn.fetchval("SELECT 1")
         except Exception:
@@ -475,6 +652,7 @@ async def test_alerts() -> dict[str, Any]:
 
     if postgres_ok:
         try:
+            assert state.postgres_pool is not None  # narrowed by postgres_ok check above
             async with state.postgres_pool.acquire() as conn:
                 await conn.fetchval("SELECT 1")
         except Exception:
@@ -493,13 +671,66 @@ async def test_alerts() -> dict[str, Any]:
     }
 
 
+@router.get("/table-name")
+async def resolve_table_name(namespace: str, template_value: str) -> dict[str, Any]:
+    """Resolve the reporting table for a (namespace, template_value) (CASE-628).
+
+    Under schema-per-namespace the physical table is
+    ``"<namespace>"."doc_<value>"``. Consumers building raw ``run_report_query``
+    SQL should resolve the name here rather than construct it. ``exists``
+    reports whether the table has been materialised yet (it is created lazily on
+    first sync).
+
+    (A template's optional ``reporting.table_name`` cosmetic override is not
+    reflected here yet — this returns the default ``doc_<value>`` form.)
+    """
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+    sm = SchemaManager(state.postgres_pool)
+    try:
+        schema = sm.schema_for(namespace)
+        table_name = sm.get_table_name(template_value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    async with state.postgres_pool.acquire() as conn:
+        exists = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_schema = $1 AND table_name = $2
+            )
+            """,
+            schema,
+            table_name,
+        )
+
+    return {
+        "namespace": namespace,
+        "template_value": template_value,
+        "schema": schema,
+        "table_name": table_name,
+        "qualified_name": sm.qualified_name(namespace, template_value),
+        "exists": exists,
+    }
+
+
 @router.get("/schema/{template_value}")
-async def get_schema(template_value: str) -> dict[str, Any]:
-    """Get the PostgreSQL schema for a template."""
+async def get_schema(template_value: str, namespace: str) -> dict[str, Any]:
+    """Get the PostgreSQL schema (columns) for a template in a namespace.
+
+    ``namespace`` is required (CASE-628): the table lives in that namespace's
+    schema, and the same template_value can exist in several namespaces.
+    """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
-    table_name = f"doc_{template_value.lower()}"
+    sm = SchemaManager(state.postgres_pool)
+    try:
+        schema = sm.schema_for(namespace)
+        table_name = sm.get_table_name(template_value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     async with state.postgres_pool.acquire() as conn:
         # Check if table exists
@@ -507,17 +738,18 @@ async def get_schema(template_value: str) -> dict[str, Any]:
             """
             SELECT EXISTS (
                 SELECT FROM information_schema.tables
-                WHERE table_schema = 'public'
-                AND table_name = $1
+                WHERE table_schema = $1
+                AND table_name = $2
             )
             """,
+            schema,
             table_name,
         )
 
         if not exists:
             raise HTTPException(
                 status_code=404,
-                detail=f"Table {table_name} does not exist",
+                detail=f'Table "{schema}"."{table_name}" does not exist',
             )
 
         # Get column information
@@ -525,18 +757,24 @@ async def get_schema(template_value: str) -> dict[str, Any]:
             """
             SELECT column_name, data_type, is_nullable, column_default
             FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = $1
+            WHERE table_schema = $1 AND table_name = $2
             ORDER BY ordinal_position
             """,
+            schema,
             table_name,
         )
 
         # Get row count
-        row_count = await conn.fetchval(f'SELECT COUNT(*) FROM "{table_name}"')
+        row_count = await conn.fetchval(
+            f'SELECT COUNT(*) FROM "{schema}"."{table_name}"'
+        )
 
         return {
+            "namespace": namespace,
             "template_value": template_value,
+            "schema": schema,
             "table_name": table_name,
+            "qualified_name": f'"{schema}"."{table_name}"',
             "columns": [
                 {
                     "name": col["column_name"],
@@ -559,7 +797,7 @@ async def trigger_terminology_sync(
     Batch sync all terminologies from Def-Store to PostgreSQL.
 
     Args:
-        namespace: Namespace to sync (default: wip)
+        namespace: Namespace to sync (required — no default)
         page_size: Page size for API fetches (default: 100)
     """
     if not state.batch_sync_service:
@@ -588,7 +826,7 @@ async def trigger_term_sync(
     Iterates through all terminologies and fetches their terms.
 
     Args:
-        namespace: Namespace to sync (default: wip)
+        namespace: Namespace to sync (required — no default)
         page_size: Page size for API fetches (default: 100)
     """
     if not state.batch_sync_service:
@@ -606,32 +844,63 @@ async def trigger_term_sync(
     }
 
 
-@router.post("/sync/batch/relationships")
-async def trigger_relationship_sync(
+@router.post("/sync/batch/term_relations")
+async def trigger_term_relation_sync(
     namespace: str,
     page_size: int = 100,
 ) -> dict[str, Any]:
     """
-    Batch sync all term relationships from Def-Store to PostgreSQL.
+    Batch sync all term-relations from Def-Store to PostgreSQL.
 
-    Fetches all active relationships via the Def-Store ontology API
-    and upserts them into the term_relationships table.
+    Fetches all active term-relations via the Def-Store ontology API
+    and upserts them into the term_relations table.
 
     Args:
-        namespace: Namespace to sync (default: wip)
+        namespace: Namespace to sync (required — no default)
         page_size: Page size for API fetches (default: 100)
     """
     if not state.batch_sync_service:
         raise HTTPException(status_code=503, detail="Batch sync service not available")
 
-    result = await state.batch_sync_service.batch_sync_relationships(
+    result = await state.batch_sync_service.batch_sync_term_relations(
         namespace=namespace,
         page_size=page_size,
     )
 
     return {
         "status": "completed",
-        "table": "term_relationships",
+        "table": "term_relations",
+        **result,
+    }
+
+
+@router.post("/sync/batch/templates")
+async def trigger_template_metadata_sync(
+    namespace: str,
+    page_size: int = 100,
+) -> dict[str, Any]:
+    """
+    Batch sync all template metadata from Template-Store to PostgreSQL.
+
+    Rebuild/backfill path for the templates metadata table — the live path
+    only writes on template events, so a rebuilt reporting database would
+    otherwise hold no template metadata until each template's next write.
+
+    Args:
+        namespace: Namespace to sync (required — no default)
+        page_size: Page size for API fetches (default: 100)
+    """
+    if not state.batch_sync_service:
+        raise HTTPException(status_code=503, detail="Batch sync service not available")
+
+    result = await state.batch_sync_service.batch_sync_templates(
+        namespace=namespace,
+        page_size=page_size,
+    )
+
+    return {
+        "status": "completed",
+        "table": "templates",
         **result,
     }
 
@@ -760,8 +1029,8 @@ class IntegrityIssue(BaseModel):
     severity: str
     source: str = Field(..., description="Source service (template-store or document-store)")
     entity_id: str = Field(..., description="ID of the entity with the issue")
-    entity_value: str | None = Field(None, description="Value of the entity (if applicable)")
-    field_path: str | None = Field(None, description="Field path")
+    entity_value: str | None = Field(default=None, description="Value of the entity (if applicable)")
+    field_path: str | None = Field(default=None, description="Field path")
     reference: str
     message: str
 
@@ -835,7 +1104,7 @@ async def aggregated_integrity_check(
     template_store_url = settings.template_store_url
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            params = {"limit": template_limit}
+            params: dict[str, Any] = {"limit": template_limit}
             if template_status:
                 params["status"] = template_status
 
@@ -952,25 +1221,62 @@ async def aggregated_integrity_check(
 
 
 @router.post("/search", response_model=SearchResponse)
-async def unified_search(request: SearchRequest) -> SearchResponse:
-    """
-    Unified search across all WIP entity types.
+async def unified_search(
+    request: SearchRequest,
+    namespace: str | None = Query(
+        default=None,
+        description=(
+            "Scope results to this namespace. Accepted as a URL query param "
+            "(matching the /sync routes); overrides request.namespace when "
+            "both are given. The body field still works."
+        ),
+    ),
+    status: str | None = Query(
+        default=None, description="Filter by status. Overrides request.status."
+    ),
+    template: str | None = Query(
+        default=None,
+        description="Restrict document search to one template (by value). Overrides request.template.",
+    ),
+) -> SearchResponse:
+    """Unified search across all WIP entity types with per-type pagination.
 
-    Searches terminologies, terms, templates, and documents in parallel.
-    Results are sorted by relevance (exact matches first).
+    Searches terminologies, terms, templates, documents, and files in
+    parallel. Each entity type returns its own pagination envelope
+    — see `wip://conventions` for the platform pagination
+    contract.
 
     Args:
         request: Search parameters
             - query: Search string (required)
             - types: Entity types to search (optional, defaults to all)
             - status: Filter by status (optional)
-            - limit: Max results per type (1-200, default 50)
+            - page: Page number (default 1)
+            - page_size: Items per type (default 50, max 100)
+            - limit: DEPRECATED alias for page_size when page=1
+        namespace/status/template: optional URL query params — these
+            filters previously lived ONLY on the request body, so a
+            `?namespace=X` URL param was silently dropped by FastAPI and the
+            search ran un-scoped (global, across every namespace's doc_* rows).
+            Accepting them as query params (consistent with the /sync routes)
+            makes URL-scoped search work; an explicit query param wins over the
+            same field in the body (the URL is the per-request override).
 
     Returns:
-        SearchResponse with results grouped by type and total counts
+        SearchResponse with per-type paginated buckets keyed by entity type.
     """
     if not state.search_service:
         raise HTTPException(status_code=503, detail="Search service not available")
+
+    overrides: dict[str, Any] = {}
+    if namespace is not None:
+        overrides["namespace"] = namespace
+    if status is not None:
+        overrides["status"] = status
+    if template is not None:
+        overrides["template"] = template
+    if overrides:
+        request = request.model_copy(update=overrides)
 
     return await state.search_service.search(request)
 
@@ -1112,67 +1418,75 @@ async def get_referenced_by(
 # =============================================================================
 
 
+# PostgreSQL schemas that are never WIP namespaces.
+_SYSTEM_SCHEMAS = ("public", "pg_catalog", "information_schema", "pg_toast")
+
+
 @router.get("/tables")
 async def list_tables(
-    table_name: str | None = Query(default=None, description="Return full column detail for a specific table"),
+    namespace: str | None = Query(default=None, description="Restrict to one namespace's schema"),
+    table_name: str | None = Query(default=None, description="Return full column detail for a specific (bare) table name"),
 ):
-    """List available reporting tables.
+    """List available reporting tables across all namespace schemas (CASE-628).
 
-    Without table_name: returns table names, row counts, and column counts (summary).
-    With table_name: returns full column detail (name, type, nullable) for that table.
+    Each WIP namespace is its own PostgreSQL schema; this enumerates the
+    reporting tables in every namespace schema and returns, per table, its
+    owning ``namespace``, the ``template_value`` it reports (for ``doc_*``
+    tables), row count, and columns. Filter by ``namespace`` and/or bare
+    ``table_name``.
     """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
     allowed_prefixes = ("doc_",)
-    allowed_exact = {"terminologies", "terms", "term_relationships"}
+    allowed_exact = {"terminologies", "terms", "term_relations", "templates"}
 
     async with state.postgres_pool.acquire() as conn:
-        # Get all base tables in public schema
+        # Base tables across every non-system schema (each is a namespace).
         raw_tables = await conn.fetch(
-            """
-            SELECT table_name
+            f"""
+            SELECT table_schema, table_name
             FROM information_schema.tables
-            WHERE table_schema = 'public'
+            WHERE table_schema NOT IN {_SYSTEM_SCHEMAS}
               AND table_type = 'BASE TABLE'
-            ORDER BY table_name
+            ORDER BY table_schema, table_name
             """
         )
 
         tables = []
         for row in raw_tables:
+            schema = row["table_schema"]
             tname = row["table_name"]
             if not (tname.startswith(allowed_prefixes) or tname in allowed_exact):
                 continue
-
-            # If filtering by table_name, skip non-matching tables
+            if namespace and schema != namespace:
+                continue
             if table_name and tname != table_name:
                 continue
 
-            # Get columns
             columns = await conn.fetch(
                 """
                 SELECT column_name, data_type, is_nullable
                 FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = $1
+                WHERE table_schema = $1
+                  AND table_name = $2
                 ORDER BY ordinal_position
                 """,
+                schema,
                 tname,
             )
 
-            # Get row count
-            count = await conn.fetchval(
-                f'SELECT COUNT(*) FROM "{tname}"'
-            )
+            count = await conn.fetchval(f'SELECT COUNT(*) FROM "{schema}"."{tname}"')
 
             entry: dict = {
+                "namespace": schema,
                 "name": tname,
+                "template_value": tname[len("doc_"):] if tname.startswith("doc_") else None,
+                "qualified_name": f'"{schema}"."{tname}"',
                 "row_count": count,
             }
 
             if table_name:
-                # Detail mode: include full column info
                 entry["columns"] = [
                     {
                         "name": c["column_name"],
@@ -1182,7 +1496,6 @@ async def list_tables(
                     for c in columns
                 ]
             else:
-                # Summary mode: just column count
                 entry["column_count"] = len(columns)
 
             tables.append(entry)
@@ -1200,6 +1513,14 @@ class ReportQuery(BaseModel):
     params: list[Any] = []
     timeout_seconds: int = Field(default=30, ge=1, le=300)
     max_rows: int = Field(default=1000, ge=1, le=50000)
+    namespace: str | None = Field(
+        default=None,
+        description=(
+            "When set, the query runs with search_path = this namespace's schema "
+            "(CASE-628), so unqualified table names like `doc_patient` resolve "
+            "there. Omit for cross-namespace queries and schema-qualify instead."
+        ),
+    )
 
 
 # Pattern matching dangerous SQL keywords at word boundaries
@@ -1223,13 +1544,26 @@ async def execute_query(body: ReportQuery):
             "INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, and REVOKE are prohibited.",
         )
 
+    # Resolve the namespace search_path schema (CASE-628), validating it as a
+    # safe identifier before interpolation.
+    search_path_schema: str | None = None
+    if body.namespace:
+        try:
+            search_path_schema = SchemaManager(state.postgres_pool).schema_for(body.namespace)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
     # Build wrapped query with row limit
     wrapped_sql = f"SELECT * FROM ({body.sql}) _q LIMIT {body.max_rows + 1}"
 
     # Build positional parameter references
     params = body.params
 
+    async def _run(conn: asyncpg.Connection) -> list:
+        return await conn.fetch(wrapped_sql, *params)
+
     try:
+        assert state.postgres_pool is not None  # narrowed by postgres_ok check above
         async with state.postgres_pool.acquire() as conn:
             # Set statement timeout and read-only transaction
             await conn.execute(
@@ -1237,7 +1571,16 @@ async def execute_query(body: ReportQuery):
             )
             await conn.execute("SET default_transaction_read_only = on")
 
-            rows = await conn.fetch(wrapped_sql, *params)
+            if search_path_schema:
+                # SET LOCAL inside a transaction auto-resets on commit, so the
+                # search_path never leaks back to the pooled connection.
+                async with conn.transaction():
+                    await conn.execute(
+                        f'SET LOCAL search_path = "{search_path_schema}", public'
+                    )
+                    rows = await _run(conn)
+            else:
+                rows = await _run(conn)
 
             # Detect truncation
             truncated = len(rows) > body.max_rows
@@ -1271,7 +1614,7 @@ async def execute_query(body: ReportQuery):
 
 # Allowed tables for CSV export (same whitelist as /tables)
 _EXPORT_ALLOWED_PREFIXES = ("doc_",)
-_EXPORT_ALLOWED_EXACT = {"terminologies", "terms", "term_relationships"}
+_EXPORT_ALLOWED_EXACT = {"terminologies", "terms", "term_relations", "templates"}
 
 
 def _is_allowed_table(name: str) -> bool:
@@ -1309,11 +1652,16 @@ async def _stream_csv(conn: asyncpg.Connection, sql: str, params: list[Any]):
 
 @router.get("/export/csv")
 async def export_table_csv(
-    table: str = Query(description="Table name to export (e.g. doc_patient)"),
+    namespace: str = Query(description="Namespace (PostgreSQL schema) the table lives in"),
+    table: str = Query(description="Bare table name to export (e.g. doc_patient)"),
     timeout_seconds: int = Query(default=120, ge=1, le=600),
     filename: str | None = Query(default=None, description="Download filename"),
 ):
-    """Export a full reporting table as streaming CSV."""
+    """Export a full reporting table as streaming CSV.
+
+    ``namespace`` is required (CASE-628): the table lives in that namespace's
+    schema.
+    """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
@@ -1321,16 +1669,25 @@ async def export_table_csv(
         raise HTTPException(
             status_code=400,
             detail=f"Table '{table}' is not available for export. "
-            "Only doc_* tables and metadata tables (terminologies, terms, term_relationships) are allowed.",
+            "Only doc_* tables and metadata tables (terminologies, terms, term_relations, templates) are allowed.",
         )
 
-    download_name = filename or f"{table}.csv"
+    # Validate both identifiers before interpolation.
+    try:
+        schema = SchemaManager(state.postgres_pool).schema_for(namespace)
+        SchemaManager._safe_ident(table)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    qualified = f'"{schema}"."{table}"'
+    download_name = filename or f"{namespace}_{table}.csv"
 
     async def generate():
+        assert state.postgres_pool is not None
         async with state.postgres_pool.acquire() as conn:
             await conn.execute(f"SET statement_timeout = {timeout_seconds * 1000}")
             await conn.execute("SET default_transaction_read_only = on")
-            async for chunk in _stream_csv(conn, f'SELECT * FROM "{table}"', []):
+            async for chunk in _stream_csv(conn, f'SELECT * FROM {qualified}', []):
                 yield chunk
 
     return StreamingResponse(
@@ -1354,6 +1711,7 @@ async def export_query_csv(body: CsvExportQuery):
         )
 
     async def generate():
+        assert state.postgres_pool is not None
         async with state.postgres_pool.acquire() as conn:
             await conn.execute(
                 f"SET statement_timeout = {body.timeout_seconds * 1000}"
@@ -1378,8 +1736,10 @@ async def export_query_csv(body: CsvExportQuery):
 async def delete_namespace(prefix: str):
     """Delete all reporting data for a namespace.
 
-    Removes rows from all doc_* tables, metadata tables (terminologies, terms,
-    term_relationships, templates), and sync status where namespace matches.
+    CASE-628: each namespace is a PostgreSQL schema, so removal is a single
+    ``DROP SCHEMA "<prefix>" CASCADE`` — every doc_* and metadata table inside
+    it (and their indexes) goes atomically. The namespace's rows in the shared
+    bookkeeping tables are cleared too.
 
     Called by Registry during namespace deletion.
     """
@@ -1389,53 +1749,34 @@ async def delete_namespace(prefix: str):
     if not prefix or not prefix.strip():
         raise HTTPException(status_code=400, detail="Namespace prefix is required")
 
-    total_deleted = 0
+    # Validate the prefix as a safe SQL identifier before interpolating it into
+    # DROP SCHEMA (identifiers cannot be parameterised).
+    sm = SchemaManager(state.postgres_pool)
+    try:
+        schema = sm.schema_for(prefix)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # total_deleted MUST be a real integer: Registry records it as the
+    # deletion journal's `postgres_rows` audit field, which is int-typed —
+    # a null here poisoned the journal and turned every otherwise-successful
+    # namespace DELETE into a validation error. drop_namespace_schema counts
+    # the schema's rows before dropping it.
+    total_deleted = await sm.drop_namespace_schema(prefix)
 
     async with state.postgres_pool.acquire() as conn:
-        # Find all doc_* tables
-        doc_tables = await conn.fetch(
-            """
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'public'
-              AND table_type = 'BASE TABLE'
-              AND table_name LIKE 'doc_%'
-            ORDER BY table_name
-            """
-        )
-
-        # Delete from each doc_* table
-        for row in doc_tables:
-            table_name = row["table_name"]
-            result = await conn.execute(
-                f'DELETE FROM "{table_name}" WHERE namespace = $1', prefix
+        # Clear the namespace's rows from the shared bookkeeping tables (these
+        # live in public, keyed by namespace — see init_postgres_schema).
+        # asyncpg returns a "DELETE <n>" status string; fold those rows into
+        # the audit total.
+        for table in ("_wip_schema_migrations", "_wip_sync_status"):
+            status = await conn.execute(
+                f"DELETE FROM {table} WHERE namespace = $1", prefix
             )
-            count = int(result.split()[-1])  # "DELETE N"
-            if count > 0:
-                logger.info(
-                    f"Deleted {count} rows from {table_name} for namespace {prefix}"
-                )
-            total_deleted += count
+            total_deleted += int(status.rsplit(" ", 1)[-1])
 
-        # Delete from metadata tables
-        for table_name in ("terminologies", "templates", "terms", "term_relationships"):
-            try:
-                result = await conn.execute(
-                    f'DELETE FROM "{table_name}" WHERE namespace = $1', prefix
-                )
-                count = int(result.split()[-1])
-                if count > 0:
-                    logger.info(
-                        f"Deleted {count} rows from {table_name} for namespace {prefix}"
-                    )
-                total_deleted += count
-            except asyncpg.UndefinedTableError:
-                pass  # Table doesn't exist yet — nothing to clean
-
-    logger.info(
-        f"Namespace {prefix} cleanup complete: {total_deleted} total rows deleted"
-    )
-    return {"total_deleted": total_deleted}
+    logger.info(f"Namespace {prefix} reporting schema dropped ({schema})")
+    return {"namespace": prefix, "dropped_schema": schema, "total_deleted": total_deleted}
 
 
 @router.get("/")
@@ -1444,7 +1785,13 @@ async def root():
     return {
         "service": settings.service_name,
         "version": __version__,
-        "docs": "/api/reporting-sync/docs",
+        # CASE-526: uniform build-provenance block (sha/built_at/image_tag).
+        "build": build_metadata(__version__),
+        # Docs are served at the unprefixed FastAPI default, reachable only
+        # when addressing the service directly — the platform-wide pattern
+        # for all five services. The Caddy route for this service preserves
+        # the /api/reporting-sync prefix, so a prefixed docs path would 404.
+        "docs": "/docs",
         "health": "/api/reporting-sync/health",
         "status": "/api/reporting-sync/status",
         "integrity": "/api/reporting-sync/health/integrity",
@@ -1454,6 +1801,11 @@ async def root():
 
 
 app.include_router(router)
+
+# Declare the X-API-Key requirement in the OpenAPI contract — runtime
+# Depends() enforcement emits nothing into the schema, and a client
+# generated from an auth-silent schema would not send a key.
+declare_api_key_security(app)
 
 
 if __name__ == "__main__":

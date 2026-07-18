@@ -38,6 +38,7 @@ os.environ.setdefault("DEF_STORE_API_KEY", "test_def_store_key")
 
 # Models and apps (must be after env var setup; sorted as one block for ruff I001)
 from registry.main import app as registry_app  # noqa: E402
+from registry.models.composite_key_claim import CompositeKeyClaim  # noqa: E402
 from registry.models.deletion_journal import DeletionJournal  # noqa: E402
 from registry.models.entry import RegistryEntry  # noqa: E402
 from registry.models.grant import NamespaceGrant  # noqa: E402
@@ -131,10 +132,35 @@ async def _register_test_terminologies(registry_transport):
             )
 
 
+async def _ensure_mongo_reachable(mongo_client: AsyncIOMotorClient, uri: str) -> None:
+    """Fail fast with a clear error if MongoDB isn't reachable.
+
+    motor's default behavior is retry-forever-with-backoff; before this
+    check, an unreachable mongo (CASE-320) caused tests to hang silently
+    with no diagnostic. The 5s serverSelectionTimeoutMS bound + explicit
+    ping turns that into a clear, actionable error inside 5 seconds —
+    regardless of whether pytest was invoked via wip-test.sh, an IDE,
+    or directly.
+    """
+    from pymongo.errors import ServerSelectionTimeoutError
+
+    try:
+        await mongo_client.admin.command("ping")
+    except ServerSelectionTimeoutError:
+        raise RuntimeError(
+            f"MongoDB at {uri} is not reachable within 5s. "
+            f"Run scripts/wip-test.sh (auto-provisions test-mongo), "
+            f"or set MONGO_URI to your own instance, or start test-mongo manually: "
+            f"podman run -d --name test-mongo -p 27017:27017 mongo:7"
+        ) from None
+
+
 @pytest_asyncio.fixture(scope="function")
 async def client() -> AsyncGenerator[AsyncClient, None]:
     """Create test client with real Registry mounted in-process."""
-    mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
+    mongo_uri = os.environ["MONGO_URI"]
+    mongo_client = AsyncIOMotorClient(mongo_uri, serverSelectionTimeoutMS=5000)
+    await _ensure_mongo_reachable(mongo_client, mongo_uri)
     test_db = mongo_client[os.environ["DATABASE_NAME"]]
 
     # Single init_beanie for all models — avoids database binding drift
@@ -143,6 +169,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
         document_models=[
             # Registry models
             Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal,
+            CompositeKeyClaim,  # CASE-427: register_keys now claims keys here
             # Template-Store models
             Template,
         ],
@@ -154,6 +181,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     await IdCounter.delete_all()
     await NamespaceGrant.delete_all()
     await DeletionJournal.delete_all()
+    await CompositeKeyClaim.delete_all()
     await Template.delete_all()
 
     registry_app.state.mongodb_client = mongo_client
@@ -172,11 +200,13 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     app.state.mongodb_client = mongo_client
     set_api_key(os.environ["API_KEY"])
 
-    # Wire real RegistryClient with transport injection
+    # Wire real RegistryClient with module-level transport injection
+    # (CASE-398: per-instance transport= kwarg is gone).
+    from template_store.services.registry_client import set_registry_transport
+    set_registry_transport(registry_transport)
     real_registry = RegistryClient(
         base_url="http://registry",
         api_key=os.environ["MASTER_API_KEY"],
-        transport=registry_transport,
     )
 
     # Wire real resolution with transport injection
@@ -199,6 +229,8 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
     # Cleanup
     set_resolve_transport(None)
+    from template_store.services.registry_client import clear_registry_transport
+    clear_registry_transport()
     clear_resolution_cache()
 
 

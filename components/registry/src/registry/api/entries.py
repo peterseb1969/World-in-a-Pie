@@ -1,10 +1,15 @@
 """Registry entry management API endpoints."""
 
+import logging
 import math
+import re
 from datetime import UTC, datetime
+from typing import cast
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+
+from wip_auth import UserIdentity
 
 from ..models.api_models import (
     ActivateBulkResponse,
@@ -38,18 +43,27 @@ from ..models.api_models import (
     UpdateEntryItem,
     UpdateEntryResponse,
 )
+from ..models.composite_key_claim import CompositeKeyClaim
 from ..models.entry import RegistryEntry, Synonym
 from ..models.id_algorithm import VALID_ENTITY_TYPES, IdFormatValidator
 from ..models.namespace import Namespace
 from ..services.auth import require_api_key
+from ..services.claims import (
+    claim_entry_keys_pending,
+    confirm_entry_keys,
+    release_entry_keys,
+)
 from ..services.hash import HashService
 from ..services.id_generator import IdGeneratorService
+from .grants import resolve_accessible_namespaces
+
+logger = logging.getLogger("registry.entries")
 
 router = APIRouter()
 
 
 def build_lookup_response(
-    input_index: int,
+    index: int,
     entry: RegistryEntry | None,
     status: str = "found",
     matched_namespace: str | None = None,
@@ -62,13 +76,13 @@ def build_lookup_response(
     """Build a standardized lookup response."""
     if entry is None:
         return LookupResponse(
-            input_index=input_index,
+            index=index,
             status=status,
             error=error
         )
 
     return LookupResponse(
-        input_index=input_index,
+        index=index,
         status=status,
         entry_id=entry.entry_id,
         namespace=entry.namespace,
@@ -96,23 +110,38 @@ async def browse_entries(
     q: str | None = Query(None, description="Search across entry IDs and composite key values"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Page size"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BrowseEntriesResponse:
     """Browse registry entries with pagination and optional filters."""
     query: dict = {}
 
+    # Scope the listing to namespaces the caller may read. Enumeration is
+    # grant-gated (unlike cross-namespace reference resolution, which stays
+    # open) — a key must not list a namespace's entry inventory without a
+    # grant on it. An explicit foreign namespace returns an empty page rather
+    # than 404, preserving pagination shape while leaking nothing.
+    accessible = await resolve_accessible_namespaces(identity)
     if namespace:
+        if accessible is not None and namespace not in accessible:
+            return BrowseEntriesResponse(
+                items=[], total=0, page=page, page_size=page_size, pages=0
+            )
         query["namespace"] = namespace
+    elif accessible is not None:
+        query["namespace"] = {"$in": accessible}
+
     if entity_type:
         query["entity_type"] = entity_type
     if status:
         query["status"] = status
 
     if q:
-        q_stripped = q.strip()
+        # CASE-568: q is a literal search string, not a regex — escape it
+        # (same as unified_search below).
+        escaped_q = re.escape(q.strip())
         query["$or"] = [
-            {"entry_id": {"$regex": q_stripped, "$options": "i"}},
-            {"search_values": {"$regex": q_stripped, "$options": "i"}},
+            {"entry_id": {"$regex": escaped_q, "$options": "i"}},
+            {"search_values": {"$regex": escaped_q, "$options": "i"}},
         ]
 
     total = await RegistryEntry.find(query).count()
@@ -155,14 +184,12 @@ async def unified_search(
     status: str | None = Query(None, description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Page size"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> UnifiedSearchResponse:
     """
     Unified search across entry IDs, additional IDs, and all composite key values
     (primary + synonyms). Returns rich results with match context and resolution paths.
     """
-    import re
-
     q_stripped = q.strip()
     escaped_q = re.escape(q_stripped)
 
@@ -174,8 +201,23 @@ async def unified_search(
 
     query: dict = {"$or": or_conditions}
 
+    # Same namespace-scoping as browse_entries: this is enumeration, so it is
+    # grant-gated. Reference resolution (lookup_by_ids / _keys, resolve_synonyms)
+    # stays cross-namespace by design; unified search does not.
+    accessible = await resolve_accessible_namespaces(identity)
     if namespace:
+        if accessible is not None and namespace not in accessible:
+            return UnifiedSearchResponse(
+                query=q_stripped,
+                items=[],
+                total=0,
+                page=page,
+                page_size=page_size,
+            )
         query["namespace"] = namespace
+    elif accessible is not None:
+        query["namespace"] = {"$in": accessible}
+
     if entity_type:
         query["entity_type"] = entity_type
     if status:
@@ -265,7 +307,7 @@ async def unified_search(
 )
 async def get_entry_detail(
     entry_id: str,
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> EntryDetailResponse:
     """Get full details for a single registry entry by its entry_id."""
     entry = await RegistryEntry.find_one({"entry_id": entry_id})
@@ -298,7 +340,7 @@ async def get_entry_detail(
 )
 async def register_keys(
     items: list[RegisterKeyItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> RegisterBulkResponse:
     """
     Register one or more composite keys. This is sugar for reserve + immediate activate.
@@ -338,10 +380,10 @@ async def register_keys(
     for item in items:
         if item.identity_values:
             # Compute identity_hash from raw values
-            id_hash = HashService.compute_composite_key_hash(item.identity_values)
-            identity_hashes.append(id_hash)
+            computed_hash = HashService.compute_composite_key_hash(item.identity_values)
+            identity_hashes.append(computed_hash)
             # Inject identity_hash into composite_key for dedup
-            item.composite_key["identity_hash"] = id_hash
+            item.composite_key["identity_hash"] = computed_hash
             hashes.append(HashService.compute_composite_key_hash(item.composite_key))
         elif item.composite_key:
             identity_hashes.append(None)
@@ -350,9 +392,14 @@ async def register_keys(
             identity_hashes.append(None)
             hashes.append("")  # Empty composite key = no dedup
 
-    # Phase 2: Batch check for existing entries (by hash and by entry_id)
+    # Phase 2: Batch check for existing entries (by hash and by entry_id).
+    # CASE-567: the map is keyed by (namespace, entity_type, key_hash) — a
+    # synonym owns its key under the synonym's OWN namespace/entity_type
+    # (which may differ from its parent entry's), exactly as lookup_by_keys'
+    # $elemMatch treats it. Flattening by hash alone let a cross-namespace
+    # synonym slip past dedup and mint a second live owner for its key.
     dedup_hashes = [h for h in hashes if h]
-    existing_by_hash = {}
+    existing_by_hash: dict[tuple[str, str, str], RegistryEntry] = {}
     if dedup_hashes:
         existing_entries = await RegistryEntry.find({
             "$or": [
@@ -362,9 +409,13 @@ async def register_keys(
         }).to_list()
 
         for entry in existing_entries:
-            existing_by_hash[entry.primary_composite_key_hash] = entry
+            existing_by_hash[
+                (entry.namespace, entry.entity_type, entry.primary_composite_key_hash)
+            ] = entry
             for syn in entry.synonyms:
-                existing_by_hash[syn.composite_key_hash] = entry
+                existing_by_hash[
+                    (syn.namespace, syn.entity_type, syn.composite_key_hash)
+                ] = entry
 
     # Also check for existing entries by entry_id (for restore/migration)
     provided_ids = [item.entry_id for item in items if item.entry_id]
@@ -379,14 +430,18 @@ async def register_keys(
     # Phase 3: Build entries to insert
     entries_to_insert: list[RegistryEntry] = []
     insert_indices: list[int] = []
-    seen_in_batch: dict[str, tuple[int, str]] = {}  # key_hash → (first_index, entry_id)
+    # CASE-567: keyed by (namespace, entity_type, key_hash) — the same key
+    # under two entity types is two entities (namespace_entity_keyhash_
+    # unique_idx). The namespace element is defense-in-depth: Phase 0a
+    # already rejects mixed-namespace batches.
+    seen_in_batch: dict[tuple[str, str, str], str] = {}
 
     for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes, strict=False)):
         try:
             # Validate entity_type
             if item.entity_type not in VALID_ENTITY_TYPES:
                 results[i] = RegisterKeyResponse(
-                    input_index=i,
+                    index=i,
                     status="error",
                     error=f"Invalid entity_type: {item.entity_type}"
                 )
@@ -396,7 +451,7 @@ async def register_keys(
             # Validate namespace exists
             if item.namespace in invalid_namespaces:
                 results[i] = RegisterKeyResponse(
-                    input_index=i,
+                    index=i,
                     status="error",
                     error=f"Namespace '{item.namespace}' does not exist or is not active"
                 )
@@ -404,10 +459,11 @@ async def register_keys(
                 continue
 
             # Check if provided entry_id already exists (collision detection)
+            existing: RegistryEntry | None
             if item.entry_id and item.entry_id in existing_by_entry_id:
                 existing = existing_by_entry_id[item.entry_id]
                 results[i] = RegisterKeyResponse(
-                    input_index=i,
+                    index=i,
                     status="error",
                     error=(
                         f"entry_id '{item.entry_id}' already exists "
@@ -418,16 +474,17 @@ async def register_keys(
                 error_count += 1
                 continue
 
-            # Check if exists by composite key hash (dedup) — scoped to namespace+entity_type
+            # Check if exists by composite key hash (dedup) — scoped to
+            # namespace+entity_type via the map key (CASE-567): a synonym
+            # match hits under the synonym's own namespace, not its parent
+            # entry's.
             if key_hash:
-                existing = existing_by_hash.get(key_hash)
-                if (
-                    existing
-                    and existing.namespace == item.namespace
-                    and existing.entity_type == item.entity_type
-                ):
+                existing = existing_by_hash.get(
+                    (item.namespace, item.entity_type, key_hash)
+                )
+                if existing:
                     results[i] = RegisterKeyResponse(
-                        input_index=i,
+                        index=i,
                         status="already_exists",
                         registry_id=existing.entry_id,
                         namespace=existing.namespace,
@@ -437,11 +494,13 @@ async def register_keys(
                     exists_count += 1
                     continue
 
-                # Intra-batch dedup: second item with same hash gets already_exists
-                if key_hash in seen_in_batch:
-                    first_entry_id = seen_in_batch[key_hash]
+                # Intra-batch dedup: second item with the same key in the
+                # same namespace+entity_type gets already_exists
+                batch_key = (item.namespace, item.entity_type, key_hash)
+                if batch_key in seen_in_batch:
+                    first_entry_id = seen_in_batch[batch_key]
                     results[i] = RegisterKeyResponse(
-                        input_index=i,
+                        index=i,
                         status="already_exists",
                         registry_id=first_entry_id,
                         namespace=item.namespace,
@@ -457,9 +516,14 @@ async def register_keys(
             else:
                 entry_id = await IdGeneratorService.generate(item.namespace, item.entity_type)
 
-            # Build synonyms list — add identity_values as a synonym if provided
+            # Build synonyms list — add identity_values as a synonym if provided.
+            # CASE-430: relationship/edge types set skip_identity_value_synonym
+            # so the bare {source_ref, target_ref} synonym (which omits the
+            # template and collides across edge types between the same pair) is
+            # not created. identity_hash is still computed + injected above, so
+            # the primary key and edge dedup/versioning are unaffected.
             synonyms = []
-            if item.identity_values and id_hash:
+            if item.identity_values and id_hash and not item.skip_identity_value_synonym:
                 synonyms.append(Synonym(
                     namespace=item.namespace,
                     entity_type=item.entity_type,
@@ -484,24 +548,42 @@ async def register_keys(
             entries_to_insert.append(entry)
             insert_indices.append(i)
             if key_hash:
-                seen_in_batch[key_hash] = entry_id
+                seen_in_batch[(item.namespace, item.entity_type, key_hash)] = entry_id
 
         except Exception as e:
             results[i] = RegisterKeyResponse(
-                input_index=i,
+                index=i,
                 status="error",
                 error=str(e)
             )
             error_count += 1
 
-    # Phase 4: Batch insert
-    if entries_to_insert:
+    # Phase 3.5: claim-first gate. Every key pair is claimed pending BEFORE
+    # the insert (fail-fast on conflict; the item drops out of the batch).
+    # An entry without a claim is thereby unrepresentable by ordering.
+    gated_entries: list = []
+    gated_indices: list[int] = []
+    for pos, idx in enumerate(insert_indices):
+        entry = entries_to_insert[pos]
+        conflict = await claim_entry_keys_pending(entry)
+        if conflict is not None:
+            results[idx] = RegisterKeyResponse(
+                index=idx, status="error", error=conflict,
+            )
+            error_count += 1
+            continue
+        gated_entries.append(entry)
+        gated_indices.append(idx)
+
+    # Phase 4: Batch insert, then confirm the pending claims.
+    if gated_entries:
         try:
-            await RegistryEntry.insert_many(entries_to_insert)
-            for pos, idx in enumerate(insert_indices):
-                entry = entries_to_insert[pos]
+            await RegistryEntry.insert_many(gated_entries)
+            for pos, idx in enumerate(gated_indices):
+                entry = gated_entries[pos]
+                await confirm_entry_keys(entry)
                 results[idx] = RegisterKeyResponse(
-                    input_index=idx,
+                    index=idx,
                     status="created",
                     registry_id=entry.entry_id,
                     namespace=entry.namespace,
@@ -510,17 +592,18 @@ async def register_keys(
                 )
                 created_count += 1
         except Exception as e:
-            for _pos, idx in enumerate(insert_indices):
+            for pos, idx in enumerate(gated_indices):
                 if results[idx] is None:
+                    await release_entry_keys(gated_entries[pos])
                     results[idx] = RegisterKeyResponse(
-                        input_index=idx,
+                        index=idx,
                         status="error",
                         error=f"Batch insert failed: {e!s}"
                     )
                     error_count += 1
 
     return RegisterBulkResponse(
-        results=results,
+        results=cast(list[RegisterKeyResponse], results),
         total=len(items),
         created=created_count,
         already_exists=exists_count,
@@ -535,7 +618,7 @@ async def register_keys(
 )
 async def provision_ids(
     request: ProvisionRequest,
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> ProvisionResponse:
     """
     Provision (generate + reserve) IDs per namespace config.
@@ -579,7 +662,23 @@ async def provision_ids(
         ids.append(ProvisionedId(entry_id=entry_id, status="reserved"))
 
     if entries:
-        await RegistryEntry.insert_many(entries)
+        # Claim-first (pending) for reserved entries too; a conflict on a
+        # provisioned composite key fails the whole provision loudly rather
+        # than reserving an entry whose key resolves elsewhere.
+        for entry in entries:
+            conflict = await claim_entry_keys_pending(entry)
+            if conflict is not None:
+                for e in entries:
+                    await release_entry_keys(e)
+                raise HTTPException(status_code=409, detail=conflict)
+        try:
+            await RegistryEntry.insert_many(entries)
+        except Exception:
+            for entry in entries:
+                await release_entry_keys(entry)
+            raise
+        for entry in entries:
+            await confirm_entry_keys(entry)
 
     return ProvisionResponse(
         namespace=request.namespace,
@@ -596,14 +695,14 @@ async def provision_ids(
 )
 async def reserve_ids(
     items: list[ReserveItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> ReserveBulkResponse:
     """
     Validate and store client-provided IDs as reserved.
 
     Validates each ID against the namespace's configured format.
     """
-    results = []
+    results: list[ReserveItemResponse | None] = []
     reserved_count = 0
     error_count = 0
     entries_to_insert = []
@@ -613,7 +712,7 @@ async def reserve_ids(
         try:
             if item.entity_type not in VALID_ENTITY_TYPES:
                 results.append(ReserveItemResponse(
-                    input_index=i, status="error",
+                    index=i, status="error",
                     error=f"Invalid entity_type: {item.entity_type}"
                 ))
                 error_count += 1
@@ -623,7 +722,7 @@ async def reserve_ids(
             existing = await RegistryEntry.find_one({"entry_id": item.entry_id})
             if existing:
                 results.append(ReserveItemResponse(
-                    input_index=i, status="already_exists", entry_id=item.entry_id
+                    index=i, status="already_exists", entry_id=item.entry_id
                 ))
                 error_count += 1
                 continue
@@ -632,7 +731,7 @@ async def reserve_ids(
             ns = await Namespace.find_one({"prefix": item.namespace, "status": "active"})
             if not ns:
                 results.append(ReserveItemResponse(
-                    input_index=i, status="error", entry_id=item.entry_id,
+                    index=i, status="error", entry_id=item.entry_id,
                     error=f"Namespace '{item.namespace}' does not exist or is not active"
                 ))
                 error_count += 1
@@ -642,7 +741,7 @@ async def reserve_ids(
             config = ns.get_id_algorithm(item.entity_type)
             if not IdFormatValidator.validate(item.entry_id, config):
                 results.append(ReserveItemResponse(
-                    input_index=i, status="invalid_format", entry_id=item.entry_id,
+                    index=i, status="invalid_format", entry_id=item.entry_id,
                     error=f"ID does not match configured format for {item.entity_type}"
                 ))
                 error_count += 1
@@ -667,24 +766,42 @@ async def reserve_ids(
 
         except Exception as e:
             results.append(ReserveItemResponse(
-                input_index=i, status="error", error=str(e)
+                index=i, status="error", error=str(e)
             ))
             error_count += 1
 
-    if entries_to_insert:
+    # Claim-first gate (pending before insert, fail-fast per item), then
+    # insert and confirm — same two-phase shape as the register path.
+    gated_entries = []
+    gated_indices = []
+    for pos, idx in enumerate(insert_indices):
+        entry = entries_to_insert[pos]
+        conflict = await claim_entry_keys_pending(entry)
+        if conflict is not None:
+            results[idx] = ReserveItemResponse(
+                index=idx, status="error", error=conflict,
+            )
+            error_count += 1
+            continue
+        gated_entries.append(entry)
+        gated_indices.append(idx)
+
+    if gated_entries:
         try:
-            await RegistryEntry.insert_many(entries_to_insert)
-            for pos, idx in enumerate(insert_indices):
-                entry = entries_to_insert[pos]
+            await RegistryEntry.insert_many(gated_entries)
+            for pos, idx in enumerate(gated_indices):
+                entry = gated_entries[pos]
+                await confirm_entry_keys(entry)
                 results[idx] = ReserveItemResponse(
-                    input_index=idx, status="reserved", entry_id=entry.entry_id
+                    index=idx, status="reserved", entry_id=entry.entry_id
                 )
                 reserved_count += 1
         except Exception as e:
-            for _pos, idx in enumerate(insert_indices):
+            for pos, idx in enumerate(gated_indices):
                 if results[idx] is None:
+                    await release_entry_keys(gated_entries[pos])
                     results[idx] = ReserveItemResponse(
-                        input_index=idx, status="error",
+                        index=idx, status="error",
                         error=f"Batch insert failed: {e!s}"
                     )
                     error_count += 1
@@ -704,7 +821,7 @@ async def reserve_ids(
 )
 async def activate_entries(
     items: list[ActivateItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> ActivateBulkResponse:
     """Activate reserved entries, making them resolvable."""
     results = []
@@ -717,20 +834,20 @@ async def activate_entries(
 
             if not entry:
                 results.append(ActivateItemResponse(
-                    input_index=i, status="not_found", entry_id=item.entry_id
+                    index=i, status="not_found", entry_id=item.entry_id
                 ))
                 error_count += 1
                 continue
 
             if entry.status == "active":
                 results.append(ActivateItemResponse(
-                    input_index=i, status="already_active", entry_id=item.entry_id
+                    index=i, status="already_active", entry_id=item.entry_id
                 ))
                 continue
 
             if entry.status != "reserved":
                 results.append(ActivateItemResponse(
-                    input_index=i, status="error", entry_id=item.entry_id,
+                    index=i, status="error", entry_id=item.entry_id,
                     error=f"Cannot activate entry with status '{entry.status}'"
                 ))
                 error_count += 1
@@ -741,13 +858,13 @@ async def activate_entries(
             await entry.save()
 
             results.append(ActivateItemResponse(
-                input_index=i, status="activated", entry_id=item.entry_id
+                index=i, status="activated", entry_id=item.entry_id
             ))
             activated_count += 1
 
         except Exception as e:
             results.append(ActivateItemResponse(
-                input_index=i, status="error", entry_id=item.entry_id, error=str(e)
+                index=i, status="error", entry_id=item.entry_id, error=str(e)
             ))
             error_count += 1
 
@@ -766,7 +883,7 @@ async def activate_entries(
 )
 async def lookup_by_ids(
     items: list[LookupByIdItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> LookupBulkResponse:
     """Look up registry entries by their IDs. Only active entries are resolvable."""
     results = []
@@ -801,7 +918,7 @@ async def lookup_by_ids(
                         matched_via = "composite_key_value"
 
                 if not entry:
-                    results.append(LookupResponse(input_index=i, status="not_found"))
+                    results.append(LookupResponse(index=i, status="not_found"))
                     not_found_count += 1
                     continue
 
@@ -816,13 +933,13 @@ async def lookup_by_ids(
                         source_data = {"error": f"Failed to fetch: {e!s}"}
 
                 results.append(build_lookup_response(
-                    input_index=i, entry=entry,
+                    index=i, entry=entry,
                     matched_via=matched_via, source_data=source_data
                 ))
                 found_count += 1
 
             except Exception as e:
-                results.append(LookupResponse(input_index=i, status="error", error=str(e)))
+                results.append(LookupResponse(index=i, status="error", error=str(e)))
                 error_count += 1
 
     return LookupBulkResponse(
@@ -838,7 +955,7 @@ async def lookup_by_ids(
 )
 async def lookup_by_keys(
     items: list[LookupByKeyItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> LookupBulkResponse:
     """Look up registry entries by their composite keys."""
     results = []
@@ -879,10 +996,23 @@ async def lookup_by_keys(
                         "status": "active"
                     }
 
-                entry = await RegistryEntry.find_one(query)
+                # CASE-427 defensive guard: fetch up to 2 matches in one query
+                # so we can detect (and loudly log) the invariant violation of a
+                # composite key resolving to more than one entry — which the
+                # claim gate + migration make impossible. No client-facing change;
+                # [0] is the deterministic pick exactly as find_one returned.
+                matches = await RegistryEntry.find(query).limit(2).to_list()
+                if len(matches) > 1:
+                    logger.error(
+                        "CASE-427 INVARIANT VIOLATION: composite key %s (%s/%s) "
+                        "resolved to multiple entries %s — uniqueness gate breached.",
+                        key_hash, item.namespace, item.entity_type,
+                        [e.entry_id for e in matches],
+                    )
+                entry = matches[0] if matches else None
 
                 if not entry:
-                    results.append(LookupResponse(input_index=i, status="not_found"))
+                    results.append(LookupResponse(index=i, status="not_found"))
                     not_found_count += 1
                     continue
 
@@ -907,7 +1037,7 @@ async def lookup_by_keys(
                         source_data = {"error": f"Failed to fetch: {e!s}"}
 
                 results.append(build_lookup_response(
-                    input_index=i, entry=entry,
+                    index=i, entry=entry,
                     matched_namespace=matched_namespace,
                     matched_entity_type=matched_entity_type,
                     matched_composite_key=matched_composite_key,
@@ -916,7 +1046,7 @@ async def lookup_by_keys(
                 found_count += 1
 
             except Exception as e:
-                results.append(LookupResponse(input_index=i, status="error", error=str(e)))
+                results.append(LookupResponse(index=i, status="error", error=str(e)))
                 error_count += 1
 
     return LookupBulkResponse(
@@ -932,7 +1062,7 @@ async def lookup_by_keys(
 )
 async def update_entries(
     items: list[UpdateEntryItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkUpdateResponse:
     """Update one or more registry entries."""
     results = []
@@ -946,7 +1076,7 @@ async def update_entries(
 
             if not entry:
                 results.append(UpdateEntryResponse(
-                    input_index=i, status="not_found", registry_id=item.entry_id,
+                    index=i, status="not_found", registry_id=item.entry_id,
                 ))
                 continue
 
@@ -960,12 +1090,12 @@ async def update_entries(
             await entry.save()
 
             results.append(UpdateEntryResponse(
-                input_index=i, status="updated", registry_id=item.entry_id,
+                index=i, status="updated", registry_id=item.entry_id,
             ))
 
         except Exception as e:
             results.append(UpdateEntryResponse(
-                input_index=i, status="error", registry_id=item.entry_id, error=str(e)
+                index=i, status="error", registry_id=item.entry_id, error=str(e)
             ))
 
     return BulkUpdateResponse(
@@ -982,7 +1112,7 @@ async def update_entries(
 )
 async def delete_entries(
     items: list[DeleteItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkDeleteResponse:
     """Deactivate or hard-delete one or more registry entries.
 
@@ -997,25 +1127,45 @@ async def delete_entries(
 
             if not entry:
                 results.append(DeleteResponse(
-                    input_index=i, status="not_found", registry_id=item.entry_id,
+                    index=i, status="not_found", registry_id=item.entry_id,
                 ))
                 continue
 
-            if item.hard_delete:
-                # Verify namespace allows hard-delete
-                namespace = await Namespace.find_one({"prefix": entry.namespace})
-                if not namespace or namespace.deletion_mode != "full":
-                    mode = namespace.deletion_mode if namespace else "unknown"
-                    results.append(DeleteResponse(
-                        input_index=i, status="error", registry_id=item.entry_id,
-                        error=f"Hard-delete requires namespace deletion_mode='full' (currently '{mode}')",
-                    ))
-                    continue
+            if item.hard_delete or item.rollback_uncommitted:
+                # CASE-436: rollback_uncommitted bypasses the deletion_mode gate
+                # for privileged (service/admin) callers — it aborts a
+                # just-allocated entry whose backing object was never committed
+                # (a document create that failed on synonym registration), which
+                # is a trusted write-rollback, not user-data deletion. Ordinary
+                # keys never get the bypass; their flag falls through to the gate.
+                privileged_rollback = (
+                    item.rollback_uncommitted
+                    and identity.has_any_group(["wip-admins", "wip-services"])
+                )
+                if privileged_rollback:
+                    logger.info(
+                        "CASE-436: rollback_uncommitted hard-delete of entry %s "
+                        "(ns=%s) by %s — bypassing deletion_mode gate.",
+                        item.entry_id, entry.namespace, identity.user_id,
+                    )
+                else:
+                    # Verify namespace allows hard-delete
+                    namespace = await Namespace.find_one({"prefix": entry.namespace})
+                    if not namespace or namespace.deletion_mode != "full":
+                        mode = namespace.deletion_mode if namespace else "unknown"
+                        results.append(DeleteResponse(
+                            index=i, status="error", registry_id=item.entry_id,
+                            error=f"Hard-delete requires namespace deletion_mode='full' (currently '{mode}')",
+                        ))
+                        continue
 
                 # Permanently remove from MongoDB
                 await entry.delete()
+                # CASE-427: release all claims owned by this entry (hard delete
+                # only — soft-delete keeps the entry and its key ownership).
+                await CompositeKeyClaim.release_for_owner(entry.entry_id)
                 results.append(DeleteResponse(
-                    input_index=i, status="deleted", registry_id=item.entry_id,
+                    index=i, status="deleted", registry_id=item.entry_id,
                 ))
             else:
                 # Soft-delete: set status to inactive
@@ -1025,12 +1175,12 @@ async def delete_entries(
                 await entry.save()
 
                 results.append(DeleteResponse(
-                    input_index=i, status="deactivated", registry_id=item.entry_id,
+                    index=i, status="deactivated", registry_id=item.entry_id,
                 ))
 
         except Exception as e:
             results.append(DeleteResponse(
-                input_index=i, status="error", registry_id=item.entry_id, error=str(e)
+                index=i, status="error", registry_id=item.entry_id, error=str(e)
             ))
 
     return BulkDeleteResponse(
@@ -1047,7 +1197,7 @@ async def delete_entries(
 )
 async def resolve_synonyms(
     items: list[ResolveItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResolveResponse:
     """
     Resolve synonyms or verify canonical IDs.
@@ -1067,7 +1217,7 @@ async def resolve_synonyms(
         try:
             if not item.entry_id and not item.composite_key:
                 results.append(ResolveResponse(
-                    input_index=i, status="error",
+                    index=i, status="error",
                     error="Provide either entry_id or composite_key",
                 ))
                 error_count += 1
@@ -1101,11 +1251,20 @@ async def resolve_synonyms(
                     query["namespace"] = item.namespace
                 if item.entity_type:
                     query["entity_type"] = item.entity_type
-                entry = await RegistryEntry.find_one(query)
+                # CASE-427 defensive guard (see lookup_by_keys): detect+log a
+                # key resolving to >1 entry, deterministic [0] pick otherwise.
+                matches = await RegistryEntry.find(query).limit(2).to_list()
+                if len(matches) > 1:
+                    logger.error(
+                        "CASE-427 INVARIANT VIOLATION: composite key %s resolved "
+                        "to multiple entries %s — uniqueness gate breached.",
+                        key_hash, [e.entry_id for e in matches],
+                    )
+                entry = matches[0] if matches else None
 
             if entry:
                 results.append(ResolveResponse(
-                    input_index=i,
+                    index=i,
                     status="found",
                     composite_key=item.composite_key,
                     entry_id=entry.entry_id,
@@ -1113,7 +1272,7 @@ async def resolve_synonyms(
                 found_count += 1
             else:
                 results.append(ResolveResponse(
-                    input_index=i,
+                    index=i,
                     status="not_found",
                     composite_key=item.composite_key,
                     entry_id=item.entry_id,
@@ -1122,7 +1281,7 @@ async def resolve_synonyms(
 
         except Exception as e:
             results.append(ResolveResponse(
-                input_index=i, status="error", error=str(e),
+                index=i, status="error", error=str(e),
             ))
             error_count += 1
 

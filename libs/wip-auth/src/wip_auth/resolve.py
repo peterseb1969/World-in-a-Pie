@@ -22,7 +22,7 @@ import logging
 import os
 import re
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -77,6 +77,24 @@ def _looks_like_uuid(raw_id: str) -> bool:
 
 
 
+def split_qualified_value(raw_id: str) -> tuple[str | None, str]:
+    """Split a qualified reference value into (namespace, value).
+
+    The platform's cross-namespace value form for non-term entities:
+    bare ``VALUE`` never crosses namespaces (returns ``(None, raw_id)``);
+    explicit ``NS:VALUE`` names the namespace to resolve in. The split is
+    purely syntactic — first colon wins, no existence check — so callers
+    get deterministic resolution independent of namespace lifecycle.
+
+    Terms use a 2/3-part form instead (``TERMINOLOGY:VALUE`` /
+    ``NS:TERMINOLOGY:VALUE``) — do not use this helper for terms.
+    """
+    if ":" in raw_id:
+        ns_prefix, value = raw_id.split(":", 1)
+        return ns_prefix, value
+    return None, raw_id
+
+
 def _build_composite_key(
     raw_id: str,
     entity_type: str,
@@ -122,12 +140,12 @@ def _build_composite_key(
         else:
             return {"ns": namespace, "type": "term", "value": raw_id}
     else:
-        if ":" in raw_id:
+        ns_prefix, value = split_qualified_value(raw_id)
+        if ns_prefix is not None:
             # NS:VALUE — cross-namespace
-            ns_prefix, value = raw_id.split(":", 1)
             return {"ns": ns_prefix, "type": entity_type, "value": value}
         # Bare value — own namespace
-        return {"ns": namespace, "type": entity_type, "value": raw_id}
+        return {"ns": namespace, "type": entity_type, "value": value}
 
 
 def _build_resolve_payload(
@@ -187,6 +205,8 @@ async def resolve_entity_id(
     entity_type: str,
     namespace: str,
     include_statuses: list[str] | None = None,
+    *,
+    bypass_cache: bool = False,
 ) -> str:
     """Resolve any identifier to its canonical ID via Registry.
 
@@ -197,6 +217,12 @@ async def resolve_entity_id(
         raw_id: The identifier (canonical ID or human-readable synonym)
         entity_type: Singular entity type: terminology, term, template, document
         namespace: Current namespace for resolution context
+        bypass_cache: When True, skip the cache read and always query
+            Registry. Intended for write paths (e.g., template creation)
+            where a resolved ID will be persisted as a reference: stale
+            cached IDs cannot be allowed to enter durable state. See
+            CASE-56. The fresh Registry result is still cached on return,
+            which self-heals any prior stale entry under the same key.
 
     Returns:
         The canonical entity ID
@@ -205,9 +231,10 @@ async def resolve_entity_id(
         EntityNotFoundError: If the identifier is not found in Registry
     """
     cache_key = f"{namespace}:{entity_type}:{raw_id}"
-    cached = _get_cached(cache_key)
-    if cached:
-        return cached
+    if not bypass_cache:
+        cached = _get_cached(cache_key)
+        if cached:
+            return cached
 
     payload = _build_resolve_payload(raw_id, entity_type, namespace, include_statuses)
 
@@ -241,7 +268,7 @@ async def resolve_entity_id(
     if results and results[0].get("status") == "found":
         canonical_id = results[0]["entry_id"]
         _set_cached(cache_key, canonical_id)
-        return canonical_id
+        return cast(str, canonical_id)
 
     raise EntityNotFoundError(raw_id, entity_type)
 
@@ -251,6 +278,8 @@ async def resolve_entity_ids(
     entity_type: str,
     namespace: str,
     include_statuses: list[str] | None = None,
+    *,
+    bypass_cache: bool = False,
 ) -> dict[str, str]:
     """Batch resolve multiple identifiers via Registry.
 
@@ -271,13 +300,20 @@ async def resolve_entity_ids(
     result: dict[str, str] = {}
     to_resolve: list[str] = []
 
+    # bypass_cache: caller is doing a write that will persist the resolved
+    # ID (e.g., template_service._normalize_field_references storing
+    # terminology_ref as a canonical UUID on a template field). A stale
+    # cache entry would bake a dead UUID into durable state — see CASE-56.
+    # Skip reads; writes still update the cache with the fresh Registry
+    # result below (self-heals any prior stale entry).
     for raw_id in raw_ids:
-        cache_key = f"{namespace}:{entity_type}:{raw_id}"
-        cached = _get_cached(cache_key)
-        if cached:
-            result[raw_id] = cached
-        else:
-            to_resolve.append(raw_id)
+        if not bypass_cache:
+            cache_key = f"{namespace}:{entity_type}:{raw_id}"
+            cached = _get_cached(cache_key)
+            if cached:
+                result[raw_id] = cached
+                continue
+        to_resolve.append(raw_id)
 
     if not to_resolve:
         return result

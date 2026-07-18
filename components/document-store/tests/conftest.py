@@ -51,6 +51,15 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "owner": "test",
     "groups": ["wip-admins"],
     "namespaces": ["wip"],
+}, {
+    # Non-admin key scoped to a namespace no test data lives in — exists to
+    # exercise permission gates (a wip-admins key bypasses every check, so
+    # gate enforcement is untestable with the primary key alone).
+    "name": "test-scoped",
+    "key": "test_scoped_key",
+    "owner": "test-scoped",
+    "groups": [],
+    "namespaces": ["scoped-test-ns"],
 }]))
 
 
@@ -62,6 +71,7 @@ from document_store.services.def_store_client import DefStoreClient  # noqa: E40
 from document_store.services.registry_client import RegistryClient  # noqa: E402
 from document_store.services.template_store_client import TemplateStoreClient  # noqa: E402
 from registry.main import app as registry_app  # noqa: E402
+from registry.models.composite_key_claim import CompositeKeyClaim  # noqa: E402
 from registry.models.deletion_journal import DeletionJournal  # noqa: E402
 from registry.models.entry import RegistryEntry  # noqa: E402
 from registry.models.grant import NamespaceGrant  # noqa: E402
@@ -182,6 +192,193 @@ _TEMPLATE_DEFS = [
         ],
         "rules": [],
     },
+    # --- Phase-2 relationship-template fixtures ---
+    {
+        "legacy_key": "TPL-EXPERIMENT",
+        "value": "EXPERIMENT",
+        "label": "Experiment",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["experiment_id"],
+        "fields": [
+            {"name": "experiment_id", "label": "Experiment ID", "type": "string", "mandatory": True},
+            {"name": "name", "label": "Name", "type": "string", "mandatory": False},
+        ],
+        "rules": [],
+    },
+    {
+        "legacy_key": "TPL-MOLECULE",
+        "value": "MOLECULE",
+        "label": "Molecule",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["molecule_id"],
+        "fields": [
+            {"name": "molecule_id", "label": "Molecule ID", "type": "string", "mandatory": True},
+            {"name": "name", "label": "Name", "type": "string", "mandatory": False},
+        ],
+        "rules": [],
+    },
+    {
+        "legacy_key": "TPL-EXPERIMENT-INPUT",
+        "value": "EXPERIMENT_INPUT",
+        "label": "Experiment Input",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["source_ref", "target_ref"],
+        "usage": "relationship",
+        "source_templates": ["EXPERIMENT"],
+        "target_templates": ["MOLECULE"],
+        "fields": [
+            {
+                "name": "source_ref", "label": "Source", "type": "reference",
+                "reference_type": "document",
+                "target_templates": ["EXPERIMENT"],
+                "mandatory": True,
+            },
+            {
+                "name": "target_ref", "label": "Target", "type": "reference",
+                "reference_type": "document",
+                "target_templates": ["MOLECULE"],
+                "mandatory": True,
+            },
+            {"name": "role", "label": "Role", "type": "string", "mandatory": False},
+        ],
+        "rules": [],
+    },
+    # --- Phase-3 versioned=false fixture ---
+    # An entity template with versioned=False to exercise the
+    # overwrite-in-place lifecycle without the extra relationship-template
+    # plumbing. Same machinery — the branch is on template.versioned alone.
+    {
+        "legacy_key": "TPL-LATEST-ONLY-NOTE",
+        "value": "LATEST_ONLY_NOTE",
+        "label": "Latest-only Note",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["note_id"],
+        "versioned": False,
+        "fields": [
+            {"name": "note_id", "label": "Note ID", "type": "string", "mandatory": True},
+            {"name": "body", "label": "Body", "type": "string", "mandatory": False},
+        ],
+        "rules": [],
+    },
+    # --- CASE-343 header_fields fixture ---
+    # Template with explicit header_fields covering both data.* and
+    # metadata.custom.* paths. CASE_RECORD-shaped to mirror APP-KB's
+    # real schema (`case_number` in data, `case_status` in metadata.custom).
+    # Exercises the peer-projection's template-aware path including the
+    # metadata.custom.<name> branch.
+    {
+        "legacy_key": "TPL-CASE-RECORD",
+        "value": "CASE_RECORD",
+        "label": "Case Record",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["case_number"],
+        "header_fields": ["case_number", "metadata.custom.case_status"],
+        "fields": [
+            {"name": "case_number", "label": "Case number", "type": "integer", "mandatory": True},
+            {"name": "title", "label": "Title", "type": "string", "mandatory": False},
+            {"name": "doc_status", "label": "Doc status", "type": "string", "mandatory": False},
+        ],
+        "rules": [],
+    },
+    # --- CASE-343 relationship-edge fixture for CASE_RECORD ---
+    # An edge connecting two CASE_RECORD docs so the peer-projection path
+    # is exercised against the CASE-343 fixture.
+    {
+        "legacy_key": "TPL-REFERENCES",
+        "value": "REFERENCES",
+        "label": "References",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["source_ref", "target_ref"],
+        "usage": "relationship",
+        "source_templates": ["CASE_RECORD"],
+        "target_templates": ["CASE_RECORD"],
+        "fields": [
+            {
+                "name": "source_ref", "label": "Source", "type": "reference",
+                "reference_type": "document",
+                "target_templates": ["CASE_RECORD"],
+                "mandatory": True,
+            },
+            {
+                "name": "target_ref", "label": "Target", "type": "reference",
+                "reference_type": "document",
+                "target_templates": ["CASE_RECORD"],
+                "mandatory": True,
+            },
+        ],
+        "rules": [],
+    },
+    # --- CASE-354 tier-2 auto-include fixtures ---
+    # Entity templates with identity != title that DO declare title +
+    # doc_status. Exercises the CASE-354 refinement: tier-2 projection
+    # should auto-include title and doc_status when the template
+    # declares those fields, alongside identity_fields.
+    {
+        "legacy_key": "TPL-LESSON",
+        "value": "LESSON",
+        "label": "Lesson",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["lesson_id"],
+        # NO header_fields — falls through to tier 2.
+        "fields": [
+            {"name": "lesson_id", "label": "Lesson ID", "type": "string", "mandatory": True},
+            {"name": "title", "label": "Title", "type": "string", "mandatory": False},
+            {"name": "doc_status", "label": "Doc status", "type": "string", "mandatory": False},
+            {"name": "body", "label": "Body", "type": "string", "mandatory": False},
+        ],
+        "rules": [],
+    },
+    # Identity != title, title declared but doc_status NOT declared.
+    # Verifies the "if field declared" guard fires per-field.
+    {
+        "legacy_key": "TPL-LESSON-NO-STATUS",
+        "value": "LESSON_NO_STATUS",
+        "label": "Lesson (no status)",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["lesson_id"],
+        "fields": [
+            {"name": "lesson_id", "label": "Lesson ID", "type": "string", "mandatory": True},
+            {"name": "title", "label": "Title", "type": "string", "mandatory": False},
+            # NO doc_status field.
+        ],
+        "rules": [],
+    },
+    # Edge connecting LESSON ↔ LESSON_NO_STATUS so the CASE-354 tests can
+    # render either as the peer.
+    {
+        "legacy_key": "TPL-MENTIONS",
+        "value": "MENTIONS",
+        "label": "Mentions",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["source_ref", "target_ref"],
+        "usage": "relationship",
+        "source_templates": ["LESSON", "LESSON_NO_STATUS"],
+        "target_templates": ["LESSON", "LESSON_NO_STATUS"],
+        "fields": [
+            {
+                "name": "source_ref", "label": "Source", "type": "reference",
+                "reference_type": "document",
+                "target_templates": ["LESSON", "LESSON_NO_STATUS"],
+                "mandatory": True,
+            },
+            {
+                "name": "target_ref", "label": "Target", "type": "reference",
+                "reference_type": "document",
+                "target_templates": ["LESSON", "LESSON_NO_STATUS"],
+                "mandatory": True,
+            },
+        ],
+        "rules": [],
+    },
 ]
 
 # Populated per-test by the client fixture after registering in real Registry.
@@ -267,8 +464,19 @@ def _build_sample_templates(id_map: dict[str, str]) -> dict[str, dict]:
             "status": tdef["status"],
             "namespace": "wip",
             "identity_fields": tdef["identity_fields"],
+            # CASE-343 — pass through header_fields so peer-projection
+            # template-aware path resolves correctly. Defaults to [] when
+            # omitted so legacy fixtures (which don't declare it) fall
+            # through to the identity_fields fallback in projection logic.
+            "header_fields": tdef.get("header_fields", []),
             "fields": tdef["fields"],
             "rules": tdef["rules"],
+            # Phase-1 fields — pass through with sensible defaults so legacy
+            # template defs (which omit them) still produce valid mock data.
+            "usage": tdef.get("usage", "entity"),
+            "source_templates": tdef.get("source_templates", []),
+            "target_templates": tdef.get("target_templates", []),
+            "versioned": tdef.get("versioned", True),
         }
         # Key by canonical UUID7 (for lookups after resolution)
         templates[real_id] = template_data
@@ -281,14 +489,35 @@ def _build_sample_templates(id_map: dict[str, str]) -> dict[str, dict]:
     return templates
 
 
+# Per-(key, version) template overrides for tests that need MULTIPLE active
+# versions of one template — e.g. the migrate primitive (CASE-491), which
+# resolves a source and a target version that differ. Keyed by
+# (template_key, version) where template_key is any SAMPLE_TEMPLATES key
+# (canonical UUID, legacy key, or value) and version is the int passed to the
+# client. Empty by default → zero effect on existing tests. Tests populate it
+# and must clear it in teardown (see the `version_overrides` fixture).
+VERSIONED_TEMPLATE_OVERRIDES: dict[tuple[str, int], dict] = {}
+
+
 def create_mock_template_store_client():
     """Create a mock Template Store client for testing.
 
-    Looks up templates in SAMPLE_TEMPLATES (keyed by both UUID7 and legacy).
+    Looks up templates in SAMPLE_TEMPLATES (keyed by both UUID7 and legacy),
+    consulting VERSIONED_TEMPLATE_OVERRIDES first when a specific version is
+    requested.
     """
     mock_client = AsyncMock(spec=TemplateStoreClient)
 
-    async def mock_get_template(template_id=None, template_value=None, resolve_inheritance=True):
+    async def mock_get_template(template_id=None, template_value=None, resolve_inheritance=True, version=None):
+        # Version-specific override wins when a concrete version is requested
+        # (multi-version tests). Falls through to the single-version
+        # SAMPLE_TEMPLATES otherwise — preserving legacy behaviour, since
+        # SAMPLE_TEMPLATES holds one version per template.
+        if version is not None:
+            key = template_id or template_value
+            override = VERSIONED_TEMPLATE_OVERRIDES.get((key, version))
+            if override is not None:
+                return override
         if template_id and template_id in SAMPLE_TEMPLATES:
             return SAMPLE_TEMPLATES[template_id]
         # Also try looking up by value
@@ -299,7 +528,7 @@ def create_mock_template_store_client():
         return None
 
     async def mock_get_template_resolved(template_id, version=None):
-        return await mock_get_template(template_id=template_id)
+        return await mock_get_template(template_id=template_id, version=version)
 
     async def mock_template_exists(template_ref):
         if template_ref in SAMPLE_TEMPLATES:
@@ -403,6 +632,7 @@ async def setup_registry_and_app(mongo_client, document_models=None):
         document_models=[
             # Registry models
             Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal,
+            CompositeKeyClaim,  # CASE-427: register_keys now claims keys here
             # Document-Store models
             *document_models,
         ],
@@ -414,6 +644,7 @@ async def setup_registry_and_app(mongo_client, document_models=None):
     await IdCounter.delete_all()
     await NamespaceGrant.delete_all()
     await DeletionJournal.delete_all()
+    await CompositeKeyClaim.delete_all()
     for model in document_models:
         await model.delete_all()
 
@@ -449,11 +680,13 @@ async def setup_registry_and_app(mongo_client, document_models=None):
     )
     set_auth_config(config)
 
-    # Wire real RegistryClient with transport injection
+    # Wire real RegistryClient with module-level transport injection
+    # (CASE-398: per-instance transport= kwarg is gone).
+    from document_store.services.registry_client import set_registry_transport
+    set_registry_transport(registry_transport)
     real_registry = RegistryClient(
         base_url="http://registry",
         api_key=os.environ["MASTER_API_KEY"],
-        transport=registry_transport,
     )
 
     # Wire real resolution with transport injection
@@ -463,10 +696,35 @@ async def setup_registry_and_app(mongo_client, document_models=None):
     return real_registry, registry_transport
 
 
+async def _ensure_mongo_reachable(mongo_client: AsyncIOMotorClient, uri: str) -> None:
+    """Fail fast with a clear error if MongoDB isn't reachable.
+
+    motor's default behavior is retry-forever-with-backoff; before this
+    check, an unreachable mongo (CASE-320) caused tests to hang silently
+    with no diagnostic. The 5s serverSelectionTimeoutMS bound + explicit
+    ping turns that into a clear, actionable error inside 5 seconds —
+    regardless of whether pytest was invoked via wip-test.sh, an IDE,
+    or directly.
+    """
+    from pymongo.errors import ServerSelectionTimeoutError
+
+    try:
+        await mongo_client.admin.command("ping")
+    except ServerSelectionTimeoutError:
+        raise RuntimeError(
+            f"MongoDB at {uri} is not reachable within 5s. "
+            f"Run scripts/wip-test.sh (auto-provisions test-mongo), "
+            f"or set MONGO_URI to your own instance, or start test-mongo manually: "
+            f"podman run -d --name test-mongo -p 27017:27017 mongo:7"
+        ) from None
+
+
 @pytest_asyncio.fixture(scope="function")
 async def client() -> AsyncGenerator[AsyncClient, None]:
     """Create test client with real Registry mounted in-process."""
-    mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
+    mongo_uri = os.environ["MONGO_URI"]
+    mongo_client = AsyncIOMotorClient(mongo_uri, serverSelectionTimeoutMS=5000)
+    await _ensure_mongo_reachable(mongo_client, mongo_uri)
     real_registry, _transport = await setup_registry_and_app(mongo_client)
 
     # Mock Template-Store and Def-Store clients (separate services)
@@ -491,6 +749,8 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
     # Cleanup
     set_resolve_transport(None)
+    from document_store.services.registry_client import clear_registry_transport
+    clear_registry_transport()
     clear_resolution_cache()
 
 

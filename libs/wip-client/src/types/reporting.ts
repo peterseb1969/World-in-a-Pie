@@ -9,6 +9,14 @@ export interface ReportQueryParams {
   timeout_seconds?: number
   /** Max rows returned (1-50000, default 1000) */
   max_rows?: number
+  /**
+   * Namespace whose PostgreSQL schema unqualified table names resolve in.
+   * Each namespace is its own schema (a table is `"<ns>"."doc_<value>"`);
+   * when set, the server runs the query with search_path pointed there, so
+   * `doc_<value>` works unqualified. Omit for cross-namespace queries and
+   * schema-qualify each table in the SQL instead.
+   */
+  namespace?: string
 }
 
 export interface ReportQueryResult {
@@ -176,6 +184,33 @@ export interface BatchSyncResponse {
   message: string
 }
 
+/**
+ * Result shape for the entity-table batch syncs (terminologies, terms,
+ * term_relations). Synchronous on the server (no per-job polling); the
+ * full result is in the response body.
+ */
+export interface BatchEntitySyncResult {
+  status: 'completed' | 'failed'
+  table: 'terminologies' | 'terms' | 'term_relations'
+  /** Entries fetched from the source service. */
+  fetched?: number
+  /** Entries upserted into PostgreSQL. */
+  synced?: number
+  /** Entries that failed to upsert. */
+  failed?: number
+  /** Free-form additional fields the server may emit. */
+  [extra: string]: unknown
+}
+
+export interface BatchJobCancelResult {
+  status: 'cancelled' | 'not_running'
+  job_id: string
+}
+
+export interface BatchJobsCleared {
+  cleared: number
+}
+
 // ── CSV Export ──
 
 export interface CsvExportQuery {
@@ -227,12 +262,45 @@ export interface SearchResult {
   status: string | null
   description: string | null
   updated_at: string | null
+  /** ts_rank score; populated for FTS document hits only. */
+  score?: number | null
+  /**
+   * ts_headline excerpt; populated for FTS document hits only.
+   * HTML by default with <b>...</b> around matched terms; pass
+   * snippet_format='text' on the request for plain text.
+   */
+  snippet?: string | null
 }
 
+/**
+ * Per-type paginated bucket on `SearchResponse.results` (CASE-329).
+ * Mirrors the platform-wide pagination envelope (see `wip://conventions`).
+ */
+export interface SearchTypeResults {
+  items: SearchResult[]
+  total: number
+  page: number
+  page_size: number
+  pages: number
+}
+
+/**
+ * Response from `POST /api/reporting-sync/search`.
+ *
+ * Breaking change in @wip/client 0.19.0 (CASE-329): the legacy flat
+ * `results: SearchResult[]` + `counts: Record<string, number>` shape was
+ * replaced by per-type buckets keyed by entity type ('terminology',
+ * 'term', 'template', 'document', 'file'), each carrying its own
+ * pagination envelope. Consumers iterating "all hits" should iterate
+ * the values of `results`.
+ */
 export interface SearchResponse {
   query: string
-  results: SearchResult[]
-  counts: Record<string, number>
+  /** Echo of the document-search mode used (informational only). */
+  mode?: string | null
+  /** Per-type paginated buckets. Only types the search visited appear here. */
+  results: Record<string, SearchTypeResults>
+  /** Sum of per-type totals across all visited types. */
   total: number
 }
 

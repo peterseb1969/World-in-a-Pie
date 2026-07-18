@@ -8,22 +8,31 @@ Provides composite key registration, synonym management, and cross-namespace sea
 import os
 from contextlib import asynccontextmanager
 
-from beanie import init_beanie
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from wip_auth import APIKeyProvider, APIKeyRecord, check_production_security, setup_auth, setup_rate_limiting
+from wip_auth import (
+    declare_api_key_security,
+    APIKeyProvider,
+    APIKeyRecord,
+    build_metadata,
+    check_production_security,
+    init_beanie_with_retry,
+    setup_auth,
+    setup_rate_limiting,
+)
 
+from . import __version__
 from .api import api_router
 from .api.api_keys import configure_api_key_management
 from .models.api_key import StoredAPIKey
+from .models.composite_key_claim import CompositeKeyClaim
 from .models.deletion_journal import DeletionJournal
 from .models.entry import RegistryEntry
 from .models.grant import NamespaceGrant
 from .models.id_counter import IdCounter
 from .models.namespace import Namespace
-from .services.auth import AuthService
 
 
 # Application configuration
@@ -49,12 +58,14 @@ async def lifespan(app: FastAPI):
 
     # Initialize MongoDB connection
     print(f"Connecting to MongoDB at {settings.MONGO_URI}...")
-    client = AsyncIOMotorClient(settings.MONGO_URI)
+    client: AsyncIOMotorClient = AsyncIOMotorClient(settings.MONGO_URI)
 
-    # Initialize Beanie ODM with document models
-    await init_beanie(
+    # Initialize Beanie ODM with retry — tolerates MongoDB not being ready
+    # yet on fresh k8s boot, node drain, pod reschedule.
+    await init_beanie_with_retry(
         database=client[settings.DATABASE_NAME],
-        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal, StoredAPIKey]
+        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal, StoredAPIKey, CompositeKeyClaim],
+        description=f"MongoDB init ({settings.DATABASE_NAME})",
     )
     print("MongoDB connection and Beanie initialization successful.")
 
@@ -104,10 +115,25 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"WARNING: Failed to recover incomplete deletions: {e}")
 
-    # Initialize auth service
+    # Resolve stale pending composite-key claims (two-phase protocol):
+    # pending older than the grace window are confirmed when their entry
+    # backs them (the request died between insert and flip) or deleted when
+    # not (it died before the insert). O(pending) via a partial index; never
+    # touches young or confirmed claims, so it is safe beside live traffic —
+    # unlike the full-collection scan, which is an explicit admin verb now
+    # (admin_backfill_claims), together with the destructive backfill.
+    from .services.claims import reconcile_pending_claims
+    try:
+        await reconcile_pending_claims()
+    except Exception as e:
+        print(f"WARNING: Failed to reconcile pending claims: {e}")
+
+    # CASE-568: authentication is enforced by the wip-auth middleware
+    # (setup_auth below) — the legacy AuthService.initialize call was a
+    # documented no-op and its "initialized" message overstated what
+    # happened. Only the key's presence is worth reporting here.
     if settings.MASTER_API_KEY:
-        AuthService.initialize(master_key=settings.MASTER_API_KEY)
-        print("Auth service initialized with master key.")
+        print("MASTER_API_KEY present (auth enforced by wip-auth middleware).")
     else:
         print("WARNING: No MASTER_API_KEY set. Auth may not work correctly.")
 
@@ -171,7 +197,9 @@ The Registry service provides centralized identity management for the WIP ecosys
 
 ### Authentication
 
-All endpoints require API key authentication via the `X-API-Key` header.
+All endpoints require API key authentication via the `X-API-Key` header,
+except the public probe and docs routes (`/`, `/health`, `/ready`,
+`/api/registry/health`, `/docs`, `/redoc`, `/openapi.json`).
 
 Admin operations (namespace management) require elevated privileges.
     """,
@@ -181,8 +209,11 @@ Admin operations (namespace management) require elevated privileges.
     redoc_url="/redoc",
 )
 
-# Setup authentication (reads from WIP_AUTH_* env vars)
-providers = setup_auth(app)
+# Setup authentication (reads from WIP_AUTH_* env vars).
+# public_paths exempts the api-prefixed /health route from auth so
+# external monitors and stale-key clients can probe it without a 401
+# (CASE-60). Root /health is already in the universal default set.
+providers = setup_auth(app, public_paths=["/api/registry/health"])
 print(f"Auth setup complete. Providers: {[type(p).__name__ for p in providers]}")
 
 # Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
@@ -200,14 +231,26 @@ app.add_middleware(
 # Include API router
 app.include_router(api_router)
 
+# Declare the X-API-Key requirement in the OpenAPI contract — runtime
+# Depends() enforcement emits nothing into the schema, and a client
+# generated from an auth-silent schema would not send a key.
+declare_api_key_security(app)
 
-# Root endpoint
+
+# Root endpoint. The prefixed alias matters: Caddy preserves the
+# /api/registry prefix on the way to this app, so the bare "/" is reachable
+# only container-direct — without the alias, router-side consumers (the
+# console's build-provenance probe at /api/registry/) get a 404 and the
+# dashboard shows no build info for this service.
 @app.get("/", tags=["Health"])
+@app.get("/api/registry/", include_in_schema=False, tags=["Health"])
 async def root():
     """Root endpoint with service information."""
     return {
         "service": "WIP Registry",
-        "version": "0.4.0",
+        "version": __version__,
+        # Uniform build-provenance block (sha/built_at/image_tag).
+        "build": build_metadata(__version__),
         "documentation": "/docs",
         "health": "/health",
     }
@@ -239,7 +282,16 @@ async def health_check():
                 "database": "disconnected",
                 "error": "database connection failed",
             }
-        )
+        ) from e
+
+
+# Also expose /health under the api-prefix so external callers through
+# Caddy can reach it (Caddy only routes /api/registry/*; root /health
+# is unreachable from outside the container network). The root /health
+# above stays for direct container probes (podman/k8s health checks).
+app.add_api_route(
+    "/api/registry/health", health_check, methods=["GET"], tags=["Health"]
+)
 
 
 # Ready check endpoint (for Kubernetes)
@@ -253,5 +305,5 @@ async def ready_check():
     try:
         await app.state.mongodb_client.admin.command('ping')
         return {"ready": True}
-    except Exception:
-        raise HTTPException(status_code=503, detail={"ready": False})
+    except Exception as e:
+        raise HTTPException(status_code=503, detail={"ready": False}) from e

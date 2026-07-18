@@ -115,7 +115,8 @@ A JSON array of patch items:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `document_id` | yes | Canonical UUID or registered synonym — resolved before processing |
-| `patch` | yes | RFC 7396 JSON Merge Patch applied to the entity's `data` |
+| `patch` | yes | RFC 7396 JSON Merge Patch applied to the entity's `data`. Pass `{}` for a metadata-only patch |
+| `metadata_patch` | no | RFC 7396 JSON Merge Patch applied to the entity's `metadata.custom`. Platform-owned metadata (`warnings`, `source_system`) cannot be addressed. Omitted = metadata carries forward unchanged |
 | `if_match` | no | Per-item optimistic concurrency control: if current version != `if_match`, the item fails with `concurrency_conflict` |
 
 ### RFC 7396 JSON Merge Patch Semantics
@@ -124,7 +125,8 @@ A JSON array of patch items:
 - Arrays are **replaced** wholesale (no per-element merging)
 - `null` **deletes** the key from the merged result
 - `null` on a required field fails validation for that item (error_code `validation_failed`)
-- Empty patch `{}` or a patch that results in no change returns `status: "unchanged"` — no new version is created
+- The same semantics apply to `metadata_patch` against `metadata.custom`
+- Empty patch `{}` or a patch that results in no change (data **and** metadata) returns `status: "unchanged"` — no new version is created
 
 ### Response Format
 
@@ -148,6 +150,7 @@ Codes defined by `PATCH /documents`:
 | `forbidden` | Caller lacks write permission on the document's namespace |
 | `archived` | Latest version has `status=ARCHIVED` — unarchive first |
 | `identity_field_change` | Patch attempts to change a template-defined identity field — not allowed |
+| `append_only` | Template has empty `identity_fields` (append-only) — the document has no logical identity, only a surrogate `document_id`, so it cannot be PATCHed. The error carries remediation: create a new document, or declare `identity_fields` on the template (CASE-478) |
 | `concurrency_conflict` | `if_match` mismatch, or internal version race lost after retries |
 | `validation_failed` | Merged document fails template validation |
 | `reference_violation` | Cross-namespace reference validation failed |
@@ -157,10 +160,86 @@ Codes defined by `PATCH /documents`:
 
 ### Key Rules (PATCH-specific)
 
-1. **PATCH always creates a new version** on success — it is not an in-place mutation of the MongoDB document. The previous version stays in history.
+1. **PATCH always creates a new version** on success — it is not an in-place mutation of the MongoDB document. The previous version stays in history. (Exception: a `versioned: false` template overwrites its single version in place; such a template must declare `identity_fields` — see rule 5.)
 2. **PATCH cannot change identity fields** — attempting to do so fails with `identity_field_change`. Use POST to create a new entity under a different identity.
 3. **PATCH preserves `template_version` and `identity_hash`** — the new version validates against the template version recorded on the document, not the latest template version.
 4. **PATCH reuses existing NATS event types** — e.g., `EventType.DOCUMENT_UPDATED`. Reporting-sync and other downstream consumers need no changes.
+5. **PATCH requires logical identity** — a template with empty `identity_fields` is append-only; its documents have only a surrogate `document_id`, not a logical identity, so PATCH is rejected with `append_only`. Relatedly, `versioned: false` requires non-empty `identity_fields` (rejected at template create *and* update), so the append-only + overwrite-in-place combination cannot exist. "Zero identity fields = no update path" therefore covers **both** the create/upsert path and PATCH (CASE-478).
+6. **Metadata versions like data** — `metadata.custom` is non-identity document content. It never feeds the identity hash (a metadata delta cannot create or dedup a document), but a change to it is a change to the document: change detection on both the create/upsert path and PATCH compares `metadata.custom`, and a metadata-only delta produces a normal new version (`updated`), never a silent drop. On create/upsert, `metadata` omitted/`null` means "not addressed" — the existing custom metadata carries forward; a supplied object (including `{}`) replaces it wholesale. On PATCH, `metadata_patch` merges (RFC 7396) onto `metadata.custom`; omitted = carries forward. Genuinely mutable, history-free annotations belong in a `deletion_mode: "full"` namespace, not in metadata.
+
+---
+
+## Edge Types
+
+An **edge type** is the schema for a class of relationships between documents (think `EMPLOYEE_MANAGES`, `ORDER_CONTAINS`, `EXPERIMENT_INPUT`). It is implemented as a template with `usage: "relationship"` — same storage as any other template, but a distinct conceptual layer with its own validation, query endpoints, and reporting columns. Throughout this section, "edge type" is the schema; "template" refers to the underlying storage. The full design lives at [`docs/design/document-relationships.md`](design/document-relationships.md).
+
+Templates carry a `usage` annotation (`entity` (default), `reference`, `relationship`). Setting `usage: "relationship"` declares the template as an edge type. Use the `create_edge_type` MCP tool for the documented happy path; calling `create_template` with `usage: "relationship"` directly works as a power-user route.
+
+### Edge-type creation constraints
+
+When `usage == "relationship"`, template-store rejects the create unless **all** of the following hold (each violation surfaces as a per-item bulk error):
+
+1. `source_templates: list[str]` is non-empty — template values allowed as the source endpoint.
+2. `target_templates: list[str]` is non-empty — template values allowed as the target endpoint.
+3. The edge type declares two reference fields named **exactly** `source_ref` and `target_ref` with `reference_type: "document"` and a `target_templates` list that matches the corresponding template-level list.
+
+The field-name convention (`source_ref` / `target_ref`) is mandatory — query APIs, Mongo indexes, and reporting-sync all key on those names. Template-store validates the shape on every create.
+
+`source_templates`, `target_templates`, `usage`, and `versioned` are **immutable** after creation. To change them, create a new template (with a new value).
+
+### Document-write validation
+
+On `create_document` (or `update_document`) against a `usage: "relationship"` template, document-store runs two extra checks after standard validation:
+
+| `error_code` (prefix on the error message) | When |
+|---|---|
+| `cross_namespace_relationship` | `source_ref` or `target_ref` resolves to a document in a different namespace than the relationship document. Cross-namespace relationships are deferred to post-v2 — note that `allowed_external_refs` does **not** lift this: it governs plain reference fields only. Model a cross-namespace link as a plain document reference field instead (losing the relationship/traverse endpoints and edge reporting columns). |
+| `archived_relationship_endpoint` | `source_ref` or `target_ref` resolves to a document with `status == "archived"`. Endpoints must be active or inactive. |
+
+These codes are returned as the prefix on the per-item `error` string (not as machine-readable `error_code` fields). Branch on the prefix when the distinction matters.
+
+Standard validation (template constraints, type checks, term resolution, reference resolution via Registry) runs first; the relationship-specific checks fire only after the references have resolved.
+
+### `versioned: false` lifecycle
+
+Set `versioned: false` on an edge type to make updates **overwrite in place** instead of creating new versions. Documents under such an edge type stay at `version: 1` forever; the document_id is stable, but no history is preserved.
+
+This is the right shape for relationships where the edge identity matters but its history doesn't (e.g., "monster has spell" in a bestiary). Concurrency on the in-place path is governed by the existing `if_match` token — strongly recommended for high-write workloads.
+
+`versioned` defaults to `true` (standard versioning) and is immutable after edge-type creation.
+
+### Query endpoints
+
+Two GET endpoints expose the relationship graph from a seed document. Both require `read` permission on the seed's namespace.
+
+#### `GET /api/document-store/documents/{id}/relationships`
+
+Returns relationship documents pointing at or from `{id}`. Backed by lazy Mongo indexes on `(template_id, data.source_ref)` and `(template_id, data.target_ref)`.
+
+| Query parameter | Values | Default |
+|---|---|---|
+| `direction` | `incoming` \| `outgoing` \| `both` | `both` |
+| `template` | comma-separated edge type values | all edge types |
+| `namespace` | namespace prefix | the seed document's namespace |
+| `active_only` | `true` \| `false` | `true` |
+| `page`, `page_size` | standard pagination | 1, 50 (max 500) |
+
+Response: `DocumentListResponse` (same shape as `list_documents`). Endpoints are not auto-resolved — caller follows refs.
+
+#### `GET /api/document-store/documents/{id}/traverse`
+
+BFS expansion through relationship documents from `{id}`. At each hop, finds relationship documents touching the current frontier and adds the *other* endpoint document_ids to the next frontier. Visited documents are skipped (cycles terminate).
+
+| Query parameter | Values | Default |
+|---|---|---|
+| `depth` | 1..**10** (hard cap) | 1 |
+| `types` | comma-separated edge type values | all |
+| `direction` | `outgoing` \| `incoming` \| `both` | `outgoing` |
+| `namespace` | namespace prefix | the seed document's namespace |
+
+**Safety bounds:** `depth` is capped at 10 by FastAPI request validation; the response also fires a `truncated: true` flag if the BFS hits the internal `max_nodes=1000` ceiling. Anything deeper or wider is an analytical query that belongs in the Postgres reporting layer (`run_report_query`).
+
+The MongoDB-only invariant holds: both endpoints work with reporting-sync stopped. Postgres `source_ref_id` / `target_ref_id` columns (added by reporting-sync for edge types) are an analytics convenience, not a functional dependency.
 
 ---
 
@@ -181,6 +260,12 @@ client.registry.upsert_namespace("my-app", {
 
 The response is always `200 OK` with the resulting `NamespaceResponse`. Calling it twice with the same body is a no-op on the second call.
 
+**Safety guards on `deletion_mode`** (mirror the narrow PATCH route at `/api/registry/namespaces/{prefix}`):
+
+- The `wip` default namespace cannot be flipped to `full`. Returns 400.
+- Flipping an existing namespace from `retain` to `full` requires `confirm_enable_deletion=true` in the body. Without it, the registry returns 400.
+- Creating a new namespace with `deletion_mode='full'` is allowed directly (no transition to confirm).
+
 ### Template create with conflict validation — `POST /api/template-store/templates?on_conflict=validate`
 
 `POST /templates` accepts an `on_conflict` query parameter:
@@ -199,6 +284,19 @@ In `validate` mode the per-item result reflects the verdict:
 | Incompatible | `error` | `error_code: "incompatible_schema"`. `details` contains: `removed`, `added_required`, `changed_type` (`{name, old_type, new_type}`), `made_required`, `modified_existing`, `identity_changed` (`{old, new}` or `null`). |
 
 Compatibility is intentionally narrow: **only "added optional field" qualifies as compatible**. Any change to an existing field (label, description, validation, type, mandatory flag), removed field, added required field, or `identity_fields` change is incompatible. The structured diff lets the bootstrap script show the human a useful error.
+
+### Terminology / term create with conflict validation (CASE-465)
+
+`POST /api/def-store/terminologies` and the **single-item** path of `POST /api/def-store/terminologies/{id}/terms` accept the same `on_conflict` query parameter (also exposed on the `create_terminology`, `create_terminologies_bulk`, and `create_terms` MCP tools):
+
+| Mode | Behavior on duplicate value |
+|------|------------------------------|
+| `error` (default) | Per-item `status: "error"` with `error_code: "already_exists"`. Message text unchanged — backwards compatible, but callers can now branch on the code. |
+| `validate` | Identical config → `unchanged` (returns the existing ID); any config difference → `error` with `error_code: "incompatible_config"`, `details: {changed: [field names]}`. |
+
+There is deliberately no "compatible update" tier for terminologies — terminology config changes (e.g. `mutable`) have their own rules and a bootstrap should never absorb config drift silently. Compared fields: terminologies — `label`, `description`, `case_sensitive`, `allow_multiple`, `extensible` (effective: `extensible or mutable`), `mutable`, `metadata`; terms — `label` (effective: defaults to `value`), `aliases`, `description`, `sort_order`, `parent_term_id`, `translations`, `metadata`.
+
+Bulk term creates (2+ items) skip duplicates regardless of `on_conflict` (`status: "skipped"`, `error_code: "already_exists"` only on the import-export error path), and duplicate term relations are skipped (an inactive duplicate is reactivated). `unchanged` and `skipped` both count toward `succeeded` — a re-run of a bootstrap that uses `on_conflict=validate` reports success end to end.
 
 ```typescript
 import { WipBulkItemError } from '@wip/client'
@@ -248,17 +346,27 @@ r = result["results"][0]
 if r["status"] == "error":
     raise RuntimeError(r["error"])
 
-# Delete terminologies
-result = client.post("def-store", "/terminologies", json=[
-    {"id": tid1},
-    {"id": tid2, "force": True},
-])
-for r in result["results"]:
+# Delete terminologies — bulk deletes use HTTP DELETE with a JSON body
+# (matching Key Rule 4 and the @router.delete routes every store exposes).
+# WIPClient has no delete() helper yet, so issue the request directly:
+import httpx
+
+resp = httpx.request(
+    "DELETE",
+    f"{base_url}/api/def-store/terminologies",
+    json=[{"id": tid1}, {"id": tid2, "force": True}],
+    headers={"X-API-Key": api_key},
+)
+for r in resp.json()["results"]:
     if r["status"] == "error":
         print(f"Failed to delete item {r['index']}: {r['error']}")
 ```
 
-> **Why POST for deletes?** HTTP DELETE with a JSON body is non-standard. The bulk-first pattern uses POST for all write operations — creates, updates, and deletes — so they all accept arrays and return BulkResponse.
+> **DELETE with a JSON body?** Yes — it is unusual but well-defined, every
+> WIP store routes bulk deletes as `@router.delete` with a `List[...]` body,
+> and the response is the same BulkResponse envelope as every other write.
+> (An earlier revision of this example used POST for deletes; the platform
+> never did.)
 
 ### TypeScript (WIP Console UI)
 

@@ -1,9 +1,19 @@
 """API request and response models for the Document Store."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# Canonical bulk-response models live in wip_auth.bulk_models (CASE-395).
+# Re-exported here under the document-store-facing names so existing
+# callers keep working without re-defining the schema.
+from wip_auth.bulk_models import (
+    DocumentBulkResponse as BulkResponse,
+)
+from wip_auth.bulk_models import (
+    DocumentBulkResultItem as BulkResultItem,  # noqa: F401
+)
 
 from .document import DocumentMetadata, DocumentStatus
 from .file import FileMetadata, FileStatus
@@ -26,15 +36,15 @@ class DocumentCreateRequest(StrictModel):
         description="Template ID to validate against"
     )
     template_version: int | None = Field(
-        None,
+        default=None,
         description="Specific template version to validate against (default: latest)"
     )
     document_id: str | None = Field(
-        None,
+        default=None,
         description="Pre-assigned document ID (for restore/migration — Registry uses as-is instead of generating)"
     )
     version: int | None = Field(
-        None,
+        default=None,
         description="Pre-assigned version (for restore/migration — skips Registry and version computation when used with document_id)"
     )
     namespace: str = Field(
@@ -46,16 +56,28 @@ class DocumentCreateRequest(StrictModel):
         description="Document content"
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system creating this document"
     )
     metadata: dict[str, Any] | None = Field(
-        None,
+        default=None,
         description="Custom metadata"
     )
     synonyms: list[dict[str, Any]] | None = Field(
-        None,
+        default=None,
         description="Optional synonym composite keys to register for this document in the Registry"
+    )
+    on_synonym_conflict: Literal["fail", "warn"] = Field(
+        default="fail",
+        description=(
+            "How to handle an inline synonym that the Registry refuses (e.g. "
+            "already owned by a different entry). 'fail' (default): the whole "
+            "create fails, the document is NOT created, and any synonyms/entry "
+            "allocated for it are rolled back — use this when the synonyms are "
+            "load-bearing (e.g. you rely on original IDs to resolve after "
+            "import). 'warn': the document is created and the refused synonyms "
+            "are reported in `warnings`."
+        ),
     )
 
 
@@ -67,7 +89,7 @@ class DocumentResponse(BaseModel):
     template_id: str
     template_version: int
     template_value: str | None = Field(
-        None,
+        default=None,
         description="Template value (e.g., PLANNED_VISIT)"
     )
     identity_hash: str = ""
@@ -98,7 +120,7 @@ class DocumentResponse(BaseModel):
         description="Whether this is the latest version of the document"
     )
     latest_version: int | None = Field(
-        None,
+        default=None,
         description="The latest version number for this document_id"
     )
 
@@ -112,7 +134,7 @@ class DocumentCreateResponse(BaseModel):
     namespace: str
     template_id: str
     template_value: str | None = Field(
-        None,
+        default=None,
         description="Template value (e.g., PLANNED_VISIT)"
     )
     identity_hash: str = ""
@@ -122,7 +144,7 @@ class DocumentCreateResponse(BaseModel):
         description="True if this is a new document, False if it's a new version"
     )
     previous_version: int | None = Field(
-        None,
+        default=None,
         description="Previous version number if this is an update"
     )
     warnings: list[str] = Field(
@@ -144,9 +166,137 @@ class DocumentListResponse(BaseModel):
     page_size: int
     pages: int
     next_cursor: str | None = Field(
-        None,
+        default=None,
         description="Cursor for next page (MongoDB _id of last item). "
                     "Null on last page or when using offset pagination."
+    )
+
+
+# ============================================================================
+# Relationships endpoint with optional peer projection (CASE-303)
+# ============================================================================
+
+class PeerProjection(BaseModel):
+    """Compact projection of a peer entity document for ?include=peers.
+
+    The relationships endpoint returns edge documents (relationship templates).
+    When ?include=peers is set, each item gains a peer field carrying the
+    entity at the OTHER end of the edge — direction-agnostic, latest active
+    version, projected down to the at-a-glance fields needed to render a
+    relationship sidebar without an N+1 fetch.
+
+    Field set is determined by the peer template's `header_fields`
+    declaration, falling back to `identity_fields`, and finally
+    to {title, doc_status} for templates with neither. `header_fields`
+    may reference data paths (bare names → data.<name>) or audit paths
+    (metadata.custom.<name>), so both `data` and `metadata` are surfaced
+    on the projection.
+    """
+
+    document_id: str
+    namespace: str
+    template_id: str
+    template_value: str | None = None
+    status: DocumentStatus
+    data: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Projected data fields from the peer doc — populated per the "
+            "peer template's header_fields (or identity_fields fallback)."
+        )
+    )
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Projected metadata fields. Only populated when the peer "
+            "template's header_fields references metadata.custom.<name> paths."
+        )
+    )
+
+
+class RelationshipItem(DocumentResponse):
+    """Edge document with optional peer projection.
+
+    When the caller passes ?include=peers, each item carries either:
+      - peer: a PeerProjection of the entity at the OTHER end of the edge
+      - peer_error_code: 'not_found' | 'forbidden' (peer is None)
+
+    Inactive peers per PoNIF #1 are NOT errors — they are returned as a
+    populated peer object with status: 'inactive' so the UI can render them
+    dimmed. peer_error_code is reserved for actual resolution failures.
+    """
+
+    peer: PeerProjection | None = None
+    peer_error_code: str | None = Field(
+        default=None,
+        description="Set when peer is null. Enum: not_found | forbidden."
+    )
+    peer_error: str | None = Field(
+        default=None,
+        description="Optional human-readable peer error message."
+    )
+
+
+class RelationshipListResponse(BaseModel):
+    """Response shape for GET /documents/{id}/relationships.
+
+    Backwards-compatible with the prior DocumentListResponse: when
+    ?include=peers is absent, items have no peer/peer_error_code/peer_error
+    fields populated and the shape is functionally identical.
+    """
+
+    items: list[RelationshipItem]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+# ============================================================================
+# Phase 4 — Document-relationship query APIs
+# ============================================================================
+
+class TraverseNode(BaseModel):
+    """One node in a relationship traversal result.
+
+    Each node is a document discovered during BFS expansion from the
+    starting document. `depth` is the number of relationship-document
+    hops away from the start (depth=0 is the start itself).
+    `path` is the chain of document_ids visited to reach this node,
+    starting from the seed doc and excluding it (so a depth-1 node has
+    a 1-element path containing only itself).
+    """
+
+    document_id: str
+    template_id: str
+    template_value: str | None = None
+    namespace: str
+    depth: int = Field(..., ge=0, le=10)
+    via_relationship: str | None = Field(
+        default=None,
+        description="document_id of the relationship document that was traversed to reach this node (None for the seed)."
+    )
+    path: list[str] = Field(
+        default_factory=list,
+        description="Chain of document_ids from seed (exclusive) to this node (inclusive)."
+    )
+
+
+class TraverseResponse(BaseModel):
+    """Response for the /documents/{id}/traverse endpoint."""
+
+    seed_document_id: str
+    direction: str  # "outgoing" | "incoming" | "both"
+    depth: int
+    types_filter: list[str] = Field(
+        default_factory=list,
+        description="Relationship template values used to constrain traversal; empty = all relationship templates."
+    )
+    nodes: list[TraverseNode]
+    total_nodes: int
+    truncated: bool = Field(
+        False,
+        description="True if a depth-cap or expansion-cap stopped traversal before exhausting reachable nodes."
     )
 
 
@@ -201,7 +351,7 @@ class DocumentQueryRequest(StrictModel):
         description="Filter conditions (AND logic)"
     )
     template_id: str | None = Field(
-        None,
+        default=None,
         description="Filter by template ID"
     )
     status: DocumentStatus | None = Field(
@@ -243,60 +393,35 @@ class DocumentQueryResponse(BaseModel):
 # ============================================================================
 # Bulk Operations
 # ============================================================================
-
-class BulkResultItem(BaseModel):
-    """Result of a bulk operation for a single item."""
-
-    index: int
-    status: str  # created, updated, unchanged, deleted, skipped, error
-    id: str | None = None
-    document_id: str | None = None
-    identity_hash: str | None = None
-    version: int | None = None
-    is_new: bool | None = None
-    error: str | None = None
-    error_code: str | None = Field(
-        None,
-        description="Machine-readable error code (e.g., 'not_found', 'validation_failed', 'concurrency_conflict')"
-    )
-    warnings: list[str] = Field(default_factory=list)
-
-
-class BulkResponse(BaseModel):
-    """Response for bulk operations."""
-
-    results: list[BulkResultItem]
-    total: int
-    succeeded: int
-    failed: int
-    timing: dict[str, float] | None = Field(
-        default=None,
-        description="Server-side timing breakdown in milliseconds"
-    )
+# Canonical models live in wip_auth.bulk_models (CASE-395) — imported at
+# the top of this file and re-exported as BulkResponse / BulkResultItem.
 
 
 class DeleteItem(StrictModel):
     """Item in a bulk delete request."""
 
     id: str = Field(..., description="ID of entity to delete")
-    version: int | None = Field(None, description="Specific version to hard-delete (default: all versions). Ignored for soft-delete.")
-    force: bool = Field(default=False, description="Force deletion even if referenced")
+    version: int | None = Field(default=None, description="Specific version to hard-delete (default: all versions). Ignored for soft-delete.")
+    force: bool = Field(default=False, description="Force deletion even if referenced (file deletion only; rejected with error_code=force_unsupported on document deletion)")
     hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
-    updated_by: str | None = Field(None, description="User performing deletion")
+    updated_by: str | None = Field(default=None, description="User performing deletion")
 
 
 class ArchiveItem(StrictModel):
     """Item in a bulk archive request."""
 
     id: str = Field(..., description="ID of document to archive")
-    archived_by: str | None = Field(None, description="User performing the archive")
+    archived_by: str | None = Field(default=None, description="User performing the archive")
 
 
 class PatchDocumentItem(StrictModel):
     """Item in a bulk PATCH /documents request.
 
-    Applies a JSON Merge Patch (RFC 7396) to the document's `data` and creates
-    a new version. Identity fields and namespace cannot be changed via patch.
+    Applies a JSON Merge Patch (RFC 7396) to the document's `data` (and,
+    via `metadata_patch`, to `metadata.custom`) and creates a new version.
+    Metadata is non-identity document content: it versions like data but
+    never feeds the identity hash. Identity fields and namespace cannot be
+    changed via patch.
     """
 
     document_id: str = Field(
@@ -306,13 +431,77 @@ class PatchDocumentItem(StrictModel):
     patch: dict[str, Any] = Field(
         ...,
         description="Partial data following RFC 7396 (JSON Merge Patch). "
-                    "Objects are deep-merged, arrays are replaced, null deletes a field."
+                    "Objects are deep-merged, arrays are replaced, null deletes a field. "
+                    "Pass {} for a metadata-only patch."
+    )
+    metadata_patch: dict[str, Any] | None = Field(
+        default=None,
+        description="Partial metadata.custom following RFC 7396 (JSON Merge Patch), "
+                    "merged onto the document's custom metadata. Platform-owned "
+                    "metadata (warnings, source_system) cannot be addressed. "
+                    "A metadata change creates a new version like any other change."
     )
     if_match: int | None = Field(
-        None,
+        default=None,
         description="Expected current version. If provided and the current version "
                     "differs, the item fails with concurrency_conflict."
     )
+
+
+# ============================================================================
+# Migrate (template-version re-pin)
+# ============================================================================
+
+class DocumentMigrateRequest(StrictModel):
+    """Request to migrate a cohort of documents from one template version to another.
+
+    Re-pins every active document currently on ``from_version`` to ``to_version``,
+    creating a new document version (or overwriting in place for ``versioned: false``
+    templates). The migration is **identity-preserving only**: the two template
+    versions must declare the same ``identity_fields``. If they differ the identity
+    hash would change — that is a *fork* (create new documents), not a migrate, and
+    the operation is rejected. No data transformation happens here; any per-document
+    data prep (e.g. PATCH-null a removed field) is the app's job, done while the
+    source version is still writable.
+    """
+
+    template_id: str = Field(
+        ...,
+        description="Template to migrate (canonical UUID or registered value/synonym)"
+    )
+    from_version: int = Field(
+        ...,
+        description="Source template version the documents are currently pinned to. "
+                    "May be inactive (frozen) — migration validates against the target, not the source."
+    )
+    to_version: int = Field(
+        ...,
+        description="Target template version to re-pin to. Must be active."
+    )
+    dry_run: bool = Field(
+        default=True,
+        description="When true (default), report per-document readiness without writing. "
+                    "A dry-run with failed==0 guarantees a successful apply (barring concurrent writes)."
+    )
+
+
+class DocumentMigrateResponse(BulkResponse):
+    """Bulk-first migrate result. Always HTTP 200; per-document outcome in ``results``.
+
+    Per-item status:
+    - ``updated`` — a new version was (apply) or would be (dry_run) pinned to to_version.
+    - ``error`` — the document fails validation against to_version (e.g. a now-removed
+      field still present → ``unknown_field``, or a newly-mandatory field missing).
+      ``error_code`` is ``validation_failed`` (details carry the field errors) or
+      ``identity_fields_changed`` (the re-pin would alter the identity hash).
+
+    When ``dry_run`` is true the statuses are PROJECTED — nothing was written.
+    """
+
+    dry_run: bool
+    template_id: str
+    from_version: int
+    to_version: int
 
 
 # ============================================================================
@@ -323,7 +512,7 @@ class ValidationError(BaseModel):
     """A validation error."""
 
     field: str | None = Field(
-        None,
+        default=None,
         description="Field path with the error (e.g., 'data.name')"
     )
     code: str = Field(
@@ -335,7 +524,7 @@ class ValidationError(BaseModel):
         description="Human-readable error message"
     )
     details: dict[str, Any] | None = Field(
-        None,
+        default=None,
         description="Additional error details"
     )
 
@@ -349,6 +538,7 @@ class ValidationRequest(StrictModel):
     )
     namespace: str = Field(
         ...,
+        min_length=1,
         description="Namespace for the document"
     )
     data: dict[str, Any] = Field(
@@ -373,11 +563,11 @@ class ValidationResponse(BaseModel):
         description="Non-blocking warnings"
     )
     identity_hash: str | None = Field(
-        None,
+        default=None,
         description="Computed identity hash (if valid)"
     )
     template_version: int | None = Field(
-        None,
+        default=None,
         description="Template version used for validation"
     )
     term_references: list[dict[str, Any]] = Field(
@@ -394,6 +584,50 @@ class ValidationResponse(BaseModel):
     )
 
 
+class BulkValidationRequest(StrictModel):
+    """Request to validate multiple documents against ONE template.
+
+    Single-template-per-call: every item validates against the same
+    `template_id` in the same `namespace`. The dry-run validator has no write
+    path, so this is side-effect-free — no documents, versions, or
+    identity-hash registrations are created. Mirrors the singular
+    ``ValidationRequest`` but takes a list of ``data`` payloads.
+    """
+
+    template_id: str = Field(
+        ...,
+        description="Template ID to validate all items against"
+    )
+    namespace: str = Field(
+        ...,
+        min_length=1,
+        description="Namespace for the documents"
+    )
+    template_version: int | None = Field(
+        default=None,
+        description="Specific template version to validate against (default: latest)"
+    )
+    items: list[dict[str, Any]] = Field(
+        ...,
+        description="Document data payloads to validate, each shaped like the singular validate `data`"
+    )
+
+
+class BulkValidationResponse(BaseModel):
+    """Per-item validation results, in input order.
+
+    Each element is a full ``ValidationResponse`` — a document being invalid is
+    reported via that item's ``valid: false`` + ``errors``, not as a batch-level
+    error. An unresolvable template fails the whole request at the endpoint
+    (404), since the batch is single-template.
+    """
+
+    results: list[ValidationResponse] = Field(
+        default_factory=list,
+        description="One ValidationResponse per input item, in the same order"
+    )
+
+
 # ============================================================================
 # File Management
 # ============================================================================
@@ -402,7 +636,7 @@ class FileUploadMetadata(StrictModel):
     """Metadata to include with file upload."""
 
     description: str | None = Field(
-        None,
+        default=None,
         description="Human-readable description of the file"
     )
     tags: list[str] = Field(
@@ -410,7 +644,7 @@ class FileUploadMetadata(StrictModel):
         description="Searchable tags"
     )
     category: str | None = Field(
-        None,
+        default=None,
         description="Classification category"
     )
     custom: dict[str, Any] = Field(
@@ -418,7 +652,7 @@ class FileUploadMetadata(StrictModel):
         description="Additional custom metadata fields"
     )
     allowed_templates: list[str] | None = Field(
-        None,
+        default=None,
         description="Template values that can reference this file (None = all)"
     )
 
@@ -427,23 +661,23 @@ class UpdateFileMetadataRequest(StrictModel):
     """Request to update file metadata."""
 
     description: str | None = Field(
-        None,
+        default=None,
         description="Human-readable description of the file"
     )
     tags: list[str] | None = Field(
-        None,
+        default=None,
         description="Searchable tags (replaces existing)"
     )
     category: str | None = Field(
-        None,
+        default=None,
         description="Classification category"
     )
     custom: dict[str, Any] | None = Field(
-        None,
+        default=None,
         description="Additional custom metadata fields (merges with existing)"
     )
     allowed_templates: list[str] | None = Field(
-        None,
+        default=None,
         description="Template values that can reference this file"
     )
 

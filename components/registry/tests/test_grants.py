@@ -70,6 +70,16 @@ class TestCreateGrants:
         assert data["succeeded"] == 3
         assert data["failed"] == 0
 
+        # Envelope contract: per-item results carry the platform-canonical
+        # `index` key (wip_auth BulkResultItemBase — same wire key as
+        # document/template/def stores), echoing request-array position.
+        # Pinned because this drifted silently once (CASE-597).
+        assert [r["index"] for r in data["results"]] == [0, 1, 2]
+        for r in data["results"]:
+            assert "input_index" not in r
+            assert r["status"] == "created"
+            assert "subject" in r and "permission" in r
+
         # Verify all appear in list
         list_resp = await client.get(
             "/api/registry/namespaces/default/grants",
@@ -297,6 +307,14 @@ class TestRevokeGrants:
         data = response.json()
         assert data["total"] == 2
         assert data["succeeded"] == 2
+
+        # Envelope contract: same platform-canonical `index` key as create
+        # (pinned once drifted — CASE-597), statuses from the revoke set.
+        assert [r["index"] for r in data["results"]] == [0, 1]
+        for r in data["results"]:
+            assert "input_index" not in r
+            assert r["status"] == "revoked"
+            assert "subject" in r
 
         # Verify all gone
         list_resp = await client.get(

@@ -1,8 +1,10 @@
 """Unit tests for ImportService (CSV/XLSX parsing, no DB needed)."""
 
 import io
-import pytest
+
 import openpyxl
+import pytest
+
 from document_store.services.import_service import ImportService
 
 
@@ -192,7 +194,7 @@ def test_parse_rows_xlsx_numeric_values():
 def test_parse_rows_xlsx_empty_cells():
     """Empty XLSX cells become empty strings."""
     content = _make_xlsx(["a", "b"], [["val", None], [None, "val2"]])
-    headers, rows = ImportService.parse_rows(content, "gaps.xlsx")
+    _headers, rows = ImportService.parse_rows(content, "gaps.xlsx")
     assert rows[0]["a"] == "val"
     assert rows[0]["b"] == ""
     assert rows[1]["a"] == ""
@@ -202,7 +204,6 @@ def test_parse_rows_xlsx_empty_cells():
 def test_parse_rows_xlsx_empty_sheet():
     """An empty XLSX sheet raises ValueError."""
     wb = openpyxl.Workbook()
-    ws = wb.active
     # Remove default empty row by not appending anything
     buf = io.BytesIO()
     wb.save(buf)

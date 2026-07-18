@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, BinaryIO, Iterator
+from collections.abc import Iterator
+from typing import Any, BinaryIO
 
 import httpx
 from rich.console import Console
@@ -24,13 +25,19 @@ class WIPClientError(Exception):
 class WIPClient:
     """HTTP client for WIP services with pagination and health checks."""
 
-    def __init__(self, config: WIPConfig) -> None:
+    def __init__(
+        self, config: WIPConfig, transport: httpx.BaseTransport | None = None
+    ) -> None:
+        # `transport` lets the integration tests bridge requests into
+        # in-process ASGI apps instead of the network. None (production)
+        # keeps httpx's default transport.
         self.config = config
         self._client = httpx.Client(
             headers={"X-API-Key": config.api_key},
             verify=config.verify_ssl,
             timeout=httpx.Timeout(config.request_timeout_seconds, connect=10.0),
             follow_redirects=True,
+            transport=transport,
         )
 
     def close(self) -> None:

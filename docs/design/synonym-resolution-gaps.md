@@ -1,8 +1,47 @@
 # Synonym Resolution: Gap Analysis and Side Effects
 
-**Status:** Analysis (2026-03-30, updated 2026-04-04). Companion to `universal-synonym-resolution.md`.
+**Status:** Analysis (2026-03-30, updated 2026-04-04, **refreshed 2026-06-01**). Companion to `universal-synonym-resolution.md`.
 
-> **2026-04-04 Update:** All 7 API-boundary gaps identified in the plan (`jolly-coalescing-narwhal.md`) have been resolved in commit `3dece58`. See "Resolved Gaps" section below. The deeper internal resolution gaps (template-store `_resolve_to_*` methods, cross-namespace resolution, reserved/draft entity resolution) remain open and are documented in this file.
+> **2026-06-01 Refresh (BE-YAC-20260531-181651).** A full-codebase synonym
+> creation/resolution audit re-verified this document against current code.
+> **The "Core Gap" analysed at length below (template-store `_resolve_to_*`
+> methods) is CLOSED** — those methods no longer exist (grep-verified, zero
+> matches). The §"Core Gap" / §"Side Effects" / §"Recommended Implementation
+> Order" sections are retained for historical/design context but describe
+> already-completed work. Specifically verified on `develop` (2026-06-01):
+>
+> - `template_service._normalize_field_references` now resolves every field
+>   reference (`terminology_ref`, `template_ref`, `target_templates`,
+>   `array_*_ref`, `target_terminologies`) through the shared
+>   `resolve_entity_ids` (`template_service.py:745`), with the activation-set
+>   `known_templates` fast-path (`:2214-2226`) and `include_statuses` for
+>   reserved/draft resolution (`:2226`, `:2234`). That closes the two
+>   "prerequisites" this doc flagged (activation-set + reserved/draft).
+> - Cross-namespace resolution was solved via an **explicit-prefix model**
+>   (`NS:VALUE` / `NS:TERMINOLOGY:VALUE`) in `resolve._build_composite_key`
+>   (`resolve.py:80-130`) — *not* the automatic own→wip→allowed_external_refs
+>   search order proposed in §3/§"Recommended Implementation Order" below.
+>   Bare values resolve in the caller's own namespace; cross-namespace requires
+>   an explicit prefix. Treat the auto-search-order proposal below as NOT the
+>   path taken.
+>
+> **Residual, still-accurate gaps** (the only ones live as of 2026-06-01):
+> - **CASE-432** — two service-local lookups that bypass the Registry entirely:
+>   template-store `create_template`/version resolves `extends` via MongoDB-direct
+>   (`template_service.py:276-283`, `:997-1000`); document-store validation's
+>   `_lookup_by_business_key` fallback queries `data.<identity_field>` directly
+>   (`validation_service.py:1628-1672`).
+> - **CASE-433** — *resolved 2026-06-11*: the def-store/template-store
+>   `/lookup/by-key` wrappers were dead code (zero callers) and were deleted;
+>   the one live lookup, `resolve_identifier` (`/lookup/by-id`), moved to
+>   `RegistryClientBase`. The three Registry endpoints (`/lookup/by-id`,
+>   `/lookup/by-key`, `/entries/resolve`) are NOT behaviorally equivalent and
+>   all remain — see the case's Response for the equivalence analysis.
+>
+> Everything below the next horizontal rule predates this refresh; read it as
+> history, and trust the two cases above for what remains.
+
+> **2026-04-04 Update:** All 7 API-boundary gaps identified in the plan (`jolly-coalescing-narwhal.md`) have been resolved in commit `3dece58`. See "Resolved Gaps" section below. The deeper internal resolution gaps (template-store `_resolve_to_*` methods, cross-namespace resolution, reserved/draft entity resolution) remain open and are documented in this file. *(2026-06-01: these are now closed — see the refresh note above.)*
 **Context:** The universal synonym resolution design is sound but incompletely implemented. This document audits the current state, identifies gaps, and analyzes the side effects of closing them.
 
 ---
@@ -79,11 +118,47 @@ Seven API-boundary gaps were closed in a single pass. These were the "stragglers
 | 2 | `replaced_by_term_id` not resolved in deprecate endpoint | def-store | Added `resolve_bulk_ids` for `replaced_by_term_id` field |
 | 3 | Audit endpoints had zero resolution | def-store | Added `resolve_or_404` to `GET /audit/terms/{id}` and `GET /audit/terminologies/{id}` |
 | 4 | Export endpoint didn't resolve `terminology_id` | def-store | Added `resolve_or_404` to `GET /export/{terminology_id}` |
-| 5 | Legacy validation endpoints retired | def-store | Removed `/validation/validate` and `/validation/validate-bulk` router (file deleted 2026-04-04). Consumers should use `POST /terms/validate` and `POST /terms/validate/bulk` instead. See `docs/migration-legacy-validation-api.md`. |
+| 5 | Legacy validation endpoints retired | def-store | Removed `/validation/validate` and `/validation/validate-bulk` router (file deleted 2026-04-04). Consumers should use `POST /terms/validate` and `POST /terms/validate/bulk` instead. |
 | 6 | Template value lookup defaulted namespace to "wip" | template-store | Made namespace required for value-based lookups — raises `ValueError` if omitted |
 | 7 | Table view namespace fallback to "wip" | document-store | Replaced `.get("namespace", "wip")` with explicit check; raises 500 if namespace missing |
 
 **What remains:** The deeper gaps documented below — template-store internal `_resolve_to_*` methods that bypass Registry entirely, cross-namespace resolution search order, and reserved/draft entity resolution during batch activation.
+
+---
+
+## Enumeration vs Resolution: two different namespace axes
+
+Namespace access in WIP is gated on **two independent axes**, and conflating them
+causes both over- and under-scoping. Keep them distinct:
+
+- **Reference resolution** (canonical ID / synonym / value → entity) is gated by
+  **isolation** — a namespace's `isolation_mode` + `allowed_external_refs`, plus the
+  always-shared `wip` namespace. Resolution crosses namespaces *by design*: a document
+  in namespace `app-a` legitimately references a term in `wip` with no grant on `wip`
+  (Vision §"References Must Resolve"). The Registry's resolution endpoints
+  (`/entries/lookup/by-id`, `/entries/lookup/by-keys`, `/entries/resolve`,
+  `/synonyms/*`) are therefore intentionally not grant-scoped. Isolation for
+  *references* is enforced at the stores' `ReferenceValidator` (see the document-store
+  fix that closed the UUID-form bypass).
+
+- **Enumeration / listing** (browse the inventory of a namespace, search across it) is
+  gated by **grants** — you need a read grant (or the api-key's namespace scope) to list
+  a namespace's entries. This is the convention "you need a grant to *list* a
+  namespace's data, but not to reference its terms."
+
+The gap fixed under CASE-580: the Registry's own enumeration endpoints —
+`GET /api/registry/entries` (browse) and `GET /api/registry/entries/search` (unified
+search) — applied **no** namespace filter, so a namespace-scoped, non-privileged
+api-key could enumerate every namespace's entry inventory. They now resolve the caller's
+accessible namespaces via `registry.api.grants.resolve_accessible_namespaces` (superadmin
+→ no filter; scoped caller → `namespace $in accessible`) and constrain the query; an
+explicit foreign namespace returns an empty page rather than leaking rows.
+
+**Do not "fix" the resolution endpoints the same way** — grant-scoping
+`/entries/lookup/*` or `/synonyms/*` would break cross-namespace reference resolution,
+which is a guarantee, not a gap. `POST /search/by-fields` is a targeted value→entry
+resolution primitive and stays on the resolution (isolation) axis, not the enumeration
+one.
 
 ---
 
@@ -270,9 +345,9 @@ Once these are in place, the swap is straightforward. The remaining side effects
 
 ---
 
-## Relationship to Fast Bulk Transfer
+## Relation to Bulk Transfer Performance
 
-This analysis was prompted by the fast bulk transfer design, but the gaps identified here are **WIP consistency issues**, not import/export issues. The resolution layer should work correctly for normal operations first:
+This analysis was prompted by bulk-transfer performance work, but the gaps identified here are **WIP consistency issues**, not import/export issues. The resolution layer should work correctly for normal operations first:
 
 - Template creation should resolve cross-namespace references through the Registry
 - Batch activation should resolve interdependent templates through the Registry
@@ -280,4 +355,4 @@ This analysis was prompted by the fast bulk transfer design, but the gaps identi
 
 Once WIP's internal resolution is consistent, import/export follows naturally: import goes through the API, references resolve correctly, no special-case remapping needed. A sane internal design eliminates the need for import-time hacks.
 
-The fast bulk transfer design should be revisited after the resolution layer is complete. The performance optimization (direct MongoDB insert) is still valid, but the reference handling strategy depends on having a working resolution layer.
+The performance optimization (direct MongoDB insert) is still valid once the reference handling strategy depends on having a working resolution layer.

@@ -80,7 +80,7 @@ class SearchService:
             })
 
         if restriction_conditions:
-            query = {"$and": [query] + restriction_conditions}
+            query = {"$and": [query, *restriction_conditions]}
 
         # Filter by status unless including inactive
         if not include_inactive:
@@ -88,56 +88,6 @@ class SearchService:
                 query["$and"].append({"status": "active"})
             else:
                 query = {"$and": [query, {"status": "active"}]}
-
-        return query
-
-    @staticmethod
-    def build_text_search_query(
-        term: str,
-        restrict_to_namespaces: list[str] | None = None,
-        restrict_to_entity_types: list[str] | None = None,
-        include_inactive: bool = False
-    ) -> dict[str, Any]:
-        """
-        Build a MongoDB query for free-text search across composite keys.
-
-        Args:
-            term: Search term
-            restrict_to_namespaces: Optional list of namespaces to restrict search
-            restrict_to_entity_types: Optional list of entity types to restrict search
-            include_inactive: Whether to include inactive entries
-
-        Returns:
-            MongoDB query dictionary
-        """
-        query: dict[str, Any] = {
-            "$text": {"$search": term}
-        }
-
-        if restrict_to_namespaces:
-            query["$or"] = [
-                {"namespace": {"$in": restrict_to_namespaces}},
-                {"synonyms.namespace": {"$in": restrict_to_namespaces}}
-            ]
-
-        if restrict_to_entity_types:
-            et_condition = {
-                "$or": [
-                    {"entity_type": {"$in": restrict_to_entity_types}},
-                    {"synonyms.entity_type": {"$in": restrict_to_entity_types}}
-                ]
-            }
-            if "$or" in query:
-                query = {"$and": [
-                    {"$text": {"$search": term}},
-                    {"$or": query["$or"]},
-                    et_condition,
-                ]}
-            else:
-                query.update(et_condition)
-
-        if not include_inactive:
-            query["status"] = "active"
 
         return query
 
@@ -162,10 +112,16 @@ class SearchService:
         """
         escaped_term = re.escape(term)
 
+        # CASE-568: match against entry_id + search_values (the flat string
+        # array rebuilt from all primary + synonym key values), the same
+        # fields browse and unified_search regex over. The old query applied
+        # $regex to primary_composite_key / synonyms.composite_key — embedded
+        # OBJECTS, which $regex never matches — so by-term returned empty for
+        # every query.
         query: dict[str, Any] = {
             "$or": [
-                {"primary_composite_key": {"$regex": escaped_term, "$options": "i"}},
-                {"synonyms.composite_key": {"$regex": escaped_term, "$options": "i"}}
+                {"entry_id": {"$regex": escaped_term, "$options": "i"}},
+                {"search_values": {"$regex": escaped_term, "$options": "i"}}
             ]
         }
 
@@ -186,7 +142,7 @@ class SearchService:
             })
 
         if restriction_conditions:
-            query = {"$and": [query] + restriction_conditions}
+            query = {"$and": [query, *restriction_conditions]}
 
         if not include_inactive:
             if "$and" in query:

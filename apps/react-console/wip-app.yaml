@@ -1,0 +1,61 @@
+api_version: wip.dev/v1
+kind: App
+metadata:
+  name: react-console
+  category: optional
+  description: |
+    React Console (RC Console) — reporting-focused frontend. Consumes
+    document/template/reporting APIs. Identity is delivered by the
+    auth-gateway via X-WIP-User headers; no per-app OIDC client.
+
+spec:
+  image:
+    name: react-console
+    # App lives in its own repo (WIP-ReactConsole).
+    # v1.2.2 — refreshed RC build (BE-YAC-20260430-2000).
+    tag: 20260610a
+
+  ports:
+    - {name: http, container_port: 3011}
+    # Vite dev server. When `wip-deploy install --target dev --app-source
+    # react-console=<path>` is used and the app's Dockerfile.dev runs
+    # `npm run dev`, the frontend lives here (not on :3011, which only
+    # serves the API/SSR in dev). Caddy routes /apps/rc/* to this port
+    # in that mode. Ignored on compose/k8s targets and on dev without
+    # the override (apps come up on :3011 from the prod image).
+    - {name: dev, container_port: 5174}
+
+  env:
+    required:
+      - {name: WIP_BASE_URL, source: {from_component: router}}
+      - {name: WIP_API_KEY, source: {from_secret: api-key}}
+      - {name: PORT, source: {literal: "3011"}}
+      - {name: APP_BASE_PATH, source: {literal: /apps/rc}}
+      - {name: NODE_ENV, source: {literal: production}}
+    optional:
+      # askBar / NL-query feature uses Anthropic. Degrades gracefully
+      # when the key is unset.
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+      - {name: NATS_URL, source: {from_component: nats}}
+      - {name: MONGO_URI, source: {from_component: mongodb}}
+
+  routes:
+    - {path: /apps/rc, auth_required: true}
+
+  # reporting-sync is a SOFT dependency — react-console functions with
+  # reporting unavailable, just greys out the reporting tab. Only
+  # document-store is a hard start-order requirement.
+  depends_on: [document-store]
+
+  # `probe: auto` emits a shell-chained curl-or-wget check. The v1.1.x
+  # react-console image ships wget but not curl; future images may add
+  # curl. Either way, auto works.
+  healthcheck:
+    endpoint: /apps/rc/health
+    probe: auto
+    start_period_seconds: 15
+
+app_metadata:
+  display_name: React Console
+  route_prefix: /apps/rc
+  ui_only: false

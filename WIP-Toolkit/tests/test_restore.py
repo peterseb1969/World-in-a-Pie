@@ -10,16 +10,19 @@ from unittest.mock import MagicMock, patch
 from wip_toolkit.client import WIPClientError
 from wip_toolkit.import_.restore import (
     _activate_templates,
+    _build_document_payloads,
     _create_documents_streamed,
     _create_templates,
     _create_terminologies,
     _create_terms,
     _ensure_namespace,
     _restore_synonyms,
+    _template_create_payload,
+    _template_update_payload,
     _upload_files,
     restore_import,
 )
-from wip_toolkit.models import EntityCounts, ImportStats
+from wip_toolkit.models import EntityCounts, ImportStats, NamespaceConfig
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -306,33 +309,59 @@ class TestRestoreFullFlow:
 # ---------------------------------------------------------------------------
 
 class TestEnsureNamespace:
+    """Single idempotent PUT upsert; applies the archive's namespace config."""
 
     @patch("wip_toolkit.import_.restore.console")
-    def test_ensure_namespace_exists(self, mock_console):
+    def test_upsert_without_config(self, mock_console):
         client = _make_client()
-        client.get.return_value = {"prefix": "target-ns", "description": "existing"}
         stats = _make_stats()
 
         _ensure_namespace(client, "target-ns", stats)
 
-        client.get.assert_called_once_with("registry", "/namespaces/target-ns")
+        client.put.assert_called_once()
+        args, kwargs = client.put.call_args
+        assert args == ("registry", "/namespaces/target-ns")
+        assert kwargs["json"]["description"] == "Restored from backup"
+        assert "deletion_mode" not in kwargs["json"]
+        client.get.assert_not_called()
         client.post.assert_not_called()
 
     @patch("wip_toolkit.import_.restore.console")
-    def test_ensure_namespace_created(self, mock_console):
+    def test_upsert_applies_manifest_config(self, mock_console):
         client = _make_client()
-        client.get.side_effect = WIPClientError("Not found", status_code=404)
-        client.post.return_value = {"prefix": "target-ns"}
         stats = _make_stats()
+        cfg = NamespaceConfig(
+            prefix="src-ns",
+            isolation_mode="strict",
+            allowed_external_refs=[],
+            deletion_mode="full",
+        )
 
-        _ensure_namespace(client, "target-ns", stats)
+        _ensure_namespace(client, "target-ns", stats, ns_config=cfg)
 
-        client.post.assert_called_once_with("registry", "/namespaces", json={
-            "prefix": "target-ns",
-            "description": "Restored from backup",
-            "isolation_mode": "open",
-            "created_by": "wip-toolkit",
-        })
+        body = client.put.call_args.kwargs["json"]
+        assert body["isolation_mode"] == "strict"
+        # An explicit empty allowlist round-trips (distinct from absent).
+        assert body["allowed_external_refs"] == []
+        assert body["deletion_mode"] == "full"
+
+    @patch("wip_toolkit.import_.restore.console")
+    def test_retain_to_full_guard_warns_and_retries(self, mock_console):
+        client = _make_client()
+        stats = _make_stats()
+        cfg = NamespaceConfig(prefix="src-ns", deletion_mode="full")
+        client.put.side_effect = [
+            WIPClientError(
+                "requires confirm_enable_deletion=true", status_code=400
+            ),
+            {"prefix": "target-ns"},
+        ]
+
+        _ensure_namespace(client, "target-ns", stats, ns_config=cfg)
+
+        assert client.put.call_count == 2
+        assert "deletion_mode" not in client.put.call_args.kwargs["json"]
+        assert any("deletion_mode" in w for w in stats.warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -756,3 +785,143 @@ class TestRestoreImportProgressCallback:
             progress_callback=explosive,
         )
         assert stats.mode == "restore"
+
+
+# ---------------------------------------------------------------------------
+# Template-class flag + metadata fidelity through restore import
+# ---------------------------------------------------------------------------
+
+EDGE_TPL = {
+    "template_id": "TPL-EDGE",
+    "value": "AUD_LINK",
+    "version": 1,
+    "fields": [],
+    "usage": "relationship",
+    "versioned": False,
+    "header_fields": ["code"],
+    "source_templates": ["AUD_ITEM"],
+    "target_templates": ["AUD_ITEM"],
+}
+
+
+class TestTemplatePayloadFidelity:
+    def test_create_payload_carries_class_flags(self):
+        payload = _template_create_payload(EDGE_TPL, "ns")
+        assert payload["usage"] == "relationship"
+        assert payload["versioned"] is False
+        assert payload["header_fields"] == ["code"]
+        assert payload["source_templates"] == ["AUD_ITEM"]
+        assert payload["target_templates"] == ["AUD_ITEM"]
+
+    def test_create_payload_omits_absent_flags(self):
+        payload = _template_create_payload(
+            {"template_id": "T", "value": "V", "version": 1, "fields": []}, "ns"
+        )
+        for flag in ("usage", "versioned", "source_templates", "target_templates"):
+            assert flag not in payload
+
+    def test_update_payload_carries_only_put_mutable_flag(self):
+        """usage/versioned are immutable and endpoint lists are append-only via
+        their dedicated route — the strict update model rejects them, so the
+        update payload carries header_fields only."""
+        payload = _template_update_payload(EDGE_TPL)
+        assert payload["header_fields"] == ["code"]
+        for flag in ("usage", "versioned", "source_templates", "target_templates"):
+            assert flag not in payload
+
+
+class TestDocumentMetadataUnwrap:
+    def test_metadata_submits_custom_content_only(self):
+        """The create API's metadata param IS the custom content; submitting
+        the stored envelope nests one level per import cycle (measured 2→3 in
+        the round-trip audit)."""
+        docs = [{
+            "template_id": "T", "document_id": "D", "version": 1,
+            "data": {"x": 1},
+            "metadata": {
+                "source_system": None,
+                "warnings": ["w"],
+                "custom": {"loader_tag": "round-trip"},
+            },
+        }]
+        payloads = _build_document_payloads(docs, "ns")
+        assert payloads[0]["metadata"] == {"loader_tag": "round-trip"}
+
+    def test_metadata_absent_submits_empty(self):
+        docs = [{"template_id": "T", "document_id": "D", "version": 1, "data": {}}]
+        payloads = _build_document_payloads(docs, "ns")
+        assert payloads[0]["metadata"] == {}
+
+
+# ---------------------------------------------------------------------------
+# CASE-668 — pre-flight: refuse restores that cannot succeed, up front
+# ---------------------------------------------------------------------------
+
+from wip_toolkit.import_.restore import (  # noqa: E402
+    RestorePreflightError,
+    _preflight_clean_target,
+)
+
+
+def _stats_response(total: int) -> dict:
+    return {"entity_counts": {"templates": total, "documents": 0}}
+
+
+def _client_with_stats(by_namespace: dict):
+    """Mock client whose registry stats GET answers per namespace;
+    namespaces absent from the map 404 (don't exist)."""
+    client = MagicMock()
+
+    def _get(service, path, params=None):
+        ns = path.removeprefix("/namespaces/").removesuffix("/stats")
+        if ns in by_namespace:
+            return _stats_response(by_namespace[ns])
+        raise WIPClientError("not found", status_code=404)
+
+    client.get.side_effect = _get
+    return client
+
+
+class TestPreflightCleanTarget:
+    def test_clean_instance_passes(self):
+        """Both namespaces gone (the disaster-recovery shape) → proceed."""
+        client = _client_with_stats({})
+        _preflight_clean_target(client, "target-ns", "source-ns")  # no raise
+
+    def test_self_restore_into_empty_namespace_passes(self):
+        client = _client_with_stats({"ns": 0})
+        _preflight_clean_target(client, "ns", "ns")  # no raise
+
+    def test_non_empty_target_refused(self):
+        client = _client_with_stats({"ns": 3})
+        try:
+            _preflight_clean_target(client, "ns", "ns")
+            raise AssertionError("expected RestorePreflightError")
+        except RestorePreflightError as e:
+            assert "empty target" in str(e)
+            assert "3 active entities" in str(e)
+
+    def test_redirect_with_live_source_refused(self):
+        """The observed incident: --target-namespace while the source still
+        owns the archived IDs — ID-preserving restore can never succeed."""
+        client = _client_with_stats({"source-ns": 14})
+        try:
+            _preflight_clean_target(client, "fresh-ns", "source-ns")
+            raise AssertionError("expected RestorePreflightError")
+        except RestorePreflightError as e:
+            assert "source-ns" in str(e)
+            assert "--mode fresh" in str(e)
+
+    def test_redirect_with_gone_source_passes(self):
+        """The valid rename-on-restore shape."""
+        client = _client_with_stats({})
+        _preflight_clean_target(client, "fresh-ns", "source-ns")  # no raise
+
+    def test_non_404_stats_error_propagates(self):
+        client = MagicMock()
+        client.get.side_effect = WIPClientError("boom", status_code=500)
+        try:
+            _preflight_clean_target(client, "ns", "ns")
+            raise AssertionError("expected WIPClientError")
+        except WIPClientError:
+            pass

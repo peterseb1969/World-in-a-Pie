@@ -91,6 +91,7 @@ async def test_dependencies_with_child_templates(client: AsyncClient, auth_heade
         "value": "DEP_CHILD_1",
         "label": "Dep Child 1",
         "extends": parent_id,
+        "extends_version": 1,
         "fields": [
             {"name": "extra", "label": "Extra", "type": "string"},
         ],
@@ -101,6 +102,7 @@ async def test_dependencies_with_child_templates(client: AsyncClient, auth_heade
         "value": "DEP_CHILD_2",
         "label": "Dep Child 2",
         "extends": parent_id,
+        "extends_version": 1,
         "fields": [],
     })
 
@@ -144,6 +146,7 @@ async def test_dependencies_prevents_delete_with_children(
         "value": "DEL_BLOCK_CHILD",
         "label": "Delete Block Child",
         "extends": parent_id,
+        "extends_version": 1,
         "fields": [],
     })
 
@@ -253,6 +256,7 @@ async def test_dependencies_document_store_unavailable_with_children(
         "value": "DS_UNAVAIL_CHILD",
         "label": "DS Unavailable Child",
         "extends": parent_id,
+        "extends_version": 1,
         "fields": [],
     })
 
@@ -294,6 +298,7 @@ async def test_dependencies_child_details_include_value_and_label(
         "value": "DETAIL_CHILD",
         "label": "Detail Child Label",
         "extends": parent_id,
+        "extends_version": 1,
         "fields": [],
     })
 
@@ -357,6 +362,7 @@ async def test_dependencies_with_deep_hierarchy(client: AsyncClient, auth_header
         "value": "DEEP_P",
         "label": "Deep Parent",
         "extends": grandparent_id,
+        "extends_version": 1,
         "fields": [],
     })
 
@@ -365,6 +371,7 @@ async def test_dependencies_with_deep_hierarchy(client: AsyncClient, auth_header
         "value": "DEEP_C",
         "label": "Deep Child",
         "extends": parent_id,
+        "extends_version": 1,
         "fields": [],
     })
 

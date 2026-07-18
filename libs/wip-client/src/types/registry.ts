@@ -48,6 +48,14 @@ export interface UpdateNamespaceRequest {
   allowed_external_refs?: string[]
   id_config?: Record<string, IdAlgorithmConfig>
   updated_by?: string
+  /**
+   * Required to be `true` when flipping `deletion_mode` from 'retain' to
+   * 'full' on an existing namespace (enabling hard-delete on namespace
+   * deletion). The backend rejects the transition without it. Ignored for
+   * other updates, and not needed when creating a namespace directly with
+   * `deletion_mode: 'full'`. Safety guard — see CASE-291 / CASE-429.
+   */
+  confirm_enable_deletion?: boolean
 }
 
 export interface RegistryEntry {
@@ -96,8 +104,25 @@ export interface RegistryEntryFull {
   updated_by: string | null
 }
 
+/**
+ * A single hit from POST /api/registry/search/by-term (CASE-572).
+ *
+ * Distinct from RegistryLookupResponse: the by-term route returns
+ * `registry_id`/`matched_in`, not `entry_id`/`matched_via`.
+ */
+export interface RegistryByTermHit {
+  registry_id: string
+  namespace: string
+  entity_type: string
+  matched_in: 'primary' | 'synonym'
+  matched_namespace: string
+  matched_entity_type: string
+  matched_composite_key: Record<string, unknown>
+  all_synonyms: RegistrySynonym[]
+}
+
 export interface RegistryLookupResponse {
-  input_index: number
+  index: number
   status: string
   entry_id: string | null
   namespace: string | null
@@ -272,10 +297,18 @@ export interface CreateAPIKeyRequest {
   namespaces?: string[] | null
   description?: string
   expires_at?: string
+  /**
+   * CASE-450: also create a namespace grant at this level for the new key
+   * (subject = key name) on each namespace in `namespaces`. Without it a
+   * scoped key can read its namespaces but not write.
+   */
+  grant_permission?: 'read' | 'write' | 'admin'
 }
 
 export interface CreateAPIKeyResponse extends APIKeyInfo {
   plaintext_key: string
+  /** Namespaces a grant was created on (CASE-450 grant_permission). */
+  granted_namespaces?: string[] | null
 }
 
 export interface UpdateAPIKeyRequest {
@@ -284,4 +317,18 @@ export interface UpdateAPIKeyRequest {
   namespaces?: string[] | null
   expires_at?: string
   enabled?: boolean
+}
+
+/**
+ * Paginated list response from `GET /api/registry/api-keys` (CASE-335).
+ * Follows the platform-wide pagination envelope (see `wip://conventions`).
+ */
+export type APIKeyListResponse = PaginatedResponse<APIKeyInfo>
+
+/** Query params for `GET /api/registry/api-keys` (CASE-335). */
+export interface ListAPIKeysParams {
+  /** Default 1. */
+  page?: number
+  /** Default 50, capped at 100. */
+  page_size?: number
 }

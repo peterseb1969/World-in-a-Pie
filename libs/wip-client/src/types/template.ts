@@ -49,6 +49,8 @@ export interface FieldDefinition {
   default_value?: unknown
   terminology_ref?: string
   template_ref?: string
+  /** Pinned version of template_ref. Backend (CASE-493) requires this when template_ref is set. */
+  template_ref_version?: number
   reference_type?: ReferenceType
   target_templates?: string[]
   target_terminologies?: string[]
@@ -57,10 +59,13 @@ export interface FieldDefinition {
   array_item_type?: FieldType
   array_terminology_ref?: string
   array_template_ref?: string
+  /** Pinned version of array_template_ref. Backend (CASE-493) requires this when array_template_ref is set. */
+  array_template_ref_version?: number
   array_file_config?: FileFieldConfig
   validation?: FieldValidation
   semantic_type?: SemanticType
   include_subtypes?: boolean
+  full_text_indexed?: boolean
   inherited?: boolean
   inherited_from?: string
   metadata: Record<string, unknown>
@@ -104,6 +109,22 @@ export interface ValidationRule {
 
 export type SyncStrategy = 'latest_only' | 'all_versions'
 
+/**
+ * How a template's documents are intended to be used.
+ *
+ * - `entity` (default): full document lifecycle, the v1.x behaviour.
+ * - `reference`: lightweight controlled-vocabulary documents (LOV).
+ *   Reserved for a future phase; currently behaves like entity.
+ * - `relationship`: typed, property-carrying edge between two
+ *   documents (a.k.a. "edge type"). Requires source_templates /
+ *   target_templates to be set on the template, plus source_ref /
+ *   target_ref reference fields. Immutable after creation.
+ *
+ * See PoNIF #7 (edge types are stored as templates) and PoNIF #8
+ * (`versioned: false` is an option on relationship templates).
+ */
+export type TemplateUsage = 'entity' | 'reference' | 'relationship'
+
 export interface ReportingConfig {
   sync_enabled: boolean
   sync_strategy: SyncStrategy
@@ -130,6 +151,39 @@ export interface Template {
   extends?: string
   extends_version?: number
   identity_fields: string[]
+  /**
+   * Fields to surface in peer/header projection contexts (CASE-343).
+   * Bare names target `data.<name>`; `metadata.custom.<name>` paths
+   * are allowed for audit fields. Empty → the platform's projection
+   * falls back to `identity_fields`. The relationships endpoint's
+   * `?include=peers` projection reads this; future list / summary
+   * endpoints may consume it too.
+   */
+  header_fields?: string[]
+  /**
+   * Usage class: entity (default), reference, or relationship.
+   * Immutable after creation. Relationship templates ("edge types")
+   * additionally require source_templates + target_templates and
+   * source_ref / target_ref reference fields.
+   */
+  usage?: TemplateUsage
+  /**
+   * Template values allowed as the source endpoint of an edge.
+   * Set only on relationship templates; empty / absent on entity and
+   * reference templates.
+   */
+  source_templates?: string[]
+  /**
+   * Template values allowed as the target endpoint of an edge.
+   * Set only on relationship templates.
+   */
+  target_templates?: string[]
+  /**
+   * True (default) = updates create new versions; false = overwrite
+   * in place. Currently only available on relationship templates.
+   * Immutable after creation. See PoNIF #8.
+   */
+  versioned?: boolean
   fields: FieldDefinition[]
   rules: ValidationRule[]
   metadata: TemplateMetadata
@@ -151,6 +205,20 @@ export interface CreateTemplateRequest {
   extends?: string
   extends_version?: number
   identity_fields?: string[]
+  /**
+   * Peer/header-projection fields (CASE-343). Bare names target data.*,
+   * `metadata.custom.<name>` paths allowed. Empty → projection falls
+   * back to identity_fields.
+   */
+  header_fields?: string[]
+  /** Usage class — defaults to 'entity' on the server when omitted. */
+  usage?: TemplateUsage
+  /** Required when usage='relationship'; ignored otherwise. */
+  source_templates?: string[]
+  /** Required when usage='relationship'; ignored otherwise. */
+  target_templates?: string[]
+  /** Defaults to true. Immutable after creation. See PoNIF #8. */
+  versioned?: boolean
   fields?: FieldDefinition[]
   rules?: ValidationRule[]
   metadata?: Partial<TemplateMetadata>
@@ -167,6 +235,8 @@ export interface UpdateTemplateRequest {
   extends?: string
   extends_version?: number
   identity_fields?: string[]
+  /** Update peer/header-projection fields (CASE-343). */
+  header_fields?: string[]
   fields?: FieldDefinition[]
   rules?: ValidationRule[]
   metadata?: Partial<TemplateMetadata>

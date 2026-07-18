@@ -5,7 +5,7 @@ Handles the bulk response envelope so callers get clean results.
 """
 
 import os
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -21,13 +21,55 @@ class BulkError(Exception):
         super().__init__(msg)
 
 
+def _raise_for_status_with_body(resp: httpx.Response) -> None:
+    """Like httpx.Response.raise_for_status(), but the raised exception's
+    message includes the response body — so consumers see the server's
+    actual validation/error detail instead of just an HTTP code.
+
+    CASE-315: the original `resp.raise_for_status()` produces messages like
+    "Client error '422 Unprocessable Entity' for url '...'" that hide the
+    server's structured `detail` payload (e.g., "Extra inputs are not
+    permitted"). MCP-tool consumers see the opaque code and have to dig
+    through HTTP traces to figure out which field tripped validation.
+    """
+    if resp.is_success:
+        return
+    body = resp.text
+    if len(body) > 1000:
+        body = body[:1000] + "…"
+    raise httpx.HTTPStatusError(
+        f"{resp.status_code} {resp.reason_phrase} from {resp.request.url}: {body}",
+        request=resp.request,
+        response=resp,
+    )
+
+
 def _resolve_api_key() -> str:
     """Resolve the API key from env var or file.
 
-    Priority: WIP_API_KEY env var > WIP_API_KEY_FILE contents > default dev key.
+    Priority: WIP_API_KEY env var > MASTER_API_KEY > API_KEY > WIP_API_KEY_FILE
+    contents > default dev key.
+
+    WIP_API_KEY is the canonical name when wip_mcp is invoked as a host-spawned
+    stdio server (apps/CLI tools set it explicitly). MASTER_API_KEY and API_KEY
+    are the names the deployer sets in the wip-mcp-server container env (per
+    the component manifest's `MASTER_API_KEY: from_secret: api-key`); without
+    them in the priority list, an HTTP-transport invocation through the
+    deployed cluster falls through to the dev default and every upstream call
+    silently 401s — CASE-312 reopen.
+
     WIP_API_KEY_FILE allows key rotation without updating each app's .mcp.json.
     """
+    # Each os.getenv read is unrolled (rather than looped) so the
+    # docstring-env-var-drift static check finds every name as a string
+    # literal — see test_docstring_env_var_drift.
     key = os.getenv("WIP_API_KEY")
+    if key:
+        return key
+    key = os.getenv("MASTER_API_KEY")
+    if key:
+        return key
+    key = os.getenv("API_KEY")
     if key:
         return key
     key_file = os.getenv("WIP_API_KEY_FILE")
@@ -41,10 +83,40 @@ def _resolve_api_key() -> str:
 
 
 class WipClient:
-    """Client for all WIP service APIs."""
+    """Client for all WIP service APIs.
+
+    All constructor arguments fall back to environment variables when
+    omitted:
+
+      - `api_url` → `WIP_API_URL`. When set, becomes the SERVICE BASE
+        for ALL five services and overrides the per-service `*_URL`
+        vars below. Set this when routing through Caddy (e.g.,
+        `https://localhost:8443`); leave unset to address each
+        service directly. Precedence per service URL is:
+        `api_url` arg > `WIP_API_URL` > per-service arg > per-service
+        env var > built-in localhost:8000X default.
+      - `*_url` args → the corresponding `*_URL` env var. Each URL is a
+        SERVICE BASE (e.g., http://wip-registry:8001 for direct service
+        access). The client owns the `/api/<service>/...` path prefix
+        and appends it at call sites.
+      - `api_key` → `_resolve_api_key()`, which reads WIP_API_KEY, then
+        WIP_API_KEY_FILE (for key rotation without editing .mcp.json),
+        then falls back to the dev default.
+      - `verify_tls` → `WIP_VERIFY_TLS`. `false` / `0` / `no` disables
+        verification — intended for local dev against a self-signed
+        Caddy, never production.
+
+    Additional env var read directly (no constructor arg):
+
+      - `WIP_MCP_DEFAULT_NAMESPACE` → when set, tool calls omitting an
+        explicit `namespace` argument resolve to this value. Lets an
+        app-scoped MCP deployment default to its own namespace without
+        per-call overrides.
+    """
 
     def __init__(
         self,
+        api_url: str | None = None,
         registry_url: str | None = None,
         def_store_url: str | None = None,
         template_store_url: str | None = None,
@@ -52,25 +124,38 @@ class WipClient:
         reporting_sync_url: str | None = None,
         api_key: str | None = None,
         timeout: float = 30.0,
+        verify_tls: bool | None = None,
     ):
-        self.registry_url = registry_url or os.getenv(
-            "REGISTRY_URL", "http://localhost:8001"
+        base = api_url or os.getenv("WIP_API_URL")
+
+        # Each chain ends in a non-optional str literal, so the result is
+        # always `str` (mypy can't prove that when the fallback is
+        # os.getenv(key, default), since the env value could be ""). Semantics
+        # are unchanged for any real URL — only an explicitly-empty env var now
+        # falls through to the default, which is the desired behaviour anyway.
+        self.registry_url: str = (
+            base or registry_url or os.getenv("REGISTRY_URL") or "http://localhost:8001"
         )
-        self.def_store_url = def_store_url or os.getenv(
-            "DEF_STORE_URL", "http://localhost:8002"
+        self.def_store_url: str = (
+            base or def_store_url or os.getenv("DEF_STORE_URL") or "http://localhost:8002"
         )
-        self.template_store_url = template_store_url or os.getenv(
-            "TEMPLATE_STORE_URL", "http://localhost:8003"
+        self.template_store_url: str = (
+            base or template_store_url or os.getenv("TEMPLATE_STORE_URL") or "http://localhost:8003"
         )
-        self.document_store_url = document_store_url or os.getenv(
-            "DOCUMENT_STORE_URL", "http://localhost:8004"
+        self.document_store_url: str = (
+            base or document_store_url or os.getenv("DOCUMENT_STORE_URL") or "http://localhost:8004"
         )
-        self.reporting_sync_url = reporting_sync_url or os.getenv(
-            "REPORTING_SYNC_URL", "http://localhost:8005"
+        self.reporting_sync_url: str = (
+            base or reporting_sync_url or os.getenv("REPORTING_SYNC_URL") or "http://localhost:8005"
         )
         self.api_key = api_key or _resolve_api_key()
         self.default_namespace = os.getenv("WIP_MCP_DEFAULT_NAMESPACE")
         self.timeout = timeout
+        self._verify_tls = (
+            verify_tls if verify_tls is not None
+            else os.getenv("WIP_VERIFY_TLS", "true").strip().lower()
+                 not in ("false", "0", "no")
+        )
         self._client: httpx.AsyncClient | None = None
 
     def _ns(self, namespace: str | None) -> str:
@@ -84,21 +169,30 @@ class WipClient:
 
     @property
     def _headers(self) -> dict[str, str]:
+        # No Content-Type here: a client-level default would override the
+        # per-request value httpx derives from the body (json= → JSON,
+        # files= → multipart with boundary). A JSON default silently broke
+        # every multipart upload (CASE-449).
         return {
             "X-API-Key": self.api_key,
-            "Content-Type": "application/json",
         }
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
-                headers=self._headers, timeout=self.timeout
+                headers=self._headers,
+                timeout=self.timeout,
+                verify=self._verify_tls,
             )
         return self._client
 
     async def close(self):
+        # httpx 0.27+ renamed AsyncClient.close() → aclose(). Earlier
+        # releases of this file called .close() and silently AttributeErrored
+        # on any caller that ran cleanup — it just didn't get exercised
+        # because most stdio/http invocations let the process exit instead.
         if self._client and not self._client.is_closed:
-            await self._client.close()
+            await self._client.aclose()
 
     # -- Low-level helpers --
 
@@ -108,8 +202,9 @@ class WipClient:
         # Strip None params
         params = {k: v for k, v in params.items() if v is not None}
         resp = await client.get(f"{base_url}{path}", params=params)
-        resp.raise_for_status()
-        return resp.json()
+        _raise_for_status_with_body(resp)
+        data: dict[str, Any] = resp.json()
+        return data
 
     async def _post(
         self, base_url: str, path: str, json: Any = None, **params
@@ -118,8 +213,9 @@ class WipClient:
         client = await self._get_client()
         params = {k: v for k, v in params.items() if v is not None}
         resp = await client.post(f"{base_url}{path}", json=json, params=params)
-        resp.raise_for_status()
-        return resp.json()
+        _raise_for_status_with_body(resp)
+        data: dict[str, Any] = resp.json()
+        return data
 
     async def _put(
         self, base_url: str, path: str, json: Any = None, **params
@@ -128,8 +224,9 @@ class WipClient:
         client = await self._get_client()
         params = {k: v for k, v in params.items() if v is not None}
         resp = await client.put(f"{base_url}{path}", json=json, params=params)
-        resp.raise_for_status()
-        return resp.json()
+        _raise_for_status_with_body(resp)
+        data: dict[str, Any] = resp.json()
+        return data
 
     async def _patch(
         self, base_url: str, path: str, json: Any = None, **params
@@ -138,8 +235,9 @@ class WipClient:
         client = await self._get_client()
         params = {k: v for k, v in params.items() if v is not None}
         resp = await client.patch(f"{base_url}{path}", json=json, params=params)
-        resp.raise_for_status()
-        return resp.json()
+        _raise_for_status_with_body(resp)
+        data: dict[str, Any] = resp.json()
+        return data
 
     async def _delete(
         self, base_url: str, path: str, json: Any = None, **params
@@ -150,16 +248,21 @@ class WipClient:
         resp = await client.request(
             "DELETE", f"{base_url}{path}", json=json, params=params,
         )
-        resp.raise_for_status()
-        return resp.json()
+        _raise_for_status_with_body(resp)
+        data: dict[str, Any] = resp.json()
+        return data
 
     def _unwrap_single(self, bulk_response: dict[str, Any]) -> dict[str, Any]:
         """Unwrap a single-item BulkResponse. Raise on error."""
-        result = bulk_response["results"][0]
+        result: dict[str, Any] = bulk_response["results"][0]
         if result.get("status") == "error":
             raise BulkError(
                 result.get("error", "Unknown error"),
-                index=result.get("index", 0),
+                # "index" is the platform-canonical per-item key (wip_auth
+                # bulk_models). "input_index" was the registry family's
+                # spelling before the platform-wide rename; kept as fallback
+                # for unwrapping against a pre-rename registry.
+                index=result.get("index", result.get("input_index", 0)),
                 error_code=result.get("error_code"),
             )
         return result
@@ -184,7 +287,10 @@ class WipClient:
             include_archived=include_archived,
         )
         # Registry returns a list directly
-        return data if isinstance(data, list) else data.get("items", data)
+        return cast(
+            "list[dict[str, Any]]",
+            data if isinstance(data, list) else data.get("items", data),
+        )
 
     async def create_namespace(
         self, prefix: str, description: str = "", **kwargs
@@ -192,6 +298,48 @@ class WipClient:
         payload = {"prefix": prefix, "description": description, **kwargs}
         return await self._post(
             self.registry_url, "/api/registry/namespaces", json=payload
+        )
+
+    async def upsert_namespace(
+        self,
+        prefix: str,
+        description: str | None = None,
+        isolation_mode: str | None = None,
+        deletion_mode: str | None = None,
+        allowed_external_refs: list[str] | None = None,
+        confirm_enable_deletion: bool | None = None,
+        updated_by: str | None = None,
+    ) -> dict:
+        """PUT /api/registry/namespaces/{prefix} — idempotent upsert.
+
+        Forwards only non-None fields so partial updates don't reset
+        other fields. The registry uses `exclude_unset=True` semantics
+        on its end; matching that here keeps the contract honest from
+        the caller's perspective.
+
+        `confirm_enable_deletion` is the safety toggle for retain→full
+        flips on existing namespaces (mirrors the guard on the narrow
+        PATCH route — see CASE-291). Pass True to opt in.
+
+        See wip://conventions and CASE-290 / CASE-291.
+        """
+        payload: dict[str, Any] = {}
+        if description is not None:
+            payload["description"] = description
+        if isolation_mode is not None:
+            payload["isolation_mode"] = isolation_mode
+        if deletion_mode is not None:
+            payload["deletion_mode"] = deletion_mode
+        if allowed_external_refs is not None:
+            payload["allowed_external_refs"] = allowed_external_refs
+        if confirm_enable_deletion is not None:
+            payload["confirm_enable_deletion"] = confirm_enable_deletion
+        if updated_by is not None:
+            payload["updated_by"] = updated_by
+        return await self._put(
+            self.registry_url,
+            f"/api/registry/namespaces/{prefix}",
+            json=payload,
         )
 
     async def get_namespace(self, prefix: str) -> dict:
@@ -221,7 +369,7 @@ class WipClient:
         confirm_enable_deletion: bool = False,
     ) -> dict:
         client = await self._get_client()
-        params = {
+        params: dict[str, Any] = {
             "deletion_mode": deletion_mode,
             "confirm_enable_deletion": confirm_enable_deletion,
         }
@@ -229,8 +377,9 @@ class WipClient:
             f"{self.registry_url}/api/registry/namespaces/{prefix}",
             params=params,
         )
-        resp.raise_for_status()
-        return resp.json()
+        _raise_for_status_with_body(resp)
+        parsed: dict[str, Any] = resp.json()
+        return parsed
 
     async def search_registry(
         self,
@@ -240,9 +389,12 @@ class WipClient:
         page: int = 1,
         page_size: int = 20,
     ) -> dict:
+        # CASE-568 follow-on: unified search lives under the entries router —
+        # /api/registry/entries/search. The old "/api/registry/search" path
+        # has no GET route and 404'd on every call.
         return await self._get(
             self.registry_url,
-            "/api/registry/search",
+            "/api/registry/entries/search",
             q=query,
             namespace=namespace,
             entity_type=entity_type,
@@ -391,18 +543,23 @@ class WipClient:
         )
 
     async def create_terminology(
-        self, value: str, label: str, namespace: str | None = None, **kwargs
+        self, value: str, label: str, namespace: str | None = None,
+        on_conflict: str | None = None, **kwargs
     ) -> dict:
         namespace = self._ns(namespace)
         payload = {"value": value, "label": label, "namespace": namespace, **kwargs}
         resp = await self._post(
-            self.def_store_url, "/api/def-store/terminologies", json=[payload]
+            self.def_store_url, "/api/def-store/terminologies", json=[payload],
+            on_conflict=on_conflict,
         )
         return self._unwrap_single(resp)
 
-    async def create_terminologies(self, items: list[dict]) -> dict:
+    async def create_terminologies(
+        self, items: list[dict], on_conflict: str | None = None
+    ) -> dict:
         resp = await self._post(
-            self.def_store_url, "/api/def-store/terminologies", json=items
+            self.def_store_url, "/api/def-store/terminologies", json=items,
+            on_conflict=on_conflict,
         )
         return self._unwrap_bulk(resp)
 
@@ -430,12 +587,14 @@ class WipClient:
         return self._unwrap_single(resp)
 
     async def restore_terminology(
-        self, terminology_id: str, restore_terms: bool = True
+        self, terminology_id: str, restore_terms: bool = True,
+        namespace: str | None = None,
     ) -> dict:
         return await self._post(
             self.def_store_url,
             f"/api/def-store/terminologies/{terminology_id}/restore",
             restore_terms=restore_terms,
+            namespace=namespace,
         )
 
     # ========================================================
@@ -457,19 +616,35 @@ class WipClient:
             page_size=page_size,
         )
 
-    async def get_term(self, term_id: str) -> dict:
+    async def get_term(self, term_id: str, namespace: str | None = None) -> dict:
         return await self._get(
-            self.def_store_url, f"/api/def-store/terms/{term_id}"
+            self.def_store_url, f"/api/def-store/terms/{term_id}",
+            namespace=namespace,
         )
 
     async def create_terms(
-        self, terminology_id: str, terms: list[dict], batch_size: int | None = None
+        self, terminology_id: str, terms: list[dict], batch_size: int | None = None,
+        on_conflict: str | None = None,
     ) -> dict:
+        # Accept UUID or value/synonym — the docstring promises both.
+        # The path-segment endpoint at the def-store side only matches
+        # UUIDs, so resolve a non-UUID input via lookup-by-value first.
+        # Aligns this tool with the universal synonym resolution
+        # principle (Vision.md "References Must Resolve").
+        import re
+        is_uuid = bool(re.match(
+            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+            terminology_id, re.IGNORECASE
+        ))
+        if not is_uuid:
+            term = await self.get_terminology_by_value(terminology_id)
+            terminology_id = term["terminology_id"]
         resp = await self._post(
             self.def_store_url,
             f"/api/def-store/terminologies/{terminology_id}/terms",
             json=terms,
             batch_size=batch_size,
+            on_conflict=on_conflict,
         )
         return self._unwrap_bulk(resp)
 
@@ -522,85 +697,95 @@ class WipClient:
     # Def-Store: Ontology
     # ========================================================
 
-    async def get_term_children(self, term_id: str, namespace: str | None = None) -> list[dict]:
-        return await self._get(
+    async def get_term_children(
+        self, term_id: str, relation_type: str | None = None,
+        namespace: str | None = None,
+    ) -> list[dict]:
+        # Ontology endpoints return a bare JSON array; _get is typed dict, so
+        # cast to the real shape.
+        return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/children",
+            relation_type=relation_type,
             namespace=namespace,
-        )
+        ))
 
-    async def get_term_parents(self, term_id: str, namespace: str | None = None) -> list[dict]:
-        return await self._get(
+    async def get_term_parents(
+        self, term_id: str, relation_type: str | None = None,
+        namespace: str | None = None,
+    ) -> list[dict]:
+        return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/parents",
+            relation_type=relation_type,
             namespace=namespace,
-        )
+        ))
 
     async def get_term_ancestors(
-        self, term_id: str, relationship_type: str | None = None,
+        self, term_id: str, relation_type: str | None = None,
         max_depth: int = 10, namespace: str | None = None,
     ) -> list[dict]:
-        return await self._get(
+        return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/ancestors",
-            relationship_type=relationship_type,
+            relation_type=relation_type,
             max_depth=max_depth,
             namespace=namespace,
-        )
+        ))
 
     async def get_term_descendants(
-        self, term_id: str, relationship_type: str | None = None,
+        self, term_id: str, relation_type: str | None = None,
         max_depth: int = 10, namespace: str | None = None,
     ) -> list[dict]:
-        return await self._get(
+        return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/descendants",
-            relationship_type=relationship_type,
+            relation_type=relation_type,
             max_depth=max_depth,
             namespace=namespace,
-        )
+        ))
 
-    async def create_relationships(
-        self, relationships: list[dict], namespace: str | None = None,
+    async def create_term_relations(
+        self, term_relations: list[dict], namespace: str | None = None,
     ) -> dict:
         resp = await self._post(
             self.def_store_url,
-            "/api/def-store/ontology/relationships",
-            json=relationships,
+            "/api/def-store/ontology/term-relations",
+            json=term_relations,
             namespace=namespace,
         )
         return self._unwrap_bulk(resp)
 
-    async def delete_relationships(
-        self, relationships: list[dict], namespace: str | None = None,
+    async def delete_term_relations(
+        self, term_relations: list[dict], namespace: str | None = None,
         hard_delete: bool = False,
     ) -> dict:
-        items = relationships
+        items = term_relations
         if hard_delete:
-            items = [{**r, "hard_delete": True} for r in relationships]
+            items = [{**r, "hard_delete": True} for r in term_relations]
         resp = await self._delete(
             self.def_store_url,
-            "/api/def-store/ontology/relationships",
+            "/api/def-store/ontology/term-relations",
             json=items,
             namespace=namespace,
         )
         return self._unwrap_bulk(resp)
 
-    async def list_relationships(
+    async def list_term_relations(
         self,
         term_id: str,
         direction: str = "outgoing",
-        relationship_type: str | None = None,
+        relation_type: str | None = None,
         namespace: str | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> dict:
         return await self._get(
             self.def_store_url,
-            "/api/def-store/ontology/relationships",
+            "/api/def-store/ontology/term-relations",
             term_id=term_id,
             direction=direction,
-            relationship_type=relationship_type,
+            relation_type=relation_type,
             namespace=namespace,
             page=page,
             page_size=page_size,
@@ -614,13 +799,15 @@ class WipClient:
         self,
         terminology_id: str,
         format: str = "json",
-        include_relationships: bool = True,
+        include_relations: bool = True,
+        namespace: str | None = None,
     ) -> dict:
         return await self._get(
             self.def_store_url,
             f"/api/def-store/import-export/export/{terminology_id}",
             format=format,
-            include_relationships=include_relationships,
+            include_relations=include_relations,
+            namespace=namespace,
         )
 
     async def import_terminology(
@@ -664,12 +851,14 @@ class WipClient:
         )
 
     async def get_template(
-        self, template_id: str, version: int | None = None
+        self, template_id: str, version: int | None = None,
+        namespace: str | None = None,
     ) -> dict:
         return await self._get(
             self.template_store_url,
             f"/api/template-store/templates/{template_id}",
             version=version,
+            namespace=namespace,
         )
 
     async def get_template_by_value(self, value: str, namespace: str | None = None) -> dict:
@@ -679,10 +868,11 @@ class WipClient:
             namespace=namespace,
         )
 
-    async def get_template_raw(self, template_id: str) -> dict:
+    async def get_template_raw(self, template_id: str, namespace: str | None = None) -> dict:
         return await self._get(
             self.template_store_url,
             f"/api/template-store/templates/{template_id}/raw",
+            namespace=namespace,
         )
 
     async def create_template(self, template: dict) -> dict:
@@ -723,7 +913,7 @@ class WipClient:
 
     async def deactivate_template(
         self, template_id: str, version: int | None = None, force: bool = False,
-        hard_delete: bool = False,
+        hard_delete: bool = False, namespace: str | None = None,
     ) -> dict:
         item: dict[str, Any] = {"id": template_id}
         if version is not None:
@@ -736,8 +926,36 @@ class WipClient:
             self.template_store_url,
             "/api/template-store/templates",
             json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
+
+    async def reactivate_template(
+        self, template_id: str, version: int, namespace: str | None = None
+    ) -> dict:
+        return await self._post(
+            self.template_store_url,
+            f"/api/template-store/templates/{template_id}/reactivate",
+            namespace=namespace or self.default_namespace,
+            version=version,
+        )
+
+    async def add_edge_type_endpoints(
+        self,
+        template_id: str,
+        add_source_templates: list[str] | None = None,
+        add_target_templates: list[str] | None = None,
+        namespace: str | None = None,
+    ) -> dict:
+        return await self._post(
+            self.template_store_url,
+            f"/api/template-store/templates/{template_id}/endpoints",
+            json={
+                "add_source_templates": add_source_templates or [],
+                "add_target_templates": add_target_templates or [],
+            },
+            namespace=namespace or self.default_namespace,
+        )
 
     async def get_template_versions(self, template_id: str) -> dict:
         return await self._get(
@@ -752,17 +970,19 @@ class WipClient:
             namespace=namespace,
         )
 
-    async def validate_template(self, template_id: str) -> dict:
+    async def validate_template(self, template_id: str, namespace: str | None = None) -> dict:
         return await self._post(
             self.template_store_url,
             f"/api/template-store/templates/{template_id}/validate",
             json={},
+            namespace=namespace,
         )
 
-    async def get_template_dependencies(self, template_id: str) -> dict:
+    async def get_template_dependencies(self, template_id: str, namespace: str | None = None) -> dict:
         return await self._get(
             self.template_store_url,
             f"/api/template-store/templates/{template_id}/dependencies",
+            namespace=namespace,
         )
 
     # ========================================================
@@ -800,6 +1020,44 @@ class WipClient:
             version=version,
         )
 
+    async def get_document_relationships(
+        self,
+        document_id: str,
+        direction: str = "both",
+        template: str | None = None,
+        namespace: str | None = None,
+        active_only: bool = True,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict:
+        return await self._get(
+            self.document_store_url,
+            f"/api/document-store/documents/{document_id}/relationships",
+            direction=direction,
+            template=template,
+            namespace=namespace,
+            active_only=active_only,
+            page=page,
+            page_size=page_size,
+        )
+
+    async def traverse_documents(
+        self,
+        document_id: str,
+        depth: int = 1,
+        types: str | None = None,
+        direction: str = "outgoing",
+        namespace: str | None = None,
+    ) -> dict:
+        return await self._get(
+            self.document_store_url,
+            f"/api/document-store/documents/{document_id}/traverse",
+            depth=depth,
+            types=types,
+            direction=direction,
+            namespace=namespace,
+        )
+
     async def create_document(self, document: dict) -> dict:
         resp = await self._post(
             self.document_store_url,
@@ -822,17 +1080,21 @@ class WipClient:
         patch: dict,
         if_match: int | None = None,
         namespace: str | None = None,
+        metadata_patch: dict | None = None,
     ) -> dict:
         """Apply an RFC 7396 JSON Merge Patch to a document.
 
-        Wraps the bulk PATCH endpoint with a single item and unwraps the
-        result. Raises BulkError (with `error_code` populated) on per-item
-        failure (e.g. not_found, identity_field_change, validation_failed,
-        concurrency_conflict).
+        `patch` targets the document's `data`; `metadata_patch` (optional)
+        targets `metadata.custom`. Wraps the bulk PATCH endpoint with a
+        single item and unwraps the result. Raises BulkError (with
+        `error_code` populated) on per-item failure (e.g. not_found,
+        identity_field_change, validation_failed, concurrency_conflict).
         """
         item: dict[str, Any] = {"document_id": document_id, "patch": patch}
         if if_match is not None:
             item["if_match"] = if_match
+        if metadata_patch is not None:
+            item["metadata_patch"] = metadata_patch
         resp = await self._patch(
             self.document_store_url,
             "/api/document-store/documents",
@@ -840,6 +1102,44 @@ class WipClient:
             namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
+
+    async def migrate_documents(
+        self,
+        template_id: str,
+        from_version: int,
+        to_version: int,
+        dry_run: bool = True,
+        namespace: str | None = None,
+    ) -> dict:
+        """Migrate documents pinned to ``from_version`` onto ``to_version``.
+
+        Returns the full migrate envelope (``dry_run``, ``from_version``,
+        ``to_version``, ``total``, ``succeeded``, ``failed``, ``results``).
+        Per-document outcomes are in ``results`` (bulk-first 200). Operation
+        -level problems (bad versions, identity mismatch, inactive target)
+        raise via the 4xx body.
+        """
+        resp = await self._post(
+            self.document_store_url,
+            "/api/document-store/documents/migrate",
+            json={
+                "template_id": template_id,
+                "from_version": from_version,
+                "to_version": to_version,
+                "dry_run": dry_run,
+            },
+            namespace=namespace or self.default_namespace,
+        )
+        return {
+            "dry_run": resp.get("dry_run"),
+            "template_id": resp.get("template_id"),
+            "from_version": resp.get("from_version"),
+            "to_version": resp.get("to_version"),
+            "total": resp.get("total", 0),
+            "succeeded": resp.get("succeeded", 0),
+            "failed": resp.get("failed", 0),
+            "results": resp.get("results", []),
+        }
 
     async def get_document_versions(self, document_id: str) -> dict:
         return await self._get(
@@ -876,11 +1176,34 @@ class WipClient:
         )
         return self._unwrap_single(resp)
 
+    async def delete_documents(
+        self, items: list[dict], namespace: str | None = None,
+    ) -> dict:
+        """Delete multiple documents via the bulk DELETE endpoint.
+
+        Returns the full BulkResponse (per-item results). IDs may be synonyms;
+        `namespace` scopes their resolution (falls back to the client default).
+        """
+        resp = await self._delete(
+            self.document_store_url,
+            "/api/document-store/documents",
+            json=items,
+            namespace=namespace or self.default_namespace,
+        )
+        return self._unwrap_bulk(resp)
+
     async def query_documents(self, filters: dict) -> dict:
+        # CASE-315: the doc-store endpoint accepts `namespace` as a QUERY PARAM,
+        # not a body field. The body is a StrictModel with extra='forbid', so
+        # passing namespace inside `filters` produces a 422 ("Extra inputs are
+        # not permitted"). Pop it out and route via _post's params kwarg.
+        body = dict(filters)  # shallow-copy: don't mutate caller's dict
+        namespace = body.pop("namespace", None)
         return await self._post(
             self.document_store_url,
             "/api/document-store/documents/query",
-            json=filters,
+            json=body,
+            namespace=namespace,
         )
 
     async def get_table_view(
@@ -906,7 +1229,7 @@ class WipClient:
     ) -> str:
         """Returns raw CSV content as a string."""
         client = await self._get_client()
-        params = {"include_metadata": include_metadata}
+        params: dict[str, Any] = {"include_metadata": include_metadata}
         if status:
             params["status"] = status
         resp = await client.get(
@@ -968,10 +1291,10 @@ class WipClient:
             f"{self.document_store_url}/api/document-store/files",
             files=files,
             data=data,
-            headers={"X-API-Key": self.api_key},  # Override default JSON headers
         )
-        resp.raise_for_status()
-        return resp.json()
+        _raise_for_status_with_body(resp)
+        parsed: dict[str, Any] = resp.json()
+        return parsed
 
     async def delete_file(self, file_id: str, force: bool = False, namespace: str | None = None) -> dict:
         item: dict[str, Any] = {"id": file_id}
@@ -1015,6 +1338,28 @@ class WipClient:
             json={"template_id": template_id, "namespace": namespace, "data": data},
         )
 
+    async def validate_documents(
+        self,
+        template_id: str,
+        items: list[dict],
+        namespace: str | None = None,
+        template_version: int | None = None,
+    ) -> dict:
+        """Validate multiple documents against one template without saving (CASE-419)."""
+        namespace = self._ns(namespace)
+        body: dict[str, Any] = {
+            "template_id": template_id,
+            "namespace": namespace,
+            "items": items,
+        }
+        if template_version is not None:
+            body["template_version"] = template_version
+        return await self._post(
+            self.document_store_url,
+            "/api/document-store/validation/validate-bulk",
+            json=body,
+        )
+
     # ========================================================
     # Document-Store: Import
     # ========================================================
@@ -1032,8 +1377,9 @@ class WipClient:
             files=files,
             headers={"X-API-Key": self.api_key},
         )
-        resp.raise_for_status()
-        return resp.json()
+        _raise_for_status_with_body(resp)
+        parsed: dict[str, Any] = resp.json()
+        return parsed
 
     async def import_documents(
         self,
@@ -1061,8 +1407,9 @@ class WipClient:
             data=data,
             headers={"X-API-Key": self.api_key},
         )
-        resp.raise_for_status()
-        return resp.json()
+        _raise_for_status_with_body(resp)
+        parsed: dict[str, Any] = resp.json()
+        return parsed
 
     # ========================================================
     # Document-Store: Replay
@@ -1158,6 +1505,7 @@ class WipClient:
         batch_size: int = 50,
         continue_on_error: bool = False,
         dry_run: bool = False,
+        drop_stale_reporting: bool = False,
     ) -> dict:
         """Upload a local archive file and start a restore job. Streams from disk."""
         from pathlib import Path as _Path
@@ -1174,6 +1522,7 @@ class WipClient:
             "batch_size": str(batch_size),
             "continue_on_error": str(continue_on_error).lower(),
             "dry_run": str(dry_run).lower(),
+            "drop_stale_reporting": str(drop_stale_reporting).lower(),
         }
         if target_namespace is not None:
             data["target_namespace"] = target_namespace
@@ -1186,8 +1535,9 @@ class WipClient:
                 data=data,
                 headers={"X-API-Key": self.api_key},
             )
-        resp.raise_for_status()
-        return resp.json()
+        _raise_for_status_with_body(resp)
+        parsed: dict[str, Any] = resp.json()
+        return parsed
 
     async def get_backup_job(self, job_id: str) -> dict:
         return await self._get(
@@ -1208,7 +1558,10 @@ class WipClient:
             status=status,
             limit=limit,
         )
-        return data if isinstance(data, list) else data.get("items", data)
+        return cast(
+            "list[dict[str, Any]]",
+            data if isinstance(data, list) else data.get("items", data),
+        )
 
     async def download_backup_archive(
         self, job_id: str, dest_path: str
@@ -1246,6 +1599,17 @@ class WipClient:
             self.reporting_sync_url, "/api/reporting-sync/status"
         )
 
+    async def check_reporting_parity(
+        self, namespace: str, include_counts: bool = True
+    ) -> dict:
+        """Namespace parity: does postgres reflect what sync should have built?"""
+        return await self._get(
+            self.reporting_sync_url,
+            "/api/reporting-sync/parity",
+            namespace=namespace,
+            include_counts=str(include_counts).lower(),
+        )
+
     async def list_report_tables(self, table_name: str | None = None) -> dict:
         """List available reporting tables (doc_* + terminologies/terms).
 
@@ -1263,14 +1627,17 @@ class WipClient:
         params: list | None = None,
         timeout_seconds: int = 30,
         max_rows: int = 1000,
+        namespace: str | None = None,
     ) -> dict:
         """Execute a read-only SQL query against the reporting database."""
-        body = {
+        body: dict = {
             "sql": sql,
             "params": params or [],
             "timeout_seconds": timeout_seconds,
             "max_rows": max_rows,
         }
+        if namespace is not None:
+            body["namespace"] = namespace
         return await self._post(
             self.reporting_sync_url, "/api/reporting-sync/query", json=body
         )
@@ -1308,13 +1675,28 @@ class WipClient:
         query: str,
         types: list[str] | None = None,
         namespace: str | None = None,
-        limit: int = 20,
+        page: int = 1,
+        page_size: int = 20,
+        template: str | None = None,
+        mode: str | None = None,
+        include_inactive: bool | None = None,
+        snippet_format: str | None = None,
     ) -> dict:
-        body: dict[str, Any] = {"query": query, "limit": limit}
+        body: dict[str, Any] = {
+            "query": query, "page": page, "page_size": page_size,
+        }
         if types:
             body["types"] = types
         if namespace:
             body["namespace"] = namespace
+        if template:
+            body["template"] = template
+        if mode is not None:
+            body["mode"] = mode
+        if include_inactive is not None:
+            body["include_inactive"] = include_inactive
+        if snippet_format is not None:
+            body["snippet_format"] = snippet_format
         return await self._post(
             self.reporting_sync_url, "/api/reporting-sync/search", json=body
         )
@@ -1331,6 +1713,7 @@ class WipClient:
         namespaces: list[str] | None = None,
         description: str | None = None,
         expires_at: str | None = None,
+        grant_permission: str | None = None,
     ) -> dict:
         payload: dict[str, Any] = {"name": name, "owner": owner}
         if groups is not None:
@@ -1339,6 +1722,8 @@ class WipClient:
             payload["namespaces"] = namespaces
         if description is not None:
             payload["description"] = description
+        if grant_permission is not None:
+            payload["grant_permission"] = grant_permission
         if expires_at is not None:
             payload["expires_at"] = expires_at
         return await self._post(
@@ -1347,7 +1732,10 @@ class WipClient:
 
     async def list_api_keys(self) -> list[dict]:
         data = await self._get(self.registry_url, "/api/registry/api-keys")
-        return data if isinstance(data, list) else data.get("items", data)
+        return cast(
+            "list[dict[str, Any]]",
+            data if isinstance(data, list) else data.get("items", data),
+        )
 
     async def get_api_key(self, name: str) -> dict:
         return await self._get(
@@ -1365,23 +1753,57 @@ class WipClient:
         )
 
     # ========================================================
+    # Registry: Namespace grants (CASE-450)
+    # ========================================================
+
+    async def list_grants(self, namespace: str) -> list[dict]:
+        data = await self._get(
+            self.registry_url, f"/api/registry/namespaces/{namespace}/grants"
+        )
+        return cast("list[dict[str, Any]]", data)
+
+    async def create_grants(self, namespace: str, items: list[dict]) -> dict:
+        return await self._post(
+            self.registry_url,
+            f"/api/registry/namespaces/{namespace}/grants",
+            json=items,
+        )
+
+    async def revoke_grants(self, namespace: str, items: list[dict]) -> dict:
+        return await self._delete(
+            self.registry_url,
+            f"/api/registry/namespaces/{namespace}/grants",
+            json=items,
+        )
+
+    # ========================================================
     # Health (all services)
     # ========================================================
 
     async def check_health(self) -> dict[str, Any]:
-        """Check health of all WIP services."""
-        services = {
-            "registry": self.registry_url,
-            "def_store": self.def_store_url,
-            "template_store": self.template_store_url,
-            "document_store": self.document_store_url,
-            "reporting_sync": self.reporting_sync_url,
-        }
+        """Check health of all WIP services.
+
+        Uses each services api-prefixed health endpoint
+        (`/api/<service>/health`), not the service-local root `/health`.
+        The api-prefixed route is reachable both through Caddy
+        (external callers using root URLs like https://host:8443) and
+        directly to the service container (internal URLs like
+        http://wip-registry:8001 — the service mounts /health at both
+        paths). The root /health is reserved for container-lifecycle
+        probes (podman/k8s healthcheck) that connect by port.
+        """
+        services = [
+            ("registry", self.registry_url, "/api/registry/health"),
+            ("def_store", self.def_store_url, "/api/def-store/health"),
+            ("template_store", self.template_store_url, "/api/template-store/health"),
+            ("document_store", self.document_store_url, "/api/document-store/health"),
+            ("reporting_sync", self.reporting_sync_url, "/api/reporting-sync/health"),
+        ]
         results = {}
         client = await self._get_client()
-        for name, url in services.items():
+        for name, base, path in services:
             try:
-                resp = await client.get(f"{url}/health", timeout=5.0)
+                resp = await client.get(f"{base}{path}", timeout=5.0)
                 results[name] = {
                     "healthy": resp.status_code == 200,
                     "details": resp.json() if resp.status_code == 200 else None,

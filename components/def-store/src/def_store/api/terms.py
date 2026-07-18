@@ -5,8 +5,8 @@ import math
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
+    UserIdentity,
     check_namespace_permission,
-    get_current_identity,
     resolve_namespace_filter,
     resolve_or_404,
 )
@@ -27,7 +27,11 @@ from ..models.api_models import (
 )
 from ..models.terminology import Terminology
 from ..services.registry_client import RegistryError
-from ..services.terminology_service import TerminologyService
+from ..services.terminology_service import (
+    EntityExistsError,
+    TerminologyService,
+    conflict_result,
+)
 from .auth import require_api_key
 
 router = APIRouter(tags=["Terms"])
@@ -58,7 +62,19 @@ async def create_terms(
         description="Number of terms per registry HTTP call (default 100). "
         "Reduce if experiencing timeouts on large imports."
     ),
-    api_key: str = Depends(require_api_key)
+    on_conflict: str = Query(
+        "error",
+        description=(
+            "Duplicate handling on the single-item path (idempotent "
+            "bootstrap): 'error' (default) fails the item with "
+            "error_code='already_exists'; 'validate' returns "
+            "status='unchanged' for an identical re-create and "
+            "error_code='incompatible_config' when the existing term "
+            "differs. The bulk path (2+ items) skips duplicates "
+            "regardless (status='skipped')."
+        ),
+    ),
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """
     Create one or more terms in a terminology.
@@ -71,6 +87,12 @@ async def create_terms(
     - `batch_size`: Controls MongoDB batch size (default 1000)
     - `registry_batch_size`: Controls registry HTTP call batch size (default 100)
     """
+    if on_conflict not in ("error", "validate"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid on_conflict value: {on_conflict!r}. Must be 'error' or 'validate'.",
+        )
+
     # Resolve terminology_id synonym (e.g., "STATUS" → UUID)
     terminology_id = await resolve_or_404(
         terminology_id, "terminology", namespace, param_name="terminology_id"
@@ -79,7 +101,6 @@ async def create_terms(
     # Look up terminology to get namespace for permission check
     term_parent = await Terminology.find_one({"terminology_id": terminology_id})
     if term_parent:
-        identity = get_current_identity()
         await check_namespace_permission(identity, term_parent.namespace, "write")
 
     if len(items) == 1:
@@ -87,6 +108,8 @@ async def create_terms(
         try:
             result = await TerminologyService.create_term(terminology_id, items[0])
             results = [BulkResultItem(index=0, status="created", id=result.term_id, value=items[0].value)]
+        except EntityExistsError as e:
+            results = [conflict_result(0, e, on_conflict, value=items[0].value)]
         except ValueError as e:
             msg = str(e)
             if "not found" in msg:
@@ -128,10 +151,9 @@ async def list_terms(
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     status: str | None = Query(None, description="Filter by status"),
     search: str | None = Query(None, description="Search in value, aliases"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> TermListResponse:
     """List terms in a terminology with pagination."""
-    identity = get_current_identity()
     ns_filter = await resolve_namespace_filter(identity, namespace)
 
     # Resolve terminology_id synonym (e.g., "STATUS" → UUID)
@@ -178,7 +200,7 @@ async def list_terms(
 async def get_term(
     term_id: str,
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> TermResponse:
     """Get a term by its ID or synonym (e.g., "STATUS:approved")."""
     # Resolve synonym — supports colon notation for terms
@@ -187,6 +209,9 @@ async def get_term(
     result = await TerminologyService.get_term(term_id=term_id)
     if not result:
         raise HTTPException(status_code=404, detail="Term not found")
+
+    # CASE-384 — gate read by the term's namespace.
+    await check_namespace_permission(identity, result.namespace, "read")
     return result
 
 
@@ -198,11 +223,22 @@ async def get_term(
 async def update_terms(
     items: list[UpdateTermItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """Update one or more terms."""
     from wip_auth import resolve_bulk_ids
     await resolve_bulk_ids(items, "term_id", "term", namespace=namespace)
+
+    # CASE-384 — batched namespace lookup + permission check.
+    from ..models.term import Term as _Term
+    ids = [item.term_id for item in items if item.term_id]
+    if ids:
+        existing_docs = await _Term.find({"term_id": {"$in": ids}}).to_list()
+        id_to_namespace = {d.term_id: d.namespace for d in existing_docs}
+        for item in items:
+            ns = id_to_namespace.get(item.term_id)
+            if ns:
+                await check_namespace_permission(identity, ns, "write")
 
     results = []
     for i, item in enumerate(items):
@@ -231,7 +267,7 @@ async def update_terms(
 async def deprecate_terms(
     items: list[DeprecateTermItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """
     Deprecate one or more terms.
@@ -242,6 +278,17 @@ async def deprecate_terms(
     from wip_auth import resolve_bulk_ids
     await resolve_bulk_ids(items, "term_id", "term", namespace=namespace)
     await resolve_bulk_ids(items, "replaced_by_term_id", "term", namespace=namespace)
+
+    # CASE-384 — batched namespace lookup + permission check.
+    from ..models.term import Term as _Term
+    ids = [item.term_id for item in items if item.term_id]
+    if ids:
+        existing_docs = await _Term.find({"term_id": {"$in": ids}}).to_list()
+        id_to_namespace = {d.term_id: d.namespace for d in existing_docs}
+        for item in items:
+            ns = id_to_namespace.get(item.term_id)
+            if ns:
+                await check_namespace_permission(identity, ns, "write")
 
     results = []
     for i, item in enumerate(items):
@@ -268,11 +315,22 @@ async def deprecate_terms(
 async def delete_terms(
     items: list[DeleteItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """Soft-delete one or more terms (set status to inactive)."""
     from wip_auth import resolve_bulk_ids
     await resolve_bulk_ids(items, "id", "term", namespace=namespace)
+
+    # CASE-384 — batched namespace lookup + permission check.
+    from ..models.term import Term as _Term
+    ids = [item.id for item in items if item.id]
+    if ids:
+        existing_docs = await _Term.find({"term_id": {"$in": ids}}).to_list()
+        id_to_namespace = {d.term_id: d.namespace for d in existing_docs}
+        for item in items:
+            ns = id_to_namespace.get(item.id)
+            if ns:
+                await check_namespace_permission(identity, ns, "write")
 
     results = []
     for i, item in enumerate(items):
@@ -305,7 +363,7 @@ async def delete_terms(
 )
 async def validate_value(
     request: ValidateValueRequest,
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> ValidateValueResponse:
     """
     Validate a value against a terminology.
@@ -340,6 +398,11 @@ async def validate_value(
             error="Terminology not found"
         )
 
+    # CASE-384 — validation reads from the terminology (returns matched
+    # terms, suggestions). Gate by read permission on the terminology's
+    # namespace.
+    await check_namespace_permission(identity, terminology.namespace, "read")
+
     is_valid, matched_term, matched_via, suggestion = await TerminologyService.validate_value(
         terminology_id=terminology.terminology_id,
         value=request.value
@@ -363,9 +426,11 @@ async def validate_value(
 )
 async def validate_values_bulk(
     request: BulkValidateRequest,
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> BulkValidateResponse:
     """Validate multiple values at once."""
+    # CASE-384 — read permission is enforced per-item against the
+    # resolved terminology's namespace. See the per-item check below.
     results = []
     valid_count = 0
     invalid_count = 0
@@ -403,6 +468,9 @@ async def validate_values_bulk(
             ))
             invalid_count += 1
             continue
+
+        # CASE-384 — gate per-item by read on the terminology's namespace.
+        await check_namespace_permission(identity, terminology.namespace, "read")
 
         is_valid, matched_term, matched_via, suggestion = await TerminologyService.validate_value(
             terminology_id=terminology.terminology_id,

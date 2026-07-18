@@ -120,10 +120,14 @@ export interface TermListResponse extends PaginatedResponse<Term> {
 export interface ImportTerminologyRequest {
   terminology: CreateTerminologyRequest
   terms: CreateTermRequest[]
-  relationships?: Array<{
+  // The wire key is `relations` (matches def-store import service:
+  // `data.get("relations", [])` in import_export.py). The previous
+  // `relationships?` key was a latent client-side bug — payloads sent
+  // under that key were silently dropped on the backend.
+  relations?: Array<{
     source_term_value: string
     target_term_value: string
-    relationship_type: string
+    relation_type: string
     target_terminology_value?: string
   }>
   options?: {
@@ -136,7 +140,20 @@ export interface ExportTerminologyResponse {
   terminology: Terminology
   terms: Term[]
   export_date: string
-  export_format: string
+  // Wire fields from def-store's _export_json (import_export.py): the format
+  // tag is `format`, not `export_format`; `version` is the export schema
+  // version; `relations` is present only when the export pulled any term
+  // relations (includeRelations).
+  format: string
+  version: string
+  relations?: Array<{
+    source_term_value: string
+    target_term_value: string
+    relation_type: string
+    metadata?: Record<string, unknown>
+    source_terminology_id?: string
+    target_terminology_id?: string
+  }>
 }
 
 export interface ValidateValueRequest {

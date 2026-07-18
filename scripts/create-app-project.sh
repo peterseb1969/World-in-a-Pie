@@ -2,26 +2,37 @@
 #
 # Create a new WIP app project directory with all required files.
 #
-# Usage:
-#   ./scripts/create-app-project.sh /path/to/my-new-app [--name "My App"]
-#   ./scripts/create-app-project.sh /path/to/my-new-app --preset query [--name "My App"]
-#   ./scripts/create-app-project.sh --refresh /path/to/cloned-app
+# Usage (one auto-detecting command — CASE-535):
+#   ./scripts/create-app-project.sh /path/to/dir [--kb <url>] [--name "My App"] [--prefix APP-<X>] [--preset query]
 #
-# This script:
+#   The directory state selects the behavior — you don't pick a mode:
+#     • empty/new dir → CREATE: full scaffold + git init (steps 1-8 below).
+#     • populated dir → SET UP IN PLACE: refresh everything propagatable from the
+#       gene pool without disturbing the app's CLAUDE.md or working tree.
+#     • --kb <url>    → TIER 3: fold KB enablement into the same run (no separate
+#       step); without it the repo stays tier 2. An existing kb.json is preserved.
+#
+# Create does:
 #   1. Creates the directory structure
 #   2. Copies slash commands from docs/slash-commands/app-builder/
-#   3. Copies reference docs (AI-Assisted-Development.md, WIP_PoNIFs.md, WIP_DevGuardrails.md,
-#      ontology-support.md, dev-delete.md)
+#   3. Copies reference docs (Vision.md, AI-Assisted-Development.md, WIP_PoNIFs.md,
+#      WIP_DevGuardrails.md, wip-guide.md, technology-stack.md, ui-guidance.md,
+#      ontology-support.md, wip-deployable-app-contract.md)
 #   4. Generates .mcp.json pointing to this WIP installation
 #   5. Copies and extracts client library tarballs + READMEs
-#   6. Copies wip-toolkit wheel and dev-delete.py
+#   6. Copies wip-toolkit wheel
 #   7. Generates a starter CLAUDE.md
 #   8. Initialises a git repo
 #
-# --refresh mode (for cloned/existing apps):
-#   Only regenerates .mcp.json and refreshes libs/tools. Does NOT touch
-#   CLAUDE.md, slash commands, docs, or git. Use after cloning an app repo
-#   on a new machine where the WIP installation path differs.
+# Set-up-in-place (populated dir) refreshes everything propagatable from the gene
+#   pool: slash commands, slash-command playbooks, reference docs, client
+#   libraries (tarballs + READMEs), wip-toolkit wheel, and regenerates .mcp.json
+#   with the current WIP installation path. It is idempotent.
+#   Does NOT touch: CLAUDE.md (would clobber app-specific customisation — a fresh
+#   render is written to CLAUDE.md.refresh unless --force-claude-md),
+#   .claude/settings.local.json (never touched — the committed
+#   .claude/settings.json baseline is regenerated instead, CASE-446), bootstrap
+#   templates, or git state.
 #
 # The generated .mcp.json uses WIP_API_KEY_FILE instead of a hardcoded key,
 # so API key rotation in WIP automatically applies to all apps.
@@ -30,12 +41,35 @@ set -euo pipefail
 
 WIP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# --- Branch guard (CASE-383) ---
+# The scaffold copies gene-pool content (slash commands, docs, templates)
+# out of this clone. Running from a non-develop branch (typically a fresh
+# clone still on main) seeds the APP-YAC with stale content. Same guard as
+# setup-backend-agent.sh.
+
+CURRENT_BRANCH="$(git -C "$WIP_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+if [[ "$CURRENT_BRANCH" != "develop" && "$CURRENT_BRANCH" != "tutorial" && -z "${ALLOW_NON_DEVELOP:-}" ]]; then
+    echo "Error: WIP clone is on '$CURRENT_BRANCH' branch, not 'develop'." >&2
+    echo "  Canonical gene-pool content lives on develop." >&2
+    echo "  Fix: cd $WIP_ROOT && git checkout develop && git pull" >&2
+    echo "  Override (rare): ALLOW_NON_DEVELOP=1 $0 $*" >&2
+    exit 1
+fi
+
 # --- Parse arguments ---
 
 APP_DIR=""
 APP_NAME=""
+APP_PREFIX=""
 PRESET="standard"
+# REFRESH_MODE is AUTO-DETECTED below from the directory state (CASE-535), not
+# a user flag: populated dir → set up in place (true); empty/new dir → create.
 REFRESH_MODE=false
+FORCE_CLAUDE_MD=false
+WITH_BOOTSTRAP=false
+# Tier-3 (KB) opt-in — CASE-463. Tier 2 (WIP-only) is the default.
+KB_URL=""
+KB_KEY_FILE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -47,22 +81,65 @@ while [[ $# -gt 0 ]]; do
             PRESET="$2"
             shift 2
             ;;
-        --refresh)
-            REFRESH_MODE=true
+        --prefix)
+            APP_PREFIX="$2"
+            shift 2
+            ;;
+        --force-claude-md)
+            FORCE_CLAUDE_MD=true
             shift
             ;;
+        --with-bootstrap)
+            WITH_BOOTSTRAP=true
+            shift
+            ;;
+        --kb)
+            KB_URL="$2"
+            shift 2
+            ;;
+        --kb-key)
+            KB_KEY_FILE="$2"
+            shift 2
+            ;;
         -h|--help)
-            echo "Usage: $0 <app-directory> [--name \"App Name\"] [--preset standard|query]"
-            echo "       $0 --refresh <existing-app-directory>"
+            echo "Usage: $0 <directory> [--kb <url>] [--name \"App Name\"] [--prefix APP-<X>] [--preset standard|query]"
             echo ""
-            echo "Creates a new WIP app project with all required files."
+            echo "Sets up a WIP app project in <directory>. Auto-detects what to do (CASE-535):"
+            echo "  • empty/new directory → create a fresh app (git init + full scaffold)"
+            echo "  • populated directory → set up the existing checkout in place (idempotent;"
+            echo "                          preserves CLAUDE.md and your working tree)"
+            echo ""
+            echo "There are no separate 'create' / 'refresh' / 'enable-kb' modes to choose —"
+            echo "the one intent ('make this checkout a working YAC') is detected from the directory."
             echo ""
             echo "Options:"
+            echo "  --kb <url>  Make the repo tier 3 (KB-backed collaboration, CASE-463) — the"
+            echo "              explicit tier-3 opt-in. Writes .claude/kb.json, installs the served"
+            echo "              KB client, drops the /wip-case stub, registers the role. Scheme is"
+            echo "              optional (https:// assumed). Without --kb (and no existing kb.json)"
+            echo "              the repo stays tier 2 (WIP-only); an existing kb.json is preserved."
+            echo "  --kb-key    Path to the KB API key file (default: ~/.wip-deploy/kb/secrets/api-key)"
             echo "  --name      Display name for the app (default: derived from directory name)"
+            echo "  --prefix    Session-role prefix (APP-KB, APP-RC, ...). Written to .claude/.session-role"
+            echo "              so /wip-setup and /wip-wake mint <PREFIX>-YYYYMMDD-HHMMSS session IDs (CASE-389)."
             echo "  --preset    Project preset: 'standard' (default) or 'query' (NL query app)"
-            echo "  --refresh   Refresh machine-specific files (.mcp.json, libs) in an existing app"
+            echo "  --force-claude-md   Overwrite an existing CLAUDE.md outright instead of writing"
+            echo "              CLAUDE.md.refresh. App-authored content is lost."
+            echo "  --with-bootstrap    Retrofit the genesis bootstrap templates"
+            echo "              (templates/bootstrap/*.template) for an app that predates them."
+            echo "              Seeds only when templates/bootstrap/ is absent — never resurrects"
+            echo "              a dir a built app deleted per the genesis banner. No-op on fresh create"
+            echo "              (create always seeds them)."
             echo "  -h          Show this help"
             exit 0
+            ;;
+        --*)
+            # A mistyped/unknown flag must never silently become the target
+            # dir — an agent once suggested a nonexistent --refresh, which
+            # this branch would have scaffolded into a './--refresh' dir.
+            echo "Unknown option: $1"
+            echo "Run $0 --help for usage."
+            exit 1
             ;;
         *)
             APP_DIR="$1"
@@ -72,8 +149,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$APP_DIR" ]; then
-    echo "Error: App directory path is required."
-    echo "Usage: $0 <app-directory> [--name \"App Name\"] [--preset standard|query]"
+    echo "Error: directory path is required."
+    echo "Usage: $0 <directory> [--kb <url>] [--name \"App Name\"] [--prefix APP-<X>] [--preset standard|query]"
     exit 1
 fi
 
@@ -85,14 +162,229 @@ fi
 # Resolve to absolute path
 APP_DIR="$(cd "$(dirname "$APP_DIR")" 2>/dev/null && pwd)/$(basename "$APP_DIR")" || APP_DIR="$(pwd)/$APP_DIR"
 
-# Derive app name from directory if not provided
+# --- Normalize --kb URL scheme (CASE-531) ---
+# A scheme-less --kb (e.g. `kb.internal`) makes curl default to http, hit a 308
+# redirect, and pipe the redirect HTML into `sh`. Assume https when no scheme.
+if [ -n "$KB_URL" ] && [[ "$KB_URL" != *"://"* ]]; then
+    KB_URL="https://$KB_URL"
+fi
+
+# --- MCP pre-flight: the WIP venv must be able to run wip_mcp (CASE-558) ---
+# The generated .mcp.json runs `$WIP_ROOT/.venv/bin/python -m wip_mcp.server`,
+# but wip_mcp is provisioned into that venv by setup-backend-agent.sh, not by
+# this script. Scaffolding an app against an unprovisioned clone used to emit
+# a config that looks fine and dies at connect time (ModuleNotFoundError →
+# MCP error -32000). Fail loud here, before anything is generated.
+# Deliberately verify-only, no auto-install: the clone's venv belongs to the
+# backend scaffold; this script stays out of it (Peter's call, fail loud).
+MCP_PYTHON="$WIP_ROOT/.venv/bin/python"
+if [ ! -x "$MCP_PYTHON" ]; then
+    echo "Error: $MCP_PYTHON not found — this WIP clone has no venv, so the generated .mcp.json could not start the MCP server (error -32000)." >&2
+    echo "  Fix: run scripts/setup-backend-agent.sh on this clone first (it creates the venv and installs wip_mcp)." >&2
+    exit 1
+fi
+if ! "$MCP_PYTHON" -c "import wip_mcp" 2>/dev/null; then
+    echo "Error: $MCP_PYTHON cannot import wip_mcp — the generated .mcp.json would die at connect time (MCP error -32000)." >&2
+    echo "  The clone's venv is provisioned by the backend scaffold, not this script. Fix (either):" >&2
+    echo "    cd $WIP_ROOT && .venv/bin/pip install -e components/mcp-server/" >&2
+    echo "    or run scripts/setup-backend-agent.sh on this clone" >&2
+    exit 1
+fi
+
+# --- Auto-detect setup-in-place vs create (CASE-535) ---
+# The one user intent ("make this checkout a working YAC") is read from the
+# directory, not chosen via a flag: a populated dir is set up in place
+# (idempotent; preserves CLAUDE.md + working tree); an empty/new dir is created.
+# This is the very check that used to ERROR on a non-empty dir — now it switches.
+if [ -d "$APP_DIR" ] && [ -n "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
+    REFRESH_MODE=true
+fi
+
+# --- Tier resolution (CASE-463) ---
+# Tier 2 (WIP-only) is the default; tier 3 (KB-backed collaboration) is explicit,
+# declared by .claude/kb.json. KB_OPT_IN captures the EXPLICIT tier-3 intent —
+# `--kb` passed on this run — which is what drives provisioning (a tier
+# transition: tier-2→tier-3, or a fresh tier-3 create). TIER3 is the resulting
+# tier STATE (kb.json present OR --kb given) and gates emitted content. The tier
+# is user intent, not generated content; it deliberately does NOT live in
+# settings.json, which is regenerated every run.
+KB_CONFIG="$APP_DIR/.claude/kb.json"
+KB_OPT_IN=false
+[ -n "$KB_URL" ] && KB_OPT_IN=true
+TIER3=false
+[ -f "$KB_CONFIG" ] && TIER3=true
+[ -n "$KB_URL" ] && TIER3=true
+
+enable_kb() {
+    # Idempotent tier-3 enable: config + served client + case stub + staging note.
+    if [ -z "$KB_URL" ] && [ -f "$KB_CONFIG" ]; then
+        KB_URL="$(python3 -c "import json;print(json.load(open('$KB_CONFIG'))['kb_app_url'])")"
+        KB_KEY_FILE="$(python3 -c "import json;print(json.load(open('$KB_CONFIG'))['kb_api_key_file'])")"
+    fi
+    if [ -z "$KB_URL" ]; then
+        echo "Error: tier-3 enable needs --kb <url> (no existing .claude/kb.json to reuse)."
+        exit 1
+    fi
+    KB_KEY_FILE="${KB_KEY_FILE:-$HOME/.wip-deploy/kb/secrets/api-key}"
+    mkdir -p "$APP_DIR/.claude/commands"
+    cat > "$KB_CONFIG" << KBEOF
+{
+  "kb_app_url": "$KB_URL",
+  "kb_api_key_file": "$KB_KEY_FILE"
+}
+KBEOF
+    echo "   Wrote: .claude/kb.json (tier 3 — KB at $KB_URL)"
+    # Served-client install: digest-gated, harmless to re-run. Failure is
+    # non-fatal — the cached runner may already exist; recovery is the same
+    # one-liner by hand (case-workflow playbook, "The served KB client").
+    if [ -f "$KB_KEY_FILE" ]; then
+        # Never pipe an un-inspected HTTP response into sh (CASE-557). Fetch the
+        # install script to a temp file, then execute it ONLY on a 2xx status AND
+        # a non-empty body — a redirect/error/HTML body (or a Caddy empty-200 on an
+        # unmatched path) would otherwise run as shell.
+        _kb_install="$(mktemp)"
+        _kb_code="$(curl -sSk -o "$_kb_install" -w '%{http_code}' \
+            -H "X-API-Key: $(cat "$KB_KEY_FILE")" \
+            "$KB_URL/apps/kb/server-api/kb-client/install" 2>/dev/null || echo 000)"
+        case "$_kb_code" in
+            2??)
+                if [ -s "$_kb_install" ] && sh "$_kb_install"; then
+                    echo "   Served KB client installed/refreshed (~/.cache/wip-kb-client/)"
+                else
+                    echo "   WARNING: served-client install returned HTTP $_kb_code but no runnable"
+                    echo "            body; run the install one-liner from docs/playbooks/case-workflow.md."
+                fi ;;
+            *)
+                echo "   WARNING: served-client install skipped (HTTP $_kb_code); run the install"
+                echo "            one-liner from docs/playbooks/case-workflow.md when KB is reachable." ;;
+        esac
+        rm -f "$_kb_install"
+    else
+        echo "   WARNING: KB key file not found at $KB_KEY_FILE; skipped client install."
+    fi
+    if cp "$WIP_ROOT/docs/slash-commands/app-builder/wip-case.md" "$APP_DIR/.claude/commands/" 2>/dev/null; then
+        echo "   Dropped: /wip-case stub"
+    fi
+    # Best-effort: register the role prefix as a SESSION_ROLE term (CASE-420).
+    # A tier-3 clone's first /wip-setup session mirror is term-validated against
+    # SESSION_ROLE (namespace kb); an unregistered prefix bounces. Enable is
+    # exactly when the clone becomes mirror-capable, so it registers here.
+    # Non-fatal — a laptop may have no KB reach. APP-KB confirmed SESSION_ROLE
+    # still gates the mirror and owns the durable seed; KB_TARGET_YAC is NOT a
+    # sync gap (free strings, hand-curated) so it is deliberately skipped.
+    # Direct def-store POST is correct: terminology provisioning, not a
+    # kb-document write (no CASE-464 gateway conflict). Base/key from kb.json;
+    # bulk-first means HTTP is always 200 — parse the per-item body, not the code.
+    ROLE_PREFIX="${APP_PREFIX:-$(cat "$APP_DIR/.claude/.session-role" 2>/dev/null || true)}"
+    if [ -n "$ROLE_PREFIX" ] && [ -f "$KB_KEY_FILE" ]; then
+        DS="${KB_URL%/}/api/def-store"
+        KB_KEY="$(cat "$KB_KEY_FILE")"
+        SR_TID="$(curl -sk "$DS/terminologies/by-value/SESSION_ROLE" -H "X-API-Key: $KB_KEY" 2>/dev/null \
+                  | sed -n 's/.*"terminology_id"[": ]*"\([^"]*\)".*/\1/p' | head -1 || true)"
+        if [ -z "$SR_TID" ]; then
+            echo "   SESSION_ROLE not resolvable at $DS — skip; add $ROLE_PREFIX via APP-KB's SESSION_ROLE.json (CASE-420)"
+        else
+            SR_RESP="$(curl -sk -X POST "$DS/terminologies/$SR_TID/terms" \
+                       -H "X-API-Key: $KB_KEY" -H "Content-Type: application/json" \
+                       -d "[{\"value\":\"$ROLE_PREFIX\",\"label\":\"$ROLE_PREFIX\",\"description\":\"YAC role ($ROLE_PREFIX).\"}]" \
+                       2>/dev/null || echo '{}')"
+            if printf '%s' "$SR_RESP" | grep -q '"succeeded":[ ]*1'; then
+                echo "   Registered new SESSION_ROLE term: $ROLE_PREFIX"
+                echo "   *** Durable seed: add \"$ROLE_PREFIX\" to APP-KB's SESSION_ROLE.json —"
+                echo "       live registration alone drifts on the next kb re-bootstrap (CASE-420)."
+            elif printf '%s' "$SR_RESP" | grep -q 'already exists'; then
+                echo "   SESSION_ROLE term $ROLE_PREFIX already present — ok"
+            elif [ "$SR_RESP" = '{}' ]; then
+                echo "   KB unreachable — register $ROLE_PREFIX in SESSION_ROLE later (re-run with --kb online)"
+            else
+                echo "   SESSION_ROLE registration: unexpected response for $ROLE_PREFIX — $SR_RESP"
+            fi
+        fi
+    fi
+    if [ ! -e "$APP_DIR/yac-discussions" ]; then
+        echo "   NOTE: no yac-discussions/ staging surface. Symlink the shared case"
+        echo "         store (transition) — the write-gateway (CASE-464) will make it optional."
+    fi
+}
+
+# --- Resolve app metadata (CASE-418) ---
+# Set-up-in-place NEVER derives metadata from the directory name — that produced
+# 'Dev ns: dev-.' on an in-place run of '.'. Resolution order: persisted
+# .claude/.app-meta -> explicit --name -> backfill from the existing
+# CLAUDE.md title -> hard error.
+
+APP_META_FILE="$APP_DIR/.claude/.app-meta"
+APP_SLUG=""
+DEV_NAMESPACE=""
+META_SOURCE=""
+
+meta_get() { sed -n "s/^$1=\"\(.*\)\"\$/\1/p" "$APP_META_FILE" 2>/dev/null | head -1; }
+
+if $REFRESH_MODE; then
+    if [ -f "$APP_META_FILE" ] && [ -n "$(meta_get APP_NAME)" ]; then
+        APP_NAME="$(meta_get APP_NAME)"
+        APP_SLUG="$(meta_get APP_SLUG)"
+        DEV_NAMESPACE="$(meta_get DEV_NAMESPACE)"
+        META_SOURCE=".claude/.app-meta"
+    elif [ -n "$APP_NAME" ]; then
+        META_SOURCE="--name"
+    elif [ -f "$APP_DIR/CLAUDE.md" ]; then
+        # One-time backfill for pre-.app-meta clones: the title line was
+        # interpolated from APP_NAME at create time; the namespace is the
+        # first backticked token in the Dev Namespace section (apps can use
+        # namespaces that are NOT dev-<slug>, e.g. WIP-DnD's `dnd`).
+        APP_NAME="$(sed -n 's/^# //p' "$APP_DIR/CLAUDE.md" | head -1)"
+        if [ -z "$APP_NAME" ]; then
+            echo "Error: could not derive the app name from $APP_DIR/CLAUDE.md."
+            echo "       Re-run with --name \"App Name\"."
+            exit 1
+        fi
+        # Backfill is a fallback PARSER, not an invariant. The grep exits 1
+        # when the '## Dev Namespace' heading is absent or has drifted (long-
+        # lived clones rename it '## Namespace' etc.); under `set -euo
+        # pipefail` that 1 propagates and kills the script AT THIS ASSIGNMENT,
+        # before any output — a silent death (CASE-460). `|| true` makes the
+        # parse tolerant; the empty result is then handled loudly below.
+        # shellcheck disable=SC2016  # literal backticks: extracting a `code`-formatted namespace from markdown
+        DEV_NAMESPACE="$(sed -n '/^## Dev Namespace/,/^## /p' "$APP_DIR/CLAUDE.md" | grep -o '`[a-z0-9][a-z0-9-]*`' | head -1 | tr -d '`' || true)"
+        if [ -z "$DEV_NAMESPACE" ]; then
+            # Refuse to guess. Heading drift means this app may run on a
+            # namespace that is NOT dev-<slug> (e.g. a live one); silently
+            # defaulting would pin the wrong namespace into durable state.
+            # Fail with the same remediation as the no-CLAUDE.md path.
+            echo "Error: found $APP_DIR/CLAUDE.md but could not parse a"
+            echo "       namespace from a '## Dev Namespace' section (the heading"
+            echo "       may have drifted, e.g. '## Namespace'). Refusing to guess —"
+            echo "       this app may use a non-dev-<slug> namespace."
+            echo "       Fix: write .claude/.app-meta with the real values, or"
+            echo "       re-run with --name \"App Name\" (CASE-418/460)."
+            exit 1
+        fi
+        META_SOURCE="CLAUDE.md backfill"
+    else
+        echo "Error: cannot resolve app metadata for in-place setup: no .claude/.app-meta,"
+        echo "       no --name, and no existing CLAUDE.md to derive from."
+        echo "       Re-run with --name \"App Name\" (CASE-418)."
+        exit 1
+    fi
+fi
+
+# Derive app name from directory if not provided (create path only — in-place
+# setup resolved it above or exited)
 if [ -z "$APP_NAME" ]; then
     APP_NAME="$(basename "$APP_DIR" | sed 's/[-_]/ /g' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1')"
 fi
 
 # Derive slug from app name (lowercase, hyphens) — used for namespace and package name
-APP_SLUG="$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/ /-/g')"
-DEV_NAMESPACE="dev-${APP_SLUG}"
+if [ -z "$APP_SLUG" ]; then
+    APP_SLUG="$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/ /-/g')"
+fi
+if [ -z "$DEV_NAMESPACE" ]; then
+    # Create mode (or a --name refresh with no parsed namespace): dev-<slug>
+    # is the documented default. The CLAUDE.md-backfill path never reaches
+    # here empty — it fails loud above rather than guess (CASE-460).
+    DEV_NAMESPACE="dev-${APP_SLUG}"
+fi
 
 if $REFRESH_MODE; then
     echo "Refreshing WIP app environment:"
@@ -103,6 +395,9 @@ echo "  Directory: $APP_DIR"
 echo "  App name:  $APP_NAME"
 echo "  Slug:      $APP_SLUG"
 echo "  Dev ns:    $DEV_NAMESPACE"
+if [ -n "$META_SOURCE" ]; then
+    echo "  Metadata:  $META_SOURCE"
+fi
 echo "  Preset:    $PRESET"
 echo "  WIP root:  $WIP_ROOT"
 echo ""
@@ -110,20 +405,15 @@ echo ""
 # --- Check prerequisites ---
 
 if $REFRESH_MODE; then
-    if [ ! -d "$APP_DIR" ]; then
-        echo "Error: $APP_DIR does not exist. Use --refresh on an existing app directory."
-        exit 1
-    fi
+    # Set-up-in-place: the dir is non-empty by construction (that's what selected
+    # this path). A missing CLAUDE.md just means it isn't a WIP app yet — warn,
+    # don't refuse; we still set it up in place.
     if [ ! -f "$APP_DIR/CLAUDE.md" ]; then
-        echo "Warning: $APP_DIR/CLAUDE.md not found — this may not be a WIP app project."
+        echo "Warning: $APP_DIR/CLAUDE.md not found — setting up an existing directory in place."
     fi
 else
-    if [ -d "$APP_DIR" ] && [ "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
-        echo "Error: $APP_DIR already exists and is not empty."
-        echo "Choose a new directory or remove the existing one."
-        exit 1
-    fi
-
+    # Create path: the dir is empty/absent by construction (a non-empty dir would
+    # have selected set-up-in-place above — that old error is now the switch).
     if [ ! -d "$WIP_ROOT/docs/slash-commands/app-builder" ]; then
         echo "Error: $WIP_ROOT/docs/slash-commands/app-builder/ not found."
         echo "Run this script from the WIP project root."
@@ -141,43 +431,50 @@ fi
 mkdir -p "$APP_DIR/libs"
 mkdir -p "$APP_DIR/tools"
 
-# --- Copy slash commands (new projects only) ---
+# Slash commands + wake-rollover are engine surfaces (CASE-612 step 3) —
+# rendered in one wip_scaffold call further down (after key-file
+# resolution, which CLAUDE.md needs). Note the deliberate order change:
+# enable_kb below now runs BEFORE the commands copy; its wip-case stub cp
+# is belt-only — the engine's tier-gated copy is authoritative either way.
 
+# --- Tier-3 provisioning (CASE-463, CASE-517, CASE-535) ---
+# Provisioning (kb.json write, served-client install, SESSION_ROLE POST) runs on
+# the explicit tier-3 opt-in only — KB_OPT_IN, i.e. `--kb` passed on this run.
+# That covers both a fresh create-with-kb AND retrofitting tier-3 onto a populated
+# tier-2 checkout (the old --enable-kb, now folded into the one flow — CASE-532).
+# A set-up-in-place run WITHOUT --kb is offline file-propagation: the /wip-case
+# stub is already re-copied above, the served client self-refreshes on next use
+# (digest-gated), and a pre-existing kb.json must not be rewritten. Tier-2 runs
+# (no --kb, no kb.json) skip this entirely.
+if $KB_OPT_IN; then
+    enable_kb
+fi
+
+# Session role (CASE-389), .app-meta (CASE-418), settings baseline
+# (CASE-446), post-compact hook (CASE-480), playbooks (copy-only —
+# CASE-522), and reference docs are engine surfaces (CASE-612 step 3),
+# rendered in the wip_scaffold call further down. Their policies and the
+# full per-surface rationale live in scaffold/src/wip_scaffold/surfaces.py.
+
+# --- Bootstrap templates (genesis copies) ---
+# The engine's bootstrap-templates surface stamps each copy with source SHA,
+# a not-canonical warning, and a delete-after-use instruction. This wrapper
+# keeps the WHEN: create always seeds; set-up-in-place seeds ONLY with
+# --with-bootstrap AND only when templates/bootstrap/ is absent — a mature
+# app that built bootstrap.ts and deleted the dir per the genesis banner
+# must NOT have it resurrected, so retrofit is opt-in, never
+# automatic-on-absence.
+SEED_BOOTSTRAP_FLAG=""
 if ! $REFRESH_MODE; then
-    echo "2. Copying slash commands..."
-    cp "$WIP_ROOT/docs/slash-commands/app-builder/"*.md "$APP_DIR/.claude/commands/"
-    echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
-
-    # --- Copy slash command playbooks (new projects only) ---
-    # Slim slash commands reference docs/playbooks/<name>.md (flat) for full procedures.
-    # Source layout in WIP is docs/playbooks/app-builder/, destination is flat docs/playbooks/.
-
-    if [ -d "$WIP_ROOT/docs/playbooks/app-builder" ]; then
-        mkdir -p "$APP_DIR/docs/playbooks"
-        cp "$WIP_ROOT/docs/playbooks/app-builder/"*.md "$APP_DIR/docs/playbooks/" 2>/dev/null || true
-        PLAYBOOK_COUNT=$(find "$APP_DIR/docs/playbooks/" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
-        echo "   Copied: $PLAYBOOK_COUNT playbook(s) to docs/playbooks/"
+    SEED_BOOTSTRAP_FLAG="--seed-bootstrap"
+elif $WITH_BOOTSTRAP; then
+    if [ -d "$APP_DIR/templates/bootstrap" ]; then
+        echo "   --with-bootstrap: templates/bootstrap/ already present — left as-is."
+        echo "     (A built app that removed it per the genesis banner should not have it"
+        echo "      resurrected; delete the dir first if you want fresh genesis copies.)"
     else
-        echo "   Warning: $WIP_ROOT/docs/playbooks/app-builder/ not found, skipping playbooks"
-    fi
-
-    # --- Copy reference docs (new projects only) ---
-
-    echo "3. Copying reference documentation..."
-    for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md dev-delete.md; do
-        if [ -f "$WIP_ROOT/docs/$doc" ]; then
-            cp "$WIP_ROOT/docs/$doc" "$APP_DIR/docs/"
-            echo "   Copied: docs/$doc"
-        else
-            echo "   Warning: docs/$doc not found, skipping"
-        fi
-    done
-    # Design docs live in a subdirectory
-    if [ -f "$WIP_ROOT/docs/design/ontology-support.md" ]; then
-        cp "$WIP_ROOT/docs/design/ontology-support.md" "$APP_DIR/docs/"
-        echo "   Copied: docs/design/ontology-support.md"
-    else
-        echo "   Warning: docs/design/ontology-support.md not found, skipping"
+        echo "   --with-bootstrap: retrofitting genesis bootstrap templates (app predates them)..."
+        SEED_BOOTSTRAP_FLAG="--seed-bootstrap"
     fi
 fi
 
@@ -189,57 +486,83 @@ else
     echo "4. Generating .mcp.json..."
 fi
 
-# Determine API key from .env (source of truth for running containers)
-# NOTE: The MCP server needs a privileged key (wip-admins or wip-services) because
-# it operates across namespaces. App code should use a namespace-scoped key instead.
-# See docs/migration-unscoped-api-keys.md for details.
-ACTIVE_KEY=""
-if [ -f "$WIP_ROOT/.env" ]; then
-    ACTIVE_KEY=$(grep "^API_KEY=" "$WIP_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)
+# Determine the API-key secrets file (CASE-520).
+# The MCP server reads its key from WIP_API_KEY_FILE at startup, so key rotation
+# in wip-deploy automatically propagates without re-running this script. The MCP
+# server needs a privileged key (wip-admins or wip-services) because it operates
+# across namespaces; app runtime code should use a namespace-scoped key instead.
+# This single value flows into .mcp.json, .env, and CLAUDE.md, so resolve it once.
+# Resolution priority — avoids the dead-path whack-a-mole of a hardcoded install
+# name (CASE-520: a literal 'wip-dev-local' pointed at a nonexistent install, so
+# every set-up-in-place re-injected a 401-causing key path):
+#   1. WIP_API_KEY_FILE_OVERRIDE — explicit escape hatch.
+#   2. set-up-in-place: PRESERVE a readable key file already in the app's .mcp.json
+#      (mirrors the WIP_BASE_URL preserve block below — stops set-up-in-place clobbering
+#      a known-good path on every run).
+#   3. Detect the RUNNING wip-deploy install from a live WIP container's compose
+#      working_dir label (the install path itself; container names are
+#      service-named, not install-named, so a name guess is unreliable).
+#   4. Nothing resolved → HARD ERROR (CASE-558). There is no literal default:
+#      the old ~/.wip-deploy/wip-local fallback is a dead path for
+#      deploy-guide installs (--name wip), and a stale path written here
+#      passes generation only to 401/ENOENT at connect time.
+WIP_API_KEY_FILE="${WIP_API_KEY_FILE_OVERRIDE:-}"
+if [ -z "$WIP_API_KEY_FILE" ] && $REFRESH_MODE && [ -f "$APP_DIR/.mcp.json" ]; then
+    _existing_key="$(python3 -c "import json; print(json.load(open('$APP_DIR/.mcp.json'))['mcpServers']['wip']['env'].get('WIP_API_KEY_FILE',''))" 2>/dev/null || true)"
+    if [ -n "$_existing_key" ] && [ -f "$_existing_key" ]; then
+        WIP_API_KEY_FILE="$_existing_key"
+        echo "   Preserving existing .mcp.json key file: $WIP_API_KEY_FILE"
+    fi
 fi
-ACTIVE_KEY="${ACTIVE_KEY:-dev_master_key_for_testing}"
-
-if [ "$ACTIVE_KEY" = "dev_master_key_for_testing" ]; then
-    # Dev mode — hardcode the well-known dev key
-    MCP_ENV=$(cat <<ENVEOF
-        "WIP_API_KEY": "dev_master_key_for_testing",
-        "PYTHONPATH": "$WIP_ROOT/components/mcp-server/src"
-ENVEOF
-)
-    echo "   API key: dev_master_key_for_testing (dev mode, privileged)"
-else
-    # Production — embed the actual key from .env
-    MCP_ENV=$(cat <<ENVEOF
-        "WIP_API_KEY": "$ACTIVE_KEY",
-        "PYTHONPATH": "$WIP_ROOT/components/mcp-server/src"
-ENVEOF
-)
-    echo "   API key: production key from .env (${#ACTIVE_KEY} chars)"
-    echo "   Note: if you rotate the API key, re-run this script or update .mcp.json"
+if [ -z "$WIP_API_KEY_FILE" ] && command -v podman >/dev/null 2>&1; then
+    # `|| true`: grep exits 1 when NO running container is a wip-deploy install.
+    # Under `set -euo pipefail` that 1 propagates through the command
+    # substitution and kills the script AT THIS ASSIGNMENT — before .mcp.json
+    # and .env are ever written (CASE-534). The empty result is handled below.
+    # CASE-539: parse working_dir out of the `{{.Labels}}` STRING. podman 6.0.0
+    # exposes `podman ps` `.Labels` as a comma-joined string, not a map, so the
+    # old `{{index .Labels "…"}}` returned empty for every container — silently
+    # defeating the running-install detection. (`podman inspect` is still a map.)
+    _wip_dirs="$(podman ps --format '{{.Labels}}' 2>/dev/null | grep -o 'com\.docker\.compose\.project\.working_dir=[^,]*' | cut -d= -f2- | grep '/\.wip-deploy/' | sort -u || true)"
+    if [ "$(printf '%s\n' "$_wip_dirs" | grep -c .)" -eq 1 ] && [ -f "$_wip_dirs/secrets/api-key" ]; then
+        WIP_API_KEY_FILE="$_wip_dirs/secrets/api-key"
+        echo "   Detected running WIP install: $WIP_API_KEY_FILE"
+    fi
+fi
+if [ -z "$WIP_API_KEY_FILE" ]; then
+    echo "Error: could not resolve the WIP API key file — no WIP_API_KEY_FILE_OVERRIDE, no preserved .mcp.json path, and no (single) running WIP install detected (CASE-558)." >&2
+    echo "  Fix (either):" >&2
+    echo "    deploy a WIP install first (wip-deploy install ... --name wip), then re-run" >&2
+    echo "    or WIP_API_KEY_FILE_OVERRIDE=\$HOME/.wip-deploy/<name>/secrets/api-key $0 ..." >&2
+    exit 1
+fi
+if [ ! -f "$WIP_API_KEY_FILE" ]; then
+    # Only reachable via WIP_API_KEY_FILE_OVERRIDE — the preserve and
+    # auto-detect steps both check existence. Keep the explicit escape
+    # hatch usable for pre-provisioning, but say so.
+    echo "   Warning: $WIP_API_KEY_FILE does not exist yet (override accepted as-is)."
 fi
 
-# Determine Python path
-PYTHON_PATH="$WIP_ROOT/.venv/bin/python"
-if [ ! -f "$PYTHON_PATH" ]; then
-    PYTHON_PATH="$(which python3 2>/dev/null || which python 2>/dev/null || echo "python")"
-    echo "   Warning: $WIP_ROOT/.venv/bin/python not found, using: $PYTHON_PATH"
-fi
+# Python path: the MCP pre-flight (CASE-558) already guaranteed this
+# interpreter exists and imports wip_mcp. No system-python fallback — a
+# python without wip_mcp is exactly the -32000 the pre-flight exists to stop.
+PYTHON_PATH="$MCP_PYTHON"
 
-cat > "$APP_DIR/.mcp.json" << EOF
-{
-  "mcpServers": {
-    "wip": {
-      "command": "$PYTHON_PATH",
-      "args": ["-m", "wip_mcp"],
-      "cwd": "$WIP_ROOT",
-      "env": {
-$MCP_ENV
-      }
-    }
-  }
-}
-EOF
-echo "   Written: .mcp.json"
+# Target base URL for the WIP services (CASE-516). Default is the local Caddy.
+# On set-up-in-place, PRESERVE a deliberate non-localhost target already in .mcp.json
+# instead of clobbering it back to localhost — an earlier refresh silently reset
+# APP-KB's hand-set kb.internal target. Override with WIP_BASE_URL_OVERRIDE.
+WIP_BASE_URL="${WIP_BASE_URL_OVERRIDE:-}"
+if [ -z "$WIP_BASE_URL" ] && $REFRESH_MODE && [ -f "$APP_DIR/.mcp.json" ]; then
+    WIP_BASE_URL="$(python3 -c "import json; print(json.load(open('$APP_DIR/.mcp.json'))['mcpServers']['wip']['env'].get('REGISTRY_URL',''))" 2>/dev/null || true)"
+    [ -n "$WIP_BASE_URL" ] && echo "   Preserving existing .mcp.json target: $WIP_BASE_URL"
+fi
+WIP_BASE_URL="${WIP_BASE_URL:-https://localhost:8443}"
+
+# .mcp.json is an engine surface (shared writer with the backend scaffold —
+# the two heredocs were drifting independently). Written by the wip_scaffold
+# call further down via the --mcp-* flags.
+echo "   .mcp.json: engine surface (key source: $WIP_API_KEY_FILE)"
 
 # --- Copy client libraries ---
 
@@ -266,9 +589,24 @@ else
     echo "5. Copying client libraries..."
 fi
 MISSING_LIBS=()
-CLIENT_TARBALL=$(find "$WIP_ROOT/libs/wip-client/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
-REACT_TARBALL=$(find "$WIP_ROOT/libs/wip-react/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
-PROXY_TARBALL=$(find "$WIP_ROOT/libs/wip-proxy/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
+# CASE-442 (supersedes CASE-441's `-latest.tgz` selection): distribute the
+# VERSIONED tarball named by the lib's package.json (wip-<lib>-<version>.tgz).
+# `-latest.tgz` was a mutable artifact — fixed filename, changing content — so
+# every rebuild desynced consumer package-lock.json integrity (and the npm
+# cache) from the shipped file, and `npm ci` failed with EINTEGRITY. A
+# version-named tarball is immutable by convention: a content change requires
+# a version bump, which changes the `file:` spec and forces npm to re-resolve
+# from disk. Empty result (no tarball matching the lib's current version)
+# falls through to the rebuild block below.
+lib_tarball() {
+    local lib_dir="$1" base ver
+    base=$(basename "$lib_dir")
+    ver=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$lib_dir/package.json" 2>/dev/null | head -1)
+    [ -n "$ver" ] && [ -f "$lib_dir/${base}-${ver}.tgz" ] && printf '%s\n' "$lib_dir/${base}-${ver}.tgz"
+}
+CLIENT_TARBALL=$(lib_tarball "$WIP_ROOT/libs/wip-client")
+REACT_TARBALL=$(lib_tarball "$WIP_ROOT/libs/wip-react")
+PROXY_TARBALL=$(lib_tarball "$WIP_ROOT/libs/wip-proxy")
 
 # Auto-build tarballs if missing or invalid
 # Fresh clones have no node_modules, so we must npm install before npm pack
@@ -282,7 +620,10 @@ rebuild_tarball() {
         echo "   Warning: failed to build $lib_name tarball" >&2
         return 1
     fi
-    find "$lib_dir" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1
+    # CASE-441: return the exact tarball `npm pack` just produced
+    # (<name>-<version>.tgz from package.json), not `find … | head -1` which
+    # returned an arbitrary (often stale) tarball from the accumulated set.
+    lib_tarball "$lib_dir"
 }
 
 if command -v npm &>/dev/null; then
@@ -299,41 +640,49 @@ else
     echo "   npm not found — cannot auto-build tarballs"
 fi
 
-# Copy and validate each tarball
-copy_tarball() {
-    local tarball="$1"
-    local lib_name="$2"
-    local readme_name="$3"
+# Final validation + engine handoff. The copy itself (immutability check,
+# stale-version wipe, README extraction) is the engine's lib-<name>
+# surface; this wrapper keeps the ACTIONS (rebuild above, lockfile sync
+# below) and the missing-libs bookkeeping for the closing banner. An
+# invalid tarball is blanked here so the banner names it — the engine
+# only ever receives tarballs that passed validation.
+LIB_FLAGS=""
+if [ -z "$CLIENT_TARBALL" ]; then
+    MISSING_LIBS+=("@wip/client")
+elif ! validate_tarball "$CLIENT_TARBALL" "@wip/client"; then
+    MISSING_LIBS+=("@wip/client (tarball has no dist/ — run npm run build first)")
+    CLIENT_TARBALL=""
+else
+    LIB_FLAGS="$LIB_FLAGS --lib-client $CLIENT_TARBALL"
+fi
+if [ -z "$REACT_TARBALL" ]; then
+    MISSING_LIBS+=("@wip/react")
+elif ! validate_tarball "$REACT_TARBALL" "@wip/react"; then
+    MISSING_LIBS+=("@wip/react (tarball has no dist/ — run npm run build first)")
+    REACT_TARBALL=""
+else
+    LIB_FLAGS="$LIB_FLAGS --lib-react $REACT_TARBALL"
+fi
+if [ -z "$PROXY_TARBALL" ]; then
+    MISSING_LIBS+=("@wip/proxy")
+elif ! validate_tarball "$PROXY_TARBALL" "@wip/proxy"; then
+    MISSING_LIBS+=("@wip/proxy (tarball has no dist/ — run npm run build first)")
+    PROXY_TARBALL=""
+else
+    LIB_FLAGS="$LIB_FLAGS --lib-proxy $PROXY_TARBALL"
+fi
 
-    if [ -z "$tarball" ]; then
-        MISSING_LIBS+=("$lib_name")
-        return
-    fi
-
-    if ! validate_tarball "$tarball" "$lib_name"; then
-        MISSING_LIBS+=("$lib_name (tarball has no dist/ — run npm run build first)")
-        return
-    fi
-
-    cp "$tarball" "$APP_DIR/libs/"
-    if tar -xzf "$tarball" --to-stdout package/README.md > "$APP_DIR/libs/$readme_name" 2>/dev/null; then
-        echo "   Copied: $(basename "$tarball") + README"
-    else
-        rm -f "$APP_DIR/libs/$readme_name"
-        echo "   Copied: $(basename "$tarball") (README extraction failed)"
-    fi
-}
-
-copy_tarball "$CLIENT_TARBALL" "@wip/client" "wip-client-README.md"
-copy_tarball "$REACT_TARBALL" "@wip/react" "wip-react-README.md"
-copy_tarball "$PROXY_TARBALL" "@wip/proxy" "wip-proxy-README.md"
-
-# --- Copy wip-toolkit and dev-delete.py ---
+# --- Copy wip-toolkit ---
+#
+# (CASE-286: dev-delete.py copy removed 2026-05-08. The legacy script bypassed
+# the WIP API and wrote directly to MongoDB; superseded by `mcp__wip__delete_namespace`
+# which the CLAUDE.md template already prescribes. Apps no longer get the orphan tool in
+# their tools/ directory.)
 
 if $REFRESH_MODE; then
-    echo "3. Refreshing wip-toolkit and dev-delete.py..."
+    echo "3. Refreshing wip-toolkit..."
 else
-    echo "6. Copying wip-toolkit and dev-delete.py..."
+    echo "6. Copying wip-toolkit..."
 fi
 
 # wip-toolkit wheel
@@ -359,65 +708,29 @@ if [ -z "$TOOLKIT_WHEEL" ]; then
     fi
 fi
 
+TOOLKIT_FLAG=""
 if [ -n "$TOOLKIT_WHEEL" ]; then
-    cp "$TOOLKIT_WHEEL" "$APP_DIR/libs/"
-    echo "   Copied: $(basename "$TOOLKIT_WHEEL")"
+    # The copy is the engine's toolkit-wheel surface; the build above is
+    # the wrapper's action.
+    TOOLKIT_FLAG="--toolkit-wheel $TOOLKIT_WHEEL"
 else
     echo "   Warning: wip-toolkit wheel not found. Build it with:"
     echo "            cd $WIP_ROOT/WIP-Toolkit && $WIP_ROOT/.venv/bin/python -m build . --wheel"
 fi
 
-# dev-delete.py
-if [ -f "$WIP_ROOT/scripts/dev-delete.py" ]; then
-    cp "$WIP_ROOT/scripts/dev-delete.py" "$APP_DIR/tools/"
-    echo "   Copied: tools/dev-delete.py"
-else
-    echo "   Warning: scripts/dev-delete.py not found"
-fi
-
-# --- Copy query scaffold files (--preset query only, new projects only) ---
-
+# --- Query scaffold (--preset query only, new projects only) ---
+# Engine surfaces: a curated copy (package-lock.json and strays deliberately
+# excluded) with in-process placeholder substitution — the sed -i calls that
+# made this script macOS-only are gone. The wrapper keeps the create+preset
+# gate; the .env.example namespace value is substituted during the copy.
+QUERY_FLAG=""
 if ! $REFRESH_MODE && [ "$PRESET" = "query" ]; then
-    SCAFFOLD_DIR="$WIP_ROOT/scripts/scaffold-query"
-    if [ ! -d "$SCAFFOLD_DIR" ]; then
-        echo "Error: Scaffold template directory not found: $SCAFFOLD_DIR"
+    if [ ! -d "$WIP_ROOT/scripts/scaffold-query" ]; then
+        echo "Error: Scaffold template directory not found: $WIP_ROOT/scripts/scaffold-query"
         exit 1
     fi
-
-    echo "7. Copying NL query scaffold..."
-
-    # Copy scaffold structure
-    cp -r "$SCAFFOLD_DIR/server" "$APP_DIR/"
-    cp -r "$SCAFFOLD_DIR/src" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/package.json" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/tsconfig.json" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/vite.config.ts" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/tailwind.config.js" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/postcss.config.js" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/index.html" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/.env.example" "$APP_DIR/"
-    cp "$SCAFFOLD_DIR/.gitignore" "$APP_DIR/.gitignore.scaffold"
-
-    # Merge .gitignore (scaffold additions)
-    if [ -f "$APP_DIR/.gitignore" ]; then
-        cat "$APP_DIR/.gitignore.scaffold" >> "$APP_DIR/.gitignore"
-    else
-        mv "$APP_DIR/.gitignore.scaffold" "$APP_DIR/.gitignore"
-    fi
-    rm -f "$APP_DIR/.gitignore.scaffold"
-
-    # Replace placeholders
-    sed -i '' "s/SCAFFOLD_APP_SLUG/$APP_SLUG/g" "$APP_DIR/package.json"
-    sed -i '' "s/SCAFFOLD_APP_NAME/$APP_NAME/g" "$APP_DIR/index.html"
-
-    # Update .env.example with actual paths
-    sed -i '' "s|/path/to/WorldInPie|$WIP_ROOT|g" "$APP_DIR/.env.example"
-
-    echo "   Copied: server/ (agent.ts, index.ts, prompts/)"
-    echo "   Copied: src/ (App.tsx, AskBar.tsx, HomePage.tsx)"
-    echo "   Copied: package.json, tsconfig.json, vite.config.ts, tailwind, .env.example"
-    echo "   App slug: $APP_SLUG"
-
+    echo "7. NL query scaffold: engine surface (slug: $APP_SLUG)"
+    QUERY_FLAG="--query-scaffold"
     STEP_OFFSET=1
 else
     STEP_OFFSET=0
@@ -431,410 +744,159 @@ if ! $REFRESH_MODE; then
     STEP_OFFSET=$((STEP_OFFSET + 1))
 
     # Best-effort — WIP may not be running. Non-fatal.
+    # PUT is the platform's documented idempotent upsert: creates on
+    # missing with platform defaults, updates supplied fields when
+    # existing, always 200 — re-running a create against a half-built
+    # instance needs no exists-check dance. (The legacy POST returned
+    # non-200 on collision, hence the old 'may already exist' guesswork.)
+    # ACTIVE_KEY is the admin key content from the wip-deploy secrets
+    # file; empty/missing degrades to the non-fatal HTTP branches.
+    ACTIVE_KEY=$(cat "$WIP_API_KEY_FILE" 2>/dev/null || true)
     NS_RESPONSE=$(curl -k -s -o /dev/null -w "%{http_code}" \
-        -X POST "https://localhost:8443/api/registry/namespaces" \
+        -X PUT "https://localhost:8443/api/registry/namespaces/$DEV_NAMESPACE" \
         -H "X-API-Key: $ACTIVE_KEY" \
         -H "Content-Type: application/json" \
-        -d "{\"prefix\": \"$DEV_NAMESPACE\", \"description\": \"$APP_NAME (dev)\"}" \
+        -d "{\"description\": \"$APP_NAME (dev)\"}" \
         2>/dev/null || echo "000")
 
     if [ "$NS_RESPONSE" = "200" ]; then
-        echo "   Created namespace: $DEV_NAMESPACE"
+        echo "   Namespace upserted: $DEV_NAMESPACE"
     elif [ "$NS_RESPONSE" = "000" ]; then
         echo "   WIP not reachable — APP-YAC will create the namespace on first run"
     else
-        echo "   HTTP $NS_RESPONSE — namespace may already exist (ok)"
+        echo "   HTTP $NS_RESPONSE — unexpected for an idempotent upsert; check the key/instance"
     fi
 
-    # Set WIP_NAMESPACE in .env.example if query preset
-    if [ "$PRESET" = "query" ] && [ -f "$APP_DIR/.env.example" ]; then
-        sed -i '' "s|# WIP_NAMESPACE=myapp|WIP_NAMESPACE=$DEV_NAMESPACE|" "$APP_DIR/.env.example"
-        echo "   Set WIP_NAMESPACE=$DEV_NAMESPACE in .env.example"
-    fi
+    # (.env.example's WIP_NAMESPACE is substituted by the engine's
+    # query-scaffold surface during the copy — no post-hoc sed.)
 
-    # --- Provision namespace-scoped API key ---
-
+    # .env is an engine surface (create-time only — this block only runs on
+    # create): points the runtime at the live secrets FILE, never a baked
+    # plaintext key, so rotation is a restart instead of a stranded fleet.
     STEP_NUM=$((7 + STEP_OFFSET))
-    echo "$STEP_NUM. Provisioning namespace-scoped API key..."
+    echo "$STEP_NUM. Pointing .env runtime key at the wip-deploy secrets file (engine surface)..."
     STEP_OFFSET=$((STEP_OFFSET + 1))
-
-    APP_KEY_PLAINTEXT=""
-    if [ "$NS_RESPONSE" != "000" ]; then
-        # WIP is reachable — create a runtime API key scoped to the dev namespace
-        KEY_JSON=$(curl -k -s \
-            -X POST "https://localhost:8443/api/registry/api-keys" \
-            -H "X-API-Key: $ACTIVE_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{
-                \"name\": \"${APP_SLUG}\",
-                \"owner\": \"dev@wip.local\",
-                \"groups\": [],
-                \"namespaces\": [\"${DEV_NAMESPACE}\"],
-                \"description\": \"${APP_NAME} — scoped to dev namespace\"
-            }" 2>/dev/null || echo "")
-
-        if [ -n "$KEY_JSON" ]; then
-            # Extract plaintext_key — try jq first, fall back to grep
-            if command -v jq &>/dev/null; then
-                APP_KEY_PLAINTEXT=$(echo "$KEY_JSON" | jq -r '.plaintext_key // empty' 2>/dev/null)
-            else
-                APP_KEY_PLAINTEXT=$(echo "$KEY_JSON" | grep -o '"plaintext_key":"[^"]*"' | cut -d'"' -f4)
-            fi
-        fi
-
-        if [ -n "$APP_KEY_PLAINTEXT" ]; then
-            echo "   Created API key: $APP_SLUG (scoped to $DEV_NAMESPACE)"
-            echo "   Key propagates to all services within ~30 seconds"
-
-            # Write .env with the provisioned key
-            cat > "$APP_DIR/.env" << ENVEOF
-# App API key — namespace-scoped to $DEV_NAMESPACE
-# Created by create-app-project.sh via POST /api/registry/api-keys
-# This is a runtime key (managed via API, not config file)
-WIP_API_KEY=$APP_KEY_PLAINTEXT
-ENVEOF
-            echo "   Written: .env (with provisioned key)"
-
-            # Update .env.example if query preset (replace the dev master key placeholder)
-            if [ "$PRESET" = "query" ] && [ -f "$APP_DIR/.env.example" ]; then
-                sed -i '' "s|WIP_API_KEY=dev_master_key_for_testing|WIP_API_KEY=$APP_KEY_PLAINTEXT|" "$APP_DIR/.env.example"
-            fi
-        else
-            # Key creation failed — maybe name collision (409) or auth issue
-            echo "   Warning: Could not provision API key (response: ${KEY_JSON:-empty})"
-            echo "   You can create one manually:"
-            echo "     curl -k -X POST https://localhost:8443/api/registry/api-keys \\"
-            echo "       -H 'X-API-Key: <admin-key>' -H 'Content-Type: application/json' \\"
-            echo "       -d '{\"name\": \"$APP_SLUG\", \"namespaces\": [\"$DEV_NAMESPACE\"]}'"
-        fi
-    else
-        echo "   WIP not reachable — skipping key provisioning"
-        echo "   When WIP is running, create a key with:"
-        echo "     curl -k -X POST https://localhost:8443/api/registry/api-keys \\"
-        echo "       -H 'X-API-Key: <admin-key>' -H 'Content-Type: application/json' \\"
-        echo "       -d '{\"name\": \"$APP_SLUG\", \"namespaces\": [\"$DEV_NAMESPACE\"]}'"
-    fi
+    WRITE_ENV_FLAG="--write-env"
 fi
+# Fresh-checkout self-heal, same class as .session-role: .env is gitignored,
+# so a fresh clone never has it and /wip-setup's key checks dead-end. Its
+# content is entirely machine-derived (a key-file pointer, nothing
+# app-authored), so a refresh recreates it when ABSENT — but never touches
+# an existing one, which may carry an operator's least-privilege key path.
+if $REFRESH_MODE && [ ! -f "$APP_DIR/.env" ]; then
+    echo "   .env absent (fresh checkout) — recreating the key-file pointer (engine surface)..."
+    WRITE_ENV_FLAG="--write-env"
+fi
+WRITE_ENV_FLAG="${WRITE_ENV_FLAG:-}"
 
-# --- Generate CLAUDE.md (new projects only) ---
-
+# --- Content surfaces via the engine (CASE-612 step 3) ---
+# Slash commands (wipe + tier gate), wake-rollover, .session-role,
+# .app-meta, settings baseline, post-compact hook, playbooks (copy-only —
+# CASE-522), reference docs, and CLAUDE.md (create → CLAUDE.md; refresh +
+# existing → CLAUDE.md.refresh unless --force-claude-md, CASE-418) run
+# through wip_scaffold's surface matrix — one implementation shared with
+# the backend scaffold, CASE-604 discipline (atomic writes, idempotent,
+# --dry-run). Placed here because the CLAUDE.md render needs the resolved
+# WIP_API_KEY_FILE. bash retains: guards, arg parsing, enable_kb,
+# .mcp.json, libs/toolkit, bootstrap templates, query preset, namespace,
+# .env, git init (they migrate in later step-3 phases).
 if ! $REFRESH_MODE; then
 STEP_NUM=$((7 + STEP_OFFSET))
-echo "$STEP_NUM. Generating CLAUDE.md..."
-cat > "$APP_DIR/CLAUDE.md" << EOF
-# $APP_NAME
-
-## What This App Does
-
-> TODO: Describe what this app does in one paragraph.
-
-## The Golden Rule
-
-> **Never modify WIP. Build on top of it.**
-
-WIP is the backend. This app is a frontend that maps a domain onto WIP's primitives (terminologies, templates, documents) and presents them to users.
-
-## Dev Namespace
-
-Your development namespace is \`$DEV_NAMESPACE\`. Use it for all data modeling during development.
-
-**Why:** Terminologies and templates are hard to delete cleanly once documents reference them. A dev namespace lets you iterate freely — create, modify, delete, start over — without polluting production data.
-
-**Workflow:**
-1. Use \`$DEV_NAMESPACE\` for all \`/design-model\` and \`/implement\` work
-2. Create terminologies, templates, and test documents in this namespace
-3. Iterate until the data model is stable
-4. When ready for production, create a new namespace (e.g., \`${APP_SLUG}\`) and recreate the finalized model there
-5. Clean up the dev namespace with \`dev-delete.py\`:
-   \`\`\`bash
-   python tools/dev-delete.py --namespace $DEV_NAMESPACE --force
-   \`\`\`
-
-**Important:** MCP tool calls use the privileged admin key, so always pass \`namespace=$DEV_NAMESPACE\` explicitly. Your app's runtime key (scoped to one namespace) gets automatic namespace derivation — no \`namespace\` parameter needed in app code.
-
-## API Key
-
-The MCP server uses a privileged admin key (from WIP's \`.env\`). This is fine for data modeling via MCP tools.
-
-**For your app's runtime API calls**, use the namespace-scoped key in \`.env\`.
-EOF
-
-if [ -n "$APP_KEY_PLAINTEXT" ]; then
-cat >> "$APP_DIR/CLAUDE.md" << EOF
-This key was auto-provisioned by \`create-app-project.sh\` and is scoped to \`$DEV_NAMESPACE\`. It is a **runtime key** managed via the Registry API (not a config-file key).
-
-\`\`\`bash
-# .env (already created)
-WIP_API_KEY=$APP_KEY_PLAINTEXT
-\`\`\`
-EOF
+echo "$STEP_NUM. Rendering content surfaces (engine)..."
 else
-cat >> "$APP_DIR/CLAUDE.md" << 'EOF'
-No key was auto-provisioned (WIP may not have been running). Create one via the Registry API — see WIP's `docs/api-key-management.md`.
-
-Save the `plaintext_key` from the response to `.env`:
-```bash
-WIP_API_KEY=<plaintext_key from response>
-```
-EOF
+echo "Rendering content surfaces (engine; metadata: $META_SOURCE)..."
+fi
+# Fresh-checkout self-heal: .session-role is gitignored, so a brand-new
+# clone never has it — but the committed .app-meta records ROLE_PREFIX
+# (written by the engine on every run). Precedence: --prefix > existing
+# local file > .app-meta. Without this, a fresh checkout dead-ends at
+# /wip-setup's identity pre-flight until someone re-runs with --prefix.
+if [ -z "$APP_PREFIX" ] && [ ! -f "$APP_DIR/.claude/.session-role" ]; then
+    APP_PREFIX="$(meta_get ROLE_PREFIX || true)"
+    [ -n "$APP_PREFIX" ] && echo "   Role prefix restored from .app-meta: $APP_PREFIX"
 fi
 
-cat >> "$APP_DIR/CLAUDE.md" << EOF
-
-Because this key is scoped to a single namespace (\`$DEV_NAMESPACE\`), WIP derives the namespace automatically when you omit the \`namespace\` parameter. This means synonym resolution works without passing \`namespace\` on every API call.
-
-**Key management:** Runtime keys can be listed, updated, and revoked via the Registry API. See WIP's \`docs/api-key-management.md\` for details.
-
-## Process
-
-Follow the 4-phase development process. Start with:
-
-\`\`\`
-/explore
-\`\`\`
-
-**Core phases** (in order):
-1. \`/explore\` — Read MCP resources, discover existing data model, understand the domain
-2. \`/design-model\` — Map the domain to WIP primitives (user must approve before proceeding)
-3. \`/implement\` — Create terminologies and templates in WIP, verify with test documents
-4. \`/build-app\` — Scaffold and build the React/TypeScript application
-
-**After Phase 4:**
-- \`/improve\` — Iterate (add features, fix bugs, refine UI)
-- \`/document\` — Generate README, ARCHITECTURE, etc.
-
-**Available at any time:**
-- \`/wip-status\` — Check WIP service health and data state
-- \`/export-model\` — Save data model to git as seed files
-- \`/bootstrap\` — Recreate data model from seed files
-- \`/add-app\` — Add a second app that cross-references the first
-- \`/resume\` — Recover context after compaction or at start of a new session
-- \`/report\` — Capture fireside chat or trigger session summary
-
-**Context management:** When context reaches ~70-80%, the human should tell you to run \`/resume\` or save state (DESIGN.md, memory files) before compaction hits.
-
-## Reference Documentation
-
-Read these before starting:
-- \`docs/AI-Assisted-Development.md\` — 4-phase process, data model design guide, PoNIFs quick reference
-- \`docs/WIP_PoNIFs.md\` — Full guide to WIP's 6 non-intuitive behaviours
-- \`docs/WIP_DevGuardrails.md\` — UI stack, app skeleton, testing conventions
-- \`docs/ontology-support.md\` — Term relationships, polyhierarchy, typed relationships, traversal queries
-- \`docs/dev-delete.md\` — Hard-delete entities during development (modes, backends, remote usage)
-
-## MCP
-
-WIP is accessed exclusively via MCP tools (71 tools, 5 resources). Before starting:
-- Read \`wip://conventions\` — bulk-first API, identity hashing, versioning
-- Read \`wip://data-model\` — terminologies, templates, documents, fields, relationships
-- Read \`wip://ponifs\` — 6 behaviours that trip up every new developer
-
-\`wip://development-guide\` provides the full 4-phase workflow reference if needed.
-\`wip://query-assistant-prompt\` provides a complete system prompt for NL query agents (used by --preset query apps).
-
-## Client Libraries
-
-For Phase 4 (app building), use @wip/client, @wip/react, and @wip/proxy:
-- \`libs/wip-client-README.md\` — TypeScript client (6 services, error hierarchy, bulk abstraction)
-- \`libs/wip-react-README.md\` — React hooks (TanStack Query, 30+ hooks)
-- \`libs/wip-proxy-README.md\` — Express middleware for WIP API proxying with auth injection
-
-Install from tarballs in \`libs/\`:
-\`\`\`bash
-npm install ./libs/wip-client-*.tgz ./libs/wip-react-*.tgz ./libs/wip-proxy-*.tgz
-\`\`\`
-
-## Dev Setup Gotchas
-
-**TLS:** WIP uses a self-signed cert on \`https://localhost:8443\`. Node.js \`fetch()\` rejects self-signed certs. Add \`NODE_TLS_REJECT_UNAUTHORIZED=0\` to your \`dev:server\` script (NOT \`start\`/production). Production with proper certs needs no workaround.
-
-**@wip/client baseUrl:** In browser apps behind a Vite proxy, use \`baseUrl: '/wip'\` (resolved to \`window.location.origin + '/wip'\`). Do NOT use a bare relative path without the client resolving it — \`new URL('/wip/...')\` throws without a protocol.
-
-**@wip/react providers:** Hooks require BOTH \`QueryClientProvider\` (from \`@tanstack/react-query\`) AND \`WipProvider\` (from \`@wip/react\`). Missing either causes silent failure — hooks mount but never fetch, no errors.
-
-## WIP Toolkit
-
-\`wip-toolkit\` is a CLI for backup, export, import, and data migration. Install from the wheel in \`libs/\`:
-
-\`\`\`bash
-pip install libs/wip_toolkit-*.whl
-\`\`\`
-
-Key commands:
-- \`wip-toolkit export <namespace> <output.zip>\` — Export namespace to archive
-- \`wip-toolkit import <archive.zip> --mode fresh\` — Import with new IDs (cross-namespace)
-- \`wip-toolkit import <archive.zip> --mode restore\` — Restore with original IDs (disaster recovery)
-
-Remote WIP instances:
-\`\`\`bash
-wip-toolkit --host pi-poe-8gb.local --proxy export wip /tmp/backup.zip
-\`\`\`
-
-## Dev Delete
-
-\`tools/dev-delete.py\` hard-deletes entities during iterative development. See \`docs/dev-delete.md\` for full usage.
-
-\`\`\`bash
-# Dry run (default)
-python tools/dev-delete.py --namespace myapp
-
-# Actually delete
-python tools/dev-delete.py --namespace myapp --force
-
-# Remote MongoDB
-python tools/dev-delete.py --mongo-uri mongodb://remote-host:27017/ --namespace myapp --force
-\`\`\`
-
-Requires \`pymongo\`. For file/reporting cleanup also install \`boto3\` and \`psycopg2-binary\`.
-
-## Session Awareness
-
-You will be replaced. This session — including everything you learn, every correction Peter makes, every insight you gain — ends when your context fills or the task completes. The next agent starts from scratch with no memory of this conversation.
-
-**Consequence:** Anything worth knowing must be encoded into a durable artifact before this session ends. If Peter corrects your approach, consider whether the correction belongs in:
-- A \`/lesson\` entry (quick, structured, for future gene pool review)
-- A session report "Dead Ends" section (for the next YAC continuing this work)
-- A CLAUDE.md update (if Peter agrees it's universal)
-
-Do not say "got it, won't happen again" unless you have written the lesson down. The next agent will make the same mistake unless you leave a trace.
-
-## Scope Budget
-
-Most tasks should complete within a predictable number of commits. If you find yourself significantly exceeding expectations, something is wrong — a misunderstanding, a rabbit hole, or a task that needs decomposition.
-
-**Commit heuristics:**
-- A bug fix: 1-3 commits. If you're past 5, stop and report what's blocking you.
-- A feature addition: 3-7 commits. If you're past 10, stop and reassess scope with Peter.
-- A refactor: 2-5 commits. If you're past 8, you're probably changing too much at once.
-
-**Context window awareness:** You can check your own context usage:
-\`\`\`bash
-cat .claude-context-pct
-\`\`\`
-This file is written to your project directory by the status line. Check it periodically — especially before starting a new subtask.
-- **Past 50%:** Ensure your session report and dead ends section are written. You are halfway to replacement.
-- **Past 75%:** Stop working and write your session summary. Do not push through hoping to finish — the next YAC picks up faster from a clean summary than from a half-finished sprawl.
-
-When stopping for any reason, write a clear status report: what's done, what's left, what's blocking, and what didn't work (dead ends).
-
-## YAC Reporting
-
-You are a YAC (Yet Another Claude). You report your work to the Field Reporter by writing files to a shared directory. This reporting is also useful for the *next* YAC — your session reports are input for future agents resuming your work.
-
-**Getting the current time:** Always use \`date '+%Y-%m-%d %H:%M'\` for timestamps. Do not guess.
-
-**Off the record:** If Peter says "off the record" or "don't report this," skip reporting for that segment. Resume when told.
-
-### Session Identity
-
-At the start of every session, run \`date '+%Y%m%d-%H%M'\` and assign yourself a session ID using your app prefix:
-
-| App | Prefix |
-|-----|--------|
-| Statement Manager | \`APP-SM\` |
-| Receipt Scanner | \`APP-RS\` |
-| D&D Compendium | \`APP-DND\` |
-| ClinTrial Explorer | \`APP-CT\` |
-| New apps | \`APP-<SHORT>\` (pick a 2-4 letter code, tell the user) |
-
-Format: \`<PREFIX>-YYYYMMDD-HHMM\`. Example: \`APP-CT-20260331-2015\`.
-
-### Report Directory
-
-Create your report directory at the start of every session:
-
-\`\`\`bash
-mkdir -p /Users/peter/Development/FR-YAC/reports/<PREFIX>-YYYYMMDD-HHMM/
-\`\`\`
-
-### Resuming — Check Previous Sessions
-
-At session start (and when running \`/resume\`), check for recent sessions with your prefix:
-
-\`\`\`bash
-ls -d /Users/peter/Development/FR-YAC/reports/<PREFIX>-* 2>/dev/null | tail -1
-\`\`\`
-
-If a previous session exists, read its \`session.md\` to recover context from the previous agent's work. This is faster and richer than reconstructing from git alone.
-
-If you are continuing work from that session (e.g., after context compaction), add this to your
-\`session.md\` frontmatter:
-
-\`\`\`
-continues: <PREVIOUS-SESSION-ID>
-\`\`\`
-
-### Session Start
-
-Create \`session.md\` immediately when starting work:
-
-\`\`\`markdown
----
-session: <PREFIX>-YYYYMMDD-HHMM
-type: app
-app: <app name>
-repo: <repo directory name>
-started: YYYY-MM-DD HH:MM
-phase: <explore | design-model | implement | build-app | improve | other>
-tasks:
-  - <initial task from user>
----
-\`\`\`
-
-### After Every Commit
-
-Before appending, read \`commits.md\` first. If the commit hash is already listed, skip it (prevents duplicates after context compaction).
-
-Append to \`commits.md\` in your report directory:
-
-\`\`\`markdown
-## <short-hash> — <commit message>
-**Time:** <run \`date '+%H:%M'\`>
-**Files:** <count> changed, +<added>/-<removed>
-**Tests:** <X passed, Y failed — or "not run">
-**What:** <1-2 sentences — what changed>
-**Why:** <1-2 sentences — what motivated this change>
-**PoNIF:** <if you encountered a PoNIF — which one and whether it caused issues. Omit if none.>
-**Discovered:** <anything surprising, bugs found, or gaps identified — omit if nothing>
-\`\`\`
-
-If you encountered a PoNIF and handled it correctly, note which one. If you hit a PoNIF and it caused a bug, definitely note it — the Field Reporter tracks these patterns.
-
-### Session Summary
-
-Write the session summary to \`session.md\` when:
-- Peter runs \`/report session-end\`
-- You detect context is running low (~70-80%)
-- The session is naturally ending
-
-Update (overwrite) the summary section — don't append multiple summaries.
-
-\`\`\`markdown
-## Session Summary
-**Duration:** <start time> – <run \`date '+%H:%M'\`>
-**Commits:** <count>
-**Lines:** +<added>/-<removed>
-**Phase:** <which phase(s) you worked in>
-**What happened:** <3-5 sentences covering the session's arc — not a commit list, but the narrative>
-**WIP interactions:** <any platform bugs, missing MCP tools, or upstream issues discovered — omit if none>
-**Unfinished:** <what's left, if anything>
-**For the next YAC:** <context the next agent needs to pick up where you left off>
-\`\`\`
-
-### Fireside Chats
-
-When Peter initiates a design discussion, architecture debate, or scope conversation, use the \`/report\` slash command to capture it. These are the high-value narrative moments — not just what was decided, but why, what alternatives were considered, and what Peter said.
-EOF
-echo "   Written: CLAUDE.md"
-
-# Ensure .env is gitignored (contains plaintext API key)
-if [ -n "$APP_KEY_PLAINTEXT" ] && [ -f "$APP_DIR/.env" ]; then
+ENGINE_FLAGS=""
+if $TIER3; then ENGINE_FLAGS="$ENGINE_FLAGS --tier3"; fi
+if $REFRESH_MODE; then ENGINE_FLAGS="$ENGINE_FLAGS --refresh"; fi
+if $FORCE_CLAUDE_MD; then ENGINE_FLAGS="$ENGINE_FLAGS --force-claude-md"; fi
+# shellcheck disable=SC2086  # ENGINE_FLAGS is deliberately word-split (0..3 flags)
+PYTHONPATH="$WIP_ROOT/scaffold/src${PYTHONPATH:+:$PYTHONPATH}" \
+    "$MCP_PYTHON" -m wip_scaffold app \
+    --wip-root "$WIP_ROOT" --app-dir "$APP_DIR" \
+    --app-name "$APP_NAME" --app-slug "$APP_SLUG" \
+    --dev-namespace "$DEV_NAMESPACE" --key-file "$WIP_API_KEY_FILE" \
+    --preset "$PRESET" --role-prefix "$APP_PREFIX" \
+    --mcp-python "$PYTHON_PATH" --mcp-base-url "$WIP_BASE_URL" \
+    --mcp-key-file "$WIP_API_KEY_FILE" \
+    $LIB_FLAGS $TOOLKIT_FLAG $QUERY_FLAG $SEED_BOOTSTRAP_FLAG $WRITE_ENV_FLAG $ENGINE_FLAGS
+
+# Lockfile sync (refresh only) — an npm ACTION, so it stays wrapper-side,
+# and it must run AFTER the engine has copied the tarballs it re-hashes.
+# Copying a tarball alone leaves package-lock.json pinning the OLD content
+# hash and `npm ci` (the Dockerfile default) fails with EINTEGRITY;
+# `npm install ./libs/<name>-<version>.tgz` rewrites the `file:` spec and
+# re-hashes from disk. Only deps the app already declares are synced.
+if $REFRESH_MODE && [ -f "$APP_DIR/package.json" ] && command -v npm &>/dev/null; then
+    SYNC_SPECS=()
+    for tb in "$CLIENT_TARBALL" "$REACT_TARBALL" "$PROXY_TARBALL"; do
+        [ -n "$tb" ] || continue
+        pkg="@wip/$(basename "$tb" | sed 's/^wip-//; s/-[0-9].*//')"
+        if grep -q "\"$pkg\"" "$APP_DIR/package.json"; then
+            SYNC_SPECS+=("./libs/$(basename "$tb")")
+        fi
+    done
+    if [ ${#SYNC_SPECS[@]} -gt 0 ]; then
+        echo "   Syncing package.json + package-lock.json to the shipped tarballs..."
+        if (cd "$APP_DIR" && npm install "${SYNC_SPECS[@]}" --no-audit --no-fund --loglevel=error); then
+            # The lockfile must now record the hash of the file we shipped.
+            # A mismatch means npm satisfied the spec from a stale cache
+            # entry — i.e. the lib's content changed without a version bump
+            # (the immutable-tarball rule). Fail loudly, not silently.
+            for spec in "${SYNC_SPECS[@]}"; do
+                tb_name=$(basename "$spec")
+                pkg="@wip/$(echo "$tb_name" | sed 's/^wip-//; s/-[0-9].*//')"
+                want="sha512-$(node -e "const c=require('crypto'),f=require('fs');process.stdout.write(c.createHash('sha512').update(f.readFileSync('$APP_DIR/libs/$tb_name')).digest('base64'))")"
+                got=$(node -e "const l=JSON.parse(require('fs').readFileSync('$APP_DIR/package-lock.json','utf8'));const e=l.packages&&l.packages['node_modules/$pkg'];process.stdout.write((e&&e.integrity)||'')")
+                if [ "$want" != "$got" ]; then
+                    echo "   ERROR: $tb_name — lockfile integrity does not match the shipped file."
+                    echo "   The library's content changed without a version bump (versioned"
+                    echo "   tarballs are immutable). Bump the version in the lib's"
+                    echo "   package.json, npm pack, commit the new tarball, then re-run this script."
+                    exit 1
+                fi
+            done
+            echo "   Lockfile synced — commit package.json + package-lock.json in the app repo."
+        else
+            echo "   WARNING: npm install failed — sync the lockfile manually:"
+            echo "     cd $APP_DIR && npm install ${SYNC_SPECS[*]}"
+            echo "   then commit package.json + package-lock.json."
+        fi
+    fi
+fi
+
+# --- Git init + gitignore sentinels (new projects only) ---
+if ! $REFRESH_MODE; then
+# Ensure .env is gitignored — environment-specific (carries WIP_API_KEY_FILE,
+# the local wip-deploy secrets path; CASE-495 removed the baked plaintext key)
+if [ -f "$APP_DIR/.env" ]; then
     if [ ! -f "$APP_DIR/.gitignore" ]; then
         printf '.env\n' > "$APP_DIR/.gitignore"
     elif ! grep -qx '.env' "$APP_DIR/.gitignore"; then
         printf '.env\n' >> "$APP_DIR/.gitignore"
     fi
 fi
+
+# Ensure the session sentinels are gitignored (CASE-389). .session-id is
+# per-session/ephemeral; .session-role is regenerated by --prefix / a re-run.
+# Neither should ever be committed.
+for _ign in '.claude/.session-id' '.claude/.session-role' '.claude/settings.local.json'; do
+    if [ ! -f "$APP_DIR/.gitignore" ]; then
+        printf '%s\n' "$_ign" > "$APP_DIR/.gitignore"
+    elif ! grep -qx "$_ign" "$APP_DIR/.gitignore"; then
+        printf '%s\n' "$_ign" >> "$APP_DIR/.gitignore"
+    fi
+done
 
 # --- Initialise git ---
 
@@ -845,7 +907,7 @@ echo "$STEP_NUM. Initialising git repository..."
 Generated by WIP create-app-project.sh from:
   $WIP_ROOT")
 echo "   Git repo initialised with initial commit"
-fi  # end of ! $REFRESH_MODE block (CLAUDE.md + git init)
+fi  # end of ! $REFRESH_MODE block (gitignore sentinels + git init)
 
 # --- Done ---
 
@@ -879,23 +941,28 @@ if [ ${#MISSING_LIBS[@]} -gt 0 ]; then
     echo ""
 fi
 
+# First command keyed on session STATE, not create-vs-setup (CASE-532 #1): a
+# freshly-set-up checkout has no .claude/.session-id, so /wip-wake would
+# correctly refuse — /wip-setup is the right entry. /wip-wake is only for
+# continuing an existing session (after /clear or a compaction reset).
+if [ -f "$APP_DIR/.claude/.session-id" ]; then
+    FIRST_CMD="/wip-wake     # Continue: roll the prior session over + recover context"
+else
+    FIRST_CMD="/wip-setup    # First run: mint a session ID + load baseline context"
+fi
+
+echo "Next steps:"
+echo "  cd $APP_DIR"
+echo "  claude          # Launch Claude Code"
+echo "  $FIRST_CMD"
+if ! $REFRESH_MODE; then
+    echo "  /wip-explore    # Then start Phase 1 (explore the domain)"
+fi
+echo ""
+echo "Verify MCP connection:"
+echo "  In Claude Code, run /mcp — you should see 94 tools and 5 resources."
 if $REFRESH_MODE; then
-    echo "Next steps:"
-    echo "  cd $APP_DIR"
-    echo "  claude          # Launch Claude Code"
-    echo "  /resume         # Recover context from existing code and docs"
-    echo ""
-    echo "Verify MCP connection:"
-    echo "  In Claude Code, run /mcp — you should see 71 tools and 5 resources."
     echo ""
     echo "Note: .mcp.json has been regenerated with paths for this machine."
     echo "      Add it to .gitignore if you don't want to commit machine-specific paths."
-else
-    echo "Next steps:"
-    echo "  cd $APP_DIR"
-    echo "  claude          # Launch Claude Code"
-    echo "  /explore        # Start Phase 1"
-    echo ""
-    echo "Verify MCP connection:"
-    echo "  In Claude Code, run /mcp — you should see 71 tools and 5 resources."
 fi

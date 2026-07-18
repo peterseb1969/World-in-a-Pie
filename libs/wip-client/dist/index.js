@@ -86,17 +86,27 @@ var FetchTransport = class {
     this.auth = auth;
     this.cachedAuthHeaders = null;
   }
+  /**
+   * Resolve auth headers for one request. Providers that opt into caching
+   * (`cacheable`, e.g. a static API key) are fetched once and reused until a
+   * 401/403 or setAuth() clears the cache; non-cacheable providers (OIDC,
+   * whose bearer the consumer callback rotates) are re-fetched every request
+   * so an expired token never pins a stale header (CASE-569).
+   */
+  async resolveAuthHeaders() {
+    if (!this.auth) return {};
+    if (!this.auth.cacheable) return this.auth.getHeaders();
+    if (!this.cachedAuthHeaders) {
+      this.cachedAuthHeaders = await this.auth.getHeaders();
+    }
+    return this.cachedAuthHeaders;
+  }
   async request(method, path, options) {
     const url = this.buildUrl(path, options?.params);
     const headers = {
       ...options?.headers
     };
-    if (this.auth) {
-      if (!this.cachedAuthHeaders) {
-        this.cachedAuthHeaders = await this.auth.getHeaders();
-      }
-      Object.assign(headers, this.cachedAuthHeaders);
-    }
+    Object.assign(headers, await this.resolveAuthHeaders());
     if (options?.body !== void 0 && !(options.body instanceof FormData)) {
       headers["Content-Type"] = "application/json";
     }
@@ -192,12 +202,7 @@ var FetchTransport = class {
   async stream(method, path, options) {
     const url = this.buildUrl(path, options?.params);
     const headers = { ...options?.headers };
-    if (this.auth) {
-      if (!this.cachedAuthHeaders) {
-        this.cachedAuthHeaders = await this.auth.getHeaders();
-      }
-      Object.assign(headers, this.cachedAuthHeaders);
-    }
+    Object.assign(headers, await this.resolveAuthHeaders());
     const response = await fetch(url, {
       method,
       headers,
@@ -279,6 +284,9 @@ var FetchTransport = class {
 var ApiKeyAuthProvider = class {
   constructor(apiKey) {
     this.apiKey = apiKey;
+    // The key is static — safe (and cheap) for the transport to cache. Rotation
+    // goes through setApiKey + the transport's setAuth, which clears the cache.
+    this.cacheable = true;
   }
   getHeaders() {
     return { "X-API-Key": this.apiKey };
@@ -445,7 +453,7 @@ var DefStoreService = class extends BaseService {
     return this.get(`/import-export/export/${terminologyId}`, {
       format: options?.format ?? "json",
       include_inactive: options?.includeInactive,
-      include_relationships: options?.includeRelationships,
+      include_relations: options?.includeRelations,
       include_metadata: options?.includeMetadata,
       languages: options?.languages
     });
@@ -460,18 +468,25 @@ var DefStoreService = class extends BaseService {
   async bulkValidate(data) {
     return this.post("/validate/bulk", data);
   }
-  // ---- Ontology / Relationships ----
-  async listRelationships(params) {
-    return this.get("/ontology/relationships", params);
+  // ---- Ontology / Term Relations ----
+  //
+  // The platform renamed this surface in WIP commit 2eeb872 (Phase 0 of
+  // the document-relationships work, 2026-04-25): "relationship" now
+  // refers to document-to-document edges; "relation" / "term-relation"
+  // refers to the term-ontology edges (is_a, part_of, ...). HTTP path,
+  // wire field, and these client method names all moved together — no
+  // backward-compat aliases.
+  async listTermRelations(params) {
+    return this.get("/ontology/term-relations", params);
   }
-  async listAllRelationships(params) {
-    return this.get("/ontology/relationships/all", params);
+  async listAllTermRelations(params) {
+    return this.get("/ontology/term-relations/all", params);
   }
-  async createRelationships(items, namespace) {
-    return this.post("/ontology/relationships", items, { namespace });
+  async createTermRelations(items, namespace) {
+    return this.post("/ontology/term-relations", items, { namespace });
   }
-  async deleteRelationships(items, namespace) {
-    return this.del("/ontology/relationships", items, { namespace });
+  async deleteTermRelations(items, namespace) {
+    return this.del("/ontology/term-relations", items, { namespace });
   }
   async getAncestors(termId, params) {
     return this.get(`/ontology/terms/${termId}/ancestors`, params);
@@ -479,11 +494,11 @@ var DefStoreService = class extends BaseService {
   async getDescendants(termId, params) {
     return this.get(`/ontology/terms/${termId}/descendants`, params);
   }
-  async getParents(termId, namespace) {
-    return this.get(`/ontology/terms/${termId}/parents`, { namespace });
+  async getParents(termId, params) {
+    return this.get(`/ontology/terms/${termId}/parents`, params);
   }
-  async getChildren(termId, namespace) {
-    return this.get(`/ontology/terms/${termId}/children`, { namespace });
+  async getChildren(termId, params) {
+    return this.get(`/ontology/terms/${termId}/children`, params);
   }
   // ---- Audit Log ----
   async getTerminologyAuditLog(terminologyId, params) {
@@ -512,17 +527,20 @@ var TemplateStoreService = class extends BaseService {
   async getTemplateRaw(id, version) {
     return this.get(`/templates/${id}/raw`, version ? { version } : void 0);
   }
-  async getTemplateByValue(value) {
-    return this.get(`/templates/by-value/${value}`);
+  async getTemplateByValue(value, opts) {
+    return this.get(`/templates/by-value/${value}`, opts?.namespace ? { namespace: opts.namespace } : void 0);
   }
   async getTemplateByValueRaw(value, namespace) {
     return this.get(`/templates/by-value/${value}/raw?namespace=${encodeURIComponent(namespace)}`);
   }
-  async getTemplateVersions(value) {
-    return this.get(`/templates/by-value/${value}/versions`);
+  async getTemplateVersions(value, opts) {
+    return this.get(`/templates/by-value/${value}/versions`, opts?.namespace ? { namespace: opts.namespace } : void 0);
   }
-  async getTemplateByValueAndVersion(value, version) {
-    return this.get(`/templates/by-value/${value}/versions/${version}`);
+  async getTemplateByValueAndVersion(value, version, opts) {
+    return this.get(`/templates/by-value/${value}/versions/${version}`, opts?.namespace ? { namespace: opts.namespace } : void 0);
+  }
+  async getTemplateVersionsById(templateId) {
+    return this.get(`/templates/${templateId}/versions`);
   }
   /**
    * Create a single template.
@@ -570,9 +588,48 @@ var TemplateStoreService = class extends BaseService {
   async activateTemplate(id, options) {
     return this.post(`/templates/${id}/activate`, null, options);
   }
+  // ---- Reactivate ----
+  /**
+   * Reactivate a soft-deleted (inactive) template version (CASE-498).
+   *
+   * The inverse of soft-delete-by-version (`deleteTemplate(id, { version })`):
+   * restores a specific frozen version to active so documents pinned to it
+   * can be updated again. Distinct from `activateTemplate`, which is draft-only
+   * and addresses the latest version — `version` is required here and targets a
+   * known frozen version (there is no "latest" default). Idempotent on an
+   * already-active version; a draft version is rejected by the backend.
+   */
+  async reactivateTemplate(id, version, options) {
+    return this.post(`/templates/${id}/reactivate`, null, {
+      namespace: options.namespace,
+      version
+    });
+  }
   // ---- Cascade ----
   async cascadeTemplate(id) {
     return this.post(`/templates/${id}/cascade`);
+  }
+  // ---- Edge-type endpoints ----
+  /**
+   * Additively widen an edge type's allowed endpoint set (CASE-515).
+   *
+   * Adds source and/or target endpoint templates to an existing relationship
+   * template (PoNIF #7) in place, preserving every existing edge — the
+   * supported alternative to the delete+recreate that would strand them.
+   * Endpoints are append-only: this only ADDS (removal stays unsupported).
+   * Each new endpoint must be a real template; idempotent on already-allowed
+   * endpoints. No reindex / reporting migration — the relationship indexes and
+   * reporting columns are generic.
+   */
+  async addEdgeTypeEndpoints(id, options) {
+    return this.post(
+      `/templates/${id}/endpoints`,
+      {
+        add_source_templates: options.addSourceTemplates ?? [],
+        add_target_templates: options.addTargetTemplates ?? []
+      },
+      { namespace: options.namespace }
+    );
   }
 };
 
@@ -585,8 +642,19 @@ var DocumentStoreService = class extends BaseService {
   async listDocuments(params) {
     return this.get("/documents", params);
   }
-  async getDocument(id, version) {
-    return this.get(`/documents/${id}`, version !== void 0 ? { version } : void 0);
+  /**
+   * Fetch a document by ID (or any synonym/value the Registry resolves).
+   *
+   * `namespace` (CASE-457): under a MULTI-namespace key (e.g. the install admin
+   * key), a value-form `id` has no namespace context to resolve against — pass
+   * `namespace` to scope it. Maps to the `?namespace=` query param the endpoint
+   * accepts. Single-namespace keys derive it automatically and can omit it.
+   */
+  async getDocument(id, version, namespace) {
+    const params = {};
+    if (version !== void 0) params.version = version;
+    if (namespace !== void 0) params.namespace = namespace;
+    return this.get(`/documents/${id}`, Object.keys(params).length ? params : void 0);
   }
   async createDocument(data) {
     return this.bulkWriteOne("/documents", data);
@@ -610,6 +678,9 @@ var DocumentStoreService = class extends BaseService {
     if (options?.ifMatch !== void 0) {
       item.if_match = options.ifMatch;
     }
+    if (options?.metadataPatch !== void 0) {
+      item.metadata_patch = options.metadataPatch;
+    }
     return this.bulkWriteOne("/documents", item, "PATCH");
   }
   /**
@@ -628,6 +699,12 @@ var DocumentStoreService = class extends BaseService {
       version: options?.version
     }, "DELETE");
   }
+  async deleteDocuments(ids, options) {
+    return this.bulkWrite("/documents", ids.map((id) => ({
+      id,
+      hard_delete: options?.hardDelete
+    })), "DELETE");
+  }
   async archiveDocument(id, archivedBy) {
     return this.bulkWriteOne("/documents/archive", { id, archived_by: archivedBy });
   }
@@ -635,6 +712,14 @@ var DocumentStoreService = class extends BaseService {
   // ---- Validation ----
   async validateDocument(data) {
     return this.post("/validation/validate", data);
+  }
+  /**
+   * Bulk validate (CASE-419): validate many data payloads against ONE template
+   * without saving. Side-effect-free — no documents/versions/identity-hash
+   * registrations. Returns per-item results in input order.
+   */
+  async validateDocuments(request) {
+    return this.post("/validation/validate-bulk", request);
   }
   // ---- Versions ----
   async getVersions(id) {
@@ -654,11 +739,69 @@ var DocumentStoreService = class extends BaseService {
   async getLatestDocument(id) {
     return this.get(`/documents/${id}/latest`);
   }
-  async getDocumentByIdentity(identityHash, includeInactive) {
-    return this.get(`/documents/by-identity/${identityHash}`, includeInactive !== void 0 ? { include_inactive: includeInactive } : void 0);
+  async getDocumentByIdentity(identityHash, includeInactive, namespace) {
+    const params = {};
+    if (includeInactive !== void 0) params.include_inactive = includeInactive;
+    if (namespace !== void 0) params.namespace = namespace;
+    return this.get(`/documents/by-identity/${identityHash}`, Object.keys(params).length ? params : void 0);
   }
-  async queryDocuments(body) {
-    return this.post("/documents/query", body);
+  /**
+   * Query documents by template + filters (POST /documents/query).
+   *
+   * `namespace` (CASE-457): the read fails SILENTLY (total: 0, no error pre-fix)
+   * when a value-form `template_id`/`template_value` can't resolve for lack of
+   * namespace context — i.e. a MULTI-namespace key (the install admin key) with
+   * no scope. Pass `namespace` to supply it. It maps to the `?namespace=` QUERY
+   * PARAM, NOT the body — `namespace` in the JSON body is rejected
+   * `extra_forbidden` (StrictModel). Single-namespace keys derive it and can omit.
+   */
+  async queryDocuments(body, namespace) {
+    return this.post("/documents/query", body, namespace !== void 0 ? { namespace } : void 0);
+  }
+  // ---- Relationship-graph queries (Phase 4 / CASE-296) ----
+  /**
+   * List relationship documents touching a document.
+   *
+   * Returns relationship documents (templates with `usage: 'relationship'`)
+   * that point at (incoming) or from (outgoing) the given document.
+   *
+   * Backed by Mongo indexes on `(template_id, data.source_ref)` and
+   * `(template_id, data.target_ref)` — query is O(matches), not
+   * O(documents).
+   *
+   * @param documentId Seed document ID (or any synonym/value the Registry resolves).
+   * @param params Filter, pagination, and namespace overrides.
+   */
+  async getDocumentRelationships(documentId, params) {
+    return this.get(`/documents/${documentId}/relationships`, params);
+  }
+  /**
+   * BFS traversal through relationship documents from a seed document.
+   *
+   * Capped at `depth=10` and `max_nodes=1000` (safety bounds). When a
+   * cap fires, the response sets `truncated: true`.
+   *
+   * @param documentId Seed document ID.
+   * @param params Depth (1..10), type filter, direction, namespace.
+   */
+  async traverseDocuments(documentId, params) {
+    return this.get(`/documents/${documentId}/traverse`, params);
+  }
+  // ---- Migration ----
+  /**
+   * Migrate a cohort of documents from one template version to another —
+   * a validated, identity-preserving bulk re-pin.
+   *
+   * `dry_run` defaults to true on the server: run it first and check
+   * `failed === 0` before applying. Bulk-first: always HTTP 200,
+   * per-document outcome in `results`. Operation-level problems (bad
+   * versions, identity-fields mismatch, inactive target) throw as 4xx.
+   *
+   * @param request Template (UUID or value/synonym), from/to versions, dry_run.
+   * @param namespace Cohort namespace. Omittable only for single-namespace keys.
+   */
+  async migrateDocuments(request, namespace) {
+    return this.post("/documents/migrate", request, namespace ? { namespace } : void 0);
   }
   // ---- Import ----
   async previewImport(file, filename) {
@@ -713,9 +856,12 @@ var DocumentStoreService = class extends BaseService {
    * Restore a namespace from an uploaded archive. The archive is streamed
    * to disk on the server, so multi-GB uploads do not buffer in memory.
    *
-   * **Mode gotcha:** `mode: 'restore'` writes back into the archive's source
-   * namespace and ignores `target_namespace`. Use `mode: 'fresh'` when
-   * restoring into a different namespace.
+   * **Mode gotcha (CASE-569):** omitting `mode` defers to the server default
+   * `'restore'`, which writes back into the archive's source namespace
+   * (a single-namespace archive honours `target_namespace`; a multi-namespace
+   * one restores each to itself). `'fresh'` is not yet implemented server-side
+   * — the backend 400s on it. Pass `mode: 'restore'` explicitly when the
+   * namespace outcome matters; see `RestoreOptions`.
    */
   async startRestore(namespace, archive, options = {}, filename = "archive.zip") {
     const form = new FormData();
@@ -837,13 +983,14 @@ var FileStoreService = class extends BaseService {
     super(transport, "/api/document-store/files");
   }
   // ---- Files ----
-  async uploadFile(file, filename, metadata) {
+  async uploadFile(file, filename, metadata, namespace) {
     const formData = new FormData();
     if (file instanceof File) {
       formData.append("file", file);
     } else {
       formData.append("file", file, filename ?? "upload");
     }
+    if (namespace) formData.append("namespace", namespace);
     if (metadata?.description) formData.append("description", metadata.description);
     if (metadata?.tags?.length) formData.append("tags", metadata.tags.join(","));
     if (metadata?.category) formData.append("category", metadata.category);
@@ -947,17 +1094,27 @@ var RegistryService = class extends BaseService {
     );
     return resp.results[0];
   }
+  /**
+   * Free-text search across composite key values (CASE-572, breaking in 0.28.0).
+   *
+   * Returns `{ hits, total }`: `total` is the full server-side match count
+   * even when `limit` bounds the returned hits. `limit` requires a backend
+   * that accepts it (registry rejects unknown fields with 422 — ships
+   * together with this client change).
+   */
   async searchEntries(term, options) {
     const resp = await this.post(
-      "/entries/search/by-term",
+      "/search/by-term",
       [{
         term,
         restrict_to_namespaces: options?.namespaces,
         restrict_to_entity_types: options?.entityTypes,
-        include_inactive: options?.includeInactive ?? false
+        include_inactive: options?.includeInactive ?? false,
+        ...options?.limit !== void 0 ? { limit: options.limit } : {}
       }]
     );
-    return resp.results[0]?.results ?? [];
+    const first = resp.results[0];
+    return { hits: first?.results ?? [], total: first?.total_matches ?? 0 };
   }
   async unifiedSearch(params) {
     return this.get("/entries/search", params);
@@ -1017,8 +1174,20 @@ var RegistryService = class extends BaseService {
     return this.del(`/namespaces/${prefix}/grants`, grants);
   }
   // ---- API Keys ----
-  async listAPIKeys() {
-    return this.get("/api-keys");
+  /**
+   * List API keys with pagination (CASE-335).
+   *
+   * Breaking change in @wip/client 0.19.0: the response shape is now a
+   * `PaginatedResponse<APIKeyInfo>` (envelope with `items`/`total`/`page`/
+   * `page_size`/`pages`) instead of a bare `APIKeyInfo[]`. Callers using
+   * `.map(...)` on the result must switch to `.items.map(...)`.
+   */
+  async listAPIKeys(params) {
+    const qs = new URLSearchParams();
+    if (params?.page !== void 0) qs.set("page", String(params.page));
+    if (params?.page_size !== void 0) qs.set("page_size", String(params.page_size));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return this.get(`/api-keys${suffix}`);
   }
   async createAPIKey(request) {
     return this.post("/api-keys", request);
@@ -1052,7 +1221,14 @@ var ReportingSyncService = class extends BaseService {
     return this.get("/status");
   }
   // ── SQL Query Execution ──
-  /** Execute a read-only SQL query against the PostgreSQL reporting database */
+  /**
+   * Execute a read-only SQL query against the PostgreSQL reporting database.
+   *
+   * Reporting tables live in per-namespace PostgreSQL schemas
+   * (`"<ns>"."doc_<value>"`). Pass `namespace` so unqualified table names
+   * resolve in that namespace's schema, or schema-qualify each table in the
+   * SQL for cross-namespace queries.
+   */
   async runQuery(sql, params, options) {
     const body = {
       sql,
@@ -1060,6 +1236,69 @@ var ReportingSyncService = class extends BaseService {
       ...options
     };
     return this.post("/query", body);
+  }
+  // ── Batch Sync (CASE-283) ──
+  /**
+   * Trigger a batch sync for ALL templates with `sync_enabled=true`.
+   * Returns one BatchSyncResponse per template; jobs run async on
+   * the server. Poll `listBatchJobs()` or `getBatchJob(job_id)` for
+   * progress.
+   */
+  async triggerBatchSyncAll(options) {
+    return this.post("/sync/batch", void 0, { ...options });
+  }
+  /**
+   * Trigger a batch sync for a single template (by value).
+   * Job runs async; poll `getBatchJob(job_id)` for progress.
+   */
+  async triggerBatchSync(templateValue, options) {
+    return this.post(`/sync/batch/${templateValue}`, void 0, { ...options });
+  }
+  /**
+   * Synchronous batch sync for the terminologies entity table.
+   * Returns the result inline; no per-job polling.
+   */
+  async triggerTerminologySync(namespace, pageSize = 100) {
+    return this.post("/sync/batch/terminologies", void 0, {
+      namespace,
+      page_size: pageSize
+    });
+  }
+  /**
+   * Synchronous batch sync for the terms entity table.
+   * Iterates every active terminology in `namespace` and syncs its
+   * terms.
+   */
+  async triggerTermSync(namespace, pageSize = 100) {
+    return this.post("/sync/batch/terms", void 0, {
+      namespace,
+      page_size: pageSize
+    });
+  }
+  /**
+   * Synchronous batch sync for the term_relations entity table.
+   */
+  async triggerTermRelationSync(namespace, pageSize = 100) {
+    return this.post("/sync/batch/term_relations", void 0, {
+      namespace,
+      page_size: pageSize
+    });
+  }
+  /** List all batch sync jobs (in-memory, lost on reporting-sync restart). */
+  async listBatchJobs() {
+    return this.get("/sync/batch/jobs");
+  }
+  /** Fetch a single batch sync job by id. 404 if unknown. */
+  async getBatchJob(jobId) {
+    return this.get(`/sync/batch/jobs/${jobId}`);
+  }
+  /** Cancel a running batch sync job. */
+  async cancelBatchJob(jobId) {
+    return this.del(`/sync/batch/jobs/${jobId}`);
+  }
+  /** Clear all completed/failed/cancelled jobs from in-memory state. */
+  async clearCompletedJobs() {
+    return this.del("/sync/batch/jobs");
   }
   // ── Sync Awareness ──
   /**
@@ -1108,6 +1347,16 @@ var ReportingSyncService = class extends BaseService {
     return this.get("/health/integrity", params);
   }
   // ── Search & Activity ──
+  /**
+   * Unified search with per-type pagination (CASE-329).
+   *
+   * Breaking change in @wip/client 0.19.0: the response shape moved
+   * from a flat `results: SearchResult[]` to per-type buckets keyed
+   * by entity type, each with its own pagination envelope. Same
+   * `page`/`page_size` applies to every type. The legacy `limit`
+   * parameter is still accepted as a deprecation-window alias for
+   * `page_size` — use `page_size` going forward.
+   */
   async search(params) {
     return this.post("/search", params);
   }

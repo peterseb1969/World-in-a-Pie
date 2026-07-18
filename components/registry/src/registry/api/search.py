@@ -1,7 +1,11 @@
 """Search API endpoints."""
 
 
+import logging
+
 from fastapi import APIRouter, Body, Depends
+
+from wip_auth import UserIdentity
 
 from ..models.api_models import (
     SearchBulkResponse,
@@ -14,6 +18,8 @@ from ..models.entry import RegistryEntry
 from ..services.auth import require_api_key
 from ..services.search import SearchService
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
@@ -24,7 +30,7 @@ router = APIRouter()
 )
 async def search_by_fields(
     items: list[SearchItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> SearchBulkResponse:
     """Search for registry entries by field values in composite keys."""
     results = []
@@ -57,14 +63,20 @@ async def search_by_fields(
                 ))
 
             results.append(SearchResponse(
-                input_index=i,
+                index=i,
                 results=search_results,
                 total_matches=len(search_results),
             ))
 
-        except Exception:
+        except Exception as e:
+            # Per-item isolation: one bad item must not 500 the whole batch
+            # (bulk-first convention). But the failure has to be visible —
+            # an unlogged empty result makes "search crashed" identical to
+            # "no matches" for both callers and operators.
+            logger.exception("search_by_fields failed for index=%d", i)
             results.append(SearchResponse(
-                input_index=i, results=[], total_matches=0,
+                index=i, status="error", results=[], total_matches=0,
+                error=str(e),
             ))
 
     return SearchBulkResponse(results=results)
@@ -77,29 +89,30 @@ async def search_by_fields(
 )
 async def search_by_term(
     items: list[SearchByTermItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> SearchBulkResponse:
     """Search for a term across any field in any composite key."""
     results = []
 
     for i, item in enumerate(items):
         try:
-            try:
-                query = SearchService.build_text_search_query(
-                    term=item.term,
-                    restrict_to_namespaces=item.restrict_to_namespaces,
-                    restrict_to_entity_types=item.restrict_to_entity_types,
-                    include_inactive=item.include_inactive
-                )
-                entries = await RegistryEntry.find(query).to_list()
-            except Exception:
-                query = SearchService.build_regex_search_query(
-                    term=item.term,
-                    restrict_to_namespaces=item.restrict_to_namespaces,
-                    restrict_to_entity_types=item.restrict_to_entity_types,
-                    include_inactive=item.include_inactive
-                )
-                entries = await RegistryEntry.find(query).to_list()
+            # CASE-568: regex search is the primary (and only) path. The old
+            # $text attempt always threw — no text index is declared on
+            # RegistryEntry — so every call paid a guaranteed-failing query
+            # before this fallback served the actual result.
+            query = SearchService.build_regex_search_query(
+                term=item.term,
+                restrict_to_namespaces=item.restrict_to_namespaces,
+                restrict_to_entity_types=item.restrict_to_entity_types,
+                include_inactive=item.include_inactive
+            )
+            # CASE-572: count before limiting so total_matches is the true
+            # match count even when the fetch is bounded.
+            total = await RegistryEntry.find(query).count()
+            find_query = RegistryEntry.find(query)
+            if item.limit is not None:
+                find_query = find_query.limit(item.limit)
+            entries = await find_query.to_list()
 
             search_results = []
             for entry in entries:
@@ -139,14 +152,17 @@ async def search_by_term(
                 ))
 
             results.append(SearchResponse(
-                input_index=i,
+                index=i,
                 results=search_results,
-                total_matches=len(search_results),
+                total_matches=total,
             ))
 
-        except Exception:
+        except Exception as e:
+            # Same per-item isolation + visibility contract as search_by_fields.
+            logger.exception("search_by_term failed for index=%d", i)
             results.append(SearchResponse(
-                input_index=i, results=[], total_matches=0,
+                index=i, status="error", results=[], total_matches=0,
+                error=str(e),
             ))
 
     return SearchBulkResponse(results=results)
@@ -159,7 +175,7 @@ async def search_by_term(
 )
 async def search_across_namespaces(
     items: list[SearchItem] = Body(...),
-    api_key: str = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_api_key)
 ) -> SearchBulkResponse:
     """Search for entries across ALL namespaces."""
     modified_items = []
@@ -171,4 +187,4 @@ async def search_across_namespaces(
             include_inactive=item.include_inactive,
         ))
 
-    return await search_by_fields(modified_items, api_key)
+    return await search_by_fields(modified_items, identity)

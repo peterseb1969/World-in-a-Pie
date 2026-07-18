@@ -1,6 +1,17 @@
 import { useQuery } from '@tanstack/react-query'
 import type { UseQueryOptions } from '@tanstack/react-query'
-import type { DocumentListResponse, Document, DocumentQueryParams, DocumentQueryRequest, DocumentVersionResponse } from '@wip/client'
+import type {
+  DocumentListResponse,
+  Document,
+  DocumentQueryParams,
+  DocumentQueryRequest,
+  DocumentVersionResponse,
+  DocumentRelationshipsParams,
+  DocumentTraverseParams,
+  DocumentTraverseResponse,
+  TableViewParams,
+  TableViewResponse,
+} from '@wip/client'
 import { useWipClient } from '../provider.js'
 import { wipKeys } from '../utils/keys.js'
 import { STALE_TIMES } from '../utils/defaults.js'
@@ -46,6 +57,32 @@ export function useQueryDocuments(
   })
 }
 
+/**
+ * Spreadsheet-style table view of a template's documents.
+ *
+ * Wraps `client.documents.getTableView` (document-store
+ * `GET /table/{template_id}`): column definitions plus one row per
+ * document, the same projection the CSV export uses. The queryKey is
+ * `wipKeys.documents.tableView(templateId, params)` — declared since the
+ * key hierarchy shipped, consumed by a first-party hook only now.
+ *
+ * Disabled when `templateId` is empty/falsy.
+ */
+export function useTableView(
+  templateId: string,
+  params?: TableViewParams,
+  options?: Omit<UseQueryOptions<TableViewResponse>, 'queryKey' | 'queryFn'>,
+) {
+  const client = useWipClient()
+  return useQuery({
+    queryKey: wipKeys.documents.tableView(templateId, params),
+    queryFn: () => client.documents.getTableView(templateId, params),
+    staleTime: STALE_TIMES.documents,
+    enabled: !!templateId,
+    ...options,
+  })
+}
+
 export function useDocumentVersions(
   id: string,
   options?: Omit<UseQueryOptions<DocumentVersionResponse>, 'queryKey' | 'queryFn'>,
@@ -56,6 +93,55 @@ export function useDocumentVersions(
     queryFn: () => client.documents.getVersions(id),
     staleTime: STALE_TIMES.documents,
     enabled: !!id,
+    ...options,
+  })
+}
+
+/**
+ * List relationship documents incident to a document (CASE-296).
+ *
+ * Wraps `client.documents.getDocumentRelationships`. Returns a
+ * paginated list of relationship documents (templates with
+ * `usage: 'relationship'`) pointing at (incoming) or from (outgoing)
+ * the given document.
+ *
+ * Disabled when `documentId` is empty/falsy.
+ */
+export function useDocumentRelationships(
+  documentId: string,
+  params?: DocumentRelationshipsParams,
+  options?: Omit<UseQueryOptions<DocumentListResponse>, 'queryKey' | 'queryFn'>,
+) {
+  const client = useWipClient()
+  return useQuery({
+    queryKey: wipKeys.documents.relationships(documentId, params),
+    queryFn: () => client.documents.getDocumentRelationships(documentId, params),
+    staleTime: STALE_TIMES.documents,
+    enabled: !!documentId,
+    ...options,
+  })
+}
+
+/**
+ * Traverse the relationship graph from a document (CASE-296).
+ *
+ * Wraps `client.documents.traverseDocuments`. BFS expansion through
+ * relationship documents, capped at depth=10 and max_nodes=1000.
+ * Check `data.truncated` to detect when a cap fired.
+ *
+ * Disabled when `documentId` is empty/falsy.
+ */
+export function useTraverseDocuments(
+  documentId: string,
+  params?: DocumentTraverseParams,
+  options?: Omit<UseQueryOptions<DocumentTraverseResponse>, 'queryKey' | 'queryFn'>,
+) {
+  const client = useWipClient()
+  return useQuery({
+    queryKey: wipKeys.documents.traverse(documentId, params),
+    queryFn: () => client.documents.traverseDocuments(documentId, params),
+    staleTime: STALE_TIMES.documents,
+    enabled: !!documentId,
     ...options,
   })
 }

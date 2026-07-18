@@ -8,11 +8,20 @@ all references in a document comply with the isolation rules.
 
 import logging
 import os
-from typing import Any
+import time
+from typing import Any, cast
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Staleness window for cached namespace config (isolation_mode,
+# allowed_external_refs). Mirrors the template cache's 5 s TTL
+# (wip://conventions): namespace-config changes take effect within this
+# window without a service restart. The 404-negative expires on the same
+# clock, so a namespace created after being first probed becomes visible
+# too (CASE-607).
+NAMESPACE_CACHE_TTL_SECONDS = 5.0
 
 
 class ReferenceValidationError(Exception):
@@ -28,13 +37,14 @@ class ReferenceValidator:
 
     def __init__(self, registry_url: str | None = None, api_key: str | None = None):
         self.registry_url = registry_url or os.getenv("REGISTRY_URL", "http://localhost:8001")
-        self.api_key = api_key or os.getenv("WIP_AUTH_LEGACY_API_KEY", "")
-        self._namespace_cache: dict[str, dict[str, Any]] = {}
+        self.api_key = cast(str, api_key or os.getenv("WIP_AUTH_LEGACY_API_KEY", ""))
+        self._namespace_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     async def _get_namespace(self, namespace: str) -> dict[str, Any] | None:
-        """Get namespace info by namespace prefix."""
-        if namespace in self._namespace_cache:
-            return self._namespace_cache[namespace]
+        """Get namespace info by namespace prefix (cached, TTL-bounded)."""
+        cached = self._namespace_cache.get(namespace)
+        if cached is not None and (time.monotonic() - cached[0]) < NAMESPACE_CACHE_TTL_SECONDS:
+            return cached[1]
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -44,12 +54,13 @@ class ReferenceValidator:
                 )
                 if response.status_code == 200:
                     ns_data = response.json()
-                    self._namespace_cache[namespace] = ns_data
-                    return ns_data
+                    self._namespace_cache[namespace] = (time.monotonic(), ns_data)
+                    return cast(dict[str, Any] | None, ns_data)
                 elif response.status_code == 404:
                     # No namespace found - allow all references (open by default)
-                    self._namespace_cache[namespace] = {"isolation_mode": "open"}
-                    return self._namespace_cache[namespace]
+                    ns_data = {"isolation_mode": "open"}
+                    self._namespace_cache[namespace] = (time.monotonic(), ns_data)
+                    return ns_data
         except Exception as e:
             logger.warning(f"Failed to fetch namespace '{namespace}': {e}")
 
@@ -61,6 +72,7 @@ class ReferenceValidator:
         template_namespace: str,
         term_references: list[dict[str, Any]] | None = None,
         file_references: list[dict[str, Any]] | None = None,
+        document_references: list[dict[str, Any]] | None = None,
     ) -> None:
         """
         Validate that all references in a document comply with isolation rules.
@@ -70,6 +82,10 @@ class ReferenceValidator:
             template_namespace: Namespace of the referenced template
             term_references: List of term reference objects
             file_references: List of file reference objects
+            document_references: List of resolved reference objects
+                (ValidationResult.references shape); entries whose
+                reference_type is "document" are checked against the
+                isolation rules via their resolved namespace (CASE-566)
 
         Raises:
             ReferenceValidationError: If any references violate isolation rules
@@ -85,13 +101,15 @@ class ReferenceValidator:
         violations = []
 
         # Check template reference
-        if template_namespace != document_namespace:
-            if not self._is_allowed_reference(template_namespace, namespace_info, is_strict):
-                violations.append({
-                    "type": "template",
-                    "namespace": template_namespace,
-                    "message": f"Template namespace '{template_namespace}' is not accessible from '{document_namespace}' namespace",
-                })
+        if (
+            template_namespace != document_namespace
+            and not self._is_allowed_reference(template_namespace, namespace_info, is_strict)
+        ):
+            violations.append({
+                "type": "template",
+                "namespace": template_namespace,
+                "message": f"Template namespace '{template_namespace}' is not accessible from '{document_namespace}' namespace",
+            })
 
         # Check term references
         if term_references:
@@ -102,13 +120,15 @@ class ReferenceValidator:
                     term_namespaces.add(term_ns)
 
             for term_ns in term_namespaces:
-                if term_ns != document_namespace:
-                    if not self._is_allowed_reference(term_ns, namespace_info, is_strict):
-                        violations.append({
-                            "type": "term",
-                            "namespace": term_ns,
-                            "message": f"Term namespace '{term_ns}' is not accessible from '{document_namespace}' namespace",
-                        })
+                if (
+                    term_ns != document_namespace
+                    and not self._is_allowed_reference(term_ns, namespace_info, is_strict)
+                ):
+                    violations.append({
+                        "type": "term",
+                        "namespace": term_ns,
+                        "message": f"Term namespace '{term_ns}' is not accessible from '{document_namespace}' namespace",
+                    })
 
         # Check file references
         if file_references:
@@ -119,13 +139,40 @@ class ReferenceValidator:
                     file_namespaces.add(file_ns)
 
             for file_ns in file_namespaces:
-                if file_ns != document_namespace:
-                    if not self._is_allowed_reference(file_ns, namespace_info, is_strict):
-                        violations.append({
-                            "type": "file",
-                            "namespace": file_ns,
-                            "message": f"File namespace '{file_ns}' is not accessible from '{document_namespace}' namespace",
-                        })
+                if (
+                    file_ns != document_namespace
+                    and not self._is_allowed_reference(file_ns, namespace_info, is_strict)
+                ):
+                    violations.append({
+                        "type": "file",
+                        "namespace": file_ns,
+                        "message": f"File namespace '{file_ns}' is not accessible from '{document_namespace}' namespace",
+                    })
+
+        # Check document references (CASE-566). The resolution layer is
+        # deliberately namespace-unscoped for UUID-form lookups; enforcing
+        # here, post-resolution, lets the violation name the foreign
+        # namespace instead of masquerading as not_found — and keeps
+        # allowed cross-namespace references working with one lookup.
+        if document_references:
+            doc_namespaces = set()
+            for ref in document_references:
+                if ref.get("reference_type") != "document":
+                    continue
+                doc_ns = (ref.get("resolved") or {}).get("namespace")
+                if doc_ns:
+                    doc_namespaces.add(doc_ns)
+
+            for doc_ns in doc_namespaces:
+                if (
+                    doc_ns != document_namespace
+                    and not self._is_allowed_reference(doc_ns, namespace_info, is_strict)
+                ):
+                    violations.append({
+                        "type": "document",
+                        "namespace": doc_ns,
+                        "message": f"Document namespace '{doc_ns}' is not accessible from '{document_namespace}' namespace",
+                    })
 
         if violations:
             raise ReferenceValidationError(
@@ -187,24 +234,29 @@ class ReferenceValidator:
         violations = []
 
         # Check extends reference
-        if extends_template_namespace and extends_template_namespace != template_namespace:
-            if not self._is_allowed_reference(extends_template_namespace, namespace_info, is_strict):
-                violations.append({
-                    "type": "extends",
-                    "namespace": extends_template_namespace,
-                    "message": f"Parent template namespace '{extends_template_namespace}' is not accessible from '{template_namespace}' namespace",
-                })
+        if (
+            extends_template_namespace
+            and extends_template_namespace != template_namespace
+            and not self._is_allowed_reference(extends_template_namespace, namespace_info, is_strict)
+        ):
+            violations.append({
+                "type": "extends",
+                "namespace": extends_template_namespace,
+                "message": f"Parent template namespace '{extends_template_namespace}' is not accessible from '{template_namespace}' namespace",
+            })
 
         # Check terminology references
         if terminology_namespaces:
             for term_ns in terminology_namespaces:
-                if term_ns != template_namespace:
-                    if not self._is_allowed_reference(term_ns, namespace_info, is_strict):
-                        violations.append({
-                            "type": "terminology",
-                            "namespace": term_ns,
-                            "message": f"Terminology namespace '{term_ns}' is not accessible from '{template_namespace}' namespace",
-                        })
+                if (
+                    term_ns != template_namespace
+                    and not self._is_allowed_reference(term_ns, namespace_info, is_strict)
+                ):
+                    violations.append({
+                        "type": "terminology",
+                        "namespace": term_ns,
+                        "message": f"Terminology namespace '{term_ns}' is not accessible from '{template_namespace}' namespace",
+                    })
 
         if violations:
             raise ReferenceValidationError(

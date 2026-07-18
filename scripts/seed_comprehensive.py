@@ -1,67 +1,81 @@
 #!/usr/bin/env python3
 """
-Comprehensive seed script for World In a Pie (WIP).
+Comprehensive seed script for World In a Pie (WIP).  v1.3
 
 Populates all services (Def-Store, Template Store, Document Store) with
 test data for functional testing and performance benchmarking.
+
+v1.3 changes:
+- Always routes through the Caddy proxy at https://<host>:8443 (or
+  --port). The wip-deploy v2 deployment does not publish service ports
+  to the host, so the previous "direct ports" mode no longer works.
+- API key is resolved (in order) from --api-key, --api-key-file,
+  WIP_API_KEY, or ~/.wip-deploy/<deployment>/secrets/api-key.
+  No fallback to repo-root .env, no hardcoded dev key.
 
 Usage:
     python scripts/seed_comprehensive.py [options]
 
 Options:
-    --host HOSTNAME       WIP host (default: localhost). Sets all service URLs.
-    --via-proxy          Route through Caddy proxy (https://<host>:8443) instead of direct ports
-    --profile PROFILE     Data profile: minimal, standard, full, performance (default: standard)
-    --services SERVICES   Comma-separated services: all, def-store, template-store, document-store
-    --clean              Clean existing data before seeding (USE WITH CAUTION)
-    --benchmark          Run performance benchmarks after seeding
-    --output FILE        Write benchmark results to JSON file
+    --host HOSTNAME       WIP host (default: localhost or WIP_HOST env)
+    --port PORT           Proxy port (default: 8443; use 443 for K8s Ingress)
+    --api-key KEY         API key (overrides all auto-discovery)
+    --api-key-file PATH   Read the key from this file (single line)
+    --deployment NAME     Pick a wip-deploy deployment under ~/.wip-deploy/
+                          when more than one exists
+    --profile PROFILE     Data profile: minimal, standard, full, performance
+    --services SERVICES   Comma-separated: all, def-store, template-store, document-store
+    --clean               Clean existing data before seeding (USE WITH CAUTION)
+    --benchmark           Run performance benchmarks after seeding
+    --output FILE         Write benchmark results to JSON file
     --namespace PREFIX    Namespace prefix for data isolation (default: seed)
-    --time-limit SECS    Stop document seeding after SECS seconds (for quick perf tests)
-    --skip-terminologies Skip terminology seeding (use existing)
-    --skip-templates     Skip template seeding (use existing)
-    --dry-run            Show what would be created without making changes
+    --time-limit SECS     Stop document seeding after SECS seconds
+    --skip-terminologies  Skip terminology seeding (use existing)
+    --skip-templates      Skip template seeding (use existing)
+    --dry-run             Show what would be created without making changes
+
+API key resolution (first hit wins):
+  1. --api-key KEY
+  2. --api-key-file PATH
+  3. WIP_API_KEY env var
+  4. ~/.wip-deploy/<deployment>/secrets/api-key
+     - If --deployment not given and exactly one deployment dir exists,
+       it is auto-selected.
+     - If --host is non-localhost, auto-discovery is skipped (the local
+       ~/.wip-deploy/ does not describe the remote host).
 
 Examples:
-    # Seed everything with standard profile (localhost)
+    # Local seed against the wip-dev-local deployment (most common)
     python scripts/seed_comprehensive.py
 
-    # Quick 30-second performance test (seeds terminologies + templates, then
-    # creates documents for 30s — enough for meaningful throughput numbers)
+    # Quick 30-second performance test
     python scripts/seed_comprehensive.py --profile performance --time-limit 30
 
-    # Seed a remote WIP instance via direct ports (requires port access)
-    python scripts/seed_comprehensive.py --host wip-pi.local
+    # Remote WIP instance — must supply the key explicitly
+    python scripts/seed_comprehensive.py --host wip-pi.local \\
+        --api-key-file /secure/path/wip-pi.api-key
 
-    # Seed a remote WIP instance via Caddy proxy (only needs port 8443)
-    python scripts/seed_comprehensive.py --host wip-pi.local --via-proxy
+    # Pick a specific local deployment when several exist
+    python scripts/seed_comprehensive.py --deployment wip-staging-local
 
     # Seed only def-store with minimal data
     python scripts/seed_comprehensive.py --profile minimal --services def-store
 
-    # Full performance test with benchmarks
-    python scripts/seed_comprehensive.py --profile performance --benchmark --output benchmark.json
-
-    # Seed into default wip namespace (not recommended, mixes with real data)
-    python scripts/seed_comprehensive.py --namespace wip --profile minimal
-
-    # Seed documents only (using existing terminologies and templates)
-    python scripts/seed_comprehensive.py --skip-terminologies --skip-templates --services document-store
+    # K8s Ingress on port 443
+    python scripts/seed_comprehensive.py --host wip.example.com --port 443
 
 Environment Variables:
     WIP_HOST              Default host if --host not specified
-    WIP_API_KEY           API key for authentication
+    WIP_API_KEY           API key (used if --api-key/--api-key-file omitted)
 """
 from __future__ import annotations
 
 import argparse
 import os
 import sys
-import json
 import time
 from pathlib import Path
 from typing import Any
-from datetime import datetime
 
 import requests
 import urllib3
@@ -72,7 +86,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Add seed-data module to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "components"))
 
-from seed_data import terminologies, templates, documents, generators, performance
+from seed_data import documents, performance, templates, terminologies  # noqa: E402  (sys.path mutated above)
 
 
 def field_name_to_label(name: str) -> str:
@@ -101,57 +115,121 @@ def process_template_fields(fields: list[dict]) -> list[dict]:
     return processed
 
 
-# Default host and API key (can be overridden via environment or arguments)
+# Default host (can be overridden via WIP_HOST env or --host arg)
 DEFAULT_HOST = os.environ.get("WIP_HOST", "localhost")
 
-
-def _resolve_api_key() -> str:
-    """Resolve API key from environment or .env file."""
-    # 1. Explicit env var takes priority
-    key = os.environ.get("WIP_API_KEY")
-    if key:
-        return key
-    # 2. Try reading from .env in project root
-    env_file = Path(__file__).parent.parent / ".env"
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if line.startswith("WIP_AUTH_LEGACY_API_KEY=") and not line.startswith("#"):
-                val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                if val:
-                    return val
-    # 3. Fallback for dev
-    return "dev_master_key_for_testing"
+# Root for wip-deploy generated deployments
+WIP_DEPLOY_ROOT = Path.home() / ".wip-deploy"
 
 
-DEFAULT_API_KEY = _resolve_api_key()
+class ApiKeyResolutionError(RuntimeError):
+    """Raised when no API key can be resolved from any source."""
 
 
-def get_service_urls(host: str = DEFAULT_HOST, via_proxy: bool = False, proxy_port: int = 8443) -> dict[str, str]:
+def resolve_api_key(
+    *,
+    cli_key: str | None,
+    cli_key_file: str | None,
+    deployment: str | None,
+    host: str,
+) -> tuple[str, str]:
+    """Resolve the API key. Returns (key, source-description).
+
+    Resolution order:
+      1. --api-key
+      2. --api-key-file
+      3. WIP_API_KEY env var
+      4. ~/.wip-deploy/<deployment>/secrets/api-key
+         - Auto-pick the deployment if exactly one dir exists.
+         - Skipped when host != localhost (local layout cannot describe
+           a remote host).
+
+    Raises ApiKeyResolutionError with a multi-line, actionable message
+    when no source yields a key.
+    """
+    if cli_key:
+        return cli_key, "--api-key"
+
+    if cli_key_file:
+        p = Path(cli_key_file).expanduser()
+        if not p.is_file():
+            raise ApiKeyResolutionError(f"--api-key-file: not a file: {p}")
+        key = p.read_text().strip()
+        if not key:
+            raise ApiKeyResolutionError(f"--api-key-file: file is empty: {p}")
+        return key, f"--api-key-file ({p})"
+
+    env_key = os.environ.get("WIP_API_KEY")
+    if env_key:
+        return env_key, "WIP_API_KEY env var"
+
+    is_local = host in ("localhost", "127.0.0.1", "::1")
+    if is_local and WIP_DEPLOY_ROOT.is_dir():
+        deployments = sorted(
+            d.name for d in WIP_DEPLOY_ROOT.iterdir()
+            if d.is_dir() and (d / "secrets" / "api-key").is_file()
+        )
+        if deployment:
+            if deployment not in deployments:
+                raise ApiKeyResolutionError(
+                    f"--deployment '{deployment}' not found under {WIP_DEPLOY_ROOT}.\n"
+                    f"Available: {', '.join(deployments) if deployments else '(none)'}"
+                )
+            picked = deployment
+        elif len(deployments) == 1:
+            picked = deployments[0]
+        elif len(deployments) > 1:
+            raise ApiKeyResolutionError(
+                f"Multiple deployments under {WIP_DEPLOY_ROOT}: {', '.join(deployments)}.\n"
+                f"Pass --deployment <name> or --api-key / --api-key-file."
+            )
+        else:
+            picked = None
+
+        if picked:
+            key_file = WIP_DEPLOY_ROOT / picked / "secrets" / "api-key"
+            key = key_file.read_text().strip()
+            if not key:
+                raise ApiKeyResolutionError(f"{key_file} is empty")
+            return key, f"~/.wip-deploy/{picked}/secrets/api-key"
+
+    # Nothing matched.
+    if not is_local:
+        hint = (
+            f"Host '{host}' is not localhost — auto-discovery skipped.\n"
+            f"Pass --api-key <KEY> or --api-key-file <PATH> for remote hosts."
+        )
+    else:
+        hint = (
+            f"No deployment found under {WIP_DEPLOY_ROOT} (or no secrets/api-key file in any).\n"
+            f"Pass --api-key, --api-key-file, or set WIP_API_KEY."
+        )
+    raise ApiKeyResolutionError(
+        "Could not resolve a WIP API key.\n"
+        "Tried (in order): --api-key, --api-key-file, WIP_API_KEY env, "
+        "~/.wip-deploy/<deployment>/secrets/api-key.\n" + hint
+    )
+
+
+def get_service_urls(host: str = DEFAULT_HOST, proxy_port: int = 8443) -> dict[str, str]:
     """Build service URLs for the given host.
+
+    All requests go through the Caddy proxy at https://<host>:<port>/api/<svc>/...
+    The wip-deploy v2 deployment does not publish service ports to the
+    host, so direct-port access is no longer supported.
 
     Args:
         host: The WIP host (e.g., localhost, wip-pi.local)
-        via_proxy: If True, route through proxy (https://<host>:<port>)
-                   If False, connect directly to service ports (http://<host>:800x)
-        proxy_port: Port for proxy mode (default 8443, use 443 for K8s Ingress)
+        proxy_port: Caddy port (default 8443, use 443 for K8s Ingress)
     """
-    if via_proxy:
-        port_suffix = f":{proxy_port}" if proxy_port != 443 else ""
-        base = f"https://{host}{port_suffix}"
-        return {
-            "registry": base,
-            "def-store": base,
-            "template-store": base,
-            "document-store": base,
-        }
-    else:
-        return {
-            "registry": f"http://{host}:8001",
-            "def-store": f"http://{host}:8002",
-            "template-store": f"http://{host}:8003",
-            "document-store": f"http://{host}:8004",
-        }
+    port_suffix = f":{proxy_port}" if proxy_port != 443 else ""
+    base = f"https://{host}{port_suffix}"
+    return {
+        "registry": base,
+        "def-store": base,
+        "template-store": base,
+        "document-store": base,
+    }
 
 
 class ServiceClient:
@@ -179,7 +257,7 @@ class ServiceClient:
         except Exception as e:
             return False, f"ERROR ({e})"
 
-    def get(self, path: str, params: dict = None) -> dict:
+    def get(self, path: str, params: dict | None = None) -> dict:
         """HTTP GET request."""
         start = time.perf_counter()
         resp = self.session.get(f"{self.base_url}{path}", params=params, timeout=30)
@@ -255,27 +333,28 @@ class WIPSeeder:
     def __init__(
         self,
         profile: str = "standard",
-        api_key: str = DEFAULT_API_KEY,
+        api_key: str = "",
         host: str = DEFAULT_HOST,
-        via_proxy: bool = False,
         proxy_port: int = 8443,
-        urls: dict[str, str] = None,
+        urls: dict[str, str] | None = None,
         dry_run: bool = False,
         namespace: str = "wip",
         time_limit: float | None = None,
     ):
+        if not api_key:
+            raise ValueError("WIPSeeder: api_key is required")
         self.profile = profile
         self.api_key = api_key
         self.host = host
-        self.via_proxy = via_proxy
-        self.urls = urls or get_service_urls(host, via_proxy, proxy_port)
+        self.urls = urls or get_service_urls(host, proxy_port)
         self.dry_run = dry_run
         self.namespace = namespace
         self._custom_ns = namespace != "wip"
         self.time_limit = time_limit
 
-        # Disable SSL verification for self-signed certs when using proxy
-        verify_ssl = not via_proxy
+        # All traffic goes through Caddy on HTTPS with a self-signed cert
+        # in dev — disable SSL verification.
+        verify_ssl = False
 
         # Initialize clients
         self.registry = ServiceClient(self.urls["registry"], api_key, verify_ssl)
@@ -286,30 +365,34 @@ class WIPSeeder:
         # Track created resources
         self.created_terminologies: dict[str, str] = {}  # value -> id
         self.created_templates: dict[str, str] = {}  # value -> id
+        # Per-template document_id list, populated during seed_documents.
+        # Used by seed_relationship_documents to pick endpoint refs.
+        self._docs_by_template: dict[str, list[str]] = {}
         self.created_term_ids: dict[str, dict[str, str]] = {}  # terminology_value -> {term_value -> term_id}
         self.created_documents: list[str] = []
 
     def check_services(self, services: list[str]) -> bool:
-        """Check that required services are healthy."""
+        """Check that required services are healthy.
+
+        Uses the api-prefixed /api/<svc>/health endpoint, which is the
+        only health path Caddy routes through.
+        """
         service_map = {
             "def-store": self.def_store,
             "template-store": self.template_store,
             "document-store": self.document_store,
         }
-        # In proxy mode, /health on the base URL hits the Console catch-all.
-        # Use each service's API root instead (returns 200 or known response).
-        proxy_health_paths = {
-            "def-store": "/api/def-store/terminologies?page_size=1",
-            "template-store": "/api/template-store/templates?page_size=1",
-            "document-store": "/api/document-store/documents?page_size=1",
+        health_paths = {
+            "def-store": "/api/def-store/health",
+            "template-store": "/api/template-store/health",
+            "document-store": "/api/document-store/health",
         }
 
         all_healthy = True
         for service in services:
             if service in service_map:
                 client = service_map[service]
-                health_path = proxy_health_paths.get(service, "/health") if self.via_proxy else "/health"
-                ok, status = client.health_check(health_path)
+                ok, status = client.health_check(health_paths[service])
                 print(f"  {service}: {status}")
                 if not ok:
                     all_healthy = False
@@ -556,6 +639,17 @@ class WIPSeeder:
                     "created_by": "seed_script"
                 }
 
+                # Forward relationship-template metadata when present.
+                # Immutable after create; safe to omit for entity templates.
+                if template_def.get("usage") and template_def["usage"] != "entity":
+                    create_data["usage"] = template_def["usage"]
+                if template_def.get("source_templates"):
+                    create_data["source_templates"] = template_def["source_templates"]
+                if template_def.get("target_templates"):
+                    create_data["target_templates"] = template_def["target_templates"]
+                if "versioned" in template_def and template_def["versioned"] is not True:
+                    create_data["versioned"] = template_def["versioned"]
+
                 if extends_id:
                     create_data["extends"] = extends_id
 
@@ -655,6 +749,7 @@ class WIPSeeder:
                     for r in result.get("results", []):
                         if r.get("document_id"):
                             self.created_documents.append(r["document_id"])
+                            self._docs_by_template.setdefault(template_value, []).append(r["document_id"])
                             stats["documents"] += 1
                             stats["by_template"][template_value]["created"] += 1
                         else:
@@ -737,6 +832,7 @@ class WIPSeeder:
                 # Fetch current template to get its fields
                 current = self.template_store.get(
                     f"/api/template-store/templates/{template_id}",
+                    params=self._ns_params(),
                 )
 
                 # Build updated field list (current fields + new field)
@@ -766,6 +862,7 @@ class WIPSeeder:
                         "fields": updated_fields,
                         "updated_by": "seed_script",
                     }],
+                    params=self._ns_params(),
                 )
 
                 r = result["results"][0]
@@ -890,6 +987,430 @@ class WIPSeeder:
 
         return stats
 
+    def seed_relationship_documents(self) -> dict[str, int]:
+        """Seed relationship documents (usage='relationship' templates).
+
+        Picks endpoint document_ids from self._docs_by_template (populated
+        by seed_documents) and posts edges for each profile-defined count.
+        Skipped if no entity documents have been created yet.
+        """
+        stats = {"documents": 0, "errors": 0, "by_template": {}, "skipped": []}
+
+        print("\nSeeding relationship documents...")
+        rel_counts = documents.get_relationship_counts(self.profile)
+
+        # Edge generators — produce a list of (data) dicts given lists of
+        # source/target document_ids and a count. Each edge picks a
+        # random source/target pair plus type-appropriate edge properties.
+        def _gen_employee_manages(sources: list[str], targets: list[str], n: int) -> list[dict]:
+            import random
+            from datetime import date, timedelta
+            edges = []
+            seen = set()
+            attempts = 0
+            # Distinct (manager, report) pairs; allow self-loops to exercise
+            # the design doc's open question on relationship-to-self.
+            while len(edges) < n and attempts < n * 10:
+                attempts += 1
+                src = random.choice(sources)
+                tgt = random.choice(targets)
+                if (src, tgt) in seen:
+                    continue
+                seen.add((src, tgt))
+                edges.append({
+                    "source_ref": src,
+                    "target_ref": tgt,
+                    "since": (date.today() - timedelta(days=random.randint(30, 1825))).isoformat(),
+                    "reporting_type": random.choice(["direct", "dotted_line"]),
+                })
+            return edges
+
+        def _gen_order_contains(sources: list[str], targets: list[str], n: int) -> list[dict]:
+            import random
+            edges = []
+            seen = set()
+            attempts = 0
+            while len(edges) < n and attempts < n * 10:
+                attempts += 1
+                src = random.choice(sources)
+                tgt = random.choice(targets)
+                if (src, tgt) in seen:
+                    continue
+                seen.add((src, tgt))
+                edges.append({
+                    "source_ref": src,
+                    "target_ref": tgt,
+                    "quantity": random.randint(1, 25),
+                    "unit_price": round(random.uniform(5.0, 500.0), 2),
+                })
+            return edges
+
+        edge_generators = {
+            "EMPLOYEE_MANAGES": ("EMPLOYEE", "EMPLOYEE", _gen_employee_manages),
+            "ORDER_CONTAINS": ("ORDER", "PRODUCT", _gen_order_contains),
+        }
+
+        for rel_value, count in rel_counts.items():
+            template_id = self.created_templates.get(rel_value)
+            if not template_id:
+                print(f"  {rel_value}: SKIPPED (template not found — was the template phase run?)")
+                stats["skipped"].append(rel_value)
+                continue
+
+            spec = edge_generators.get(rel_value)
+            if not spec:
+                print(f"  {rel_value}: SKIPPED (no edge generator defined)")
+                stats["skipped"].append(rel_value)
+                continue
+
+            src_template, tgt_template, gen_fn = spec
+            sources = self._docs_by_template.get(src_template, [])
+            targets = self._docs_by_template.get(tgt_template, [])
+            if not sources or not targets:
+                print(f"  {rel_value}: SKIPPED (need {src_template} + {tgt_template} entity docs first; have {len(sources)}/{len(targets)})")
+                stats["skipped"].append(rel_value)
+                continue
+
+            stats["by_template"][rel_value] = {"created": 0, "errors": 0}
+
+            if self.dry_run:
+                print(f"  [DRY-RUN] Would create {count} {rel_value} edges from {len(sources)} sources / {len(targets)} targets")
+                stats["documents"] += count
+                continue
+
+            edges = gen_fn(sources, targets, count)
+            if len(edges) < count:
+                print(f"  {rel_value}: only {len(edges)}/{count} unique pairs available")
+
+            batch_size = 50
+            for i in range(0, len(edges), batch_size):
+                batch = edges[i:i + batch_size]
+                batch_data = [
+                    {"template_id": template_id, "namespace": self.namespace, "data": data, "created_by": "seed_script"}
+                    for data in batch
+                ]
+                try:
+                    result = self.document_store.post(
+                        "/api/document-store/documents",
+                        batch_data,
+                    )
+                    for r in result.get("results", []):
+                        if r.get("document_id"):
+                            self.created_documents.append(r["document_id"])
+                            self._docs_by_template.setdefault(rel_value, []).append(r["document_id"])
+                            stats["documents"] += 1
+                            stats["by_template"][rel_value]["created"] += 1
+                        else:
+                            stats["errors"] += 1
+                            stats["by_template"][rel_value]["errors"] += 1
+                            err = (r.get("error") or "")[:120]
+                            if err:
+                                print(f"  {rel_value}: per-item error — {err}")
+                except requests.HTTPError as e:
+                    detail = ""
+                    try:
+                        body = e.response.json()
+                        detail = str(body.get("detail", ""))[:200]
+                    except Exception:
+                        pass
+                    print(f"  {rel_value}: batch error — {e} {detail}")
+                    stats["errors"] += len(batch)
+                    stats["by_template"][rel_value]["errors"] += len(batch)
+                except Exception as e:
+                    print(f"  {rel_value}: batch error — {e}")
+                    stats["errors"] += len(batch)
+                    stats["by_template"][rel_value]["errors"] += len(batch)
+
+            s = stats["by_template"][rel_value]
+            print(f"  {rel_value}: {s['created']} created, {s['errors']} errors")
+
+        return stats
+
+    def seed_term_relations(self) -> dict[str, int]:
+        """Seed ontology term-relations on the DEPARTMENT terminology.
+
+        Mirrors DEPARTMENT.parent_value chain as is_a edges. Exercises the
+        Phase-0-renamed /api/def-store/ontology/term-relations surface
+        (CASE-61). Idempotent — skipped per-edge if it already exists.
+        """
+        stats = {"relations_created": 0, "errors": 0, "skipped": 0}
+
+        print("\nSeeding ontology term-relations (DEPARTMENT is_a chain)...")
+
+        dept_id = self.created_terminologies.get("DEPARTMENT")
+        if not dept_id:
+            print("  SKIPPED (DEPARTMENT terminology not found)")
+            return stats
+
+        if self.dry_run:
+            print("  [DRY-RUN] Would create is_a edges for DEPARTMENT children")
+            stats["relations_created"] = 8  # rough count from terminologies.py
+            return stats
+
+        # Fetch terms in DEPARTMENT to map value -> term_id
+        try:
+            resp = self.def_store.get(
+                f"/api/def-store/terminologies/{dept_id}/terms",
+                params=self._ns_params(page_size=200),
+            )
+            terms_by_value = {t["value"]: t["term_id"] for t in resp.get("items", [])}
+        except Exception as e:
+            print(f"  ERROR fetching DEPARTMENT terms: {e}")
+            stats["errors"] += 1
+            return stats
+
+        # Build is_a edges: child -> parent based on parent_value in seed defs.
+        from seed_data import terminologies as term_module
+        dept_def = term_module.get_terminology_by_value("DEPARTMENT")
+        edges: list[dict[str, str]] = []
+        for term_def in dept_def.get("terms", []):
+            parent_value = term_def.get("parent_value")
+            if not parent_value:
+                continue
+            child_id = terms_by_value.get(term_def["value"])
+            parent_id = terms_by_value.get(parent_value)
+            if child_id and parent_id:
+                edges.append({
+                    "source_term_id": child_id,
+                    "target_term_id": parent_id,
+                    "relation_type": "is_a",
+                })
+
+        if not edges:
+            print("  SKIPPED (no DEPARTMENT parent chain — terms may not be seeded yet)")
+            return stats
+
+        try:
+            result = self.def_store.post(
+                "/api/def-store/ontology/term-relations",
+                edges,
+                params=self._ns_params(),
+            )
+            for r in result.get("results", []):
+                status_str = r.get("status", "")
+                if status_str == "created":
+                    stats["relations_created"] += 1
+                elif status_str in ("unchanged", "skipped"):
+                    stats["skipped"] += 1
+                else:
+                    stats["errors"] += 1
+                    err = (r.get("error") or "")[:120]
+                    if err:
+                        print(f"  per-item error: {err}")
+            print(f"  Term-relations: {stats['relations_created']} created, {stats['skipped']} skipped, {stats['errors']} errors")
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            stats["errors"] = len(edges)
+
+        return stats
+
+    def verify_relationships(self) -> dict[str, Any]:
+        """Smoke-test the new relationship query paths against seeded data.
+
+        Touches each Phase-4..7 code path with at least one assertion so a
+        regression in any of them surfaces in routine seeding output.
+        """
+        results: dict[str, Any] = {"checks": [], "errors": 0}
+
+        print("\nVerifying relationship APIs...")
+
+        if self.dry_run:
+            print("  [DRY-RUN] Would call /relationships, /traverse, get_document_versions, run_report_query")
+            return results
+
+        def _check(name: str, ok: bool, detail: str = "") -> None:
+            mark = "OK" if ok else "FAIL"
+            print(f"  [{mark}] {name}{(' — ' + detail) if detail else ''}")
+            results["checks"].append({"name": name, "ok": ok, "detail": detail})
+            if not ok:
+                results["errors"] += 1
+
+        # 1. /relationships on a manager (any EMPLOYEE that appears as source_ref)
+        managers = self._docs_by_template.get("EMPLOYEE", [])
+        if managers:
+            sample_mgr = managers[0]
+            try:
+                resp = self.document_store.get(
+                    f"/api/document-store/documents/{sample_mgr}/relationships",
+                    params={"namespace": self.namespace, "direction": "outgoing", "page_size": 10},
+                )
+                count = len(resp.get("items", []))
+                _check("get /relationships?direction=outgoing", True, f"{count} edges from sample employee")
+            except Exception as e:
+                _check("get /relationships?direction=outgoing", False, str(e)[:120])
+
+        # 2. /traverse with depth=2 on the same manager
+        if managers:
+            try:
+                resp = self.document_store.get(
+                    f"/api/document-store/documents/{managers[0]}/traverse",
+                    params={"namespace": self.namespace, "depth": 2, "direction": "outgoing"},
+                )
+                node_count = len(resp.get("nodes", []))
+                truncated = resp.get("truncated", False)
+                _check("get /traverse?depth=2", True, f"{node_count} nodes (truncated={truncated})")
+            except Exception as e:
+                _check("get /traverse?depth=2", False, str(e)[:120])
+
+        # 3. versioned=false: update an ORDER_CONTAINS doc twice and assert version stays at 1.
+        order_contains_docs = self._docs_by_template.get("ORDER_CONTAINS", [])
+        oc_template_id = self.created_templates.get("ORDER_CONTAINS")
+        if order_contains_docs and oc_template_id:
+            sample_oc = order_contains_docs[0]
+            try:
+                # Fetch current document to get source/target refs (re-post replaces in place).
+                current = self.document_store.get(
+                    f"/api/document-store/documents/{sample_oc}",
+                    params={"namespace": self.namespace},
+                )
+                cur_data = current.get("data", {})
+                # Re-post the same identity with a different unit_price twice.
+                for new_price in (99.99, 199.99):
+                    self.document_store.post(
+                        "/api/document-store/documents",
+                        [{
+                            "template_id": oc_template_id,
+                            "namespace": self.namespace,
+                            "data": {**cur_data, "unit_price": new_price},
+                            "created_by": "seed_script_versioned_false_check",
+                        }],
+                    )
+                # Now verify only one version exists.
+                versions = self.document_store.get(
+                    f"/api/document-store/documents/{sample_oc}/versions",
+                    params={"namespace": self.namespace},
+                )
+                vlist = versions.get("versions") or []
+                cur_version = versions.get("current_version", -1)
+                _check(
+                    "versioned=false (ORDER_CONTAINS): 1 version after 2 updates",
+                    len(vlist) == 1 and cur_version == 1,
+                    f"got versions={len(vlist)} current_version={cur_version}",
+                )
+            except Exception as e:
+                _check("versioned=false (ORDER_CONTAINS): 1 version after 2 updates", False, str(e)[:120])
+
+        # 4. Reporting: source_ref_id / target_ref_id columns populated on
+        # the relationship template's table. All services share the same
+        # Caddy URL — reuse the document-store client's base URL.
+        try:
+            # Give reporting-sync a moment to consume the NATS events from
+            # the relationship-document phase.
+            time.sleep(2.0)
+            rs_client = ServiceClient(self.urls["document-store"], self.api_key, verify_ssl=False)
+            # Filter on namespace — doc_order_contains is one global table
+            # with rows from every namespace. Without the filter the test
+            # would pass on any namespace's data, which is a false positive
+            # for the current run.
+            rq = rs_client.post(
+                "/api/reporting-sync/query",
+                {
+                    "sql": "SELECT source_ref_id, target_ref_id FROM doc_order_contains WHERE namespace = $1 LIMIT 5",
+                    "params": [self.namespace],
+                },
+            )
+            rows = rq.get("rows", [])
+            non_null = sum(1 for r in rows if r.get("source_ref_id") and r.get("target_ref_id"))
+            _check(
+                "reporting: doc_order_contains source/target_ref_id populated",
+                non_null > 0,
+                f"{non_null}/{len(rows)} rows in namespace={self.namespace}",
+            )
+        except Exception as e:
+            _check("reporting: doc_order_contains source/target_ref_id populated", False, str(e)[:120])
+
+        # 5. Negative case: archived endpoint should reject with archived_relationship_endpoint.
+        # Uses a per-run unique fixture (timestamp-suffixed employee_id) so
+        # the EMPLOYEE_MANAGES identity_hash never collides with edges from
+        # prior runs — that collision returns status='skipped' without
+        # re-running relationship validation, and the test would pass for
+        # the wrong reason.
+        em_template_id = self.created_templates.get("EMPLOYEE_MANAGES")
+        emp_template_id = self.created_templates.get("EMPLOYEE")
+        employees = self._docs_by_template.get("EMPLOYEE", [])
+        if em_template_id and emp_template_id and len(employees) >= 1:
+            try:
+                # Step A: create a one-off EMPLOYEE for this test run.
+                # employee_id must match ^EMP-\d{6}$ — pack the timestamp
+                # into 6 digits, prefixed with 9 to stay above the seed's
+                # normal 100000-base range.
+                run_tag = int(time.time())
+                fixture_emp_id = f"EMP-9{run_tag % 100000:05d}"
+                fixture_emp = {
+                    "employee_id": fixture_emp_id,
+                    "first_name": "Neg",
+                    "last_name": "Case",
+                    "email": f"neg.case.{run_tag}@example.com",
+                    "birth_date": "1990-01-01",
+                    "hire_date": "2020-01-01",
+                    "department": "Human Resources",
+                    "job_title": "QA Fixture",
+                    "employment_type": "Full-time",
+                    "salary": {"currency": "USD", "amount": 1.0},
+                }
+                fixture_resp = self.document_store.post(
+                    "/api/document-store/documents",
+                    [{
+                        "template_id": emp_template_id,
+                        "namespace": self.namespace,
+                        "data": fixture_emp,
+                        "created_by": "seed_script_negative_check_fixture",
+                    }],
+                )
+                fixture_r = fixture_resp.get("results", [{}])[0]
+                archive_target = fixture_r.get("document_id")
+                if not archive_target:
+                    _check(
+                        "negative: archived_relationship_endpoint enforced",
+                        False,
+                        f"setup failure — fixture employee create returned status={fixture_r.get('status')} error={(fixture_r.get('error') or '')[:120]}",
+                    )
+                else:
+                    # Step B: archive the fixture employee.
+                    arch_result = self.document_store.post(
+                        "/api/document-store/documents/archive",
+                        [{"id": archive_target, "archived_by": "seed_script_negative_check"}],
+                        params=self._ns_params(),
+                    )
+                    arch_r = arch_result.get("results", [{}])[0]
+                    if arch_r.get("status") not in ("archived", "deleted", "updated", "unchanged"):
+                        _check(
+                            "negative: archived_relationship_endpoint enforced",
+                            False,
+                            f"setup failure — archive call returned status={arch_r.get('status')} error={(arch_r.get('error') or '')[:120]}",
+                        )
+                    else:
+                        # Step C: try to create an EMPLOYEE_MANAGES edge
+                        # pointing at the freshly-archived fixture employee.
+                        # Expected: per-item error with `archived_relationship_endpoint` prefix.
+                        manager_id = employees[0]
+                        result = self.document_store.post(
+                            "/api/document-store/documents",
+                            [{
+                                "template_id": em_template_id,
+                                "namespace": self.namespace,
+                                "data": {
+                                    "source_ref": manager_id,
+                                    "target_ref": archive_target,
+                                    "since": "2025-01-01",
+                                    "reporting_type": "direct",
+                                },
+                                "created_by": "seed_script_negative_check",
+                            }],
+                        )
+                        r = result.get("results", [{}])[0]
+                        err_str = r.get("error", "") or ""
+                        rejected = r.get("status") == "error" and "archived_relationship_endpoint" in err_str
+                        _check(
+                            "negative: archived_relationship_endpoint enforced",
+                            rejected,
+                            f"got status={r.get('status')} error={err_str[:120]}",
+                        )
+            except Exception as e:
+                _check("negative: archived_relationship_endpoint enforced", False, str(e)[:120])
+
+        return results
+
     def run_benchmarks(self) -> performance.BenchmarkReport:
         """Run performance benchmarks."""
         print("\nRunning performance benchmarks...")
@@ -913,7 +1434,6 @@ class WIPSeeder:
 
         # Benchmark document operations
         print("  Benchmarking document creation...")
-        doc_count = min(100, len(documents.generate_documents_for_template("PERSON", 100)))
 
         # Get a template_id for testing
         template_id = self.created_templates.get("PERSON")
@@ -958,7 +1478,10 @@ class WIPSeeder:
             for doc_id in self.created_documents[:50]:
                 start = time.perf_counter()
                 try:
-                    self.document_store.get(f"/api/document-store/documents/{doc_id}")
+                    self.document_store.get(
+                        f"/api/document-store/documents/{doc_id}",
+                        params=self._ns_params(),
+                    )
                     elapsed = (time.perf_counter() - start) * 1000
                     read_result.times_ms.append(elapsed)
                 except Exception:
@@ -1045,7 +1568,10 @@ class WIPSeeder:
 
                 start = time.perf_counter()
                 try:
-                    self.template_store.get(f"/api/template-store/templates/{template_id}")
+                    self.template_store.get(
+                        f"/api/template-store/templates/{template_id}",
+                        params=self._ns_params(),
+                    )
                     elapsed = (time.perf_counter() - start) * 1000
                     resolution_result.times_ms.append(elapsed)
                 except Exception:
@@ -1066,20 +1592,34 @@ def main():
     parser.add_argument(
         "--host",
         default=DEFAULT_HOST,
-        help="WIP host for remote seeding (default: localhost or WIP_HOST env var)"
-    )
-
-    parser.add_argument(
-        "--via-proxy",
-        action="store_true",
-        help="Route requests through proxy (https://<host>:<port>) instead of direct ports"
+        help="WIP host (default: localhost or WIP_HOST env var)"
     )
 
     parser.add_argument(
         "--port",
         type=int,
         default=8443,
-        help="Proxy port (default: 8443, use 443 for K8s Ingress)"
+        help="Caddy proxy port (default: 8443, use 443 for K8s Ingress)"
+    )
+
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="API key (overrides --api-key-file, WIP_API_KEY, and auto-discovery)"
+    )
+
+    parser.add_argument(
+        "--api-key-file",
+        default=None,
+        metavar="PATH",
+        help="Read the API key from this file (single line)"
+    )
+
+    parser.add_argument(
+        "--deployment",
+        default=None,
+        metavar="NAME",
+        help="When several deployments exist under ~/.wip-deploy/, pick this one (e.g. wip-dev-local)"
     )
 
     parser.add_argument(
@@ -1144,12 +1684,6 @@ def main():
         help="Namespace prefix for data isolation (default: seed). Use 'wip' to seed into the default namespace."
     )
 
-    parser.add_argument(
-        "--api-key",
-        default=DEFAULT_API_KEY,
-        help="API key for authentication"
-    )
-
     args = parser.parse_args()
 
     # Parse services
@@ -1158,19 +1692,31 @@ def main():
     else:
         services = [s.strip() for s in args.services.split(",")]
 
+    # Resolve the API key before printing the banner so its source can
+    # appear there.
+    try:
+        api_key, key_source = resolve_api_key(
+            cli_key=args.api_key,
+            cli_key_file=args.api_key_file,
+            deployment=args.deployment,
+            host=args.host,
+        )
+    except ApiKeyResolutionError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return
+
     print("=" * 70)
-    print("WIP Comprehensive Seed Script")
+    print("WIP Comprehensive Seed Script  v1.3")
     print("=" * 70)
-    print(f"Host: {args.host}" + (" (via Caddy proxy)" if args.via_proxy else " (direct ports)"))
+    print(f"Host: https://{args.host}:{args.port} (Caddy proxy; only mode supported)")
+    print(f"API key source: {key_source}")
     print(f"Profile: {args.profile}")
     print(f"Namespace: {args.namespace}")
     print(f"Services: {', '.join(services)}")
     if args.time_limit:
         print(f"Time limit: {args.time_limit:.0f}s (document seeding)")
     print(f"Dry run: {args.dry_run}")
-
-    if args.via_proxy:
-        print("\nNote: Using Caddy proxy - SSL verification disabled for self-signed certs")
+    print("\nNote: SSL verification disabled for self-signed Caddy cert.")
 
     if args.clean:
         print("\nWARNING: Clean mode is enabled. This will delete existing data!")
@@ -1182,9 +1728,8 @@ def main():
     # Initialize seeder
     seeder = WIPSeeder(
         profile=args.profile,
-        api_key=args.api_key,
+        api_key=api_key,
         host=args.host,
-        via_proxy=args.via_proxy,
         proxy_port=args.port,
         dry_run=args.dry_run,
         namespace=args.namespace,
@@ -1194,15 +1739,15 @@ def main():
     # Check services
     print("\nChecking service health...")
     if not seeder.check_services(services):
-        print("\nSome services are not responding. Please ensure all services are running:")
-        print("  podman-compose -f docker-compose.infra.yml up -d")
-        print("  cd components/def-store && podman-compose -f docker-compose.yml up -d --build")
-        print("  cd components/template-store && podman-compose -f docker-compose.yml up -d --build")
-        print("  cd components/document-store && podman-compose -f docker-compose.yml up -d --build")
+        print("\nSome services are not responding.")
+        print("  Verify the deployment is up:  podman ps | grep wip-")
+        print("  Caddy must be reachable on https://"
+              f"{args.host}:{args.port}/api/<service>/health")
         return
 
     # Initialize custom namespace in registry
-    # Default 'wip' namespace is initialized by setup.sh, not the seed script
+    # Default 'wip' namespace is initialized by the registry's own startup
+    # bootstrap under wip-deploy, not the seed script
     if not args.dry_run and seeder._custom_ns:
         print("\nInitializing namespace...")
         seeder.initialize_namespace()
@@ -1257,6 +1802,22 @@ def main():
         total_stats["documents"] = stats
         print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
 
+    # Seed relationship documents — needs entity documents to exist first.
+    # Runs even under time-limit since this is the only path that exercises
+    # the document-relationship feature.
+    if "document-store" in services:
+        phase_start = time.perf_counter()
+        stats = seeder.seed_relationship_documents()
+        total_stats["relationship_documents"] = stats
+        print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
+
+    # Seed term-relations (CASE-61 — Phase-0 rename surface coverage).
+    if "def-store" in services and not args.skip_terminologies:
+        phase_start = time.perf_counter()
+        stats = seeder.seed_term_relations()
+        total_stats["term_relations"] = stats
+        print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
+
     # Seed template versions and versioning tests (skip when time-limited — not useful for perf tests)
     if not args.time_limit:
         if "template-store" in services and not args.skip_templates:
@@ -1269,6 +1830,14 @@ def main():
             phase_start = time.perf_counter()
             stats = seeder.seed_versioning_tests()
             total_stats["versioning_tests"] = stats
+            print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
+
+        # Verify the relationship query/reporting paths against seeded data.
+        # Skip under --time-limit (not useful for perf benchmarks).
+        if "document-store" in services:
+            phase_start = time.perf_counter()
+            stats = seeder.verify_relationships()
+            total_stats["relationship_verification"] = stats
             print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
 
     elapsed = time.time() - start_time
@@ -1296,9 +1865,24 @@ def main():
         time_note = " (time limit reached)" if s.get("time_limited") else ""
         print(f"Documents: {s['documents']} created, {s['errors']} errors{time_note}")
 
+    if "relationship_documents" in total_stats:
+        s = total_stats["relationship_documents"]
+        skipped_note = f", {len(s['skipped'])} skipped" if s.get("skipped") else ""
+        print(f"Relationship documents: {s['documents']} created, {s['errors']} errors{skipped_note}")
+
+    if "term_relations" in total_stats:
+        s = total_stats["term_relations"]
+        print(f"Term relations: {s['relations_created']} created, {s['skipped']} skipped, {s['errors']} errors")
+
     if "versioning_tests" in total_stats:
         s = total_stats["versioning_tests"]
         print(f"Versioning tests: {s['versions_created']} document versions created, {s['errors']} errors")
+
+    if "relationship_verification" in total_stats:
+        s = total_stats["relationship_verification"]
+        passed = sum(1 for c in s.get("checks", []) if c["ok"])
+        total_checks = len(s.get("checks", []))
+        print(f"Relationship verification: {passed}/{total_checks} checks passed, {s['errors']} errors")
 
     # Per-service HTTP timing reports
     seeder.def_store.print_timing_report("Def-Store")
@@ -1339,13 +1923,14 @@ def main():
                 f.write(report.to_json())
             print(f"\nBenchmark results saved to: {args.output}")
 
+    base = f"https://{args.host}:{args.port}"
     print("\n" + "=" * 70)
     print("You can now explore the data at:")
-    print(f"  Def-Store API:      http://{args.host}:8002/docs")
-    print(f"  Template Store API: http://{args.host}:8003/docs")
-    print(f"  Document Store API: http://{args.host}:8004/docs")
-    print(f"  MongoDB Express:    http://{args.host}:8081")
-    print(f"  WIP Console:        https://{args.host}:8443")
+    print(f"  Registry API:       {base}/api/registry/docs")
+    print(f"  Def-Store API:      {base}/api/def-store/docs")
+    print(f"  Template Store API: {base}/api/template-store/docs")
+    print(f"  Document Store API: {base}/api/document-store/docs")
+    print(f"  WIP Console:        {base}")
     print("=" * 70)
 
 

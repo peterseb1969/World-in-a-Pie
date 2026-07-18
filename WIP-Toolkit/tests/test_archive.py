@@ -1,13 +1,12 @@
 """Tests for archive read/write round-trip."""
 
-import json
-import tempfile
+import zipfile
 from pathlib import Path
 
 import pytest
-
-from wip_toolkit.archive import ArchiveReader, ArchiveWriter, ENTITY_FILES
-from wip_toolkit.models import EntityCounts, Manifest
+from wip_toolkit.archive import ENTITY_FILES, ArchiveReader, ArchiveWriter
+from wip_toolkit.convert_archive import convert_archive
+from wip_toolkit.models import EntityCounts, Manifest, NamespaceEntry
 
 
 class TestArchiveRoundTrip:
@@ -16,7 +15,7 @@ class TestArchiveRoundTrip:
     def test_empty_archive(self, tmp_path):
         """Empty archive has valid manifest and zero entities."""
         output = tmp_path / "empty.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
         manifest = Manifest(namespace="test")
         writer.write(manifest)
 
@@ -30,7 +29,7 @@ class TestArchiveRoundTrip:
     def test_terminology_round_trip(self, tmp_path):
         """Terminologies survive write/read."""
         output = tmp_path / "terms.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
 
         terminology = {
             "terminology_id": "0190a000-0000-7000-0000-000000000001",
@@ -55,7 +54,7 @@ class TestArchiveRoundTrip:
 
     def test_multiple_entity_types(self, tmp_path):
         output = tmp_path / "multi.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
 
         writer.add_entity("terminologies", {"terminology_id": "0190a000-0000-7000-0000-000000000001", "value": "A"})
         writer.add_entity("terms", {"term_id": "0190b000-0000-7000-0000-000000000001", "value": "a"})
@@ -84,7 +83,7 @@ class TestArchiveRoundTrip:
     def test_large_batch(self, tmp_path):
         """Many entities survive round-trip."""
         output = tmp_path / "large.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
 
         count = 500
         for i in range(count):
@@ -114,7 +113,7 @@ class TestArchiveRoundTrip:
         is constructed in Python.
         """
         output = tmp_path / "stream-blob.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
 
         chunks = [b"chunk-1-", b"chunk-2-", b"chunk-3"]
         with writer.open_blob("FILE-STREAM") as fh:
@@ -142,7 +141,7 @@ class TestArchiveRoundTrip:
         scratch_root.mkdir()
         output = tmp_path / "out.zip"
 
-        writer = ArchiveWriter(output, tmp_dir=scratch_root)
+        writer = ArchiveWriter(output, tmp_dir=scratch_root, default_namespace="wip")
 
         # Scratch should live under the override, not under /tmp
         assert Path(writer._tmp_dir).parent == scratch_root
@@ -158,7 +157,7 @@ class TestArchiveRoundTrip:
     def test_blob_round_trip(self, tmp_path):
         """Binary blobs survive round-trip."""
         output = tmp_path / "blobs.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
 
         blob_data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
         writer.add_blob("FILE-000001", blob_data)
@@ -187,7 +186,7 @@ class TestArchiveRoundTrip:
     def test_manifest_fields_preserved(self, tmp_path):
         """All manifest fields survive round-trip."""
         output = tmp_path / "manifest.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
 
         manifest = Manifest(
             source_host="pi-poe-8gb.local",
@@ -211,7 +210,7 @@ class TestArchiveRoundTrip:
     def test_special_characters_in_data(self, tmp_path):
         """JSON special characters survive round-trip."""
         output = tmp_path / "special.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
 
         writer.add_entity("documents", {
             "document_id": "0190d000-0000-7000-0000-000000000001",
@@ -238,7 +237,7 @@ class TestArchiveRoundTrip:
 
     def test_entity_count(self, tmp_path):
         output = tmp_path / "count.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
         for i in range(7):
             writer.add_entity("terms", {"term_id": f"0190b000-0000-7000-0000-{i:012d}"})
 
@@ -251,7 +250,7 @@ class TestArchiveRoundTrip:
 
     def test_archive_sizes(self, tmp_path):
         output = tmp_path / "sizes.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
         for i in range(100):
             writer.add_entity("terms", {"term_id": f"0190b000-0000-7000-0000-{i:012d}", "value": f"term_{i}" * 10})
 
@@ -267,7 +266,7 @@ class TestArchiveRoundTrip:
     def test_registry_metadata_round_trip(self, tmp_path, sample_registry_data):
         """Entities with _registry metadata survive write/read round-trip."""
         output = tmp_path / "registry.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
 
         terminology = {
             "terminology_id": "0190a000-0000-7000-0000-000000000001",
@@ -294,7 +293,7 @@ class TestArchiveRoundTrip:
         with ArchiveReader(output) as reader:
             # Verify format version
             m = reader.read_manifest()
-            assert m.format_version == "2.0"
+            assert m.format_version == "3.0"
 
             # Terminology _registry round-trip
             terms = list(reader.read_entities("terminologies"))
@@ -317,7 +316,7 @@ class TestArchiveRoundTrip:
     def test_format_1_0_backward_compat(self, tmp_path):
         """Entities without _registry (format 1.0 style) load correctly."""
         output = tmp_path / "legacy.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
 
         # Simulate format 1.0: no _registry field
         writer.add_entity("templates", {
@@ -358,7 +357,7 @@ class TestArchiveRoundTrip:
     def test_include_all_versions_manifest_field(self, tmp_path):
         """Manifest include_all_versions field survives round-trip."""
         output = tmp_path / "versions.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
 
         manifest = Manifest(
             namespace="wip",
@@ -371,13 +370,110 @@ class TestArchiveRoundTrip:
             assert m.include_all_versions is True
 
 
+class TestMultiNamespaceArchive:
+    """v3 multi-namespace archive layout (CASE-542)."""
+
+    def test_two_namespaces_round_trip(self, tmp_path):
+        output = tmp_path / "multi-ns.zip"
+        writer = ArchiveWriter(output)
+
+        writer.add_entity("terms", {"term_id": "T-A1", "value": "a1"}, namespace="alpha")
+        writer.add_entity("terms", {"term_id": "T-A2", "value": "a2"}, namespace="alpha")
+        writer.add_entity("documents", {"document_id": "D-B1"}, namespace="beta")
+
+        assert writer.namespaces() == ["alpha", "beta"]
+        assert writer.entity_count("terms", namespace="alpha") == 2
+        assert writer.entity_count("documents", namespace="beta") == 1
+
+        writer.write(Manifest(
+            namespaces=[
+                NamespaceEntry(prefix="alpha", counts=EntityCounts(terms=2)),
+                NamespaceEntry(prefix="beta", counts=EntityCounts(documents=1)),
+            ],
+            counts=EntityCounts(terms=2, documents=1),
+        ))
+
+        with ArchiveReader(output) as reader:
+            assert reader.list_namespaces() == ["alpha", "beta"]
+            assert reader.read_manifest().namespace_prefixes() == ["alpha", "beta"]
+            alpha_terms = list(reader.read_entities("terms", namespace="alpha"))
+            assert {t["term_id"] for t in alpha_terms} == {"T-A1", "T-A2"}
+            assert list(reader.read_entities("terms", namespace="beta")) == []
+            assert reader.entity_count("documents", namespace="beta") == 1
+
+    def test_layout_is_per_namespace(self, tmp_path):
+        output = tmp_path / "layout.zip"
+        writer = ArchiveWriter(output)
+        writer.add_entity("terms", {"term_id": "X"}, namespace="ns1")
+        writer.write(Manifest(namespaces=[NamespaceEntry(prefix="ns1")]))
+
+        with zipfile.ZipFile(output) as zf:
+            names = zf.namelist()
+        assert "namespaces/ns1/terms.jsonl" in names
+        assert "terms.jsonl" not in names  # not at root anymore
+
+    def test_read_entities_ambiguous_without_namespace(self, tmp_path):
+        output = tmp_path / "ambig.zip"
+        writer = ArchiveWriter(output)
+        writer.add_entity("terms", {"term_id": "A"}, namespace="alpha")
+        writer.add_entity("terms", {"term_id": "B"}, namespace="beta")
+        writer.write(Manifest(namespaces=[
+            NamespaceEntry(prefix="alpha"), NamespaceEntry(prefix="beta"),
+        ]))
+        with ArchiveReader(output) as reader, pytest.raises(ValueError, match="2 namespaces"):
+            list(reader.read_entities("terms"))
+
+
+class TestConvertArchive:
+    """v2.0 flat → v3 conversion (CASE-542)."""
+
+    def _write_legacy_v2(self, path):
+        """Hand-build an old flat v2.0 archive (entities at root)."""
+        manifest = Manifest(
+            format_version="2.0", namespace="legacy",
+            counts=EntityCounts(terms=2, documents=1),
+        )
+        # Clear the v3 namespaces list to mimic a true v2.0 manifest.
+        manifest.namespaces = []
+        with zipfile.ZipFile(path, "w") as zf:
+            zf.writestr("manifest.json", manifest.model_dump_json())
+            zf.writestr("terms.jsonl", '{"term_id":"T1"}\n{"term_id":"T2"}\n')
+            zf.writestr("documents.jsonl", '{"document_id":"D1"}\n')
+            zf.writestr("blobs/FILE-1", b"blobdata")
+
+    def test_convert_v2_to_v3(self, tmp_path):
+        old = tmp_path / "old.zip"
+        new = tmp_path / "new.zip"
+        self._write_legacy_v2(old)
+
+        convert_archive(old, new)
+
+        with ArchiveReader(new) as reader:
+            m = reader.read_manifest()
+            assert m.format_version == "3.0"
+            assert reader.list_namespaces() == ["legacy"]
+            terms = list(reader.read_entities("terms", namespace="legacy"))
+            assert {t["term_id"] for t in terms} == {"T1", "T2"}
+            docs = list(reader.read_entities("documents", namespace="legacy"))
+            assert docs[0]["document_id"] == "D1"
+            assert reader.read_blob("FILE-1") == b"blobdata"  # blobs stay flat
+
+    def test_convert_rejects_already_v3(self, tmp_path):
+        v3 = tmp_path / "v3.zip"
+        writer = ArchiveWriter(v3, default_namespace="x")
+        writer.add_entity("terms", {"term_id": "T"})
+        writer.write(Manifest(namespaces=[NamespaceEntry(prefix="x")]))
+        with pytest.raises(ValueError, match="already v3"):
+            convert_archive(v3, tmp_path / "out.zip")
+
+
 class TestArchiveWriterTempFiles:
     """Test the temp-file-based writer specifically."""
 
     def test_entity_count_tracking(self, tmp_path):
         """Writer tracks entity counts correctly."""
         output = tmp_path / "count.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
 
         for i in range(10):
             writer.add_entity("documents", {"document_id": f"0190d000-0000-7000-0000-{i:012d}"})
@@ -394,7 +490,7 @@ class TestArchiveWriterTempFiles:
     def test_temp_dir_cleaned_up_after_write(self, tmp_path):
         """Temp directory is removed after write()."""
         output = tmp_path / "cleanup.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
         writer.add_entity("terms", {"term_id": "0190b000-0000-7000-0000-000000000001"})
 
         tmp_dir = writer._tmp_dir
@@ -407,7 +503,7 @@ class TestArchiveWriterTempFiles:
     def test_synonyms_file_round_trip(self, tmp_path):
         """Synonyms written via write_synonyms_file survive round-trip."""
         output = tmp_path / "synonyms.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
 
         synonyms = [
             {"entry_id": "0190a000-0000-7000-0000-000000000001", "namespace": "wip",
@@ -430,7 +526,7 @@ class TestArchiveWriterTempFiles:
     def test_no_synonyms_file(self, tmp_path):
         """Archive without synonyms.jsonl reports has_synonyms=False."""
         output = tmp_path / "no-synonyms.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
         writer.add_entity("terms", {"term_id": "0190b000-0000-7000-0000-000000000001"})
         writer.write(Manifest(namespace="wip"))
 
@@ -445,7 +541,7 @@ class TestArchiveWriterTempFiles:
         We verify this by writing a large number and checking the file exists.
         """
         output = tmp_path / "large-stream.zip"
-        writer = ArchiveWriter(output)
+        writer = ArchiveWriter(output, default_namespace="wip")
 
         count = 5000
         for i in range(count):

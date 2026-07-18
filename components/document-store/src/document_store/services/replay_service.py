@@ -1,11 +1,12 @@
 """Event replay service — replays stored documents as NATS events."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class ReplayService:
 
         # Count documents matching filter
         from ..models.document import Document
-        query = {"status": replay_filter.status, "namespace": replay_filter.namespace}
+        query: dict[str, Any] = {"status": replay_filter.status, "namespace": replay_filter.namespace}
         if replay_filter.template_id:
             query["template_id"] = replay_filter.template_id
         if replay_filter.template_value:
@@ -92,7 +93,7 @@ class ReplayService:
         session = self._sessions.get(session_id)
         if not session:
             return None
-        return session.model_dump(mode="json")
+        return cast(dict[Any, Any] | None, session.model_dump(mode="json"))
 
     def list_sessions(self) -> list[dict]:
         """List all replay sessions."""
@@ -136,10 +137,8 @@ class ReplayService:
             task = self._tasks.get(session_id)
             if task and not task.done():
                 task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError):
                     await task
-                except asyncio.CancelledError:
-                    pass
 
         session.status = ReplayStatus.CANCELLED
 
@@ -163,6 +162,7 @@ class ReplayService:
         from ..models.document import Document
         from ..models.replay import ReplayStatus
         from .nats_client import _jetstream
+        assert _jetstream is not None  # start() enforces NATS enabled before launching this task
 
         session = self._sessions[session_id]
         session.status = ReplayStatus.RUNNING
