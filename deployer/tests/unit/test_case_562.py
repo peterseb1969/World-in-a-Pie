@@ -38,7 +38,7 @@ class TestExactBeatsSubstring:
         src = _make_app_source(tmp_path, pkg_name="kb")
         _make_manifest(tmp_path, name="kb-staging", http_port=3012)
         _make_manifest(tmp_path, name="wip-kb", http_port=3012)
-        m, name, note = find_manifest_for_source(src, tmp_path)
+        _m, name, note = find_manifest_for_source(src, tmp_path)
         assert note is None
         assert name == "wip-kb"
 
@@ -61,7 +61,7 @@ class TestExactBeatsSubstring:
         # and it stays a substring match) and it must go ambiguous,
         # listing only the exacts (not the substring dev-kb).
         _make_manifest(tmp_path, name="k-b", http_port=3012)
-        m, name, note = find_manifest_for_source(src, tmp_path)
+        m, _name, note = find_manifest_for_source(src, tmp_path)
         assert m is None
         assert note is not None and "ambiguous" in note
         assert "dev-kb" not in note
@@ -71,7 +71,7 @@ class TestExactBeatsSubstring:
         as before (test_case_379's hyphenation-drift contract)."""
         src = _make_app_source(tmp_path, pkg_name="clintrial-explorer")
         _make_manifest(tmp_path, name="clintrial", http_port=3001)
-        m, name, note = find_manifest_for_source(src, tmp_path)
+        _m, name, note = find_manifest_for_source(src, tmp_path)
         assert note is None
         assert name == "clintrial"
 
@@ -83,6 +83,6 @@ class TestExactBeatsSubstring:
         src = _make_app_source(tmp_path, pkg_name="clintrial-explorer")
         _make_manifest(tmp_path, name="clintrial", http_port=3001)
         _make_manifest(tmp_path, name="explorer", http_port=3002)
-        m, name, note = find_manifest_for_source(src, tmp_path)
+        m, _name, note = find_manifest_for_source(src, tmp_path)
         assert m is None
         assert note is not None and "ambiguous" in note

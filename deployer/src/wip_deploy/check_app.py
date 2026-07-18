@@ -513,7 +513,7 @@ def check_manifest_validates(
     if manifest_path is None:
         return CheckResult(name, False, "no manifest found")
     try:
-        app, errors = validate_manifest(manifest_path, repo_root)
+        _app, errors = validate_manifest(manifest_path, repo_root)
     except ManifestLoadError as exc:
         return CheckResult(name, False, f"manifest load failed: {exc}")
     if not errors:

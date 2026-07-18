@@ -94,7 +94,7 @@ class TestResolveManifestPath:
         assert resolve_manifest_path(tmp_path) == f
 
     def test_directory_without_manifest_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(ManifestLoadError, match="no `wip-app.yaml`"):
+        with pytest.raises(ManifestLoadError, match=r"no `wip-app\.yaml`"):
             resolve_manifest_path(tmp_path)
 
     def test_missing_path_raises(self, tmp_path: Path) -> None:
@@ -234,7 +234,7 @@ class TestReferenceFailures:
             "source": {"from_secret": "totally-made-up-secret-name"},
         })
         manifest = _write_manifest(tmp_path / "wip-app.yaml", body)
-        app_obj, errors = validate_manifest(manifest, repo_root)
+        _app_obj, errors = validate_manifest(manifest, repo_root)
         assert errors == []
 
 
@@ -251,7 +251,7 @@ class TestRouteCollisions:
         # /apps/rc is react-console's route — colliding deliberately.
         body["spec"]["routes"] = [{"path": "/apps/rc", "auth_required": True}]
         manifest = _write_manifest(tmp_path / "wip-app.yaml", body)
-        app_obj, errors = validate_manifest(manifest, repo_root)
+        _app_obj, errors = validate_manifest(manifest, repo_root)
         assert any(
             "react-console" in e.message and "routes[0].path" in e.field
             for e in errors
@@ -263,7 +263,7 @@ class TestRouteCollisions:
         body = _valid_manifest_body("ref-prefix-collide")
         body["app_metadata"]["route_prefix"] = "/apps/rc"
         manifest = _write_manifest(tmp_path / "wip-app.yaml", body)
-        app_obj, errors = validate_manifest(manifest, repo_root)
+        _app_obj, errors = validate_manifest(manifest, repo_root)
         assert any(
             "route_prefix" in e.field and "react-console" in e.message
             for e in errors
@@ -280,7 +280,7 @@ class TestRouteCollisions:
         body["spec"]["routes"] = [{"path": "/apps/rc", "auth_required": True}]
         body["app_metadata"]["route_prefix"] = "/apps/rc"
         manifest = _write_manifest(tmp_path / "wip-app.yaml", body)
-        app_obj, errors = validate_manifest(manifest, repo_root)
+        _app_obj, errors = validate_manifest(manifest, repo_root)
         # No route_prefix or route-path collision — same-name self-exclusion.
         collision_errors = [
             e for e in errors

@@ -283,7 +283,7 @@ class TestFindManifestForSource:
         src = _make_app_source(tmp_path, pkg_name="something-unrelated")
         _make_manifest(tmp_path, name="other", http_port=3000)
         # apps/ dir must exist for the scan
-        m, name, note = find_manifest_for_source(src, tmp_path)
+        m, _name, note = find_manifest_for_source(src, tmp_path)
         assert m is None
         assert note is not None
         assert "something-unrelated" in note
@@ -291,7 +291,7 @@ class TestFindManifestForSource:
     def test_no_package_json_returns_note(self, tmp_path: Path) -> None:
         src = tmp_path / "no-pkg"
         src.mkdir()
-        m, name, note = find_manifest_for_source(src, tmp_path)
+        m, _name, note = find_manifest_for_source(src, tmp_path)
         assert m is None
         assert "package.json" in (note or "")
 
