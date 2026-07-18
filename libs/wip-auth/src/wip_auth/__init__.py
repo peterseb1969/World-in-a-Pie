@@ -55,6 +55,7 @@ from .identity import (
 from .key_sync import KeySyncService
 from .middleware import AuthMiddleware, create_auth_middleware
 from .models import APIKeyRecord, AuthResult, UserIdentity
+from .openapi import declare_api_key_security
 from .permissions import (
     NamespaceFilter,
     check_namespace_permission,
@@ -81,7 +82,6 @@ from .resolve import (
     resolve_entity_ids,
     split_qualified_value,
 )
-from .openapi import declare_api_key_security
 from .security import check_production_security
 from .startup import init_beanie_with_retry, retry_async
 
@@ -89,9 +89,7 @@ __version__ = "0.4.0"
 
 __all__ = [
     "APIKeyProvider",
-    "declare_api_key_security",
     "APIKeyRecord",
-    "build_metadata",
     # Config
     "AuthConfig",
     # Middleware
@@ -100,13 +98,16 @@ __all__ = [
     "AuthProvider",
     "AuthResult",
     "EntityNotFoundError",
+    # Key sync
+    "KeySyncService",
+    "NamespaceFilter",
     "NoAuthProvider",
     "OIDCProvider",
     "RejectUnknownQueryParamsMiddleware",
     "TrustedHeaderProvider",
-    "NamespaceFilter",
     # Models
     "UserIdentity",
+    "build_metadata",
     # Permissions
     "check_namespace_permission",
     # Security
@@ -116,6 +117,7 @@ __all__ = [
     "clear_resolution_cache",
     "create_auth_middleware",
     "create_providers_from_config",
+    "declare_api_key_security",
     "get_actor_info",
     "get_auth_config",
     # Identity context
@@ -123,10 +125,13 @@ __all__ = [
     "get_identity_owner",
     "get_identity_string",
     "hash_api_key",
+    # Startup retry helpers
+    "init_beanie_with_retry",
     "optional_identity",
     "permission_sufficient",
     "require_admin",
     "require_api_key",
+    "require_current_identity",
     "require_groups",
     # Dependencies
     "require_identity",
@@ -136,27 +141,22 @@ __all__ = [
     "reset_auth_config",
     "reset_current_identity",
     "resolve_accessible_namespaces",
-    "resolve_namespace_filter",
-    "require_current_identity",
     # Synonym resolution
     "resolve_bulk_ids",
     "resolve_entity_id",
     "resolve_entity_ids",
+    "resolve_namespace_filter",
     "resolve_or_404",
     "resolve_permission",
-    "split_qualified_value",
+    "retry_async",
     "set_auth_config",
     "set_current_identity",
     # Setup
     "setup_auth",
     "setup_key_sync",
-    # Key sync
-    "KeySyncService",
     # Rate limiting
     "setup_rate_limiting",
-    # Startup retry helpers
-    "init_beanie_with_retry",
-    "retry_async",
+    "split_qualified_value",
 ]
 
 
