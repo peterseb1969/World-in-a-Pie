@@ -38,7 +38,7 @@ from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
-from wip_deploy.spec.deployment import AppRef
+from wip_deploy.spec.deployment import AppRef, SpecAPIKey
 from wip_deploy.spec.validators import validate_all
 
 app = typer.Typer(
@@ -142,9 +142,59 @@ def _api_key_opt() -> typer.models.OptionInfo:
     )
 
 
-def _parse_api_key_options(values: list[str] | None) -> list[dict]:
-    """Parse each --api-key JSON value; loud error on malformed input."""
+def _api_keys_file_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--api-keys-file",
+        help=(
+            "Path to a YAML or JSON file declaring spec API keys as a list "
+            "under a top-level `keys:` (or a bare list) — each entry "
+            "{name, namespaces, grants, owner?, groups?}. A human-friendly "
+            "alternative to repeating --api-key JSON; the file entries and "
+            "any --api-key values merge. Reviewable, diffable deployer input "
+            "rather than shell history."
+        ),
+    )
+
+
+def _parse_api_key_options(
+    values: list[str] | None, file_path: str | None = None
+) -> list[dict]:
+    """Merge --api-keys-file (if any) with each --api-key JSON value into a
+    list of key dicts. Loud, clean error on malformed input or on a key that
+    fails SpecAPIKey validation (e.g. grants outside the read scope)."""
     parsed: list[dict] = []
+
+    if file_path:
+        try:
+            text = Path(file_path).read_text()
+        except OSError as exc:
+            typer.echo(f"error: --api-keys-file unreadable: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        try:
+            doc = yaml.safe_load(text)  # YAML is a JSON superset
+        except yaml.YAMLError as exc:
+            typer.echo(
+                f"error: --api-keys-file is not valid YAML/JSON: {exc}", err=True
+            )
+            raise typer.Exit(1) from exc
+        keys = doc.get("keys") if isinstance(doc, dict) else doc
+        if not isinstance(keys, list):
+            typer.echo(
+                "error: --api-keys-file must have a top-level `keys:` list "
+                "(or be a bare list of key mappings)",
+                err=True,
+            )
+            raise typer.Exit(1)
+        for entry in keys:
+            if not isinstance(entry, dict):
+                typer.echo(
+                    f"error: --api-keys-file entry must be a mapping, got: "
+                    f"{entry!r}",
+                    err=True,
+                )
+                raise typer.Exit(1)
+            parsed.append(entry)
+
     for raw in values or []:
         try:
             obj = json.loads(raw)
@@ -158,6 +208,18 @@ def _parse_api_key_options(values: list[str] | None) -> list[dict]:
             )
             raise typer.Exit(1)
         parsed.append(obj)
+
+    # Validate each up front so grants-outside-namespaces (and other spec
+    # rules) surface as a one-line error here, not a pydantic traceback deep
+    # in build. Construction is discarded; the dicts flow on unchanged.
+    for entry in parsed:
+        try:
+            SpecAPIKey(**entry)
+        except Exception as exc:
+            name = entry.get("name", "?") if isinstance(entry, dict) else "?"
+            typer.echo(f"error: invalid api key {name!r}: {exc}", err=True)
+            raise typer.Exit(1) from exc
+
     return parsed
 
 
@@ -539,6 +601,7 @@ def validate(
     target: Annotated[str, _target_opt()] = "compose",
     variant: Annotated[str, _variant_opt()] = "dev",
     api_key: Annotated[list[str] | None, _api_key_opt()] = None,
+    api_keys_file: Annotated[str | None, _api_keys_file_opt()] = None,
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -585,7 +648,7 @@ def validate(
         preset=preset,
         target=target,
         variant=variant,
-        api_keys=_parse_api_key_options(api_key),
+        api_keys=_parse_api_key_options(api_key, api_keys_file),
         hostname=hostname,
         tls=tls,
         https_port=https_port,
@@ -662,6 +725,7 @@ def show_spec(
     target: Annotated[str, _target_opt()] = "compose",
     variant: Annotated[str, _variant_opt()] = "dev",
     api_key: Annotated[list[str] | None, _api_key_opt()] = None,
+    api_keys_file: Annotated[str | None, _api_keys_file_opt()] = None,
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -710,7 +774,7 @@ def show_spec(
         preset=preset,
         target=target,
         variant=variant,
-        api_keys=_parse_api_key_options(api_key),
+        api_keys=_parse_api_key_options(api_key, api_keys_file),
         hostname=hostname,
         tls=tls,
         https_port=https_port,
@@ -760,6 +824,7 @@ def render(
     target: Annotated[str, _target_opt()] = "compose",
     variant: Annotated[str, _variant_opt()] = "dev",
     api_key: Annotated[list[str] | None, _api_key_opt()] = None,
+    api_keys_file: Annotated[str | None, _api_keys_file_opt()] = None,
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -812,7 +877,7 @@ def render(
         preset=preset,
         target=target,
         variant=variant,
-        api_keys=_parse_api_key_options(api_key),
+        api_keys=_parse_api_key_options(api_key, api_keys_file),
         hostname=hostname,
         tls=tls,
         https_port=https_port,
@@ -881,6 +946,7 @@ def install(
     target: Annotated[str, _target_opt()] = "compose",
     variant: Annotated[str, _variant_opt()] = "dev",
     api_key: Annotated[list[str] | None, _api_key_opt()] = None,
+    api_keys_file: Annotated[str | None, _api_keys_file_opt()] = None,
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -989,7 +1055,7 @@ def install(
         preset=preset,
         target=target,
         variant=variant,
-        api_keys=_parse_api_key_options(api_key),
+        api_keys=_parse_api_key_options(api_key, api_keys_file),
         hostname=hostname,
         tls=tls,
         https_port=https_port,
