@@ -87,6 +87,7 @@ def _config_key_to_response(record: APIKeyRecord) -> APIKeyResponse:
         namespaces=record.namespaces,
         created_by="config-file",
         source="config",
+        grants=record.grants,
     )
 
 

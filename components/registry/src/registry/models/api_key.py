@@ -6,7 +6,7 @@ They coexist with config-file keys (loaded at startup via wip-auth).
 
 import secrets
 from datetime import UTC, datetime
-from typing import Literal
+from typing import ClassVar, Literal
 
 from beanie import Document
 from pydantic import BaseModel, ConfigDict, Field
@@ -37,7 +37,7 @@ class StoredAPIKey(Document):
 
     class Settings:
         name = "api_keys"
-        indexes = [
+        indexes: ClassVar[list] = [
             IndexModel([("name", 1)], unique=True, name="api_key_name_unique"),
         ]
 
@@ -88,6 +88,15 @@ class APIKeyResponse(BaseModel):
     namespaces: list[str] | None
     created_by: str
     source: str = Field(description="'config' or 'runtime'")
+    grants: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Config-declared grants ({namespace: read|write|admin}) — "
+            "resolved locally in wip-auth and surviving MongoDB rebuilds. "
+            "Always None for runtime keys: their write grants are Registry "
+            "NamespaceGrants (wipe-mortal) and are not shown in this field."
+        ),
+    )
 
 
 class APIKeyCreatedResponse(APIKeyResponse):

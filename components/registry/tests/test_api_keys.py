@@ -423,3 +423,75 @@ class TestRequestValidation:
             headers=auth_headers,
         )
         assert response.status_code == 404
+
+
+class TestConfigKeyGrants:
+    """Config-declared grants surface on the metadata API — the write
+    scope of a spec-declared key (wip-deploy auth.api_keys) must be
+    visible to admins, not only readable from the install host's
+    rendered api-keys.json. Runtime keys always return grants=None:
+    their write grants are Registry NamespaceGrants (wipe-mortal) and
+    deliberately stay out of this field."""
+
+    @staticmethod
+    def _spec_declared_record():
+        from wip_auth.models import APIKeyRecord
+        from wip_auth.providers.api_key import hash_api_key
+
+        return APIKeyRecord(
+            name="spec-declared",
+            key_hash=hash_api_key("kR7mX2pQ9vL4nB8wZ3cF6a"),
+            owner="system:web-yac",
+            namespaces=["library", "kb"],
+            grants={"kb": "write"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_config_key_grants_exposed_on_list_and_get(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        from registry.api import api_keys as api_keys_module
+
+        provider = api_keys_module._get_provider()
+        record = self._spec_declared_record()
+        provider._keys.append(record)
+        api_keys_module._config_key_names.add(record.name)
+        try:
+            listed = await client.get(BASE, headers=auth_headers)
+            assert listed.status_code == 200
+            by_name = {k["name"]: k for k in listed.json()["items"]}
+            assert by_name["spec-declared"]["grants"] == {"kb": "write"}
+            # Config key WITHOUT grants: field present, None.
+            assert by_name["legacy"]["grants"] is None
+
+            single = await client.get(
+                f"{BASE}/spec-declared", headers=auth_headers
+            )
+            assert single.status_code == 200
+            assert single.json()["grants"] == {"kb": "write"}
+        finally:
+            provider._keys.remove(record)
+            api_keys_module._config_key_names.discard(record.name)
+
+    @pytest.mark.asyncio
+    async def test_runtime_key_grants_always_none(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        await client.post(
+            BASE,
+            json={
+                "name": "grants-none-runtime",
+                "namespaces": ["default"],
+                "grant_permission": "write",
+            },
+            headers=auth_headers,
+        )
+        response = await client.get(
+            f"{BASE}/grants-none-runtime", headers=auth_headers
+        )
+        assert response.status_code == 200
+        # Even though a NamespaceGrant was created (grant_permission),
+        # the response field stays None — Registry grants are a
+        # different, wipe-mortal source and must not blur into the
+        # config-declared field.
+        assert response.json()["grants"] is None
