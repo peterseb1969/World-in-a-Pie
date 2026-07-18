@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import socket
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -139,6 +140,36 @@ def is_public_hostname(hostname: str) -> bool:
     if h.endswith(_PRIVATE_HOST_SUFFIXES):
         return False
     return "." in h
+
+
+def _resolves_private_only(hostname: str) -> bool | None:
+    """Resolve `hostname` and report whether it lives entirely off the
+    public internet.
+
+    - True  → resolves, and EVERY address is non-globally-routable
+      (RFC 1918, CGNAT 100.64/10, ULA, link-local, loopback — all
+      `is_global == False`, the same test `is_public_hostname` uses on
+      IP literals).
+    - False → resolves and at least one address is globally routable.
+    - None  → does not resolve from this host.
+
+    A read-only DNS lookup. Deliberately confined to the verify tool (an
+    online, run-before-exposure check) and never used in spec validation,
+    which must stay deterministic and offline.
+    """
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except (OSError, UnicodeError):
+        return None
+    addrs = []
+    for info in infos:
+        try:
+            addrs.append(ipaddress.ip_address(info[4][0]))
+        except ValueError:
+            continue
+    if not addrs:
+        return None
+    return all(not a.is_global for a in addrs)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -258,10 +289,27 @@ def check_tls_hostname_sanity(network: NetworkSpec) -> CheckResult:
     name = "TLS mode vs hostname"
     public = is_public_hostname(network.hostname)
     if network.tls in ("internal", "self-signed") and public:
+        # Public-SHAPED, but resolve before failing: a name that resolves
+        # only into private space (VPN/LAN — e.g. a Tailscale/WireGuard
+        # CGNAT address, or a split-horizon DNS name pointing at an RFC 1918
+        # host) is not actually internet-exposed, so a self-signed CA is
+        # fine. Only global-resolving (or unresolvable) names are the real
+        # broken promise.
+        resolves_private = _resolves_private_only(network.hostname)
+        if resolves_private is True:
+            return CheckResult(
+                name,
+                True,
+                f"tls={network.tls}, hostname {network.hostname!r} "
+                f"(public-shaped but resolves privately — VPN/LAN only)",
+            )
+        detail = f"tls={network.tls} with public hostname {network.hostname!r}"
+        if resolves_private is None:
+            detail += " (could not resolve from this host — treating as public)"
         return CheckResult(
             name,
             False,
-            f"tls={network.tls} with public hostname {network.hostname!r}",
+            detail,
             fix_hint=(
                 "A public hostname behind a self-signed CA gives every visitor\n"
                 "certificate warnings and no transport trust. Reinstall with\n"
