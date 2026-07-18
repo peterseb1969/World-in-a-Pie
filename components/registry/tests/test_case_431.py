@@ -1,29 +1,27 @@
-"""CASE-431 — claim_entry_keys must be truly best-effort.
+"""CASE-431 — committed entries must never fail on claim-domain hiccups.
 
-The create paths call claim_entry_keys AFTER the entry is already inserted, so
-a claim failure must never fail the committed entry. claim_entry_keys was
-documented as best-effort but only caught DuplicateKeyError, so any other
-exception (a transient Mongo error, or an uninitialised CompositeKeyClaim
-collection in a misconfigured in-process harness) propagated — and
-register_keys' broad handler then flipped the already-persisted entry's
-per-item result to status="error"/registry_id=None. This is what made the
-wip-auth integration test 404 on by-value resolution (the harness omitted
-CompositeKeyClaim from init_beanie; fixed separately in
-libs/wip-auth/tests/test_fastapi_helpers.py).
-
-These tests pin the registry-side hardening: claim_entry_keys swallows any
-claim exception (logging it) and returns normally.
+Originally this pinned the best-effort contract of the post-insert
+claim_entry_keys. The two-phase protocol (CASE-554) retired that function:
+claims now happen BEFORE the insert (claim_entry_keys_pending — where a
+failure legitimately fails the not-yet-committed request), and the
+committed-entry protection this case is about moved to the post-commit side:
+confirm_entry_keys and release_entry_keys must swallow any exception
+(logging it) and return normally, leaving the pending claim for the
+reconcile pass. These tests pin that relocated contract.
 """
 
 from datetime import UTC, datetime
 
 import pytest
-from pymongo.errors import DuplicateKeyError
 
 from registry.models.composite_key_claim import CompositeKeyClaim
 from registry.models.entry import RegistryEntry
 from registry.services import claims as claims_module
-from registry.services.claims import claim_entry_keys
+from registry.services.claims import (
+    claim_entry_keys_pending,
+    confirm_entry_keys,
+    release_entry_keys,
+)
 from registry.services.hash import HashService
 
 
@@ -43,64 +41,57 @@ async def _insert_entry(entry_id: str) -> RegistryEntry:
     return entry
 
 
-class TestClaimEntryKeysBestEffort:
+class TestPostCommitBestEffort:
     @pytest.mark.asyncio
-    async def test_unexpected_claim_error_does_not_propagate(self, client, monkeypatch):
-        """A non-DuplicateKeyError from claim() must be swallowed (logged), not
-        raised — the committed entry stands, the claim is left for reconcile."""
+    async def test_confirm_error_does_not_propagate(self, client, monkeypatch):
+        """A transient error during the confirm flip must not fail the
+        already-committed entry — the claim stays pending for reconcile."""
         entry = await _insert_entry("CASE431_A")
+        await claim_entry_keys_pending(entry)
 
         async def _boom(*_args, **_kwargs):
-            raise RuntimeError("simulated claims-subsystem hiccup")
+            raise RuntimeError("transient mongo hiccup")
 
-        monkeypatch.setattr(CompositeKeyClaim, "claim", _boom)
+        monkeypatch.setattr(CompositeKeyClaim, "confirm", _boom)
 
         # Must NOT raise.
-        await claim_entry_keys(entry)
+        await confirm_entry_keys(entry)
 
-        # No claim was recorded for the primary key (left for reconciliation).
         existing = await CompositeKeyClaim.find_existing(
             entry.namespace, entry.entity_type, entry.primary_composite_key_hash
         )
-        assert existing is None
+        assert existing is not None and existing.state == "pending"
 
     @pytest.mark.asyncio
-    async def test_duplicate_key_still_handled_distinctly(self, client, monkeypatch):
-        """The pre-existing DuplicateKeyError branch is unchanged: it is caught,
-        find_existing is consulted, and it does not propagate."""
+    async def test_release_error_does_not_propagate(self, client, monkeypatch):
+        """Rollback after a failed batch insert is best-effort too — a
+        failing release logs and returns; the pending claim dies in the
+        reconcile pass."""
         entry = await _insert_entry("CASE431_B")
-        called = {"find_existing": 0}
+        await claim_entry_keys_pending(entry)
 
-        async def _dup(*_args, **_kwargs):
-            raise DuplicateKeyError("dup")
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("transient mongo hiccup")
 
-        real_find_existing = CompositeKeyClaim.find_existing
+        monkeypatch.setattr(CompositeKeyClaim, "release", _boom)
 
-        async def _counting_find_existing(*args, **kwargs):
-            called["find_existing"] += 1
-            return await real_find_existing(*args, **kwargs)
-
-        monkeypatch.setattr(CompositeKeyClaim, "claim", _dup)
-        monkeypatch.setattr(CompositeKeyClaim, "find_existing", _counting_find_existing)
-
-        await claim_entry_keys(entry)
-
-        # DuplicateKeyError path consulted find_existing (distinct from the
-        # broad-except path, which does not).
-        assert called["find_existing"] >= 1
+        # Must NOT raise.
+        await release_entry_keys(entry)
 
     @pytest.mark.asyncio
-    async def test_happy_path_records_primary_claim(self, client):
-        """Sanity: with a working claims collection, the primary key is claimed."""
+    async def test_happy_path_claims_pending_then_confirms(self, client):
+        """Sanity: the two-phase pair leaves a confirmed primary claim."""
         entry = await _insert_entry("CASE431_C")
-        await claim_entry_keys(entry)
+        assert await claim_entry_keys_pending(entry) is None
+        await confirm_entry_keys(entry)
         existing = await CompositeKeyClaim.find_existing(
             entry.namespace, entry.entity_type, entry.primary_composite_key_hash
         )
         assert existing is not None
         assert existing.owner_entry_id == entry.entry_id
+        assert existing.state == "confirmed"
 
 
 def test_module_imports_logger():
-    """Guard: the broad-except branch logs via the module logger."""
+    """Guard: the best-effort branches log via the module logger."""
     assert claims_module.logger is not None

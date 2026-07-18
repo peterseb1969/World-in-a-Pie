@@ -59,6 +59,17 @@ class CompositeKeyClaim(Document):
                     "Diagnostic + drives the migration winner policy "
                     "(primary beats synonym); NOT part of the unique key."
     )
+    state: str = Field(
+        default="confirmed",
+        description='"pending" | "confirmed" — the two-phase lifecycle. '
+                    "Write paths claim pending BEFORE the entry write and "
+                    "confirm after it commits; the only inconsistency the "
+                    "system can then produce is a pending claim whose request "
+                    "died mid-flight, detectable by an indexed (state, age) "
+                    "query instead of a full-collection scan. Legacy claims "
+                    "carry no state field and read as confirmed via this "
+                    "default — deliberately zero-migration."
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
@@ -82,6 +93,15 @@ class CompositeKeyClaim(Document):
                 [("owner_entry_id", 1)],
                 name="claim_owner_idx",
             ),
+            # The cheap-reconcile query: pending claims by age. Partial on
+            # state=pending so the index stays tiny (confirmed claims — the
+            # overwhelming majority — never enter it), making startup
+            # reconciliation O(pending) regardless of collection size.
+            IndexModel(
+                [("state", 1), ("created_at", 1)],
+                partialFilterExpression={"state": "pending"},
+                name="claim_pending_age_idx",
+            ),
         ]
 
     # ── Atomic primitives ──────────────────────────────────────────────
@@ -96,6 +116,7 @@ class CompositeKeyClaim(Document):
         composite_key_hash: str,
         owner_entry_id: str,
         kind: str,
+        state: str = "confirmed",
     ) -> "CompositeKeyClaim | None":
         """Atomically claim a composite-key hash for an owner.
 
@@ -104,6 +125,10 @@ class CompositeKeyClaim(Document):
         SAME owner, returns the existing claim (no-op) rather than raising.
         Raises ``DuplicateKeyError`` only when the hash is claimed by a
         DIFFERENT owner — the caller inspects ``find_existing`` to decide.
+
+        Two-phase write paths pass ``state="pending"`` before the entry
+        write and ``confirm`` after it commits; ``confirmed`` stays the
+        default so audit/backfill callers keep their one-shot semantics.
         """
         if not composite_key_hash:
             return None
@@ -113,6 +138,7 @@ class CompositeKeyClaim(Document):
             "composite_key_hash": composite_key_hash,
             "owner_entry_id": owner_entry_id,
             "kind": kind,
+            "state": state,
             "created_at": datetime.now(UTC),
         }
         try:
@@ -128,7 +154,36 @@ class CompositeKeyClaim(Document):
             composite_key_hash=composite_key_hash,
             owner_entry_id=owner_entry_id,
             kind=kind,
+            state=state,
             created_at=doc["created_at"],
+        )
+
+    @classmethod
+    async def confirm(
+        cls,
+        namespace: str,
+        entity_type: str,
+        composite_key_hash: str,
+        owner_entry_id: str,
+    ) -> None:
+        """Flip a pending claim to confirmed after its entry write committed.
+
+        Owner-scoped so a racing healer can never confirm someone else's
+        claim. Idempotent — confirming a confirmed claim is a no-op. A
+        failure here leaves a pending-but-backed claim, which the cheap
+        reconcile pass confirms on its next run; it must not fail the
+        already-committed entry write.
+        """
+        if not composite_key_hash:
+            return
+        await cls.get_motor_collection().update_one(
+            {
+                "namespace": namespace,
+                "entity_type": entity_type,
+                "composite_key_hash": composite_key_hash,
+                "owner_entry_id": owner_entry_id,
+            },
+            {"$set": {"state": "confirmed"}},
         )
 
     @classmethod

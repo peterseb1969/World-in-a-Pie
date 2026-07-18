@@ -22,6 +22,7 @@ from ..models.api_models import (
 from ..models.composite_key_claim import CompositeKeyClaim
 from ..models.entry import RegistryEntry, Synonym
 from ..services.auth import require_api_key
+from ..services.claims import resolve_stale_claim
 from ..services.hash import HashService
 
 logger = logging.getLogger("registry.synonyms")
@@ -70,31 +71,40 @@ async def add_synonyms(
                 ))
                 continue
 
-            # Atomic uniqueness gate (CASE-427): claim the hash before writing.
-            # The unique index is the lock — no check-then-insert race.
-            try:
-                await CompositeKeyClaim.claim(
-                    item.synonym_namespace, item.synonym_entity_type,
-                    synonym_hash, entry.entry_id, "synonym",
-                )
-            except DuplicateKeyError:
-                existing_claim = await CompositeKeyClaim.find_existing(
-                    item.synonym_namespace, item.synonym_entity_type, synonym_hash
-                )
-                owner = existing_claim.owner_entry_id if existing_claim else "?"
-                if existing_claim and owner == entry.entry_id:
-                    # Self-owned orphan (claim points at us, embedded missing) —
-                    # safe to reclaim by writing the embedded synonym below.
-                    pass
-                else:
-                    # Owned by a different entry. Never auto-steal — even if that
-                    # entry doesn't currently embed it (cross-owner orphan,
-                    # cleared by reconciliation), the hot path stays safe.
+            # Atomic uniqueness gate (CASE-427, two-phase since CASE-554):
+            # claim the hash pending before writing; the unique index is the
+            # lock — no check-then-insert race. Confirmed after the save.
+            claim_conflict = False
+            for attempt in (1, 2):
+                try:
+                    await CompositeKeyClaim.claim(
+                        item.synonym_namespace, item.synonym_entity_type,
+                        synonym_hash, entry.entry_id, "synonym",
+                        state="pending",
+                    )
+                    break
+                except DuplicateKeyError:
+                    existing_claim = await CompositeKeyClaim.find_existing(
+                        item.synonym_namespace, item.synonym_entity_type, synonym_hash
+                    )
+                    owner = existing_claim.owner_entry_id if existing_claim else "?"
+                    if existing_claim and owner == entry.entry_id:
+                        # Self-owned claim (embedded write died mid-flight) —
+                        # safe to reclaim by writing the embedded synonym below.
+                        break
+                    # Stale claim from a dead request or crashed delete? Heal
+                    # inline and retry once; the unique index arbitrates
+                    # racing healers. Genuine owner → never auto-steal.
+                    if attempt == 1 and await resolve_stale_claim(existing_claim):
+                        continue
                     results.append(AddSynonymResponse(
                         index=i, status="error",
                         error=f"Synonym already registered under different entry: {owner}"
                     ))
-                    continue
+                    claim_conflict = True
+                    break
+            if claim_conflict:
+                continue
 
             synonym = Synonym(
                 namespace=item.synonym_namespace,
@@ -111,13 +121,23 @@ async def add_synonyms(
             try:
                 await entry.save()
             except Exception:
-                # Compensate the no-transaction window: release the claim we
-                # just took so it doesn't dangle as an orphan, then re-raise.
+                # Compensate the no-transaction window: release the pending
+                # claim we just took so it doesn't dangle, then re-raise.
+                # Anything this release misses is pending and dies in the
+                # reconcile pass.
                 await CompositeKeyClaim.release(
                     item.synonym_namespace, item.synonym_entity_type,
                     synonym_hash, owner_entry_id=entry.entry_id,
                 )
                 raise
+
+            # Entry committed — flip the claim to confirmed. Best-effort: a
+            # failure leaves a pending-but-backed claim for the reconcile
+            # pass; it must not fail the committed synonym.
+            await CompositeKeyClaim.confirm(
+                item.synonym_namespace, item.synonym_entity_type,
+                synonym_hash, entry.entry_id,
+            )
 
             results.append(AddSynonymResponse(
                 index=i, status="added", registry_id=entry.entry_id,

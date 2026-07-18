@@ -115,15 +115,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"WARNING: Failed to recover incomplete deletions: {e}")
 
-    # Prune orphan composite-key claims (CASE-427) — non-destructive to
-    # entries; only deletes dangling claims (deleted entries, cross-namespace
-    # synonym residue, no-transaction write-failure orphans). The destructive
-    # backfill is a separate explicit one-shot, not run here.
-    from .services.claims import reconcile_orphan_claims
+    # Resolve stale pending composite-key claims (two-phase protocol):
+    # pending older than the grace window are confirmed when their entry
+    # backs them (the request died between insert and flip) or deleted when
+    # not (it died before the insert). O(pending) via a partial index; never
+    # touches young or confirmed claims, so it is safe beside live traffic —
+    # unlike the full-collection scan, which is an explicit admin verb now
+    # (admin_backfill_claims), together with the destructive backfill.
+    from .services.claims import reconcile_pending_claims
     try:
-        await reconcile_orphan_claims()
+        await reconcile_pending_claims()
     except Exception as e:
-        print(f"WARNING: Failed to reconcile orphan claims: {e}")
+        print(f"WARNING: Failed to reconcile pending claims: {e}")
 
     # CASE-568: authentication is enforced by the wip-auth middleware
     # (setup_auth below) — the legacy AuthService.initialize call was a

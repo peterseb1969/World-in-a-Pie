@@ -288,14 +288,32 @@ class TestWritePathClaims:
         assert (await _add_synonym(client, auth_headers, a, "vendor1", "templates", key))["status"] == "added"
 
     @pytest.mark.asyncio
-    async def test_cross_owner_orphan_not_stolen(self, client, auth_headers):
+    async def test_cross_owner_orphan_healed_and_claimed(self, client, auth_headers):
+        """Two-phase protocol (CASE-554): a claim whose owner does NOT back it
+        is garbage, not property — the collision heals it inline and the new
+        claimant proceeds. (Pre-554 this blocked until the manual scan.)"""
         a = await _register(client, auth_headers, "default", "templates", {"value": "OWN"})
         b = await _register(client, auth_headers, "default", "templates", {"value": "OTH"})
         key = {"vendor": "X"}
-        # Claim owned by A, A doesn't embed it (cross-owner orphan for B).
+        # Claim owned by A, but A doesn't embed it (cross-owner orphan).
         await CompositeKeyClaim.claim("vendor1", "templates", _hash(key), a, "synonym")
-        # B must NOT steal it.
-        assert (await _add_synonym(client, auth_headers, b, "vendor1", "templates", key))["status"] == "error"
+        # B's add heals the orphan and claims the hash.
+        assert (await _add_synonym(client, auth_headers, b, "vendor1", "templates", key))["status"] == "added"
+        claim = await CompositeKeyClaim.find_existing("vendor1", "templates", _hash(key))
+        assert claim is not None and claim.owner_entry_id == b
+
+    @pytest.mark.asyncio
+    async def test_backed_claim_never_stolen(self, client, auth_headers):
+        """The never-steal rule holds where it matters: a claim its owner
+        genuinely backs (embedded synonym) refuses any other claimant."""
+        a = await _register(client, auth_headers, "default", "templates", {"value": "OWN2"})
+        b = await _register(client, auth_headers, "default", "templates", {"value": "OTH2"})
+        key = {"vendor": "Y"}
+        assert (await _add_synonym(client, auth_headers, a, "vendor1", "templates", key))["status"] == "added"
+        result = await _add_synonym(client, auth_headers, b, "vendor1", "templates", key)
+        assert result["status"] == "error"
+        claim = await CompositeKeyClaim.find_existing("vendor1", "templates", _hash(key))
+        assert claim is not None and claim.owner_entry_id == a
 
     @pytest.mark.asyncio
     async def test_merge_transfers_claims(self, client, auth_headers):

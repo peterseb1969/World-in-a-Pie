@@ -1,18 +1,25 @@
-"""Composite-key claim orchestration (CASE-427).
+"""Composite-key claim orchestration (CASE-427, two-phase since CASE-554).
 
-Higher-level operations over the ``CompositeKeyClaim`` collection: the one-shot
-**backfill** that builds the claims domain from existing ``RegistryEntry`` data
-(reconciling pre-existing duplicates), and the idempotent **reconciliation**
-that prunes orphan claims. The atomic per-claim primitives live on the model
-(``CompositeKeyClaim.claim/release/transfer``).
+Higher-level operations over the ``CompositeKeyClaim`` collection. The write
+paths run a two-phase protocol — claim ``pending`` BEFORE the entry write,
+fail-fast on conflict, flip ``confirmed`` after it commits — so an entry
+without a claim is unrepresentable by ordering and the only inconsistency the
+system can produce is a pending claim whose request died mid-flight. Those are
+resolved two ways: the cheap ``reconcile_pending_claims`` startup pass (an
+indexed (state, age) query — confirm if backed, delete if not), and
+``resolve_stale_claim`` inline healing when a new claim collides with a stale
+one (which also self-heals the rare confirmed-dangling residue of crashed
+deletes, at the moment it matters).
 
-Backfill is destructive (it strips losing duplicate synonyms) and is therefore
-an explicit one-shot, not a silent every-boot step. Reconciliation is
-non-destructive to entries (only deletes dangling claims) and is safe to run at
-startup.
+The one-shot **backfill** (builds the domain from existing entries, stripping
+losing duplicate synonyms — destructive, explicit) and the full-collection
+**reconcile_orphan_claims** scan remain as ADMIN AUDIT verbs only; the scan is
+off the startup path — its live-traffic race class (CASE-553) does not apply
+to the pending pass, which never touches young or confirmed claims.
 """
 
 import logging
+from datetime import UTC, datetime, timedelta
 
 from pymongo.errors import DuplicateKeyError
 
@@ -21,50 +28,177 @@ from ..models.entry import RegistryEntry
 
 logger = logging.getLogger("registry.claims")
 
+# How long a pending claim may sit before the reconcile pass (or an inline
+# collision) treats its request as dead. Requests live for seconds; a minute
+# is generous without letting ghosts block a hash for long.
+PENDING_GRACE_SECONDS = 60
 
-async def claim_entry_keys(entry: RegistryEntry) -> None:
-    """Claim an entry's primary key + all embedded synonym hashes into the
-    unified domain (CASE-427), best-effort.
 
-    Used by the create paths AFTER a successful insert. Primary-vs-primary
-    uniqueness is already enforced atomically by RegistryEntry's
-    namespace_entity_keyhash_unique_idx, so this claim's role is to populate
-    the unified domain so later add_synonyms conflict with these keys
-    (cross-feed protection). A DuplicateKeyError here means the hash is already
-    claimed elsewhere — a rare cross-feed/concurrent-window case; log it for
-    reconciliation rather than failing the (already-committed) entry.
-    """
+def _entry_key_pairs(entry: RegistryEntry) -> list[tuple[str, str, str, str]]:
+    """(namespace, entity_type, hash, kind) for an entry's primary key plus
+    every embedded synonym — the pairs the unified domain tracks."""
     pairs = [
         (entry.namespace, entry.entity_type, entry.primary_composite_key_hash, "primary"),
     ]
     for syn in entry.synonyms:
         pairs.append((syn.namespace, syn.entity_type, syn.composite_key_hash, "synonym"))
-    for ns, etype, key_hash, kind in pairs:
-        if not key_hash:
-            continue
+    return [(ns, et, h, k) for ns, et, h, k in pairs if h]
+
+
+async def resolve_stale_claim(existing: CompositeKeyClaim | None) -> bool:
+    """Inline healing at collision time. True = the claim was stale and has
+    been removed (caller may retry its claim once); False = leave it alone.
+
+    Stale means: the owner entry no longer exists or no longer carries the
+    claimed key (crashed delete / namespace-deletion residue / synonym
+    removal), OR the claim is pending and older than the grace window with
+    no backing entry (its request died before the entry write). A pending
+    claim that IS backed gets confirmed here — its request died between the
+    entry write and the flip — and then counts as genuine. Young pending
+    claims are in-flight requests: never touched. Never steals a claim whose
+    owner genuinely backs it; racing healers are arbitrated by the unique
+    index on re-claim.
+    """
+    if existing is None:
+        return False
+    entry = await RegistryEntry.find_one(RegistryEntry.entry_id == existing.owner_entry_id)
+    backed = entry is not None and _entry_backs_claim(entry, existing)
+
+    if existing.state == "pending":
+        # Beanie deserializes Mongo dates as naive UTC — normalize before
+        # arithmetic or the subtraction raises on aware-vs-naive.
+        created = existing.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        age = datetime.now(UTC) - created
+        if age < timedelta(seconds=PENDING_GRACE_SECONDS):
+            return False  # in-flight request — genuine for now
+        if backed:
+            await CompositeKeyClaim.confirm(
+                existing.namespace, existing.entity_type,
+                existing.composite_key_hash, existing.owner_entry_id,
+            )
+            return False  # healed to confirmed — genuine owner
+    elif backed:
+        return False  # confirmed and backed — genuine owner
+
+    await CompositeKeyClaim.get_motor_collection().delete_one({
+        "namespace": existing.namespace,
+        "entity_type": existing.entity_type,
+        "composite_key_hash": existing.composite_key_hash,
+        "owner_entry_id": existing.owner_entry_id,
+        "state": existing.state,
+    })
+    logger.info(
+        "CASE-554: healed stale %s claim on %s (%s/%s), late owner %s",
+        existing.state, existing.composite_key_hash,
+        existing.namespace, existing.entity_type, existing.owner_entry_id,
+    )
+    return True
+
+
+async def claim_entry_keys_pending(entry: RegistryEntry) -> str | None:
+    """Claim-first gate for the entry create paths: claim every key pair as
+    ``pending`` BEFORE the entry insert. Returns None on success or a
+    conflict message — in which case any pairs already claimed for this
+    entry have been rolled back and the item must NOT be inserted.
+
+    Fail-fast is deliberate (CASE-554): a primary key colliding with an
+    existing synonym is a real conflict — the composite key already resolves
+    to another entity — not a log line. Claim-first also makes
+    entry-without-claim unrepresentable by ordering.
+    """
+    claimed: list[tuple[str, str, str]] = []
+    for ns, etype, key_hash, kind in _entry_key_pairs(entry):
+        for attempt in (1, 2):
+            try:
+                await CompositeKeyClaim.claim(
+                    ns, etype, key_hash, entry.entry_id, kind, state="pending"
+                )
+                claimed.append((ns, etype, key_hash))
+                break
+            except DuplicateKeyError:
+                existing = await CompositeKeyClaim.find_existing(ns, etype, key_hash)
+                if attempt == 1 and await resolve_stale_claim(existing):
+                    continue  # healed — retry once; index arbitrates races
+                owner = existing.owner_entry_id if existing else "?"
+                for c_ns, c_et, c_hash in claimed:
+                    await CompositeKeyClaim.release(c_ns, c_et, c_hash, entry.entry_id)
+                return (
+                    f"Composite key already registered under different entry: {owner}"
+                )
+    return None
+
+
+async def confirm_entry_keys(entry: RegistryEntry) -> None:
+    """Flip an inserted entry's pending claims to confirmed. Best-effort: a
+    failure leaves pending-but-backed claims, which the cheap reconcile pass
+    confirms on its next run — it must never fail the committed insert."""
+    for ns, etype, key_hash, _kind in _entry_key_pairs(entry):
         try:
-            await CompositeKeyClaim.claim(ns, etype, key_hash, entry.entry_id, kind)
-        except DuplicateKeyError:
-            existing = await CompositeKeyClaim.find_existing(ns, etype, key_hash)
-            owner = existing.owner_entry_id if existing else "?"
-            logger.warning(
-                "CASE-427: %s key %s (%s/%s) for new entry %s already claimed "
-                "by %s — cross-feed/concurrent collision, left for reconciliation.",
-                kind, key_hash, ns, etype, entry.entry_id, owner,
-            )
+            await CompositeKeyClaim.confirm(ns, etype, key_hash, entry.entry_id)
         except Exception:
-            # CASE-431: truly best-effort. The entry is already inserted and its
-            # primary uniqueness is guaranteed by namespace_entity_keyhash_unique_idx;
-            # the claim is only cross-feed protection for future add_synonyms. Any
-            # non-DuplicateKeyError hiccup (transient Mongo error, or an
-            # uninitialised collection in a misconfigured harness) must NOT fail
-            # the committed entry — log it and leave the missing claim for startup
-            # reconciliation.
             logger.exception(
-                "CASE-431: %s key %s (%s/%s) claim for committed entry %s failed "
-                "unexpectedly — entry stands; missing claim left for reconciliation.",
-                kind, key_hash, ns, etype, entry.entry_id,
+                "CASE-554: confirm failed for %s (%s/%s), entry %s — left "
+                "pending for reconciliation.",
+                key_hash, ns, etype, entry.entry_id,
             )
+
+
+async def release_entry_keys(entry: RegistryEntry) -> None:
+    """Roll back an entry's claims after its insert failed. Best-effort —
+    anything left behind is pending and dies in the reconcile pass."""
+    for ns, etype, key_hash, _kind in _entry_key_pairs(entry):
+        try:
+            await CompositeKeyClaim.release(ns, etype, key_hash, entry.entry_id)
+        except Exception:
+            logger.exception(
+                "CASE-554: release failed for %s (%s/%s), entry %s — pending "
+                "claim left for reconciliation.",
+                key_hash, ns, etype, entry.entry_id,
+            )
+
+
+async def reconcile_pending_claims(
+    grace_seconds: int = PENDING_GRACE_SECONDS,
+) -> dict[str, int]:
+    """The cheap startup reconcile: resolve pending claims older than the
+    grace window. Backed by an entry → confirm (the request died between
+    insert and flip); unbacked → delete (it died before the insert).
+
+    O(pending) via the partial (state, created_at) index — confirmed claims,
+    the overwhelming majority, are never read. Young pending claims belong
+    to in-flight requests and are never touched, which is what makes this
+    safe to run concurrently with live traffic (the CASE-553 failure mode of
+    the full-scan reconcile).
+    """
+    cutoff = datetime.now(UTC) - timedelta(seconds=grace_seconds)
+    claims_coll = CompositeKeyClaim.get_motor_collection()
+    summary = {"checked": 0, "confirmed": 0, "deleted": 0}
+
+    async for doc in claims_coll.find(
+        {"state": "pending", "created_at": {"$lt": cutoff}}
+    ):
+        summary["checked"] += 1
+        entry = await RegistryEntry.find_one(
+            RegistryEntry.entry_id == doc["owner_entry_id"]
+        )
+        backed = entry is not None and _entry_doc_backs_claim(
+            entry.model_dump(), doc
+        )
+        if backed:
+            await claims_coll.update_one(
+                {"_id": doc["_id"], "state": "pending"},
+                {"$set": {"state": "confirmed"}},
+            )
+            summary["confirmed"] += 1
+        else:
+            await claims_coll.delete_one({"_id": doc["_id"], "state": "pending"})
+            summary["deleted"] += 1
+
+    if summary["checked"]:
+        logger.info("CASE-554 pending reconcile: %s", summary)
+    return summary
 
 
 async def backfill_claims() -> dict[str, int]:
@@ -160,13 +294,16 @@ async def backfill_claims() -> dict[str, int]:
 
 
 async def reconcile_orphan_claims() -> dict[str, int]:
-    """Delete claims whose backing entry/synonym no longer exists.
+    """Full-collection audit: delete claims whose backing entry/synonym no
+    longer exists. ADMIN VERB — not on the startup path since the two-phase
+    protocol (CASE-554); day-to-day consistency is kept by
+    reconcile_pending_claims + inline healing, and this scan's concurrency
+    hazard against live traffic (CASE-553) is why it stays manual.
 
     Safe + idempotent — only deletes dangling claims, never mutates entries.
-    Run at startup (like recover_incomplete_deletions). Catches: claims for
-    deleted entries, cross-namespace-synonym residue after namespace deletion,
-    and orphans left by a claim-insert that succeeded while the subsequent
-    entry write failed (no-transaction window).
+    Catches confirmed-dangling residue in bulk: claims for deleted entries,
+    cross-namespace-synonym residue after namespace deletion, stale claims
+    from entry mutations.
 
     Uses batched queries (500 owner IDs per round) instead of per-claim
     lookups to avoid the N+1 pattern that takes 20+ minutes on slow storage.

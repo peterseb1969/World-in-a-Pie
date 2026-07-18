@@ -48,7 +48,11 @@ from ..models.entry import RegistryEntry, Synonym
 from ..models.id_algorithm import VALID_ENTITY_TYPES, IdFormatValidator
 from ..models.namespace import Namespace
 from ..services.auth import require_api_key
-from ..services.claims import claim_entry_keys
+from ..services.claims import (
+    claim_entry_keys_pending,
+    confirm_entry_keys,
+    release_entry_keys,
+)
 from ..services.hash import HashService
 from ..services.id_generator import IdGeneratorService
 from .grants import resolve_accessible_namespaces
@@ -554,16 +558,30 @@ async def register_keys(
             )
             error_count += 1
 
-    # Phase 4: Batch insert
-    if entries_to_insert:
+    # Phase 3.5: claim-first gate. Every key pair is claimed pending BEFORE
+    # the insert (fail-fast on conflict; the item drops out of the batch).
+    # An entry without a claim is thereby unrepresentable by ordering.
+    gated_entries: list = []
+    gated_indices: list[int] = []
+    for pos, idx in enumerate(insert_indices):
+        entry = entries_to_insert[pos]
+        conflict = await claim_entry_keys_pending(entry)
+        if conflict is not None:
+            results[idx] = RegisterKeyResponse(
+                index=idx, status="error", error=conflict,
+            )
+            error_count += 1
+            continue
+        gated_entries.append(entry)
+        gated_indices.append(idx)
+
+    # Phase 4: Batch insert, then confirm the pending claims.
+    if gated_entries:
         try:
-            await RegistryEntry.insert_many(entries_to_insert)
-            for pos, idx in enumerate(insert_indices):
-                entry = entries_to_insert[pos]
-                # CASE-427: populate the unified claims domain for the new
-                # entry (primary + any identity-value synonym). Best-effort —
-                # primary uniqueness is already guaranteed by the unique index.
-                await claim_entry_keys(entry)
+            await RegistryEntry.insert_many(gated_entries)
+            for pos, idx in enumerate(gated_indices):
+                entry = gated_entries[pos]
+                await confirm_entry_keys(entry)
                 results[idx] = RegisterKeyResponse(
                     index=idx,
                     status="created",
@@ -574,8 +592,9 @@ async def register_keys(
                 )
                 created_count += 1
         except Exception as e:
-            for _pos, idx in enumerate(insert_indices):
+            for pos, idx in enumerate(gated_indices):
                 if results[idx] is None:
+                    await release_entry_keys(gated_entries[pos])
                     results[idx] = RegisterKeyResponse(
                         index=idx,
                         status="error",
@@ -643,9 +662,23 @@ async def provision_ids(
         ids.append(ProvisionedId(entry_id=entry_id, status="reserved"))
 
     if entries:
-        await RegistryEntry.insert_many(entries)
-        for entry in entries:  # CASE-427: claim primary keys for reserved entries
-            await claim_entry_keys(entry)
+        # Claim-first (pending) for reserved entries too; a conflict on a
+        # provisioned composite key fails the whole provision loudly rather
+        # than reserving an entry whose key resolves elsewhere.
+        for entry in entries:
+            conflict = await claim_entry_keys_pending(entry)
+            if conflict is not None:
+                for e in entries:
+                    await release_entry_keys(e)
+                raise HTTPException(status_code=409, detail=conflict)
+        try:
+            await RegistryEntry.insert_many(entries)
+        except Exception:
+            for entry in entries:
+                await release_entry_keys(entry)
+            raise
+        for entry in entries:
+            await confirm_entry_keys(entry)
 
     return ProvisionResponse(
         namespace=request.namespace,
@@ -737,19 +770,36 @@ async def reserve_ids(
             ))
             error_count += 1
 
-    if entries_to_insert:
+    # Claim-first gate (pending before insert, fail-fast per item), then
+    # insert and confirm — same two-phase shape as the register path.
+    gated_entries = []
+    gated_indices = []
+    for pos, idx in enumerate(insert_indices):
+        entry = entries_to_insert[pos]
+        conflict = await claim_entry_keys_pending(entry)
+        if conflict is not None:
+            results[idx] = ReserveItemResponse(
+                index=idx, status="error", error=conflict,
+            )
+            error_count += 1
+            continue
+        gated_entries.append(entry)
+        gated_indices.append(idx)
+
+    if gated_entries:
         try:
-            await RegistryEntry.insert_many(entries_to_insert)
-            for pos, idx in enumerate(insert_indices):
-                entry = entries_to_insert[pos]
-                await claim_entry_keys(entry)  # CASE-427
+            await RegistryEntry.insert_many(gated_entries)
+            for pos, idx in enumerate(gated_indices):
+                entry = gated_entries[pos]
+                await confirm_entry_keys(entry)
                 results[idx] = ReserveItemResponse(
                     index=idx, status="reserved", entry_id=entry.entry_id
                 )
                 reserved_count += 1
         except Exception as e:
-            for _pos, idx in enumerate(insert_indices):
+            for pos, idx in enumerate(gated_indices):
                 if results[idx] is None:
+                    await release_entry_keys(gated_entries[pos])
                     results[idx] = ReserveItemResponse(
                         index=idx, status="error",
                         error=f"Batch insert failed: {e!s}"
