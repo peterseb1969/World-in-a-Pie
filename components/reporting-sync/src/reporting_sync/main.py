@@ -42,6 +42,7 @@ from .models import (
     MetricsResponse,
     SyncStatus,
 )
+from .parity import NamespaceParityResult, check_namespace_parity
 from .schema_manager import SchemaManager
 from .search_service import (
     ActivityResponse,
@@ -519,6 +520,38 @@ async def _postgres_live_check() -> bool:
         return True
     except Exception:
         return False
+
+
+@router.get("/parity", response_model=NamespaceParityResult)
+async def reporting_parity(
+    namespace: str = Query(..., description="Namespace to verify"),
+    include_counts: bool = Query(
+        True,
+        description=(
+            "Include expected-vs-actual row counts (mongo-derived, same "
+            "query the batch sync consumes). Pass false for the cheap "
+            "structure-only form used between restore phases."
+        ),
+    ),
+) -> NamespaceParityResult:
+    """Does postgres reflect what sync should have built for this namespace?
+
+    Per sync-enabled template: table present in the namespace's schema,
+    columns matching the schema manager's own derivation, bookkeeping row
+    recorded, and (optionally) row-count parity against the active-document
+    total. Also reports namespace-level state — schema presence, table
+    count, and whether the bookkeeping tables are namespace-keyed at all.
+
+    The one-request answer to "why does the reporting layer look empty":
+    a stale/fossil schema shows structural issues, a dead sync worker or
+    blocked doc-type sync shows count mismatches, and a pre-namespace-keying
+    database is named explicitly with remediation.
+    """
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+    return await check_namespace_parity(
+        state.postgres_pool, namespace, include_counts=include_counts
+    )
 
 
 # =============================================================================

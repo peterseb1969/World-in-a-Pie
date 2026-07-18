@@ -116,6 +116,14 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
         job.status = BackupJobStatus.RUNNING
         job.started_at = datetime.now(UTC)
 
+    # Warnings accumulate on the job record instead of overwriting the
+    # rolling phase/message — a completed job with warnings succeeded; the
+    # warnings say what to double-check (e.g. reporting parity incomplete).
+    if event.phase == "warning":
+        job.warnings.append(event.message)
+        await job.save()
+        return
+
     job.phase = event.phase
     job.message = event.message
     if event.percent is not None:
@@ -335,16 +343,21 @@ def make_direct_restore_runner(
     async def runner(progress_callback: Callable[[ProgressEvent], None]) -> Any:
         from .backup_engine import DirectRestoreEngine
         from .file_storage_client import get_file_storage_client, is_file_storage_enabled
+        from .reporting_client import ReportingSyncClient
 
         mongo_client = cast(Any, BackupJob.get_motor_collection().database.client)
         storage = get_file_storage_client() if is_file_storage_enabled() else None
-        engine = DirectRestoreEngine(mongo_client, storage, progress_callback)
+        engine = DirectRestoreEngine(
+            mongo_client, storage, progress_callback,
+            reporting_client=ReportingSyncClient(),
+        )
         await engine.run_restore(
             Path(archive_path),
             target_namespace=opts.get("target_namespace", ""),
             skip_documents=opts.get("skip_documents", False),
             skip_files=opts.get("skip_files", False),
             batch_size=opts.get("batch_size", 500),
+            drop_stale_reporting=opts.get("drop_stale_reporting", False),
         )
 
     return runner

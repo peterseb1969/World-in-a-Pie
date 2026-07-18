@@ -11,6 +11,7 @@ in :mod:`backup_service`.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -31,6 +32,7 @@ from wip_toolkit.models import (
 )
 
 from .file_storage_client import FileStorageClient
+from .reporting_client import ReportingSyncClient
 
 logger = logging.getLogger("document_store.backup_engine")
 
@@ -341,6 +343,7 @@ class DirectRestoreEngine:
         *,
         registry_base_url: str | None = None,
         registry_api_key: str | None = None,
+        reporting_client: "ReportingSyncClient | None" = None,
     ) -> None:
         self._mongo = mongo_client
         self._storage = storage_client
@@ -352,6 +355,13 @@ class DirectRestoreEngine:
             "REGISTRY_API_KEY",
             os.getenv("API_KEY", "dev_master_key_for_testing"),
         ))
+        # Reporting verification phases (restore-verification design): when a
+        # client is injected AND reporting-sync answers, the restore verifies
+        # the reporting layer at phase boundaries. When reporting-sync is
+        # unreachable (core preset deploys without it), the phases degrade to
+        # a logged warning — a restore never fails because the convenience
+        # layer is absent, only on positive verification failures.
+        self._reporting = reporting_client
 
     async def run_restore(
         self,
@@ -361,6 +371,7 @@ class DirectRestoreEngine:
         skip_documents: bool = False,
         skip_files: bool = False,
         batch_size: int = 500,
+        drop_stale_reporting: bool = False,
     ) -> None:
         """Run the full restore pipeline over every namespace in the archive.
 
@@ -415,10 +426,14 @@ class DirectRestoreEngine:
                 percent=0,
             )
 
-            # Phase 1: validate ALL targets empty before writing anything
+            # Phase 1: validate ALL targets empty before writing anything.
+            # The reporting precondition runs alongside: the namespace's
+            # reporting schema must be absent/empty too, or stale tables
+            # would shadow the restored data (fossil-schema incident class).
             self._emit("phase_validate", "Checking target namespaces are empty", percent=2)
             for _src, tgt in targets:
                 await self._check_namespace_empty(tgt)
+                await self._check_reporting_precondition(tgt, drop_stale_reporting)
 
             entry_by_prefix = {e.prefix: e for e in manifest.namespaces}
             restore_order = [
@@ -489,6 +504,19 @@ class DirectRestoreEngine:
 
                     logger.info("Restored %d %s into namespace %s", count, entity_type, tgt)
 
+                    # Structural gate between templates and documents: the
+                    # reporting tables the restored templates imply must be
+                    # creatable and correctly shaped BEFORE any document
+                    # moves. Catches broken bookkeeping / mis-shaped tables
+                    # at the first template instead of after a full restore.
+                    if entity_type == "templates":
+                        await self._reporting_phase_structure(tgt)
+
+                # Count parity after the namespace's data is in: expected vs
+                # actual rows, bounded wait. Mismatch completes WITH a
+                # warning — never a hard fail (operator ruling).
+                await self._reporting_phase_counts(tgt, skip_documents=skip_documents)
+
             # Blobs are flat (namespace-agnostic, globally-unique file_ids) — restore
             # the whole archive's blob set once after all namespaces are in.
             if not skip_files and self._storage:
@@ -512,6 +540,156 @@ class DirectRestoreEngine:
                 f"Found data in: {', '.join(non_empty)}. "
                 "Restore requires an empty namespace."
             )
+
+    # -- Reporting verification phases (restore-verification design) --------
+    #
+    # Poll pacing: structure materializes within a couple of batch-sync
+    # seconds; counts follow the batch sync of the full document set. Both
+    # bounds are generous for dev-class data volumes and merely delay the
+    # warning, not the restore, when exceeded.
+    _REPORTING_STRUCTURE_TIMEOUT_S = 30
+    _REPORTING_COUNTS_TIMEOUT_S = 90
+    _REPORTING_POLL_INTERVAL_S = 3
+
+    def _reporting_unavailable(self, namespace: str, what: str) -> None:
+        """Disable further reporting phases and surface why, loudly once."""
+        self._emit(
+            "warning",
+            f"[{namespace}] reporting-sync unreachable during {what} — "
+            "reporting verification skipped for this restore",
+        )
+        self._reporting = None
+
+    async def _check_reporting_precondition(
+        self, namespace: str, drop_stale: bool
+    ) -> None:
+        """The namespace's reporting schema must be absent/empty before restore.
+
+        Stale tables would shadow the restored data (a complete-looking but
+        dead copy). With ``drop_stale`` the stale schema is dropped after the
+        operator's explicit opt-in; without it, the restore refuses and names
+        the flag. A bookkeeping-table shape problem also fails here — loudly,
+        before anything is written — instead of surfacing as per-type sync
+        failures afterwards.
+        """
+        if not self._reporting:
+            return
+        parity = await self._reporting.parity(namespace, include_counts=False)
+        if parity is None:
+            self._reporting_unavailable(namespace, "precondition check")
+            return
+        if not parity.get("bookkeeping_tables_ok", True):
+            raise RestoreEngineError(
+                f"Reporting bookkeeping tables are unusable: "
+                f"{parity.get('bookkeeping_error')} — restore would complete "
+                "with a silently empty reporting layer. Remediate first."
+            )
+        if parity.get("schema_present") and parity.get("table_count", 0) > 0:
+            if not drop_stale:
+                raise RestoreEngineError(
+                    f"Reporting schema '{parity.get('schema_name')}' already "
+                    f"holds {parity.get('table_count')} table(s) for namespace "
+                    f"'{namespace}' — stale reporting data would shadow the "
+                    "restore. Re-run with drop_stale_reporting=true to drop "
+                    "it, or clear it manually."
+                )
+            if not await self._reporting.drop_namespace_schema(namespace):
+                raise RestoreEngineError(
+                    f"Could not drop stale reporting schema for '{namespace}' "
+                    "(drop_stale_reporting was set) — refusing to restore "
+                    "over shadowed reporting data."
+                )
+            self._emit(
+                "phase_reporting_drop",
+                f"[{namespace}] dropped stale reporting schema "
+                f"({parity.get('table_count')} table(s))",
+            )
+
+    async def _reporting_phase_structure(self, namespace: str) -> None:
+        """Post-templates gate: reporting tables must materialize correctly.
+
+        Triggers a namespace batch sync (no documents are restored yet, so
+        tables materialize empty) and polls the structure-only parity until
+        green. A persistent structural failure HALTS the restore before any
+        document moves.
+        """
+        if not self._reporting:
+            return
+        self._emit(
+            "phase_reporting_structure",
+            f"[{namespace}] verifying reporting tables for restored templates",
+        )
+        await self._reporting.trigger_batch_sync(namespace)
+        deadline = asyncio.get_event_loop().time() + self._REPORTING_STRUCTURE_TIMEOUT_S
+        parity: dict[str, Any] | None = None
+        while asyncio.get_event_loop().time() < deadline:
+            parity = await self._reporting.parity(namespace, include_counts=False)
+            if parity is None:
+                self._reporting_unavailable(namespace, "structure verification")
+                return
+            if parity.get("bookkeeping_tables_ok", True) and parity.get("structural_issues", 0) == 0:
+                return
+            await asyncio.sleep(self._REPORTING_POLL_INTERVAL_S)
+        issues = [
+            f"{t.get('template_value')}: "
+            + (t.get("error") or (
+                "table missing" if not t.get("table_present")
+                else f"missing columns {t.get('missing_columns')}"
+            ))
+            for t in (parity or {}).get("templates", [])
+            if not (t.get("table_present") and not t.get("missing_columns") and not t.get("error"))
+        ]
+        raise RestoreEngineError(
+            f"Reporting tables for namespace '{namespace}' did not verify "
+            f"within {self._REPORTING_STRUCTURE_TIMEOUT_S}s — halting before "
+            f"document restore. Issues: {'; '.join(issues[:5]) or 'unknown'}"
+        )
+
+    async def _reporting_phase_counts(
+        self, namespace: str, *, skip_documents: bool
+    ) -> None:
+        """Post-data count parity: bounded wait, then complete WITH warning.
+
+        Never a hard fail — data is safely in MongoDB at this point and the
+        reporting layer can catch up or be replayed; the warning makes the
+        gap visible instead of silent.
+        """
+        if not self._reporting or skip_documents:
+            return
+        self._emit(
+            "phase_reporting_parity",
+            f"[{namespace}] verifying reporting row-count parity",
+        )
+        await self._reporting.trigger_batch_sync(namespace)
+        deadline = asyncio.get_event_loop().time() + self._REPORTING_COUNTS_TIMEOUT_S
+        parity: dict[str, Any] | None = None
+        while asyncio.get_event_loop().time() < deadline:
+            parity = await self._reporting.parity(namespace, include_counts=True)
+            if parity is None:
+                self._reporting_unavailable(namespace, "count parity")
+                return
+            if parity.get("ok"):
+                self._emit(
+                    "phase_reporting_parity",
+                    f"[{namespace}] reporting parity verified "
+                    f"({len(parity.get('templates', []))} template(s))",
+                )
+                return
+            await asyncio.sleep(self._REPORTING_POLL_INTERVAL_S)
+        mismatches = [
+            f"{t.get('template_value')} expected={t.get('expected_documents')} "
+            f"actual={t.get('actual_rows')}"
+            for t in (parity or {}).get("templates", [])
+            if t.get("counts_match") is False
+        ]
+        self._emit(
+            "warning",
+            f"[{namespace}] reporting count parity incomplete after "
+            f"{self._REPORTING_COUNTS_TIMEOUT_S}s: "
+            f"{'; '.join(mismatches[:5]) or 'no per-template detail'} — "
+            "restore data is complete in MongoDB; re-run the batch sync or "
+            "check the parity endpoint",
+        )
 
     async def _upsert_namespace(
         self, namespace: str, ns_config: NamespaceConfig | None

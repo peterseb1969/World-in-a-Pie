@@ -1505,6 +1505,7 @@ class WipClient:
         batch_size: int = 50,
         continue_on_error: bool = False,
         dry_run: bool = False,
+        drop_stale_reporting: bool = False,
     ) -> dict:
         """Upload a local archive file and start a restore job. Streams from disk."""
         from pathlib import Path as _Path
@@ -1521,6 +1522,7 @@ class WipClient:
             "batch_size": str(batch_size),
             "continue_on_error": str(continue_on_error).lower(),
             "dry_run": str(dry_run).lower(),
+            "drop_stale_reporting": str(drop_stale_reporting).lower(),
         }
         if target_namespace is not None:
             data["target_namespace"] = target_namespace
@@ -1595,6 +1597,17 @@ class WipClient:
     async def get_sync_status(self) -> dict:
         return await self._get(
             self.reporting_sync_url, "/api/reporting-sync/status"
+        )
+
+    async def check_reporting_parity(
+        self, namespace: str, include_counts: bool = True
+    ) -> dict:
+        """Namespace parity: does postgres reflect what sync should have built?"""
+        return await self._get(
+            self.reporting_sync_url,
+            "/api/reporting-sync/parity",
+            namespace=namespace,
+            include_counts=str(include_counts).lower(),
         )
 
     async def list_report_tables(self, table_name: str | None = None) -> dict:

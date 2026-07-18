@@ -140,6 +140,14 @@ class BackupJob(BeanieDocument):
         description="The request body / options that initiated the job"
     )
 
+    # Non-fatal findings surfaced during the job (e.g. reporting count-parity
+    # incomplete after its bounded wait). A completed job with warnings
+    # succeeded — the warnings say what to double-check.
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Non-fatal warnings accumulated while the job ran"
+    )
+
     # Provenance
     created_by: str = Field(
         ...,
@@ -301,6 +309,7 @@ class BackupJobSnapshot(BaseModel):
     archive_size: int | None = None
     archive_backend: str = "local"
     options: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
     created_by: str
 
     @classmethod
@@ -322,5 +331,6 @@ class BackupJobSnapshot(BaseModel):
             archive_size=job.archive_size,
             archive_backend=job.archive_backend,
             options=job.options,
+            warnings=job.warnings,
             created_by=job.created_by,
         )

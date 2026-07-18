@@ -409,6 +409,69 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
 
         return ddl.strip()
 
+    @staticmethod
+    def parse_template_fields(fields_data: list[dict]) -> list[TemplateField]:
+        """Parse raw template field dicts (as the template-store API returns
+        them) into TemplateField models. The single conversion point shared by
+        table creation and the parity check — both must see identical fields
+        or the parity oracle drifts from what sync actually builds."""
+        fields: list[TemplateField] = []
+        for f in fields_data:
+            file_config = None
+            if f.get("file_config"):
+                file_config = FileFieldConfig(**f["file_config"])
+            array_file_config = None
+            if f.get("array_file_config"):
+                array_file_config = FileFieldConfig(**f["array_file_config"])
+            semantic_type = None
+            if f.get("semantic_type"):
+                semantic_type = SemanticType(f["semantic_type"])
+
+            fields.append(TemplateField(
+                name=f["name"],
+                label=f.get("label"),
+                type=FieldType(f["type"]),
+                mandatory=f.get("mandatory", False),
+                terminology_ref=f.get("terminology_ref"),
+                template_ref=f.get("template_ref"),
+                array_item_type=FieldType(f["array_item_type"]) if f.get("array_item_type") else None,
+                array_terminology_ref=f.get("array_terminology_ref"),
+                array_template_ref=f.get("array_template_ref"),
+                file_config=file_config,
+                array_file_config=array_file_config,
+                semantic_type=semantic_type,
+                full_text_indexed=f.get("full_text_indexed"),
+            ))
+        return fields
+
+    def expected_columns_for_template(
+        self,
+        fields: list[TemplateField],
+        config: ReportingConfig | None = None,
+        usage: str = "entity",
+    ) -> set[str]:
+        """Column names the sync pipeline would create for these fields.
+
+        Derived from the same _generate_column_ddl / SYSTEM_COLUMNS-prefix /
+        full-text rules create_table and update_table_schema apply, so a
+        parity check comparing against information_schema measures exactly
+        what sync builds. Covers field-derived columns only — the fixed
+        system columns are created with the table and cannot drift
+        independently.
+        """
+        expected: set[str] = set()
+        for field in fields:
+            needs_prefix = field.name in self.SYSTEM_COLUMNS
+            for col_name, _col_type in self._generate_column_ddl(field, config=config):
+                expected.add(f"data_{col_name}" if needs_prefix else col_name)
+            if field.full_text_indexed and field.type == FieldType.STRING:
+                base_col = f"data_{field.name}" if needs_prefix else field.name
+                for fts_col, _fts_type in self._full_text_columns(base_col):
+                    expected.add(fts_col)
+        if usage == "relationship":
+            expected.update(("source_ref_id", "target_ref_id"))
+        return expected
+
     async def ensure_schema(self, namespace: str) -> str:
         """Create the namespace's PostgreSQL schema if absent. Returns its name."""
         schema = self.schema_for(namespace)
@@ -887,34 +950,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
 
         # Parse fields
         fields = []
-        for f in fields_data:
-            # Parse file_config if present
-            file_config = None
-            if f.get("file_config"):
-                file_config = FileFieldConfig(**f["file_config"])
-            array_file_config = None
-            if f.get("array_file_config"):
-                array_file_config = FileFieldConfig(**f["array_file_config"])
-            # Parse semantic_type if present
-            semantic_type = None
-            if f.get("semantic_type"):
-                semantic_type = SemanticType(f["semantic_type"])
-
-            fields.append(TemplateField(
-                name=f["name"],
-                label=f.get("label"),
-                type=FieldType(f["type"]),
-                mandatory=f.get("mandatory", False),
-                terminology_ref=f.get("terminology_ref"),
-                template_ref=f.get("template_ref"),
-                array_item_type=FieldType(f["array_item_type"]) if f.get("array_item_type") else None,
-                array_terminology_ref=f.get("array_terminology_ref"),
-                array_template_ref=f.get("array_template_ref"),
-                file_config=file_config,
-                array_file_config=array_file_config,
-                semantic_type=semantic_type,
-                full_text_indexed=f.get("full_text_indexed"),
-            ))
+        fields.extend(self.parse_template_fields(fields_data))
 
         # Parse reporting config if present
         reporting_data = template.get("reporting", {})

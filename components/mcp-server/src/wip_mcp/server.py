@@ -3779,8 +3779,17 @@ async def start_restore(
     batch_size: int = 50,
     continue_on_error: bool = False,
     dry_run: bool = False,
+    drop_stale_reporting: bool = False,
 ) -> str:
     """Restore a namespace from a local archive file. Returns the initial BackupJobSnapshot.
+
+    The restore verifies the PostgreSQL reporting layer at phase boundaries:
+    a stale reporting schema fails the precondition unless
+    drop_stale_reporting=True (which drops it first); reporting tables must
+    materialize correctly after templates restore (halts before documents
+    otherwise); and row-count parity is checked at the end — a mismatch
+    completes the job WITH warnings on the job record, never a hard fail.
+    Use check_reporting_parity for the same verification any time.
 
     The archive at archive_path is uploaded as multipart and a restore job is
     queued. Poll get_backup_job to track progress.
@@ -3816,6 +3825,7 @@ async def start_restore(
             batch_size=batch_size,
             continue_on_error=continue_on_error,
             dry_run=dry_run,
+            drop_stale_reporting=drop_stale_reporting,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -3900,6 +3910,45 @@ async def get_sync_status() -> str:
     """
     try:
         data = await get_client().get_sync_status()
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def check_reporting_parity(
+    namespace: str,
+    include_counts: bool = True,
+) -> str:
+    """Verify the PostgreSQL reporting layer reflects MongoDB for a namespace.
+
+    The one-call answer to "why does the reporting layer look empty". Per
+    sync-enabled template: table present in the namespace's schema, columns
+    matching what the sync would build, bookkeeping row recorded, and
+    (with include_counts) expected-vs-actual row counts using the same
+    document query the batch sync consumes. Also reports namespace-level
+    state: schema presence, table count, and whether the sync bookkeeping
+    tables are usable at all (a pre-namespace-keying database is named
+    explicitly, with remediation).
+
+    Interpreting results:
+    - structural_issues > 0: tables missing or mis-shaped — check the
+      per-template rows for missing_columns / errors.
+    - count_mismatches > 0: sync is behind or blocked — re-run the batch
+      sync (or check get_sync_status) and re-check.
+    - bookkeeping_tables_ok false: the reporting database predates the
+      namespace-keyed bookkeeping — doc-type sync cannot work until
+      remediated (wipe the reporting volume or apply the named ALTER).
+
+    Args:
+        namespace: Namespace to verify.
+        include_counts: Include row-count parity (slower). Pass false for
+            the cheap structure-only check.
+    """
+    try:
+        data = await get_client().check_reporting_parity(
+            namespace, include_counts=include_counts
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)

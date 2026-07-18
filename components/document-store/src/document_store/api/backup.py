@@ -243,6 +243,14 @@ async def start_restore(
     batch_size: int = Form(50, ge=1, le=500),
     continue_on_error: bool = Form(False),
     dry_run: bool = Form(False),
+    drop_stale_reporting: bool = Form(
+        False,
+        description=(
+            "When the target namespace's reporting schema already holds "
+            "tables (stale data that would shadow the restore), drop it "
+            "before restoring. Without this flag such a restore refuses."
+        ),
+    ),
     identity: UserIdentity = Depends(require_api_key),
 ) -> BackupJobSnapshot:
     """Upload an archive and restore it into ``namespace``.
@@ -303,6 +311,7 @@ async def start_restore(
         "batch_size": batch_size,
         "continue_on_error": continue_on_error,
         "dry_run": dry_run,
+        "drop_stale_reporting": drop_stale_reporting,
     }
 
     job = BackupJob(
