@@ -2576,6 +2576,125 @@ def redeploy(
     )
 
 
+@app.command("rotate-key")
+def rotate_key(
+    key_name: Annotated[
+        str,
+        typer.Argument(
+            help="Name of the spec-declared config API key to rotate "
+            "(one of auth.api_keys)."
+        ),
+    ],
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Rotate a spec-declared config-file API key — mint a fresh plaintext and re-apply.
+
+    Removes the key's secret (`<name>-api-key`) from the install's secret
+    backend, then re-renders and re-applies the saved spec — regenerating a
+    fresh plaintext, rewriting api-keys.json, and reloading services. Prints
+    the new plaintext ONCE.
+
+    No grace window: the old plaintext stops working the moment the apply
+    completes. Consumers that read the key from a mounted `*_API_KEY_FILE`
+    pick up the new value automatically (listed on success); external holders
+    (scripts, other machines, humans) must be re-handed it.
+
+    Only config-declared keys (auth.api_keys) rotate in place. Runtime keys
+    (console / POST /api-keys) have a server-generated, once-returned
+    plaintext — rotate those by revoke + create.
+
+    Zero-downtime rotation when external consumers can't switch atomically:
+    declare a second key, apply, migrate consumers, then remove the first and
+    apply.
+    """
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+
+    keys = deployment.spec.auth.api_keys
+    match = next((k for k in keys if k.name == key_name), None)
+    if match is None:
+        declared = ", ".join(sorted(k.name for k in keys)) or "(none)"
+        typer.echo(
+            f"error: {key_name!r} is not a spec-declared api key on this "
+            f"install. Declared config keys: {declared}. Runtime keys "
+            "(console / POST /api-keys) can't be rotated in place — revoke "
+            "and create a new one instead.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    secrets_spec = deployment.spec.secrets
+    if secrets_spec.backend != "file" or secrets_spec.location is None:
+        typer.echo(
+            "error: rotate-key requires the file secret backend with a "
+            "location set.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    secret_name = match.secret_name
+    secrets_location = Path(secrets_spec.location)
+    # Remove the current secret so the re-apply's ensure_secrets regenerates
+    # a fresh plaintext (get_or_generate: absent → generate).
+    FileSecretBackend(secrets_location).remove(secret_name)
+
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Rotated api key {key_name!r} on {resolved_name}",
+        repo_root=repo_root,
+    )
+
+    # Read the regenerated plaintext straight off disk (the apply used its own
+    # backend instance; this reads the persisted value).
+    secret_path = secrets_location / secret_name
+    new_plaintext = secret_path.read_text().rstrip("\n")
+
+    typer.echo("")
+    typer.echo(
+        typer.style(
+            f"New plaintext for {key_name!r} (shown once):", bold=True
+        )
+    )
+    typer.echo(f"  {new_plaintext}")
+    typer.echo(f"  secret file: {secret_path}")
+
+    # Consumers that mount this secret update automatically on the apply;
+    # everyone else holds a now-dead key.
+    auto = sorted(
+        {
+            owner.metadata.name
+            for owner in (*components, *apps_list)
+            for ev in (*owner.spec.env.required, *owner.spec.env.optional)
+            if ev.source.from_secret == secret_name
+        }
+    )
+    typer.echo("")
+    if auto:
+        typer.echo(
+            "Picks up the new value automatically (mounts the secret): "
+            + ", ".join(auto)
+        )
+    typer.echo(
+        typer.style(
+            "External holders of the OLD key (scripts, other machines, "
+            "humans) will now get 401 — re-hand them the new value above.",
+            fg=typer.colors.YELLOW,
+        )
+    )
+
+
 @app.command("add-module")
 def add_module(
     module_name: Annotated[
