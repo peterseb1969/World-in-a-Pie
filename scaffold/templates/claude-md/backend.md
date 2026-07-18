@@ -88,6 +88,14 @@ Every config, command, env var, API path, file path, flag, or named symbol must 
 - **Do not claim end-to-end without running end-to-end.** Partial-path validation reported as end-to-end is a specific and expensive lie.
 - **Do not patch code to retroactively validate a prior fabrication.** The trap: fabricate a name → ship → someone tries to use it → modify code so the earlier claim becomes true. That is an ad-hoc retrofit, not a designed addition. If you catch yourself adding code only because another agent hit a name you invented, stop. File the fabrication openly. Decide whether the feature is actually wanted.
 - **Verify before asserting any factual claim.** The grep-before-naming and read-before-citing rules are specific to code references; the umbrella principle is broader. Any factual claim that a cheap check could falsify — a file's contents, a function's location, a date, a count, a previous case's content — must be checked, not asserted from memory. The discipline applies anywhere a fact appears without a check behind it.
+- **Wake-up reading has a quality bar and a ceiling.** A wake-load reading must describe behavior that is **present, current, generally-scoped, and enforced**, with a **reconciliation path** for when reality moves. Five ways it drifts, each with its own fix — name the mode before choosing the fix:
+  - **MISSING** — the reading isn't in the wake-load → add it.
+  - **STALE** — the reading contradicts reality, with no way to notice → give it a reconciliation path.
+  - **TOO-NARROW** — the rule is present but phrased to miss the case → re-scope the wording.
+  - **ASPIRATIONAL** — the contract describes intended, not enforced, behavior → back it with a real check.
+  - **NOT-RETAINED** — the reading is present, current, scoped, and enforced, and still gets lost to mid-session salience decay under delivery pressure.
+
+  The first four are reading-list fixes. **The fifth is not** — no wake-load change reaches a rule that decays mid-session. It needs an **action-triggered gate**: a check that fires on the risky action itself (the write, the model change), not at the session boundary. When a drift instance appears in the wild, classify it against these five first; if it's NOT-RETAINED, do not reach for a reading-list patch.
 
 Full rule at `feedback_no_invented_config.md`.
 

@@ -14,6 +14,15 @@ WIP is the backend. This app is a frontend that maps a domain onto WIP's primiti
 
 **Verify before asserting any factual claim.** Any factual claim a cheap check could falsify — a file's contents, a function's location, a date, a count, a previous case's content — must be checked, not asserted from memory. "I'm pretty sure" is fabrication if you haven't run the check. The pattern has been observed across BE-YAC and FRanC; it is agent-agnostic.
 
+- **Wake-up reading has a quality bar and a ceiling.** A wake-load reading must describe behavior that is **present, current, generally-scoped, and enforced**, with a **reconciliation path** for when reality moves. Five ways it drifts, each with its own fix — name the mode before choosing the fix:
+  - **MISSING** — the reading isn't in the wake-load → add it.
+  - **STALE** — the reading contradicts reality, with no way to notice → give it a reconciliation path.
+  - **TOO-NARROW** — the rule is present but phrased to miss the case → re-scope the wording.
+  - **ASPIRATIONAL** — the contract describes intended, not enforced, behavior → back it with a real check.
+  - **NOT-RETAINED** — the reading is present, current, scoped, and enforced, and still gets lost to mid-session salience decay under delivery pressure.
+
+  The first four are reading-list fixes. **The fifth is not** — no wake-load change reaches a rule that decays mid-session. It needs an **action-triggered gate**: a check that fires on the risky action itself (the write, the model change), not at the session boundary. When a drift instance appears in the wild, classify it against these five first; if it's NOT-RETAINED, do not reach for a reading-list patch.
+
 **Case numbers in code comments are provenance, never substance.** A comment must state the constraint or invariant in full prose; a `CASE-NNN` token may prefix it as history, but the comment must survive the deletion test: remove the token — does it still explain the code? "See CASE-NNN" as the whole explanation is a dead link to every reader without KB access, and case-pointer comments rot because the pointer never gets re-verified against the code around it. Anything user-facing or generated (UI copy, served API descriptions, docs your app publishes) carries no case tokens at all — those readers have no KB.
 
 ## Dev Namespace
