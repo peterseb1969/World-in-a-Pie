@@ -39,6 +39,14 @@ class CaddyConfig:
     # Bare-host `/` redirect target (CASE-368), or None to leave `/`
     # unhandled. Resolved in the shared layer so compose and k8s agree.
     root_redirect: str | None
+    # Emit the hardening-header block (HSTS et al.) in the site block.
+    # Keyed on public exposure (tls=letsencrypt): LAN installs stay
+    # unchanged, and HSTS on a self-signed .local host would pin
+    # browsers to a CA they may drop. The decision lives here — not in
+    # the renderer — so a future k8s-edge equivalent keys on the same
+    # signal. (The k8s edge is nginx-ingress, whose controller defaults
+    # provide HSTS on TLS ingresses; it does not consume this config.)
+    emit_hardening_headers: bool = False
 
 
 def generate_caddy_config(
@@ -71,4 +79,5 @@ def generate_caddy_config(
         has_dex=dex_active,
         dex_service="wip-dex",
         root_redirect=resolve_root_redirect(deployment, apps),
+        emit_hardening_headers=(net.tls == "letsencrypt"),
     )

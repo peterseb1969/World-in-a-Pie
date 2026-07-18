@@ -301,7 +301,7 @@ class TestCheckCaddySecurityHeaders:
 
     def test_internal_tls_passes_with_note(self, tmp_path: Path) -> None:
         d = _make_deployment(tmp_path)
-        r = check_caddy_security_headers(tmp_path, d.spec.network)
+        r = check_caddy_security_headers(tmp_path, d)
         assert r.passed
         assert "LAN-shaped" in r.message
 
@@ -310,7 +310,7 @@ class TestCheckCaddySecurityHeaders:
         d = _make_deployment(
             tmp_path, hostname="wip.example.com", tls="letsencrypt"
         )
-        r = check_caddy_security_headers(tmp_path, d.spec.network)
+        r = check_caddy_security_headers(tmp_path, d)
         assert not r.passed
         assert r.fix_hint is not None
 
@@ -322,13 +322,13 @@ class TestCheckCaddySecurityHeaders:
         d = _make_deployment(
             tmp_path, hostname="wip.example.com", tls="letsencrypt"
         )
-        assert check_caddy_security_headers(tmp_path, d.spec.network).passed
+        assert check_caddy_security_headers(tmp_path, d).passed
 
     def test_letsencrypt_missing_caddyfile_fails(self, tmp_path: Path) -> None:
         d = _make_deployment(
             tmp_path, hostname="wip.example.com", tls="letsencrypt"
         )
-        assert not check_caddy_security_headers(tmp_path, d.spec.network).passed
+        assert not check_caddy_security_headers(tmp_path, d).passed
 
 
 # ────────────────────────────────────────────────────────────────────

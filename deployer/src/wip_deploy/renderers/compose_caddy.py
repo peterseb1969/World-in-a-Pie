@@ -40,6 +40,16 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
     _write_tls(out, cfg)
     out.write("\n")
 
+    # Hardening headers for publicly exposed installs. Site-block level
+    # so they apply to every route, app routes included.
+    if cfg.emit_hardening_headers:
+        out.write("    header {\n")
+        out.write('        Strict-Transport-Security "max-age=31536000"\n')
+        out.write('        X-Content-Type-Options "nosniff"\n')
+        out.write('        X-Frame-Options "SAMEORIGIN"\n')
+        out.write('        Referrer-Policy "strict-origin-when-cross-origin"\n')
+        out.write("    }\n\n")
+
     # Bare-host redirect (CASE-368): send `/` to the resolved target (the
     # first app's prefix, or /auth/login when only the gateway is up).
     # Emitted up front, but `handle /` is an EXACT-path matcher — it

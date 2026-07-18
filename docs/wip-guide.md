@@ -121,7 +121,7 @@ wip-deploy install \
 What changes:
 
 - Let's Encrypt issues a real cert via Caddy. You need port 443 reachable from the public internet for the ACME HTTP-01 challenge, and a hostname that resolves on the public internet.
-- HSTS and standard hardening headers are **not** yet emitted by the rendered Caddy config — `wip-deploy verify --security` flags their absence on public installs; add them manually until header rendering lands as a platform feature.
+- HSTS and standard hardening headers (nosniff, X-Frame-Options, Referrer-Policy) are included in the rendered Caddy config for letsencrypt installs — `wip-deploy verify --security` confirms them.
 - For testing the ACME flow without burning rate limits, use `--tls letsencrypt --acme-staging` (staging cert is *not* trusted by browsers).
 - Run `wip-deploy verify --security` and walk the §7 *Security Hardening* checklist before exposing the host.
 

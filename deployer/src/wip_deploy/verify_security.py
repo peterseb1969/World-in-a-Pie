@@ -41,10 +41,12 @@ check mutates anything; the whole module is read-only.
      is the ground truth for what is actually published.
 
   6. **Security headers on public installs** — a letsencrypt install
-     should send Strict-Transport-Security. The renderer currently
-     emits no security-header block, so this check failing on a public
-     install is a real finding, not noise; LAN-shaped installs
-     (tls=internal) pass with a note.
+     should send Strict-Transport-Security. The renderer emits the
+     hardening-header block for letsencrypt installs (CASE-691), so a
+     failure here means the rendered Caddyfile predates that and needs
+     a re-render; LAN-shaped installs (tls=internal) pass with a note,
+     and k8s installs are not applicable (their edge is nginx-ingress,
+     with controller-provided HSTS).
 
 ### What's NOT checked
 
@@ -343,9 +345,21 @@ def check_published_ports(install_dir: Path, deployment: Deployment) -> CheckRes
     return CheckResult(name, True, f"no datastore/admin ports on the host (published: {summary})")
 
 
-def check_caddy_security_headers(install_dir: Path, network: NetworkSpec) -> CheckResult:
+def check_caddy_security_headers(install_dir: Path, deployment: Deployment) -> CheckResult:
     """Public (letsencrypt) installs should send Strict-Transport-Security."""
     name = "security headers (Caddyfile)"
+    network = deployment.spec.network
+    if deployment.spec.target == "k8s":
+        # The k8s edge is nginx-ingress, not Caddy — there is no edge
+        # Caddyfile to inspect. The ingress controller's defaults provide
+        # HSTS on TLS ingresses; verify empirically on the cluster
+        # (`curl -sI https://<host>/ | grep -i strict-transport`).
+        return CheckResult(
+            name,
+            True,
+            "not applicable (k8s edge is nginx-ingress; HSTS is "
+            "controller-provided — verify with curl -sI on the cluster)",
+        )
     if network.tls != "letsencrypt":
         return CheckResult(
             name,
@@ -370,10 +384,9 @@ def check_caddy_security_headers(install_dir: Path, network: NetworkSpec) -> Che
         False,
         "public install without Strict-Transport-Security in the rendered Caddyfile",
         fix_hint=(
-            "The renderer does not currently emit a security-header block —\n"
-            "add `header Strict-Transport-Security \"max-age=31536000\"` to the\n"
-            "site block manually until header rendering lands as a platform\n"
-            "feature, and re-run this check."
+            "The renderer emits the hardening-header block for tls=letsencrypt\n"
+            "installs since CASE-691 — this Caddyfile predates that. Re-render\n"
+            "with `wip-deploy install` (current deployer) and re-run this check."
         ),
     )
 
@@ -392,6 +405,6 @@ def verify_security(install_dir: Path, deployment: Deployment) -> SecurityReport
         check_tls_hostname_sanity(network),
         check_variant_exposure(deployment),
         check_published_ports(install_dir, deployment),
-        check_caddy_security_headers(install_dir, network),
+        check_caddy_security_headers(install_dir, deployment),
     ]
     return SecurityReport(install_dir=install_dir, results=results)
