@@ -350,7 +350,7 @@ async def setup_key_sync(
     if api_key_provider is None:
         return None
 
-    config_key_names = {k.name for k in api_key_provider._keys}
+    config_key_names = {k.name for k in api_key_provider.iter_keys()}
 
     sync_service = KeySyncService(
         registry_url=registry_url,
