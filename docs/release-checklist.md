@@ -32,9 +32,9 @@ done
 
 ## 3. Security
 
-- [ ] Manual pre-exposure checks pass on a `wip-deploy install --tls letsencrypt` (or `--tls internal`) deployment — see WIP Guide §7.3 (the v1 `production-check.sh` is retired, CASE-383; automated v2 check tracked in CASE-445)
+- [ ] `wip-deploy verify --security` passes on the release-candidate install — see WIP Guide §7.3
 - [ ] No new security warnings from `pip-audit` or `bandit`
-- [ ] Default dev API key (`dev_master_key_for_testing`) not present in any install's secret backend (note: the in-service prod-mode rejection gate is currently inert under v2 — CASE-445)
+- [ ] Default dev API key (`dev_master_key_for_testing`) not present in any install's secret backend — `verify --security` checks this too (note: the in-service prod-mode rejection gate is armed only on `--variant prod` installs; dev-variant installs rely on this check)
 
 ## 4. API Consistency
 

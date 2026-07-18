@@ -1270,6 +1270,126 @@ def status(
 
 
 # ────────────────────────────────────────────────────────────────────
+# verify (CASE-445 — pre-exposure security check)
+# ────────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def verify(
+    security: Annotated[
+        bool,
+        typer.Option(
+            "--security",
+            help=(
+                "Run the pre-exposure security checklist: secret file "
+                "permissions, API-key strength, TLS-vs-hostname sanity, "
+                "variant-vs-exposure, published host ports, security "
+                "headers. Read-only."
+            ),
+        ),
+    ] = False,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help=(
+                "Install directory. Defaults to ~/.wip-deploy/<name>/ "
+                "when --name is used."
+            ),
+        ),
+    ] = None,
+    name: Annotated[str | None, _name_opt()] = None,
+) -> None:
+    """Verify an install against a pre-exposure checklist. Read-only.
+
+    Successor to the retired v1 `production-check.sh` (CASE-383/445):
+    reads the persisted deployer-state, the rendered artifacts, and the
+    secret backend — the things a v2 install actually consists of.
+
+    Run this BEFORE exposing an install beyond the local machine, and
+    from the release checklist.
+
+    Exit codes:
+      0 — all checks passed
+      1 — at least one check failed; fix-hints printed per failure
+      2 — couldn't start (no install / no persisted state)
+
+    Examples:
+
+      wip-deploy verify --security
+      wip-deploy verify --security --name wip-prod
+    """
+    if not security:
+        typer.echo("nothing to verify: pass --security", err=True)
+        raise typer.Exit(2)
+
+    from wip_deploy.verify_security import verify_security
+
+    name = _resolve_name(name)
+    resolved_dir = (install_dir or _default_install_dir(name)).expanduser()
+    if not resolved_dir.is_dir():
+        typer.echo(
+            typer.style(f"✗ no install at {resolved_dir}", fg=typer.colors.RED),
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    previous = _try_load_previous_deployment(resolved_dir)
+    if previous is None:
+        typer.echo(
+            typer.style(
+                f"✗ no readable deployer-state under {resolved_dir} — "
+                "cannot verify an install without its persisted spec",
+                fg=typer.colors.RED,
+            ),
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    report = verify_security(resolved_dir, previous)
+
+    typer.echo(f"Security verification: {resolved_dir}")
+    typer.echo(
+        f"  target={previous.spec.target}  variant={previous.spec.variant}  "
+        f"tls={previous.spec.network.tls}  hostname={previous.spec.network.hostname}"
+    )
+    typer.echo("")
+    for r in report.results:
+        if r.passed:
+            typer.echo(
+                typer.style(f"  ✓ {r.name}", fg=typer.colors.GREEN) + f"  {r.message}"
+            )
+        else:
+            typer.echo(
+                typer.style(f"  ✗ {r.name}", fg=typer.colors.RED) + f"  {r.message}"
+            )
+            if r.fix_hint:
+                for line in r.fix_hint.split("\n"):
+                    typer.echo(f"      {line}")
+
+    typer.echo("")
+    if report.ok:
+        typer.echo(
+            typer.style(
+                f"✓ {len(report.results)} check(s) passed.",
+                fg=typer.colors.GREEN,
+                bold=True,
+            )
+        )
+        raise typer.Exit(0)
+
+    n_failed = len(report.failures)
+    typer.echo(
+        typer.style(
+            f"✗ {n_failed} of {len(report.results)} check(s) failed.",
+            fg=typer.colors.RED,
+            bold=True,
+        )
+    )
+    raise typer.Exit(1)
+
+
+# ────────────────────────────────────────────────────────────────────
 # rebuild
 # ────────────────────────────────────────────────────────────────────
 

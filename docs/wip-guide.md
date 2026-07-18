@@ -121,9 +121,9 @@ wip-deploy install \
 What changes:
 
 - Let's Encrypt issues a real cert via Caddy. You need port 443 reachable from the public internet for the ACME HTTP-01 challenge, and a hostname that resolves on the public internet.
-- HSTS and standard hardening headers are added by default.
+- HSTS and standard hardening headers are **not** yet emitted by the rendered Caddy config — `wip-deploy verify --security` flags their absence on public installs; add them manually until header rendering lands as a platform feature.
 - For testing the ACME flow without burning rate limits, use `--tls letsencrypt --acme-staging` (staging cert is *not* trusted by browsers).
-- Walk the §7 *Security Hardening* checklist before exposing the host (the v1 `production-check.sh` validator is retired — CASE-383; a v2-native check is tracked in CASE-445).
+- Run `wip-deploy verify --security` and walk the §7 *Security Hardening* checklist before exposing the host.
 
 ### Tier 3: Enterprise
 
@@ -692,20 +692,18 @@ Rotation cadences worth defaulting to:
 
 ### 7.3 Validate before exposing
 
-The v1 `production-check.sh` validator was retired with the v1 deployment
-shape it checked (CASE-383); a v2-native automated check is tracked in
-CASE-445. Until it lands, verify manually on the install:
+Run the automated pre-exposure checklist against the install:
 
 ```bash
-# Secret backend permissions: dir 700, files 600
-ls -ld ~/.wip-deploy/<name>/secrets && ls -l ~/.wip-deploy/<name>/secrets
-
-# API key is the generated random one, not the documented dev default
-grep -c "dev_master_key_for_testing" ~/.wip-deploy/<name>/.env   # expect 0
-
-# TLS mode matches the exposure (letsencrypt for public hostnames)
-grep -m1 -A2 "tls" ~/.wip-deploy/<name>/config/caddy/Caddyfile
+wip-deploy verify --security --name <name>
 ```
+
+Read-only. It checks secret file permissions (dir 700, files 600), API-key
+strength (not the documented dev default, not trivially short), TLS mode vs
+hostname sanity, variant vs exposure (a public-shaped install must run
+`--variant prod` so the in-service startup guards are armed), published host
+ports (no datastore/admin ports bypassing Caddy), and security headers on
+public installs. Exit 0 = safe to expose; each failure prints a fix hint.
 
 ### 7.4 Ongoing health monitoring
 
