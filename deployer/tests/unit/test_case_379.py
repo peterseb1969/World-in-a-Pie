@@ -72,6 +72,11 @@ def _make_app_source(
     if has_dockerfile_dev:
         (src / "Dockerfile.dev").write_text("FROM node:20-alpine\nCMD npm run dev\n")
 
+    # Production Dockerfile on an alpine base: the fixture manifest declares
+    # an HTTP healthcheck, and the probe-binary pre-flight requires the
+    # runtime image to carry curl/wget (busybox wget via alpine suffices).
+    (src / "Dockerfile").write_text("FROM node:20-alpine\nCMD [\"node\"]\n")
+
     if has_vite_config:
         lines = [
             "import { defineConfig } from 'vite'",

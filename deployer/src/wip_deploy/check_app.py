@@ -408,6 +408,104 @@ def check_manifest_declares_dev_port(
     )
 
 
+_DOCKERFILE_FROM = re.compile(r"^\s*FROM\s+(\S+)", re.MULTILINE | re.IGNORECASE)
+
+
+def check_healthcheck_probe_binary(
+    source_dir: Path, manifest_path: Path
+) -> CheckResult:
+    """An HTTP healthcheck's probe binary must exist in the production image.
+
+    The rendered probe is a shell `curl`/`wget` invocation; an image with
+    neither binary exits 127 on every probe and the container reports
+    permanently unhealthy while the app serves fine — indistinguishable in
+    health status from a genuinely dead app, and the install's health-wait
+    fails pointing at the app instead of the missing binary. Alpine bases
+    satisfy `wget` via busybox; `node:*-slim` and distroless ship neither.
+
+    Heuristic-grade by design: last `FROM` decides the runtime base, an
+    `apk add`/`apt-get install` line naming the binary counts as installed.
+    Declaring NO healthcheck is a legal alternative — the container then
+    reports no health status at all (plain `Up`, like the platform router).
+    """
+    name = "healthcheck probe binary present in production image"
+    try:
+        data = yaml.safe_load(manifest_path.read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        return CheckResult(
+            name, True, "manifest unreadable — reported by the validate check"
+        )
+    hc = (data.get("spec") or {}).get("healthcheck") or None
+    if not hc or not isinstance(hc, dict):
+        return CheckResult(
+            name, True,
+            "no healthcheck declared — container reports no health status "
+            "(plain Up, like the platform router); an allowed choice",
+        )
+    if hc.get("command"):
+        return CheckResult(
+            name, True, "exec-style healthcheck — no HTTP probe binary needed"
+        )
+    probe = str(hc.get("probe", "auto"))
+
+    dockerfile = source_dir / "Dockerfile"
+    if not dockerfile.is_file():
+        return CheckResult(
+            name, False,
+            f"HTTP healthcheck declared but no production Dockerfile at "
+            f"{dockerfile}",
+            fix_hint=(
+                "Add the production Dockerfile, or drop spec.healthcheck "
+                "from the manifest."
+            ),
+        )
+    try:
+        text = dockerfile.read_text()
+    except OSError as exc:
+        return CheckResult(name, False, f"cannot read {dockerfile}: {exc}")
+
+    froms = _DOCKERFILE_FROM.findall(text)
+    runtime_base = froms[-1] if froms else ""
+    base_is_alpine = "alpine" in runtime_base.lower()
+    has_curl = bool(re.search(
+        r"(apk\s+add|apt-get\s+install|apt\s+install)[^\n]*\bcurl\b", text
+    ))
+    has_wget = bool(re.search(
+        r"(apk\s+add|apt-get\s+install|apt\s+install)[^\n]*\bwget\b", text
+    ))
+
+    # busybox (alpine) provides wget but NOT curl — an explicit probe: curl
+    # needs a real curl install even on alpine.
+    if probe == "curl":
+        ok, need = has_curl, "curl"
+    elif probe == "wget":
+        ok, need = base_is_alpine or has_wget, "wget"
+    else:  # auto — the rendered probe chains curl || wget, either satisfies
+        ok, need = base_is_alpine or has_curl or has_wget, "curl or wget"
+
+    if ok:
+        why = (
+            f"runtime base {runtime_base!r} is alpine (busybox wget)"
+            if base_is_alpine and not (has_curl or has_wget)
+            else "explicit install found in Dockerfile"
+        )
+        return CheckResult(name, True, why)
+    return CheckResult(
+        name, False,
+        f"manifest declares an HTTP healthcheck (probe: {probe}) but the "
+        f"production image (runtime base {runtime_base!r}) shows no {need}",
+        fix_hint=(
+            f"Install {need} in the runtime stage (~2 MB; e.g. "
+            "`RUN apt-get update && apt-get install -y --no-install-recommends "
+            "wget && rm -rf /var/lib/apt/lists/*`), switch to an alpine base, "
+            "or remove spec.healthcheck — the container then shows plain Up "
+            "with no health status, like the platform router. Without one of "
+            "these the probe exits 127 and the container reports permanently "
+            "unhealthy while the app serves fine."
+        ),
+    )
+
+
 def check_manifest_validates(
     manifest_path: Path | None, repo_root: Path
 ) -> CheckResult:
@@ -501,6 +599,7 @@ def check_app_deployability(
         ))
         results.append(check_manifest_declares_dev_port(manifest_path))
         results.append(check_manifest_validates(manifest_path, repo_root))
+        results.append(check_healthcheck_probe_binary(source_dir, manifest_path))
 
     return CheckReport(
         source_dir=source_dir,
