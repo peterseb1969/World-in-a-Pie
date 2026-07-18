@@ -62,6 +62,11 @@ class SpecContextSecurity:
     # (refuse-to-start on known-default secrets) arm exactly when the
     # operator asserted prod. String for direct env injection.
     variant: str
+    # Container path of the rendered config-file API keys, injected as
+    # WIP_AUTH_API_KEYS_FILE; empty string when the spec declares no
+    # api_keys (wip-auth treats empty as unset, so manifests can
+    # reference it unconditionally).
+    api_keys_file: str
 
 
 @dataclass(frozen=True)
@@ -86,7 +91,14 @@ def make_spec_context(
     net = _compute_network(deployment)
     auth = _compute_auth(deployment)
     features = _compute_features(deployment, components)
-    security = SpecContextSecurity(variant=deployment.spec.variant)
+    from wip_deploy.config_gen.api_keys import API_KEYS_CONTAINER_PATH
+
+    security = SpecContextSecurity(
+        variant=deployment.spec.variant,
+        api_keys_file=(
+            API_KEYS_CONTAINER_PATH if deployment.spec.auth.api_keys else ""
+        ),
+    )
     return SpecContext(network=net, auth=auth, features=features, security=security)
 
 

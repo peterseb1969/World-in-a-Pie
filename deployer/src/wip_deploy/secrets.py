@@ -70,6 +70,13 @@ def collect_required_secrets(
             continue
         _collect_from_env(a, names)
 
+    # Spec-declared API keys (CASE-655): one secret per key holds the
+    # plaintext, generated on first apply and stable thereafter — the
+    # config-file key survives Mongo rebuilds because its material
+    # lives here, not in the registry's api_keys collection.
+    for k in deployment.spec.auth.api_keys:
+        names.add(k.secret_name)
+
     dex_cfg = generate_dex_config(deployment, components, apps)
     if dex_cfg is not None:
         for u in dex_cfg.users:

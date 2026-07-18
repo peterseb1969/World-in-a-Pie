@@ -102,6 +102,45 @@ def _default_dex_users() -> list[DexUser]:
     ]
 
 
+class SpecAPIKey(WIPModel):
+    """A declaratively provisioned API key (agents, external tools).
+
+    Rendered into wip-auth's config-file key mechanism
+    (WIP_AUTH_API_KEYS_FILE): the plaintext lives in the install's
+    secret backend under `<name>-api-key` (generated on first apply,
+    stable thereafter), and the key's read scope (`namespaces`) plus
+    write grants resolve locally in every service — no MongoDB row,
+    no Registry round-trip. Spec-declared keys therefore survive a
+    Mongo wipe/restore intact, unlike runtime keys created via
+    POST /api-keys (whose plaintext is server-generated and
+    unrecoverable once the api_keys collection is rebuilt).
+    """
+
+    name: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9-]*$")
+    namespaces: list[str] = Field(min_length=1)
+    """Read scope — the key sees exactly these namespaces."""
+    grants: dict[str, Literal["read", "write", "admin"]] = Field(
+        default_factory=dict
+    )
+    """Write grants per namespace; keys must be within `namespaces`."""
+    owner: str = "system"
+    groups: list[str] = Field(default_factory=list)
+
+    @property
+    def secret_name(self) -> str:
+        return f"{self.name}-api-key"
+
+    @model_validator(mode="after")
+    def grants_within_namespaces(self) -> SpecAPIKey:
+        outside = sorted(set(self.grants) - set(self.namespaces))
+        if outside:
+            raise ValueError(
+                f"api key {self.name!r}: grants on namespaces outside its "
+                f"read scope: {outside} (add them to `namespaces` too)"
+            )
+        return self
+
+
 class AuthSpec(WIPModel):
     mode: Literal["oidc", "api-key-only", "hybrid"]
     gateway: bool
@@ -110,6 +149,16 @@ class AuthSpec(WIPModel):
     guarantee is the same (Theme 7)."""
     users: list[DexUser] = Field(default_factory=_default_dex_users)
     session_ttl: str = "15m"
+    api_keys: list[SpecAPIKey] = Field(default_factory=list)
+    """Declaratively provisioned config-file API keys — see SpecAPIKey."""
+
+    @model_validator(mode="after")
+    def api_key_names_unique(self) -> AuthSpec:
+        names = [k.name for k in self.api_keys]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            raise ValueError(f"duplicate api key names: {dupes}")
+        return self
 
     @model_validator(mode="after")
     def gateway_requires_oidc(self) -> AuthSpec:

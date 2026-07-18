@@ -77,6 +77,21 @@ class APIKeyRecord(BaseModel):
         description="If set, limits key to these namespaces only"
     )
 
+    # Config-declared grants: {namespace: "read"|"write"|"admin"}.
+    # A config-file key that declares grants opts into fully LOCAL
+    # permission resolution — namespaces give read, grants give their
+    # level, no Registry round-trip and no MongoDB dependency. This is
+    # what makes spec-declared keys survive a Mongo wipe/restore: key,
+    # scope, and write grants all come from the config file. Keys
+    # without grants resolve through the Registry exactly as before.
+    grants: dict[str, Literal["read", "write", "admin"]] | None = Field(
+        default=None,
+        description=(
+            "Config-declared namespace grants; presence switches this key "
+            "to local (Registry-free) permission resolution"
+        ),
+    )
+
     def is_expired(self) -> bool:
         """Check if the key has expired."""
         if self.expires_at is None:

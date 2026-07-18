@@ -59,6 +59,11 @@ class BuildInputs:
     # (no Dex makes sense without core).
     apps_only: bool = False
 
+    # Spec-declared API keys (parsed dicts, one per --api-key JSON
+    # value). Persist in the install's state like everything else, so
+    # redeploy/rebuild keep them and the rendered key file survives.
+    api_keys: list[dict] = field(default_factory=list)
+
     # Compose platform
     compose_data_dir: Path | None = None
     compose_platform_variant: str = "default"
@@ -159,6 +164,12 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
         # Switching off OIDC + gateway? Drop users too, to pass validation.
         if inputs.auth_mode == "api-key-only":
             spec_dict["auth"]["users"] = []
+
+    # Spec-declared API keys — each entry a dict (parsed from the CLI's
+    # --api-key JSON); AuthSpec validates shape, name uniqueness, and
+    # grants ⊆ namespaces.
+    if inputs.api_keys:
+        spec_dict["auth"]["api_keys"] = list(inputs.api_keys)
 
     # Target + platform
     spec_dict["target"] = inputs.target

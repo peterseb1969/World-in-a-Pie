@@ -221,6 +221,10 @@ class APIKeyProvider:
                 "key_name": key_record.name,
                 "owner": key_record.owner,
                 "namespaces": key_record.namespaces,
+                # Non-None only for config-file keys that declare grants —
+                # the signal that flips permission resolution to local
+                # (see wip_auth.permissions.resolve_permission).
+                "grants": key_record.grants,
             },
         )
 
@@ -237,4 +241,9 @@ class APIKeyProvider:
         if namespaces is None:
             return True
 
-        return namespace in namespaces
+        # A config-declared grant extends the key's reach to that
+        # namespace even if the namespaces list omits it (the deployer
+        # validates grants ⊆ namespaces, but runtime stays permissive
+        # for hand-written config files).
+        grants = raw_claims.get("grants") or {}
+        return namespace in namespaces or namespace in grants

@@ -236,11 +236,33 @@ WIP supports two kinds of API keys; both authenticate identically.
 | Aspect | Config keys | Runtime keys |
 |---|---|---|
 | Defined in | `config/api-keys.json` | MongoDB, via REST API |
-| Created by | Editing the file + recreating services | `POST /api/registry/api-keys` |
+| Created by | Declared in the deployment spec (`--api-key`, below) or by editing the file + recreating services | `POST /api/registry/api-keys` |
 | Modifiable via API | No (read-only) | Yes |
 | Deletable via API | No | Yes |
-| Use case | Bootstrap keys (admin, service accounts) | App keys, temporary keys, automated provisioning |
+| Survives a MongoDB wipe/restore | **Yes** — material lives in the spec + secret backend | **No** — key and grants are Mongo rows; the plaintext is unrecoverable |
+| Use case | Bootstrap keys, service accounts, agent keys that must survive redeploys | App keys, temporary keys, UI-created keys |
 | `source` field on the key | `"config"` | `"runtime"` |
+
+**Spec-declared keys (recommended for standing agent/service keys).**
+Declare keys on the deployment and wip-deploy provisions everything:
+
+```bash
+wip-deploy install --target dev \
+  --api-key '{"name": "web-yac", "namespaces": ["library", "kb"], "grants": {"kb": "write"}}'
+```
+
+For each declared key the deployer generates a random plaintext into the
+install's secret backend (`~/.wip-deploy/<name>/secrets/<key>-api-key`,
+stable across re-applies), renders `config/auth/api-keys.json` (mode
+0600), and mounts it into every backend service. `namespaces` is the
+key's read scope; `grants` gives per-namespace `read`/`write`/`admin`
+and must stay within `namespaces`. Crucially, a spec-declared key's
+grants resolve **locally in wip-auth** — not via Registry grants in
+MongoDB — so the key keeps working, at full declared scope, after any
+Mongo rebuild (redeploy with a fresh volume, `nuke --remove-data`, or
+the wipe-and-restore remediation ritual). Runtime keys die in exactly
+those events, and backups do not cover them. The declaration persists
+in the install's state: plain `redeploy`/`rebuild` keep it.
 
 ### 4.4 Runtime API keys: CRUD endpoints
 

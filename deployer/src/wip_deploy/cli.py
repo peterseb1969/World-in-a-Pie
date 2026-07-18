@@ -127,6 +127,40 @@ def _variant_opt() -> typer.models.OptionInfo:
     )
 
 
+def _api_key_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--api-key",
+        help=(
+            "Spec-declared API key as a JSON object (repeatable). "
+            'Example: \'{"name": "web-yac", "namespaces": ["library", "kb"], '
+            '"grants": {"kb": "write"}}\'. The plaintext is generated into '
+            "the install's secret backend (<name>-api-key) on first apply "
+            "and rendered into wip-auth's config-file key mechanism, so "
+            "the key + its grants survive MongoDB rebuilds. Persists in "
+            "the install's state; redeploy/rebuild keep it."
+        ),
+    )
+
+
+def _parse_api_key_options(values: list[str] | None) -> list[dict]:
+    """Parse each --api-key JSON value; loud error on malformed input."""
+    parsed: list[dict] = []
+    for raw in values or []:
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            typer.echo(f"error: --api-key is not valid JSON: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        if not isinstance(obj, dict):
+            typer.echo(
+                f"error: --api-key must be a JSON object, got: {raw!r}",
+                err=True,
+            )
+            raise typer.Exit(1)
+        parsed.append(obj)
+    return parsed
+
+
 def _hostname_opt() -> typer.models.OptionInfo:
     return typer.Option(
         "--hostname",
@@ -504,6 +538,7 @@ def validate(
     preset: Annotated[str, _preset_opt()] = "standard",
     target: Annotated[str, _target_opt()] = "compose",
     variant: Annotated[str, _variant_opt()] = "dev",
+    api_key: Annotated[list[str] | None, _api_key_opt()] = None,
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -550,6 +585,7 @@ def validate(
         preset=preset,
         target=target,
         variant=variant,
+        api_keys=_parse_api_key_options(api_key),
         hostname=hostname,
         tls=tls,
         https_port=https_port,
@@ -625,6 +661,7 @@ def show_spec(
     preset: Annotated[str, _preset_opt()] = "standard",
     target: Annotated[str, _target_opt()] = "compose",
     variant: Annotated[str, _variant_opt()] = "dev",
+    api_key: Annotated[list[str] | None, _api_key_opt()] = None,
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -673,6 +710,7 @@ def show_spec(
         preset=preset,
         target=target,
         variant=variant,
+        api_keys=_parse_api_key_options(api_key),
         hostname=hostname,
         tls=tls,
         https_port=https_port,
@@ -721,6 +759,7 @@ def render(
     preset: Annotated[str, _preset_opt()] = "standard",
     target: Annotated[str, _target_opt()] = "compose",
     variant: Annotated[str, _variant_opt()] = "dev",
+    api_key: Annotated[list[str] | None, _api_key_opt()] = None,
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -773,6 +812,7 @@ def render(
         preset=preset,
         target=target,
         variant=variant,
+        api_keys=_parse_api_key_options(api_key),
         hostname=hostname,
         tls=tls,
         https_port=https_port,
@@ -840,6 +880,7 @@ def install(
     preset: Annotated[str, _preset_opt()] = "standard",
     target: Annotated[str, _target_opt()] = "compose",
     variant: Annotated[str, _variant_opt()] = "dev",
+    api_key: Annotated[list[str] | None, _api_key_opt()] = None,
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -948,6 +989,7 @@ def install(
         preset=preset,
         target=target,
         variant=variant,
+        api_keys=_parse_api_key_options(api_key),
         hostname=hostname,
         tls=tls,
         https_port=https_port,
@@ -3571,6 +3613,7 @@ def _assemble(
     secrets_location: str | None,
     repo_root: Path | None,
     name: str,
+    api_keys: list[dict] | None = None,
     remote_wip_url: str | None = None,
     apps_only: bool = False,
     skip_discovery: bool = False,
@@ -3648,6 +3691,7 @@ def _assemble(
         preset=preset,
         target=target,
         variant=variant,
+        api_keys=api_keys or [],
         hostname=hostname,
         tls=tls,
         https_port=https_port,

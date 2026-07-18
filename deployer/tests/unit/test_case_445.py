@@ -150,6 +150,20 @@ class TestCheckSecretPermissions:
         assert not r.passed
         assert ".env" in r.message
 
+    def test_loose_api_keys_file_fails(self, tmp_path: Path) -> None:
+        """The rendered auth.api_keys file carries plaintext keys —
+        group/other-readable is the same finding as a loose secret."""
+        _make_secrets(tmp_path)
+        auth_dir = tmp_path / "config" / "auth"
+        auth_dir.mkdir(parents=True)
+        ak = auth_dir / "api-keys.json"
+        ak.write_text('{"keys": []}\n')
+        ak.chmod(0o644)
+        d = _make_deployment(tmp_path)
+        r = check_secret_permissions(tmp_path, d)
+        assert not r.passed
+        assert "api-keys.json" in r.message
+
     def test_missing_dir_fails(self, tmp_path: Path) -> None:
         d = _make_deployment(tmp_path)
         r = check_secret_permissions(tmp_path, d)

@@ -40,6 +40,12 @@ from wip_deploy.config_gen import (
     make_spec_context,
     resolve_all_env,
 )
+from wip_deploy.config_gen.api_keys import (
+    API_KEYS_CONTAINER_PATH,
+    API_KEYS_RENDER_PATH,
+    declares_api_keys_file,
+    generate_api_keys_json,
+)
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose import (
@@ -239,6 +245,12 @@ def render_dev_simple(
 
     caddy_cfg = generate_caddy_config(deployment, components, apps)
     tree.add("config/caddy/Caddyfile", render_caddyfile(caddy_cfg))
+
+    # Spec-declared config-file API keys — same render + posture as the
+    # compose target (0600, mounted where the manifest declares the env).
+    api_keys_json = generate_api_keys_json(deployment, secrets)
+    if api_keys_json is not None:
+        tree.add(API_KEYS_RENDER_PATH, api_keys_json, mode=0o600)
 
     dex_cfg = generate_dex_config(deployment, components, apps)
     if dex_cfg is not None:
@@ -483,6 +495,8 @@ def _dev_service_block(
         volumes.append(
             f"./secrets/external-ca.crt:{_EXTERNAL_CA_CONTAINER_PATH}:ro"
         )
+    if deployment.spec.auth.api_keys and declares_api_keys_file(owner):
+        volumes.append(f"./{API_KEYS_RENDER_PATH}:{API_KEYS_CONTAINER_PATH}:ro")
     if volumes:
         block["volumes"] = volumes
 

@@ -37,6 +37,11 @@ from wip_deploy.config_gen import (
     make_spec_context,
     resolve_all_env,
 )
+from wip_deploy.config_gen.api_keys import (
+    API_KEYS_CONTAINER_PATH,
+    declares_api_keys_file,
+    generate_api_keys_json,
+)
 from wip_deploy.config_gen.env import Literal
 from wip_deploy.config_gen.images import image_ref as _image_ref
 from wip_deploy.config_gen.router import generate_router_config
@@ -88,6 +93,17 @@ def render_k8s(
 
     # Secrets
     tree.add("secrets.yaml", _render_secrets(ns, secrets), mode=0o600)
+
+    # Spec-declared config-file API keys: a dedicated Secret carrying
+    # the rendered api-keys.json, mounted (subPath) into components
+    # whose manifest declares WIP_AUTH_API_KEYS_FILE.
+    api_keys_json = generate_api_keys_json(deployment, secrets)
+    if api_keys_json is not None:
+        tree.add(
+            "api-keys-secret.yaml",
+            _render_api_keys_secret(ns, api_keys_json),
+            mode=0o600,
+        )
 
     # ConfigMaps
     configmaps = _render_configmaps(deployment, components, apps, resolved_env, ns, secrets)
@@ -302,6 +318,23 @@ def _render_network_policies(ns: str) -> str:
 # ────────────────────────────────────────────────────────────────────
 
 
+def _render_api_keys_secret(ns: str, api_keys_json: str) -> str:
+    """The rendered WIP_AUTH_API_KEYS_FILE document as its own Secret,
+    so it can be subPath-mounted as a file (wip-secrets carries flat
+    name→value pairs, not files)."""
+    return _dump({
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": "wip-api-keys-config",
+            "namespace": ns,
+            "labels": {_LABELS_PART_OF: "wip"},
+        },
+        "type": "Opaque",
+        "stringData": {"api-keys.json": api_keys_json},
+    })
+
+
 def _render_secrets(ns: str, secrets: ResolvedSecrets) -> str:
     """Render all secrets into a single k8s Secret (stringData).
 
@@ -489,6 +522,20 @@ def _render_component(
         volumes.append({
             "name": storage.name,
             "persistentVolumeClaim": {"claimName": pvc_name},
+        })
+
+    # Spec-declared API keys file — mounted for exactly the manifests
+    # that declare WIP_AUTH_API_KEYS_FILE (the env is the opt-in).
+    if deployment.spec.auth.api_keys and declares_api_keys_file(owner):
+        volume_mounts.append({
+            "name": "api-keys-config",
+            "mountPath": API_KEYS_CONTAINER_PATH,
+            "subPath": "api-keys.json",
+            "readOnly": True,
+        })
+        volumes.append({
+            "name": "api-keys-config",
+            "secret": {"secretName": "wip-api-keys-config"},
         })
 
     # Config-file mounts for known components. Generalizing via

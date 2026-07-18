@@ -99,7 +99,7 @@ class TestResolveFromSpec:
                 files_enabled="true",
                 file_storage_public_endpoint="https://h/minio",
             ),
-            security=SpecContextSecurity(variant="dev"),
+            security=SpecContextSecurity(variant="dev", api_keys_file=""),
         )
 
     def test_nested_path(self) -> None:
@@ -111,7 +111,7 @@ class TestResolveFromSpec:
 
     def test_missing_path_raises_keyerror(self) -> None:
         ctx = self._simple_ctx()
-        with pytest.raises(KeyError, match="network.missing"):
+        with pytest.raises(KeyError, match=r"network\.missing"):
             resolve_from_spec("network.missing", ctx)
 
     def test_unknown_top_section_raises(self) -> None:

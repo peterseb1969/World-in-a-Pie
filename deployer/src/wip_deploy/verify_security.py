@@ -191,6 +191,16 @@ def check_secret_permissions(install_dir: Path, deployment: Deployment) -> Check
         if env_mode & 0o077:
             offenders.append(f".env is {env_mode:04o} (want 0600)")
 
+    # Rendered config-file API keys carry plaintext (spec-declared keys,
+    # auth.api_keys) — same exposure class as the secret files.
+    api_keys_file = install_dir / "config" / "auth" / "api-keys.json"
+    if api_keys_file.is_file():
+        ak_mode = _mode_of(api_keys_file)
+        if ak_mode & 0o077:
+            offenders.append(
+                f"config/auth/api-keys.json is {ak_mode:04o} (want 0600)"
+            )
+
     if offenders:
         return CheckResult(
             name,

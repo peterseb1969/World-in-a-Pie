@@ -28,6 +28,9 @@ spec:
       - {name: TEMPLATE_STORE_URL, source: {from_component: template-store}}
       - {name: DOCUMENT_STORE_URL, source: {from_component: document-store}}
       - {name: MASTER_API_KEY, source: {from_secret: api-key}}
+      # Spec-declared config-file API keys (deployment auth.api_keys);
+      # empty when none are declared — wip-auth treats empty as unset.
+      - {name: WIP_AUTH_API_KEYS_FILE, source: {from_spec: security.api_keys_file}}
       # CASE-377: DNS-rebinding protection allow-list. Without this the
       # MCP server rejects same-network clients connecting via the
       # container DNS name (e.g. WIP-KB at http://wip-mcp-server:8007/mcp)
