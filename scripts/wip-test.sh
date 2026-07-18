@@ -219,6 +219,20 @@ PYTHON_TOOLS=(deployer agent-scripts scaffold)
 # to die on ModuleNotFoundError until someone replayed the CI install by
 # hand. A marker under .venv/ makes re-runs free; delete the markers (or
 # the venv) to force re-provisioning.
+# The shared venv hosts every component's deps at once; a component
+# whose pins force pip to downgrade a library another component needs
+# breaks that other component silently. pip check makes the divergence
+# loud and attributes it to the component whose install triggered it.
+_pip_check_tripwire() {
+    local name="$1"
+    local out
+    if ! out="$(pip check 2>&1)"; then
+        echo "  WARNING: shared venv has conflicting requirements after installing $name's deps:" >&2
+        echo "$out" | sed 's/^/           /' >&2
+        echo "           Another component's suite may now fail on import." >&2
+    fi
+}
+
 _ensure_component_test_deps() {
     local name="$1" dir="$2"
     local marker="$REPO_ROOT/.venv/.wip-test-deps-$name"
@@ -234,6 +248,7 @@ _ensure_component_test_deps() {
         else
             echo "  WARNING: wip-auth test-dep provisioning failed — imports may error below." >&2
         fi
+        _pip_check_tripwire "$name"
         return 0
     fi
     [[ "$dir" == "$REPO_ROOT/components/"* ]] || return 0
@@ -247,6 +262,7 @@ _ensure_component_test_deps() {
         echo "           Manual recipe: pip install -r $dir/requirements.txt \\" >&2
         echo "             -r components/registry/requirements.txt pytest-asyncio httpx" >&2
     fi
+    _pip_check_tripwire "$name"
 }
 
 run_python_tests() {
