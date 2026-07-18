@@ -221,7 +221,7 @@ async def list_api_keys(
     results: list[APIKeyResponse] = []
 
     # Config-file keys
-    for record in provider._keys:
+    for record in provider.iter_keys():
         if record.name in _config_key_names:
             results.append(_config_key_to_response(record))
 
@@ -291,7 +291,7 @@ async def get_api_key(
 
     # Check config keys first
     if name in _config_key_names:
-        for record in provider._keys:
+        for record in provider.iter_keys():
             if record.name == name:
                 return _config_key_to_response(record)
 

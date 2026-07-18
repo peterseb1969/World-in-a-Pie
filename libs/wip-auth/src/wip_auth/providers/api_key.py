@@ -144,6 +144,15 @@ class APIKeyProvider:
         self._keys = config_keys + [k for k in runtime_keys if k.enabled]
         self._verified_cache.clear()
 
+    def iter_keys(self) -> tuple[APIKeyRecord, ...]:
+        """Read-only snapshot of the registered keys.
+
+        Public accessor so callers (e.g. the Registry's key-listing and
+        /sync endpoints) iterate keys without reaching into the private
+        `_keys` list and coupling to its representation.
+        """
+        return tuple(self._keys)
+
     def _get_key_from_header(self, request: Request) -> str | None:
         """Extract API key from request header."""
         return request.headers.get(self.header_name)

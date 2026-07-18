@@ -146,7 +146,7 @@ async def lifespan(app: FastAPI):
 
     if api_key_provider:
         # Identify config-file key names (these cannot be modified via API)
-        config_key_names = {k.name for k in api_key_provider._keys}
+        config_key_names = {k.name for k in api_key_provider.iter_keys()}
 
         # Load runtime keys from MongoDB and add to provider
         runtime_docs = await StoredAPIKey.find(StoredAPIKey.enabled == True).to_list()  # noqa: E712
