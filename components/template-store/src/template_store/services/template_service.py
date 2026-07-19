@@ -29,6 +29,7 @@ from ..models.api_models import (
 from ..models.field import FieldDefinition, FieldType, ReferenceType
 from ..models.template import ReportingConfig, Template, TemplateMetadata, TemplateUsage
 from .def_store_client import DefStoreError, get_def_store_client
+from .document_store_client import get_document_store_client
 from .inheritance_service import InheritanceError, InheritanceService
 from .nats_client import EventType, publish_template_event
 from .reference_validator import ReferenceValidationError, get_reference_validator
@@ -253,6 +254,61 @@ class TemplateService:
             )
 
     @staticmethod
+    def _validate_renames(
+        renames: dict[str, str] | None,
+        previous_fields: list[FieldDefinition],
+        new_fields: list[FieldDefinition],
+        identity_fields: list[str] | None,
+    ) -> None:
+        """Validate a version's declared renames ({new_field: old_field}).
+
+        A rename declaration promises "mechanically the same data under a new
+        key" — every condition below keeps that promise honest: the old field
+        must exist in the previous version and be gone from the new one, the
+        new field must be declared now and not have existed before, the types
+        must match (same data!), and identity fields can never be renamed
+        (identity is immutable across versions; a re-keyed identity value
+        would re-hash every document).
+        """
+        if not renames:
+            return
+        prev = {f.name: f for f in previous_fields}
+        new = {f.name: f for f in new_fields}
+        idf = set(identity_fields or [])
+        for new_name, old_name in renames.items():
+            if old_name not in prev:
+                raise ValueError(
+                    f"rename '{new_name}' <- '{old_name}': '{old_name}' does not "
+                    f"exist in the previous version"
+                )
+            if new_name not in new:
+                raise ValueError(
+                    f"rename '{new_name}' <- '{old_name}': '{new_name}' is not "
+                    f"declared in this version's fields"
+                )
+            if new_name in prev:
+                raise ValueError(
+                    f"rename '{new_name}' <- '{old_name}': '{new_name}' already "
+                    f"existed in the previous version — that is not a rename"
+                )
+            if old_name in new:
+                raise ValueError(
+                    f"rename '{new_name}' <- '{old_name}': '{old_name}' is still "
+                    f"declared in this version — that is not a rename"
+                )
+            if prev[old_name].type != new[new_name].type:
+                raise ValueError(
+                    f"rename '{new_name}' <- '{old_name}': types differ "
+                    f"({prev[old_name].type} -> {new[new_name].type}); a rename "
+                    f"carries the same data, so the type must match"
+                )
+            if old_name in idf or new_name in idf:
+                raise ValueError(
+                    f"rename '{new_name}' <- '{old_name}': identity fields cannot "
+                    f"be renamed (identity is immutable across versions)"
+                )
+
+    @staticmethod
     def validate_fields_for_write(fields: list[FieldDefinition]) -> None:
         """Enforce field-shape authoring invariants at the write seam (CASE-629).
 
@@ -365,6 +421,17 @@ class TemplateService:
         # Check if value already exists within namespace — skip in restore mode
         # (restoring version 2+ of a template will find version 1 already present)
         is_restore = request.template_id and request.version is not None
+
+        # Renames are relative to a PREVIOUS version — meaningless on a first
+        # version. The upsert dispatcher validates them on the versioning
+        # path; restore trusts the archive (the declaration was validated
+        # when the version was originally created).
+        if request.renames and not is_restore:
+            raise ValueError(
+                "renames require a previous version to rename from — a first "
+                "version has none. Declare renames on the version that "
+                "introduces the new field names."
+            )
         if not is_restore:
             existing = await Template.find_one({"namespace": namespace, "value": request.value})
             if existing:
@@ -490,6 +557,7 @@ class TemplateService:
             extends_version=request.extends_version,
             identity_fields=request.identity_fields,
             header_fields=request.header_fields,
+            renames=request.renames,
             usage=request.usage,
             source_templates=request.source_templates,
             target_templates=request.target_templates,
@@ -804,6 +872,8 @@ class TemplateService:
         if request.identity_fields is not None and request.identity_fields != original.identity_fields:
             return True
         if request.header_fields is not None and request.header_fields != original.header_fields:
+            return True
+        if request.renames is not None and request.renames != original.renames:
             return True
 
         # Compare fields using JSON serialization
@@ -1287,6 +1357,14 @@ class TemplateService:
         )
         TemplateService.validate_fields_for_write(new_fields)
 
+        # Declared renames for this new version are validated against the
+        # version they rename FROM (the current latest) and the merged new
+        # field set. Renames are per-version declarations — they are never
+        # inherited from the previous version.
+        TemplateService._validate_renames(
+            request.renames, original.fields, new_fields, new_identity_fields
+        )
+
         # Stable ID: reuse original template_id (no Registry call for updates)
         # Create new template document for this version. usage,
         # versioned, source_templates, and target_templates are
@@ -1302,6 +1380,7 @@ class TemplateService:
             extends_version=request.extends_version if request.extends_version is not None else original.extends_version,
             identity_fields=request.identity_fields if request.identity_fields is not None else original.identity_fields,
             header_fields=request.header_fields if request.header_fields is not None else original.header_fields,
+            renames=request.renames,
             usage=original.usage,
             source_templates=original.source_templates,
             target_templates=original.target_templates,
@@ -1679,6 +1758,92 @@ class TemplateService:
     # =========================================================================
 
     @staticmethod
+    async def _version_event_impact(
+        template_id: str,
+        namespace: str,
+        diff: dict,
+        renames: dict[str, str] | None,
+    ) -> tuple[dict, dict]:
+        """Advisory impact + migration-eligibility for a version event.
+
+        Never raises and never blocks the version event: a failed
+        document-store call yields an EXPLICIT "unavailable" impact — never a
+        silent zero, which would read as "no documents affected".
+
+        Eligibility mirrors the decided rule (added fields / dropped-empty
+        fields / combinations are offerable; type changes, newly-required
+        fields, and modified fields need app-side data decisions), with
+        declared renames excluded on both sides of the diff — a declared
+        rename migrates losslessly, so its removed old name is not "stranded
+        data" and its added new name is not "missing data".
+        """
+        rename_targets = set((renames or {}).keys())
+        rename_sources = set((renames or {}).values())
+        removed = [f for f in (diff.get("removed") or []) if f not in rename_sources]
+        added_required = [
+            f for f in (diff.get("added_required") or []) if f not in rename_targets
+        ]
+
+        try:
+            stats = await get_document_store_client().get_impact_stats(
+                template_id, namespace, removed,
+            )
+            impact = {
+                "status": "ok",
+                "total_live_docs": stats.get("total_live_docs", 0),
+                "docs_per_version": stats.get("docs_per_version", {}),
+                "field_nonempty_counts": stats.get("field_nonempty_counts", {}),
+            }
+        except Exception as exc:  # advisory path — any failure is "unavailable"
+            impact = {
+                "status": "unavailable",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+
+        via = "migrate_documents (dry_run first)"
+        if (
+            diff.get("changed_type")
+            or diff.get("made_required")
+            or diff.get("modified_existing")
+            or added_required
+        ):
+            migration = {
+                "eligible": False,
+                "reason": (
+                    "type changes, newly-required fields, or modified fields "
+                    "require app-side data decisions"
+                ),
+                "via": via,
+            }
+        elif not removed:
+            migration = {"eligible": True, "reason": "additive or rename-only change", "via": via}
+        elif impact["status"] != "ok":
+            migration = {
+                "eligible": None,
+                "reason": (
+                    "removed fields present but live counts unavailable — run "
+                    "the migrate dry-run for a per-document readiness report"
+                ),
+                "via": via,
+            }
+        else:
+            counts = impact["field_nonempty_counts"]
+            stranded = {f: counts[f] for f in removed if counts.get(f, 0) > 0}
+            if stranded:
+                migration = {
+                    "eligible": False,
+                    "reason": f"removed fields carry live data: {stranded}",
+                    "via": via,
+                }
+            else:
+                migration = {
+                    "eligible": True,
+                    "reason": "removed fields are empty in all live documents",
+                    "via": via,
+                }
+        return impact, migration
+
+    @staticmethod
     async def create_templates_with_conflict_policy(
         items: list[CreateTemplateRequest],
         on_conflict: str,
@@ -1862,6 +2027,7 @@ class TemplateService:
                     extends=item.extends,
                     extends_version=item.extends_version,
                     header_fields=item.header_fields,
+                    renames=item.renames,
                     rules=item.rules,
                     metadata=item.metadata,
                     reporting=item.reporting,
@@ -1890,6 +2056,7 @@ class TemplateService:
                     extends_version=item.extends_version,
                     identity_fields=item.identity_fields,
                     header_fields=item.header_fields,
+                    renames=item.renames,
                     fields=item.fields,
                     rules=item.rules,
                     metadata=item.metadata,
@@ -1900,6 +2067,13 @@ class TemplateService:
                     request=update_req,
                 )
                 if update_resp and update_resp.is_new_version:
+                    # A version event carries its consequences: live-document
+                    # impact counts and a migration-eligibility verdict ride
+                    # in details next to the schema diff. Advisory only —
+                    # computed after the version exists and never blocking.
+                    impact, migration = await TemplateService._version_event_impact(
+                        existing.template_id, item.namespace, diff, item.renames,
+                    )
                     results.append(BulkResultItem(
                         index=i,
                         status="updated",
@@ -1907,7 +2081,7 @@ class TemplateService:
                         value=item.value,
                         version=update_resp.version,
                         is_new_version=True,
-                        details=diff,
+                        details={**diff, "impact": impact, "migration": migration},
                     ))
                 else:
                     results.append(BulkResultItem(
@@ -2805,6 +2979,7 @@ class TemplateService:
             extends_version=t.extends_version,
             identity_fields=t.identity_fields,
             header_fields=t.header_fields,
+            renames=t.renames,
             usage=t.usage,
             source_templates=t.source_templates,
             target_templates=t.target_templates,

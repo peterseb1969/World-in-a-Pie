@@ -76,6 +76,15 @@ class CreateTemplateRequest(StrictModel):
             "Empty → projection falls back to identity_fields."
         )
     )
+    renames: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Field renames relative to the previous version, {new_field: old_field}. "
+            "Only meaningful when this create versions an existing template (create "
+            "is an upsert); rejected on a first version. Identity fields cannot be "
+            "renamed. Declared renames migrate losslessly and map in reporting."
+        )
+    )
     usage: TemplateUsage = Field(
         default=TemplateUsage.ENTITY,
         description="Usage class: entity (default), reference, or relationship. Immutable after creation."
@@ -162,6 +171,13 @@ class UpdateTemplateRequest(StrictModel):
         default=None,
         description="Update peer-projection fields"
     )
+    renames: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Field renames this new version declares relative to the current "
+            "one, {new_field: old_field}. Identity fields cannot be renamed."
+        )
+    )
     fields: list[FieldDefinition] | None = Field(
         default=None,
         description="Update field definitions"
@@ -210,6 +226,7 @@ class TemplateResponse(BaseModel):
     extends_version: int | None = None
     identity_fields: list[str] = []
     header_fields: list[str] = []
+    renames: dict[str, str] | None = None
     usage: TemplateUsage = TemplateUsage.ENTITY
     source_templates: list[str] = []
     target_templates: list[str] = []

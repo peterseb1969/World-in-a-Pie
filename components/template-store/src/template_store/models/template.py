@@ -161,6 +161,22 @@ class Template(Document):
         )
     )
 
+    # Declared renames for THIS version relative to the previous one:
+    # {new_field: old_field}. A rename declaration means "mechanically the
+    # same data under a new key" — it makes the rename losslessly
+    # auto-migratable (migrate re-keys before target validation) and
+    # matview-mappable, where an undeclared rename is indistinguishable
+    # from drop+add. Identity fields can never be renamed (identity is
+    # immutable across versions). None/empty on version 1 by definition.
+    renames: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Field renames relative to the previous version, as "
+            "{new_field: old_field}. Enables lossless migration of renamed "
+            "fields; identity fields cannot appear."
+        )
+    )
+
     # Usage annotation — controls validation, query APIs, and reporting
     # shape. Default 'entity' = v1.x behaviour. 'relationship' enables
     # the document-relationship feature (requires source_templates,
