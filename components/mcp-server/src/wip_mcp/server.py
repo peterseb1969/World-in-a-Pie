@@ -3722,33 +3722,20 @@ async def start_backup(
     include_files: bool = False,
     include_inactive: bool = False,
     skip_documents: bool = False,
-    skip_closure: bool = False,
-    skip_synonyms: bool = False,
-    latest_only: bool = False,
-    template_prefixes: list[str] | None = None,
-    dry_run: bool = False,
 ) -> str:
     """Start a backup of a namespace. Returns the initial BackupJobSnapshot.
 
     Backups run in the background; poll get_backup_job to track progress until
     status is 'complete' or 'failed', then download_backup_archive to fetch
-    the .zip.
-
-    WARNING — v1.0 limitation: include_files=true is unsafe on namespaces with
-    non-trivial file content: the archive writer buffers all blob bytes in
-    RAM and will OOM the document-store container. Leave it false until a
-    streaming archive path ships.
+    the .zip. The archive always contains every entity version, term
+    relations, and the registry entries (synonyms travel inside them); blob
+    bytes are staged to the server's backup scratch dir, not RAM.
 
     Args:
         namespace: Source namespace (uses WIP_MCP_DEFAULT_NAMESPACE if unset).
-        include_files: Include file blobs in the archive (see WARNING above).
+        include_files: Include file blobs in the archive.
         include_inactive: Include soft-deleted entities.
         skip_documents: Skip the documents phase entirely (definitions only).
-        skip_closure: Skip the closure-table (relations) phase.
-        skip_synonyms: Skip the synonyms phase.
-        latest_only: Export only the latest version of each entity.
-        template_prefixes: Optional template_id prefixes to filter documents.
-        dry_run: Walk the export without writing the archive.
     """
     try:
         data = await get_client().start_backup(
@@ -3756,11 +3743,6 @@ async def start_backup(
             include_files=include_files,
             include_inactive=include_inactive,
             skip_documents=skip_documents,
-            skip_closure=skip_closure,
-            skip_synonyms=skip_synonyms,
-            latest_only=latest_only,
-            template_prefixes=template_prefixes,
-            dry_run=dry_run,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -3771,17 +3753,19 @@ async def start_backup(
 async def start_restore(
     namespace: str,
     archive_path: str,
-    mode: str = "restore",
-    target_namespace: str | None = None,
-    register_synonyms: bool = False,
     skip_documents: bool = False,
     skip_files: bool = False,
-    batch_size: int = 50,
-    continue_on_error: bool = False,
+    batch_size: int = 500,
     dry_run: bool = False,
     drop_stale_reporting: bool = False,
 ) -> str:
-    """Restore a namespace from a local archive file. Returns the initial BackupJobSnapshot.
+    """Restore from a local archive file. Returns the initial BackupJobSnapshot.
+
+    Restore is ID-preserving and writes each namespace in the archive back to
+    ITSELF; every target namespace must be empty. Restoring under a different
+    namespace name is not supported (it requires re-minting IDs — a planned
+    separate mode). Admin permission is required on every namespace the
+    archive carries.
 
     The restore verifies the PostgreSQL reporting layer at phase boundaries:
     a stale reporting schema fails the precondition unless
@@ -3794,36 +3778,24 @@ async def start_restore(
     The archive at archive_path is uploaded as multipart and a restore job is
     queued. Poll get_backup_job to track progress.
 
-    GOTCHA — restore mode semantics:
-    - mode='restore' writes back to the *source* namespace embedded in the
-      archive and IGNORES target_namespace. Use this only when restoring an
-      archive into the same namespace it came from.
-    - mode='fresh' generates new IDs and honors target_namespace. Use this for
-      round-trip into a new namespace.
-
     Args:
         namespace: URL-path namespace (the auth check target).
         archive_path: Local filesystem path to the .zip archive to upload.
-        mode: 'restore' (preserve IDs) or 'fresh' (generate new IDs).
-        target_namespace: Override target namespace. Honored only in 'fresh' mode.
-        register_synonyms: Register original IDs as synonyms of new IDs (fresh mode).
         skip_documents: Skip restoring documents (definitions only).
         skip_files: Skip restoring file blobs.
-        batch_size: Restore batch size (1-500).
-        continue_on_error: Continue past per-item errors.
-        dry_run: Walk the import without applying changes.
+        batch_size: Bulk-insert batch size (1-500).
+        dry_run: Run every precondition and report what would be restored,
+            without writing anything (no namespace upsert, inserts, or blobs).
+        drop_stale_reporting: Drop a stale reporting schema before restoring
+            instead of refusing. A dry run reports the would-drop only.
     """
     try:
         data = await get_client().start_restore(
             namespace=namespace,
             archive_path=archive_path,
-            mode=mode,
-            target_namespace=target_namespace,
-            register_synonyms=register_synonyms,
             skip_documents=skip_documents,
             skip_files=skip_files,
             batch_size=batch_size,
-            continue_on_error=continue_on_error,
             dry_run=dry_run,
             drop_stale_reporting=drop_stale_reporting,
         )

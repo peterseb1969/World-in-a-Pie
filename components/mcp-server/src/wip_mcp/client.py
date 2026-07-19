@@ -1468,25 +1468,19 @@ class WipClient:
         include_files: bool = False,
         include_inactive: bool = False,
         skip_documents: bool = False,
-        skip_closure: bool = False,
-        skip_synonyms: bool = False,
-        latest_only: bool = False,
-        template_prefixes: list[str] | None = None,
-        dry_run: bool = False,
     ) -> dict:
-        """Kick off a namespace backup. Returns the initial BackupJobSnapshot (HTTP 202)."""
+        """Kick off a namespace backup. Returns the initial BackupJobSnapshot (HTTP 202).
+
+        Only the options the direct backup engine consumes are sent — the
+        endpoint rejects retired toolkit-era fields (skip_closure,
+        skip_synonyms, latest_only, template_prefixes, dry_run) with 400.
+        """
         namespace = self._ns(namespace)
         body: dict[str, Any] = {
             "include_files": include_files,
             "include_inactive": include_inactive,
             "skip_documents": skip_documents,
-            "skip_closure": skip_closure,
-            "skip_synonyms": skip_synonyms,
-            "latest_only": latest_only,
-            "dry_run": dry_run,
         }
-        if template_prefixes is not None:
-            body["template_prefixes"] = template_prefixes
         return await self._post(
             self.document_store_url,
             f"/api/document-store/backup/namespaces/{namespace}/backup",
@@ -1497,17 +1491,19 @@ class WipClient:
         self,
         namespace: str,
         archive_path: str,
-        mode: str = "restore",
-        target_namespace: str | None = None,
-        register_synonyms: bool = False,
         skip_documents: bool = False,
         skip_files: bool = False,
-        batch_size: int = 50,
-        continue_on_error: bool = False,
+        batch_size: int = 500,
         dry_run: bool = False,
         drop_stale_reporting: bool = False,
     ) -> dict:
-        """Upload a local archive file and start a restore job. Streams from disk."""
+        """Upload a local archive file and start a restore job. Streams from disk.
+
+        ID-preserving restore-to-self only — the endpoint determines the
+        target namespaces from the archive manifest. Retired toolkit-era
+        params (mode overrides, register_synonyms, continue_on_error) are
+        not sent; the endpoint rejects them with 400 when set.
+        """
         from pathlib import Path as _Path
         path = _Path(archive_path)
         if not path.is_file():
@@ -1515,17 +1511,13 @@ class WipClient:
 
         client = await self._get_client()
         data: dict[str, str] = {
-            "mode": mode,
-            "register_synonyms": str(register_synonyms).lower(),
+            "mode": "restore",
             "skip_documents": str(skip_documents).lower(),
             "skip_files": str(skip_files).lower(),
             "batch_size": str(batch_size),
-            "continue_on_error": str(continue_on_error).lower(),
             "dry_run": str(dry_run).lower(),
             "drop_stale_reporting": str(drop_stale_reporting).lower(),
         }
-        if target_namespace is not None:
-            data["target_namespace"] = target_namespace
 
         with path.open("rb") as fh:
             files = {"archive": (path.name, fh, "application/zip")}

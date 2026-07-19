@@ -456,7 +456,7 @@ async def test_get_template_by_value_with_namespace():
 
 @pytest.mark.asyncio
 async def test_start_backup_sends_full_body():
-    """start_backup posts to the namespace backup endpoint with all options."""
+    """start_backup posts only the options the direct engine consumes."""
     expected = {"job_id": "bkp-abc", "status": "pending"}
     mock_http = _mock_http(_mock_response(expected))
 
@@ -466,8 +466,6 @@ async def test_start_backup_sends_full_body():
             namespace="wip",
             include_files=True,
             include_inactive=True,
-            template_prefixes=["TPL-"],
-            dry_run=False,
         )
 
     assert result == expected
@@ -477,26 +475,28 @@ async def test_start_backup_sends_full_body():
     body = mock_http.post.call_args.kwargs["json"]
     assert body["include_files"] is True
     assert body["include_inactive"] is True
-    assert body["template_prefixes"] == ["TPL-"]
-    assert body["dry_run"] is False
 
 
 @pytest.mark.asyncio
-async def test_start_backup_omits_template_prefixes_when_none():
-    """start_backup leaves template_prefixes out of the body when not provided."""
+async def test_start_backup_omits_toolkit_era_fields():
+    """start_backup never sends the retired toolkit-export fields — the
+    endpoint 400s on them, so the client must not emit them at all."""
     mock_http = _mock_http(_mock_response({"job_id": "bkp-1"}))
     client = _make_client()
     with patch.object(client, "_get_client", return_value=mock_http):
         await client.start_backup(namespace="wip")
 
     body = mock_http.post.call_args.kwargs["json"]
-    assert "template_prefixes" not in body
+    for dead in ("template_prefixes", "skip_closure", "skip_synonyms",
+                 "latest_only", "dry_run"):
+        assert dead not in body
     assert body["include_files"] is False  # default
 
 
 @pytest.mark.asyncio
 async def test_start_restore_uploads_archive_multipart(tmp_path):
-    """start_restore streams a local archive as multipart form fields."""
+    """start_restore streams a local archive as multipart form fields and
+    sends only live params (restore-to-self; no toolkit-era fields)."""
     archive = tmp_path / "ns.zip"
     archive.write_bytes(b"PK\x03\x04 fake zip")
     mock_http = _mock_http(_mock_response({"job_id": "rst-1", "status": "pending"}))
@@ -506,10 +506,8 @@ async def test_start_restore_uploads_archive_multipart(tmp_path):
         await client.start_restore(
             namespace="wip",
             archive_path=str(archive),
-            mode="fresh",
-            target_namespace="wip-restored",
-            register_synonyms=True,
             batch_size=100,
+            dry_run=True,
         )
 
     url = mock_http.post.call_args.args[0]
@@ -517,10 +515,11 @@ async def test_start_restore_uploads_archive_multipart(tmp_path):
     files = mock_http.post.call_args.kwargs["files"]
     assert files["archive"][0] == "ns.zip"
     data = mock_http.post.call_args.kwargs["data"]
-    assert data["mode"] == "fresh"
-    assert data["target_namespace"] == "wip-restored"
-    assert data["register_synonyms"] == "true"
+    assert data["mode"] == "restore"
     assert data["batch_size"] == "100"
+    assert data["dry_run"] == "true"
+    for dead in ("target_namespace", "register_synonyms", "continue_on_error"):
+        assert dead not in data
     headers = mock_http.post.call_args.kwargs["headers"]
     assert headers == {"X-API-Key": "test_key"}
 
