@@ -1622,11 +1622,13 @@ def restart(
     Compose/dev only. Reads the rendered docker-compose.yaml under
     the install directory and runs `compose restart <svc>...` — does
     not rebuild the image or recreate the container, just bounces
-    the process. Picks up env-var changes that don't propagate
-    through bind-mounted source.
+    the process. Use it to re-import bind-mounted source edits.
 
-    For Dockerfile or package.json/requirements.txt edits use
-    `wip-deploy rebuild` instead — restart alone won't pick up
+    A restart does NOT pick up env or secret changes: the container
+    keeps the environment it was created with. After editing the
+    install's .env or secrets, use `wip-deploy redeploy` (recreates
+    the containers). For Dockerfile or package.json/requirements.txt
+    edits use `wip-deploy rebuild` — restart alone won't pick up
     a new image.
 
     Examples:
@@ -3690,14 +3692,46 @@ DEV LOOP — hot-reload an app from a local checkout
     wip-deploy install --tag 20260610a --image-tag registry=20260611-fix
 
 CHANGING AN EXISTING INSTALL
-  Pick up an env-var change, no rebuild:
+  Re-import a source edit in dev mode (process bounce only):
     wip-deploy restart def-store
+
+  Apply an env or secret change (recreate — a restart does NOT re-read env):
+    wip-deploy redeploy
+
+  Re-render from the saved spec after a deployer upgrade (only changed
+  services are recreated; name services to scope it):
+    wip-deploy redeploy registry def-store
 
   Pull a new image and recreate the container:
     wip-deploy rebuild registry
 
   See current state of running services:
     wip-deploy status
+
+SECURITY — before exposing an install
+  Run the read-only pre-exposure checklist (secret permissions, API-key
+  strength, TLS-vs-hostname sanity, published ports, hardening headers):
+    wip-deploy verify --security --name wip-prod
+
+DURABLE API KEYS — survive MongoDB wipe-restore (console-minted keys do not)
+  Declare a key with write grants on the deployment:
+    wip-deploy install --api-key '{"name": "web-yac", "namespaces": ["kb"], "grants": {"kb": "write"}}'
+
+  Same, from a reviewable YAML/JSON file (merges with --api-key):
+    wip-deploy install --api-keys-file keys.yaml
+
+  Rotate a declared key (prints the fresh plaintext once, no grace window):
+    wip-deploy rotate-key web-yac --name wip-prod
+
+APPS ON A RUNNING INSTALL
+  Enable an app (from apps/<name>/wip-app.yaml):
+    wip-deploy add-app clintrial
+
+  Enable with hot-reload from a local checkout (dev target):
+    wip-deploy add-app react-console --source $HOME/Dev/WIP-ReactConsole
+
+  Remove it again:
+    wip-deploy remove-app clintrial
 
 INSPECTION (no-op verbs — useful for debugging)
   See what a preset resolves to without applying:
@@ -3750,6 +3784,11 @@ TARGETS
 
 For verb-specific options:
   wip-deploy COMMAND --help
+
+More verbs, each with its own --help and examples:
+  up · app-deploy · register-app · unregister-app · validate-manifest
+  check-app-deployability · add-module · remove-module · export-ca
+  import-bundle
 """
 
 
