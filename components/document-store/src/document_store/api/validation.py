@@ -125,6 +125,11 @@ existing template (`sample_limit`, default 100, max 500).
 Reference values inside the candidate (terminology_ref etc.) should be
 canonical IDs or resolvable synonyms — an unresolvable reference surfaces as
 a per-document validation error, exactly as it would on a real write.
+
+Declared renames are honored: a candidate carrying `renames`
+(`{new_field: old_field}`) validates each document as-if re-keyed — the
+same semantics an applied migration uses — so a declared rename does not
+false-fail as an unknown old field plus a missing new one.
 """,
 )
 async def validate_candidate(

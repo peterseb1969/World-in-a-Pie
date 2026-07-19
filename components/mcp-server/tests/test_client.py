@@ -812,3 +812,31 @@ async def test_unwrap_bulk_returns_summary():
     assert result["succeeded"] == 1
     assert result["failed"] == 0
     assert len(result["results"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_validate_template_candidate_posts_to_validate_candidate():
+    """validate_template_candidate posts the inline candidate + sample spec
+    to the candidate endpoint; sample_template maps to sample_template_id
+    and documents is omitted when unused."""
+    envelope = {"total": 2, "valid_count": 1, "invalid_count": 1, "results": []}
+    mock_http = _mock_http(_mock_response(envelope))
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        result = await client.validate_template_candidate(
+            template_definition={"value": "PERSON", "fields": [], "renames": {"a": "b"}},
+            namespace="wip",
+            sample_template="PERSON",
+            sample_limit=50,
+        )
+
+    assert result["total"] == 2
+    call = mock_http.post.call_args
+    assert "/api/document-store/validation/validate-candidate" in call.args[0]
+    assert call.kwargs["json"] == {
+        "template_definition": {"value": "PERSON", "fields": [], "renames": {"a": "b"}},
+        "namespace": "wip",
+        "sample_limit": 50,
+        "sample_template_id": "PERSON",
+    }
+    assert "documents" not in call.kwargs["json"]

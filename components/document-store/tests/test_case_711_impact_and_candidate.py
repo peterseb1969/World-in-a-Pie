@@ -256,3 +256,52 @@ async def test_candidate_requires_exactly_one_input_mode(
         },
     )
     assert both.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_candidate_honors_declared_renames(
+    client: AsyncClient, auth_headers: dict
+):
+    """A candidate carrying renames {new: old} validates sampled documents
+    as-if re-keyed (the same semantics an applied migration uses) — the
+    sanctioned rename flow must not false-fail the what-if loop with
+    unknown_field on the old name plus missing-mandatory on the new one."""
+    await _create_person(client, auth_headers, "711000021")
+
+    candidate = _candidate_from_person()
+    candidate["fields"] = [
+        ({**f, "name": "family_name"} if f["name"] == "last_name" else f)
+        for f in candidate["fields"]
+    ]
+    candidate["renames"] = {"family_name": "last_name"}
+
+    resp = await client.post(
+        CANDIDATE,
+        headers=auth_headers,
+        json={
+            "namespace": "wip",
+            "template_definition": candidate,
+            "sample_template_id": "PERSON",
+            "sample_limit": 50,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] >= 1
+    assert body["invalid_count"] == 0, body["results"]
+
+    # Without the declaration the same reshape fails both ways — the
+    # contrast that proves the re-key is doing the work.
+    del candidate["renames"]
+    resp = await client.post(
+        CANDIDATE,
+        headers=auth_headers,
+        json={
+            "namespace": "wip",
+            "template_definition": candidate,
+            "sample_template_id": "PERSON",
+            "sample_limit": 50,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["invalid_count"] >= 1

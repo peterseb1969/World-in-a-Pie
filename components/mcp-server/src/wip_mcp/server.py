@@ -2024,7 +2024,10 @@ async def create_template(template: dict, namespace: str | None = None) -> str:
               undeclared rename is indistinguishable from drop+add: the
               old column's data is stranded instead of migrating
               losslessly and mapping in reporting. Identity fields cannot
-              be renamed. Rejected on a first version.
+              be renamed. Rejected on a first version. Test the change
+              against live documents FIRST with
+              validate_template_candidate — iterate there instead of
+              minting throwaway versions.
             - reporting.cross_version_view: opt-in combined reporting view
               across template versions — {"versions": "all"|[ints],
               "columns": {target: {"from": source} | {}}}. Declared
@@ -2599,6 +2602,59 @@ async def validate_documents(
             items=items,
             namespace=namespace,
             template_version=template_version,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def validate_template_candidate(
+    template_definition: dict,
+    namespace: str | None = None,
+    documents: list[dict] | None = None,
+    sample_template: str | None = None,
+    sample_limit: int = 100,
+) -> str:
+    """Test a DRAFT template definition against real documents BEFORE creating it.
+
+    The what-if half of schema evolution: create_template is an upsert, so
+    every same-name create mints a real version (which also materializes a
+    per-version reporting table). Iterate on a schema change HERE instead —
+    the candidate is never persisted, cached, or registered; nothing exists
+    after the call. When the candidate validates cleanly, create it for real
+    with create_template and read the impact block in that response.
+
+    Declared renames are honored: a candidate carrying
+    renames {new_field: old_field} validates sampled documents as-if
+    re-keyed (the same semantics an applied migration uses), so a rename
+    does not false-fail as unknown_field + missing mandatory.
+
+    Args:
+        template_definition: The candidate definition, same shape as a
+            create_template payload (fields, identity_fields, rules,
+            renames, ...). Reference values should be canonical IDs or
+            resolvable synonyms — an unresolvable reference surfaces as a
+            per-document validation error, as on a real write.
+        namespace: Namespace context for term/reference resolution.
+        documents: Explicit data payloads to validate. Mutually exclusive
+            with sample_template — provide exactly one.
+        sample_template: Template ID, value, or synonym — validates the most
+            recently updated ACTIVE documents of that template against the
+            candidate ("would my last N docs validate against this draft?").
+        sample_limit: Sample size (default 100, max 500).
+
+    Returns {total, valid_count, invalid_count, results: [...]} — per
+    document: index, document_id (None for explicit payloads), and the full
+    validation result with errors.
+    """
+    try:
+        data = await get_client().validate_template_candidate(
+            template_definition=template_definition,
+            namespace=namespace,
+            documents=documents,
+            sample_template=sample_template,
+            sample_limit=sample_limit,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

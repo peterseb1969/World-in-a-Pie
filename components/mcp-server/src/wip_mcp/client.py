@@ -1360,6 +1360,37 @@ class WipClient:
             json=body,
         )
 
+    async def validate_template_candidate(
+        self,
+        template_definition: dict,
+        namespace: str | None = None,
+        documents: list[dict] | None = None,
+        sample_template: str | None = None,
+        sample_limit: int = 100,
+    ) -> dict:
+        """Validate documents against an INLINE candidate template definition.
+
+        Nothing is created, cached, or registered — the candidate exists only
+        for this call. Exactly one of ``documents`` (explicit payloads) or
+        ``sample_template`` (validate the most recently updated active docs of
+        an existing template) must be provided.
+        """
+        namespace = self._ns(namespace)
+        body: dict[str, Any] = {
+            "template_definition": template_definition,
+            "namespace": namespace,
+            "sample_limit": sample_limit,
+        }
+        if documents is not None:
+            body["documents"] = documents
+        if sample_template is not None:
+            body["sample_template_id"] = sample_template
+        return await self._post(
+            self.document_store_url,
+            "/api/document-store/validation/validate-candidate",
+            json=body,
+        )
+
     # ========================================================
     # Document-Store: Import
     # ========================================================

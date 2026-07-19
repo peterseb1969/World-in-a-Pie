@@ -2728,8 +2728,22 @@ class DocumentService:
             ).limit(sample_limit).to_list()
             payloads = [(d.document_id, d.data) for d in docs]
 
+        # Declared renames on the candidate re-key each document's data
+        # exactly as an applied migration would (matching old key moves to
+        # the new name) — without this, the sanctioned rename flow
+        # false-fails the what-if loop with unknown_field on the old name
+        # plus a missing-mandatory on the new one. Same semantics as the
+        # migrate path: only re-key when the old key is present and the
+        # new one is not.
+        renames = dict(template_definition.get("renames") or {})
+
         out: list[tuple[str | None, ValidationResponse]] = []
         for doc_id, data in payloads:
+            if renames:
+                data = dict(data)
+                for new_key, old_key in renames.items():
+                    if old_key in data and new_key not in data:
+                        data[new_key] = data.pop(old_key)
             result = await self.validation_service.validate(
                 "candidate",
                 data,
