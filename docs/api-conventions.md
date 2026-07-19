@@ -266,24 +266,38 @@ The response is always `200 OK` with the resulting `NamespaceResponse`. Calling 
 - Flipping an existing namespace from `retain` to `full` requires `confirm_enable_deletion=true` in the body. Without it, the registry returns 400.
 - Creating a new namespace with `deletion_mode='full'` is allowed directly (no transition to confirm).
 
-### Template create with conflict validation — `POST /api/template-store/templates?on_conflict=validate`
+### Template create is an upsert — `POST /api/template-store/templates`
 
-`POST /templates` accepts an `on_conflict` query parameter:
+The template's identity is its name: creating an existing `(namespace, value)`
+is a **version event**, mirroring the document upsert (same identity → new
+version). Per item:
 
-| Mode | Behavior on `(namespace, value)` collision |
-|------|---------------------------------------------|
-| `error` (default) | Returns a per-item `status: "error"`, `error: "Template with value '...' already exists ..."`. Existing behavior — backwards compatible. |
-| `validate` | Schema-aware: identical → `unchanged`; compatible → `updated` (version N+1); incompatible → `error` with structured diff. |
+| Situation | Status | Notes |
+|-----------|--------|-------|
+| New `(namespace, value)` | `created` | Version 1. |
+| Fully identical re-post | `unchanged` | Same `id`/`version` as existing — the idempotent bootstrap re-run, no query parameter needed. `details` carries the (empty) diff. |
+| Any difference (schema or label/description/metadata) | `updated` | `is_new_version: true`, `version: N+1`. `details` carries the structured diff (`added_optional`, `added_required`, `removed`, `changed_type`, `made_required`, `modified_existing`) **plus** `impact` (live-document counts per version and non-empty counts for dropped fields, from document-store; explicit `status: "unavailable"` if unreachable — never a silent zero) and `migration` (an eligibility verdict: additive/rename-only or dropped-but-empty → eligible; type changes, newly-required, or modified fields → app decision; pointer to the `migrate_documents` dry-run). |
+| Identity-bearing / immutable difference | `error` | `identity_fields` differ → `error_code: "identity_fields_immutable"` (changing identity is a **fork** — declare a new template value); `usage` / `versioned` / edge endpoint lists differ → `error_code: "immutable_property"`. |
 
-In `validate` mode the per-item result reflects the verdict:
+Versioning is loud, never blocking: read the per-item `status` and `details`.
+The `on_conflict` query parameter is **deprecated** — still accepted
+(`error` | `validate`) but no longer selects behavior; every create upserts.
 
-| Verdict | Status | Notes |
-|---------|--------|-------|
-| Identical schema | `unchanged` | Same `id` and `version` as the existing template. `details` carries the (empty) diff. |
-| Compatible (added optional fields only) | `updated` | New version created; `is_new_version: true`, `version: N+1`. `details.added_optional` lists the added field names. |
-| Incompatible | `error` | `error_code: "incompatible_schema"`. `details` contains: `removed`, `added_required`, `changed_type` (`{name, old_type, new_type}`), `made_required`, `modified_existing`, `identity_changed` (`{old, new}` or `null`). |
+Two companion capabilities for schema evolution:
 
-Compatibility is intentionally narrow: **only "added optional field" qualifies as compatible**. Any change to an existing field (label, description, validation, type, mandatory flag), removed field, added required field, or `identity_fields` change is incompatible. The structured diff lets the bootstrap script show the human a useful error.
+- **Declared renames** — a new version may declare `renames: {new_field: old_field}`
+  (validated: the old field existed in the previous version and is gone, the new
+  one is declared and new, types match, identity fields excluded). A declared
+  rename migrates losslessly — `migrate_documents` re-keys the data before
+  target validation — where an undeclared rename is indistinguishable from
+  drop+add and fails migration with `unknown_field`.
+- **Candidate dry-run** — `POST /api/document-store/validation/validate-candidate`
+  validates documents (a sample of an existing template's most recent active
+  docs, or explicit payloads) against an **inline** candidate definition:
+  "would my documents still validate against this draft?" answered with zero
+  persistence — no throwaway draft versions. Companion read:
+  `GET /api/document-store/documents/impact-stats` returns the per-version and
+  per-field live-document counts on demand.
 
 ### Terminology / term create with conflict validation (CASE-465)
 

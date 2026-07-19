@@ -614,10 +614,10 @@ Rule: After updating, deactivate the old version with deactivate_template()
 
 Corollary: Existing documents survive template updates unchanged. The
       identity_hash scopes to template_id (PoNIF #3), and template_id is
-      canonical — stable across versions. This is the exception to WIP's
-      "new version → new ID" pattern: templates carry ONE id across all
-      their versions, so existing docs remain matchable through future
-      template updates. Add a non-identity field to a template, re-mirror
+      canonical — stable across versions. Stable-ID-across-versions is
+      the NORM for WIP's versioned entities (documents and templates both
+      keep one canonical ID with integer version coordinates), so
+      existing docs remain matchable through future template updates. Add a non-identity field to a template, re-mirror
       an existing doc with the same identity values, and you get an UPDATE
       (new doc version, populated new field) rather than a CREATE — no
       data migration step needed, just a backfill pass.
@@ -636,12 +636,15 @@ Moving a cohort forward: the corollary handles ADDITIVE changes
       identity-changing move is a FORK (create new docs), not a migrate, and is
       rejected.
 
-v2 caveat: the planned v2 template-ID redesign (docs/design/v2-index.md)
-      is planning to make template_id version-specific and route logical
-      identity through (namespace, template_value). The corollary HOLDS in both v1 and v2
-      — identity stays stable across schema updates by design — but the
-      mechanism changes. Code that names template_id as the canonical
-      handle will need a rename pass when v2 lands.
+v2 status: the template-identity redesign
+      (docs/design/template-identity-unification.md) decided AGAINST
+      per-version template IDs — template_id stays the stable canonical
+      handle, mirroring documents (versions are coordinates on an entity,
+      not entities). What changed instead: the template's identity
+      (namespace, value) is registered with the Registry as a real
+      composite key, and template create is an upsert (same name → new
+      version; identical schema → unchanged). The corollary holds
+      unchanged; no rename pass is coming.
 
 ## 3. Document Identity — The Hash Decides
 Templates define identity_fields. WIP hashes them to decide: same hash = new

@@ -57,6 +57,33 @@ A term value like `"Draft"` can appear in both the `DOC_STATUS` and `PRIORITY` t
 
 ---
 
+## The Registry Ontology: Identities, Never States
+
+> **The Registry registers identities — "which thing is this" — never states.
+> Versions, of documents and templates alike, are coordinates on an entity
+> (`(id, version)`), not Registry citizens.**
+
+This is the deliberate design, confirmed on a green-field review (see
+`docs/design/template-identity-unification.md` §3): a version is never
+upserted (it is the *output* of an upsert), never resolved from an alternate
+identifier, and has exactly one name. Registering versions would add a
+Registry write to every document write for zero resolution capability.
+Stable-ID-across-versions is therefore the **norm** for WIP's two versioned
+entities — documents and templates both keep one canonical ID with integer
+version coordinates, unique on `(namespace, <id>, version)`.
+
+The normative vocabulary that goes with this:
+
+| Term | Meaning |
+|------|---------|
+| **the template** / **the document** | The logical entity: canonical UUID, registered identity, carries the versions |
+| **a version** | A coordinate `(id, version)` on an entity — addressable, but not an entity: no canonical ID, no synonyms |
+| **identity** | The registered key that determines "which one is this" (`(namespace, value)` for templates; the identity-hash composite for documents) — always the key, never the entity itself |
+
+A change to an entity's identity is a **fork** (a new entity), never a new
+version — for documents that means identity-field values, for templates the
+name and the `identity_fields` declaration.
+
 ## The Registry: Single Source of Truth
 
 The Registry is a **standalone registrar**. WIP services are its primary consumer, but it can be used independently for any identity management need.

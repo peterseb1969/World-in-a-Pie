@@ -55,7 +55,7 @@ The core insight: every problem hit during the Pi deployment stems from the same
 **Superseded (2026-07-19):** by [`template-identity-unification.md`](template-identity-unification.md) via FIRESIDE-23, which falsified this entry's founding premise — no WIP entity mints new IDs per version; documents also keep stable IDs across versions. The stable template UUID stays; what changes is identity *registration*, create-as-upsert, and per-version reporting. See CASE-709/710/711/712.
 **File:** [`../../FR-YAC/reports/BE-YAC-20260409-1636/fireside-template-id-management.md`](../../FR-YAC/reports/BE-YAC-20260409-1636/fireside-template-id-management.md)
 **Author:** BE-YAC + Peter (Day 29 fireside, after the synonym resolution work)
-**Theme:** Templates are the only entity in WIP where multiple versions share one canonical ID. Every other entity follows "new version → new ID." The CASE-40/41 synonym resolution work put a spotlight on the inconsistency.
+**Theme:** *(falsified premise, preserved as history — no WIP entity mints per-version IDs; documents also keep a stable ID across versions)* Templates are the only entity in WIP where multiple versions share one canonical ID. Every other entity follows "new version → new ID." The CASE-40/41 synonym resolution work put a spotlight on the inconsistency.
 
 **Core decision:** Separate logical identity (`(namespace, template_value)`) from version handle (`template_id`). Documents reference templates by the logical identity pair by default. Version pinning becomes an explicit, edge-case concern.
 

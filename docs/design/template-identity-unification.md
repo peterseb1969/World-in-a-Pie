@@ -48,7 +48,7 @@ Unchanged from v1: `(namespace, template_id, version)` and `(namespace, value, v
 ### 4.3 Identity is immutable — changes are forks
 
 - **Rename is a fork.** The name *is* the identity; a template with a new name is a new entity. (Mirrors documents: identity-field value changes are rejected by PATCH; a changed identity is a new document.)
-- **`identity_fields` are immutable across versions of one template.** Document identity must be comparable across template versions (that is what makes cross-version upsert work); versions with differing `identity_fields` would break the shared hash scope. Changing `identity_fields` therefore requires a fork (new `value`). *Flagged: this rule follows logically from the identity decision but has not been explicitly confirmed by Peter — confirm in the implementing case before enforcement is built.*
+- **`identity_fields` are immutable across versions of one template.** Document identity must be comparable across template versions (that is what makes cross-version upsert work); versions with differing `identity_fields` would break the shared hash scope. Changing `identity_fields` therefore requires a fork (new `value`). Confirmed by Peter and enforced (create-as-upsert rejects with `identity_fields_immutable`; update rejects with fork guidance).
 
 ### 4.4 Document identity (recap, unchanged in mechanics)
 

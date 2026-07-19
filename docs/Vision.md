@@ -247,6 +247,8 @@ Composite keys serve three purposes:
 
 3. **Efficient search**: The composite key is hashed (SHA-256) into a single value. This enables fast lookups even when composite keys have different structures (e.g., a terminology keyed on `{code, name}` vs. a term keyed on `{terminology_id, code, value}`). The hash provides a uniform index regardless of key shape.
 
+The Registry registers **identities, never states**: versions of documents and templates are coordinates on an entity, not Registry citizens (see `docs/uniqueness-and-identity.md` for the full ontology and vocabulary).
+
 ---
 
 ## Term Aliases vs Registry Synonyms
