@@ -25,6 +25,11 @@ v2 isn't being planned in advance. It's being driven by **v1.0 contact with real
 
 ## Foundation Documents
 
+### 🔍 Template Identity Unification
+**File:** [`template-identity-unification.md`](template-identity-unification.md)
+**Author:** Peter + BE-YAC-20260719-104725 (FIRESIDE-23, post-v2.0.0 green-field round)
+**Theme:** Templates unify with documents: identity registered in the Registry (`{ns, type: template, value}` replaces the empty-key mint), create-as-upsert, stable entity UUID + integer version coordinates (no per-version IDs — "the Registry registers identities, never states"), pin-to-what-validated, per-version reporting tables with derived cross-version surfaces. Supersedes the Template ID Management entry below (whose "new version → new ID" premise was falsified). Workstreams: CASE-709 (identity core), CASE-710 (reporting), CASE-711 (guardrail tooling), CASE-712 (doc corrections).
+
 ### 🔍 Pluggable Apps — Greenfield Design
 **File:** [`pluggable-apps.md`](pluggable-apps.md)
 **Author:** BE-YAC-20260409-1636 (post-Pi-deployment, Day 28)
@@ -47,6 +52,7 @@ The core insight: every problem hit during the Pi deployment stems from the same
 ---
 
 ### 🔍 Template ID Management — v2 Breaking Change
+**Superseded (2026-07-19):** by [`template-identity-unification.md`](template-identity-unification.md) via FIRESIDE-23, which falsified this entry's founding premise — no WIP entity mints new IDs per version; documents also keep stable IDs across versions. The stable template UUID stays; what changes is identity *registration*, create-as-upsert, and per-version reporting. See CASE-709/710/711/712.
 **File:** [`../../FR-YAC/reports/BE-YAC-20260409-1636/fireside-template-id-management.md`](../../FR-YAC/reports/BE-YAC-20260409-1636/fireside-template-id-management.md)
 **Author:** BE-YAC + Peter (Day 29 fireside, after the synonym resolution work)
 **Theme:** Templates are the only entity in WIP where multiple versions share one canonical ID. Every other entity follows "new version → new ID." The CASE-40/41 synonym resolution work put a spotlight on the inconsistency.
