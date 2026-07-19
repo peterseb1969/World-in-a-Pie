@@ -1274,12 +1274,11 @@ interface DocumentMigrateResponse extends BulkResponse {
 type BackupJobKind = 'backup' | 'restore';
 type BackupJobStatus = 'pending' | 'running' | 'complete' | 'failed';
 /**
- * Restore mode. `'restore'` is the only mode the server implements today: it
- * writes back into the archive's source namespace. `'fresh'` is RESERVED —
- * the backend currently rejects it with 400 "Fresh mode is not yet
- * implemented" (document-store `api/backup.py`); the new-ID / honour-
- * `target_namespace` path it names does not exist yet. Kept in the union for
- * forward-compat, but do not send it (CASE-569).
+ * Restore mode. `'restore'` is the only mode the server implements today:
+ * ID-preserving, each namespace in the archive restores to itself.
+ * `'fresh'` is RESERVED — the backend rejects it with 400; the planned
+ * new-namespace (remap) mode with re-minted IDs does not exist yet. Kept
+ * in the union for forward-compat, but do not send it.
  */
 type RestoreMode = 'restore' | 'fresh';
 /**
@@ -1305,49 +1304,43 @@ interface BackupJobSnapshot {
 /**
  * Request body for `POST /backup/namespaces/{namespace}/backup`.
  *
- * All fields map to keyword arguments of the underlying toolkit
- * `run_export` call. Defaults match the server side, so callers may pass an
- * empty object to take everything.
- *
- * **v1.0 caveat — `include_files`:** see CASE-28. Setting this to `true`
- * against any namespace with non-trivial file content currently causes the
- * archive writer to buffer all blobs in memory. Stick with the default
- * (`false`) until CASE-28 lands.
+ * Only the options the direct backup engine consumes are typed — the
+ * endpoint rejects the retired toolkit-era fields (`skip_closure`,
+ * `skip_synonyms`, `latest_only`, `template_prefixes`, `dry_run`) with a
+ * 400 when set. Blob bytes stream to the server's backup scratch dir, so
+ * `include_files: true` is safe at any content volume.
  */
 interface BackupRequest {
     include_files?: boolean;
     include_inactive?: boolean;
     skip_documents?: boolean;
-    skip_closure?: boolean;
-    skip_synonyms?: boolean;
-    latest_only?: boolean;
-    template_prefixes?: string[];
-    dry_run?: boolean;
+    namespaces?: string[];
+    all_namespaces?: boolean;
 }
 /**
  * Form fields accompanying a multipart restore upload.
  *
- * **Mode gotcha (CASE-569):** omitting `mode` sends nothing on the wire, so
- * the server default applies — and that default is `'restore'`, which writes
- * back into the archive's **source** namespace. A single-namespace archive
- * may be redirected with `target_namespace`; a multi-namespace archive
- * restores each namespace to itself and rejects a target override. So a
- * caller who sets `target_namespace`, omits `mode`, and expects a
- * fresh-namespace restore lands in the archive's original namespace instead —
- * the surprising direction, with no error. `'fresh'` is NOT yet implemented
- * (the backend 400s on it); there is no mode that remaps to a new namespace
- * with new IDs today. Pass `mode: 'restore'` explicitly when the namespace
- * outcome matters.
+ * Restore is ID-preserving and writes each namespace in the archive back
+ * to ITSELF; every target must be empty. A `target_namespace` differing
+ * from the archive's namespace is rejected — re-namespacing needs the
+ * planned remap mode (`'fresh'` still 400s server-side). `dry_run` is
+ * real: every precondition runs (archive format, empty targets, reporting
+ * schema) and the would-restore counts are reported, with nothing
+ * written. The retired toolkit-era params (`register_synonyms`,
+ * `continue_on_error`) are gone from this type — the endpoint 400s when
+ * they are set.
  */
 interface RestoreOptions {
     mode?: RestoreMode;
-    target_namespace?: string;
-    register_synonyms?: boolean;
     skip_documents?: boolean;
     skip_files?: boolean;
     batch_size?: number;
-    continue_on_error?: boolean;
     dry_run?: boolean;
+    /**
+     * Drop a stale reporting schema for the target namespace before
+     * restoring instead of refusing. A dry run reports the would-drop only.
+     */
+    drop_stale_reporting?: boolean;
 }
 /**
  * Filter parameters for `GET /backup/jobs`.
@@ -1501,15 +1494,15 @@ declare class DocumentStoreService extends BaseService {
      */
     startBackup(namespace: string, request?: BackupRequest): Promise<BackupJobSnapshot>;
     /**
-     * Restore a namespace from an uploaded archive. The archive is streamed
-     * to disk on the server, so multi-GB uploads do not buffer in memory.
+     * Restore from an uploaded archive. The archive is streamed to disk on
+     * the server, so multi-GB uploads do not buffer in memory.
      *
-     * **Mode gotcha (CASE-569):** omitting `mode` defers to the server default
-     * `'restore'`, which writes back into the archive's source namespace
-     * (a single-namespace archive honours `target_namespace`; a multi-namespace
-     * one restores each to itself). `'fresh'` is not yet implemented server-side
-     * — the backend 400s on it. Pass `mode: 'restore'` explicitly when the
-     * namespace outcome matters; see `RestoreOptions`.
+     * ID-preserving restore-to-self: the archive manifest determines the
+     * target namespaces (each restores to itself; every target must be
+     * empty). Set `dry_run: true` to run every precondition and get the
+     * would-restore report without writing anything. Retired toolkit-era
+     * params are no longer sent — the endpoint 400s them; see
+     * `RestoreOptions`.
      */
     startRestore(namespace: string, archive: Blob | File, options?: RestoreOptions, filename?: string): Promise<BackupJobSnapshot>;
     /** Get the latest persisted snapshot for a backup or restore job. */
@@ -2073,13 +2066,57 @@ interface ReportTableColumn {
     type: string;
     nullable: boolean;
 }
+/**
+ * One reporting relation as `/tables` lists it. Post per-version split,
+ * a template ("entity") owns several relations: physical per-version
+ * tables `doc_<value>__v<N>`, the identity-core view
+ * `doc_<value>__entities`, and the bare-name view `doc_<value>` — the
+ * default query surface. Never sum an entity's sibling relations (they
+ * overlap by construction); use `ReportEntity.row_count` instead.
+ */
 interface ReportTable {
-    table_name: string;
+    namespace: string;
+    name: string;
+    /** 'view' (entity views) or 'table' (physical / legacy pre-split). */
+    kind: 'view' | 'table';
+    /** Stripped doc_* stem for document relations, null for metadata tables. */
+    template_value: string | null;
+    qualified_name: string;
+    row_count: number;
+    /** Summary mode only. */
+    column_count?: number;
+    /** Detail mode (listTables with a tableName) only. */
+    columns?: ReportTableColumn[];
+}
+interface ReportEntityVersion {
+    version: number;
+    table: string;
+    row_count: number;
+}
+/**
+ * Entity-first grouping from `/tables` — one entry per template with its
+ * version tables and views. `row_count` is the entity's document count
+ * (a document lives in exactly one version table under latest_only).
+ * `legacy_table: true` = a pre-split physical table still occupies the
+ * bare name (needs an explicit drop + batch-sync rebuild — the platform
+ * never auto-drops it).
+ */
+interface ReportEntity {
+    namespace: string;
+    entity: string;
+    default_view: string;
+    default_view_present: boolean;
+    entities_view: string;
+    legacy_table: boolean;
+    versions: ReportEntityVersion[];
     row_count: number;
 }
 interface ReportTableSchema {
+    namespace: string;
     template_value: string;
+    schema: string;
     table_name: string;
+    qualified_name: string;
     columns: ReportTableColumn[];
     row_count: number;
 }
@@ -2457,12 +2494,26 @@ declare class ReportingSyncService extends BaseService {
         /** Poll interval in milliseconds (default: 200) */
         interval?: number;
     }): Promise<void>;
-    /** List all PostgreSQL reporting tables */
-    listTables(tableName?: string): Promise<{
+    /**
+     * List reporting relations, grouped entity-first. Without `tableName`,
+     * the response carries `entities` (one entry per template with its
+     * version tables and views — the shape UIs should render) alongside the
+     * flat `tables` list. With `tableName`, returns that single relation
+     * with full column detail (works for views and version tables alike),
+     * and `entities` is omitted.
+     */
+    listTables(tableName?: string, namespace?: string): Promise<{
         tables: ReportTable[];
+        entities?: ReportEntity[];
     }>;
-    /** Get PostgreSQL schema for a template's reporting table */
-    getTableSchema(templateValue: string): Promise<ReportTableSchema>;
+    /**
+     * Get PostgreSQL columns for a template's reporting relation.
+     * `namespace` is required by the endpoint (the relation lives in that
+     * namespace's schema). Without `version`: the bare-name entity view
+     * (the default query surface). With `version`: that version's physical
+     * table shape.
+     */
+    getTableSchema(templateValue: string, namespace: string, version?: number): Promise<ReportTableSchema>;
     getIntegrityCheck(params?: {
         template_status?: string;
         document_status?: string;
@@ -2668,4 +2719,4 @@ interface ResolvedReference {
  */
 declare function resolveReference(client: WipClient, templateId: string, searchTerm: string, limit?: number): Promise<ResolvedReference[]>;
 
-export { type APIKeyInfo, type APIKeyListResponse, type ActivateTemplateResponse, type ActivationDetail, type ActivityItem, type ActivityResponse, type AddSynonymRequest, type Alert, type AlertConfig, type AlertSeverity, type AlertThresholds, type AlertType, type AlertsResponse, type ApiError, ApiKeyAuthProvider, type AuditLogEntry, type AuditLogResponse, type AuthProvider, type BackupJobKind, type BackupJobSnapshot, type BackupJobStatus, type BackupProgressMessage, type BackupRequest, type BatchEntitySyncResult, type BatchJobCancelResult, type BatchJobsCleared, type BatchSyncJob, type BatchSyncRequest, type BatchSyncResponse, type BatchSyncStatus, type BulkImportOptions, type BulkImportProgress, type BulkResponse, type BulkResultItem, type BulkValidateRequest, type BulkValidateResponse, type BulkValidationResponse, type CascadeResponse, type CascadeResult, type Condition, type ConditionOperator, type ConsumerInfo, type CreateAPIKeyRequest, type CreateAPIKeyResponse, type CreateDocumentRequest, type CreateGrantRequest, type CreateNamespaceRequest, type CreateTemplateRequest, type CreateTermRelationRequest, type CreateTermRequest, type CreateTerminologyRequest, type CsvExportQuery, DefStoreService, type DeleteTermRelationRequest, type DeprecateTermRequest, type Document, type DocumentCreateResponse, type DocumentListResponse, type DocumentMetadata, type DocumentMigrateRequest, type DocumentMigrateResponse, type DocumentQueryParams, type DocumentQueryRequest, type DocumentReference, type DocumentRelationshipsParams, type DocumentStatus, DocumentStoreService, type DocumentTraverseNode, type DocumentTraverseParams, type DocumentTraverseResponse, type DocumentValidationResponse, type DocumentVersionResponse, type DocumentVersionSummary, type EntityDetails, type EntityReference, type EntityReferencesResponse, type ExportResponse, type ExportTerminologyResponse, FetchTransport, type FetchTransportConfig, type FieldDefinition, type FieldType, type FieldValidation, type FileDownloadResponse, type FileEntity, type FileFieldConfig, type FileIntegrityIssue, type FileIntegrityResponse, type FileListResponse, type FileMetadata, type FileQueryParams, type FileStatus, FileStoreService, type FileUploadMetadata, type FormField, type FormInputType, type Grant, type GrantBulkResponse, type GrantBulkResult, type GrantPermission, type GrantRevokeBulkResponse, type GrantRevokeResult, type GrantSubjectType, type HealthResponse, type IdAlgorithmConfig, type ImportDocumentError, type ImportDocumentResult, type ImportDocumentsOptions, type ImportDocumentsResponse, type ImportPreviewResponse, type ImportResponse, type ImportTerminologyRequest, type IncomingReference, type IntegrityCheckResult, type IntegrityIssue, type IntegritySummary, type LatencyStats, type ListAPIKeysParams, type ListBackupJobsParams, type MergeRequest, type MetricsResponse, type Namespace, type NamespaceStats, OidcAuthProvider, type PaginatedResponse, type PatchDocumentRequest, type PeerProjection, type PerTemplateStats, type QueryFilter, type QueryFilterOperator, type Reference, type ReferenceType, type ReferencedByResponse, type RegistryBrowseParams, type RegistryByTermHit, type RegistryEntry, type RegistryEntryFull, type RegistryEntryListResponse, type RegistryLookupResponse, type RegistrySearchParams, type RegistrySearchResponse, type RegistrySearchResult, RegistryService, type RegistrySourceInfo, type RegistrySynonym, type RemoveSynonymRequest, type ReplayFilter, type ReplayRequest, type ReplaySessionResponse, type ReplayStatus, type ReportQueryParams, type ReportQueryResult, type ReportTable, type ReportTableColumn, type ReportTableSchema, type ReportingConfig, ReportingSyncService, type ResolvedReference, type RestoreMode, type RestoreOptions, type RetryConfig, type RevokeGrantRequest, type RuleType, type SearchResponse, type SearchResult, type SearchTypeResults, type SemanticType, type SyncStatus, type SyncStrategy, type TableColumn, type TableViewParams, type TableViewResponse, type Template, type TemplateListResponse, type TemplateMetadata, TemplateStoreService, type TemplateUpdateResponse, type TemplateUsage, type Term, type TermDocumentsResponse, type TermListResponse, type TermReference, type TermRelation, type TermRelationListResponse, type TermTranslation, type Terminology, type TerminologyListResponse, type TerminologyMetadata, type TraversalNode, type TraversalResponse, type UpdateAPIKeyRequest, type UpdateFileMetadataRequest, type UpdateNamespaceRequest, type UpdateTemplateRequest, type UpdateTermRequest, type UpdateTerminologyRequest, type ValidateDocumentRequest, type ValidateDocumentsRequest, type ValidateTemplateRequest, type ValidateTemplateResponse, type ValidateValueRequest, type ValidateValueResponse, type ValidationRule, type VersionStrategy, WipAuthError, WipBulkItemError, type WipClient, type WipClientConfig, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };
+export { type APIKeyInfo, type APIKeyListResponse, type ActivateTemplateResponse, type ActivationDetail, type ActivityItem, type ActivityResponse, type AddSynonymRequest, type Alert, type AlertConfig, type AlertSeverity, type AlertThresholds, type AlertType, type AlertsResponse, type ApiError, ApiKeyAuthProvider, type AuditLogEntry, type AuditLogResponse, type AuthProvider, type BackupJobKind, type BackupJobSnapshot, type BackupJobStatus, type BackupProgressMessage, type BackupRequest, type BatchEntitySyncResult, type BatchJobCancelResult, type BatchJobsCleared, type BatchSyncJob, type BatchSyncRequest, type BatchSyncResponse, type BatchSyncStatus, type BulkImportOptions, type BulkImportProgress, type BulkResponse, type BulkResultItem, type BulkValidateRequest, type BulkValidateResponse, type BulkValidationResponse, type CascadeResponse, type CascadeResult, type Condition, type ConditionOperator, type ConsumerInfo, type CreateAPIKeyRequest, type CreateAPIKeyResponse, type CreateDocumentRequest, type CreateGrantRequest, type CreateNamespaceRequest, type CreateTemplateRequest, type CreateTermRelationRequest, type CreateTermRequest, type CreateTerminologyRequest, type CsvExportQuery, DefStoreService, type DeleteTermRelationRequest, type DeprecateTermRequest, type Document, type DocumentCreateResponse, type DocumentListResponse, type DocumentMetadata, type DocumentMigrateRequest, type DocumentMigrateResponse, type DocumentQueryParams, type DocumentQueryRequest, type DocumentReference, type DocumentRelationshipsParams, type DocumentStatus, DocumentStoreService, type DocumentTraverseNode, type DocumentTraverseParams, type DocumentTraverseResponse, type DocumentValidationResponse, type DocumentVersionResponse, type DocumentVersionSummary, type EntityDetails, type EntityReference, type EntityReferencesResponse, type ExportResponse, type ExportTerminologyResponse, FetchTransport, type FetchTransportConfig, type FieldDefinition, type FieldType, type FieldValidation, type FileDownloadResponse, type FileEntity, type FileFieldConfig, type FileIntegrityIssue, type FileIntegrityResponse, type FileListResponse, type FileMetadata, type FileQueryParams, type FileStatus, FileStoreService, type FileUploadMetadata, type FormField, type FormInputType, type Grant, type GrantBulkResponse, type GrantBulkResult, type GrantPermission, type GrantRevokeBulkResponse, type GrantRevokeResult, type GrantSubjectType, type HealthResponse, type IdAlgorithmConfig, type ImportDocumentError, type ImportDocumentResult, type ImportDocumentsOptions, type ImportDocumentsResponse, type ImportPreviewResponse, type ImportResponse, type ImportTerminologyRequest, type IncomingReference, type IntegrityCheckResult, type IntegrityIssue, type IntegritySummary, type LatencyStats, type ListAPIKeysParams, type ListBackupJobsParams, type MergeRequest, type MetricsResponse, type Namespace, type NamespaceStats, OidcAuthProvider, type PaginatedResponse, type PatchDocumentRequest, type PeerProjection, type PerTemplateStats, type QueryFilter, type QueryFilterOperator, type Reference, type ReferenceType, type ReferencedByResponse, type RegistryBrowseParams, type RegistryByTermHit, type RegistryEntry, type RegistryEntryFull, type RegistryEntryListResponse, type RegistryLookupResponse, type RegistrySearchParams, type RegistrySearchResponse, type RegistrySearchResult, RegistryService, type RegistrySourceInfo, type RegistrySynonym, type RemoveSynonymRequest, type ReplayFilter, type ReplayRequest, type ReplaySessionResponse, type ReplayStatus, type ReportEntity, type ReportEntityVersion, type ReportQueryParams, type ReportQueryResult, type ReportTable, type ReportTableColumn, type ReportTableSchema, type ReportingConfig, ReportingSyncService, type ResolvedReference, type RestoreMode, type RestoreOptions, type RetryConfig, type RevokeGrantRequest, type RuleType, type SearchResponse, type SearchResult, type SearchTypeResults, type SemanticType, type SyncStatus, type SyncStrategy, type TableColumn, type TableViewParams, type TableViewResponse, type Template, type TemplateListResponse, type TemplateMetadata, TemplateStoreService, type TemplateUpdateResponse, type TemplateUsage, type Term, type TermDocumentsResponse, type TermListResponse, type TermReference, type TermRelation, type TermRelationListResponse, type TermTranslation, type Terminology, type TerminologyListResponse, type TerminologyMetadata, type TraversalNode, type TraversalResponse, type UpdateAPIKeyRequest, type UpdateFileMetadataRequest, type UpdateNamespaceRequest, type UpdateTemplateRequest, type UpdateTermRequest, type UpdateTerminologyRequest, type ValidateDocumentRequest, type ValidateDocumentsRequest, type ValidateTemplateRequest, type ValidateTemplateResponse, type ValidateValueRequest, type ValidateValueResponse, type ValidationRule, type VersionStrategy, WipAuthError, WipBulkItemError, type WipClient, type WipClientConfig, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };

@@ -855,34 +855,30 @@ var DocumentStoreService = class extends BaseService {
     return this.post(`/backup/namespaces/${namespace}/backup`, request);
   }
   /**
-   * Restore a namespace from an uploaded archive. The archive is streamed
-   * to disk on the server, so multi-GB uploads do not buffer in memory.
+   * Restore from an uploaded archive. The archive is streamed to disk on
+   * the server, so multi-GB uploads do not buffer in memory.
    *
-   * **Mode gotcha (CASE-569):** omitting `mode` defers to the server default
-   * `'restore'`, which writes back into the archive's source namespace
-   * (a single-namespace archive honours `target_namespace`; a multi-namespace
-   * one restores each to itself). `'fresh'` is not yet implemented server-side
-   * — the backend 400s on it. Pass `mode: 'restore'` explicitly when the
-   * namespace outcome matters; see `RestoreOptions`.
+   * ID-preserving restore-to-self: the archive manifest determines the
+   * target namespaces (each restores to itself; every target must be
+   * empty). Set `dry_run: true` to run every precondition and get the
+   * would-restore report without writing anything. Retired toolkit-era
+   * params are no longer sent — the endpoint 400s them; see
+   * `RestoreOptions`.
    */
   async startRestore(namespace, archive, options = {}, filename = "archive.zip") {
     const form = new FormData();
     form.append("archive", archive, filename);
     if (options.mode !== void 0) form.append("mode", options.mode);
-    if (options.target_namespace !== void 0)
-      form.append("target_namespace", options.target_namespace);
-    if (options.register_synonyms !== void 0)
-      form.append("register_synonyms", String(options.register_synonyms));
     if (options.skip_documents !== void 0)
       form.append("skip_documents", String(options.skip_documents));
     if (options.skip_files !== void 0)
       form.append("skip_files", String(options.skip_files));
     if (options.batch_size !== void 0)
       form.append("batch_size", String(options.batch_size));
-    if (options.continue_on_error !== void 0)
-      form.append("continue_on_error", String(options.continue_on_error));
     if (options.dry_run !== void 0)
       form.append("dry_run", String(options.dry_run));
+    if (options.drop_stale_reporting !== void 0)
+      form.append("drop_stale_reporting", String(options.drop_stale_reporting));
     return this.postFormData(`/backup/namespaces/${namespace}/restore`, form);
   }
   /** Get the latest persisted snapshot for a backup or restore job. */
@@ -1336,13 +1332,31 @@ var ReportingSyncService = class extends BaseService {
     throw new WipError("Sync timeout: no new events processed");
   }
   // ── Table Introspection ──
-  /** List all PostgreSQL reporting tables */
-  async listTables(tableName) {
-    return this.get("/tables", tableName ? { table_name: tableName } : void 0);
+  /**
+   * List reporting relations, grouped entity-first. Without `tableName`,
+   * the response carries `entities` (one entry per template with its
+   * version tables and views — the shape UIs should render) alongside the
+   * flat `tables` list. With `tableName`, returns that single relation
+   * with full column detail (works for views and version tables alike),
+   * and `entities` is omitted.
+   */
+  async listTables(tableName, namespace) {
+    const params = {};
+    if (tableName) params.table_name = tableName;
+    if (namespace) params.namespace = namespace;
+    return this.get("/tables", Object.keys(params).length ? params : void 0);
   }
-  /** Get PostgreSQL schema for a template's reporting table */
-  async getTableSchema(templateValue) {
-    return this.get(`/schema/${templateValue}`);
+  /**
+   * Get PostgreSQL columns for a template's reporting relation.
+   * `namespace` is required by the endpoint (the relation lives in that
+   * namespace's schema). Without `version`: the bare-name entity view
+   * (the default query surface). With `version`: that version's physical
+   * table shape.
+   */
+  async getTableSchema(templateValue, namespace, version) {
+    const params = { namespace };
+    if (version !== void 0) params.version = String(version);
+    return this.get(`/schema/${templateValue}`, params);
   }
   // ── Integrity ──
   async getIntegrityCheck(params) {

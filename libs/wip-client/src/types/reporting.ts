@@ -34,14 +34,60 @@ export interface ReportTableColumn {
   nullable: boolean
 }
 
+/**
+ * One reporting relation as `/tables` lists it. Post per-version split,
+ * a template ("entity") owns several relations: physical per-version
+ * tables `doc_<value>__v<N>`, the identity-core view
+ * `doc_<value>__entities`, and the bare-name view `doc_<value>` — the
+ * default query surface. Never sum an entity's sibling relations (they
+ * overlap by construction); use `ReportEntity.row_count` instead.
+ */
 export interface ReportTable {
-  table_name: string
+  namespace: string
+  name: string
+  /** 'view' (entity views) or 'table' (physical / legacy pre-split). */
+  kind: 'view' | 'table'
+  /** Stripped doc_* stem for document relations, null for metadata tables. */
+  template_value: string | null
+  qualified_name: string
+  row_count: number
+  /** Summary mode only. */
+  column_count?: number
+  /** Detail mode (listTables with a tableName) only. */
+  columns?: ReportTableColumn[]
+}
+
+export interface ReportEntityVersion {
+  version: number
+  table: string
+  row_count: number
+}
+
+/**
+ * Entity-first grouping from `/tables` — one entry per template with its
+ * version tables and views. `row_count` is the entity's document count
+ * (a document lives in exactly one version table under latest_only).
+ * `legacy_table: true` = a pre-split physical table still occupies the
+ * bare name (needs an explicit drop + batch-sync rebuild — the platform
+ * never auto-drops it).
+ */
+export interface ReportEntity {
+  namespace: string
+  entity: string
+  default_view: string
+  default_view_present: boolean
+  entities_view: string
+  legacy_table: boolean
+  versions: ReportEntityVersion[]
   row_count: number
 }
 
 export interface ReportTableSchema {
+  namespace: string
   template_value: string
+  schema: string
   table_name: string
+  qualified_name: string
   columns: ReportTableColumn[]
   row_count: number
 }

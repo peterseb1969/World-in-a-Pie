@@ -14,12 +14,11 @@ export type BackupJobKind = 'backup' | 'restore'
 export type BackupJobStatus = 'pending' | 'running' | 'complete' | 'failed'
 
 /**
- * Restore mode. `'restore'` is the only mode the server implements today: it
- * writes back into the archive's source namespace. `'fresh'` is RESERVED —
- * the backend currently rejects it with 400 "Fresh mode is not yet
- * implemented" (document-store `api/backup.py`); the new-ID / honour-
- * `target_namespace` path it names does not exist yet. Kept in the union for
- * forward-compat, but do not send it (CASE-569).
+ * Restore mode. `'restore'` is the only mode the server implements today:
+ * ID-preserving, each namespace in the archive restores to itself.
+ * `'fresh'` is RESERVED — the backend rejects it with 400; the planned
+ * new-namespace (remap) mode with re-minted IDs does not exist yet. Kept
+ * in the union for forward-compat, but do not send it.
  */
 export type RestoreMode = 'restore' | 'fresh'
 
@@ -47,50 +46,44 @@ export interface BackupJobSnapshot {
 /**
  * Request body for `POST /backup/namespaces/{namespace}/backup`.
  *
- * All fields map to keyword arguments of the underlying toolkit
- * `run_export` call. Defaults match the server side, so callers may pass an
- * empty object to take everything.
- *
- * **v1.0 caveat — `include_files`:** see CASE-28. Setting this to `true`
- * against any namespace with non-trivial file content currently causes the
- * archive writer to buffer all blobs in memory. Stick with the default
- * (`false`) until CASE-28 lands.
+ * Only the options the direct backup engine consumes are typed — the
+ * endpoint rejects the retired toolkit-era fields (`skip_closure`,
+ * `skip_synonyms`, `latest_only`, `template_prefixes`, `dry_run`) with a
+ * 400 when set. Blob bytes stream to the server's backup scratch dir, so
+ * `include_files: true` is safe at any content volume.
  */
 export interface BackupRequest {
   include_files?: boolean
   include_inactive?: boolean
   skip_documents?: boolean
-  skip_closure?: boolean
-  skip_synonyms?: boolean
-  latest_only?: boolean
-  template_prefixes?: string[]
-  dry_run?: boolean
+  namespaces?: string[]
+  all_namespaces?: boolean
 }
 
 /**
  * Form fields accompanying a multipart restore upload.
  *
- * **Mode gotcha (CASE-569):** omitting `mode` sends nothing on the wire, so
- * the server default applies — and that default is `'restore'`, which writes
- * back into the archive's **source** namespace. A single-namespace archive
- * may be redirected with `target_namespace`; a multi-namespace archive
- * restores each namespace to itself and rejects a target override. So a
- * caller who sets `target_namespace`, omits `mode`, and expects a
- * fresh-namespace restore lands in the archive's original namespace instead —
- * the surprising direction, with no error. `'fresh'` is NOT yet implemented
- * (the backend 400s on it); there is no mode that remaps to a new namespace
- * with new IDs today. Pass `mode: 'restore'` explicitly when the namespace
- * outcome matters.
+ * Restore is ID-preserving and writes each namespace in the archive back
+ * to ITSELF; every target must be empty. A `target_namespace` differing
+ * from the archive's namespace is rejected — re-namespacing needs the
+ * planned remap mode (`'fresh'` still 400s server-side). `dry_run` is
+ * real: every precondition runs (archive format, empty targets, reporting
+ * schema) and the would-restore counts are reported, with nothing
+ * written. The retired toolkit-era params (`register_synonyms`,
+ * `continue_on_error`) are gone from this type — the endpoint 400s when
+ * they are set.
  */
 export interface RestoreOptions {
   mode?: RestoreMode
-  target_namespace?: string
-  register_synonyms?: boolean
   skip_documents?: boolean
   skip_files?: boolean
   batch_size?: number
-  continue_on_error?: boolean
   dry_run?: boolean
+  /**
+   * Drop a stale reporting schema for the target namespace before
+   * restoring instead of refusing. A dry run reports the would-drop only.
+   */
+  drop_stale_reporting?: boolean
 }
 
 /**

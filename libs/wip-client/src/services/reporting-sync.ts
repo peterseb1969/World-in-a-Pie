@@ -10,6 +10,7 @@ import type {
   EntityReferencesResponse,
   IntegrityCheckResult,
   ReferencedByResponse,
+  ReportEntity,
   ReportQueryParams,
   ReportQueryResult,
   ReportTable,
@@ -198,14 +199,39 @@ export class ReportingSyncService extends BaseService {
 
   // ── Table Introspection ──
 
-  /** List all PostgreSQL reporting tables */
-  async listTables(tableName?: string): Promise<{ tables: ReportTable[] }> {
-    return this.get('/tables', tableName ? { table_name: tableName } : undefined)
+  /**
+   * List reporting relations, grouped entity-first. Without `tableName`,
+   * the response carries `entities` (one entry per template with its
+   * version tables and views — the shape UIs should render) alongside the
+   * flat `tables` list. With `tableName`, returns that single relation
+   * with full column detail (works for views and version tables alike),
+   * and `entities` is omitted.
+   */
+  async listTables(
+    tableName?: string,
+    namespace?: string,
+  ): Promise<{ tables: ReportTable[]; entities?: ReportEntity[] }> {
+    const params: Record<string, string> = {}
+    if (tableName) params.table_name = tableName
+    if (namespace) params.namespace = namespace
+    return this.get('/tables', Object.keys(params).length ? params : undefined)
   }
 
-  /** Get PostgreSQL schema for a template's reporting table */
-  async getTableSchema(templateValue: string): Promise<ReportTableSchema> {
-    return this.get(`/schema/${templateValue}`)
+  /**
+   * Get PostgreSQL columns for a template's reporting relation.
+   * `namespace` is required by the endpoint (the relation lives in that
+   * namespace's schema). Without `version`: the bare-name entity view
+   * (the default query surface). With `version`: that version's physical
+   * table shape.
+   */
+  async getTableSchema(
+    templateValue: string,
+    namespace: string,
+    version?: number,
+  ): Promise<ReportTableSchema> {
+    const params: Record<string, string> = { namespace }
+    if (version !== undefined) params.version = String(version)
+    return this.get(`/schema/${templateValue}`, params)
   }
 
   // ── Integrity ──

@@ -987,10 +987,10 @@ describe('Service classes via createWipClient', () => {
         'aa-restored',
         archive,
         {
-          mode: 'fresh',
-          target_namespace: 'aa-restored',
+          mode: 'restore',
           batch_size: 100,
-          register_synonyms: true,
+          dry_run: true,
+          drop_stale_reporting: true,
         },
         'aa-backup.zip',
       )
@@ -1002,10 +1002,14 @@ describe('Service classes via createWipClient', () => {
       expect(options.method).toBe('POST')
       expect(options.body).toBeInstanceOf(FormData)
       const fd = options.body as FormData
-      expect(fd.get('mode')).toBe('fresh')
-      expect(fd.get('target_namespace')).toBe('aa-restored')
+      expect(fd.get('mode')).toBe('restore')
       expect(fd.get('batch_size')).toBe('100')
-      expect(fd.get('register_synonyms')).toBe('true')
+      expect(fd.get('dry_run')).toBe('true')
+      expect(fd.get('drop_stale_reporting')).toBe('true')
+      // Retired toolkit-era params must never be sent — the endpoint 400s them.
+      expect(fd.get('target_namespace')).toBeNull()
+      expect(fd.get('register_synonyms')).toBeNull()
+      expect(fd.get('continue_on_error')).toBeNull()
       // Archive part is present and named.
       const archivePart = fd.get('archive')
       expect(archivePart).toBeInstanceOf(Blob)
