@@ -191,10 +191,14 @@ Two primary query tools:
 - query_by_template(template_value, field_filters) — the most common way to
   query documents. Filters on field values, auto-resolves template_value to ID.
 - run_report_query(sql, namespace=...) — raw SQL against the PostgreSQL reporting
-  tables. Each namespace is its own PostgreSQL schema; a table is
-  "<namespace>"."doc_<value>". Pass namespace so unqualified names like doc_patient
-  resolve in that schema, or schema-qualify for cross-namespace queries. Use for
-  cross-template JOINs, aggregations, and complex analytics.
+  layer. Each namespace is its own PostgreSQL schema. The default query surface
+  per template is the entity view "<namespace>"."doc_<value>"; physical rows
+  live in per-version tables doc_<value>__v<N> (one per template version, each
+  shaped by its version's own fields — a NULL means "submitted empty", never
+  "field not in this schema version"). Pass namespace so unqualified names like
+  doc_patient resolve in that schema, or schema-qualify for cross-namespace
+  queries. Use for cross-template JOINs, aggregations, and complex analytics;
+  list_report_tables shows each entity's versions and views.
 
 For a spreadsheet-like view: get_table_view(template_value).
 For CSV export: export_table_csv(template_value).
@@ -3459,16 +3463,22 @@ async def query_by_template(
 
 @mcp.tool()
 async def list_report_tables(table_name: str | None = None) -> str:
-    """List available reporting tables in PostgreSQL (doc_* tables + terminologies/terms).
+    """List reporting relations in PostgreSQL, grouped entity-first.
 
-    Use this to discover what tables exist before running SQL queries.
+    One template ("entity") owns several relations: physical per-version
+    tables doc_<value>__v<N> (one per template version, shaped by that
+    version's own fields), the identity-core view doc_<value>__entities,
+    and the bare-name view doc_<value> — the DEFAULT query surface. Query
+    the bare name unless you need one version's exact shape; the response's
+    `entities` grouping lists every sibling version table so SQL never
+    silently misses rows that live in another version's table.
 
     Args:
-        table_name: If omitted, returns a compact summary of all tables (name,
-            row_count, column_count) — typically a few KB. If provided, returns
-            full column detail (name, type, nullable) for that specific table.
-            Call without table_name first to discover tables, then with table_name
-            to inspect columns before writing SQL.
+        table_name: If omitted, returns the entity grouping plus a compact
+            flat summary of all relations (name, kind, row_count,
+            column_count). If provided, returns full column detail (name,
+            type, nullable) for that relation — works for views and version
+            tables alike. Discover first, then inspect before writing SQL.
     """
     try:
         data = await get_client().list_report_tables(table_name=table_name)
@@ -3491,10 +3501,14 @@ async def run_report_query(
 
     Args:
         sql: SQL SELECT query. Must be read-only (no INSERT/UPDATE/DELETE/DROP).
-            Each namespace is its own PostgreSQL schema; a table is
-            "<namespace>"."doc_<value>". Term fields have two columns:
-            {field} (value) and {field}_term_id. Use list_report_tables() first
-            to discover tables (with their namespace) and columns.
+            Each namespace is its own PostgreSQL schema. The default query
+            surface per template is the entity VIEW "<namespace>"."doc_<value>"
+            (identity core + columns stable across template versions);
+            physical rows live in per-version tables doc_<value>__v<N>, one
+            per template version — query those directly only when you need a
+            version's exact shape. Term fields have two columns: {field}
+            (value) and {field}_term_id. Use list_report_tables() first to
+            discover entities, their version tables, and columns.
         params: Optional list of parameter values for $1, $2, etc. placeholders.
         max_rows: Maximum rows to return (default 1000).
         namespace: When set, the query runs with the search_path pointed at that

@@ -73,7 +73,8 @@ class _Base:
             NS, value, 1, fields, config,
             usage=usage, identity_fields=list(identity_fields),
         )
-        return sm.get_table_name(value, config)
+        # Physical tables are per-version (CASE-710): version 1 here.
+        return sm.get_table_name(value, config, 1)
 
 
 # =========================================================================
@@ -256,7 +257,9 @@ class TestIndexesAndStrategies(_Base):
 
 
 class TestEvolution(_Base):
-    async def test_adds_new_column(self, sm, pg_pool):
+    async def test_new_version_gets_its_own_table(self, sm, pg_pool):
+        # Per-version split (CASE-710): a NEW template version materialises a
+        # NEW table shaped by its own fields — never an ALTER of v1's table.
         await self._create(sm, "t_evo", [TemplateField(name="a", type=FieldType.STRING)], identity_fields=["a"])
         await sm.update_table_schema(
             NS, "t_evo", 2,
@@ -264,18 +267,22 @@ class TestEvolution(_Base):
              TemplateField(name="b", type=FieldType.INTEGER)],
             None, identity_fields=["a"],
         )
-        cols = await _columns(pg_pool, "doc_t_evo")
-        assert cols.get("b") == "integer"
+        v2_cols = await _columns(pg_pool, "doc_t_evo__v2")
+        assert v2_cols.get("b") == "integer"
+        # v1's table is untouched by v2's shape.
+        assert "b" not in await _columns(pg_pool, "doc_t_evo__v1")
 
-    async def test_new_term_field_adds_two_columns(self, sm, pg_pool):
+    async def test_same_version_reensure_adds_columns(self, sm, pg_pool):
+        # Within ONE version's table, re-ensuring with more fields still
+        # evolves additively (e.g. inherited-field resolution improving).
         await self._create(sm, "t_evoterm", [TemplateField(name="a", type=FieldType.STRING)], identity_fields=["a"])
         await sm.update_table_schema(
-            NS, "t_evoterm", 2,
+            NS, "t_evoterm", 1,
             [TemplateField(name="a", type=FieldType.STRING),
              TemplateField(name="g", type=FieldType.TERM)],
             None, identity_fields=["a"],
         )
-        cols = await _columns(pg_pool, "doc_t_evoterm")
+        cols = await _columns(pg_pool, "doc_t_evoterm__v1")
         assert "g" in cols and "g_term_id" in cols
 
     async def test_creates_table_if_not_exists(self, sm, pg_pool):
@@ -284,18 +291,19 @@ class TestEvolution(_Base):
             NS, "t_evonew", 1, [TemplateField(name="a", type=FieldType.STRING)],
             None, identity_fields=["a"],
         )
-        assert "a" in await _columns(pg_pool, "doc_t_evonew")
+        assert "a" in await _columns(pg_pool, "doc_t_evonew__v1")
 
     async def test_drops_legacy_unique_index_for_identity_less_template(self, sm, pg_pool):
-        # Create WITH identity (emits the partial-unique index), then evolve to
-        # identity-less — the now-broken unique index must be dropped.
+        # Create WITH identity (emits the partial-unique index), then re-ensure
+        # the SAME version as identity-less — the now-broken unique index must
+        # be dropped (the legacy healing path, per-version table scoped).
         await self._create(sm, "t_drop", [TemplateField(name="a", type=FieldType.STRING)], identity_fields=["a"])
-        assert "doc_t_drop_ns_active_identity_idx" in await _indexes(pg_pool, "doc_t_drop")
+        assert "doc_t_drop__v1_ns_active_identity_idx" in await _indexes(pg_pool, "doc_t_drop__v1")
         await sm.update_table_schema(
-            NS, "t_drop", 2, [TemplateField(name="a", type=FieldType.STRING)],
+            NS, "t_drop", 1, [TemplateField(name="a", type=FieldType.STRING)],
             None, identity_fields=[],
         )
-        assert "doc_t_drop_ns_active_identity_idx" not in await _indexes(pg_pool, "doc_t_drop")
+        assert "doc_t_drop__v1_ns_active_identity_idx" not in await _indexes(pg_pool, "doc_t_drop__v1")
 
 
 # =========================================================================
@@ -317,8 +325,10 @@ class TestEnsureTableForTemplate(_Base):
 
     async def test_creates_table_when_not_exists(self, sm, pg_pool):
         qualified = await sm.ensure_table_for_template(NS, self._template())
-        assert qualified == f'"{NS}"."doc_person"'
-        assert "name" in await _columns(pg_pool, "doc_person")
+        assert qualified == f'"{NS}"."doc_person__v1"'
+        assert "name" in await _columns(pg_pool, "doc_person__v1")
+        # The bare name is the entity view over the version tables.
+        assert await sm.relation_kind(NS, "doc_person") == "view"
 
     async def test_updates_schema_when_table_exists(self, sm, pg_pool):
         await sm.ensure_table_for_template(NS, self._template())
@@ -326,8 +336,9 @@ class TestEnsureTableForTemplate(_Base):
             version=2,
             fields=[{"name": "name", "type": "string"}, {"name": "age", "type": "integer"}],
         ))
-        cols = await _columns(pg_pool, "doc_person")
+        cols = await _columns(pg_pool, "doc_person__v2")
         assert cols.get("age") == "integer"
+        assert "age" not in await _columns(pg_pool, "doc_person__v1")
 
     async def test_returns_empty_when_sync_disabled(self, sm, pg_pool):
         out = await sm.ensure_table_for_template(NS, self._template(reporting={"sync_enabled": False}))
@@ -337,7 +348,7 @@ class TestEnsureTableForTemplate(_Base):
         await sm.ensure_table_for_template(NS, self._template(
             reporting={"sync_enabled": True, "table_name": "people"},
         ))
-        assert "name" in await _columns(pg_pool, "people")
+        assert "name" in await _columns(pg_pool, "people__v1")
 
     async def test_parses_file_and_semantic_fields(self, sm, pg_pool):
         await sm.ensure_table_for_template(NS, self._template(
@@ -348,6 +359,6 @@ class TestEnsureTableForTemplate(_Base):
                 {"name": "email", "type": "string", "semantic_type": "email"},
             ],
         ))
-        cols = await _columns(pg_pool, "doc_mix")
+        cols = await _columns(pg_pool, "doc_mix__v1")
         assert "scan_file_id" in cols
         assert cols.get("email") == "text"

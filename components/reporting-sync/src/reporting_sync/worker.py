@@ -51,38 +51,57 @@ class SyncWorker:
         self._template_cache: dict[str, dict[str, Any]] = {}
         self._managed_tables: set[str] = set()
 
-    async def _fetch_template(self, template_id: str) -> dict[str, Any] | None:
+    async def _fetch_template(
+        self, template_id: str, version: int | None = None
+    ) -> dict[str, Any] | None:
         """Fetch template definition from Template Store.
+
+        With ``version``, fetches that exact template version — the shape a
+        version-pinned document actually validated against. Explicit
+        versions are immutable, so the cache never goes stale for them;
+        the unversioned ("latest") entry can, and is only used where
+        latest is genuinely meant.
 
         Returns template dict on success, None if template definitively doesn't exist.
         Raises on transient errors (connection, timeout) so the event gets retried.
         """
-        if template_id in self._template_cache:
-            return self._template_cache[template_id]
+        cache_key = f"{template_id}@{version}" if version is not None else template_id
+        if cache_key in self._template_cache:
+            return self._template_cache[cache_key]
+        if version is not None:
+            # The unversioned (latest) cache entry satisfies a pinned request
+            # when it IS that version — the common case while a template has
+            # a single live version. Saves the HTTP round-trip.
+            latest = self._template_cache.get(template_id)
+            if latest is not None and int(latest.get("version", 1)) == int(version):
+                self._template_cache[cache_key] = latest
+                return latest
 
+        params = {"version": str(version)} if version is not None else {}
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     f"{settings.template_store_url}/api/template-store/templates/{template_id}",
+                    params=params,
                     headers={"X-API-Key": settings.api_key},
                     timeout=30.0,
                 )
                 if response.status_code == 200:
                     template = response.json()
-                    self._template_cache[template_id] = template
+                    self._template_cache[cache_key] = template
                     return cast(dict[str, Any] | None, template)
                 elif response.status_code == 404:
-                    logger.warning(f"Template {template_id} not found (404)")
+                    logger.warning(f"Template {cache_key} not found (404)")
                     return None
                 else:
                     # 5xx, 401, etc. — transient, should retry
                     raise RuntimeError(
-                        f"Template Store returned {response.status_code} for {template_id}"
+                        f"Template Store returned {response.status_code} for {cache_key}"
                     )
         except httpx.ConnectError as e:
             raise RuntimeError(f"Cannot connect to Template Store: {e}") from e
         except httpx.TimeoutException as e:
-            raise RuntimeError(f"Template Store timeout for {template_id}: {e}") from e
+            raise RuntimeError(f"Template Store timeout for {cache_key}: {e}") from e
 
     def _get_reporting_config(self, template: dict[str, Any]) -> ReportingConfig:
         """Extract reporting config from template."""
@@ -106,8 +125,13 @@ class SyncWorker:
             metrics.record_event_failed(None, None, "invalid_event", "Missing document_id or template_id")
             return False
 
-        # Fetch template to get reporting config
-        template = await self._fetch_template(template_id)
+        # Fetch the template at the DOCUMENT's pinned version — the shape it
+        # validated against (pin-to-what-validated). Transforming against a
+        # different version is exactly the NULL-conflation the per-version
+        # split exists to eliminate. A pinned version may be deactivated;
+        # the explicit-version fetch returns it regardless of status.
+        doc_template_version = document.get("template_version")
+        template = await self._fetch_template(template_id, doc_template_version)
         if not template:
             logger.warning(f"Template {template_id} not found, skipping document {document_id}")
             metrics.record_event_failed(None, None, "template_not_found", f"Template {template_id} not found")
@@ -144,37 +168,48 @@ class SyncWorker:
         # Determine sync strategy
         strategy = config.sync_strategy.value
 
-        # Handle delete/archive events — both set the document as inactive in PG
+        # Handle delete/archive events — both set the document as inactive in
+        # PG. The document's rows may live in ANY version table (its history
+        # can span template versions), so apply across all of them — a
+        # document_id absent from a sibling table is a harmless no-op.
         if event_type in (EventType.DOCUMENT_DELETED.value, EventType.DOCUMENT_ARCHIVED.value):
+            version_tables = await self.schema_manager.list_version_tables(
+                namespace, template_value, config
+            )
+            schema = self.schema_manager.schema_for(namespace)
+            targets = [f'"{schema}"."{t}"' for t in version_tables.values()] or [table_name]
+
             if event_type == EventType.DOCUMENT_DELETED.value and document.get("hard_delete"):
                 # Hard-delete: remove rows from PostgreSQL
                 async with self.pool.acquire() as conn:
                     target_version = document.get("version")
-                    if target_version is not None:
-                        await conn.execute(
-                            f'DELETE FROM {table_name} WHERE document_id = $1 AND version = $2',
-                            document_id, target_version,
-                        )
-                    else:
-                        await conn.execute(
-                            f'DELETE FROM {table_name} WHERE document_id = $1',
-                            document_id,
-                        )
+                    for target in targets:
+                        if target_version is not None:
+                            await conn.execute(
+                                f'DELETE FROM {target} WHERE document_id = $1 AND version = $2',
+                                document_id, target_version,
+                            )
+                        else:
+                            await conn.execute(
+                                f'DELETE FROM {target} WHERE document_id = $1',
+                                document_id,
+                            )
                 latency_ms = (time.perf_counter() - start_time) * 1000
                 metrics.record_event_processed(template_value, table_name, latency_ms)
-                logger.info(f"Hard-deleted document {document_id} from {table_name}")
+                logger.info(f"Hard-deleted document {document_id} from {len(targets)} version table(s)")
                 return True
 
             new_status = "archived" if event_type == EventType.DOCUMENT_ARCHIVED.value else "deleted"
             async with self.pool.acquire() as conn:
-                await conn.execute(
-                    f'UPDATE {table_name} SET status = $1 WHERE document_id = $2',
-                    new_status,
-                    document_id,
-                )
+                for target in targets:
+                    await conn.execute(
+                        f'UPDATE {target} SET status = $1 WHERE document_id = $2',
+                        new_status,
+                        document_id,
+                    )
             latency_ms = (time.perf_counter() - start_time) * 1000
             metrics.record_event_processed(template_value, table_name, latency_ms)
-            logger.info(f"Marked document {document_id} as {new_status} in {table_name}")
+            logger.info(f"Marked document {document_id} as {new_status} across {len(targets)} version table(s)")
             return True
 
         # Insert/update rows
@@ -194,6 +229,22 @@ class SyncWorker:
                         ]
                         logger.debug(f"Values (truncated): {truncated}")
                         raise
+
+            # Pin-to-what-validated means an update can move a document to a
+            # newer version's table; under latest_only the sibling tables
+            # must lose their now-stale row or the entity views would show
+            # the document twice.
+            if strategy == "latest_only" and doc_template_version is not None:
+                moved = await self.schema_manager.delete_from_sibling_version_tables(
+                    namespace, template_value, config,
+                    keep_version=int(doc_template_version),
+                    document_id=document_id,
+                )
+                if moved:
+                    logger.info(
+                        f"Document {document_id} moved to v{doc_template_version} "
+                        f"table ({moved} stale sibling row(s) removed)"
+                    )
 
             latency_ms = (time.perf_counter() - start_time) * 1000
             metrics.record_event_processed(template_value, table_name, latency_ms)

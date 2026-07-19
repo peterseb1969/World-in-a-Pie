@@ -4,7 +4,7 @@ Data models for the Reporting Sync service.
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -79,6 +79,25 @@ class TemplateEvent(BaseModel):
     template: dict[str, Any] = Field(..., description="Full template definition")
 
 
+class CrossVersionView(BaseModel):
+    """Opt-in cross-version entity view config (template-level).
+
+    Controls the bare-name view built over the per-version tables. The
+    identity-core column set (typed intersection of the selected versions'
+    tables) is always included; ``columns`` adds mappings beyond it —
+    declared renames land here. Anything unmapped and not provably
+    identical across the selected versions is absent from the view: the
+    backend never silently merges columns it cannot prove compatible.
+
+    ``columns`` maps a target column name to an optional ``{"from": <old>}``
+    source; an empty mapping means "this column exists under its own name
+    in the versions that have it, NULL elsewhere".
+    """
+
+    versions: Literal["all"] | list[int] = "all"
+    columns: dict[str, dict[str, str] | None] = Field(default_factory=dict)
+
+
 class ReportingConfig(BaseModel):
     """Reporting configuration for a template."""
 
@@ -88,6 +107,7 @@ class ReportingConfig(BaseModel):
     include_metadata: bool = True
     flatten_arrays: bool = True
     max_array_elements: int = 10
+    cross_version_view: CrossVersionView | None = None
 
 
 class FieldType(StrEnum):

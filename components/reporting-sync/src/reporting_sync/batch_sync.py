@@ -73,6 +73,31 @@ class BatchSyncService:
             logger.error(f"Error fetching template by code {template_value}: {e}")
             return None
 
+    async def _fetch_template_version(
+        self, template_id: str, version: int
+    ) -> dict[str, Any] | None:
+        """Fetch one exact template version — the shape a version-pinned
+        document validated against. Works for deactivated versions too (an
+        explicit-version read is status-independent)."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{settings.template_store_url}/api/template-store/templates/{template_id}",
+                    params={"version": str(version)},
+                    headers={"X-API-Key": settings.api_key},
+                    timeout=30.0,
+                )
+                if response.status_code == 200:
+                    return cast(dict[str, Any] | None, response.json())
+                logger.error(
+                    f"Failed to fetch template {template_id} v{version}: "
+                    f"{response.status_code}"
+                )
+                return None
+        except Exception as e:
+            logger.error(f"Error fetching template {template_id} v{version}: {e}")
+            return None
+
     async def _resolve_template_fields(self, template: dict[str, Any]) -> dict[str, Any]:
         """
         Resolve template with all inherited fields from parent templates.
@@ -250,26 +275,53 @@ class BatchSyncService:
                 job.completed_at = datetime.now(UTC)
                 return
 
-            # Documents route to their own namespace's schema (CASE-628), so a
-            # single template can fill several tables. Ensure lazily per
-            # namespace as pages stream in. The pre-CASE-628 "skip if the table
-            # already has data unless force" guard is dropped: with lazily
-            # created per-namespace tables there is no single table to probe,
-            # and a rebuild runs with force in practice.
-            ns_tables: dict[str, str] = {}
+            # Documents route to their own namespace's schema (CASE-628) AND
+            # to their pinned template version's table (per-version split) —
+            # a single template can fill several tables per namespace. Ensure
+            # lazily per (namespace, version) as pages stream in. Each
+            # document is transformed against the template version it
+            # validated against (pin-to-what-validated), never against
+            # latest — that mismatch was the NULL-conflation the split
+            # eliminates.
+            ns_tables: dict[tuple[str, int], str] = {}
+            version_templates: dict[int, dict[str, Any]] = {}
+            touched_namespaces: set[str] = set()
 
-            # Eagerly ensure the table in the template's own namespace even
-            # when there are zero documents: a freshly bootstrapped namespace
-            # (templates, no docs yet) must be SQL-queryable — "no rows yet"
-            # is an empty table, not relation-does-not-exist. Documents from
-            # other namespaces still materialise their tables lazily below.
+            latest_version = int(template.get("version", 1))
+            version_templates[latest_version] = template
+
+            async def _template_for_version(version: int) -> dict[str, Any]:
+                if version in version_templates:
+                    return version_templates[version]
+                fetched = await self._fetch_template_version(
+                    template["template_id"], version
+                )
+                if fetched is None:
+                    # Pinned version unavailable — fall back to the latest
+                    # definition, loudly: better a possibly-wider table than
+                    # dropping the document.
+                    logger.warning(
+                        f"Template {job.template_value} v{version} not "
+                        f"fetchable; falling back to v{latest_version}"
+                    )
+                    version_templates[version] = template
+                    return template
+                resolved = await self._resolve_template_fields(fetched)
+                version_templates[version] = resolved
+                return resolved
+
+            # Eagerly ensure the latest version's table in the template's own
+            # namespace even when there are zero documents: a freshly
+            # bootstrapped namespace (templates, no docs yet) must be
+            # SQL-queryable — "no rows yet" is an empty table (and view), not
+            # relation-does-not-exist.
             tpl_ns = template.get("namespace") or "wip"
             tpl_table = await self.schema_manager.ensure_table_for_template(tpl_ns, template)
             if tpl_table:
-                ns_tables[tpl_ns] = tpl_table
+                ns_tables[(tpl_ns, latest_version)] = tpl_table
+                touched_namespaces.add(tpl_ns)
 
             template_id = template["template_id"]
-            transformer = DocumentTransformer(config)
             strategy = config.sync_strategy.value
 
             # Fetch first page to get total count
@@ -298,23 +350,34 @@ class BatchSyncService:
 
                 job.current_page = page
 
-                # Ensure a table for each namespace present in this page.
-                # ensure_table_for_template uses its own pooled connection, so
-                # do it before holding a connection for the upserts.
+                # Ensure a table for each (namespace, template_version)
+                # present in this page. ensure_table_for_template uses its own
+                # pooled connection, so do it before holding a connection for
+                # the upserts.
                 for document in documents:
                     ns = document.get("namespace") or "wip"
-                    if ns not in ns_tables:
-                        ns_tables[ns] = await self.schema_manager.ensure_table_for_template(
-                            ns, template
+                    doc_tv = int(document.get("template_version", latest_version))
+                    if (ns, doc_tv) not in ns_tables:
+                        version_template = await _template_for_version(doc_tv)
+                        ns_tables[(ns, doc_tv)] = (
+                            await self.schema_manager.ensure_table_for_template(
+                                ns, version_template
+                            )
                         )
+                        touched_namespaces.add(ns)
 
-                # Process documents in this page, routing each to its schema.
+                # Process documents in this page, routing each to its
+                # (schema, version table) and transforming against the
+                # template version it validated against.
                 async with self.pool.acquire() as conn:
                     for document in documents:
                         try:
                             ns = document.get("namespace") or "wip"
-                            table_name = ns_tables[ns]
-                            rows = transformer.transform(document, template)
+                            doc_tv = int(document.get("template_version", latest_version))
+                            table_name = ns_tables[(ns, doc_tv)]
+                            version_template = await _template_for_version(doc_tv)
+                            transformer = DocumentTransformer(config)
+                            rows = transformer.transform(document, version_template)
                             for row in rows:
                                 sql, values = transformer.generate_upsert_sql(
                                     table_name, row, strategy
@@ -327,6 +390,20 @@ class BatchSyncService:
                             )
                             job.documents_failed += 1
 
+                # Version-crossing upserts leave stale rows in sibling
+                # version tables under latest_only — pair the page's upserts
+                # with the sibling cleanup per document.
+                if strategy == "latest_only":
+                    for document in documents:
+                        ns = document.get("namespace") or "wip"
+                        doc_tv = int(document.get("template_version", latest_version))
+                        doc_id = document.get("document_id")
+                        if doc_id:
+                            await self.schema_manager.delete_from_sibling_version_tables(
+                                ns, job.template_value, config,
+                                keep_version=doc_tv, document_id=doc_id,
+                            )
+
                 # Check if we've processed all pages
                 if len(documents) < page_size:
                     break
@@ -334,6 +411,18 @@ class BatchSyncService:
 
                 # Small delay to avoid overwhelming the services
                 await asyncio.sleep(0.1)
+
+            # Rebuild the entity views for every namespace this job touched —
+            # the union membership may have grown with lazily created version
+            # tables. A legacy pre-split table is reported, never auto-dropped.
+            for ns in touched_namespaces:
+                warning = await self.schema_manager.ensure_views_for_template(
+                    ns, job.template_value, config
+                )
+                if warning:
+                    job.error_message = (
+                        (job.error_message + "; " if job.error_message else "") + warning
+                    )
 
             job.status = BatchSyncStatus.COMPLETED
             job.completed_at = datetime.now(UTC)

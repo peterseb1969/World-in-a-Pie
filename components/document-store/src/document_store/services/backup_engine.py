@@ -724,11 +724,18 @@ class DirectRestoreEngine:
         issues = [
             f"{t.get('template_value')}: "
             + (t.get("error") or (
-                "table missing" if not t.get("table_present")
+                "legacy pre-split table shadows the entity view"
+                if t.get("legacy_table")
+                else "table missing" if not t.get("table_present")
                 else f"missing columns {t.get('missing_columns')}"
             ))
             for t in (parity or {}).get("templates", [])
-            if not (t.get("table_present") and not t.get("missing_columns") and not t.get("error"))
+            if not (
+                t.get("table_present")
+                and not t.get("missing_columns")
+                and not t.get("legacy_table")
+                and not t.get("error")
+            )
         ]
         raise RestoreEngineError(
             f"Reporting tables for namespace '{namespace}' did not verify "

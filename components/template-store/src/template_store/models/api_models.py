@@ -1,9 +1,10 @@
 """API request/response models for the Template Store service."""
 
+import re
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Canonical bulk-response models live in wip_auth.bulk_models (CASE-395).
 # Re-exported here under the template-store-facing names so existing
@@ -23,6 +24,25 @@ from .template import ReportingConfig, TemplateMetadata, TemplateUsage
 class StrictModel(BaseModel):
     """Base for API request models — rejects unknown fields."""
     model_config = ConfigDict(extra='forbid')
+
+
+# The reporting layer names each template version's physical table
+# ``<base>__v<N>`` (per-version reporting split). A template value or
+# cosmetic reporting.table_name ending in the reserved suffix would make
+# one entity's base name collide with another entity's version table
+# (``sample__v3`` vs ``sample`` v3), so the suffix is rejected at the API
+# boundary — the only collision class the naming scheme has.
+_RESERVED_TABLE_SUFFIX = re.compile(r"__v[0-9]+$")
+
+
+def _reject_reserved_suffix(value: str, what: str) -> str:
+    if _RESERVED_TABLE_SUFFIX.search(value):
+        raise ValueError(
+            f"{what} must not end in the reserved reporting suffix "
+            f"'__v<N>' (got {value!r}) — it would collide with a "
+            "per-version reporting table name"
+        )
+    return value
 
 
 # =============================================================================
@@ -130,6 +150,19 @@ class CreateTemplateRequest(StrictModel):
         description="Initial status: 'active' (default) or 'draft' (skips reference validation)"
     )
 
+    @field_validator("value")
+    @classmethod
+    def _value_reserved_suffix(cls, v: str) -> str:
+        return _reject_reserved_suffix(v, "Template value")
+
+    @model_validator(mode="after")
+    def _table_name_reserved_suffix(self) -> "CreateTemplateRequest":
+        if self.reporting and self.reporting.table_name:
+            _reject_reserved_suffix(
+                self.reporting.table_name, "reporting.table_name"
+            )
+        return self
+
 
 class UpdateTemplateRequest(StrictModel):
     """Request to update an existing template."""
@@ -198,6 +231,14 @@ class UpdateTemplateRequest(StrictModel):
         default=None,
         description="User or system updating this template"
     )
+
+    @model_validator(mode="after")
+    def _update_reserved_suffix(self) -> "UpdateTemplateRequest":
+        if self.reporting and self.reporting.table_name:
+            _reject_reserved_suffix(
+                self.reporting.table_name, "reporting.table_name"
+            )
+        return self
 
 
 class AddEndpointsRequest(StrictModel):

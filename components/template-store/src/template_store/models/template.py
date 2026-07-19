@@ -57,6 +57,16 @@ class ReportingConfig(BaseModel):
         le=100,
         description="Maximum array elements to include when flattening"
     )
+    cross_version_view: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Opt-in cross-version entity view over the per-version reporting "
+            "tables: {'versions': 'all' | [ints], 'columns': {target: "
+            "{'from': source} | {}}}. The identity core is always included; "
+            "declared column mappings extend it. Consumed by reporting-sync "
+            "(which validates the shape); stored pass-through here."
+        )
+    )
 
 
 class TemplateMetadata(BaseModel):

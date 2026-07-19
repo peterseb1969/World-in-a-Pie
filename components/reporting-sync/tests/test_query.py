@@ -57,12 +57,12 @@ async def test_list_tables_summary(http_client: AsyncClient, mock_state):
     conn.fetch = AsyncMock(side_effect=[
         # First call: list all tables
         [
-            {"table_schema": "wip", "table_name": "doc_patient"},
-            {"table_schema": "wip", "table_name": "doc_bank_transaction"},
-            {"table_schema": "wip", "table_name": "terminologies"},
-            {"table_schema": "wip", "table_name": "terms"},
-            {"table_schema": "wip", "table_name": "term_relations"},
-            {"table_schema": "wip", "table_name": "_wip_schema_migrations"},  # should be filtered out
+            {"table_schema": "wip", "table_name": "doc_patient", "table_type": "BASE TABLE"},
+            {"table_schema": "wip", "table_name": "doc_bank_transaction", "table_type": "BASE TABLE"},
+            {"table_schema": "wip", "table_name": "terminologies", "table_type": "BASE TABLE"},
+            {"table_schema": "wip", "table_name": "terms", "table_type": "BASE TABLE"},
+            {"table_schema": "wip", "table_name": "term_relations", "table_type": "BASE TABLE"},
+            {"table_schema": "wip", "table_name": "_wip_schema_migrations", "table_type": "BASE TABLE"},  # should be filtered out
         ],
         # Subsequent calls: columns for each allowed table (5 tables)
         [{"column_name": "id", "data_type": "text", "is_nullable": "NO"}],
@@ -102,8 +102,8 @@ async def test_list_tables_detail(http_client: AsyncClient, mock_state):
     conn.fetch = AsyncMock(side_effect=[
         # First call: list all tables
         [
-            {"table_schema": "wip", "table_name": "doc_patient"},
-            {"table_schema": "wip", "table_name": "terminologies"},
+            {"table_schema": "wip", "table_name": "doc_patient", "table_type": "BASE TABLE"},
+            {"table_schema": "wip", "table_name": "terminologies", "table_type": "BASE TABLE"},
         ],
         # Column detail for doc_patient
         [
@@ -135,7 +135,7 @@ async def test_list_tables_detail_not_found(http_client: AsyncClient, mock_state
     _pool, conn = mock_state
 
     conn.fetch = AsyncMock(side_effect=[
-        [{"table_schema": "wip", "table_name": "doc_patient"}],
+        [{"table_schema": "wip", "table_name": "doc_patient", "table_type": "BASE TABLE"}],
     ])
 
     async with http_client:

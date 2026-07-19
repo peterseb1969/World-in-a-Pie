@@ -511,10 +511,10 @@ class TestTemplateLifecycle:
             assert row["label"] == "Updated Template"
             assert row["status"] == "active"
 
-            # New column should exist in doc table
+            # Per-version split: v2's column lands in v2's OWN table.
             col = await conn.fetchval(
                 """SELECT column_name FROM information_schema.columns
-                   WHERE table_name = 'doc_lctemplate' AND column_name = 'notes'"""
+                   WHERE table_name = 'doc_lctemplate__v2' AND column_name = 'notes'"""
             )
             assert col == "notes"
 

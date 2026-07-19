@@ -109,8 +109,8 @@ async def test_templates_in_tables_listing(http_client: AsyncClient, mock_state)
     _pool, conn = mock_state
     conn.fetch = AsyncMock(side_effect=[
         [
-            {"table_schema": "wip", "table_name": "templates"},
-            {"table_schema": "wip", "table_name": "_wip_schema_migrations"},
+            {"table_schema": "wip", "table_name": "templates", "table_type": "BASE TABLE"},
+            {"table_schema": "wip", "table_name": "_wip_schema_migrations", "table_type": "BASE TABLE"},
         ],
         [{"column_name": "template_id", "data_type": "text", "is_nullable": "NO"}],
     ])

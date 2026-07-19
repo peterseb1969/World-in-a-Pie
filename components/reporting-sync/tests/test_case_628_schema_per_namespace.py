@@ -104,9 +104,9 @@ class TestPerNamespaceSchemas:
     async def test_create_table_lands_in_namespace_schema(self, pg_pool):
         sm = SchemaManager(pg_pool)
         await sm.create_table("clinic_a", "patient", 1, _fields(), identity_fields=["name"])
-        assert await _table_in_schema(pg_pool, "clinic_a", "doc_patient")
+        assert await _table_in_schema(pg_pool, "clinic_a", "doc_patient__v1")
         # And it is NOT in public.
-        assert not await _table_in_schema(pg_pool, "public", "doc_patient")
+        assert not await _table_in_schema(pg_pool, "public", "doc_patient__v1")
 
     async def test_same_value_two_namespaces_no_collision(self, pg_pool):
         """The core fix: same template value in two namespaces → two tables."""
@@ -114,26 +114,26 @@ class TestPerNamespaceSchemas:
         await sm.create_table("clinic_a", "patient", 1, _fields(), identity_fields=["name"])
         await sm.create_table("clinic_b", "patient", 1, _fields(), identity_fields=["name"])
 
-        assert await _table_in_schema(pg_pool, "clinic_a", "doc_patient")
-        assert await _table_in_schema(pg_pool, "clinic_b", "doc_patient")
+        assert await _table_in_schema(pg_pool, "clinic_a", "doc_patient__v1")
+        assert await _table_in_schema(pg_pool, "clinic_b", "doc_patient__v1")
 
         # They are physically distinct: a row in one is invisible to the other.
         async with pg_pool.acquire() as conn:
             await conn.execute(
-                'INSERT INTO "clinic_a"."doc_patient" '
+                'INSERT INTO "clinic_a"."doc_patient__v1" '
                 "(document_id, namespace, template_id, template_version, version, "
                 "status, identity_hash, created_at) "
                 "VALUES ('d1','clinic_a','t1',1,1,'active','h1', NOW())"
             )
-            a_count = await conn.fetchval('SELECT count(*) FROM "clinic_a"."doc_patient"')
-            b_count = await conn.fetchval('SELECT count(*) FROM "clinic_b"."doc_patient"')
+            a_count = await conn.fetchval('SELECT count(*) FROM "clinic_a"."doc_patient__v1"')
+            b_count = await conn.fetchval('SELECT count(*) FROM "clinic_b"."doc_patient__v1"')
         assert a_count == 1
         assert b_count == 0
 
     async def test_hyphenated_namespace_end_to_end(self, pg_pool):
         sm = SchemaManager(pg_pool)
         await sm.create_table("dev-wip-song", "track", 1, _fields(), identity_fields=["name"])
-        assert await _table_in_schema(pg_pool, "dev-wip-song", "doc_track")
+        assert await _table_in_schema(pg_pool, "dev-wip-song", "doc_track__v1")
 
     async def test_ensure_table_for_template_returns_qualified(self, pg_pool):
         sm = SchemaManager(pg_pool)
@@ -145,8 +145,8 @@ class TestPerNamespaceSchemas:
             "reporting": {"sync_enabled": True},
         }
         qualified = await sm.ensure_table_for_template("clinic_a", template)
-        assert qualified == '"clinic_a"."doc_patient"'
-        assert await _table_in_schema(pg_pool, "clinic_a", "doc_patient")
+        assert qualified == '"clinic_a"."doc_patient__v1"'
+        assert await _table_in_schema(pg_pool, "clinic_a", "doc_patient__v1")
 
     async def test_metadata_tables_are_per_namespace(self, pg_pool):
         sm = SchemaManager(pg_pool)

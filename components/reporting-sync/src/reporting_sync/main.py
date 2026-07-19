@@ -673,13 +673,19 @@ async def test_alerts() -> dict[str, Any]:
 
 @router.get("/table-name")
 async def resolve_table_name(namespace: str, template_value: str) -> dict[str, Any]:
-    """Resolve the reporting table for a (namespace, template_value) (CASE-628).
+    """Resolve the default reporting relation for a (namespace, template_value).
 
-    Under schema-per-namespace the physical table is
-    ``"<namespace>"."doc_<value>"``. Consumers building raw ``run_report_query``
-    SQL should resolve the name here rather than construct it. ``exists``
-    reports whether the table has been materialised yet (it is created lazily on
-    first sync).
+    Post per-version split, the bare name ``doc_<value>`` is the entity
+    VIEW (identity-core, or the template's opt-in cross-version view) over
+    the physical per-version tables ``doc_<value>__v<N>``. Consumers
+    building raw ``run_report_query`` SQL should resolve here rather than
+    construct names: query the bare name unless you need one version's
+    exact shape — ``version_tables`` lists what physically exists.
+
+    ``kind`` is ``view`` (post-split), ``table`` (a legacy pre-split
+    physical table still shadowing the view — remediate via batch sync
+    rebuild), or ``absent``. ``exists`` stays: true when the bare name
+    resolves to anything queryable.
 
     (A template's optional ``reporting.table_name`` cosmetic override is not
     reflected here yet — this returns the default ``doc_<value>`` form.)
@@ -693,17 +699,8 @@ async def resolve_table_name(namespace: str, template_value: str) -> dict[str, A
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    async with state.postgres_pool.acquire() as conn:
-        exists = await conn.fetchval(
-            """
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables
-                WHERE table_schema = $1 AND table_name = $2
-            )
-            """,
-            schema,
-            table_name,
-        )
+    kind = await sm.relation_kind(schema, table_name)
+    version_tables = await sm.list_version_tables(namespace, template_value)
 
     return {
         "namespace": namespace,
@@ -711,16 +708,24 @@ async def resolve_table_name(namespace: str, template_value: str) -> dict[str, A
         "schema": schema,
         "table_name": table_name,
         "qualified_name": sm.qualified_name(namespace, template_value),
-        "exists": exists,
+        "exists": kind is not None,
+        "kind": kind or "absent",
+        "version_tables": {v: t for v, t in sorted(version_tables.items())},
+        "entities_view": sm.entities_view_name(template_value),
     }
 
 
 @router.get("/schema/{template_value}")
-async def get_schema(template_value: str, namespace: str) -> dict[str, Any]:
-    """Get the PostgreSQL schema (columns) for a template in a namespace.
+async def get_schema(
+    template_value: str, namespace: str, version: int | None = None
+) -> dict[str, Any]:
+    """Get the PostgreSQL columns for a template's reporting relation.
 
-    ``namespace`` is required (CASE-628): the table lives in that namespace's
-    schema, and the same template_value can exist in several namespaces.
+    ``namespace`` is required (CASE-628): the relation lives in that
+    namespace's schema, and the same template_value can exist in several
+    namespaces. Without ``version`` this describes the bare-name entity
+    view (the default query surface); with ``version`` it describes that
+    version's physical table ``doc_<value>__v<N>``.
     """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
@@ -728,7 +733,7 @@ async def get_schema(template_value: str, namespace: str) -> dict[str, Any]:
     sm = SchemaManager(state.postgres_pool)
     try:
         schema = sm.schema_for(namespace)
-        table_name = sm.get_table_name(template_value)
+        table_name = sm.get_table_name(template_value, version=version)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -1427,36 +1432,62 @@ async def list_tables(
     namespace: str | None = Query(default=None, description="Restrict to one namespace's schema"),
     table_name: str | None = Query(default=None, description="Return full column detail for a specific (bare) table name"),
 ):
-    """List available reporting tables across all namespace schemas (CASE-628).
+    """List reporting relations across namespace schemas — entity-first.
 
-    Each WIP namespace is its own PostgreSQL schema; this enumerates the
-    reporting tables in every namespace schema and returns, per table, its
-    owning ``namespace``, the ``template_value`` it reports (for ``doc_*``
-    tables), row count, and columns. Filter by ``namespace`` and/or bare
-    ``table_name``.
+    Each WIP namespace is its own PostgreSQL schema. Post per-version
+    split, one template ("entity") owns several relations: the physical
+    per-version tables ``doc_<value>__v<N>``, the always-present
+    identity-core view ``doc_<value>__entities``, and the bare-name view
+    ``doc_<value>`` (the default query surface). The response groups them
+    under ``entities`` so agent-written SQL never silently misses sibling
+    version tables; ``tables`` keeps the flat relation list (fixed
+    metadata tables + every doc relation) for consumers that want it.
+    Filter by ``namespace`` and/or bare ``table_name`` (any relation name;
+    detail mode returns its columns).
     """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
     allowed_prefixes = ("doc_",)
     allowed_exact = {"terminologies", "terms", "term_relations", "templates"}
+    version_re = re.compile(r"^(doc_.+)__v(\d+)$")
 
     async with state.postgres_pool.acquire() as conn:
-        # Base tables across every non-system schema (each is a namespace).
+        # Tables AND views across every non-system schema (each schema is a
+        # namespace) — the entity views are first-class discovery citizens.
         raw_tables = await conn.fetch(
             f"""
-            SELECT table_schema, table_name
+            SELECT table_schema, table_name, table_type
             FROM information_schema.tables
             WHERE table_schema NOT IN {_SYSTEM_SCHEMAS}
-              AND table_type = 'BASE TABLE'
+              AND table_type IN ('BASE TABLE', 'VIEW')
             ORDER BY table_schema, table_name
             """
         )
 
         tables = []
+        # (schema, entity_base) → grouped entry
+        entities: dict[tuple[str, str], dict] = {}
+
+        def _entity(schema: str, base: str) -> dict:
+            key = (schema, base)
+            if key not in entities:
+                entities[key] = {
+                    "namespace": schema,
+                    "entity": base[len("doc_"):],
+                    "default_view": base,
+                    "default_view_present": False,
+                    "entities_view": f"{base}__entities",
+                    "legacy_table": False,
+                    "versions": [],
+                    "row_count": 0,
+                }
+            return entities[key]
+
         for row in raw_tables:
             schema = row["table_schema"]
             tname = row["table_name"]
+            is_view = row["table_type"] == "VIEW"
             if not (tname.startswith(allowed_prefixes) or tname in allowed_exact):
                 continue
             if namespace and schema != namespace:
@@ -1481,6 +1512,7 @@ async def list_tables(
             entry: dict = {
                 "namespace": schema,
                 "name": tname,
+                "kind": "view" if is_view else "table",
                 "template_value": tname[len("doc_"):] if tname.startswith("doc_") else None,
                 "qualified_name": f'"{schema}"."{tname}"',
                 "row_count": count,
@@ -1500,10 +1532,38 @@ async def list_tables(
 
             tables.append(entry)
 
+            # Entity grouping (skip in single-relation detail mode).
+            if table_name or not tname.startswith("doc_"):
+                continue
+            m = version_re.match(tname)
+            if m and not is_view:
+                ent = _entity(schema, m.group(1))
+                ent["versions"].append(
+                    {"version": int(m.group(2)), "table": tname, "row_count": count}
+                )
+                ent["row_count"] += count or 0
+            elif tname.endswith("__entities") and is_view:
+                _entity(schema, tname[: -len("__entities")])
+            elif is_view:
+                _entity(schema, tname)["default_view_present"] = True
+            else:
+                # A bare-name BASE TABLE: the legacy pre-split layout.
+                ent = _entity(schema, tname)
+                ent["legacy_table"] = True
+                ent["row_count"] += count or 0
+
         if table_name and not tables:
             raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
-    return {"tables": tables}
+    for ent in entities.values():
+        ent["versions"].sort(key=lambda v: v["version"])
+
+    result: dict = {"tables": tables}
+    if not table_name:
+        result["entities"] = sorted(
+            entities.values(), key=lambda e: (e["namespace"], e["entity"])
+        )
+    return result
 
 
 class ReportQuery(BaseModel):
