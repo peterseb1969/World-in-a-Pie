@@ -1,6 +1,6 @@
 {
   "name": "@wip/proxy",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
   "description": "Express middleware for proxying WIP API calls with auth injection and file content streaming",
   "type": "module",

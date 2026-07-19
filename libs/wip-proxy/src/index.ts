@@ -109,19 +109,44 @@ export function prefixPattern(prefix: string): RegExp {
 
 /**
  * Resolve the upstream API key from `apiKeyFile` (preferred — read once at
- * startup, like the MCP server's `WIP_API_KEY_FILE`) or `apiKey`. Throws if
- * neither yields a non-empty key, so a misconfigured proxy fails loudly at
- * construction rather than silently 401-ing every upstream call (CASE-495).
+ * startup, like the MCP server's `WIP_API_KEY_FILE`) or `apiKey`.
+ *
+ * An `apiKeyFile` that is missing, unreadable, or empty falls back to
+ * `apiKey` when one is set — with a startup warning, because the file is
+ * the rotation-aware source and running on the inline key means a rotation
+ * won't apply until the path resolves. The same app config can therefore
+ * serve host-run dev (file exists on the host) and containerized dev (a
+ * bind-mounted .env carries a host path that doesn't exist in-container,
+ * but the deployer injects the inline key) without crashing either way.
+ *
+ * Throws only when NO source yields a non-empty key, naming every attempt —
+ * a misconfigured proxy still fails loudly at construction rather than
+ * silently 401-ing every upstream call.
  */
 export function resolveApiKey(options: WipProxyOptions): string {
+  let fileFailure: string | null = null
   if (options.apiKeyFile) {
-    const key = readFileSync(options.apiKeyFile, 'utf8').trim()
-    if (!key) {
-      throw new Error(`wipProxy: apiKeyFile '${options.apiKeyFile}' is empty`)
+    try {
+      const key = readFileSync(options.apiKeyFile, 'utf8').trim()
+      if (key) return key
+      fileFailure = `apiKeyFile '${options.apiKeyFile}' is empty`
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      fileFailure = `apiKeyFile '${options.apiKeyFile}' is unreadable (${reason})`
     }
-    return key
   }
-  if (options.apiKey) return options.apiKey
+  if (options.apiKey) {
+    if (fileFailure) {
+      console.warn(
+        `wipProxy: ${fileFailure} — falling back to the inline apiKey. ` +
+        'Key rotation via the file will not apply until the path resolves.'
+      )
+    }
+    return options.apiKey
+  }
+  if (fileFailure) {
+    throw new Error(`wipProxy: ${fileFailure} and no inline apiKey is set`)
+  }
   throw new Error('wipProxy: one of apiKey or apiKeyFile is required')
 }
 
