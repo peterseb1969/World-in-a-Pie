@@ -435,20 +435,47 @@ class TemplateService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Register with Registry — ALWAYS, including restore mode
-        # (pre-assigned template_id + version). Every later resolution of a
-        # template_id (activation, references, synonym lookup) goes through
-        # the Registry, so an unregistered pre-assigned ID makes a restored
-        # template unresolvable: created but unusable. The Registry honors a
+        # Register the template's identity with the Registry — ALWAYS,
+        # including restore mode (pre-assigned template_id + version). Every
+        # later resolution of a template_id (activation, references, synonym
+        # lookup) goes through the Registry, so an unregistered pre-assigned
+        # ID makes a restored template unresolvable: created but unusable.
+        # The composite key {ns, type, value} is the template's registered
+        # identity; the Registry upserts on it. The Registry also honors a
         # provided entry_id and errors loudly if that ID already exists
         # ("restore requires a clean target"), which is the correct
         # double-restore behavior.
         client = get_registry_client()
-        template_id = await client.register_template(
+        template_id, reg_status = await client.register_template(
             created_by=actor,
             namespace=namespace,
+            value=request.value,
             entry_id=request.template_id,
         )
+        if reg_status == "already_exists":
+            if is_restore:
+                # The value's identity resolved to an entry that is NOT the
+                # archive's pre-assigned ID (an identical ID would have
+                # errored above as an entry_id collision). Restoring onto a
+                # target that already owns this value under a different
+                # identity is a dirty-target restore — fail loudly rather
+                # than silently re-parenting the archive's versions.
+                raise ValueError(
+                    f"Restore conflict: value '{request.value}' in namespace "
+                    f"'{namespace}' is already registered as '{template_id}', "
+                    f"but the archive carries '{request.template_id}'. "
+                    f"Restore requires a clean target."
+                )
+            # Non-restore create of an existing value: the upsert decision
+            # (unchanged / new version / fork rejection) is made one level up
+            # in create_templates_with_conflict_policy, which checks for the
+            # existing template BEFORE calling here. Reaching this branch
+            # means a concurrent create won the race — surface the same
+            # error the pre-check raises, so the caller can retry as an
+            # upsert.
+            raise ValueError(
+                f"Template with value '{request.value}' already exists in namespace '{namespace}'"
+            )
         version = request.version if is_restore else 1
 
         # Create template document
@@ -1131,23 +1158,43 @@ class TemplateService:
                 previous_version=None
             )
 
-        # Calculate new version number (max version for this value + 1)
+        # The template's name IS its identity — a rename is a fork (a new
+        # template), never a new version. Versions under different names
+        # sharing one ID would break name-based resolution and the
+        # registered {ns, type, value} identity key.
+        if request.value is not None and request.value != original.value:
+            raise ValueError(
+                f"value is immutable: renaming '{original.value}' to "
+                f"'{request.value}' is a fork, not a version — create a new "
+                f"template with the new value instead."
+            )
+        new_value = original.value
+
+        # identity_fields are immutable across versions: document identity
+        # must stay comparable across the whole version catalog (the
+        # cross-version upsert hashes documents against one declaration), so
+        # a changed identity is a different kind of thing — a fork. Without
+        # this guard the platform mints versions whose documents silently
+        # re-key on next write (the parallel-orphan failure shape).
+        if (
+            request.identity_fields is not None
+            and list(request.identity_fields) != list(original.identity_fields or [])
+        ):
+            raise ValueError(
+                f"identity_fields are immutable across versions of "
+                f"'{original.value}' (existing: {list(original.identity_fields or [])}, "
+                f"requested: {list(request.identity_fields)}). Changing identity "
+                f"is a fork — create a new template with a new value instead."
+            )
+
+        # Calculate new version number (max version for this value + 1),
+        # scoped to the namespace — (namespace, value, version) is the
+        # uniqueness key; an unscoped query would inflate version numbers
+        # from same-named templates in other namespaces.
         max_version_template = await Template.find(
-            {"value": original.value}
+            {"namespace": original.namespace, "value": original.value}
         ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         new_version = max_version_template[0].version + 1 if max_version_template else 1
-
-        # Determine the value for the new version
-        new_value = request.value if request.value is not None else original.value
-
-        # If value is changing, check it doesn't conflict with another template family
-        if new_value != original.value:
-            existing_other = await Template.find_one({
-                "value": new_value,
-                "namespace": original.namespace,
-            })
-            if existing_other:
-                raise ValueError(f"Template with value '{new_value}' already exists")
 
         # Validate extends if changing
         extends_value = request.extends if request.extends is not None else original.extends
@@ -1637,24 +1684,30 @@ class TemplateService:
         on_conflict: str,
     ) -> list[BulkResultItem]:
         """
-        Per-item create dispatcher that applies an `on_conflict` policy.
+        Per-item create dispatcher. Template create is an UPSERT: the
+        template's identity is its name, so creating an existing
+        (namespace, value) is a version event, mirroring the document
+        upsert (same identity → new version).
 
-        Behavior per item:
-        - on_conflict='error' (default):
-            * existing (namespace, value) → BulkResultItem(status='error',
-              error='Template with value ... already exists ...')
-            * else → standard create (status='created')
-        - on_conflict='validate':
-            * no existing → standard create (status='created')
-            * identical existing → status='unchanged' (id/version of existing)
-            * compatible existing (added optional fields only) → version N+1
-              via update_template path (status='updated', is_new_version=True)
-            * incompatible existing → status='error',
-              error_code='incompatible_schema', details=<diff>
+        Behavior per non-draft item:
+        - no existing (namespace, value) → standard create (status='created')
+        - identical existing schema → status='unchanged' (id/version of existing)
+        - any schema difference → version N+1 via the update path
+          (status='updated', is_new_version=True, details=<diff> — the loud
+          report; never blocking)
+        - EXCEPT identity-bearing / immutable differences, which are forks or
+          contract violations, not versions → status='error':
+            * identity_fields differ → error_code='identity_fields_immutable'
+              (declare a new template value instead — a fork)
+            * usage / versioned differ → error_code='immutable_property'
+            * source/target_templates differ → error_code='immutable_property'
+              (endpoint lists grow only via the add-endpoints route)
 
-        For draft items (status='draft'), the conflict check is skipped because
-        drafts may have unresolved references and live in their own value-space.
-        Used by POST /templates?on_conflict=...
+        `on_conflict` is retained for API compatibility but no longer
+        selects behavior: 'error' and 'validate' both upsert. Draft items
+        skip the upsert (drafts may have unresolved references and live in
+        their own value-space; a draft onto an existing value errors).
+        Used by POST /templates.
 
         Returns one BulkResultItem per input item, in input order.
         """
@@ -1662,9 +1715,10 @@ class TemplateService:
 
         for i, item in enumerate(items):
             try:
-                if item.status == "draft" or on_conflict == "error":
-                    # Fast path: defer to existing create_template (which raises
-                    # ValueError on conflict). Drafts always take this path.
+                if item.status == "draft":
+                    # Drafts: direct create (raises ValueError on an existing
+                    # value — draft-onto-existing-family is not a version
+                    # event, it is a modeling error).
                     try:
                         created = await TemplateService.create_template(
                             item, namespace=item.namespace
@@ -1685,7 +1739,6 @@ class TemplateService:
                         ))
                     continue
 
-                # on_conflict == "validate"
                 existing_list = await Template.find(
                     {"namespace": item.namespace, "value": item.value}
                 ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
@@ -1704,11 +1757,118 @@ class TemplateService:
                     ))
                     continue
 
+                # Immutable-after-create properties can never ride a new
+                # version — the update path silently preserves the originals,
+                # so honoring the request would create a version that does
+                # not match what was asked for. Reject loudly instead.
+                # Enforced only when the request set the field explicitly:
+                # an omitted field inherits the existing template's value
+                # (model_fields_set distinguishes omitted from default —
+                # both usage and versioned carry non-optional defaults that
+                # would otherwise false-trigger against relationship /
+                # versioned:false templates).
+                if "usage" in item.model_fields_set and item.usage != existing.usage:
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="error",
+                        id=existing.template_id,
+                        value=item.value,
+                        version=existing.version,
+                        error_code="immutable_property",
+                        error=(
+                            f"usage is immutable after creation: existing "
+                            f"'{existing.value}' has usage='{existing.usage}', "
+                            f"request asks '{item.usage}'. Declare a new "
+                            f"template value instead."
+                        ),
+                    ))
+                    continue
+                if "versioned" in item.model_fields_set and item.versioned != existing.versioned:
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="error",
+                        id=existing.template_id,
+                        value=item.value,
+                        version=existing.version,
+                        error_code="immutable_property",
+                        error=(
+                            f"versioned is immutable after creation: existing "
+                            f"'{existing.value}' has versioned={existing.versioned}. "
+                            f"Declare a new template value instead."
+                        ),
+                    ))
+                    continue
+
                 verdict, diff = await TemplateService.compute_template_compatibility(
                     existing, item, namespace=item.namespace,
                 )
 
-                if verdict == "identical":
+                if diff.get("identity_changed"):
+                    # The identity_fields declaration is immutable across
+                    # versions: document identity must stay comparable across
+                    # the whole version catalog, or cross-version upsert
+                    # breaks. A different identity is a different kind of
+                    # thing — a fork, not a version.
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="error",
+                        id=existing.template_id,
+                        value=item.value,
+                        version=existing.version,
+                        error_code="identity_fields_immutable",
+                        error=(
+                            f"identity_fields are immutable across versions of "
+                            f"'{item.value}' (existing: "
+                            f"{diff['identity_changed']['old']}, requested: "
+                            f"{diff['identity_changed']['new']}). Changing "
+                            f"identity is a fork — declare a new template "
+                            f"value instead."
+                        ),
+                        details=diff,
+                    ))
+                    continue
+                if diff.get("relationship_refs_changed"):
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="error",
+                        id=existing.template_id,
+                        value=item.value,
+                        version=existing.version,
+                        error_code="immutable_property",
+                        error=(
+                            f"source_templates / target_templates on "
+                            f"'{item.value}' cannot change via create — "
+                            f"endpoint lists grow only via the add-endpoints "
+                            f"route."
+                        ),
+                        details=diff,
+                    ))
+                    continue
+
+                # Unchanged detection is two-part, and the parts are NOT
+                # interchangeable: schema equality must come from the
+                # SEMANTIC comparator (which resolves reference forms through
+                # the Registry — a value-form resubmit of a stored-canonical
+                # template is identical, not a phantom modification), while
+                # cosmetic equality (label, description, extends, rules,
+                # metadata, reporting, header_fields) comes from the update
+                # path's change detection probed WITHOUT fields (its field
+                # comparison is byte-level and would re-introduce the
+                # phantom). Fully identical re-posts — the idempotent
+                # bootstrap re-run — come back 'unchanged' minting nothing.
+                cosmetic_probe = UpdateTemplateRequest(
+                    label=item.label,
+                    description=item.description,
+                    extends=item.extends,
+                    extends_version=item.extends_version,
+                    header_fields=item.header_fields,
+                    rules=item.rules,
+                    metadata=item.metadata,
+                    reporting=item.reporting,
+                )
+                if verdict == "identical" and not TemplateService._template_has_changed(
+                    existing, cosmetic_probe
+                ):
                     results.append(BulkResultItem(
                         index=i,
                         status="unchanged",
@@ -1717,44 +1877,45 @@ class TemplateService:
                         version=existing.version,
                         details=diff,
                     ))
-                elif verdict == "compatible":
-                    # Bump version via update_template
-                    update_req = UpdateTemplateRequest(
-                        label=item.label,
-                        description=item.description,
-                        extends=item.extends,
-                        extends_version=item.extends_version,
-                        identity_fields=item.identity_fields,
-                        fields=item.fields,
-                        rules=item.rules,
-                        metadata=item.metadata,
-                        reporting=item.reporting,
-                    )
-                    update_resp = await TemplateService.update_template(
-                        template_id=existing.template_id,
-                        request=update_req,
-                    )
+                    continue
+
+                # Any difference — schema or cosmetic — versions the
+                # template, with the diff as the loud report. The document
+                # analogy: the upsert never blocks on "your new data looks
+                # different"; it records a new version and says so.
+                update_req = UpdateTemplateRequest(
+                    label=item.label,
+                    description=item.description,
+                    extends=item.extends,
+                    extends_version=item.extends_version,
+                    identity_fields=item.identity_fields,
+                    header_fields=item.header_fields,
+                    fields=item.fields,
+                    rules=item.rules,
+                    metadata=item.metadata,
+                    reporting=item.reporting,
+                )
+                update_resp = await TemplateService.update_template(
+                    template_id=existing.template_id,
+                    request=update_req,
+                )
+                if update_resp and update_resp.is_new_version:
                     results.append(BulkResultItem(
                         index=i,
                         status="updated",
                         id=existing.template_id,
                         value=item.value,
-                        version=update_resp.version if update_resp else existing.version,
-                        is_new_version=bool(update_resp and update_resp.is_new_version),
+                        version=update_resp.version,
+                        is_new_version=True,
                         details=diff,
                     ))
-                else:  # incompatible
+                else:
                     results.append(BulkResultItem(
                         index=i,
-                        status="error",
+                        status="unchanged",
                         id=existing.template_id,
-                        value=item.value,
+                        value=existing.value,
                         version=existing.version,
-                        error_code="incompatible_schema",
-                        error=(
-                            f"Proposed schema for '{item.value}' is incompatible "
-                            f"with existing version {existing.version}"
-                        ),
                         details=diff,
                     ))
             except ValueError as e:
@@ -1764,215 +1925,18 @@ class TemplateService:
                     value=item.value,
                     error=str(e),
                 ))
+            except RegistryError as e:
+                # Bulk-first contract: a Registry rejection for one item
+                # (e.g. a double-restore's entry_id collision) is a per-item
+                # error, never a whole-request 502.
+                results.append(BulkResultItem(
+                    index=i,
+                    status="error",
+                    value=item.value,
+                    error=f"Registry error: {e!s}",
+                ))
 
         return results
-
-    @staticmethod
-    async def create_templates_bulk(
-        templates: list[CreateTemplateRequest],
-        namespace: str,
-        created_by: str | None = None,  # Deprecated: uses authenticated identity
-    ) -> list[BulkResultItem]:
-        """
-        Create multiple templates.
-
-        Args:
-            templates: Templates to create
-            created_by: Deprecated - uses authenticated identity
-            namespace: Namespace for template registration
-
-        Returns:
-            List of operation results
-        """
-        # Get authenticated identity (not client-provided)
-        actor = get_identity_string()
-
-        # Register all templates with Registry (empty composite keys)
-        client = get_registry_client()
-        registry_results = await client.register_templates_bulk(
-            count=len(templates),
-            created_by=actor,
-            namespace=namespace,
-        )
-
-        results = []
-
-        for i, (template_req, reg_result) in enumerate(zip(templates, registry_results, strict=False)):
-            if reg_result["status"] == "error":
-                results.append(BulkResultItem(
-                    index=i,
-                    status="error",
-                    value=template_req.value,
-                    error=reg_result.get("error")
-                ))
-                continue
-
-            template_id = reg_result["registry_id"]
-
-            # Check if template already exists in our DB (any version)
-            existing_list = await Template.find({"template_id": template_id}).limit(1).to_list()
-            existing = existing_list[0] if existing_list else None
-            if existing:
-                results.append(BulkResultItem(
-                    index=i,
-                    status="skipped",
-                    id=template_id,
-                    value=template_req.value,
-                    error="Already exists"
-                ))
-                continue
-
-            # Determine status (draft or active)
-            req_status = template_req.status or "active"
-            is_draft = req_status == "draft"
-
-            # Structural validation for relationship templates
-            try:
-                await TemplateService._validate_relationship_template_shape(
-                    template_req, namespace
-                )
-            except ValueError as e:
-                results.append(BulkResultItem(
-                    index=i,
-                    status="error",
-                    value=template_req.value,
-                    error=str(e)
-                ))
-                continue
-
-            # Structural validation for full_text_indexed (pre-existing
-            # gap — bulk path was bypassing this) and metadata-in-
-            # declarative-slots (CASE-317). Both are purely declarative
-            # so they run for drafts too.
-            try:
-                TemplateService._validate_full_text_indexed_constraints(
-                    template_req.fields, template_req.reporting
-                )
-                TemplateService._validate_no_metadata_in_declarative_slots(
-                    template_req.identity_fields, template_req.fields
-                )
-            except ValueError as e:
-                results.append(BulkResultItem(
-                    index=i,
-                    status="error",
-                    value=template_req.value,
-                    error=str(e)
-                ))
-                continue
-
-            # Normalize field references to canonical IDs — skip for drafts
-            if not is_draft:
-                try:
-                    bulk_template_ids, bulk_terminology_ids = (
-                        await TemplateService._normalize_field_references(
-                            template_req.fields, namespace
-                        )
-                    )
-                    # Isolation check over the resolved field refs. extends is
-                    # NOT covered here: the bulk path stores it unresolved
-                    # (pins are presence-checked with check_existence=False),
-                    # so there is no canonical parent ID to look up — a
-                    # pre-existing looseness of the bulk contract, not a new
-                    # exemption.
-                    await TemplateService._check_reference_isolation(
-                        namespace,
-                        template_ids=bulk_template_ids,
-                        terminology_ids=bulk_terminology_ids,
-                    )
-                except (ValueError, EntityNotFoundError) as e:
-                    results.append(BulkResultItem(
-                        index=i,
-                        status="error",
-                        value=template_req.value,
-                        error=str(e)
-                    ))
-                    continue
-
-            # CASE-493: enforce mandatory pinned versions (presence). Nested-ref
-            # template existence is already guaranteed by normalize above; full
-            # version existence for non-draft bulk is deferred to keep bulk's
-            # lighter contract (draft bulk re-checks every pin — incl. version —
-            # at activation, and a stale pin degrades to a document-validation
-            # warning, never a strand). Presence is the load-bearing guarantee.
-            try:
-                await TemplateService._validate_pinned_versions(
-                    template_req.fields, template_req.extends,
-                    template_req.extends_version, check_existence=False,
-                )
-            except ValueError as e:
-                results.append(BulkResultItem(
-                    index=i,
-                    status="error",
-                    value=template_req.value,
-                    error=str(e)
-                ))
-                continue
-
-            # Create template document
-            template = Template(
-                template_id=template_id,
-                namespace=namespace,
-                value=template_req.value,
-                label=template_req.label,
-                description=template_req.description,
-                extends=template_req.extends,
-                extends_version=template_req.extends_version,
-                identity_fields=template_req.identity_fields,
-                usage=template_req.usage,
-                source_templates=template_req.source_templates,
-                target_templates=template_req.target_templates,
-                versioned=template_req.versioned,
-                fields=template_req.fields,
-                rules=template_req.rules,
-                metadata=template_req.metadata or TemplateMetadata(),
-                reporting=template_req.reporting,
-                status=req_status,
-                created_by=actor,
-            )
-            await template.insert()
-
-            # Register auto-synonym for human-readable resolution
-            # Version is always 1 for bulk create (existing templates are skipped above)
-            # On failure, roll back the MongoDB document and re-raise through bulk handler
-            try:
-                await client.register_auto_synonym(
-                    target_id=template_id,
-                    namespace=namespace,
-                    composite_key={
-                        "ns": namespace,
-                        "type": "template",
-                        "value": template_req.value,
-                    },
-                    created_by=actor,
-                )
-            except RegistryError:
-                logger.error(
-                    "Auto-synonym registration failed for template %s — rolling back",
-                    template_id,
-                )
-                await template.delete()
-                raise
-
-            # Publish event — skip for drafts
-            if not is_draft:
-                await publish_template_event(
-                    EventType.TEMPLATE_CREATED,
-                    TemplateService._template_to_event_payload(template),
-                    changed_by=actor
-                )
-
-            results.append(BulkResultItem(
-                index=i,
-                status="created",
-                id=template_id,
-                value=template_req.value
-            ))
-
-        return results
-
-    # =========================================================================
-    # VALIDATION
-    # =========================================================================
 
     @staticmethod
     async def validate_template(

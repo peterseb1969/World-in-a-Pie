@@ -127,7 +127,11 @@ class UpdateTemplateRequest(StrictModel):
 
     value: str | None = Field(
         default=None,
-        description="New value (triggers Registry synonym)"
+        description=(
+            "Must equal the current value when provided — the name is the "
+            "template's identity and is immutable; a rename is a fork "
+            "(create a new template), never a new version"
+        )
     )
     label: str | None = Field(
         default=None,
@@ -147,7 +151,12 @@ class UpdateTemplateRequest(StrictModel):
     )
     identity_fields: list[str] | None = Field(
         default=None,
-        description="Update identity fields"
+        description=(
+            "Must equal the current identity_fields when provided — the "
+            "identity declaration is immutable across versions (document "
+            "identity must stay comparable across the whole version "
+            "catalog); changing it is a fork (create a new template)"
+        )
     )
     header_fields: list[str] | None = Field(
         default=None,

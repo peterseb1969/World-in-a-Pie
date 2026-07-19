@@ -91,12 +91,15 @@ async def test_create_template_without_auth(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_create_template_duplicate_code(client: AsyncClient, auth_headers: dict):
-    """Test that creating a template with duplicate code fails."""
+async def test_create_template_duplicate_code_upserts(client: AsyncClient, auth_headers: dict):
+    """Creating a template whose (namespace, value) exists is an upsert, not
+    an error: a differing schema (here: new label) becomes version 2 of the
+    same template — the name is the identity, like a document's identity
+    fields."""
     # Create first template
     await _create_one(client, auth_headers, {"namespace": "wip", "value": "UNIQUE", "label": "First Template"})
 
-    # Try to create second with same value
+    # Create second with same value but a different label → new version
     response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
@@ -104,9 +107,11 @@ async def test_create_template_duplicate_code(client: AsyncClient, auth_headers:
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["failed"] == 1
-    assert data["results"][0]["status"] == "error"
-    assert "already exists" in data["results"][0]["error"]
+    assert data["failed"] == 0
+    item = data["results"][0]
+    assert item["status"] == "updated"
+    assert item["version"] == 2
+    assert item["is_new_version"] is True
 
 
 @pytest.mark.asyncio

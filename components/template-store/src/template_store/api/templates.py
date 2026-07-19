@@ -46,20 +46,23 @@ async def create_templates(
     on_conflict: str = Query(
         default="error",
         description=(
-            "How to handle a value collision with an existing template in the same "
-            "namespace. 'error' (default): treat as error (existing behavior). "
-            "'validate': identical schema returns 'unchanged'; compatible (added "
-            "optional fields only) bumps to version N+1; incompatible returns an "
-            "error item with error_code='incompatible_schema' and a structured diff."
+            "Deprecated — retained for API compatibility, no longer selects "
+            "behavior. Template create is an upsert: a new (namespace, value) "
+            "creates version 1; an existing one returns 'unchanged' for an "
+            "identical schema or bumps to version N+1 for any difference, "
+            "with a structured diff in the item's details. Identity-bearing "
+            "or immutable differences (identity_fields, usage, versioned, "
+            "edge endpoint lists) are rejected per item instead of versioned."
         ),
     ),
 ):
     """
-    Create one or more templates.
+    Create one or more templates (upsert semantics).
 
-    Each template is registered with the Registry service to get a unique ID.
-    Namespace is specified per item (required — no default).
-    For single items, uses direct creation. For multiple items, uses batch path.
+    The template's identity is (namespace, value): creating an existing
+    value is a version event, not an error — identical schemas return
+    'unchanged', any difference creates the next version and reports the
+    diff. Namespace is specified per item (required — no default).
     """
     if on_conflict not in ("error", "validate"):
         raise HTTPException(
@@ -72,33 +75,13 @@ async def create_templates(
     for ns in namespaces:
         await check_namespace_permission(identity, ns, "write")
 
-    if on_conflict == "validate":
-        # Per-item dispatch with conflict policy.
-        try:
-            results = await TemplateService.create_templates_with_conflict_policy(
-                items=items,
-                on_conflict=on_conflict,
-            )
-        except RegistryError as e:
-            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
-    elif len(items) == 1:
-        # Single-item fast path (preserves existing behavior).
-        try:
-            result = await TemplateService.create_template(items[0], namespace=items[0].namespace)
-            results = [BulkResultItem(index=0, status="created", id=result.template_id, value=items[0].value, version=result.version)]
-        except ValueError as e:
-            results = [BulkResultItem(index=0, status="error", value=items[0].value, error=str(e))]
-        except RegistryError as e:
-            results = [BulkResultItem(index=0, status="error", value=items[0].value, error=f"Registry error: {e!s}")]
-    else:
-        # Multi-item bulk path (preserves existing behavior — one Registry batch call).
-        try:
-            results = await TemplateService.create_templates_bulk(
-                templates=items,
-                namespace=items[0].namespace,
-            )
-        except RegistryError as e:
-            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
+    try:
+        results = await TemplateService.create_templates_with_conflict_policy(
+            items=items,
+            on_conflict=on_conflict,
+        )
+    except RegistryError as e:
+        raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
 
     succeeded = sum(1 for r in results if r.status != "error")
     failed = sum(1 for r in results if r.status == "error")

@@ -26,7 +26,6 @@ from template_store.models.field import FieldDefinition, FieldType
 from template_store.models.template import Template
 from template_store.services.template_service import TemplateService
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -126,12 +125,13 @@ async def test_value_form_resubmit_no_change_returns_unchanged(
 
 
 @pytest.mark.asyncio
-async def test_actual_terminology_change_still_incompatible(
+async def test_actual_terminology_change_still_detected(
     client: AsyncClient, auth_headers: dict,
 ):
-    """An *actual* change to a different terminology must still be caught.
-    The fix doesn't loosen modification detection; it only fixes the
-    value↔UUID asymmetry on equivalent references."""
+    """An *actual* change to a different terminology must still be caught by
+    modification detection — the value↔UUID equivalence fix must not loosen
+    it. Under upsert semantics the detected change versions the template,
+    and the diff's modified_existing entry is the loud report."""
     payload = _case_record_seed_payload()
     payload["value"] = "CASE406_REAL_CHANGE"
 
@@ -146,8 +146,8 @@ async def test_actual_terminology_change_still_incompatible(
 
     second = await _post(client, auth_headers, [payload_v2], on_conflict="validate")
     result = second["results"][0]
-    assert result["status"] == "error"
-    assert result["error_code"] == "incompatible_schema"
+    assert result["status"] == "updated"
+    assert result["version"] == 2
     assert "doc_status" in result["details"]["modified_existing"]
 
 
