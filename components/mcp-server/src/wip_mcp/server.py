@@ -138,21 +138,28 @@ Safety guards on `deletion_mode`:
 - Creating a new namespace with `deletion_mode='full'` is allowed
   directly (no transition to confirm).
 
-### Template create with conflict validation: POST /templates?on_conflict=validate
-Adds a query parameter to control collision behavior on (namespace, value):
-- on_conflict='error' (default): collisions return per-item status='error',
-  preserving the existing behavior.
-- on_conflict='validate':
-  * identical schema → status='unchanged' (returns existing template_id/version)
-  * compatible schema → status='updated', is_new_version=true, version=N+1
-    (compatible = added optional field only — anything else is incompatible)
-  * incompatible schema → status='error', error_code='incompatible_schema',
-    details={added_required, removed, changed_type, made_required,
-    modified_existing, identity_changed}
+### Template create is an upsert: POST /templates
+The template's identity is its name — creating an existing (namespace, value)
+is a version event, exactly like a document upsert (same identity → new
+version). Per item:
+  * no existing value → status='created' (version 1)
+  * fully identical re-post → status='unchanged' (returns existing
+    template_id/version — the idempotent bootstrap re-run, no parameter needed)
+  * any difference (schema or label/description/metadata) → status='updated',
+    is_new_version=true, version=N+1, with the structured schema diff in
+    details={added_optional, added_required, removed, changed_type,
+    made_required, modified_existing} as the loud report — never blocking
+  * identity-bearing or immutable differences are rejected per item instead
+    of versioned: identity_fields differ → error_code=
+    'identity_fields_immutable' (changing identity is a fork — declare a new
+    template value); usage / versioned / edge endpoint lists differ →
+    error_code='immutable_property'
 
-The narrow compatibility rule is intentional: silent guardrails are worse than
-loud ones. If the bootstrap script wants to evolve the template in a way the
-platform considers incompatible, it must explicitly bump the version itself.
+The on_conflict query parameter is deprecated: it is still accepted
+('error' | 'validate') but no longer selects behavior — every create upserts.
+Versioning is loud, not silent: read the per-item status and details. To
+evolve a schema deliberately, just re-POST the full new declaration; to
+change identity or immutable properties, create a new template value.
 
 Reference comparison: terminology_ref, template_ref, target_templates,
 target_terminologies, array_terminology_ref, array_template_ref (and the
@@ -1979,10 +1986,14 @@ async def get_template_raw(template_id: str, namespace: str | None = None) -> st
 
 @mcp.tool()
 async def create_template(template: dict, namespace: str | None = None) -> str:
-    """Create a template (document schema).
-
-    NOTE: Updating an existing template creates a new version — the old version
-    stays active. See wip://conventions for versioning behaviour and deactivation.
+    """Create a template (document schema). This is an UPSERT keyed on the
+    template's name: if (namespace, value) already exists, an identical
+    definition returns status='unchanged', and any difference creates the
+    NEXT VERSION with a structured diff in the result — check the returned
+    status; a same-name create never errors, it versions. Changing
+    identity_fields (or usage/versioned) is rejected — declare a new value
+    instead. The old version stays active alongside the new one. See
+    wip://conventions for versioning behaviour and deactivation.
 
     Args:
         template: Template definition. Required fields:
