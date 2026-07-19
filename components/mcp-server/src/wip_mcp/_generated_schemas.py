@@ -430,6 +430,35 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                           'falls '
                                                                                           'back to '
                                                                                           'identity_fields.'},
+                                                         'renames': {'additionalProperties': {'type': 'string'},
+                                                                     'type': 'object',
+                                                                     'description': 'Field renames '
+                                                                                    'relative to '
+                                                                                    'the previous '
+                                                                                    'version, '
+                                                                                    '{new_field: '
+                                                                                    'old_field}. '
+                                                                                    'Only '
+                                                                                    'meaningful '
+                                                                                    'when this '
+                                                                                    'create '
+                                                                                    'versions an '
+                                                                                    'existing '
+                                                                                    'template '
+                                                                                    '(create is an '
+                                                                                    'upsert); '
+                                                                                    'rejected on a '
+                                                                                    'first '
+                                                                                    'version. '
+                                                                                    'Identity '
+                                                                                    'fields cannot '
+                                                                                    'be renamed. '
+                                                                                    'Declared '
+                                                                                    'renames '
+                                                                                    'migrate '
+                                                                                    'losslessly '
+                                                                                    'and map in '
+                                                                                    'reporting.'},
                                                          'usage': {'type': 'string',
                                                                    'enum': ['entity',
                                                                             'reference',
@@ -1128,7 +1157,49 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                                                             'include '
                                                                                                                             'when '
                                                                                                                             'flattening',
-                                                                                                             'default': 10}},
+                                                                                                             'default': 10},
+                                                                                      'cross_version_view': {'additionalProperties': True,
+                                                                                                             'type': 'object',
+                                                                                                             'description': 'Opt-in '
+                                                                                                                            'cross-version '
+                                                                                                                            'entity '
+                                                                                                                            'view '
+                                                                                                                            'over '
+                                                                                                                            'the '
+                                                                                                                            'per-version '
+                                                                                                                            'reporting '
+                                                                                                                            'tables: '
+                                                                                                                            "{'versions': "
+                                                                                                                            "'all' "
+                                                                                                                            '| '
+                                                                                                                            '[ints], '
+                                                                                                                            "'columns': "
+                                                                                                                            '{target: '
+                                                                                                                            "{'from': "
+                                                                                                                            'source} '
+                                                                                                                            '| '
+                                                                                                                            '{}}}. '
+                                                                                                                            'The '
+                                                                                                                            'identity '
+                                                                                                                            'core '
+                                                                                                                            'is '
+                                                                                                                            'always '
+                                                                                                                            'included; '
+                                                                                                                            'declared '
+                                                                                                                            'column '
+                                                                                                                            'mappings '
+                                                                                                                            'extend '
+                                                                                                                            'it. '
+                                                                                                                            'Consumed '
+                                                                                                                            'by '
+                                                                                                                            'reporting-sync '
+                                                                                                                            '(which '
+                                                                                                                            'validates '
+                                                                                                                            'the '
+                                                                                                                            'shape); '
+                                                                                                                            'stored '
+                                                                                                                            'pass-through '
+                                                                                                                            'here.'}},
                                                                        'type': 'object',
                                                                        'description': 'Configuration '
                                                                                       'for '
@@ -1583,6 +1654,7 @@ extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version (None = always use latest active parent version)
 identity_fields (array of string): Fields that form the composite identity key
 header_fields (array of string): Fields to include in peer/header projections. Bare names → data.<name>; metadata.custom.<name> paths allowed. Empty → projection falls back to identity_fields.
+renames (object): Field renames relative to the previous version, {new_field: old_field}. Only meaningful when this create versions an existing template (create is an upsert); rejected on a first version. Identity fields cannot be renamed. Declared renames migrate losslessly and map in reporting.
 usage (enum): One of: entity, reference, relationship. How a template's documents are intended to be used.
 
 - entity (default): full document lifecycle, the v1.x behaviour.
@@ -1652,6 +1724,7 @@ reporting (object): Configuration for PostgreSQL reporting sync
   include_metadata (boolean, default: true): Include created_at, created_by, etc. columns
   flatten_arrays (boolean, default: true): Flatten arrays into multiple rows (cross-product)
   max_array_elements (integer, default: 10): Maximum array elements to include when flattening
+  cross_version_view (object): Opt-in cross-version entity view over the per-version reporting tables: {'versions': 'all' | [ints], 'columns': {target: {'from': source} | {}}}. The identity core is always included; declared column mappings extend it. Consumed by reporting-sync (which validates the shape); stored pass-through here.
 created_by (string): User or system creating this template
 validate_references (boolean, default: true): Validate that terminology_ref and template_ref values exist before creating
 status (string): Initial status: 'active' (default) or 'draft' (skips reference validation)
@@ -1701,6 +1774,7 @@ extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version (None = always use latest active parent version)
 identity_fields (array of string): Fields that form the composite identity key
 header_fields (array of string): Fields to include in peer/header projections. Bare names → data.<name>; metadata.custom.<name> paths allowed. Empty → projection falls back to identity_fields.
+renames (object): Field renames relative to the previous version, {new_field: old_field}. Only meaningful when this create versions an existing template (create is an upsert); rejected on a first version. Identity fields cannot be renamed. Declared renames migrate losslessly and map in reporting.
 usage (enum): One of: entity, reference, relationship. How a template's documents are intended to be used.
 
 - entity (default): full document lifecycle, the v1.x behaviour.
@@ -1770,6 +1844,7 @@ reporting (object): Configuration for PostgreSQL reporting sync
   include_metadata (boolean, default: true): Include created_at, created_by, etc. columns
   flatten_arrays (boolean, default: true): Flatten arrays into multiple rows (cross-product)
   max_array_elements (integer, default: 10): Maximum array elements to include when flattening
+  cross_version_view (object): Opt-in cross-version entity view over the per-version reporting tables: {'versions': 'all' | [ints], 'columns': {target: {'from': source} | {}}}. The identity core is always included; declared column mappings extend it. Consumed by reporting-sync (which validates the shape); stored pass-through here.
 created_by (string): User or system creating this template
 validate_references (boolean, default: true): Validate that terminology_ref and template_ref values exist before creating
 status (string): Initial status: 'active' (default) or 'draft' (skips reference validation)
