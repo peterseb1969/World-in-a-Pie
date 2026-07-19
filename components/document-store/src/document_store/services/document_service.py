@@ -2693,6 +2693,52 @@ class DocumentService:
         result = await self.validation_service.validate(template_id, data, namespace=namespace)
         return self._result_to_validation_response(result)
 
+    async def validate_candidate(
+        self,
+        template_definition: dict[str, Any],
+        namespace: str,
+        documents: list[dict[str, Any]] | None = None,
+        sample_template_id: str | None = None,
+        sample_limit: int = 100,
+    ) -> list[tuple[str | None, ValidationResponse]]:
+        """Validate documents against an INLINE candidate template definition.
+
+        The what-if half of schema evolution: "would my documents validate
+        against this draft version?" — answered without creating anything.
+        The candidate is never persisted, never cached, never registered; it
+        exists only for the duration of this call (deliberately NOT a
+        throwaway draft version, which would be an entity with lifecycle and
+        would pollute the version catalog per what-if question).
+
+        Two input modes: explicit ``documents`` payloads, or a sample of the
+        most recently updated active documents of ``sample_template_id``.
+        Returns (document_id, ValidationResponse) pairs in input order
+        (document_id is None for explicit payloads).
+        """
+        payloads: list[tuple[str | None, dict[str, Any]]]
+        if documents is not None:
+            payloads = [(None, d) for d in documents]
+        else:
+            docs = await Document.find({
+                "namespace": namespace,
+                "template_id": sample_template_id,
+                "status": DocumentStatus.ACTIVE.value,
+            }).sort(
+                [("updated_at", SortDirection.DESCENDING)]
+            ).limit(sample_limit).to_list()
+            payloads = [(d.document_id, d.data) for d in docs]
+
+        out: list[tuple[str | None, ValidationResponse]] = []
+        for doc_id, data in payloads:
+            result = await self.validation_service.validate(
+                "candidate",
+                data,
+                namespace=namespace,
+                template_override=template_definition,
+            )
+            out.append((doc_id, self._result_to_validation_response(result)))
+        return out
+
     async def validate_documents_bulk(
         self,
         template_id: str,
@@ -2930,6 +2976,14 @@ class DocumentService:
                 "not a migrate."
             )
 
+        # Declared renames on the target version: the one sanctioned data
+        # transformation in a migrate. A rename declaration ("new_field
+        # renames old_field") means mechanically-same data under a new key —
+        # without it a rename is indistinguishable from drop+add and every
+        # renamed doc would fail target validation with unknown_field.
+        # Anything beyond key-mapping stays app territory.
+        renames = dict(target.get("renames") or {})
+
         # ---- Per-document fan-out (cohort = active docs pinned to from_version) ----
         cohort = await Document.find({
             "namespace": namespace,
@@ -2944,6 +2998,7 @@ class DocumentService:
                 results.append(
                     await self._migrate_one(
                         index, doc, template_id, to_version, namespace, dry_run,
+                        renames=renames,
                     )
                 )
             except Exception as exc:
@@ -2964,6 +3019,52 @@ class DocumentService:
             from_version=from_version, to_version=to_version,
         ), None, None
 
+    async def get_template_impact_stats(
+        self,
+        template_id: str,
+        namespace: str,
+        fields: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Live-document counts for template version-change impact analysis.
+
+        Returns per-template_version active-document counts plus, for each
+        requested field name, the count of active documents carrying a
+        non-empty value at ``data.<field>`` (across all versions). "Non-empty"
+        means the key exists and is neither null nor the empty string — an
+        empty array or object counts as non-empty, which errs toward NOT
+        offering an automatic migration (the safe direction).
+
+        Read-only and advisory: consumed by template-store's create-as-upsert
+        to attach consequence data to a version event.
+        """
+        match = {
+            "namespace": namespace,
+            "template_id": template_id,
+            "status": DocumentStatus.ACTIVE.value,
+        }
+        rows = await Document.aggregate([
+            {"$match": match},
+            {"$group": {"_id": "$template_version", "count": {"$sum": 1}}},
+        ]).to_list()
+        docs_per_version = {str(r["_id"]): r["count"] for r in rows}
+
+        field_nonempty_counts: dict[str, int] = {}
+        # Bounded fan-out: one indexed count per field, capped so a
+        # pathological field list cannot turn advisory stats into a scan storm.
+        for field in (fields or [])[:50]:
+            field_nonempty_counts[field] = await Document.find({
+                **match,
+                f"data.{field}": {"$exists": True, "$nin": [None, ""]},
+            }).count()
+
+        return {
+            "template_id": template_id,
+            "namespace": namespace,
+            "total_live_docs": sum(docs_per_version.values()),
+            "docs_per_version": docs_per_version,
+            "field_nonempty_counts": field_nonempty_counts,
+        }
+
     async def _migrate_one(
         self,
         index: int,
@@ -2972,14 +3073,26 @@ class DocumentService:
         to_version: int,
         namespace: str,
         dry_run: bool,
+        renames: dict[str, str] | None = None,
     ) -> BulkResultItem:
         """Validate one document against the target version; apply the re-pin
         unless ``dry_run``. Validating the document's existing data against the
         target IS the readiness check — a now-removed field still present surfaces
         as ``unknown_field``; a newly-mandatory field missing surfaces as ``required``.
+
+        ``renames`` maps new_field -> old_field (the target version's declared
+        renames): matching old keys are re-keyed before validation and the
+        re-keyed data is what the applied new document version stores. Identity
+        fields can never appear in a rename declaration (template-store rejects
+        that at declare time), so the identity hash is unaffected.
         """
+        data = dict(doc.data)
+        for new_key, old_key in (renames or {}).items():
+            if old_key in data and new_key not in data:
+                data[new_key] = data.pop(old_key)
+
         vr = await self.validation_service.validate(
-            template_id, doc.data, namespace=namespace, template_version=to_version,
+            template_id, data, namespace=namespace, template_version=to_version,
         )
         if not vr.valid:
             return BulkResultItem(
@@ -3013,7 +3126,7 @@ class DocumentService:
             template_id=template_id,
             template_version=to_version,
             namespace=namespace,
-            data=doc.data,
+            data=data,
             metadata=(doc.metadata.custom if doc.metadata else None),
         )
         vr.identity_hash = doc.identity_hash

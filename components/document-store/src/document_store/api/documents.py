@@ -27,6 +27,7 @@ from ..models.api_models import (
     DocumentVersionResponse,
     PatchDocumentItem,
     RelationshipListResponse,
+    TemplateImpactStatsResponse,
     TraverseResponse,
 )
 from ..models.document import DocumentStatus
@@ -253,6 +254,53 @@ async def migrate_documents(
         )
     await asyncio.sleep(get_throttle_delay())
     return response
+
+
+@router.get(
+    "/impact-stats",
+    response_model=TemplateImpactStatsResponse,
+    summary="Live-document counts for template version-change impact analysis",
+    description="""
+Advisory, read-only counts consumed by the template create-as-upsert: how many
+active documents each version of the template carries, and — for each name in
+`fields` — how many active documents hold a non-empty value there. A dropped
+field whose non-empty count is zero is safely migratable; a non-zero count
+means data would be stranded.
+""",
+)
+async def get_template_impact_stats(
+    template_id: str = Query(..., description="Template ID, value, or synonym"),
+    fields: str | None = Query(
+        None, description="Comma-separated field names to count non-empty occurrences for"
+    ),
+    namespace: str | None = Query(
+        None,
+        description="Namespace. Omittable only for single-namespace API keys.",
+    ),
+    identity: UserIdentity = Depends(require_api_key),
+):
+    """Per-version and per-field live-document counts for one template."""
+    nsf = await resolve_namespace_filter(identity, namespace, "read")
+    if namespace:
+        ns = namespace
+    elif nsf.namespaces and len(nsf.namespaces) == 1:
+        ns = nsf.namespaces[0]
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="namespace is required (omittable only for single-namespace keys)",
+        )
+
+    resolved_id = await resolve_or_404(
+        template_id, "template", ns, param_name="template_id", strict=True,
+    )
+    field_list = [f.strip() for f in fields.split(",") if f.strip()] if fields else []
+
+    service = get_document_service()
+    stats = await service.get_template_impact_stats(
+        template_id=resolved_id, namespace=ns, fields=field_list,
+    )
+    return TemplateImpactStatsResponse(**stats)
 
 
 @router.get(

@@ -168,7 +168,8 @@ class ValidationService:
         data: dict[str, Any],
         namespace: str,
         template_version: int | None = None,
-        doc_ref_cache: dict | None = None
+        doc_ref_cache: dict | None = None,
+        template_override: dict[str, Any] | None = None,
     ) -> ValidationResult:
         """
         Validate document data against a template.
@@ -176,6 +177,11 @@ class ValidationService:
         Args:
             template_id: Template ID to validate against
             data: Document data to validate
+            template_override: An inline template definition used INSTEAD of
+                resolving template_id — the candidate dry-run path ("would
+                these documents validate against this draft?"). Nothing is
+                persisted or cached; every later validation stage consumes
+                the dict exactly as a resolved template would be.
 
         Returns:
             ValidationResult with errors, warnings, identity hash, and timing
@@ -191,9 +197,12 @@ class ValidationService:
             return result
         result.timing["1_structural"] = (time.perf_counter() - start) * 1000
 
-        # Stage 2: Template resolution
+        # Stage 2: Template resolution (skipped for an inline candidate)
         start = time.perf_counter()
-        template = await self._resolve_template(template_id, result, version=template_version)
+        if template_override is not None:
+            template = template_override
+        else:
+            template = await self._resolve_template(template_id, result, version=template_version)
         result.timing["2_template_resolution"] = (time.perf_counter() - start) * 1000
         if template is None:
             result.timing["total"] = (time.perf_counter() - total_start) * 1000
