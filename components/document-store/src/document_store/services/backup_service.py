@@ -358,6 +358,7 @@ def make_direct_restore_runner(
             skip_files=opts.get("skip_files", False),
             batch_size=opts.get("batch_size", 500),
             drop_stale_reporting=opts.get("drop_stale_reporting", False),
+            dry_run=opts.get("dry_run", False),
         )
 
     return runner

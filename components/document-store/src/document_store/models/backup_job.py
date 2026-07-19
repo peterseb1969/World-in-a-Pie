@@ -248,20 +248,31 @@ class BackupRequest(BaseModel):
         False, description="Skip the documents phase entirely"
     )
     skip_closure: bool = Field(
-        False, description="Skip the closure-table (term-relations) phase"
+        False,
+        description="Retired toolkit-export parameter — rejected with 400 if "
+                    "set. The direct engine always includes term relations.",
     )
     skip_synonyms: bool = Field(
-        False, description="Skip the synonyms phase"
+        False,
+        description="Retired toolkit-export parameter — rejected with 400 if "
+                    "set. Synonyms travel inside registry entries.",
     )
     latest_only: bool = Field(
-        False, description="Export only the latest version of each entity"
+        False,
+        description="Retired toolkit-export parameter — rejected with 400 if "
+                    "set. The direct engine exports every version; when this "
+                    "flag was silently ignored it also mis-stamped the "
+                    "manifest as latest-only.",
     )
     template_prefixes: list[str] | None = Field(
         default=None,
-        description="Optional list of template_id prefixes to filter documents",
+        description="Retired toolkit-export parameter — rejected with 400 if "
+                    "set. The direct engine has no template filter.",
     )
     dry_run: bool = Field(
-        False, description="Walk the export without writing the archive"
+        False,
+        description="Retired toolkit-export parameter — rejected with 400 if "
+                    "set. (Restore, by contrast, supports a real dry run.)",
     )
 
 
@@ -287,7 +298,7 @@ class RestoreFromJobRequest(BaseModel):
         False, description="Skip restoring file blobs"
     )
     batch_size: int = Field(
-        50, ge=1, le=500, description="Document write batch size"
+        500, ge=1, le=500, description="Document write batch size"
     )
 
 

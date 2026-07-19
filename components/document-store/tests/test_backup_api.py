@@ -103,7 +103,7 @@ async def test_start_backup_creates_job_and_returns_snapshot(
         resp = await client.post(
             "/api/document-store/backup/namespaces/wip/backup",
             headers=auth_headers,
-            json={"include_files": True, "latest_only": True},
+            json={"include_files": True, "include_inactive": True},
         )
 
     assert resp.status_code == 202, resp.text
@@ -113,7 +113,7 @@ async def test_start_backup_creates_job_and_returns_snapshot(
     assert body["status"] == "pending"
     assert body["job_id"].startswith("bkp-")
     assert body["options"]["include_files"] is True
-    assert body["options"]["latest_only"] is True
+    assert body["options"]["include_inactive"] is True
 
     # Runner factory received the snapshot options; start_async_job was called once.
     assert mk_runner.called
@@ -190,6 +190,81 @@ async def test_restore_rejects_invalid_mode(client: AsyncClient, auth_headers: d
     )
     assert resp.status_code == 400
     assert "restore" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dead_param", ["register_synonyms", "continue_on_error"])
+async def test_restore_rejects_toolkit_era_params(
+    client: AsyncClient, auth_headers: dict, dead_param: str
+):
+    """Setting a retired toolkit import param is a loud 400, never a silent no-op."""
+    resp = await client.post(
+        "/api/document-store/backup/namespaces/wip/restore",
+        headers=auth_headers,
+        files={"archive": ("b.zip", b"x", "application/zip")},
+        data={"mode": "restore", dead_param: "true"},
+    )
+    assert resp.status_code == 400
+    assert dead_param in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("dead_field", "value"),
+    [
+        ("skip_closure", True),
+        ("skip_synonyms", True),
+        ("template_prefixes", ["TPL-"]),
+        ("dry_run", True),
+        ("latest_only", True),
+    ],
+)
+async def test_backup_rejects_toolkit_era_fields(
+    client: AsyncClient, auth_headers: dict, dead_field: str, value
+):
+    """Setting a retired toolkit export field is a loud 400, never a silent no-op."""
+    resp = await client.post(
+        "/api/document-store/backup/namespaces/wip/backup",
+        headers=auth_headers,
+        json={dead_field: value},
+    )
+    assert resp.status_code == 400
+    assert dead_field in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_restore_dry_run_reaches_the_runner(
+    client: AsyncClient, auth_headers: dict
+):
+    """dry_run is forwarded into the job options the runner factory consumes.
+
+    Regression guard for the accepted-but-dropped shape this param had: the
+    endpoint stored it in options while the factory never passed it on, so a
+    dry-run request ran a real restore.
+    """
+    fake_task = asyncio.get_running_loop().create_future()
+    fake_task.set_result(None)
+    with (
+        patch(
+            "document_store.api.backup.backup_service.make_direct_restore_runner",
+            return_value=AsyncMock(),
+        ) as mk_runner,
+        patch(
+            "document_store.api.backup.backup_service.start_async_job",
+            new=AsyncMock(return_value=fake_task),
+        ),
+    ):
+        resp = await client.post(
+            "/api/document-store/backup/namespaces/wip/restore",
+            headers=auth_headers,
+            files={"archive": ("b.zip", b"PK\x03\x04x", "application/zip")},
+            data={"mode": "restore", "dry_run": "true"},
+        )
+
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["options"]["dry_run"] is True
+    _, kwargs = mk_runner.call_args
+    assert kwargs["options"]["dry_run"] is True
 
 
 # ---------------------------------------------------------------------------

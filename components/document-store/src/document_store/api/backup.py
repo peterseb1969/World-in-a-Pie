@@ -174,6 +174,32 @@ async def start_backup(
     registry namespace; ``namespaces`` adds an explicit set alongside the
     anchor. Admin permission is required on every namespace in the resolved set.
     """
+    # Parameters of the retired toolkit export path. The direct backup engine
+    # always includes term relations, carries synonyms inside registry
+    # entries, has no template filter, no dry-run walk, and no latest-only
+    # version filter. Silently ignoring any of these would make the archive
+    # contents differ from what the caller asked for (template_prefixes and
+    # latest_only especially: the caller expects a filtered export and gets
+    # everything — latest_only even stamped the manifest as latest-only while
+    # the archive carried every version), so reject loudly.
+    _dead_backup_fields = (
+        ("skip_closure", request.skip_closure),
+        ("skip_synonyms", request.skip_synonyms),
+        ("template_prefixes", request.template_prefixes is not None),
+        ("dry_run", request.dry_run),
+        ("latest_only", request.latest_only),
+    )
+    for _dead_name, _dead_set in _dead_backup_fields:
+        if _dead_set:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"'{_dead_name}' is not supported by the backup engine — "
+                    "it belonged to the retired toolkit export path and has "
+                    "no effect. Remove it from the request."
+                ),
+            )
+
     # Resolve the namespace set.
     if request.all_namespaces:
         ns_list = await backup_service.list_all_namespaces()
@@ -240,9 +266,16 @@ async def start_restore(
     register_synonyms: bool = Form(False),
     skip_documents: bool = Form(False),
     skip_files: bool = Form(False),
-    batch_size: int = Form(50, ge=1, le=500),
+    batch_size: int = Form(500, ge=1, le=500),
     continue_on_error: bool = Form(False),
-    dry_run: bool = Form(False),
+    dry_run: bool = Form(
+        False,
+        description=(
+            "Run every precondition (archive format, empty targets, "
+            "reporting schema) and report what would be restored, without "
+            "writing anything."
+        ),
+    ),
     drop_stale_reporting: bool = Form(
         False,
         description=(
@@ -269,6 +302,23 @@ async def start_restore(
         raise HTTPException(
             status_code=400, detail="Fresh mode is not yet implemented. Use 'restore' mode."
         )
+    # Parameters of the retired toolkit import path. The direct restore engine
+    # has no per-item error tolerance and no synonym registration; silently
+    # ignoring a request for either would misrepresent what the restore did,
+    # so a request that sets them is rejected outright.
+    for _dead_name, _dead_value in (
+        ("register_synonyms", register_synonyms),
+        ("continue_on_error", continue_on_error),
+    ):
+        if _dead_value:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"'{_dead_name}' is not supported by the restore engine — "
+                    "it belonged to the retired toolkit import path and has "
+                    "no effect. Remove it from the request."
+                ),
+            )
 
     get_archive_store().sweep_expired_scratch()
 

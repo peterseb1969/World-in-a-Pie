@@ -762,3 +762,156 @@ class TestRunRestoreBasicFlow:
             return_value=mock_reader,
         ), pytest.raises(RestoreEngineError, match="not empty"):
             await engine.run_restore(tmp_path / "kb.zip", "kb")
+
+
+class TestRestoreRedirectGuard:
+    """An ID-preserving restore must never write under a different namespace
+    name: the archived entities and registry entries embed the source
+    namespace, so a redirected insert would empty-check one namespace and
+    write records carrying another. The engine rejects the redirect before
+    any precondition or write."""
+
+    def _reader_for(self, namespace: str):
+        manifest = Manifest(
+            format_version="3.0",
+            namespace=namespace,
+            namespace_config=NamespaceConfig(prefix=namespace),
+            counts=EntityCounts(),
+        )
+        mock_reader = MagicMock()
+        mock_reader.read_manifest = MagicMock(return_value=manifest)
+        mock_reader.list_namespaces = MagicMock(return_value=[namespace])
+        mock_reader.__enter__ = MagicMock(return_value=mock_reader)
+        mock_reader.__exit__ = MagicMock(return_value=None)
+        return mock_reader
+
+    @pytest.mark.asyncio
+    async def test_differing_target_namespace_rejected(self, tmp_path):
+        mongo, _ = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        engine = DirectRestoreEngine(mongo, None, _collect_progress([]))
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=self._reader_for("prod"),
+        ), pytest.raises(RestoreEngineError, match="cannot re-namespace"):
+            await engine.run_restore(tmp_path / "prod.zip", "prod-bak")
+
+    @pytest.mark.asyncio
+    async def test_matching_target_namespace_accepted(self, tmp_path):
+        mongo, _ = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        events = []
+        engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+        reader = self._reader_for("prod")
+        reader.read_entities = MagicMock(return_value=[])
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=reader,
+        ), patch("httpx.AsyncClient") as mock_httpx_cls:
+            ok_resp = MagicMock(status_code=200, text="ok")
+            mock_httpx = MagicMock()
+            mock_httpx.put = AsyncMock(return_value=ok_resp)
+            mock_httpx.__aenter__ = AsyncMock(return_value=mock_httpx)
+            mock_httpx.__aexit__ = AsyncMock(return_value=None)
+            mock_httpx_cls.return_value = mock_httpx
+
+            await engine.run_restore(tmp_path / "prod.zip", "prod")
+
+        assert events[-1].phase == "complete"
+
+
+class TestRunRestoreDryRun:
+    """dry_run runs every precondition, reports would-restore counts, and
+    writes nothing: no namespace upsert, no inserts, no blobs."""
+
+    def _reader(self):
+        manifest = Manifest(
+            format_version="3.0",
+            namespace="kb",
+            namespace_config=NamespaceConfig(prefix="kb", isolation_mode="open"),
+            counts=EntityCounts(terminologies=2, documents=3),
+        )
+        mock_reader = MagicMock()
+        mock_reader.read_manifest = MagicMock(return_value=manifest)
+        mock_reader.list_namespaces = MagicMock(return_value=["kb"])
+        mock_reader.list_blobs = MagicMock(return_value=[])
+        # The manifest above has no per-namespace entries, so the dry-run
+        # report falls back to counting archive lines — stub that count.
+        mock_reader.entity_count = MagicMock(
+            side_effect=lambda et, namespace="": {
+                "terminologies": 2, "documents": 3,
+            }.get(et, 0)
+        )
+        mock_reader.__enter__ = MagicMock(return_value=mock_reader)
+        mock_reader.__exit__ = MagicMock(return_value=None)
+        return mock_reader
+
+    @pytest.mark.asyncio
+    async def test_dry_run_writes_nothing_and_reports_counts(self, tmp_path):
+        mongo, collections = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        events = []
+        engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+        reader = self._reader()
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=reader,
+        ), patch("httpx.AsyncClient") as mock_httpx_cls:
+            await engine.run_restore(tmp_path / "kb.zip", "kb", dry_run=True)
+
+        # No namespace upsert (httpx never even instantiated), no entity reads,
+        # no inserts on any collection.
+        assert not mock_httpx_cls.called
+        assert not reader.read_entities.called
+        for coll in collections.values():
+            assert not coll.insert_many.called
+
+        # Preconditions ran, the report names the manifest counts, and the
+        # job completed as a dry run.
+        phases = [e.phase for e in events]
+        assert "phase_validate" in phases
+        report = next(e for e in events if e.phase == "phase_dry_run")
+        assert "terminologies=2" in report.message
+        assert "documents=3" in report.message
+        assert events[-1].phase == "complete"
+        assert "Dry run complete" in events[-1].message
+
+    @pytest.mark.asyncio
+    async def test_dry_run_still_fails_on_non_empty_target(self, tmp_path):
+        counts = {e: 0 for e in BACKUP_ENTITY_ORDER}
+        counts["documents"] = 1
+        mongo, _ = _make_mongo_mock(counts_per_collection=counts)
+        engine = DirectRestoreEngine(mongo, None, _collect_progress([]))
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=self._reader(),
+        ), pytest.raises(RestoreEngineError, match="not empty"):
+            await engine.run_restore(tmp_path / "kb.zip", "kb", dry_run=True)
+
+    @pytest.mark.asyncio
+    async def test_dry_run_respects_skip_flags_in_report(self, tmp_path):
+        mongo, _ = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        events = []
+        engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=self._reader(),
+        ):
+            await engine.run_restore(
+                tmp_path / "kb.zip", "kb",
+                dry_run=True, skip_documents=True, skip_files=True,
+            )
+
+        report = next(e for e in events if e.phase == "phase_dry_run")
+        assert "documents=skipped" in report.message
+        assert "files=skipped" in report.message

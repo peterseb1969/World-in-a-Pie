@@ -343,7 +343,7 @@ class DirectRestoreEngine:
         *,
         registry_base_url: str | None = None,
         registry_api_key: str | None = None,
-        reporting_client: "ReportingSyncClient | None" = None,
+        reporting_client: ReportingSyncClient | None = None,
     ) -> None:
         self._mongo = mongo_client
         self._storage = storage_client
@@ -372,14 +372,20 @@ class DirectRestoreEngine:
         skip_files: bool = False,
         batch_size: int = 500,
         drop_stale_reporting: bool = False,
+        dry_run: bool = False,
     ) -> None:
         """Run the full restore pipeline over every namespace in the archive.
 
         Identity-only restore (CASE-542): each namespace restores to itself and
-        its target must be empty. A *single*-namespace archive may still be
-        redirected to an explicit ``target_namespace`` (the pre-existing
-        single-namespace behaviour); a multi-namespace archive rejects a target
-        override — cross-namespace remap (Registry re-mint) is out of scope.
+        its target must be empty. A ``target_namespace`` that differs from the
+        archive's own namespace is rejected — ID-preserving restore cannot
+        re-namespace data (entities, registry entries, and composite keys all
+        embed the source namespace); re-namespacing is the planned remap mode.
+
+        With ``dry_run`` the engine runs every precondition (archive format,
+        empty targets, reporting schema) and reports what it *would* restore
+        from the manifest, then completes without writing anything — no
+        namespace upsert, no inserts, no blobs, no reporting sync.
         """
         with ArchiveReader(archive_path) as reader:
             manifest = reader.read_manifest()
@@ -409,16 +415,28 @@ class DirectRestoreEngine:
             if not source_namespaces:
                 raise RestoreEngineError("Archive contains no namespaces to restore")
 
-            if len(source_namespaces) == 1 and target_namespace:
-                targets = [(source_namespaces[0], target_namespace)]
-            else:
-                if target_namespace:
+            if target_namespace:
+                if len(source_namespaces) > 1:
                     raise RestoreEngineError(
-                        "target_namespace override is only supported for a "
-                        "single-namespace archive; a multi-namespace archive "
-                        "restores each namespace to itself."
+                        "target_namespace override is not supported for a "
+                        "multi-namespace archive; each namespace restores "
+                        "to itself."
                     )
-                targets = [(ns, ns) for ns in source_namespaces]
+                if target_namespace != source_namespaces[0]:
+                    # Redirecting an ID-preserving restore is unsound: the
+                    # archived entities, registry entries, and composite keys
+                    # all embed the source namespace, so the insert would
+                    # write records still carrying the source namespace after
+                    # empty-checking only the target (CASE-548). Re-namespacing
+                    # requires the remap mode (new IDs, rewritten references).
+                    raise RestoreEngineError(
+                        f"target_namespace '{target_namespace}' differs from "
+                        f"the archive's namespace '{source_namespaces[0]}' — "
+                        "an ID-preserving restore cannot re-namespace data. "
+                        "Restore to the archive's own namespace, or use the "
+                        "new-namespace (remap) restore mode once available."
+                    )
+            targets = [(ns, ns) for ns in source_namespaces]
 
             self._emit(
                 "start",
@@ -433,7 +451,9 @@ class DirectRestoreEngine:
             self._emit("phase_validate", "Checking target namespaces are empty", percent=2)
             for _src, tgt in targets:
                 await self._check_namespace_empty(tgt)
-                await self._check_reporting_precondition(tgt, drop_stale_reporting)
+                await self._check_reporting_precondition(
+                    tgt, drop_stale_reporting, dry_run=dry_run
+                )
 
             entry_by_prefix = {e.prefix: e for e in manifest.namespaces}
             restore_order = [
@@ -445,6 +465,14 @@ class DirectRestoreEngine:
                 "files",
                 "registry_entries",
             ]
+
+            if dry_run:
+                self._dry_run_report(
+                    reader, targets, entry_by_prefix, restore_order,
+                    skip_documents=skip_documents, skip_files=skip_files,
+                )
+                return
+
             total = sum(getattr(manifest.counts, et, 0) for et in restore_order)
             processed = 0
 
@@ -541,6 +569,56 @@ class DirectRestoreEngine:
                 "Restore requires an empty namespace."
             )
 
+    def _dry_run_report(
+        self,
+        reader: ArchiveReader,
+        targets: list[tuple[str, str]],
+        entry_by_prefix: dict[str, Any],
+        restore_order: list[str],
+        *,
+        skip_documents: bool,
+        skip_files: bool,
+    ) -> None:
+        """Emit what a real run would restore, then complete without writing.
+
+        Counts come from the manifest's per-namespace entry when present and
+        fall back to counting the archive's JSONL lines. All preconditions
+        have already run at this point — a dry run that reaches this method
+        would have started writing if it were a real run.
+        """
+        for src, tgt in targets:
+            entry = entry_by_prefix.get(src)
+            parts: list[str] = []
+            for entity_type in restore_order:
+                if skip_documents and entity_type == "documents":
+                    parts.append("documents=skipped")
+                    continue
+                if skip_files and entity_type == "files":
+                    parts.append("files=skipped")
+                    continue
+                count = (
+                    getattr(entry.counts, entity_type, 0)
+                    if entry
+                    else reader.entity_count(entity_type, namespace=src)
+                )
+                parts.append(f"{entity_type}={count}")
+            self._emit(
+                "phase_dry_run",
+                f"[{tgt}] dry run — would restore: {', '.join(parts)}",
+            )
+
+        if not skip_files and self._storage:
+            self._emit(
+                "phase_dry_run",
+                f"dry run — would upload {len(reader.list_blobs())} file blob(s)",
+            )
+
+        self._emit(
+            "complete",
+            "Dry run complete — preconditions passed, no changes made",
+            percent=100,
+        )
+
     # -- Reporting verification phases (restore-verification design) --------
     #
     # Poll pacing: structure materializes within a couple of batch-sync
@@ -561,7 +639,7 @@ class DirectRestoreEngine:
         self._reporting = None
 
     async def _check_reporting_precondition(
-        self, namespace: str, drop_stale: bool
+        self, namespace: str, drop_stale: bool, *, dry_run: bool = False
     ) -> None:
         """The namespace's reporting schema must be absent/empty before restore.
 
@@ -571,6 +649,11 @@ class DirectRestoreEngine:
         the flag. A bookkeeping-table shape problem also fails here — loudly,
         before anything is written — instead of surfacing as per-type sync
         failures afterwards.
+
+        A dry run still *fails* on the same conditions a real run would refuse
+        (that is the information a dry run exists to surface), but never
+        mutates: with ``drop_stale`` set it reports the schema that would be
+        dropped instead of dropping it.
         """
         if not self._reporting:
             return
@@ -593,6 +676,14 @@ class DirectRestoreEngine:
                     "restore. Re-run with drop_stale_reporting=true to drop "
                     "it, or clear it manually."
                 )
+            if dry_run:
+                self._emit(
+                    "phase_dry_run",
+                    f"[{namespace}] dry run — stale reporting schema "
+                    f"({parity.get('table_count')} table(s)) would be dropped "
+                    "(drop_stale_reporting is set)",
+                )
+                return
             if not await self._reporting.drop_namespace_schema(namespace):
                 raise RestoreEngineError(
                     f"Could not drop stale reporting schema for '{namespace}' "
