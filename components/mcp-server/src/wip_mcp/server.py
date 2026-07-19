@@ -2019,6 +2019,16 @@ async def create_template(template: dict, namespace: str | None = None) -> str:
               projections. Bare names target data.<name>;
               `metadata.custom.<name>` paths also allowed. Empty →
               projection falls back to identity_fields.
+            - renames: {new_field: old_field} — when this create versions
+              an existing template, DECLARE renamed fields here. An
+              undeclared rename is indistinguishable from drop+add: the
+              old column's data is stranded instead of migrating
+              losslessly and mapping in reporting. Identity fields cannot
+              be renamed. Rejected on a first version.
+            - reporting.cross_version_view: opt-in combined reporting view
+              across template versions — {"versions": "all"|[ints],
+              "columns": {target: {"from": source} | {}}}. Declared
+              renames feed the column mappings.
             - status: 'active' (default) or 'draft' (skip validation).
 
         Field definition: {
@@ -3933,9 +3943,15 @@ async def check_reporting_parity(
 
     Interpreting results:
     - structural_issues > 0: tables missing or mis-shaped — check the
-      per-template rows for missing_columns / errors.
+      per-template rows for missing_columns / legacy_table / errors.
+    - legacy_table true on a template: a pre-split physical table still
+      occupies the entity's bare name, shadowing the per-version layout.
+      Needs explicit operator action (drop the legacy table, then re-run
+      the batch sync) — the platform never auto-drops it.
     - count_mismatches > 0: sync is behind or blocked — re-run the batch
-      sync (or check get_sync_status) and re-check.
+      sync (or check get_sync_status) and re-check. actual_rows aggregates
+      across a template's per-version tables (version_tables lists them;
+      view_present confirms the entity view).
     - bookkeeping_tables_ok false: the reporting database predates the
       namespace-keyed bookkeeping — doc-type sync cannot work until
       remediated (wipe the reporting volume or apply the named ALTER).
