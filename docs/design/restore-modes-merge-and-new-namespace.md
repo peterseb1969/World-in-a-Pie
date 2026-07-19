@@ -140,6 +140,34 @@ Measured shape (code-read, not benchmarked — flagged as such):
   (`IdCounter.next_val(count=N)`-style `$inc` by N) and (b) `insert_many`
   for claims. UUID7 namespaces don't touch the counter at all.
 
+### 1.6 Coordination: template identity unification (CASE-709…CASE-712)
+
+The template-identity workstreams (`template-identity-unification.md`,
+distilled from FIRESIDE-23) intersect this plan in four places:
+
+1. **Restore must recreate composite-key claims — a verified live gap.**
+   `composite_key_claims` (the CASE-554 uniqueness gate, its own Registry
+   collection) is not in the restore engine's `COLLECTION_MAP`: restored
+   registry entries come back claim-less, and reconcile only *deletes*
+   dangling claims, never rebuilds missing ones (only the one-shot
+   `backfill_claims` does). Latent today; load-bearing once CASE-709 makes
+   template identity depend on the claim gate. Claim recreation at restore
+   applies to **all** entity types and belongs in CASE-709's restore
+   scope; both new modes inherit it (merge clash detection assumes
+   entries and claims are coherent; new-namespace provisioning creates
+   claims via the Registry, which handles it by construction).
+2. **Template composite keys are constructed, not read** (§2.1) — pre-709
+   archives carry empty template composite keys.
+3. **Merge schema-clash policy is the operator's, not the platform's**
+   (§2.2): CASE-709's create-as-upsert adds `upsert` as a *choice*;
+   the merge default stays `fail` per Peter's ruling.
+4. **CASE-710 per-version reporting tables change restore verification.**
+   The structural gate and count parity are per-template today; per-version
+   tables make them per-`(template, version)`, and merge-overwrite plus
+   `latest_only` sync means rows *move* between version tables on
+   version-crossing updates. Restore verification (this engine) must be a
+   named consumer in CASE-710's design pass before that workstream lands.
+
 ---
 
 ## Part 2 — The two new modes
@@ -166,6 +194,16 @@ RemapPlan
 
 Built by **bulk, indexed Mongo reads** (batched `$in`, 1000 keys per query),
 never per-item HTTP. `IDRemapper` consumes `id_map` unchanged.
+
+**Template matching never trusts archived composite-key hashes.** Registry
+template entries carry an *empty* composite key in every pre-CASE-709
+archive (`registry_client.py` registered templates with `composite_key={}`),
+so hash comparison matches nothing. The RemapPlan constructs the template
+key `{ns, type: "template", value}` from archive data it already has
+(namespace + template value — no archive-format change), exactly as
+CASE-709's restore ruling prescribes for plain restore. Terminologies,
+terms, documents, and files have always carried real composite keys and
+match by stored hash.
 
 **identity_hash caveat (from CASE-548 analysis, verified):** the hash is
 namespace-independent and value-based — stable under both modes — *except*
@@ -218,14 +256,28 @@ composed cross-install mode (deferred, Part 3).
   For `versioned: false` templates (PoNIF #8) overwrite replaces the single
   version in place, matching the template's own lifecycle.
 
-**Schema entities (terminologies, terms, templates) do not take the
-overwrite/skip policy in v1.** They follow the idempotent-bootstrap
-philosophy (`on_conflict=validate`): identical → skip (counted
-`unchanged`); different → per-item error listing the diff. Merging data
-into a namespace whose *schema* diverged from the archive is a schema
-migration, not a restore — loud is correct. (Open question #1 for Peter:
-is a `--force-schema` overwrite tier wanted later? Recommendation: no,
-until a concrete case demands it.)
+**Schema entities (terminologies, terms, templates) take their own clash
+policy — an explicit operator decision on the restore action, defaulting
+to fail.** Identical schema → skip (counted `unchanged`) under every
+policy. On a *difference*, a per-request `on_schema_clash` parameter
+decides:
+
+- `fail` (**default**): per-item error listing the diff, merge refuses.
+  Merging data into a namespace whose schema diverged from the archive is
+  a schema migration someone should look at — loud is the safe default.
+- `skip`: target schema wins; the archive's variant is not imported and
+  the divergence is reported in the job result. Documents from the archive
+  then validate against the *target's* schema semantics on the reporting
+  side — the report must say so.
+- `upsert`: the archive's template is imported as a **new version** of the
+  target's template (matching platform create-as-upsert semantics,
+  CASE-709 §5.1), loudly reported.
+
+Peter's ruling (2026-07-19): the platform's create-as-upsert (CASE-709)
+does NOT make upsert the merge default — "this must be a user decision" on
+the restore action; WIP's write-path semantics and a restore action's
+clash handling are separate contracts. Terminologies/terms follow the same
+policy parameter with their `incompatible_config` diff shape.
 
 **Preconditions replace, not drop, the safety gates:**
 
@@ -381,8 +433,13 @@ semantics; not before a concrete driving case).
 
 ## Open questions for Peter
 
-1. **Schema clash tier in merge:** validate-or-error only (recommended), or
-   an explicit template-overwrite (new version) escape hatch?
+1. **Schema clash tier in merge:** ~~validate-or-error only (recommended),
+   or an explicit template-overwrite (new version) escape hatch?~~
+   **Resolved (Peter, 2026-07-19):** explicit per-action `on_schema_clash`
+   choice — `fail` (default) | `skip` | `upsert` (new version, aligned
+   with CASE-709 create-as-upsert). Upsert is deliberately NOT the
+   default: the restore action's clash handling is the operator's
+   decision, separate from WIP's write-path semantics. See §2.2.
 2. **New-namespace multi-archive UX:** explicit `{src: tgt}` map acceptable,
    or is a single-namespace-only v1 enough?
 3. **Lineage synonyms** (`restored_from` old-ID → new entity): default-on,
