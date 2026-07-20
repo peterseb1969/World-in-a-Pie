@@ -1,10 +1,10 @@
 # Restore Modes: Merge, Cross-Install Merge, and New-Namespace
 
-**Status:** Phase 0 and Phase 1 (same-install merge) shipped 2026-07-20.
-Phase 2 is now **cross-install merge**; the new-namespace (ID re-minting)
-mode was demoted to Phase 3 the same day, after both of its non-development
-justifications dissolved. See Part 4 for the phasing and Part 3 for what is
-deferred versus rejected outright.
+**Status:** Phases 0, 1 (same-install merge) and 2 (cross-install merge)
+shipped 2026-07-20. The new-namespace (ID re-minting) mode was demoted to
+Phase 3 the same day, after both of its non-development justifications
+dissolved. See Part 4 for the phasing and Part 3 for what is deferred versus
+rejected outright.
 **Author:** BE-YAC-20260718-222350 (Phase 1 + 2026-07-20 revision:
 BE-YAC-20260720-010210)
 **Context:** Extends `backup-restore-redesign.md` (v3 multi-namespace archives,
@@ -17,7 +17,7 @@ CASE-548. Two new restore modes were requested by Peter (2026-07-19); the
    **Shipped.**
 2. **cross-install merge** (§2.3) — the same, where the two installs'
    canonical IDs differ: match by logical identity, skip what exists, rewrite
-   references. The consolidation case. **Next.**
+   references. The consolidation case. **Shipped.**
 3. **new-namespace** (§2.4) — restore under a *different* namespace name,
    minting new canonical IDs. **Deferred** — its non-development
    justifications turned out to belong elsewhere.
@@ -592,10 +592,34 @@ Still open from this phase: the **scale test against a clintrial-sized
 namespace**. The read path is batched-by-archive-key (cost scales with the
 delta, not the target), but that is a code-reading claim, not a measurement.
 
-**Phase 2 — cross-install merge (§2.3).** Reordered ahead of the
-new-namespace mode on 2026-07-20; it is both better justified (real
-consolidation use case vs. parallel dev copies) and cheaper to build (no
-Registry-mediated bulk step at all). Scope:
+**Phase 2 — cross-install merge (§2.3): SHIPPED** (2026-07-20). Reordered
+ahead of the new-namespace mode the same day; it is both better justified
+(real consolidation use case vs. parallel dev copies) and cheaper to build
+(no Registry-mediated bulk step at all). Delivered as scoped below, plus one
+prerequisite the plan had not identified:
+
+- **Composite-key hashing moved to `wip_auth.composite_key`** as its
+  canonical home, with the Registry's `HashService` delegating. A
+  cross-install merge rewrites the parent IDs embedded in a Registry
+  composite key and must recompute its hash off the Registry's write path;
+  re-deriving "sort, dump, sha256" at a second call site is the CASE-316 /
+  CASE-401 drift class, and document identity hashing was consolidated for
+  exactly this reason after CASE-402. Contract tests pin the digests and pin
+  the facade to the canonical function.
+- **`IDRemapper` gained `remap_term` and `remap_term_relation`** — the two
+  rewrites it was missing. A term's parent terminology is its only outward
+  reference and is load-bearing; term relations carry two endpoints, their
+  denormalized terminologies, and a `relation_type` that may be a term ID or
+  a plain value.
+- **Planning interleaves rewrite → match → record** per entity type rather
+  than reading everything up front, because the logical key a type matches on
+  contains the IDs the previous types just resolved.
+
+Still open: the same clintrial-scale test Phase 1 wants. Also unvalidated
+live — the mode has real-database tests but has not yet been run against two
+genuine installs.
+
+Original scope, all delivered:
 
 1. **Matching by composite key** — extend `MergePlanner` with a second
    matching path: where same-install merge treats "same logical key, different

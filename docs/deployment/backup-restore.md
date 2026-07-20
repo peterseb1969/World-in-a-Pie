@@ -135,8 +135,39 @@ Two deliberate shapes worth knowing before you choose:
 
 A merge **refuses outright** when the archive and target disagree about
 identity — the same ID under a different logical key, or one logical key under
-two IDs. Merge preserves IDs and cannot reconcile that; such an archive needs
-the ID-reminting (new-namespace) mode, which does not exist yet.
+two IDs. Within one install that means identity has been corrupted, and merge
+preserves IDs so it cannot reconcile it.
+
+### Merging an archive from a different install
+
+Set `cross_install=true` when the archive comes from another install. The two
+sides never shared an ID space, so the same real-world entity legitimately
+exists under two different UUIDs — and the refusal above would fire on data
+that is perfectly healthy. With the flag, that case becomes a **match**: the
+target's copy wins, the incoming one is dropped, and every incoming reference
+to it is rewritten to the target's ID.
+
+This is the consolidation case — folding two installs' copies of one namespace
+together. It is never inferred, and cannot be: the same evidence means
+corruption within one install and ordinary divergence across two. Only the
+caller knows which they have.
+
+Two things follow that are worth knowing:
+
+- **Skipping is only half the job.** If the target's `GENDER` wins, the
+  incoming terms still carry the *other* install's `terminology_id`. They are
+  repointed before insert — otherwise the merge would import references that
+  resolve to nothing. The same applies one level down to Registry composite
+  keys, which embed parent IDs and are rehashed after rewriting.
+- **Matching runs in dependency order for a reason.** A term's logical key is
+  `(terminology_id, value)`, so the term can only be recognised as one the
+  target already has *after* its terminology has contributed its match. The
+  dry run reports how many identities were matched and how many incoming
+  entities had references rewritten.
+
+`on_schema_clash=fail` still applies, and matters more here: consolidating two
+installs whose template versions have diverged would otherwise silently
+validate one install's documents against the other's schema.
 
 `dry_run` is exact for a merge: the plan is computed before anything is
 written, so the report is what a real run would do — per entity type, how many
