@@ -1089,11 +1089,16 @@ class TemplateService:
     @staticmethod
     async def compute_template_compatibility(
         existing: Template,
-        proposed: CreateTemplateRequest,
+        proposed: CreateTemplateRequest | Template,
         namespace: str,
     ) -> tuple[str, dict]:
         """
         Compare a proposed CreateTemplateRequest against an existing Template.
+
+        `proposed` may also be a stored Template: the update path compares two
+        already-minted versions after the fact to describe a version event.
+        Only the shape both types share is read (fields, identity_fields,
+        source/target_templates).
 
         Returns a (verdict, diff) tuple where verdict is one of:
         - "identical": no schema differences — proposed matches existing exactly
@@ -1842,6 +1847,59 @@ class TemplateService:
                     "via": via,
                 }
         return impact, migration
+
+    @staticmethod
+    async def version_event_details(
+        template_id: str,
+        version: int,
+        previous_version: int | None,
+        renames: dict[str, str] | None,
+    ) -> dict | None:
+        """Schema diff + advisory impact for a version event on the UPDATE path.
+
+        The create-as-upsert path builds this inline because it already holds
+        the diff it used to decide whether to version at all. PUT /templates
+        has no such diff — it versions on any change — so the two stored
+        versions are compared after the fact here. Both paths mint a version
+        with identical consequences for live documents, so both must report
+        them; an interactive template editor saves through PUT, which makes
+        it the surface where a human is MOST likely to create a version
+        without having thought about the blast radius.
+
+        Comparing two stored templates is safe against the phantom-diff
+        problem that forced semantic comparison on the create path: both
+        sides carry canonical reference forms, so there is no value-vs-UUID
+        mismatch to resolve. The comparator is reused anyway rather than
+        reimplemented, so the two paths cannot drift.
+
+        Returns None instead of raising. This is advisory data riding on a
+        write that has already succeeded — a failure to describe the change
+        must never turn into a failure to make it.
+        """
+        if previous_version is None:
+            return None
+        try:
+            new_doc = await Template.find_one(
+                {"template_id": template_id, "version": version}
+            )
+            old_doc = await Template.find_one(
+                {"template_id": template_id, "version": previous_version}
+            )
+            if not new_doc or not old_doc:
+                return None
+            _, diff = await TemplateService.compute_template_compatibility(
+                old_doc, new_doc, namespace=new_doc.namespace,
+            )
+            impact, migration = await TemplateService._version_event_impact(
+                template_id, new_doc.namespace, diff, renames,
+            )
+            return {**diff, "impact": impact, "migration": migration}
+        except Exception:
+            logger.exception(
+                "version_event_details failed for %s v%s — update stands, "
+                "impact not reported", template_id, version,
+            )
+            return None
 
     @staticmethod
     async def create_templates_with_conflict_policy(

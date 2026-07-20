@@ -228,3 +228,99 @@ async def test_declared_rename_neutralizes_stranded_check(
     assert "additive or rename-only" in item["details"]["migration"]["reason"]
     # note is rename-excluded: nothing was asked of document-store for it.
     assert stub.calls[-1]["fields"] == []
+
+
+# ---------------------------------------------------------------------------
+# both version-creating paths report impact
+# ---------------------------------------------------------------------------
+
+
+async def _put(client: AsyncClient, auth_headers: dict, items: list[dict]) -> dict:
+    resp = await client.put(TEMPLATES, headers=auth_headers, json=items)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+@pytest.mark.asyncio
+async def test_update_path_version_event_carries_impact(
+    client: AsyncClient, auth_headers: dict
+):
+    """PUT versions a template exactly as create-as-upsert does, so it owes
+    the same report. It used to return details=null, which left the
+    interactive editor — the surface most likely to version by accident —
+    with nothing to show."""
+    stub = _StubDocStore(stats={
+        "total_live_docs": 5,
+        "docs_per_version": {"1": 5},
+        "field_nonempty_counts": {"note": 0},
+    })
+    set_document_store_client(stub)
+    created = (await _post(client, auth_headers, [_payload("PUT_IMPACT")]))["results"][0]
+
+    item = (await _put(client, auth_headers, [{
+        "template_id": created["id"],
+        "fields": [
+            {"name": "code", "label": "Code", "type": "string", "mandatory": True},
+        ],
+    }]))["results"][0]
+
+    assert item["status"] == "updated"
+    assert item["is_new_version"] is True
+    assert item["version"] == 2
+    details = item["details"]
+    assert details is not None, "a version event must describe itself on both paths"
+    assert details["removed"] == ["note"]
+    assert details["impact"]["status"] == "ok"
+    assert details["impact"]["total_live_docs"] == 5
+    assert details["migration"]["eligible"] is True
+    assert stub.calls[-1]["fields"] == ["note"]
+
+
+@pytest.mark.asyncio
+async def test_update_path_honors_declared_renames(
+    client: AsyncClient, auth_headers: dict
+):
+    """Rename exclusion is a property of the version event, not of the route
+    that minted it."""
+    stub = _StubDocStore(stats={
+        "total_live_docs": 2,
+        "docs_per_version": {"1": 2},
+        "field_nonempty_counts": {},
+    })
+    set_document_store_client(stub)
+    created = (await _post(client, auth_headers, [_payload("PUT_REN")]))["results"][0]
+
+    item = (await _put(client, auth_headers, [{
+        "template_id": created["id"],
+        "renames": {"remark": "note"},
+        "fields": [
+            {"name": "code", "label": "Code", "type": "string", "mandatory": True},
+            {"name": "remark", "label": "Remark", "type": "string", "mandatory": False},
+        ],
+    }]))["results"][0]
+
+    assert item["details"]["migration"]["eligible"] is True
+    assert "additive or rename-only" in item["details"]["migration"]["reason"]
+    assert stub.calls[-1]["fields"] == []
+
+
+@pytest.mark.asyncio
+async def test_update_path_impact_failure_never_blocks_the_update(
+    client: AsyncClient, auth_headers: dict
+):
+    """Advisory means advisory: an unreachable document-store degrades the
+    report, not the write."""
+    set_document_store_client(_StubDocStore(fail=True))
+    created = (await _post(client, auth_headers, [_payload("PUT_FAIL")]))["results"][0]
+
+    item = (await _put(client, auth_headers, [{
+        "template_id": created["id"],
+        "fields": [
+            {"name": "code", "label": "Code", "type": "string", "mandatory": True},
+        ],
+    }]))["results"][0]
+
+    assert item["status"] == "updated"
+    assert item["version"] == 2
+    assert item["details"]["impact"]["status"] == "unavailable"
+    assert item["details"]["migration"]["eligible"] is None

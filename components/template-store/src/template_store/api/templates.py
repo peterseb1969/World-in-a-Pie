@@ -366,10 +366,21 @@ async def update_templates(
             if not result:
                 results.append(BulkResultItem(index=i, status="error", id=item.template_id, error="Template not found"))
             else:
+                # A version event carries its consequences on this path too,
+                # not only on create-as-upsert: same schema diff, same live
+                # documents, same migration question. Advisory — None here
+                # means the description failed, never the update.
+                details = None
+                if result.is_new_version:
+                    details = await TemplateService.version_event_details(
+                        result.template_id, result.version,
+                        result.previous_version, item.renames,
+                    )
                 results.append(BulkResultItem(
                     index=i, status="updated", id=result.template_id,
                     value=result.value, version=result.version,
                     is_new_version=result.is_new_version,
+                    details=details,
                 ))
         except ValueError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.template_id, error=str(e)))
