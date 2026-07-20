@@ -307,21 +307,17 @@ class RestoreFromJobRequest(BaseModel):
             "appends the archive's latest version on top of it."
         ),
     )
-    on_schema_clash: str = Field(
-        "fail",
-        description=(
-            "Merge only — what to do when an archived terminology, term, or "
-            "template differs from the target's. 'fail' refuses, 'skip' keeps "
-            "the target's, 'upsert' takes the archive's."
-        ),
-    )
-    cross_install: bool = Field(
+    add_missing: bool = Field(
         False,
         description=(
-            "Merge only — the archive comes from a different install, so an "
-            "entity the target holds under another ID is matched and skipped "
-            "(the target's ID survives, incoming references are rewritten) "
-            "rather than refused as an identity conflict."
+            "Merge only — insert terminologies and templates the target does "
+            "not have, instead of refusing."
+        ),
+    )
+    extend_terminologies: bool = Field(
+        False,
+        description=(
+            "Merge only — add terms the target's terminology is missing."
         ),
     )
     skip_documents: bool = Field(

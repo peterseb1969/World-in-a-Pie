@@ -860,7 +860,7 @@ var DocumentStoreService = class extends BaseService {
    * target namespaces (each writes to itself). `mode: 'restore'` (default)
    * requires every target to be empty; `mode: 'merge'` reconciles the
    * archive into a namespace that already holds data, under the
-   * `on_clash` / `on_schema_clash` policies. Set `dry_run: true` to get the
+   * definitions-compatibility check, then `on_clash` for documents. Set `dry_run: true` to get the
    * report without writing anything. Retired toolkit-era params are no
    * longer sent — the endpoint 400s them; see `RestoreOptions`.
    */
@@ -869,10 +869,10 @@ var DocumentStoreService = class extends BaseService {
     form.append("archive", archive, filename);
     if (options.mode !== void 0) form.append("mode", options.mode);
     if (options.on_clash !== void 0) form.append("on_clash", options.on_clash);
-    if (options.on_schema_clash !== void 0)
-      form.append("on_schema_clash", options.on_schema_clash);
-    if (options.cross_install !== void 0)
-      form.append("cross_install", String(options.cross_install));
+    if (options.add_missing !== void 0)
+      form.append("add_missing", String(options.add_missing));
+    if (options.extend_terminologies !== void 0)
+      form.append("extend_terminologies", String(options.extend_terminologies));
     if (options.skip_documents !== void 0)
       form.append("skip_documents", String(options.skip_documents));
     if (options.skip_files !== void 0)

@@ -275,7 +275,7 @@ class TestRestoreRunnerModeRouting:
                 "mode": "merge",
                 "target_namespace": "kb",
                 "on_clash": "overwrite",
-                "on_schema_clash": "upsert",
+                "add_missing": True,
                 "dry_run": True,
             },
         )
@@ -295,7 +295,7 @@ class TestRestoreRunnerModeRouting:
         kwargs = engine.run_merge.call_args.kwargs
         assert kwargs["target_namespace"] == "kb"
         assert kwargs["on_clash"] == "overwrite"
-        assert kwargs["on_schema_clash"] == "upsert"
+        assert kwargs["add_missing"] is True
         assert kwargs["dry_run"] is True
 
     async def test_default_mode_runs_the_plain_restore(self, tmp_path):

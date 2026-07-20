@@ -35,6 +35,11 @@ from wip_toolkit.models import (
 from wip_auth.composite_key import compute_composite_key_hash
 
 from .file_storage_client import FileStorageClient
+from .merge_definitions import (
+    DEFINITION_TYPES,
+    DefinitionsPlan,
+    DefinitionsPlanner,
+)
 from .merge_plan import MERGE_ENTITY_SPECS, EntityPlan, MergePlanner
 from .reporting_client import ReportingSyncClient
 
@@ -528,14 +533,11 @@ class DirectRestoreEngine:
 
         self._emit("complete", "Restore complete", percent=100)
 
-    # Clash policies. Documents take on_clash; the schema entities take their
-    # own on_schema_clash, because merging data into a namespace whose schema
-    # diverged from the archive is a migration someone should look at — the
-    # platform's own create-as-upsert write semantics deliberately do NOT make
-    # `upsert` the default for a restore action.
+    # Documents are the only thing a merge resolves by policy. Definitions
+    # (terminologies, terms, templates) are a precondition instead: a merge
+    # that had to reconcile schemas while writing data would be validating one
+    # side's documents against the other's contract.
     MERGE_CLASH_POLICIES = ("skip", "overwrite")
-    MERGE_SCHEMA_CLASH_POLICIES = ("fail", "skip", "upsert")
-    SCHEMA_ENTITY_TYPES = ("terminologies", "terms", "templates")
 
     async def run_merge(
         self,
@@ -543,8 +545,8 @@ class DirectRestoreEngine:
         target_namespace: str,
         *,
         on_clash: str = "skip",
-        on_schema_clash: str = "fail",
-        cross_install: bool = False,
+        add_missing: bool = False,
+        extend_terminologies: bool = False,
         skip_documents: bool = False,
         skip_files: bool = False,
         batch_size: int = 500,
@@ -552,34 +554,29 @@ class DirectRestoreEngine:
     ) -> None:
         """Merge an archive into an existing, possibly non-empty namespace.
 
-        Same namespace name, IDs preserved: the archive is a delta source, not
-        a replacement. Entities the target lacks are inserted; entities it
-        already holds are resolved by policy.
+        Two passes. The first checks that the two sides' definitions —
+        terminologies, terms and templates — are compatible by content, and
+        produces the ID mapping that says which of them are the same thing
+        under different IDs. Only then do documents move, against a schema both
+        sides are known to agree on.
 
-        ``cross_install`` declares that the archive comes from a *different*
-        install, so the two sides never shared an ID space. It changes one
-        thing and everything that follows from it: an entity the target holds
-        under a different ID becomes a match rather than an identity conflict,
-        the target's ID survives, and every incoming reference to the
-        archive's ID is rewritten before insert. It cannot be inferred — the
-        same evidence means corruption within one install and normal
-        divergence across two — so it is always the caller's declaration.
+        Definitions are a precondition, not a policy: a mismatch refuses.
+        ``add_missing`` and ``extend_terminologies`` are the two opt-ins that
+        let the merge extend the target's definitions instead of refusing;
+        without them, changing a live namespace's schema is never a side
+        effect of restoring data into it.
 
-        The plan is built before anything is written, which makes ``dry_run``
-        exact rather than indicative — it reports the same classification the
-        real run acts on. A dry run still *fails* on everything a real run
-        would refuse (identity conflicts, schema divergence under
-        ``on_schema_clash=fail``); surfacing those is what it is for.
+        Documents get the policy: ``on_clash`` decides what happens where the
+        target already holds an identity.
+
+        Both passes are computed before anything is written, so ``dry_run`` is
+        exact rather than indicative, and still fails on everything a real run
+        would refuse.
         """
         if on_clash not in self.MERGE_CLASH_POLICIES:
             raise RestoreEngineError(
                 f"Invalid on_clash '{on_clash}' — must be one of "
                 f"{', '.join(self.MERGE_CLASH_POLICIES)}"
-            )
-        if on_schema_clash not in self.MERGE_SCHEMA_CLASH_POLICIES:
-            raise RestoreEngineError(
-                f"Invalid on_schema_clash '{on_schema_clash}' — must be one of "
-                f"{', '.join(self.MERGE_SCHEMA_CLASH_POLICIES)}"
             )
 
         with ArchiveReader(archive_path) as reader:
@@ -608,61 +605,74 @@ class DirectRestoreEngine:
                 ns_config = entry.namespace_config if entry else manifest.namespace_config
                 await self._report_namespace_config_drift(tgt, ns_config)
 
-                plans, doc_groups = self._build_merge_plan_inputs(
-                    reader, src, skip_documents=skip_documents, skip_files=skip_files
+                archive_entities, doc_groups = self._build_merge_plan_inputs(
+                    reader, src, skip_documents=skip_documents,
+                    skip_files=skip_files,
                 )
-                planner = MergePlanner(
-                    self._mongo, COLLECTION_MAP, cross_install=cross_install
-                )
+
+                # ---- Pass 1: definitions -------------------------------
+                definitions = await DefinitionsPlanner(
+                    self._mongo, COLLECTION_MAP,
+                    add_missing=add_missing,
+                    extend_terminologies=extend_terminologies,
+                ).plan(archive_entities, tgt)
+                self._emit_definitions_plan(tgt, definitions, dry_run=dry_run)
+                self._enforce_definitions_gate(tgt, definitions)
+
+                # The mapping pass 1 produced is what lets pass 2 point the
+                # incoming data at the definitions that survived.
                 remapper = IDRemapper()
+                for old_id, new_id in definitions.mapping["terminologies"].items():
+                    remapper.add_terminology_mapping(old_id, new_id)
+                for old_id, new_id in definitions.mapping["terms"].items():
+                    remapper.add_term_mapping(old_id, new_id)
+                for old_id, new_id in definitions.mapping["templates"].items():
+                    remapper.add_template_mapping(old_id, new_id)
+
+                # ---- Pass 2: everything else ---------------------------
+                planner = MergePlanner(self._mongo, COLLECTION_MAP)
                 built: dict[str, EntityPlan] = {}
                 rewritten = 0
-                # Dependency order matters twice over here. A cross-install
-                # merge must rewrite an entity's parent references BEFORE
-                # matching it, because the logical key it matches on contains
-                # them: a term's key is (terminology_id, value), and the
-                # archive's terminology_id belongs to the other install. So
-                # each type is planned only after the types it points at have
-                # contributed their matches to the remapper.
                 for entity_type in MERGE_ENTITY_ORDER:
-                    entities = plans.get(entity_type)
+                    if entity_type in DEFINITION_TYPES:
+                        continue
+                    entities = archive_entities.get(entity_type)
                     if entities is None:
                         continue
-                    if cross_install:
-                        entities, changed = self._rewrite_entities(
-                            entity_type, entities, remapper
-                        )
-                        rewritten += changed
-                        plans[entity_type] = entities
-                        if entity_type == "documents":
-                            doc_groups = self._regroup_documents(
-                                doc_groups, remapper
-                            )
+                    entities, changed = self._rewrite_entities(
+                        entity_type, entities, remapper
+                    )
+                    rewritten += changed
+                    archive_entities[entity_type] = entities
+                    if entity_type == "documents":
+                        doc_groups = self._regroup_documents(doc_groups, remapper)
                     plan = await planner.plan(entity_type, entities, tgt)
                     built[entity_type] = plan
-                    if cross_install:
-                        self._record_matches(entity_type, plan, remapper)
-                if cross_install:
+                    # A document the target holds under another ID is still a
+                    # collision for policy, but the ID it survives under has to
+                    # reach anything referencing it.
+                    for old_id, new_id in plan.mapping.items():
+                        if entity_type == "documents":
+                            remapper.add_document_mapping(old_id, new_id)
+                        elif entity_type == "files":
+                            remapper.add_file_mapping(old_id, new_id)
+
+                if rewritten:
                     self._emit(
                         "phase_merge_plan",
-                        f"[{tgt}] cross-install: {remapper.total_mappings} "
-                        f"identit(ies) matched to the target's IDs, "
-                        f"{rewritten} incoming entit(ies) had references rewritten",
+                        f"[{tgt}] {rewritten} incoming entit(ies) had references "
+                        f"rewritten onto the target's definitions",
                     )
-
-                self._emit_merge_plan(
-                    tgt, built, on_clash=on_clash,
-                    on_schema_clash=on_schema_clash, dry_run=dry_run,
-                )
-                self._enforce_merge_gates(tgt, built, on_schema_clash=on_schema_clash)
+                self._emit_merge_plan(tgt, built, on_clash=on_clash, dry_run=dry_run)
+                self._enforce_merge_gates(tgt, built)
 
                 if dry_run:
                     continue
 
+                await self._apply_definitions(tgt, definitions, remapper, batch_size)
                 await self._apply_merge(
                     tgt, built, doc_groups,
-                    on_clash=on_clash, on_schema_clash=on_schema_clash,
-                    batch_size=batch_size,
+                    on_clash=on_clash, batch_size=batch_size,
                 )
                 inserted_file_ids.update(
                     f["file_id"] for f in built.get(
@@ -875,11 +885,89 @@ class DirectRestoreEngine:
         for match in plan.matches:
             add(match.old_id, match.new_id)
 
-    def _merge_policy_for(
-        self, entity_type: str, *, on_clash: str, on_schema_clash: str
-    ) -> str:
-        if entity_type in self.SCHEMA_ENTITY_TYPES:
-            return on_schema_clash
+    def _emit_definitions_plan(
+        self, namespace: str, definitions: DefinitionsPlan, *, dry_run: bool
+    ) -> None:
+        """Report pass 1: what matched, what would be added, what the target
+        kept."""
+        phase = "phase_dry_run" if dry_run else "phase_definitions"
+        for entity_type, counts in definitions.summary().items():
+            if not any(counts.values()):
+                continue
+            self._emit(
+                phase,
+                f"[{namespace}] {entity_type}: {counts['unchanged']} already "
+                f"identical, {counts['add']} to add, {counts['mapped']} mapped "
+                "to the target's IDs",
+            )
+        # Never silent: an operator who loses a label or an alias list to the
+        # target's copy finds out later from a UI that changed under them.
+        for note in definitions.target_wins[:20]:
+            self._emit(
+                phase,
+                f"[{namespace}] {note.entity_type} '{note.name}': target's "
+                f"{', '.join(note.fields)} kept, the archive's discarded "
+                f"({note.detail})",
+            )
+        if len(definitions.target_wins) > 20:
+            self._emit(
+                phase,
+                f"[{namespace}] …and {len(definitions.target_wins) - 20} more "
+                "definition(s) where the target's metadata was kept",
+            )
+
+    def _enforce_definitions_gate(
+        self, namespace: str, definitions: DefinitionsPlan
+    ) -> None:
+        """Definitions are the precondition — an incompatibility stops the
+        merge before any document moves."""
+        if definitions.compatible:
+            return
+        detail = "; ".join(
+            f"{issue.entity_type} '{issue.name}' — {issue.reason}"
+            for issue in definitions.incompatibilities[:5]
+        )
+        raise RestoreEngineError(
+            f"Merge into '{namespace}' refused — "
+            f"{len(definitions.incompatibilities)} definition(s) are not "
+            f"compatible with the target. {detail}. Documents cannot be merged "
+            "under definitions the two sides disagree on."
+        )
+
+    async def _apply_definitions(
+        self,
+        namespace: str,
+        definitions: DefinitionsPlan,
+        remapper: IDRemapper,
+        batch_size: int,
+    ) -> None:
+        """Insert the definitions the opt-in strategies allowed.
+
+        Dependency order again: a term added to the target must point at the
+        terminology that survived, not at the archive's copy of it.
+        """
+        for entity_type in DEFINITION_TYPES:
+            rows = definitions.to_add[entity_type]
+            if not rows:
+                continue
+            if entity_type == "terms":
+                rows = [remapper.remap_term(row) for row in rows]
+            elif entity_type == "templates":
+                rows = [remapper.remap_template(row) for row in rows]
+
+            db_name, coll_name = COLLECTION_MAP[entity_type]
+            collection = self._mongo[db_name][coll_name]
+            for start in range(0, len(rows), batch_size):
+                await self._insert_batch(
+                    collection, rows[start:start + batch_size], entity_type
+                )
+            self._emit(
+                "phase_definitions",
+                f"[{namespace}] added {len(rows)} {entity_type} the target "
+                "did not have",
+            )
+
+    def _merge_policy_for(self, entity_type: str, *, on_clash: str) -> str:
         if entity_type == "documents":
             return on_clash
         # Term relations dedup by their endpoints, files by checksum, registry
@@ -893,7 +981,6 @@ class DirectRestoreEngine:
         plans: dict[str, EntityPlan],
         *,
         on_clash: str,
-        on_schema_clash: str,
         dry_run: bool,
     ) -> None:
         """Report the classification — the dry run's whole output, and a real
@@ -904,9 +991,7 @@ class DirectRestoreEngine:
             counts = plan.summary()
             if not any(counts.values()):
                 continue
-            policy = self._merge_policy_for(
-                entity_type, on_clash=on_clash, on_schema_clash=on_schema_clash
-            )
+            policy = self._merge_policy_for(entity_type, on_clash=on_clash)
             self._emit(
                 phase,
                 f"[{namespace}] {verb} {entity_type}: "
@@ -937,51 +1022,27 @@ class DirectRestoreEngine:
         return " ".join(parts) or "<unidentified>"
 
     def _enforce_merge_gates(
-        self,
-        namespace: str,
-        plans: dict[str, EntityPlan],
-        *,
-        on_schema_clash: str,
+        self, namespace: str, plans: dict[str, EntityPlan]
     ) -> None:
-        """Refuse the merge on anything policy does not cover."""
+        """Refuse on the one thing no policy covers: an ID naming two things."""
         conflicts = [
             (entity_type, conflict)
             for entity_type, plan in plans.items()
             for conflict in plan.conflicts
         ]
-        if conflicts:
-            detail = "; ".join(
-                f"{entity_type}: {conflict.reason}"
-                for entity_type, conflict in conflicts[:5]
-            )
-            raise RestoreEngineError(
-                f"Merge into '{namespace}' refused — {len(conflicts)} identity "
-                f"conflict(s) between archive and target. {detail}. Merge "
-                "preserves IDs and cannot reconcile identities that disagree; "
-                "this archive needs the ID-reminting (new-namespace) mode."
-            )
-
-        if on_schema_clash != "fail":
+        if not conflicts:
             return
-        divergent = [
-            (entity_type, clash)
-            for entity_type in self.SCHEMA_ENTITY_TYPES
-            if entity_type in plans
-            for clash in plans[entity_type].differing_clashes
-        ]
-        if divergent:
-            detail = "; ".join(
-                f"{entity_type} "
-                f"{self._describe_entity(entity_type, clash.entity)} differs in "
-                f"{', '.join(sorted(clash.diff))}"
-                for entity_type, clash in divergent[:5]
-            )
-            raise RestoreEngineError(
-                f"Merge into '{namespace}' refused — {len(divergent)} schema "
-                f"entit(ies) differ between archive and target. {detail}. "
-                "Choose on_schema_clash=skip to keep the target's schema, or "
-                "on_schema_clash=upsert to take the archive's."
-            )
+        detail = "; ".join(
+            f"{entity_type}: {conflict.reason}"
+            for entity_type, conflict in conflicts[:5]
+        )
+        raise RestoreEngineError(
+            f"Merge into '{namespace}' refused — {len(conflicts)} identity "
+            f"conflict(s) between archive and target. {detail}. One ID names "
+            "two different entities across the two sides; no automatic "
+            "resolution is defensible, since picking either would destroy the "
+            "other identity."
+        )
 
     async def _apply_merge(
         self,
@@ -990,7 +1051,6 @@ class DirectRestoreEngine:
         doc_groups: dict[str, list[dict[str, Any]]],
         *,
         on_clash: str,
-        on_schema_clash: str,
         batch_size: int,
     ) -> None:
         """Write the plan. Inserts first, then policy-driven clash handling."""
@@ -1027,9 +1087,7 @@ class DirectRestoreEngine:
             if entity_type == "templates":
                 await self._reporting_phase_structure(namespace)
 
-            if entity_type in self.SCHEMA_ENTITY_TYPES and on_schema_clash == "upsert":
-                await self._upsert_schema_clashes(namespace, entity_type, plan)
-            elif entity_type == "documents" and on_clash == "overwrite":
+            if entity_type == "documents" and on_clash == "overwrite":
                 await self._overwrite_documents(namespace, plan, doc_groups)
 
         entries_plan = plans.get("registry_entries")
@@ -1041,90 +1099,6 @@ class DirectRestoreEngine:
                     e["entry_id"] for e in entries_plan.to_insert if e.get("entry_id")
                 ],
             )
-
-    async def _upsert_schema_clashes(
-        self, namespace: str, entity_type: str, plan: EntityPlan
-    ) -> None:
-        """Take the archive's version of a diverged schema entity.
-
-        Templates are versioned, so the archive's definition lands as a NEW
-        version of the target's template — the platform's own create-as-upsert
-        shape, and the reason nothing is overwritten or lost. Terminologies and
-        terms have no version axis: for them "the archive wins" can only mean
-        updating the target row in place, which is what an operator asking for
-        upsert is asking for.
-        """
-        clashes = plan.differing_clashes
-        if not clashes:
-            return
-
-        db_name, coll_name = COLLECTION_MAP[entity_type]
-        collection = self._mongo[db_name][coll_name]
-
-        if entity_type == "templates":
-            heads = await self._template_head_versions(
-                namespace, [c.target.get("template_id") for c in clashes]
-            )
-            new_rows: list[dict[str, Any]] = []
-            for clash in clashes:
-                template_id = clash.target.get("template_id")
-                next_version = heads.get(template_id, clash.target.get("version", 1)) + 1
-                heads[template_id] = next_version
-                row = dict(clash.entity)
-                row["template_id"] = template_id
-                row["version"] = next_version
-                new_rows.append(row)
-            await self._insert_batch(collection, new_rows, entity_type)
-            self._emit(
-                "phase_templates",
-                f"[{namespace}] upserted {len(new_rows)} template(s) as new "
-                "versions from the archive",
-            )
-            return
-
-        updated = 0
-        for clash in clashes:
-            payload = {
-                key: value
-                for key, value in clash.entity.items()
-                if key not in ("_id", "created_at", "created_by")
-            }
-            await collection.update_one(
-                {
-                    "namespace": namespace,
-                    **{
-                        field_name: clash.target.get(field_name)
-                        for field_name in MERGE_ENTITY_SPECS[entity_type].id_fields
-                    },
-                },
-                {"$set": payload},
-            )
-            updated += 1
-        self._emit(
-            f"phase_{entity_type}",
-            f"[{namespace}] updated {updated} {entity_type} in place from the "
-            "archive (no version history exists for this entity type)",
-        )
-
-    async def _template_head_versions(
-        self, namespace: str, template_ids: list[str | None]
-    ) -> dict[str, int]:
-        """Highest stored version per template, for appending new ones."""
-        wanted = [t for t in template_ids if t]
-        heads: dict[str, int] = {}
-        if not wanted:
-            return heads
-        db_name, coll_name = COLLECTION_MAP["templates"]
-        cursor = self._mongo[db_name][coll_name].find(
-            {"namespace": namespace, "template_id": {"$in": wanted}},
-            {"template_id": 1, "version": 1},
-        )
-        async for row in cursor:
-            template_id = row.get("template_id")
-            version = row.get("version", 1)
-            if version > heads.get(template_id, 0):
-                heads[template_id] = version
-        return heads
 
     async def _overwrite_documents(
         self,

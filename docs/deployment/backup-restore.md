@@ -99,94 +99,93 @@ by a *different* entry is left with its incumbent and reported as a warning.
 
 `mode=merge` (REST form field, MCP `start_restore`, `@wip/client`
 `startRestore`) treats the archive as a **delta** against a namespace that
-already holds data, instead of requiring an empty target. Same install, same
-namespace name, IDs preserved. Use it to bring a namespace up to an archive's
-state without tearing it down.
+already holds data, instead of requiring an empty target. Use it to bring a
+namespace up to an archive's state without tearing it down, or to fold another
+install's copy of a namespace into this one.
 
-The preconditions invert accordingly: the namespace must **exist**, its
-reporting schema is expected to hold tables (so `drop_stale_reporting` is
-rejected — it would discard the data you are merging into), and only unusable
-bookkeeping still refuses. The archive's namespace config is compared and any
-drift reported, never applied: the live namespace's configuration belongs to
-whoever runs it.
+A merge runs in two passes.
 
-Entities the target lacks are inserted. Everything else is policy:
+### Pass 1 — definitions must be compatible
 
-| Option | Applies to | Values |
-|---|---|---|
-| `on_clash` | documents | `skip` (default) — target wins. `overwrite` — the archive's LATEST version is appended on top of the target's head, adopting the target's `document_id`. |
-| `on_schema_clash` | terminologies, terms, templates | `fail` (default) — refuse and report the differences. `skip` — target's schema wins. `upsert` — take the archive's. |
+Before a single document moves, the archive's terminologies, terms and
+templates are checked against the target's, **by content, not by ID**. That
+matters: two installs that independently created `GENDER` hold it under
+different UUIDs, and comparing content recognises them as the same
+vocabulary without you having to say where the archive came from. The same
+pass learns which definitions are the same thing under different IDs, and the
+document pass uses that mapping to repoint incoming data.
 
-Two deliberate shapes worth knowing before you choose:
+Compatible means, per definition:
 
-- **Overwrite never splices histories.** The target's versions are kept and the
-  archive's are not interleaved into them — two independent version chains have
-  no defined order, and merging them would corrupt the `(document_id, version)`
-  contract. You get the target's history plus one new head. On a
-  `versioned: false` template the single version is replaced in place instead,
-  which is that template's own lifecycle.
-- **`fail` is the schema default on purpose.** The platform's write path treats
-  create as upsert, but a restore action's clash handling is the operator's
-  decision, not the platform's. Merging data into a namespace whose schema has
-  diverged from the archive is a migration someone should look at. Under
-  `upsert`, a template lands as a NEW version (nothing overwritten);
-  terminologies and terms have no version axis, so there `upsert` updates the
-  row in place.
+- **Template** — the target has one with the same value and identical content,
+  or has none with that value.
+- **Terminology** — the target has none with that value, or has one whose
+  terms reconcile.
+- **Terms** — extra terms on the archive side can be added; extra terms on the
+  *target* side are harmless, since nothing incoming references them.
 
-A merge **refuses outright** when the archive and target disagree about
-identity — the same ID under a different logical key, or one logical key under
-two IDs. Within one install that means identity has been corrupted, and merge
-preserves IDs so it cannot reconcile it.
+Incompatible is the leftover: **same name, different content**. A template
+with the same value and a different schema refuses the merge, because merging
+documents under it would validate one side's data against the other's
+contract.
 
-### Merging an archive from a different install
+**The default changes nothing.** Verify-only is deliberate: altering a live
+namespace's definitions is an active decision, never a side effect of
+restoring data into it. Two separate opt-ins let the merge extend them:
 
-Set `cross_install=true` when the archive comes from another install. The two
-sides never shared an ID space, so the same real-world entity legitimately
-exists under two different UUIDs — and the refusal above would fire on data
-that is perfectly healthy. With the flag, that case becomes a **match**: the
-target's copy wins, the incoming one is dropped, and every incoming reference
-to it is rewritten to the target's ID.
+| Flag | Effect |
+|---|---|
+| `add_missing` | Insert terminologies and templates the target does not have |
+| `extend_terminologies` | Add terms the target's terminology is missing |
 
-This is the consolidation case — folding two installs' copies of one namespace
-together. It is never inferred, and cannot be: the same evidence means
-corruption within one install and ordinary divergence across two. Only the
-caller knows which they have.
+They are separate because allowing new vocabulary entries is not the same
+decision as allowing new schemas.
 
-Two things follow that are worth knowing:
+Where a definition matches but its **label, description or aliases differ**,
+the target's win — and the difference is reported, in the job output and the
+dry run. Losing a label silently is the kind of change you otherwise discover
+much later, from a UI that no longer says what you expect.
 
-- **Skipping is only half the job.** If the target's `GENDER` wins, the
-  incoming terms still carry the *other* install's `terminology_id`. They are
-  repointed before insert — otherwise the merge would import references that
-  resolve to nothing. The same applies one level down to Registry composite
-  keys, which embed parent IDs and are rehashed after rewriting.
-- **Matching runs in dependency order for a reason.** A term's logical key is
-  `(terminology_id, value)`, so the term can only be recognised as one the
-  target already has *after* its terminology has contributed its match. The
-  dry run reports how many identities were matched and how many incoming
-  entities had references rewritten.
+### Pass 2 — documents
 
-> **Known gap — do not rely on `on_schema_clash` here.** An earlier version of
-> this page said `on_schema_clash=fail` catches diverged schemas in this mode.
-> It does not, and that was verified by probe: when the two sides hold the
-> same template under *different* IDs — which is the normal cross-install
-> case — the collision is classified as a match and never reaches the schema
-> policy at all. The archive's template is dropped silently and its documents
-> land against the target's schema. Until the two-pass restructure lands
-> (`docs/design/restore-modes-merge-and-new-namespace.md`, Phase 2b), check
-> schema equivalence yourself before consolidating two installs, and prefer a
-> `dry_run` plus `list_templates` comparison on both sides.
+With a schema both sides agree on, documents merge per identity under
+`on_clash`:
 
-`dry_run` is exact for a merge: the plan is computed before anything is
-written, so the report is what a real run would do — per entity type, how many
-would be inserted, are unchanged, clash, or conflict, with the first few
-differences named. It still fails on everything a real run would refuse, which
-is the point of asking first.
+- `skip` (default) — target wins; the archive's version is not imported.
+- `overwrite` — the archive's **latest** version is appended on top of the
+  target's head, adopting the target's `document_id`.
+
+Overwrite never splices histories. The target's versions are kept and the
+archive's are not interleaved into them — two independent version chains have
+no defined order, and merging them would corrupt the `(document_id, version)`
+contract. You get the target's history plus one new head. On a
+`versioned: false` template the single version is replaced in place instead,
+which is that template's own lifecycle.
+
+A merge refuses outright on one thing no policy covers: **one ID naming two
+different entities** across the two sides. Matching is by content, so the same
+entity under two IDs is a match; the reverse cannot be resolved, since picking
+either side would destroy an identity.
+
+### Preconditions and the dry run
+
+The namespace must **exist**, its reporting schema is expected to hold tables
+(so `drop_stale_reporting` is rejected — it would discard the data you are
+merging into), and only unusable bookkeeping still refuses. The archive's
+namespace config is compared and any drift reported, never applied: the live
+namespace's configuration belongs to whoever runs it.
+
+`dry_run` is exact: both passes are computed before anything is written, so
+the report is what a real run would do — per type, how many definitions are
+already identical, how many would be added, how many map to the target's IDs,
+every difference the target won, and the document counts. It still fails on
+everything a real run would refuse.
 
 ```bash
 # See what would happen, decide, then run it
 start_restore(namespace="kb", archive_path="kb.zip", mode="merge", dry_run=True)
 start_restore(namespace="kb", archive_path="kb.zip", mode="merge",
-              on_clash="overwrite", on_schema_clash="skip")
+              add_missing=True, on_clash="overwrite")
 ```
 
 ---

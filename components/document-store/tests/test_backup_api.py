@@ -297,7 +297,7 @@ async def test_merge_mode_forwards_its_policies_to_the_runner(
             data={
                 "mode": "merge",
                 "on_clash": "overwrite",
-                "on_schema_clash": "upsert",
+                "add_missing": "true",
             },
         )
 
@@ -305,13 +305,13 @@ async def test_merge_mode_forwards_its_policies_to_the_runner(
     options = mk_runner.call_args.kwargs["options"]
     assert options["mode"] == "merge"
     assert options["on_clash"] == "overwrite"
-    assert options["on_schema_clash"] == "upsert"
+    assert options["add_missing"] is True
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("on_clash", "clobber"), ("on_schema_clash", "sometimes")],
+    [("on_clash", "clobber")],
 )
 async def test_merge_rejects_unknown_policies(
     client: AsyncClient, auth_headers: dict, field: str, value: str
@@ -327,11 +327,11 @@ async def test_merge_rejects_unknown_policies(
 
 
 @pytest.mark.asyncio
-async def test_cross_install_flag_reaches_the_runner(
+async def test_extend_terminologies_reaches_the_runner(
     client: AsyncClient, auth_headers: dict
 ):
-    """cross_install decides whether a duplicate identity is a match or a
-    refusal, so it must reach the engine rather than sit on the job record."""
+    """The opt-ins decide whether the target's definitions may change, so they
+    must reach the engine rather than sit on the job record."""
     fake_task = asyncio.get_running_loop().create_future()
     fake_task.set_result(None)
     with (
@@ -348,11 +348,11 @@ async def test_cross_install_flag_reaches_the_runner(
             "/api/document-store/backup/namespaces/wip/restore",
             headers=auth_headers,
             files={"archive": ("b.zip", b"PK\x03\x04x", "application/zip")},
-            data={"mode": "merge", "cross_install": "true"},
+            data={"mode": "merge", "extend_terminologies": "true"},
         )
 
     assert resp.status_code == 202, resp.text
-    assert mk_runner.call_args.kwargs["options"]["cross_install"] is True
+    assert mk_runner.call_args.kwargs["options"]["extend_terminologies"] is True
 
 
 @pytest.mark.asyncio
@@ -360,8 +360,8 @@ async def test_cross_install_flag_reaches_the_runner(
     ("field", "value"),
     [
         ("on_clash", "overwrite"),
-        ("on_schema_clash", "upsert"),
-        ("cross_install", "true"),
+        ("add_missing", "true"),
+        ("extend_terminologies", "true"),
     ],
 )
 async def test_plain_restore_rejects_merge_policies(

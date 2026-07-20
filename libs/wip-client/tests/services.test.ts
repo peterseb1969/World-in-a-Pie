@@ -1023,28 +1023,28 @@ describe('Service classes via createWipClient', () => {
       await client.documents.startRestore('aa', archive, {
         mode: 'merge',
         on_clash: 'overwrite',
-        on_schema_clash: 'upsert',
+        add_missing: true,
       })
 
       const [, options] = fetchMock.mock.calls[0]
       const fd = options.body as FormData
       expect(fd.get('mode')).toBe('merge')
       expect(fd.get('on_clash')).toBe('overwrite')
-      expect(fd.get('on_schema_clash')).toBe('upsert')
+      expect(fd.get('add_missing')).toBe('true')
     })
 
-    it('startRestore sends cross_install for a consolidation merge', async () => {
+    it('startRestore sends the definitions opt-ins', async () => {
       mockJsonResponse(backupSnapshot({ kind: 'restore', namespace: 'aa' }))
 
       const archive = new Blob([new Uint8Array([0x50, 0x4b])], { type: 'application/zip' })
       await client.documents.startRestore('aa', archive, {
         mode: 'merge',
-        cross_install: true,
+        extend_terminologies: true,
       })
 
       const [, options] = fetchMock.mock.calls[0]
       const fd = options.body as FormData
-      expect(fd.get('cross_install')).toBe('true')
+      expect(fd.get('extend_terminologies')).toBe('true')
     })
 
     it('startRestore omits unset option fields', async () => {

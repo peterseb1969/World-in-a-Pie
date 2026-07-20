@@ -34,16 +34,7 @@ export type RestoreMode = 'restore' | 'merge' | 'fresh'
  */
 export type ClashPolicy = 'skip' | 'overwrite'
 
-/**
- * What a merge does when an archived terminology, term or template differs
- * from the target's. `'fail'` (default) refuses the whole merge and reports
- * the differences — merging data into a namespace whose schema has diverged
- * is a migration someone should look at. `'skip'` keeps the target's
- * schema. `'upsert'` takes the archive's: a NEW template version (nothing
- * overwritten), or an in-place update for terminologies and terms, which
- * have no version axis.
- */
-export type SchemaClashPolicy = 'fail' | 'skip' | 'upsert'
+
 
 /**
  * Persistent snapshot of a backup or restore job. Returned by every backup
@@ -104,17 +95,15 @@ export interface RestoreOptions {
   mode?: RestoreMode
   /** Merge only — resolution for a document identity the target already holds. */
   on_clash?: ClashPolicy
-  /** Merge only — resolution for a diverged terminology, term or template. */
-  on_schema_clash?: SchemaClashPolicy
   /**
-   * Merge only — the archive comes from a DIFFERENT install, so the two
-   * sides never shared an ID space. An entity the target already holds under
-   * another ID is then matched and skipped (the target's ID survives, and
-   * incoming references to it are rewritten) instead of being refused as an
-   * identity conflict. Never inferred: the same evidence means identity
-   * corruption within one install and ordinary divergence across two.
+   * Merge only — insert terminologies and templates the target does not
+   * have. Without it a missing definition refuses the merge: changing a live
+   * namespace's definitions is an active decision, not a side effect of
+   * restoring data into it.
    */
-  cross_install?: boolean
+  add_missing?: boolean
+  /** Merge only — add terms the target's terminology is missing. */
+  extend_terminologies?: boolean
   skip_documents?: boolean
   skip_files?: boolean
   batch_size?: number

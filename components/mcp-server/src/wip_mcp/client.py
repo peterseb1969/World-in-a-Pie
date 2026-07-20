@@ -1524,8 +1524,8 @@ class WipClient:
         archive_path: str,
         mode: str = "restore",
         on_clash: str = "skip",
-        on_schema_clash: str = "fail",
-        cross_install: bool = False,
+        add_missing: bool = False,
+        extend_terminologies: bool = False,
         skip_documents: bool = False,
         skip_files: bool = False,
         batch_size: int = 500,
@@ -1560,8 +1560,8 @@ class WipClient:
         }
         if mode == "merge":
             data["on_clash"] = on_clash
-            data["on_schema_clash"] = on_schema_clash
-            data["cross_install"] = str(cross_install).lower()
+            data["add_missing"] = str(add_missing).lower()
+            data["extend_terminologies"] = str(extend_terminologies).lower()
 
         with path.open("rb") as fh:
             files = {"archive": (path.name, fh, "application/zip")}

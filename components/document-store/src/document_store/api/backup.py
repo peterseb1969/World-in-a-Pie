@@ -16,7 +16,8 @@ Endpoints
     disk and a restore job is kicked off against it. Returns the initial
     snapshot. ``mode`` selects the semantics: ``restore`` requires an empty
     target, ``merge`` reconciles the archive into a namespace that already
-    holds data under the ``on_clash`` / ``on_schema_clash`` policies.
+    holds data: definitions must be compatible (see ``add_missing`` /
+    ``extend_terminologies``), then documents merge under ``on_clash``.
 * ``GET  /backup/jobs/{job_id}``
     Latest persisted snapshot for a job.
 * ``GET  /backup/jobs/{job_id}/events``
@@ -109,25 +110,25 @@ def _validate_merge_options(
     mode: str,
     *,
     on_clash: str,
-    on_schema_clash: str,
+    add_missing: bool,
+    extend_terminologies: bool,
     drop_stale_reporting: bool,
-    cross_install: bool = False,
 ) -> None:
-    """Reject policy options the chosen mode cannot honour.
+    """Reject options the chosen mode cannot honour.
 
-    Shared by both restore entry points. A merge policy silently ignored on a
+    Shared by both restore entry points. A merge option silently ignored on a
     plain restore would misrepresent what ran — the caller asked for clash
-    handling and got an empty-target insert — so a non-default policy outside
-    merge mode is an error rather than a no-op. Likewise
-    ``drop_stale_reporting`` is meaningless for a merge: a live namespace's
-    reporting schema is expected to hold tables, and dropping it would delete
-    the reporting data the merge is adding to.
+    handling and got an empty-target insert — so a non-default outside merge
+    mode is an error rather than a no-op. ``drop_stale_reporting`` is
+    meaningless for a merge: a live namespace's reporting schema is expected
+    to hold tables, and dropping it would delete the reporting data the merge
+    is adding to.
     """
     if mode != "merge":
         for name, value, default in (
             ("on_clash", on_clash, "skip"),
-            ("on_schema_clash", on_schema_clash, "fail"),
-            ("cross_install", cross_install, False),
+            ("add_missing", add_missing, False),
+            ("extend_terminologies", extend_terminologies, False),
         ):
             if value != default:
                 raise HTTPException(
@@ -143,14 +144,6 @@ def _validate_merge_options(
         raise HTTPException(
             status_code=400,
             detail=f"Invalid on_clash '{on_clash}' — must be 'skip' or 'overwrite'",
-        )
-    if on_schema_clash not in ("fail", "skip", "upsert"):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Invalid on_schema_clash '{on_schema_clash}' — must be "
-                "'fail', 'skip' or 'upsert'"
-            ),
         )
     if drop_stale_reporting:
         raise HTTPException(
@@ -327,7 +320,8 @@ async def start_restore(
             "'restore' requires an empty target and inserts everything. "
             "'merge' takes the archive as a delta against an existing, "
             "possibly non-empty namespace, resolving anything the target "
-            "already holds by the on_clash / on_schema_clash policies."
+            "already holds by the on_clash policy, after checking that both "
+            "sides' definitions are compatible."
         ),
     ),
     target_namespace: str | None = Form(None),
@@ -340,26 +334,21 @@ async def start_restore(
             "top of the target's head, preserving both histories."
         ),
     ),
-    on_schema_clash: str = Form(
-        "fail",
-        description=(
-            "Merge only — what to do when an archived terminology, term, or "
-            "template differs from the target's. 'fail' (default) refuses the "
-            "merge and reports the differences; 'skip' keeps the target's "
-            "schema; 'upsert' takes the archive's (a new template version, or "
-            "an in-place update for terminologies and terms)."
-        ),
-    ),
-    cross_install: bool = Form(
+    add_missing: bool = Form(
         False,
         description=(
-            "Merge only — the archive comes from a DIFFERENT install, so the "
-            "two sides never shared an ID space. An entity the target already "
-            "holds under another ID is then matched and skipped (the target's "
-            "ID survives) and incoming references to it are rewritten, instead "
-            "of being refused as an identity conflict. Never inferred: the "
-            "same evidence means corruption within one install and normal "
-            "divergence across two."
+            "Merge only — insert terminologies and templates the target does "
+            "not have. Without it, a definition the target lacks refuses the "
+            "merge: changing a live namespace's definitions is an active "
+            "decision, never a side effect of restoring data into it."
+        ),
+    ),
+    extend_terminologies: bool = Form(
+        False,
+        description=(
+            "Merge only — add terms the target's terminology is missing. "
+            "Separate from add_missing on purpose: allowing new vocabulary "
+            "entries is not the same decision as allowing new schemas."
         ),
     ),
     register_synonyms: bool = Form(False),
@@ -410,8 +399,8 @@ async def start_restore(
     _validate_merge_options(
         mode,
         on_clash=on_clash,
-        on_schema_clash=on_schema_clash,
-        cross_install=cross_install,
+        add_missing=add_missing,
+        extend_terminologies=extend_terminologies,
         drop_stale_reporting=drop_stale_reporting,
     )
     # Parameters of the retired toolkit import path. The direct restore engine
@@ -468,8 +457,8 @@ async def start_restore(
         "mode": mode,
         "target_namespace": effective_target,
         "on_clash": on_clash,
-        "on_schema_clash": on_schema_clash,
-        "cross_install": cross_install,
+        "add_missing": add_missing,
+        "extend_terminologies": extend_terminologies,
         "register_synonyms": register_synonyms,
         "skip_documents": skip_documents,
         "skip_files": skip_files,
@@ -755,8 +744,8 @@ async def restore_from_job(
     _validate_merge_options(
         request.mode,
         on_clash=request.on_clash,
-        on_schema_clash=request.on_schema_clash,
-        cross_install=request.cross_install,
+        add_missing=request.add_missing,
+        extend_terminologies=request.extend_terminologies,
         drop_stale_reporting=False,
     )
 
@@ -802,8 +791,8 @@ async def restore_from_job(
         "mode": request.mode,
         "target_namespace": effective_target,
         "on_clash": request.on_clash,
-        "on_schema_clash": request.on_schema_clash,
-        "cross_install": request.cross_install,
+        "add_missing": request.add_missing,
+        "extend_terminologies": request.extend_terminologies,
         "skip_documents": request.skip_documents,
         "skip_files": request.skip_files,
         "batch_size": request.batch_size,
