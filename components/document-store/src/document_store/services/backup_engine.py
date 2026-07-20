@@ -47,6 +47,14 @@ _DB_DEF_STORE = os.getenv("DEF_STORE_DATABASE_NAME", "wip_def_store")
 _DB_TEMPLATE_STORE = os.getenv("TEMPLATE_STORE_DATABASE_NAME", "wip_template_store")
 _DB_DOCUMENT_STORE = os.getenv("DOCUMENT_STORE_DATABASE_NAME", "wip_document_store")
 
+# Composite-key claims are the Registry's uniqueness gate: one row per
+# (namespace, entity_type, composite_key_hash) naming the entry that owns it.
+# They are NOT backed up — every claim is derivable from the registry entries
+# themselves — but they MUST be recreated after a restore. Without them a
+# restored namespace has entries whose keys nothing claims, so the next write
+# reusing one of those keys passes the gate and mints a duplicate identity.
+CLAIMS_COLLECTION: tuple[str, str] = (_DB_REGISTRY, "composite_key_claims")
+
 # (archive_entity_type) → (database_name, collection_name)
 COLLECTION_MAP: dict[str, tuple[str, str]] = {
     "terminologies": (_DB_DEF_STORE, "terminologies"),
@@ -540,6 +548,11 @@ class DirectRestoreEngine:
                     if entity_type == "templates":
                         await self._reporting_phase_structure(tgt)
 
+                # Rebuild the Registry's uniqueness gate for the entries just
+                # restored. Runs after registry_entries (last in restore_order)
+                # so every entry a claim points at exists.
+                await self._recreate_claims(tgt, batch_size=batch_size)
+
                 # Count parity after the namespace's data is in: expected vs
                 # actual rows, bounded wait. Mismatch completes WITH a
                 # warning — never a hard fail (operator ruling).
@@ -551,6 +564,132 @@ class DirectRestoreEngine:
                 await self._restore_blobs(reader, targets[0][1])
 
         self._emit("complete", "Restore complete", percent=100)
+
+    async def _recreate_claims(self, namespace: str, *, batch_size: int) -> None:
+        """Rebuild composite-key claims for a namespace's restored entries.
+
+        A claim is derived state — (namespace, entity_type, hash) → owning
+        entry — so archives never carry it, but a restored namespace whose
+        entries have no claims has lost its uniqueness gate: the next
+        registration of an already-taken composite key sails through and mints
+        a second entity for one identity. This phase reconstructs one claim per
+        entry primary key plus one per embedded synonym, mirroring the
+        Registry's own backfill.
+
+        Synonyms carry their own namespace/entity_type (a synonym may live in a
+        different namespace than the entry it points at), so claims are keyed
+        from the synonym's fields, not the owner's.
+
+        A duplicate means some *other* entry already owns that hash. Skipping
+        it is the correct outcome — the incumbent keeps the key — so the phase
+        counts collisions and warns rather than failing a restore whose data is
+        already committed.
+        """
+        entries_db, entries_coll_name = COLLECTION_MAP["registry_entries"]
+        entries = self._mongo[entries_db][entries_coll_name]
+        claims_db, claims_coll_name = CLAIMS_COLLECTION
+        claims = self._mongo[claims_db][claims_coll_name]
+
+        self._emit(
+            "phase_claims",
+            f"[{namespace}] rebuilding composite-key claims",
+        )
+
+        now = datetime.now(UTC)
+        batch: list[dict[str, Any]] = []
+        claimed = 0
+        collisions = 0
+
+        async def flush() -> tuple[int, int]:
+            """Insert a batch unordered; duplicates are expected losers."""
+            from pymongo.errors import BulkWriteError
+
+            if not batch:
+                return (0, 0)
+            try:
+                result = await claims.insert_many(batch, ordered=False)
+                return (len(result.inserted_ids), 0)
+            except BulkWriteError as exc:
+                write_errors = exc.details.get("writeErrors", [])
+                duplicates = [e for e in write_errors if e.get("code") == 11000]
+                if len(duplicates) != len(write_errors):
+                    raise RestoreEngineError(
+                        f"Claim rebuild failed for namespace '{namespace}': "
+                        f"{write_errors[0].get('errmsg', 'unknown error')}"
+                    ) from exc
+                return (len(batch) - len(duplicates), len(duplicates))
+
+        cursor = entries.find(
+            {"namespace": namespace},
+            {
+                "entry_id": 1,
+                "namespace": 1,
+                "entity_type": 1,
+                "primary_composite_key_hash": 1,
+                "synonyms": 1,
+            },
+        )
+        async for entry in cursor:
+            pairs = [
+                (
+                    entry.get("namespace"),
+                    entry.get("entity_type"),
+                    entry.get("primary_composite_key_hash"),
+                    "primary",
+                )
+            ]
+            pairs += [
+                (
+                    syn.get("namespace"),
+                    syn.get("entity_type"),
+                    syn.get("composite_key_hash"),
+                    "synonym",
+                )
+                for syn in entry.get("synonyms", [])
+            ]
+            for ns, entity_type, key_hash, kind in pairs:
+                # An empty hash means "no dedup for this entity" (legacy
+                # template entries, identity-less documents). The claims
+                # unique index exempts it and so does this rebuild.
+                if not key_hash or not ns or not entity_type:
+                    continue
+                batch.append({
+                    "namespace": ns,
+                    "entity_type": entity_type,
+                    "composite_key_hash": key_hash,
+                    "owner_entry_id": entry.get("entry_id"),
+                    "kind": kind,
+                    "state": "confirmed",
+                    "created_at": now,
+                })
+
+            if len(batch) >= batch_size:
+                ok, dup = await flush()
+                claimed += ok
+                collisions += dup
+                batch = []
+
+        ok, dup = await flush()
+        claimed += ok
+        collisions += dup
+
+        logger.info(
+            "Rebuilt %d composite-key claims for namespace %s (%d collisions)",
+            claimed, namespace, collisions,
+        )
+        if collisions:
+            self._emit(
+                "warning",
+                f"[{namespace}] {collisions} composite key(s) were already "
+                "claimed by other entries and were left with their existing "
+                "owner — the restored entries sharing those keys are not "
+                "gate-protected. Review with the Registry's claim reconcile.",
+            )
+        else:
+            self._emit(
+                "phase_claims",
+                f"[{namespace}] rebuilt {claimed} composite-key claim(s)",
+            )
 
     async def _check_namespace_empty(self, namespace: str) -> None:
         """Verify no data exists for this namespace across all collections."""
@@ -604,7 +743,8 @@ class DirectRestoreEngine:
                 parts.append(f"{entity_type}={count}")
             self._emit(
                 "phase_dry_run",
-                f"[{tgt}] dry run — would restore: {', '.join(parts)}",
+                f"[{tgt}] dry run — would restore: {', '.join(parts)} "
+                "(plus rebuilt composite-key claims)",
             )
 
         if not skip_files and self._storage:
