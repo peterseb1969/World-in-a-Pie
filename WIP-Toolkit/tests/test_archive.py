@@ -556,3 +556,61 @@ class TestArchiveWriterTempFiles:
         with ArchiveReader(output) as reader:
             entities = list(reader.read_entities("documents"))
             assert len(entities) == count
+
+
+class TestStreamingReads:
+    """The reader must not materialise an entity file to yield one row.
+
+    The writer side has always been O(1) in memory (it spools to temp files);
+    the reader used to decode a whole member into one Python string, which for
+    a large namespace's documents is hundreds of megabytes for something
+    consumed a row at a time — and twice over, since counting re-read it.
+    """
+
+    @staticmethod
+    def _archive(tmp_path, rows=2000):
+        writer = ArchiveWriter(tmp_path / "stream.zip")
+        for index in range(rows):
+            writer.add_entity(
+                "documents",
+                {"document_id": f"D{index}", "payload": "x" * 100},
+                namespace="kb",
+            )
+        writer.write(Manifest(
+            format_version="3.0",
+            namespace="kb",
+            counts=EntityCounts(documents=rows),
+        ))
+        return tmp_path / "stream.zip"
+
+    def test_reading_is_lazy(self, tmp_path):
+        # The first row must arrive without the rest having been read.
+        with ArchiveReader(self._archive(tmp_path)) as reader:
+            rows = reader.read_entities("documents", namespace="kb")
+            assert next(rows)["document_id"] == "D0"
+            assert next(rows)["document_id"] == "D1"
+
+    def test_every_row_is_yielded(self, tmp_path):
+        with ArchiveReader(self._archive(tmp_path)) as reader:
+            rows = list(reader.read_entities("documents", namespace="kb"))
+        assert len(rows) == 2000
+        assert rows[-1]["document_id"] == "D1999"
+
+    def test_counting_matches_reading(self, tmp_path):
+        with ArchiveReader(self._archive(tmp_path)) as reader:
+            counted = reader.entity_count("documents", namespace="kb")
+            read = sum(1 for _ in reader.read_entities("documents", namespace="kb"))
+        assert counted == read == 2000
+
+    def test_a_missing_entity_file_yields_nothing(self, tmp_path):
+        with ArchiveReader(self._archive(tmp_path)) as reader:
+            assert list(reader.read_entities("terminologies", namespace="kb")) == []
+            assert reader.entity_count("terminologies", namespace="kb") == 0
+
+    def test_reads_can_be_reopened(self, tmp_path):
+        # Streaming opens a fresh member handle per call; a second pass must
+        # not find an exhausted one.
+        with ArchiveReader(self._archive(tmp_path, rows=10)) as reader:
+            first = list(reader.read_entities("documents", namespace="kb"))
+            second = list(reader.read_entities("documents", namespace="kb"))
+        assert first == second and len(first) == 10

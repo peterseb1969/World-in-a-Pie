@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import tempfile
@@ -265,31 +266,40 @@ class ArchiveReader:
     def read_entities(
         self, entity_type: str, *, namespace: str = ""
     ) -> Iterator[dict[str, Any]]:
-        """Iterate entities of a given type within a namespace."""
+        """Iterate entities of a given type within a namespace.
+
+        Streams line by line out of the ZIP rather than decoding the member
+        whole. The writer side has always been O(1) in memory (it spools to
+        temp files); the reader used to hold an entire entity file as one
+        Python string, which for a large namespace's documents is hundreds of
+        megabytes for something consumed one row at a time.
+        """
         ns = self._resolve_ns(namespace)
         if ns is None:
             return
         try:
-            content = self._zf.read(_entity_path(ns, entity_type)).decode("utf-8")
+            handle = self._zf.open(_entity_path(ns, entity_type))
         except KeyError:
             return
 
-        for line in content.splitlines():
-            line = line.strip()
-            if line:
-                yield json.loads(line)
+        with handle, io.TextIOWrapper(handle, encoding="utf-8") as text:
+            for line in text:
+                line = line.strip()
+                if line:
+                    yield json.loads(line)
 
     def read_synonyms(self) -> Iterator[dict[str, Any]]:
         """Iterate over synonyms from synonyms.jsonl (if present)."""
         try:
-            content = self._zf.read(SYNONYMS_FILE).decode("utf-8")
+            handle = self._zf.open(SYNONYMS_FILE)
         except KeyError:
             return
 
-        for line in content.splitlines():
-            line = line.strip()
-            if line:
-                yield json.loads(line)
+        with handle, io.TextIOWrapper(handle, encoding="utf-8") as text:
+            for line in text:
+                line = line.strip()
+                if line:
+                    yield json.loads(line)
 
     def has_synonyms(self) -> bool:
         """Check if the archive contains synonyms.jsonl."""
@@ -312,15 +322,21 @@ class ArchiveReader:
         ]
 
     def entity_count(self, entity_type: str, *, namespace: str = "") -> int:
-        """Count entities of a type within a namespace, without loading them."""
+        """Count entities of a type within a namespace, without loading them.
+
+        Streamed for the same reason as read_entities: a dry run counts every
+        entity type, and doing that by materialising each file would make the
+        cheap preview as memory-hungry as the restore it is previewing.
+        """
         ns = self._resolve_ns(namespace)
         if ns is None:
             return 0
         try:
-            content = self._zf.read(_entity_path(ns, entity_type)).decode("utf-8")
+            handle = self._zf.open(_entity_path(ns, entity_type))
         except KeyError:
             return 0
-        return sum(1 for line in content.splitlines() if line.strip())
+        with handle, io.TextIOWrapper(handle, encoding="utf-8") as text:
+            return sum(1 for line in text if line.strip())
 
     def namelist(self) -> list[str]:
         """List all files in the archive."""
