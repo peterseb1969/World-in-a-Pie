@@ -3847,6 +3847,9 @@ async def start_backup(
 async def start_restore(
     namespace: str,
     archive_path: str,
+    mode: str = "restore",
+    on_clash: str = "skip",
+    on_schema_clash: str = "fail",
     skip_documents: bool = False,
     skip_files: bool = False,
     batch_size: int = 500,
@@ -3855,31 +3858,55 @@ async def start_restore(
 ) -> str:
     """Restore from a local archive file. Returns the initial BackupJobSnapshot.
 
-    Restore is ID-preserving and writes each namespace in the archive back to
-    ITSELF; every target namespace must be empty. Restoring under a different
-    namespace name is not supported (it requires re-minting IDs — a planned
-    separate mode). Admin permission is required on every namespace the
-    archive carries.
+    Both modes are ID-preserving and write each namespace in the archive back
+    to ITSELF; writing under a different namespace name is not supported (it
+    requires re-minting IDs — a planned separate mode). Admin permission is
+    required on every namespace the archive carries.
+
+    mode='restore' (default) requires every target namespace to be EMPTY and
+    inserts the archive wholesale.
+
+    mode='merge' takes the archive as a delta against a namespace that already
+    holds data: the namespace must exist, entities it lacks are inserted, and
+    entities it already holds are resolved by policy. on_clash governs
+    documents — 'skip' (default) keeps the target's version, 'overwrite'
+    appends the archive's latest version on top of the target's head, keeping
+    both histories (on a versioned:false template it replaces the single
+    version in place instead). on_schema_clash governs terminologies, terms
+    and templates — 'fail' (default) refuses the merge and reports the
+    differences, 'skip' keeps the target's schema, 'upsert' takes the
+    archive's as a new template version (or an in-place update for
+    terminologies and terms, which have no version axis). A merge refuses
+    outright when the archive and target disagree about identity — the same ID
+    under a different logical key, or one logical key under two IDs.
+
+    dry_run is exact for a merge: the plan is computed before anything is
+    written, so the report is what a real run would do, and it still fails on
+    what a real run would refuse.
 
     The restore verifies the PostgreSQL reporting layer at phase boundaries:
     a stale reporting schema fails the precondition unless
-    drop_stale_reporting=True (which drops it first); reporting tables must
-    materialize correctly after templates restore (halts before documents
-    otherwise); and row-count parity is checked at the end — a mismatch
-    completes the job WITH warnings on the job record, never a hard fail.
-    Use check_reporting_parity for the same verification any time.
+    drop_stale_reporting=True (which drops it first, and which a merge rejects
+    — its target is live); reporting tables must materialize correctly after
+    templates are written (halts before documents otherwise); and row-count
+    parity is checked at the end — a mismatch completes the job WITH warnings
+    on the job record, never a hard fail. Use check_reporting_parity for the
+    same verification any time.
 
-    The archive at archive_path is uploaded as multipart and a restore job is
-    queued. Poll get_backup_job to track progress.
+    The archive at archive_path is uploaded as multipart and a job is queued.
+    Poll get_backup_job to track progress.
 
     Args:
         namespace: URL-path namespace (the auth check target).
         archive_path: Local filesystem path to the .zip archive to upload.
-        skip_documents: Skip restoring documents (definitions only).
-        skip_files: Skip restoring file blobs.
+        mode: 'restore' (empty target) or 'merge' (existing namespace).
+        on_clash: Merge only — 'skip' or 'overwrite' for clashing documents.
+        on_schema_clash: Merge only — 'fail', 'skip' or 'upsert' for a
+            terminology, term or template that differs from the target's.
+        skip_documents: Skip documents (definitions only).
+        skip_files: Skip file blobs.
         batch_size: Bulk-insert batch size (1-500).
-        dry_run: Run every precondition and report what would be restored,
-            without writing anything (no namespace upsert, inserts, or blobs).
+        dry_run: Report what would happen without writing anything.
         drop_stale_reporting: Drop a stale reporting schema before restoring
             instead of refusing. A dry run reports the would-drop only.
     """
@@ -3887,6 +3914,9 @@ async def start_restore(
         data = await get_client().start_restore(
             namespace=namespace,
             archive_path=archive_path,
+            mode=mode,
+            on_clash=on_clash,
+            on_schema_clash=on_schema_clash,
             skip_documents=skip_documents,
             skip_files=skip_files,
             batch_size=batch_size,

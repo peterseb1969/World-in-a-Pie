@@ -859,16 +859,20 @@ var DocumentStoreService = class extends BaseService {
    * the server, so multi-GB uploads do not buffer in memory.
    *
    * ID-preserving restore-to-self: the archive manifest determines the
-   * target namespaces (each restores to itself; every target must be
-   * empty). Set `dry_run: true` to run every precondition and get the
-   * would-restore report without writing anything. Retired toolkit-era
-   * params are no longer sent — the endpoint 400s them; see
-   * `RestoreOptions`.
+   * target namespaces (each writes to itself). `mode: 'restore'` (default)
+   * requires every target to be empty; `mode: 'merge'` reconciles the
+   * archive into a namespace that already holds data, under the
+   * `on_clash` / `on_schema_clash` policies. Set `dry_run: true` to get the
+   * report without writing anything. Retired toolkit-era params are no
+   * longer sent — the endpoint 400s them; see `RestoreOptions`.
    */
   async startRestore(namespace, archive, options = {}, filename = "archive.zip") {
     const form = new FormData();
     form.append("archive", archive, filename);
     if (options.mode !== void 0) form.append("mode", options.mode);
+    if (options.on_clash !== void 0) form.append("on_clash", options.on_clash);
+    if (options.on_schema_clash !== void 0)
+      form.append("on_schema_clash", options.on_schema_clash);
     if (options.skip_documents !== void 0)
       form.append("skip_documents", String(options.skip_documents));
     if (options.skip_files !== void 0)

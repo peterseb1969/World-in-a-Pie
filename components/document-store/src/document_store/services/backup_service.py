@@ -337,7 +337,15 @@ def make_direct_restore_runner(
     archive_path: str | Path,
     options: dict[str, Any] | None = None,
 ) -> AsyncRunner:
-    """Build an :data:`AsyncRunner` that restores from ``archive_path`` via direct Mongo writes."""
+    """Build an :data:`AsyncRunner` that writes ``archive_path`` into MongoDB.
+
+    ``options['mode']`` picks the engine entry point: ``restore`` inserts an
+    archive into an empty namespace, ``merge`` reconciles it against a
+    namespace that already holds data. They differ in preconditions and in
+    what they do on a collision, so each takes its own parameter set — a merge
+    option reaching a plain restore is rejected at the API surface rather than
+    dropped here.
+    """
     opts = dict(options or {})
 
     async def runner(progress_callback: Callable[[ProgressEvent], None]) -> Any:
@@ -351,6 +359,18 @@ def make_direct_restore_runner(
             mongo_client, storage, progress_callback,
             reporting_client=ReportingSyncClient(),
         )
+        if opts.get("mode") == "merge":
+            await engine.run_merge(
+                Path(archive_path),
+                target_namespace=opts.get("target_namespace", ""),
+                on_clash=opts.get("on_clash", "skip"),
+                on_schema_clash=opts.get("on_schema_clash", "fail"),
+                skip_documents=opts.get("skip_documents", False),
+                skip_files=opts.get("skip_files", False),
+                batch_size=opts.get("batch_size", 500),
+                dry_run=opts.get("dry_run", False),
+            )
+            return
         await engine.run_restore(
             Path(archive_path),
             target_namespace=opts.get("target_namespace", ""),

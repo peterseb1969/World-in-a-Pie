@@ -268,6 +268,117 @@ async def test_restore_dry_run_reaches_the_runner(
 
 
 # ---------------------------------------------------------------------------
+# Merge mode surface
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_merge_mode_forwards_its_policies_to_the_runner(
+    client: AsyncClient, auth_headers: dict
+):
+    """The clash policies are the merge's whole contract — they must reach the
+    engine, not just the job record."""
+    fake_task = asyncio.get_running_loop().create_future()
+    fake_task.set_result(None)
+    with (
+        patch(
+            "document_store.api.backup.backup_service.make_direct_restore_runner",
+            return_value=AsyncMock(),
+        ) as mk_runner,
+        patch(
+            "document_store.api.backup.backup_service.start_async_job",
+            new=AsyncMock(return_value=fake_task),
+        ),
+    ):
+        resp = await client.post(
+            "/api/document-store/backup/namespaces/wip/restore",
+            headers=auth_headers,
+            files={"archive": ("b.zip", b"PK\x03\x04x", "application/zip")},
+            data={
+                "mode": "merge",
+                "on_clash": "overwrite",
+                "on_schema_clash": "upsert",
+            },
+        )
+
+    assert resp.status_code == 202, resp.text
+    options = mk_runner.call_args.kwargs["options"]
+    assert options["mode"] == "merge"
+    assert options["on_clash"] == "overwrite"
+    assert options["on_schema_clash"] == "upsert"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("on_clash", "clobber"), ("on_schema_clash", "sometimes")],
+)
+async def test_merge_rejects_unknown_policies(
+    client: AsyncClient, auth_headers: dict, field: str, value: str
+):
+    resp = await client.post(
+        "/api/document-store/backup/namespaces/wip/restore",
+        headers=auth_headers,
+        files={"archive": ("b.zip", b"x", "application/zip")},
+        data={"mode": "merge", field: value},
+    )
+    assert resp.status_code == 400
+    assert field in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("on_clash", "overwrite"), ("on_schema_clash", "upsert")],
+)
+async def test_plain_restore_rejects_merge_policies(
+    client: AsyncClient, auth_headers: dict, field: str, value: str
+):
+    """A merge policy silently ignored on a plain restore would misrepresent
+    what ran: the caller asked for clash handling and got an empty-target
+    insert."""
+    resp = await client.post(
+        "/api/document-store/backup/namespaces/wip/restore",
+        headers=auth_headers,
+        files={"archive": ("b.zip", b"x", "application/zip")},
+        data={"mode": "restore", field: value},
+    )
+    assert resp.status_code == 400
+    assert field in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_merge_rejects_drop_stale_reporting(
+    client: AsyncClient, auth_headers: dict
+):
+    """The target is live, so its reporting schema is expected to hold tables —
+    dropping it would discard the data being merged into."""
+    resp = await client.post(
+        "/api/document-store/backup/namespaces/wip/restore",
+        headers=auth_headers,
+        files={"archive": ("b.zip", b"x", "application/zip")},
+        data={"mode": "merge", "drop_stale_reporting": "true"},
+    )
+    assert resp.status_code == 400
+    assert "drop_stale_reporting" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_fresh_mode_points_at_the_two_real_modes(
+    client: AsyncClient, auth_headers: dict
+):
+    resp = await client.post(
+        "/api/document-store/backup/namespaces/wip/restore",
+        headers=auth_headers,
+        files={"archive": ("b.zip", b"x", "application/zip")},
+        data={"mode": "fresh"},
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "merge" in detail and "restore" in detail
+
+
+# ---------------------------------------------------------------------------
 # GET /backup/jobs/{job_id}
 # ---------------------------------------------------------------------------
 

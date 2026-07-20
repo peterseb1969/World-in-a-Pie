@@ -291,6 +291,30 @@ class RestoreFromJobRequest(BaseModel):
     This model IS wired to the route, so its bounds are enforced.
     """
 
+    mode: str = Field(
+        "restore",
+        description=(
+            "'restore' requires an empty target and inserts everything; "
+            "'merge' takes the archive as a delta against an existing, "
+            "possibly non-empty namespace."
+        ),
+    )
+    on_clash: str = Field(
+        "skip",
+        description=(
+            "Merge only — what to do when the target already holds a "
+            "document's identity. 'skip' keeps the target's; 'overwrite' "
+            "appends the archive's latest version on top of it."
+        ),
+    )
+    on_schema_clash: str = Field(
+        "fail",
+        description=(
+            "Merge only — what to do when an archived terminology, term, or "
+            "template differs from the target's. 'fail' refuses, 'skip' keeps "
+            "the target's, 'upsert' takes the archive's."
+        ),
+    )
     skip_documents: bool = Field(
         False, description="Skip the documents phase entirely"
     )
@@ -299,6 +323,13 @@ class RestoreFromJobRequest(BaseModel):
     )
     batch_size: int = Field(
         500, ge=1, le=500, description="Document write batch size"
+    )
+    dry_run: bool = Field(
+        False,
+        description=(
+            "Run the preconditions and report what would happen without "
+            "writing anything."
+        ),
     )
 
 

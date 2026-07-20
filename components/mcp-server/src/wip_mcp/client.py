@@ -1522,6 +1522,9 @@ class WipClient:
         self,
         namespace: str,
         archive_path: str,
+        mode: str = "restore",
+        on_clash: str = "skip",
+        on_schema_clash: str = "fail",
         skip_documents: bool = False,
         skip_files: bool = False,
         batch_size: int = 500,
@@ -1530,10 +1533,15 @@ class WipClient:
     ) -> dict:
         """Upload a local archive file and start a restore job. Streams from disk.
 
-        ID-preserving restore-to-self only — the endpoint determines the
-        target namespaces from the archive manifest. Retired toolkit-era
-        params (mode overrides, register_synonyms, continue_on_error) are
-        not sent; the endpoint rejects them with 400 when set.
+        Both modes are ID-preserving and write each namespace in the archive
+        back to ITSELF — the endpoint determines the targets from the archive
+        manifest. ``restore`` requires an empty target; ``merge`` reconciles
+        into a namespace that already holds data. Retired toolkit-era params
+        (register_synonyms, continue_on_error) are not sent; the endpoint
+        rejects them with 400 when set.
+
+        The clash policies are only sent for a merge: the endpoint rejects a
+        non-default policy on a plain restore rather than ignoring it.
         """
         from pathlib import Path as _Path
         path = _Path(archive_path)
@@ -1542,13 +1550,16 @@ class WipClient:
 
         client = await self._get_client()
         data: dict[str, str] = {
-            "mode": "restore",
+            "mode": mode,
             "skip_documents": str(skip_documents).lower(),
             "skip_files": str(skip_files).lower(),
             "batch_size": str(batch_size),
             "dry_run": str(dry_run).lower(),
             "drop_stale_reporting": str(drop_stale_reporting).lower(),
         }
+        if mode == "merge":
+            data["on_clash"] = on_clash
+            data["on_schema_clash"] = on_schema_clash
 
         with path.open("rb") as fh:
             files = {"archive": (path.name, fh, "application/zip")}

@@ -1016,6 +1016,23 @@ describe('Service classes via createWipClient', () => {
       expect((archivePart as File).name).toBe('aa-backup.zip')
     })
 
+    it('startRestore sends the merge clash policies', async () => {
+      mockJsonResponse(backupSnapshot({ kind: 'restore', namespace: 'aa' }))
+
+      const archive = new Blob([new Uint8Array([0x50, 0x4b])], { type: 'application/zip' })
+      await client.documents.startRestore('aa', archive, {
+        mode: 'merge',
+        on_clash: 'overwrite',
+        on_schema_clash: 'upsert',
+      })
+
+      const [, options] = fetchMock.mock.calls[0]
+      const fd = options.body as FormData
+      expect(fd.get('mode')).toBe('merge')
+      expect(fd.get('on_clash')).toBe('overwrite')
+      expect(fd.get('on_schema_clash')).toBe('upsert')
+    })
+
     it('startRestore omits unset option fields', async () => {
       mockJsonResponse(backupSnapshot({ kind: 'restore' }))
 

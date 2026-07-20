@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
@@ -251,6 +252,74 @@ class TestPersistEventDetails:
         # and completed_at must be after it
         assert updated.completed_at is not None
         assert updated.completed_at >= updated.started_at
+
+
+
+class TestRestoreRunnerModeRouting:
+    """``mode`` picks the engine entry point.
+
+    The two modes differ in preconditions and in what they do on a collision,
+    so routing to the wrong one is not a degraded run — it is a different
+    operation. Regression guard for the class of bug where an option reached
+    the job record but never the engine.
+    """
+
+    async def test_merge_mode_runs_the_merge_with_its_policies(self, tmp_path):
+        engine = MagicMock()
+        engine.run_merge = AsyncMock()
+        engine.run_restore = AsyncMock()
+
+        runner = backup_service.make_direct_restore_runner(
+            tmp_path / "a.zip",
+            {
+                "mode": "merge",
+                "target_namespace": "kb",
+                "on_clash": "overwrite",
+                "on_schema_clash": "upsert",
+                "dry_run": True,
+            },
+        )
+        with (
+            patch(
+                "document_store.services.backup_engine.DirectRestoreEngine",
+                return_value=engine,
+            ),
+            patch(
+                "document_store.services.file_storage_client.is_file_storage_enabled",
+                return_value=False,
+            ),
+        ):
+            await runner(lambda _event: None)
+
+        engine.run_restore.assert_not_called()
+        kwargs = engine.run_merge.call_args.kwargs
+        assert kwargs["target_namespace"] == "kb"
+        assert kwargs["on_clash"] == "overwrite"
+        assert kwargs["on_schema_clash"] == "upsert"
+        assert kwargs["dry_run"] is True
+
+    async def test_default_mode_runs_the_plain_restore(self, tmp_path):
+        engine = MagicMock()
+        engine.run_merge = AsyncMock()
+        engine.run_restore = AsyncMock()
+
+        runner = backup_service.make_direct_restore_runner(
+            tmp_path / "a.zip", {"target_namespace": "kb"}
+        )
+        with (
+            patch(
+                "document_store.services.backup_engine.DirectRestoreEngine",
+                return_value=engine,
+            ),
+            patch(
+                "document_store.services.file_storage_client.is_file_storage_enabled",
+                return_value=False,
+            ),
+        ):
+            await runner(lambda _event: None)
+
+        engine.run_merge.assert_not_called()
+        engine.run_restore.assert_called_once()
 
 
 # Need asyncio mode for async tests in this module

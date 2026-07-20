@@ -14,7 +14,9 @@ Endpoints
 * ``POST /backup/namespaces/{namespace}/restore``
     Multipart upload of an archive + form fields. The upload is streamed to
     disk and a restore job is kicked off against it. Returns the initial
-    snapshot.
+    snapshot. ``mode`` selects the semantics: ``restore`` requires an empty
+    target, ``merge`` reconciles the archive into a namespace that already
+    holds data under the ``on_clash`` / ``on_schema_clash`` policies.
 * ``GET  /backup/jobs/{job_id}``
     Latest persisted snapshot for a job.
 * ``GET  /backup/jobs/{job_id}/events``
@@ -101,6 +103,62 @@ router = APIRouter(prefix="/backup", tags=["Backup"])
 def _archive_path_for(job_id: str) -> Path:
     """Scratch/staging path for a job's archive (see archive_store)."""
     return scratch_path_for(job_id)
+
+
+def _validate_merge_options(
+    mode: str,
+    *,
+    on_clash: str,
+    on_schema_clash: str,
+    drop_stale_reporting: bool,
+) -> None:
+    """Reject policy options the chosen mode cannot honour.
+
+    Shared by both restore entry points. A merge policy silently ignored on a
+    plain restore would misrepresent what ran — the caller asked for clash
+    handling and got an empty-target insert — so a non-default policy outside
+    merge mode is an error rather than a no-op. Likewise
+    ``drop_stale_reporting`` is meaningless for a merge: a live namespace's
+    reporting schema is expected to hold tables, and dropping it would delete
+    the reporting data the merge is adding to.
+    """
+    if mode != "merge":
+        for name, value, default in (
+            ("on_clash", on_clash, "skip"),
+            ("on_schema_clash", on_schema_clash, "fail"),
+        ):
+            if value != default:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"'{name}' applies to mode='merge' only — a plain "
+                        "restore requires an empty target, so nothing can clash."
+                    ),
+                )
+        return
+
+    if on_clash not in ("skip", "overwrite"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid on_clash '{on_clash}' — must be 'skip' or 'overwrite'",
+        )
+    if on_schema_clash not in ("fail", "skip", "upsert"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid on_schema_clash '{on_schema_clash}' — must be "
+                "'fail', 'skip' or 'upsert'"
+            ),
+        )
+    if drop_stale_reporting:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "'drop_stale_reporting' does not apply to a merge — the target "
+                "namespace is live, so its reporting schema is expected to hold "
+                "tables, and dropping it would discard the data being merged into."
+            ),
+        )
 
 
 async def _authorize_archive_restore(
@@ -261,8 +319,35 @@ async def start_backup(
 async def start_restore(
     namespace: str,
     archive: UploadFile = File(..., description="Backup archive (.zip) to restore"),
-    mode: str = Form("restore"),
+    mode: str = Form(
+        "restore",
+        description=(
+            "'restore' requires an empty target and inserts everything. "
+            "'merge' takes the archive as a delta against an existing, "
+            "possibly non-empty namespace, resolving anything the target "
+            "already holds by the on_clash / on_schema_clash policies."
+        ),
+    ),
     target_namespace: str | None = Form(None),
+    on_clash: str = Form(
+        "skip",
+        description=(
+            "Merge only — what to do when the target already holds a "
+            "document's identity. 'skip' (default) keeps the target's "
+            "version; 'overwrite' appends the archive's latest version on "
+            "top of the target's head, preserving both histories."
+        ),
+    ),
+    on_schema_clash: str = Form(
+        "fail",
+        description=(
+            "Merge only — what to do when an archived terminology, term, or "
+            "template differs from the target's. 'fail' (default) refuses the "
+            "merge and reports the differences; 'skip' keeps the target's "
+            "schema; 'upsert' takes the archive's (a new template version, or "
+            "an in-place update for terminologies and terms)."
+        ),
+    ),
     register_synonyms: bool = Form(False),
     skip_documents: bool = Form(False),
     skip_files: bool = Form(False),
@@ -294,14 +379,26 @@ async def start_restore(
     effective_target = target_namespace or namespace
     await check_namespace_permission(identity, effective_target, "admin")
 
-    if mode not in ("restore", "fresh"):
+    if mode not in ("restore", "merge", "fresh"):
         raise HTTPException(
-            status_code=400, detail=f"Invalid mode '{mode}' — must be 'restore' or 'fresh'"
+            status_code=400,
+            detail=f"Invalid mode '{mode}' — must be 'restore' or 'merge'",
         )
     if mode == "fresh":
         raise HTTPException(
-            status_code=400, detail="Fresh mode is not yet implemented. Use 'restore' mode."
+            status_code=400,
+            detail=(
+                "Fresh mode is not implemented. Use 'restore' for an empty "
+                "target or 'merge' for an existing namespace."
+            ),
         )
+
+    _validate_merge_options(
+        mode,
+        on_clash=on_clash,
+        on_schema_clash=on_schema_clash,
+        drop_stale_reporting=drop_stale_reporting,
+    )
     # Parameters of the retired toolkit import path. The direct restore engine
     # has no per-item error tolerance and no synonym registration; silently
     # ignoring a request for either would misrepresent what the restore did,
@@ -343,7 +440,7 @@ async def start_restore(
     archive_size = archive_path.stat().st_size
 
     prefixes: list[str] = []
-    if mode == "restore":
+    if mode in ("restore", "merge"):
         try:
             prefixes, effective_target = await _authorize_archive_restore(
                 archive_path, identity, fallback_target=effective_target
@@ -355,6 +452,8 @@ async def start_restore(
     options = {
         "mode": mode,
         "target_namespace": effective_target,
+        "on_clash": on_clash,
+        "on_schema_clash": on_schema_clash,
         "register_synonyms": register_synonyms,
         "skip_documents": skip_documents,
         "skip_files": skip_files,
@@ -632,6 +731,18 @@ async def restore_from_job(
     per-namespace admin checks the upload restore runs (the archive
     manifest is authoritative for what gets written).
     """
+    if request.mode not in ("restore", "merge"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid mode '{request.mode}' — must be 'restore' or 'merge'",
+        )
+    _validate_merge_options(
+        request.mode,
+        on_clash=request.on_clash,
+        on_schema_clash=request.on_schema_clash,
+        drop_stale_reporting=False,
+    )
+
     src = await BackupJob.find_one(BackupJob.job_id == job_id)
     if src is None:
         raise HTTPException(status_code=404, detail=f"Backup job {job_id} not found")
@@ -671,11 +782,14 @@ async def restore_from_job(
         raise
 
     options = {
-        "mode": "restore",
+        "mode": request.mode,
         "target_namespace": effective_target,
+        "on_clash": request.on_clash,
+        "on_schema_clash": request.on_schema_clash,
         "skip_documents": request.skip_documents,
         "skip_files": request.skip_files,
         "batch_size": request.batch_size,
+        "dry_run": request.dry_run,
         "restored_from_job": src.job_id,
     }
 

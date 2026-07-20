@@ -14,13 +14,36 @@ export type BackupJobKind = 'backup' | 'restore'
 export type BackupJobStatus = 'pending' | 'running' | 'complete' | 'failed'
 
 /**
- * Restore mode. `'restore'` is the only mode the server implements today:
- * ID-preserving, each namespace in the archive restores to itself.
- * `'fresh'` is RESERVED — the backend rejects it with 400; the planned
- * new-namespace (remap) mode with re-minted IDs does not exist yet. Kept
- * in the union for forward-compat, but do not send it.
+ * Restore mode. Both implemented modes are ID-preserving and write each
+ * namespace in the archive back to itself. `'restore'` requires every
+ * target namespace to be EMPTY and inserts the archive wholesale.
+ * `'merge'` takes the archive as a delta against a namespace that already
+ * holds data. `'fresh'` is RESERVED — the backend rejects it with 400; the
+ * planned new-namespace (remap) mode with re-minted IDs does not exist
+ * yet. Kept in the union for forward-compat, but do not send it.
  */
-export type RestoreMode = 'restore' | 'fresh'
+export type RestoreMode = 'restore' | 'merge' | 'fresh'
+
+/**
+ * What a merge does when the target already holds a document's identity.
+ * `'skip'` (default) keeps the target's version. `'overwrite'` appends the
+ * archive's LATEST version on top of the target's head, adopting the
+ * target's document_id — both histories survive, and the archive's is not
+ * spliced in. On a `versioned: false` template it replaces the single
+ * version in place instead, matching that template's own lifecycle.
+ */
+export type ClashPolicy = 'skip' | 'overwrite'
+
+/**
+ * What a merge does when an archived terminology, term or template differs
+ * from the target's. `'fail'` (default) refuses the whole merge and reports
+ * the differences — merging data into a namespace whose schema has diverged
+ * is a migration someone should look at. `'skip'` keeps the target's
+ * schema. `'upsert'` takes the archive's: a NEW template version (nothing
+ * overwritten), or an in-place update for terminologies and terms, which
+ * have no version axis.
+ */
+export type SchemaClashPolicy = 'fail' | 'skip' | 'upsert'
 
 /**
  * Persistent snapshot of a backup or restore job. Returned by every backup
@@ -63,18 +86,26 @@ export interface BackupRequest {
 /**
  * Form fields accompanying a multipart restore upload.
  *
- * Restore is ID-preserving and writes each namespace in the archive back
- * to ITSELF; every target must be empty. A `target_namespace` differing
- * from the archive's namespace is rejected — re-namespacing needs the
- * planned remap mode (`'fresh'` still 400s server-side). `dry_run` is
- * real: every precondition runs (archive format, empty targets, reporting
- * schema) and the would-restore counts are reported, with nothing
- * written. The retired toolkit-era params (`register_synonyms`,
- * `continue_on_error`) are gone from this type — the endpoint 400s when
- * they are set.
+ * Both modes are ID-preserving and write each namespace in the archive back
+ * to ITSELF. A `target_namespace` differing from the archive's namespace is
+ * rejected — re-namespacing needs the planned remap mode (`'fresh'` still
+ * 400s server-side). `dry_run` is real, and for a merge it is exact: the
+ * plan is computed before anything is written, so the report is what a real
+ * run would do — and it still fails on what a real run would refuse. The
+ * retired toolkit-era params (`register_synonyms`, `continue_on_error`) are
+ * gone from this type — the endpoint 400s when they are set.
+ *
+ * The clash policies apply to `mode: 'merge'` only. Sending a non-default
+ * one with a plain restore is a 400 rather than a silent no-op: a restore
+ * requires an empty target, so nothing can clash, and quietly accepting the
+ * option would misreport what ran.
  */
 export interface RestoreOptions {
   mode?: RestoreMode
+  /** Merge only — resolution for a document identity the target already holds. */
+  on_clash?: ClashPolicy
+  /** Merge only — resolution for a diverged terminology, term or template. */
+  on_schema_clash?: SchemaClashPolicy
   skip_documents?: boolean
   skip_files?: boolean
   batch_size?: number
@@ -82,6 +113,9 @@ export interface RestoreOptions {
   /**
    * Drop a stale reporting schema for the target namespace before
    * restoring instead of refusing. A dry run reports the would-drop only.
+   * Rejected for a merge: its target is live, so a populated reporting
+   * schema is expected and dropping it would discard the data being merged
+   * into.
    */
   drop_stale_reporting?: boolean
 }
