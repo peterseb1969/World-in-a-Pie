@@ -3,14 +3,18 @@
 The planner decides what a merge would do before it writes anything, so its
 classification IS the contract: an entity is inserted, clashes with something
 the target already holds, or conflicts because the two sides disagree about
-identity. These tests drive it through a fake collection that really evaluates
-the queries the planner builds, so a wrong query shape fails here rather than
-silently matching nothing against a mock.
+identity. Classification runs against the real test MongoDB — a query shape
+that matches nothing in practice is exactly the bug worth catching, and a
+stand-in collection would answer it happily.
 """
 
 from __future__ import annotations
 
+import os
+
 import pytest
+import pytest_asyncio
+from motor.motor_asyncio import AsyncIOMotorClient
 
 from document_store.services.backup_engine import COLLECTION_MAP
 from document_store.services.merge_plan import (
@@ -21,67 +25,37 @@ from document_store.services.merge_plan import (
     key_of,
 )
 
-
-class _FakeCollection:
-    """In-memory collection that honours the query shapes the planner emits."""
-
-    def __init__(self, rows):
-        self.rows = [dict(r) for r in rows]
-        self.queries: list[dict] = []
-
-    def find(self, query, projection=None):
-        self.queries.append(query)
-        matched = [r for r in self.rows if self._matches(r, query)]
-        if projection:
-            matched = [
-                {k: v for k, v in r.items() if k in projection} for r in matched
-            ]
-        return _AsyncRows(matched)
-
-    @staticmethod
-    def _matches(row, query):
-        for key, condition in query.items():
-            if key == "$or":
-                if not any(
-                    all(row.get(k) == v for k, v in branch.items())
-                    for branch in condition
-                ):
-                    return False
-            elif isinstance(condition, dict) and "$in" in condition:
-                if row.get(key) not in condition["$in"]:
-                    return False
-            elif row.get(key) != condition:
-                return False
-        return True
+# This suite's own namespace, so it never sees another suite's rows.
+NAMESPACE = "merge-plan-ns"
 
 
-class _AsyncRows:
-    def __init__(self, rows):
-        self._rows = list(rows)
+@pytest_asyncio.fixture
+async def planner():
+    """A planner over the real databases, cleared before and after."""
+    client = AsyncIOMotorClient(
+        os.environ.get("MONGO_URI", "mongodb://localhost:27017/")
+    )
 
-    def __aiter__(self):
-        return self
+    async def _clear():
+        for db_name, coll_name in COLLECTION_MAP.values():
+            await client[db_name][coll_name].delete_many({"namespace": NAMESPACE})
 
-    async def __anext__(self):
-        if not self._rows:
-            raise StopAsyncIteration
-        return dict(self._rows.pop(0))
+    await _clear()
+    instance = MergePlanner(client, COLLECTION_MAP)
+    instance.seed = _seeder(client)  # type: ignore[attr-defined]
+    yield instance
+    await _clear()
+    client.close()
 
 
-def _planner(entity_type, target_rows):
-    """A planner whose only populated collection is ``entity_type``'s."""
-    collection = _FakeCollection(target_rows)
-    db_name, coll_name = COLLECTION_MAP[entity_type]
+def _seeder(client):
+    async def seed(entity_type, rows):
+        if not rows:
+            return
+        db_name, coll_name = COLLECTION_MAP[entity_type]
+        await client[db_name][coll_name].insert_many([dict(r) for r in rows])
 
-    class _DB:
-        def __getitem__(self, name):
-            return collection if name == coll_name else _FakeCollection([])
-
-    class _Client:
-        def __getitem__(self, name):
-            return _DB()
-
-    return MergePlanner(_Client(), COLLECTION_MAP), collection
+    return seed
 
 
 # ---------------------------------------------------------------------------
@@ -131,21 +105,21 @@ class TestDiffEntities:
 
 class TestPlanClassification:
     @pytest.mark.asyncio
-    async def test_entity_absent_from_target_is_inserted(self):
-        planner, _ = _planner("terminologies", [])
+    async def test_entity_absent_from_target_is_inserted(self, planner):
         plan = await planner.plan(
             "terminologies",
-            [{"terminology_id": "T1", "namespace": "kb", "value": "GENDER"}],
-            "kb",
+            [{"terminology_id": "T1", "namespace": NAMESPACE, "value": "GENDER"}],
+            NAMESPACE,
         )
         assert [e["terminology_id"] for e in plan.to_insert] == ["T1"]
         assert plan.clashes == [] and plan.conflicts == []
 
     @pytest.mark.asyncio
-    async def test_identical_entity_is_an_unchanged_clash(self):
-        row = {"terminology_id": "T1", "namespace": "kb", "value": "GENDER"}
-        planner, _ = _planner("terminologies", [row])
-        plan = await planner.plan("terminologies", [dict(row)], "kb")
+    async def test_identical_entity_is_an_unchanged_clash(self, planner):
+        row = {"terminology_id": "T1", "namespace": NAMESPACE, "value": "GENDER"}
+        await planner.seed("terminologies", [row])
+
+        plan = await planner.plan("terminologies", [dict(row)], NAMESPACE)
 
         assert plan.to_insert == []
         assert len(plan.identical_clashes) == 1
@@ -154,51 +128,56 @@ class TestPlanClassification:
         }
 
     @pytest.mark.asyncio
-    async def test_differing_entity_is_a_clash_carrying_the_diff(self):
-        planner, _ = _planner("terminologies", [
-            {"terminology_id": "T1", "namespace": "kb", "value": "GENDER",
+    async def test_differing_entity_is_a_clash_carrying_the_diff(self, planner):
+        await planner.seed("terminologies", [
+            {"terminology_id": "T1", "namespace": NAMESPACE, "value": "GENDER",
              "label": "Gender"},
         ])
+
         plan = await planner.plan(
             "terminologies",
-            [{"terminology_id": "T1", "namespace": "kb", "value": "GENDER",
+            [{"terminology_id": "T1", "namespace": NAMESPACE, "value": "GENDER",
               "label": "Sex"}],
-            "kb",
+            NAMESPACE,
         )
 
         (clash,) = plan.differing_clashes
         assert clash.diff == {"label": {"archive": "Sex", "target": "Gender"}}
 
     @pytest.mark.asyncio
-    async def test_other_namespace_is_not_a_clash(self):
+    async def test_other_namespace_is_not_a_clash(self, planner):
         # The same value in another namespace is a different entity.
-        planner, _ = _planner("terminologies", [
-            {"terminology_id": "T1", "namespace": "other", "value": "GENDER"},
+        await planner.seed("terminologies", [
+            {"terminology_id": "T1", "namespace": "someone-else", "value": "GENDER"},
         ])
+
         plan = await planner.plan(
             "terminologies",
-            [{"terminology_id": "T1", "namespace": "kb", "value": "GENDER"}],
-            "kb",
+            [{"terminology_id": "T1", "namespace": NAMESPACE, "value": "GENDER"}],
+            NAMESPACE,
         )
+
         assert len(plan.to_insert) == 1
 
     @pytest.mark.asyncio
-    async def test_compound_logical_key_matches_on_all_parts(self):
-        planner, _ = _planner("terms", [
-            {"term_id": "X1", "namespace": "kb", "terminology_id": "T1",
+    async def test_compound_logical_key_matches_on_all_parts(self, planner):
+        await planner.seed("terms", [
+            {"term_id": "X1", "namespace": NAMESPACE, "terminology_id": "T1",
              "value": "M"},
         ])
+
         plan = await planner.plan(
             "terms",
             [
-                {"term_id": "X1", "namespace": "kb", "terminology_id": "T1",
+                {"term_id": "X1", "namespace": NAMESPACE, "terminology_id": "T1",
                  "value": "M"},
                 # Same value under a different terminology — a different term.
-                {"term_id": "X2", "namespace": "kb", "terminology_id": "T2",
+                {"term_id": "X2", "namespace": NAMESPACE, "terminology_id": "T2",
                  "value": "M"},
             ],
-            "kb",
+            NAMESPACE,
         )
+
         assert len(plan.clashes) == 1
         assert [e["term_id"] for e in plan.to_insert] == ["X2"]
 
@@ -212,14 +191,15 @@ class TestIdentityConflicts:
     """
 
     @pytest.mark.asyncio
-    async def test_same_id_under_a_different_logical_key_conflicts(self):
-        planner, _ = _planner("terminologies", [
-            {"terminology_id": "T1", "namespace": "kb", "value": "COUNTRY"},
+    async def test_same_id_under_a_different_logical_key_conflicts(self, planner):
+        await planner.seed("terminologies", [
+            {"terminology_id": "T1", "namespace": NAMESPACE, "value": "COUNTRY"},
         ])
+
         plan = await planner.plan(
             "terminologies",
-            [{"terminology_id": "T1", "namespace": "kb", "value": "GENDER"}],
-            "kb",
+            [{"terminology_id": "T1", "namespace": NAMESPACE, "value": "GENDER"}],
+            NAMESPACE,
         )
 
         assert plan.to_insert == [] and plan.clashes == []
@@ -228,14 +208,15 @@ class TestIdentityConflicts:
         assert "COUNTRY" in conflict.reason and "GENDER" in conflict.reason
 
     @pytest.mark.asyncio
-    async def test_same_logical_key_under_a_different_id_conflicts(self):
-        planner, _ = _planner("terminologies", [
-            {"terminology_id": "T-OTHER", "namespace": "kb", "value": "GENDER"},
+    async def test_same_logical_key_under_a_different_id_conflicts(self, planner):
+        await planner.seed("terminologies", [
+            {"terminology_id": "T-OTHER", "namespace": NAMESPACE, "value": "GENDER"},
         ])
+
         plan = await planner.plan(
             "terminologies",
-            [{"terminology_id": "T1", "namespace": "kb", "value": "GENDER"}],
-            "kb",
+            [{"terminology_id": "T1", "namespace": NAMESPACE, "value": "GENDER"}],
+            NAMESPACE,
         )
 
         (conflict,) = plan.conflicts
@@ -243,51 +224,50 @@ class TestIdentityConflicts:
         assert "T-OTHER" in conflict.reason
 
     @pytest.mark.asyncio
-    async def test_keys_matching_two_different_rows_conflicts(self):
-        planner, _ = _planner("terms", [
-            {"term_id": "X1", "namespace": "kb", "terminology_id": "T1",
+    async def test_keys_matching_two_different_rows_conflicts(self, planner):
+        await planner.seed("terms", [
+            {"term_id": "X1", "namespace": NAMESPACE, "terminology_id": "T1",
              "value": "F"},
-            {"term_id": "X2", "namespace": "kb", "terminology_id": "T1",
+            {"term_id": "X2", "namespace": NAMESPACE, "terminology_id": "T1",
              "value": "M"},
         ])
+
         plan = await planner.plan(
             "terms",
-            [{"term_id": "X1", "namespace": "kb", "terminology_id": "T1",
+            [{"term_id": "X1", "namespace": NAMESPACE, "terminology_id": "T1",
               "value": "M"}],
-            "kb",
+            NAMESPACE,
         )
 
         (conflict,) = plan.conflicts
         assert "two different rows" in conflict.reason
 
     @pytest.mark.asyncio
-    async def test_entity_without_a_logical_key_matches_on_id_alone(self):
+    async def test_entity_without_a_logical_key_matches_on_id_alone(self, planner):
         # A registry entry with an empty composite-key hash opts out of dedup;
         # there is no logical key to disagree with, so ID matching stands.
-        planner, _ = _planner("registry_entries", [
-            {"entry_id": "E1", "namespace": "kb", "entity_type": "templates",
-             "primary_composite_key_hash": ""},
-        ])
-        plan = await planner.plan(
-            "registry_entries",
-            [{"entry_id": "E1", "namespace": "kb", "entity_type": "templates",
-              "primary_composite_key_hash": ""}],
-            "kb",
-        )
+        entry = {"entry_id": "E1", "namespace": NAMESPACE,
+                 "entity_type": "templates", "primary_composite_key_hash": ""}
+        await planner.seed("registry_entries", [entry])
+
+        plan = await planner.plan("registry_entries", [dict(entry)], NAMESPACE)
 
         assert plan.conflicts == []
         assert len(plan.clashes) == 1
 
     @pytest.mark.asyncio
-    async def test_entity_without_an_id_matches_on_the_logical_key_alone(self):
+    async def test_entity_without_an_id_matches_on_the_logical_key_alone(
+        self, planner
+    ):
         # A term relation IS its endpoints — it carries no ID of its own.
         assert MERGE_ENTITY_SPECS["term_relations"].id_fields == ()
         relation = {
-            "namespace": "kb", "source_term_id": "A", "target_term_id": "B",
+            "namespace": NAMESPACE, "source_term_id": "A", "target_term_id": "B",
             "relation_type": "is_a",
         }
-        planner, _ = _planner("term_relations", [relation])
-        plan = await planner.plan("term_relations", [dict(relation)], "kb")
+        await planner.seed("term_relations", [relation])
+
+        plan = await planner.plan("term_relations", [dict(relation)], NAMESPACE)
 
         assert plan.conflicts == []
         assert len(plan.clashes) == 1
@@ -295,62 +275,67 @@ class TestIdentityConflicts:
 
 class TestDocumentPlanning:
     @pytest.mark.asyncio
-    async def test_clash_carries_every_target_version(self):
+    async def test_clash_carries_every_target_version(self, planner):
         # Overwrite appends on top of the target's head, so the caller needs
         # all the target's versions, not an arbitrary one.
-        planner, _ = _planner("documents", [
-            {"document_id": "D1", "namespace": "kb", "template_id": "TPL",
-             "identity_hash": "h1", "version": 1},
-            {"document_id": "D1", "namespace": "kb", "template_id": "TPL",
-             "identity_hash": "h1", "version": 2},
+        await planner.seed("documents", [
+            {"document_id": "D1", "namespace": NAMESPACE, "template_id": "TPL",
+             "identity_hash": "h1", "version": v}
+            for v in (1, 2)
         ])
+
         plan = await planner.plan(
             "documents",
-            [{"document_id": "D1", "namespace": "kb", "template_id": "TPL",
+            [{"document_id": "D1", "namespace": NAMESPACE, "template_id": "TPL",
               "identity_hash": "h1", "version": 1, "data": {"x": 1}}],
-            "kb",
+            NAMESPACE,
         )
 
         (clash,) = plan.clashes
         assert sorted(t["version"] for t in clash.targets) == [1, 2]
 
     @pytest.mark.asyncio
-    async def test_projected_reads_do_not_produce_phantom_diffs(self):
+    async def test_projected_reads_do_not_produce_phantom_diffs(self, planner):
         # Documents are read with a projection, so a field-level diff would
         # report every omitted field as a difference. Document clashes are
-        # resolved by the on_clash policy, not by diffing.
-        planner, _ = _planner("documents", [
-            {"document_id": "D1", "namespace": "kb", "template_id": "TPL",
+        # resolved by the on_clash policy, not by diffing — and a clash is
+        # never reported as "unchanged" on the strength of a partial read.
+        await planner.seed("documents", [
+            {"document_id": "D1", "namespace": NAMESPACE, "template_id": "TPL",
              "identity_hash": "h1", "version": 1, "data": {"x": 1}},
         ])
+
         plan = await planner.plan(
             "documents",
-            [{"document_id": "D1", "namespace": "kb", "template_id": "TPL",
+            [{"document_id": "D1", "namespace": NAMESPACE, "template_id": "TPL",
               "identity_hash": "h1", "version": 1, "data": {"x": 999}}],
-            "kb",
+            NAMESPACE,
         )
 
         (clash,) = plan.clashes
         assert clash.diff == {}
         assert "data" not in clash.target
+        assert plan.summary()["clash"] == 1
+        assert plan.summary()["unchanged"] == 0
 
     @pytest.mark.asyncio
-    async def test_identity_less_documents_match_by_document_id_only(self):
+    async def test_identity_less_documents_match_by_document_id_only(self, planner):
         # Append-only templates have no logical identity — same document_id
         # means the same physical row; anything else is new.
-        planner, _ = _planner("documents", [
-            {"document_id": "D1", "namespace": "kb", "template_id": "TPL",
+        await planner.seed("documents", [
+            {"document_id": "D1", "namespace": NAMESPACE, "template_id": "TPL",
              "identity_hash": "", "version": 1},
         ])
+
         plan = await planner.plan(
             "documents",
             [
-                {"document_id": "D1", "namespace": "kb", "template_id": "TPL",
+                {"document_id": "D1", "namespace": NAMESPACE, "template_id": "TPL",
                  "identity_hash": "", "version": 1},
-                {"document_id": "D2", "namespace": "kb", "template_id": "TPL",
+                {"document_id": "D2", "namespace": NAMESPACE, "template_id": "TPL",
                  "identity_hash": "", "version": 1},
             ],
-            "kb",
+            NAMESPACE,
         )
 
         assert plan.conflicts == []
@@ -360,24 +345,33 @@ class TestDocumentPlanning:
 
 class TestBatching:
     @pytest.mark.asyncio
-    async def test_probes_are_batched(self):
-        entities = [
-            {"terminology_id": f"T{i}", "namespace": "kb", "value": f"V{i}"}
-            for i in range(KEY_BATCH_SIZE + 10)
-        ]
-        planner, collection = _planner("terminologies", [])
-        await planner.plan("terminologies", entities, "kb")
+    async def test_more_keys_than_one_batch_still_classifies_every_entity(
+        self, planner
+    ):
+        # Probes are chunked; a key landing in the second chunk must be
+        # classified against the target just as one in the first.
+        total = KEY_BATCH_SIZE + 10
+        await planner.seed("terminologies", [
+            {"terminology_id": f"T{i}", "namespace": NAMESPACE, "value": f"V{i}"}
+            for i in range(total)
+        ])
 
-        # Two key kinds (id and logical), each batched into 2 probes.
-        assert len(collection.queries) == 4
-        id_probe = collection.queries[0]
-        assert len(id_probe["terminology_id"]["$in"]) == KEY_BATCH_SIZE
+        plan = await planner.plan(
+            "terminologies",
+            [
+                {"terminology_id": f"T{i}", "namespace": NAMESPACE,
+                 "value": f"V{i}"}
+                for i in range(total)
+            ],
+            NAMESPACE,
+        )
+
+        assert len(plan.identical_clashes) == total
+        assert plan.to_insert == []
 
     @pytest.mark.asyncio
-    async def test_no_entities_means_no_reads(self):
-        planner, collection = _planner("terminologies", [])
-        plan = await planner.plan("terminologies", [], "kb")
-        assert collection.queries == []
+    async def test_no_entities_means_an_empty_plan(self, planner):
+        plan = await planner.plan("terminologies", [], NAMESPACE)
         assert plan.summary() == {
             "insert": 0, "unchanged": 0, "clash": 0, "conflict": 0,
         }

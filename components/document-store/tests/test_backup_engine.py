@@ -933,7 +933,7 @@ class TestRecreateClaims:
 
     @staticmethod
     def _engine_with_entries(entries, *, insert_result=None, insert_error=None):
-        mongo, colls = _make_mongo_mock(
+        mongo, _colls = _make_mongo_mock(
             docs_per_collection={"registry_entries": entries}
         )
         claims = mongo["wip_registry"]["composite_key_claims"]

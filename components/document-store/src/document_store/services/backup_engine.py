@@ -32,6 +32,7 @@ from wip_toolkit.models import (
 )
 
 from .file_storage_client import FileStorageClient
+from .merge_plan import MERGE_ENTITY_SPECS, EntityPlan, MergePlanner
 from .reporting_client import ReportingSyncClient
 
 logger = logging.getLogger("document_store.backup_engine")
@@ -76,6 +77,12 @@ BACKUP_ENTITY_ORDER = [
     "files",
     "registry_entries",
 ]
+
+# Merge writes in the same order for the same reason a restore does: it is
+# dependency order. Terms need their terminology, documents need their
+# template, and registry entries come last so nothing claims an identity
+# before the entity holding it exists.
+MERGE_ENTITY_ORDER = list(BACKUP_ENTITY_ORDER)
 
 
 class BackupEngineError(Exception):
@@ -397,54 +404,7 @@ class DirectRestoreEngine:
         """
         with ArchiveReader(archive_path) as reader:
             manifest = reader.read_manifest()
-
-            # Belt behind the endpoint's synchronous 400: a pre-v3 archive is
-            # flat, so every namespaces/<ns>/<entity>.jsonl read below would
-            # find nothing and the job would complete "successfully" having
-            # restored zero entities into a freshly created namespace. Fail
-            # loud instead, for any caller that bypasses the endpoint.
-            if not manifest.format_version.startswith("3"):
-                raise RestoreEngineError(
-                    f"Archive is format v{manifest.format_version} — the restore "
-                    "engine reads the v3 layout. Convert it first: "
-                    "python -m wip_toolkit convert-archive <src> <dst>"
-                )
-            # A manifest may *claim* 3.x yet carry no namespaces/ subtree
-            # (hand-assembled or truncated zip). namespace_prefixes() can be
-            # non-empty from the manifest alone, so check the actual layout —
-            # otherwise the same silent zero-entity restore happens.
-            if not reader.list_namespaces():
-                raise RestoreEngineError(
-                    "Archive manifest claims v3 but the zip has no namespaces/ "
-                    "tree — malformed archive, nothing to restore"
-                )
-
-            source_namespaces = manifest.namespace_prefixes() or reader.list_namespaces()
-            if not source_namespaces:
-                raise RestoreEngineError("Archive contains no namespaces to restore")
-
-            if target_namespace:
-                if len(source_namespaces) > 1:
-                    raise RestoreEngineError(
-                        "target_namespace override is not supported for a "
-                        "multi-namespace archive; each namespace restores "
-                        "to itself."
-                    )
-                if target_namespace != source_namespaces[0]:
-                    # Redirecting an ID-preserving restore is unsound: the
-                    # archived entities, registry entries, and composite keys
-                    # all embed the source namespace, so the insert would
-                    # write records still carrying the source namespace after
-                    # empty-checking only the target (CASE-548). Re-namespacing
-                    # requires the remap mode (new IDs, rewritten references).
-                    raise RestoreEngineError(
-                        f"target_namespace '{target_namespace}' differs from "
-                        f"the archive's namespace '{source_namespaces[0]}' — "
-                        "an ID-preserving restore cannot re-namespace data. "
-                        "Restore to the archive's own namespace, or use the "
-                        "new-namespace (remap) restore mode once available."
-                    )
-            targets = [(ns, ns) for ns in source_namespaces]
+            targets = self._resolve_targets(reader, manifest, target_namespace)
 
             self._emit(
                 "start",
@@ -564,6 +524,639 @@ class DirectRestoreEngine:
                 await self._restore_blobs(reader, targets[0][1])
 
         self._emit("complete", "Restore complete", percent=100)
+
+    # Clash policies. Documents take on_clash; the schema entities take their
+    # own on_schema_clash, because merging data into a namespace whose schema
+    # diverged from the archive is a migration someone should look at — the
+    # platform's own create-as-upsert write semantics deliberately do NOT make
+    # `upsert` the default for a restore action.
+    MERGE_CLASH_POLICIES = ("skip", "overwrite")
+    MERGE_SCHEMA_CLASH_POLICIES = ("fail", "skip", "upsert")
+    SCHEMA_ENTITY_TYPES = ("terminologies", "terms", "templates")
+
+    async def run_merge(
+        self,
+        archive_path: Path,
+        target_namespace: str,
+        *,
+        on_clash: str = "skip",
+        on_schema_clash: str = "fail",
+        skip_documents: bool = False,
+        skip_files: bool = False,
+        batch_size: int = 500,
+        dry_run: bool = False,
+    ) -> None:
+        """Merge an archive into an existing, possibly non-empty namespace.
+
+        Same install, same namespace name, IDs preserved: the archive is a
+        delta source, not a replacement. Entities the target lacks are
+        inserted; entities it already holds are resolved by policy.
+
+        The plan is built before anything is written, which makes ``dry_run``
+        exact rather than indicative — it reports the same classification the
+        real run acts on. A dry run still *fails* on everything a real run
+        would refuse (identity conflicts, schema divergence under
+        ``on_schema_clash=fail``); surfacing those is what it is for.
+        """
+        if on_clash not in self.MERGE_CLASH_POLICIES:
+            raise RestoreEngineError(
+                f"Invalid on_clash '{on_clash}' — must be one of "
+                f"{', '.join(self.MERGE_CLASH_POLICIES)}"
+            )
+        if on_schema_clash not in self.MERGE_SCHEMA_CLASH_POLICIES:
+            raise RestoreEngineError(
+                f"Invalid on_schema_clash '{on_schema_clash}' — must be one of "
+                f"{', '.join(self.MERGE_SCHEMA_CLASH_POLICIES)}"
+            )
+
+        with ArchiveReader(archive_path) as reader:
+            manifest = reader.read_manifest()
+            targets = self._resolve_targets(reader, manifest, target_namespace)
+
+            self._emit(
+                "start",
+                f"Starting merge into {len(targets)} namespace(s)",
+                percent=0,
+            )
+
+            # The empty-target precondition inverts: merge REQUIRES the
+            # namespace to exist (creating it would be a plain restore), and
+            # its reporting schema is expected to be there already.
+            self._emit("phase_validate", "Checking target namespaces", percent=2)
+            for _src, tgt in targets:
+                await self._check_namespace_exists(tgt)
+                await self._check_merge_reporting_precondition(tgt)
+
+            entry_by_prefix = {e.prefix: e for e in manifest.namespaces}
+            inserted_file_ids: set[str] = set()
+
+            for src, tgt in targets:
+                entry = entry_by_prefix.get(src)
+                ns_config = entry.namespace_config if entry else manifest.namespace_config
+                await self._report_namespace_config_drift(tgt, ns_config)
+
+                plans, doc_groups = self._build_merge_plan_inputs(
+                    reader, src, skip_documents=skip_documents, skip_files=skip_files
+                )
+                planner = MergePlanner(self._mongo, COLLECTION_MAP)
+                built: dict[str, EntityPlan] = {}
+                for entity_type, entities in plans.items():
+                    built[entity_type] = await planner.plan(entity_type, entities, tgt)
+
+                self._emit_merge_plan(
+                    tgt, built, on_clash=on_clash,
+                    on_schema_clash=on_schema_clash, dry_run=dry_run,
+                )
+                self._enforce_merge_gates(tgt, built, on_schema_clash=on_schema_clash)
+
+                if dry_run:
+                    continue
+
+                await self._apply_merge(
+                    tgt, built, doc_groups,
+                    on_clash=on_clash, on_schema_clash=on_schema_clash,
+                    batch_size=batch_size,
+                )
+                inserted_file_ids.update(
+                    f["file_id"] for f in built.get(
+                        "files", EntityPlan(entity_type="files")
+                    ).to_insert
+                    if f.get("file_id")
+                )
+                await self._reporting_phase_counts(tgt, skip_documents=skip_documents)
+
+            if dry_run:
+                self._emit(
+                    "complete",
+                    "Merge dry run complete — plan computed, no changes made",
+                    percent=100,
+                )
+                return
+
+            # Only blobs for files the merge actually inserted: a file the
+            # target already had keeps its bytes, and re-uploading them would
+            # be work at best and an orphan object at worst.
+            if not skip_files and self._storage and inserted_file_ids:
+                await self._restore_blobs(reader, targets[0][1], only=inserted_file_ids)
+
+        self._emit("complete", "Merge complete", percent=100)
+
+    def _build_merge_plan_inputs(
+        self,
+        reader: ArchiveReader,
+        src: str,
+        *,
+        skip_documents: bool,
+        skip_files: bool,
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+        """Read the archive's entities for one namespace, ready for planning.
+
+        Documents are planned at the *logical* level: an archived document is
+        a chain of version rows, and it is the chain that clashes with the
+        target's chain, not each row separately. The head row represents the
+        group during planning; ``doc_groups`` keeps the full chains so an
+        inserted document brings all its history.
+        """
+        entities_by_type: dict[str, list[dict[str, Any]]] = {}
+        doc_groups: dict[str, list[dict[str, Any]]] = {}
+
+        for entity_type in MERGE_ENTITY_ORDER:
+            if skip_documents and entity_type == "documents":
+                continue
+            if skip_files and entity_type == "files":
+                continue
+
+            entities: list[dict[str, Any]] = []
+            for entity in reader.read_entities(entity_type, namespace=src):
+                entity.pop("_id", None)
+                entities.append(entity)
+
+            if entity_type == "documents":
+                for row in entities:
+                    doc_groups.setdefault(row.get("document_id", ""), []).append(row)
+                entities = [
+                    max(rows, key=lambda r: r.get("version", 1))
+                    for rows in doc_groups.values()
+                ]
+
+            entities_by_type[entity_type] = entities
+
+        return entities_by_type, doc_groups
+
+    def _merge_policy_for(
+        self, entity_type: str, *, on_clash: str, on_schema_clash: str
+    ) -> str:
+        if entity_type in self.SCHEMA_ENTITY_TYPES:
+            return on_schema_clash
+        if entity_type == "documents":
+            return on_clash
+        # Term relations dedup by their endpoints, files by checksum, registry
+        # entries by composite key — for all three the target's copy IS the
+        # entity, so there is nothing an archive copy could add.
+        return "skip"
+
+    def _emit_merge_plan(
+        self,
+        namespace: str,
+        plans: dict[str, EntityPlan],
+        *,
+        on_clash: str,
+        on_schema_clash: str,
+        dry_run: bool,
+    ) -> None:
+        """Report the classification — the dry run's whole output, and a real
+        merge's record of what it is about to do."""
+        phase = "phase_dry_run" if dry_run else "phase_merge_plan"
+        verb = "would merge" if dry_run else "merging"
+        for entity_type, plan in plans.items():
+            counts = plan.summary()
+            if not any(counts.values()):
+                continue
+            policy = self._merge_policy_for(
+                entity_type, on_clash=on_clash, on_schema_clash=on_schema_clash
+            )
+            self._emit(
+                phase,
+                f"[{namespace}] {verb} {entity_type}: "
+                f"insert={counts['insert']}, unchanged={counts['unchanged']}, "
+                f"clash={counts['clash']} (on clash: {policy}), "
+                f"conflict={counts['conflict']}",
+            )
+            for clash in plan.differing_clashes[:5]:
+                self._emit(
+                    phase,
+                    f"[{namespace}] {entity_type} clash: "
+                    f"{self._describe_entity(entity_type, clash.entity)} — "
+                    + (
+                        f"differs in {', '.join(sorted(clash.diff))}"
+                        if clash.diff
+                        else "target holds this identity already"
+                    ),
+                )
+
+    @staticmethod
+    def _describe_entity(entity_type: str, entity: dict[str, Any]) -> str:
+        """Name an entity the way an operator reading a merge report would."""
+        spec = MERGE_ENTITY_SPECS[entity_type]
+        parts = [
+            f"{name}={entity.get(name)!r}"
+            for name in (spec.logical_fields or spec.id_fields)
+        ]
+        return " ".join(parts) or "<unidentified>"
+
+    def _enforce_merge_gates(
+        self,
+        namespace: str,
+        plans: dict[str, EntityPlan],
+        *,
+        on_schema_clash: str,
+    ) -> None:
+        """Refuse the merge on anything policy does not cover."""
+        conflicts = [
+            (entity_type, conflict)
+            for entity_type, plan in plans.items()
+            for conflict in plan.conflicts
+        ]
+        if conflicts:
+            detail = "; ".join(
+                f"{entity_type}: {conflict.reason}"
+                for entity_type, conflict in conflicts[:5]
+            )
+            raise RestoreEngineError(
+                f"Merge into '{namespace}' refused — {len(conflicts)} identity "
+                f"conflict(s) between archive and target. {detail}. Merge "
+                "preserves IDs and cannot reconcile identities that disagree; "
+                "this archive needs the ID-reminting (new-namespace) mode."
+            )
+
+        if on_schema_clash != "fail":
+            return
+        divergent = [
+            (entity_type, clash)
+            for entity_type in self.SCHEMA_ENTITY_TYPES
+            if entity_type in plans
+            for clash in plans[entity_type].differing_clashes
+        ]
+        if divergent:
+            detail = "; ".join(
+                f"{entity_type} "
+                f"{self._describe_entity(entity_type, clash.entity)} differs in "
+                f"{', '.join(sorted(clash.diff))}"
+                for entity_type, clash in divergent[:5]
+            )
+            raise RestoreEngineError(
+                f"Merge into '{namespace}' refused — {len(divergent)} schema "
+                f"entit(ies) differ between archive and target. {detail}. "
+                "Choose on_schema_clash=skip to keep the target's schema, or "
+                "on_schema_clash=upsert to take the archive's."
+            )
+
+    async def _apply_merge(
+        self,
+        namespace: str,
+        plans: dict[str, EntityPlan],
+        doc_groups: dict[str, list[dict[str, Any]]],
+        *,
+        on_clash: str,
+        on_schema_clash: str,
+        batch_size: int,
+    ) -> None:
+        """Write the plan. Inserts first, then policy-driven clash handling."""
+        for entity_type in MERGE_ENTITY_ORDER:
+            plan = plans.get(entity_type)
+            if plan is None:
+                continue
+
+            db_name, coll_name = COLLECTION_MAP[entity_type]
+            collection = self._mongo[db_name][coll_name]
+
+            rows = plan.to_insert
+            if entity_type == "documents":
+                # An inserted document brings its whole version chain.
+                rows = [
+                    row
+                    for head in plan.to_insert
+                    for row in doc_groups.get(head.get("document_id", ""), [head])
+                ]
+
+            for start in range(0, len(rows), batch_size):
+                await self._insert_batch(
+                    collection, rows[start:start + batch_size], entity_type
+                )
+            if rows:
+                self._emit(
+                    f"phase_{entity_type}",
+                    f"[{namespace}] inserted {len(rows)} {entity_type}",
+                )
+
+            # Same structural gate a plain restore runs: the reporting tables
+            # the new templates imply must exist and be correctly shaped
+            # before any document moves.
+            if entity_type == "templates":
+                await self._reporting_phase_structure(namespace)
+
+            if entity_type in self.SCHEMA_ENTITY_TYPES and on_schema_clash == "upsert":
+                await self._upsert_schema_clashes(namespace, entity_type, plan)
+            elif entity_type == "documents" and on_clash == "overwrite":
+                await self._overwrite_documents(namespace, plan, doc_groups)
+
+        entries_plan = plans.get("registry_entries")
+        if entries_plan and entries_plan.to_insert:
+            await self._recreate_claims(
+                namespace,
+                batch_size=batch_size,
+                entry_ids=[
+                    e["entry_id"] for e in entries_plan.to_insert if e.get("entry_id")
+                ],
+            )
+
+    async def _upsert_schema_clashes(
+        self, namespace: str, entity_type: str, plan: EntityPlan
+    ) -> None:
+        """Take the archive's version of a diverged schema entity.
+
+        Templates are versioned, so the archive's definition lands as a NEW
+        version of the target's template — the platform's own create-as-upsert
+        shape, and the reason nothing is overwritten or lost. Terminologies and
+        terms have no version axis: for them "the archive wins" can only mean
+        updating the target row in place, which is what an operator asking for
+        upsert is asking for.
+        """
+        clashes = plan.differing_clashes
+        if not clashes:
+            return
+
+        db_name, coll_name = COLLECTION_MAP[entity_type]
+        collection = self._mongo[db_name][coll_name]
+
+        if entity_type == "templates":
+            heads = await self._template_head_versions(
+                namespace, [c.target.get("template_id") for c in clashes]
+            )
+            new_rows: list[dict[str, Any]] = []
+            for clash in clashes:
+                template_id = clash.target.get("template_id")
+                next_version = heads.get(template_id, clash.target.get("version", 1)) + 1
+                heads[template_id] = next_version
+                row = dict(clash.entity)
+                row["template_id"] = template_id
+                row["version"] = next_version
+                new_rows.append(row)
+            await self._insert_batch(collection, new_rows, entity_type)
+            self._emit(
+                "phase_templates",
+                f"[{namespace}] upserted {len(new_rows)} template(s) as new "
+                "versions from the archive",
+            )
+            return
+
+        updated = 0
+        for clash in clashes:
+            payload = {
+                key: value
+                for key, value in clash.entity.items()
+                if key not in ("_id", "created_at", "created_by")
+            }
+            await collection.update_one(
+                {
+                    "namespace": namespace,
+                    **{
+                        field_name: clash.target.get(field_name)
+                        for field_name in MERGE_ENTITY_SPECS[entity_type].id_fields
+                    },
+                },
+                {"$set": payload},
+            )
+            updated += 1
+        self._emit(
+            f"phase_{entity_type}",
+            f"[{namespace}] updated {updated} {entity_type} in place from the "
+            "archive (no version history exists for this entity type)",
+        )
+
+    async def _template_head_versions(
+        self, namespace: str, template_ids: list[str | None]
+    ) -> dict[str, int]:
+        """Highest stored version per template, for appending new ones."""
+        wanted = [t for t in template_ids if t]
+        heads: dict[str, int] = {}
+        if not wanted:
+            return heads
+        db_name, coll_name = COLLECTION_MAP["templates"]
+        cursor = self._mongo[db_name][coll_name].find(
+            {"namespace": namespace, "template_id": {"$in": wanted}},
+            {"template_id": 1, "version": 1},
+        )
+        async for row in cursor:
+            template_id = row.get("template_id")
+            version = row.get("version", 1)
+            if version > heads.get(template_id, 0):
+                heads[template_id] = version
+        return heads
+
+    async def _overwrite_documents(
+        self,
+        namespace: str,
+        plan: EntityPlan,
+        doc_groups: dict[str, list[dict[str, Any]]],
+    ) -> None:
+        """Let the archive win, going forward.
+
+        The archive's LATEST version of a clashing identity is appended as one
+        new version on top of the target's head, adopting the target's
+        document_id. The target's history is preserved and the archive's is not
+        spliced in: interleaving two independent version chains has no defined
+        order and would corrupt the (document_id, version) contract.
+
+        A ``versioned: false`` template has no such contract to protect — its
+        lifecycle IS overwrite-in-place — so there the single row is replaced.
+        """
+        clashes = plan.differing_clashes
+        if not clashes:
+            return
+
+        db_name, coll_name = COLLECTION_MAP["documents"]
+        collection = self._mongo[db_name][coll_name]
+        versioned = await self._template_versioned_flags(
+            namespace, [c.entity.get("template_id") for c in clashes]
+        )
+
+        appended = 0
+        replaced = 0
+        new_rows: list[dict[str, Any]] = []
+        for clash in clashes:
+            source_rows = doc_groups.get(
+                clash.entity.get("document_id", ""), [clash.entity]
+            )
+            latest = max(source_rows, key=lambda r: r.get("version", 1))
+            target_head = max(clash.targets, key=lambda r: r.get("version", 1))
+
+            row = dict(latest)
+            row["document_id"] = target_head.get("document_id")
+
+            if versioned.get(clash.entity.get("template_id"), True) is False:
+                row["version"] = target_head.get("version", 1)
+                await collection.replace_one(
+                    {
+                        "namespace": namespace,
+                        "document_id": row["document_id"],
+                        "version": row["version"],
+                    },
+                    row,
+                )
+                replaced += 1
+            else:
+                row["version"] = target_head.get("version", 1) + 1
+                new_rows.append(row)
+                appended += 1
+
+        if new_rows:
+            await self._insert_batch(collection, new_rows, "documents")
+
+        self._emit(
+            "phase_documents",
+            f"[{namespace}] overwrote {appended + replaced} clashing document(s) "
+            f"({appended} appended as a new version, {replaced} replaced in "
+            "place on versioned:false templates)",
+        )
+
+    async def _template_versioned_flags(
+        self, namespace: str, template_ids: list[str | None]
+    ) -> dict[str, bool]:
+        """``versioned`` per template — immutable after create, so any row of
+        a template answers for all its versions."""
+        wanted = [t for t in template_ids if t]
+        flags: dict[str, bool] = {}
+        if not wanted:
+            return flags
+        db_name, coll_name = COLLECTION_MAP["templates"]
+        cursor = self._mongo[db_name][coll_name].find(
+            {"namespace": namespace, "template_id": {"$in": wanted}},
+            {"template_id": 1, "versioned": 1},
+        )
+        async for row in cursor:
+            flags[row.get("template_id")] = row.get("versioned", True)
+        return flags
+
+    async def _check_namespace_exists(self, namespace: str) -> None:
+        """Merge inverts the empty-target precondition: the namespace must be
+        there. Creating it would mean there is nothing to merge into, which is
+        a plain restore."""
+        ns_doc = await self._mongo[_DB_REGISTRY]["namespaces"].find_one(
+            {"prefix": namespace}
+        )
+        if ns_doc is None:
+            raise RestoreEngineError(
+                f"Namespace '{namespace}' does not exist — merge restores into "
+                "an existing namespace. Use a plain restore to create it from "
+                "this archive."
+            )
+
+    async def _check_merge_reporting_precondition(self, namespace: str) -> None:
+        """Reporting must be usable, but a populated schema is expected here.
+
+        The plain restore refuses a non-empty reporting schema because stale
+        tables would shadow restored data. A merge is *supposed* to land in a
+        live namespace, so the same finding is normal; only unusable
+        bookkeeping — which would make the merge complete with a silently
+        broken reporting layer — still refuses.
+        """
+        if not self._reporting:
+            return
+        parity = await self._reporting.parity(namespace, include_counts=False)
+        if parity is None:
+            self._reporting_unavailable(namespace, "precondition check")
+            return
+        if not parity.get("bookkeeping_tables_ok", True):
+            raise RestoreEngineError(
+                f"Reporting bookkeeping tables are unusable: "
+                f"{parity.get('bookkeeping_error')} — the merge would complete "
+                "with a silently broken reporting layer. Remediate first."
+            )
+        if not parity.get("schema_present"):
+            self._emit(
+                "warning",
+                f"[{namespace}] has no reporting schema yet — the merge will "
+                "create it, but a live namespace without one means reporting "
+                "was never synced here. Verify after the merge.",
+            )
+
+    async def _report_namespace_config_drift(
+        self, namespace: str, ns_config: NamespaceConfig | None
+    ) -> None:
+        """Compare the archive's namespace config against the live one.
+
+        Merge never applies it: the target namespace is live and its
+        configuration belongs to whoever is running it, not to an archive
+        taken at some earlier point. Drift is still worth naming — an
+        id_config or isolation_mode that has moved changes how the merged
+        data will behave.
+        """
+        if ns_config is None:
+            return
+        live = await self._mongo[_DB_REGISTRY]["namespaces"].find_one(
+            {"prefix": namespace}
+        )
+        if live is None:
+            return
+
+        drift: list[str] = []
+        for field_name, archived in (
+            ("isolation_mode", ns_config.isolation_mode),
+            ("id_config", ns_config.id_config),
+            ("allowed_external_refs", ns_config.allowed_external_refs),
+            ("deletion_mode", ns_config.deletion_mode),
+        ):
+            if archived is None:
+                continue
+            current = live.get(field_name)
+            if current != archived:
+                drift.append(f"{field_name}: target={current!r} archive={archived!r}")
+
+        if drift:
+            self._emit(
+                "warning",
+                f"[{namespace}] namespace config differs from the archive's "
+                f"({'; '.join(drift)}) — the target's config is kept; a merge "
+                "never applies the archive's.",
+            )
+
+    def _resolve_targets(
+        self,
+        reader: ArchiveReader,
+        manifest: Any,
+        target_namespace: str,
+    ) -> list[tuple[str, str]]:
+        """Validate the archive's shape and pair each source namespace with
+        its target. Shared by every mode that reads an archive.
+
+        Both modes here write each namespace to itself. A different target is
+        rejected rather than honoured: the archived entities, registry entries,
+        and composite keys all embed the source namespace, so writing them
+        elsewhere would produce records still carrying the source namespace
+        after checking only the target. Re-namespacing means new IDs and
+        rewritten references — the new-namespace mode's job.
+        """
+        # Belt behind the endpoint's synchronous 400: a pre-v3 archive is
+        # flat, so every namespaces/<ns>/<entity>.jsonl read would find
+        # nothing and the job would complete "successfully" having written
+        # zero entities. Fail loud for any caller that bypasses the endpoint.
+        if not manifest.format_version.startswith("3"):
+            raise RestoreEngineError(
+                f"Archive is format v{manifest.format_version} — the restore "
+                "engine reads the v3 layout. Convert it first: "
+                "python -m wip_toolkit convert-archive <src> <dst>"
+            )
+        # A manifest may *claim* 3.x yet carry no namespaces/ subtree
+        # (hand-assembled or truncated zip). namespace_prefixes() can be
+        # non-empty from the manifest alone, so check the actual layout —
+        # otherwise the same silent zero-entity run happens.
+        if not reader.list_namespaces():
+            raise RestoreEngineError(
+                "Archive manifest claims v3 but the zip has no namespaces/ "
+                "tree — malformed archive, nothing to restore"
+            )
+
+        source_namespaces = manifest.namespace_prefixes() or reader.list_namespaces()
+        if not source_namespaces:
+            raise RestoreEngineError("Archive contains no namespaces to restore")
+
+        if target_namespace:
+            if len(source_namespaces) > 1:
+                raise RestoreEngineError(
+                    "target_namespace override is not supported for a "
+                    "multi-namespace archive; each namespace restores "
+                    "to itself."
+                )
+            if target_namespace != source_namespaces[0]:
+                raise RestoreEngineError(
+                    f"target_namespace '{target_namespace}' differs from "
+                    f"the archive's namespace '{source_namespaces[0]}' — "
+                    "an ID-preserving restore cannot re-namespace data. "
+                    "Restore to the archive's own namespace, or use the "
+                    "new-namespace (remap) restore mode once available."
+                )
+        return [(ns, ns) for ns in source_namespaces]
 
     async def _recreate_claims(
         self,
@@ -1041,10 +1634,23 @@ class DirectRestoreEngine:
                 f"First error: {exc.details['writeErrors'][0].get('errmsg', 'unknown')}"
             ) from exc
 
-    async def _restore_blobs(self, reader: ArchiveReader, namespace: str) -> None:
-        """Upload file blobs from the archive to MinIO."""
+    async def _restore_blobs(
+        self,
+        reader: ArchiveReader,
+        namespace: str,
+        *,
+        only: set[str] | None = None,
+    ) -> None:
+        """Upload file blobs from the archive to MinIO.
+
+        ``only`` narrows the upload to specific file ids — a merge uploads
+        bytes for the files it inserted and leaves the ones the target already
+        had alone.
+        """
         assert self._storage is not None
         blob_ids = reader.list_blobs()
+        if only is not None:
+            blob_ids = [b for b in blob_ids if b in only]
         if not blob_ids:
             return
 

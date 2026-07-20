@@ -145,13 +145,22 @@ class EntityPlan:
     to_insert: list[dict[str, Any]] = field(default_factory=list)
     clashes: list[Clash] = field(default_factory=list)
     conflicts: list[Conflict] = field(default_factory=list)
+    # False when the target was read through a projection, so the two sides
+    # cannot be compared field by field. Such a clash is never "unchanged" —
+    # the archive may well carry different content, and the caller's policy
+    # decides without a diff.
+    diffable: bool = True
 
     @property
     def identical_clashes(self) -> list[Clash]:
+        if not self.diffable:
+            return []
         return [c for c in self.clashes if c.identical]
 
     @property
     def differing_clashes(self) -> list[Clash]:
+        if not self.diffable:
+            return list(self.clashes)
         return [c for c in self.clashes if not c.identical]
 
     def summary(self) -> dict[str, int]:
@@ -231,16 +240,16 @@ class MergePlanner:
         namespace: str,
     ) -> EntityPlan:
         """Classify every archived entity of one type against the target."""
-        plan = EntityPlan(entity_type=entity_type)
-        if not entities:
-            return plan
-
         spec = MERGE_ENTITY_SPECS[entity_type]
-        db_name, coll_name = self._collection_map[entity_type]
-        collection = self._mongo[db_name][coll_name]
         projection = (
             {name: 1 for name in spec.projection} if spec.projection else None
         )
+        plan = EntityPlan(entity_type=entity_type, diffable=projection is None)
+        if not entities:
+            return plan
+
+        db_name, coll_name = self._collection_map[entity_type]
+        collection = self._mongo[db_name][coll_name]
 
         id_index = await self._fetch_by_keys(
             collection, namespace, spec.id_fields,
