@@ -885,6 +885,26 @@ var DocumentStoreService = class extends BaseService {
       form.append("drop_stale_reporting", String(options.drop_stale_reporting));
     return this.postFormData(`/backup/namespaces/${namespace}/restore`, form);
   }
+  /**
+   * Verify a namespace's referential and identity integrity. Returns a job.
+   *
+   * Checks that every reference resolves — template, term, document, file —
+   * and that every document's stored identity hash still matches its own
+   * data. It is the referential twin of the reporting parity check: that one
+   * compares PostgreSQL against MongoDB, this compares MongoDB against
+   * itself.
+   *
+   * It matters most after a restore, which writes documents straight to
+   * MongoDB and validates nothing while writing. Every restore starts one of
+   * these per namespace it wrote and records the ids on its own snapshot
+   * (`validation_job_ids`); this is the same check on demand.
+   *
+   * Poll `getBackupJob` for progress and `result`. Findings do not fail the
+   * job — it completes with `result.status` of healthy, warning or error.
+   */
+  async validateNamespace(namespace, params = {}) {
+    return this.post(`/backup/namespaces/${namespace}/validate`, void 0, params);
+  }
   /** Get the latest persisted snapshot for a backup or restore job. */
   async getBackupJob(jobId) {
     return this.get(`/backup/jobs/${jobId}`);

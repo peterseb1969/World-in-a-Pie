@@ -1061,6 +1061,22 @@ describe('Service classes via createWipClient', () => {
       expect(fd.get('archive')).toBeInstanceOf(Blob)
     })
 
+    it('validateNamespace posts with its options as query params', async () => {
+      mockJsonResponse(backupSnapshot({ kind: 'validate', namespace: 'kb' }))
+
+      const result = await client.documents.validateNamespace('kb', {
+        check_identity: false,
+        limit: 25,
+      })
+
+      expect(result.kind).toBe('validate')
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/backup/namespaces/kb/validate')
+      expect(url).toContain('check_identity=false')
+      expect(url).toContain('limit=25')
+      expect(options.method).toBe('POST')
+    })
+
     it('getBackupJob fetches by job_id', async () => {
       mockJsonResponse(backupSnapshot({ status: 'complete', percent: 100, archive_size: 90840 }))
 

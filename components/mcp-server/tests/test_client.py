@@ -565,6 +565,24 @@ async def test_start_restore_omits_clash_policies_outside_merge(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_start_validation_posts_to_the_namespace(tmp_path):
+    """Validation is the post-restore check; it must reach document-store's
+    validate endpoint with its options as query params."""
+    mock_http = _mock_http(_mock_response({"job_id": "val-1", "kind": "validate"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.start_validation("kb", check_identity=False, limit=25)
+
+    url = mock_http.post.call_args.args[0]
+    assert "/api/document-store/backup/namespaces/kb/validate" in url
+    params = mock_http.post.call_args.kwargs["params"]
+    assert params["check_identity"] == "false"
+    assert params["check_term_refs"] == "true"
+    assert params["limit"] == 25
+
+
+@pytest.mark.asyncio
 async def test_start_restore_missing_archive_raises():
     """start_restore raises FileNotFoundError if the archive doesn't exist."""
     client = _make_client()

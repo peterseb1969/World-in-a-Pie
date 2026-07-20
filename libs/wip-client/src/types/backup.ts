@@ -9,7 +9,7 @@
  * so a future implementation can replace the toolkit without breaking clients.
  */
 
-export type BackupJobKind = 'backup' | 'restore'
+export type BackupJobKind = 'backup' | 'restore' | 'validate'
 
 export type BackupJobStatus = 'pending' | 'running' | 'complete' | 'failed'
 
@@ -61,7 +61,70 @@ export interface BackupJobSnapshot {
   completed_at: string | null
   archive_size: number | null
   options: Record<string, unknown>
+  warnings?: string[]
+  /** Present on `validate` jobs once they complete. */
+  result?: NamespaceIntegrityResult | null
+  /**
+   * Validation jobs a completed restore started, one per namespace it wrote.
+   * The restore does not wait for them — its data is committed either way.
+   */
+  validation_job_ids?: string[]
   created_by: string
+}
+
+/**
+ * A single referential or identity problem found in a namespace.
+ *
+ * Distinct from the reporting layer's `IntegrityIssue`, which describes a
+ * PostgreSQL-side finding keyed on `entity_id`. This one is a MongoDB-side
+ * finding about a specific document version.
+ */
+export interface NamespaceIntegrityIssue {
+  type: string
+  severity: 'error' | 'warning' | 'info'
+  document_id: string
+  template_id: string
+  version: number
+  field_path: string | null
+  reference: string
+  message: string
+}
+
+export interface NamespaceIntegritySummary {
+  total_documents: number
+  documents_checked: number
+  documents_with_issues: number
+  orphaned_template_refs: number
+  orphaned_term_refs: number
+  inactive_template_refs: number
+  orphaned_document_refs: number
+  orphaned_file_refs: number
+  identity_hash_mismatches: number
+}
+
+/**
+ * The outcome of a namespace validation job.
+ *
+ * Findings do not fail the job — the check ran, and its answer is the
+ * deliverable. `issues` is a capped sample; `issues_truncated` says how many
+ * more there were, since a namespace with a systematic problem produces one
+ * issue per document.
+ */
+export interface NamespaceIntegrityResult {
+  status: 'healthy' | 'warning' | 'error'
+  summary: NamespaceIntegritySummary
+  issues: NamespaceIntegrityIssue[]
+  issues_truncated: number
+}
+
+/** Query parameters for `POST /backup/namespaces/{namespace}/validate`. */
+export interface ValidateNamespaceParams {
+  /** Check term references (one cached lookup per distinct term). */
+  check_term_refs?: boolean
+  /** Recompute each document's identity hash and compare it to the stored one. */
+  check_identity?: boolean
+  /** Stop after this many documents (0 = all). */
+  limit?: number
 }
 
 /**

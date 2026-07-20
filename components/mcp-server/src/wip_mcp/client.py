@@ -1575,6 +1575,22 @@ class WipClient:
         parsed: dict[str, Any] = resp.json()
         return parsed
 
+    async def start_validation(
+        self,
+        namespace: str,
+        check_term_refs: bool = True,
+        check_identity: bool = True,
+        limit: int = 0,
+    ) -> dict:
+        """Start a namespace integrity check. Returns the initial job snapshot."""
+        return await self._post(
+            self.document_store_url,
+            f"/api/document-store/backup/namespaces/{namespace}/validate",
+            check_term_refs=str(check_term_refs).lower(),
+            check_identity=str(check_identity).lower(),
+            limit=limit,
+        )
+
     async def get_backup_job(self, job_id: str) -> dict:
         return await self._get(
             self.document_store_url,

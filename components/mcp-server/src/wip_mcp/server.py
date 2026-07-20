@@ -3943,6 +3943,61 @@ async def start_restore(
 
 
 @mcp.tool()
+async def validate_namespace(
+    namespace: str,
+    check_term_refs: bool = True,
+    check_identity: bool = True,
+    limit: int = 0,
+) -> str:
+    """Check that a namespace's data is internally consistent. Returns a job.
+
+    Verifies two things across every document in the namespace: that every
+    reference resolves — template, term, document, file — and that every
+    document's stored identity hash still matches its own data.
+
+    This is the referential twin of check_reporting_parity: that one compares
+    PostgreSQL against MongoDB, this one compares MongoDB against itself.
+
+    It matters most after a restore. A restore writes documents straight to
+    MongoDB and validates NOTHING while writing — deliberately, because
+    per-record validation would undo the bulk write path that makes restore
+    fast — so this is where a restored namespace actually gets checked. Every
+    restore starts one of these automatically per namespace it wrote and
+    records the job ids on its own record; call this for the same check on
+    demand.
+
+    Scanning a whole namespace takes time, so it runs as a job: poll
+    get_backup_job for progress and the result. Findings do not fail the job —
+    it completes, and `result.status` is healthy, warning or error, with
+    `result.issues` carrying a capped sample and `result.issues_truncated`
+    saying how many more there were.
+
+    The identity check is the one nothing else performs. A document's identity
+    hash decides whether a write becomes a new version or a new document, it
+    is written once at create time, and one that has drifted from its own
+    content stays wrong silently until the next write on that identity lands
+    in the wrong place.
+
+    Args:
+        namespace: The namespace to verify.
+        check_term_refs: Check term references (one cached lookup per distinct
+            term, so cost scales with vocabulary size, not document count).
+        check_identity: Recompute and compare identity hashes.
+        limit: Stop after this many documents (0 = all).
+    """
+    try:
+        data = await get_client().start_validation(
+            namespace=namespace,
+            check_term_refs=check_term_refs,
+            check_identity=check_identity,
+            limit=limit,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def get_backup_job(job_id: str) -> str:
     """Get the current state of a backup or restore job.
 
