@@ -238,6 +238,68 @@ class TestRemapPlanning:
         ]
 
     @pytest.mark.asyncio
+    async def test_all_versions_of_a_document_share_one_new_id(self):
+        # Versions of one document are one identity to the Registry: they
+        # share (template_id, identity_hash), so asking for an id per ROW
+        # collides on the second version. Found live — 65,923 document rows
+        # returned 409 on the first chunk.
+        provision = _provisioner()
+        planner = _planner(provision)
+
+        plan = await planner.plan(
+            {
+                "templates": [{"template_id": "T", "value": "PATIENT"}],
+                "documents": [
+                    {"document_id": "D1", "template_id": "T",
+                     "identity_hash": "h1", "version": v}
+                    for v in (1, 2, 3)
+                ],
+            },
+            NAMESPACE,
+        )
+
+        doc_calls = [c for c in provision.calls if c[0] == "documents"]
+        assert len(doc_calls[0][1]) == 1, "one key for one document, not one per version"
+        rows = plan.rows["documents"]
+        assert len(rows) == 3
+        assert len({r["document_id"] for r in rows}) == 1
+        assert sorted(r["version"] for r in rows) == [1, 2, 3]
+
+    @pytest.mark.asyncio
+    async def test_all_versions_of_a_template_share_one_new_id(self):
+        # Same for templates: every version shares the template's value, so
+        # the composite key {ns, type, value} is one identity.
+        provision = _provisioner()
+        planner = _planner(provision)
+
+        plan = await planner.plan(
+            {"templates": [
+                {"template_id": "T", "value": "PATIENT", "version": v}
+                for v in (1, 2)
+            ]},
+            NAMESPACE,
+        )
+
+        tpl_calls = [c for c in provision.calls if c[0] == "templates"]
+        assert len(tpl_calls[0][1]) == 1
+        rows = plan.rows["templates"]
+        assert len(rows) == 2
+        assert len({r["template_id"] for r in rows}) == 1
+
+    @pytest.mark.asyncio
+    async def test_distinct_documents_still_get_distinct_ids(self):
+        planner = _planner()
+        plan = await planner.plan(
+            {"documents": [
+                {"document_id": "D1", "template_id": "T", "identity_hash": "h1"},
+                {"document_id": "D2", "template_id": "T", "identity_hash": "h2"},
+            ]},
+            NAMESPACE,
+        )
+
+        assert len({r["document_id"] for r in plan.rows["documents"]}) == 2
+
+    @pytest.mark.asyncio
     async def test_a_short_provision_response_refuses_to_guess(self):
         async def stingy(entity_type, keys):
             return ["ONLY-ONE"]

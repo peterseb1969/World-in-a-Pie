@@ -93,6 +93,11 @@ BACKUP_ENTITY_ORDER = [
 # before the entity holding it exists.
 MERGE_ENTITY_ORDER = list(BACKUP_ENTITY_ORDER)
 
+# The Registry's provision endpoint caps `count` per call (ProvisionRequest
+# bounds it at 1000), so a remap of a namespace-sized entity type asks in
+# chunks. Found live: 1099 terms in one request came back 422.
+PROVISION_BATCH = 1000
+
 
 class BackupEngineError(Exception):
     """Raised when the backup engine encounters a fatal error."""
@@ -597,6 +602,12 @@ class DirectRestoreEngine:
         does not resolve, so a job that dies partway leaves an invisible and
         reconcilable namespace; a single activation at the end makes the whole
         set visible at once.
+
+        No reporting work happens here. A restore's job is to get the data in;
+        PostgreSQL is a derived layer that can be rebuilt at any time, and
+        syncing mid-restore only couples the write to a service that has
+        nothing to say yet. Verify afterwards — `check_reporting_parity` and
+        the namespace validation job both exist for that.
         """
         if not target_namespace:
             raise RestoreEngineError(
@@ -651,6 +662,15 @@ class DirectRestoreEngine:
                 if template.get("value")
             }
 
+            # The namespace has to exist before anything is provisioned: the
+            # Registry mints ids per the TARGET namespace's id_config, and
+            # refuses outright for a namespace it does not know. Creating it
+            # is a write, so a dry run skips it — which is exactly why the dry
+            # run cannot catch this ordering: its stand-in provisioner never
+            # asks the Registry anything.
+            if not dry_run:
+                await self._upsert_namespace(target_namespace, ns_config)
+
             remapper = IDRemapper()
             planner = RemapRestore(
                 self._dry_run_provisioner() if dry_run
@@ -682,7 +702,6 @@ class DirectRestoreEngine:
                 )
                 return
 
-            await self._upsert_namespace(target_namespace, ns_config)
             await self._write_remapped(target_namespace, plan, batch_size)
 
             if not skip_files and self._storage:
@@ -697,9 +716,6 @@ class DirectRestoreEngine:
                 ],
             )
             await self._record_provenance(target_namespace, src, manifest)
-            await self._reporting_phase_counts(
-                target_namespace, skip_documents=skip_documents
-            )
 
         self._emit("complete", "Remap restore complete", percent=100,
                    details=self.result)
@@ -719,20 +735,32 @@ class DirectRestoreEngine:
                 "X-API-Key": self._registry_api_key,
                 "Content-Type": "application/json",
             }
-            body = {
-                "namespace": namespace,
-                "entity_type": entity_type,
-                "count": len(keys),
-                "composite_keys": keys,
-            }
+            minted: list[str] = []
             async with httpx.AsyncClient(timeout=120.0) as client:
-                resp = await client.post(url, json=body, headers=headers)
-                if resp.status_code != 200:
-                    raise RestoreEngineError(
-                        f"Could not provision {len(keys)} {entity_type} id(s) "
-                        f"in '{namespace}': {resp.status_code} — {resp.text}"
+                # The endpoint caps `count` at PROVISION_BATCH per call, so a
+                # namespace-sized type has to be asked for in chunks. Ids come
+                # back in request order and are appended in that order, which
+                # is what lets the caller zip them against its entities.
+                for start in range(0, len(keys), PROVISION_BATCH):
+                    chunk = keys[start:start + PROVISION_BATCH]
+                    resp = await client.post(
+                        url,
+                        json={
+                            "namespace": namespace,
+                            "entity_type": entity_type,
+                            "count": len(chunk),
+                            "composite_keys": chunk,
+                        },
+                        headers=headers,
                     )
-                return [item["entry_id"] for item in resp.json()["ids"]]
+                    if resp.status_code != 200:
+                        raise RestoreEngineError(
+                            f"Could not provision {len(chunk)} {entity_type} "
+                            f"id(s) in '{namespace}' (chunk at offset {start} "
+                            f"of {len(keys)}): {resp.status_code} — {resp.text}"
+                        )
+                    minted.extend(item["entry_id"] for item in resp.json()["ids"])
+            return minted
 
         return provision
 
@@ -778,8 +806,6 @@ class DirectRestoreEngine:
                 f"phase_{entity_type}",
                 f"[{namespace}] wrote {len(rows)} {entity_type} under new ids",
             )
-            if entity_type == "templates":
-                await self._reporting_phase_structure(namespace)
 
     async def _remap_blobs(
         self, reader: ArchiveReader, file_id_map: dict[str, str]

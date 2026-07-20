@@ -1312,6 +1312,117 @@ class TestRemapRestore:
         await _clear_remap_target(mongo)
 
     @pytest.mark.asyncio
+    async def test_the_namespace_exists_before_anything_is_provisioned(self, mongo):
+        # The Registry mints ids per the TARGET namespace's id_config and
+        # refuses for a namespace it does not know, so creating it has to come
+        # first. A live run failed here with 404 "Namespace not found" while
+        # every test passed: the dry run's stand-in provisioner never asks the
+        # Registry anything, so it cannot catch the ordering.
+        await _clear_remap_target(mongo)
+        order: list[str] = []
+
+        class _OrderingRegistry(_FakeRegistry):
+            async def post(self, url, json=None, headers=None):
+                if url.endswith("/entries/provision"):
+                    order.append("provision")
+                return await super().post(url, json=json, headers=headers)
+
+        registry = _OrderingRegistry()
+        http = MagicMock()
+        http.post = registry.post
+
+        async def _put(url, **kwargs):
+            order.append("namespace")
+            return MagicMock(status_code=200, text="ok")
+
+        http.put = _put
+        http.__aenter__ = AsyncMock(return_value=http)
+        http.__aexit__ = AsyncMock(return_value=None)
+
+        engine = DirectRestoreEngine(mongo, None, lambda _e: None)
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=_archive({"terminologies": [
+                {"terminology_id": "L1", "namespace": NAMESPACE, "value": "A"},
+            ]}),
+        ), patch("httpx.AsyncClient", return_value=http):
+            await engine.run_remap(MagicMock(), REMAP_TARGET)
+
+        assert order[0] == "namespace", (
+            f"the namespace must be created before provisioning; order was {order}"
+        )
+        assert "provision" in order
+        await _clear_remap_target(mongo)
+
+    @pytest.mark.asyncio
+    async def test_provisioning_is_chunked_to_the_endpoints_limit(self, mongo):
+        # The Registry caps `count` per provision call, so a namespace-sized
+        # entity type has to be asked for in chunks. Found live: 1099 terms in
+        # one request came back 422, after the 13 terminologies had already
+        # succeeded — so the failure lands mid-restore, not at the start.
+        from document_store.services.backup_engine import PROVISION_BATCH
+
+        await _clear_remap_target(mongo)
+        counts: list[int] = []
+
+        class _CountingRegistry(_FakeRegistry):
+            async def post(self, url, json=None, headers=None):
+                if url.endswith("/entries/provision"):
+                    counts.append(json["count"])
+                    assert json["count"] <= PROVISION_BATCH, (
+                        f"asked for {json['count']} ids in one call; the "
+                        f"endpoint accepts at most {PROVISION_BATCH}"
+                    )
+                return await super().post(url, json=json, headers=headers)
+
+        oversized = [
+            {"terminology_id": f"L{i}", "namespace": NAMESPACE, "value": f"V{i}"}
+            for i in range(PROVISION_BATCH + 99)
+        ]
+        await _run_remap(
+            mongo,
+            _archive({"terminologies": oversized}),
+            registry=_CountingRegistry(),
+        )
+
+        assert counts == [PROVISION_BATCH, 99]
+        rows = await _remap_rows(mongo, "terminologies")
+        assert len(rows) == PROVISION_BATCH + 99
+        # Ids come back in request order across chunks, so entities keep the
+        # id that was minted for them.
+        assert len({r["terminology_id"] for r in rows}) == len(rows)
+        await _clear_remap_target(mongo)
+
+    @pytest.mark.asyncio
+    async def test_a_dry_run_does_not_create_the_namespace(self, mongo):
+        # Creating it is a write. A preview must not leave one behind.
+        await _clear_remap_target(mongo)
+        created: list[str] = []
+        registry = _FakeRegistry()
+        http = MagicMock()
+        http.post = registry.post
+
+        async def _put(url, **kwargs):
+            created.append(url)
+            return MagicMock(status_code=200, text="ok")
+
+        http.put = _put
+        http.__aenter__ = AsyncMock(return_value=http)
+        http.__aexit__ = AsyncMock(return_value=None)
+
+        engine = DirectRestoreEngine(mongo, None, lambda _e: None)
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=_archive({"terminologies": [
+                {"terminology_id": "L1", "namespace": NAMESPACE, "value": "A"},
+            ]}),
+        ), patch("httpx.AsyncClient", return_value=http):
+            await engine.run_remap(MagicMock(), REMAP_TARGET, dry_run=True)
+
+        assert created == []
+        await _clear_remap_target(mongo)
+
+    @pytest.mark.asyncio
     async def test_a_dry_run_provisions_nothing_and_writes_nothing(self, mongo):
         # Provisioning writes reserved entries, so a preview that called the
         # Registry would leave rows behind and not be a preview.

@@ -36,6 +36,13 @@ logger = logging.getLogger("document_store.remap_restore")
 # term's key carries terminology_id, a document's carries template_id.
 REMAP_ENTITY_ORDER = ("terminologies", "terms", "templates", "files", "documents")
 
+# Types whose archive rows are VERSIONS of one entity rather than distinct
+# entities. All versions of a document share (template_id, identity_hash), and
+# all versions of a template share its value — so each is one identity to the
+# Registry, and provisioning per row makes version 2 collide with version 1.
+# Found live: 65,923 document rows produced a 409 on the first chunk.
+VERSIONED_TYPES = frozenset({"documents", "templates"})
+
 # The canonical id field each type carries.
 ID_FIELDS: dict[str, str] = {
     "terminologies": "terminology_id",
@@ -161,28 +168,36 @@ class RemapRestore:
                 plan.rows[entity_type] = []
                 continue
 
+            id_field = ID_FIELDS[entity_type]
+            # One identity per ENTITY, not per row. A versioned type's rows
+            # are versions of one thing: they share a composite key, so asking
+            # the Registry for an id per row collides on the second version.
+            groups: dict[str, list[dict[str, Any]]] = {}
+            for entity in entities:
+                groups.setdefault(str(entity.get(id_field)), []).append(entity)
+
+            representatives = [rows[0] for rows in groups.values()]
             keys = [
                 composite_key_for(entity_type, entity, namespace, plan.id_map)
-                for entity in entities
+                for entity in representatives
             ]
             new_ids = await self._provision(entity_type, keys)
-            if len(new_ids) != len(entities):
+            if len(new_ids) != len(representatives):
                 raise ValueError(
                     f"Registry provisioned {len(new_ids)} id(s) for "
-                    f"{len(entities)} {entity_type} — refusing to guess which "
-                    "entity got which id"
+                    f"{len(representatives)} {entity_type} — refusing to guess "
+                    "which entity got which id"
                 )
 
-            id_field = ID_FIELDS[entity_type]
-            for entity, new_id in zip(entities, new_ids, strict=True):
-                old_id = entity.get(id_field)
-                if old_id:
-                    plan.id_map[entity_type][str(old_id)] = new_id
+            for old_id, new_id in zip(groups, new_ids, strict=True):
+                if old_id and old_id != "None":
+                    plan.id_map[entity_type][old_id] = new_id
             self._feed_remapper(entity_type, plan.id_map[entity_type])
 
             plan.rows[entity_type] = [
-                self._rewrite(entity_type, entity, namespace, new_id)
-                for entity, new_id in zip(entities, new_ids, strict=True)
+                self._rewrite(entity_type, row, namespace, new_id)
+                for (rows, new_id) in zip(groups.values(), new_ids, strict=True)
+                for row in rows
             ]
 
         # Term relations carry no id of their own — they ARE their endpoints,
