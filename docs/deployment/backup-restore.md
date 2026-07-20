@@ -165,9 +165,16 @@ Two things follow that are worth knowing:
   dry run reports how many identities were matched and how many incoming
   entities had references rewritten.
 
-`on_schema_clash=fail` still applies, and matters more here: consolidating two
-installs whose template versions have diverged would otherwise silently
-validate one install's documents against the other's schema.
+> **Known gap — do not rely on `on_schema_clash` here.** An earlier version of
+> this page said `on_schema_clash=fail` catches diverged schemas in this mode.
+> It does not, and that was verified by probe: when the two sides hold the
+> same template under *different* IDs — which is the normal cross-install
+> case — the collision is classified as a match and never reaches the schema
+> policy at all. The archive's template is dropped silently and its documents
+> land against the target's schema. Until the two-pass restructure lands
+> (`docs/design/restore-modes-merge-and-new-namespace.md`, Phase 2b), check
+> schema equivalence yourself before consolidating two installs, and prefer a
+> `dry_run` plus `list_templates` comparison on both sides.
 
 `dry_run` is exact for a merge: the plan is computed before anything is
 written, so the report is what a real run would do — per entity type, how many
