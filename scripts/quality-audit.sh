@@ -543,8 +543,31 @@ else
     cat "$RAW_DIR/tarball-consistency.log"
 fi
 
-# ─── Step 16: Generate report ────────────────────────────────────────
-info "Step 16: Generating report..."
+# ─── Step 16: KB doc drift (CASE-723) ────────────────────────────────
+info "Step 16: KB doc drift..."
+STEP_START=$(date +%s)
+
+# Docs live in the clone AND in the central KB store; nothing kept the second
+# in step with the first, so the store served a 25-day-old snapshot — including
+# a design pattern the repo had already retired. Gated like the tarball check
+# rather than counted against a baseline: a store that authoritatively serves
+# superseded doctrine is a correctness fault, not a metric that may drift.
+# Skips (exit 0) when the kb client is absent or the store is unreachable, so
+# it fails on drift it measured, never on its own inability to look.
+KB_DOC_OK=true
+if python3 "$SCRIPT_DIR/check-kb-doc-drift.py" \
+        --root "$ROOT_DIR" \
+        --strict \
+        --output "$RAW_DIR/kb-doc-drift.json" > "$RAW_DIR/kb-doc-drift.log" 2>&1; then
+    ok "KB doc drift: clean or skipped ($(step_time $STEP_START))"
+else
+    KB_DOC_OK=false
+    fail "KB doc drift: STALE RECORDS — see $RAW_DIR/kb-doc-drift.log ($(step_time $STEP_START))"
+    cat "$RAW_DIR/kb-doc-drift.log"
+fi
+
+# ─── Step 17: Generate report ────────────────────────────────────────
+info "Step 17: Generating report..."
 STEP_START=$(date +%s)
 
 MODE="full"
@@ -571,6 +594,15 @@ ok "Report generated ($(step_time $STEP_START))"
 # directly rather than through quality-audit-report.py's baseline comparison.
 if $CI_MODE && [ "$TARBALL_OK" = false ]; then
     fail "Vendored-tarball consistency failed — failing audit (--ci). See Step 15."
+    exit 1
+fi
+
+# KB doc drift is the same class (CASE-723): the central store serving stale or
+# missing docs is a correctness fault about what other agents are taught, so it
+# gates directly rather than through the baseline. Repair with:
+#   python3 scripts/check-kb-doc-drift.py --fix
+if $CI_MODE && [ "$KB_DOC_OK" = false ]; then
+    fail "KB doc drift failed — failing audit (--ci). See Step 16."
     exit 1
 fi
 
