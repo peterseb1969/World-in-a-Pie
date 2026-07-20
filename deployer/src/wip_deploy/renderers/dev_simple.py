@@ -454,8 +454,19 @@ def _dev_service_block(
     # restart. The build-time pip install stays as a fallback — if the
     # bind-mount is somehow missing, the site-packages copy still lets
     # the container boot.
-    if name in _AUTH_SERVICES:
-        environment["PYTHONPATH"] = "/app/libs/wip-auth/src:/app/src"
+    # The same applies to WIP-Toolkit for the services that use it: the
+    # bind-mount has to come first, or the copy baked at image build wins and
+    # toolkit edits stay invisible until someone rebuilds.
+    python_path = [
+        path
+        for path, applies in (
+            ("/app/libs/wip-auth/src", name in _AUTH_SERVICES),
+            ("/app/libs/wip-toolkit/src", name in _TOOLKIT_SERVICES),
+        )
+        if applies
+    ]
+    if python_path:
+        environment["PYTHONPATH"] = ":".join([*python_path, "/app/src"])
     if environment:
         block["environment"] = environment
 
@@ -586,6 +597,17 @@ def _dev_volumes_for(
             wip_auth_src = (repo_root / "libs" / "wip-auth" / "src").resolve()
             if wip_auth_src.is_dir():
                 volumes.append(f"{wip_auth_src}:/app/libs/wip-auth/src:ro")
+        # Same treatment for WIP-Toolkit, for the same reason. Without it,
+        # wip-auth edits propagated on a restart while toolkit edits silently
+        # did not — the service kept running the copy pip-installed at image
+        # build, and the only symptom was behaviour that did not match the
+        # source in front of you. Found the hard way: a restore mode calling a
+        # toolkit function added the same day failed with AttributeError
+        # against a container whose code was days old.
+        if owner.metadata.name in _TOOLKIT_SERVICES:
+            toolkit_src = (repo_root / "WIP-Toolkit" / "src").resolve()
+            if toolkit_src.is_dir():
+                volumes.append(f"{toolkit_src}:/app/libs/wip-toolkit/src:ro")
 
     # CASE-55: app source-mount for --app-source overrides. Mount the
     # entire app directory into /app (including package.json + src/ +

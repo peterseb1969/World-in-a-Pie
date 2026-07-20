@@ -633,6 +633,75 @@ class TestTargetValidation:
 # ────────────────────────────────────────────────────────────────────
 
 
+class TestWipToolkitBindMount:
+    """WIP-Toolkit needs the same treatment wip-auth already had.
+
+    Without it, wip-auth edits propagated on a restart while toolkit edits
+    silently did not: the service kept running the copy pip-installed at image
+    build, and the only symptom was behaviour that did not match the source in
+    front of you. Found the hard way — a restore mode calling a toolkit
+    function added the same day failed with AttributeError against a container
+    whose toolkit was days old.
+    """
+
+    def _compose_doc(
+        self, tmp_path: Path, discovery: Discovery, **overrides: object
+    ) -> dict:  # type: ignore[type-arg]
+        d = _dev_deployment(**overrides)  # type: ignore[arg-type]
+        s = _secrets(tmp_path, d, discovery)
+        tree = render_dev_simple(
+            d, discovery.components, discovery.apps, s, repo_root=REPO_ROOT,
+        )
+        return yaml.safe_load(tree.files[Path("docker-compose.yaml")].content)
+
+    def test_toolkit_service_mounts_the_toolkit_source(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        doc = self._compose_doc(tmp_path, real_discovery)
+        target = "/app/libs/wip-toolkit/src"
+        mounts = [
+            v for v in doc["services"]["document-store"].get("volumes", [])
+            if target in v
+        ]
+        assert mounts, (
+            "document-store imports wip_toolkit and should mount it; volumes "
+            f"were {doc['services']['document-store'].get('volumes')}"
+        )
+        assert mounts[0].endswith(f"{target}:ro")
+        assert "WIP-Toolkit/src" in mounts[0]
+
+    def test_pythonpath_puts_the_mount_before_site_packages(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        # The mount alone is not enough: the image also pip-installs the
+        # toolkit, and site-packages wins unless the mount comes first.
+        doc = self._compose_doc(tmp_path, real_discovery)
+        parts = doc["services"]["document-store"]["environment"]["PYTHONPATH"].split(":")
+        assert "/app/libs/wip-toolkit/src" in parts
+        assert parts.index("/app/libs/wip-toolkit/src") < parts.index("/app/src")
+
+    def test_a_non_toolkit_service_does_not_get_the_mount(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        # Only document-store imports the toolkit; mounting it everywhere
+        # would imply a dependency that does not exist.
+        doc = self._compose_doc(tmp_path, real_discovery)
+        registry = doc["services"]["registry"]
+        assert not [
+            v for v in registry.get("volumes", []) if "wip-toolkit" in v
+        ]
+        assert "/app/libs/wip-toolkit/src" not in registry["environment"]["PYTHONPATH"]
+
+    def test_wip_auth_still_comes_first(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        # Regression guard for the change itself: adding the toolkit entry
+        # must not displace wip-auth from the front of PYTHONPATH.
+        doc = self._compose_doc(tmp_path, real_discovery)
+        parts = doc["services"]["document-store"]["environment"]["PYTHONPATH"].split(":")
+        assert parts[0] == "/app/libs/wip-auth/src"
+
+
 class TestWipAuthBindMount:
     def _compose_doc(
         self, tmp_path: Path, discovery: Discovery, **overrides: object
