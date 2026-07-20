@@ -620,3 +620,75 @@ async def test_delete_rejects_running_job(client: AsyncClient, auth_headers: dic
         f"/api/document-store/backup/jobs/{job.job_id}", headers=auth_headers
     )
     assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Namespace validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_validate_creates_a_job_and_forwards_its_options(
+    client: AsyncClient, auth_headers: dict
+):
+    """The check runs as a job because it scans a whole namespace; the caller
+    leaves with a job id, not a blocked connection."""
+    fake_task = asyncio.get_running_loop().create_future()
+    fake_task.set_result(None)
+    with (
+        patch(
+            "document_store.api.backup.backup_service.make_validation_runner",
+            return_value=AsyncMock(),
+        ) as mk_runner,
+        patch(
+            "document_store.api.backup.backup_service.start_async_job",
+            new=AsyncMock(return_value=fake_task),
+        ),
+    ):
+        resp = await client.post(
+            "/api/document-store/backup/namespaces/wip/validate"
+            "?check_identity=false&limit=10",
+            headers=auth_headers,
+        )
+
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["kind"] == "validate"
+    assert body["namespace"] == "wip"
+    _job_id, ns, options = mk_runner.call_args.args
+    assert ns == "wip"
+    assert options["check_identity"] is False
+    assert options["limit"] == 10
+
+
+@pytest.mark.asyncio
+async def test_validation_findings_do_not_fail_the_job(
+    client: AsyncClient, auth_headers: dict
+):
+    """A namespace with problems is a completed job carrying findings — the
+    check ran, and its answer is the deliverable."""
+    job = BackupJob(
+        job_id=f"val-{uuid.uuid4().hex[:16]}",
+        kind=BackupJobKind.VALIDATE,
+        namespace="wip",
+        namespaces=["wip"],
+        status=BackupJobStatus.COMPLETE,
+        result={
+            "status": "error",
+            "summary": {"documents_checked": 3, "documents_with_issues": 1},
+            "issues": [{"type": "orphaned_document_ref"}],
+            "issues_truncated": 0,
+        },
+        created_by="test",
+    )
+    await job.insert()
+
+    resp = await client.get(
+        f"/api/document-store/backup/jobs/{job.job_id}", headers=auth_headers
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "complete"
+    assert body["result"]["status"] == "error"
+    assert body["result"]["issues"][0]["type"] == "orphaned_document_ref"

@@ -18,6 +18,9 @@ Endpoints
     target, ``merge`` reconciles the archive into a namespace that already
     holds data: definitions must be compatible (see ``add_missing`` /
     ``extend_terminologies``), then documents merge under ``on_clash``.
+* ``POST /backup/namespaces/{namespace}/validate``
+    Verify a namespace's referential and identity integrity as a job. Started
+    automatically after every restore, and available on demand.
 * ``GET  /backup/jobs/{job_id}``
     Latest persisted snapshot for a job.
 * ``GET  /backup/jobs/{job_id}/events``
@@ -498,6 +501,82 @@ async def start_restore(
         await backup_service.start_async_job(
             job_id, runner, on_event=archive_lifecycle_hook(job_id)
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return BackupJobSnapshot.from_job(job)
+
+
+# ---------------------------------------------------------------------------
+# POST /backup/namespaces/{namespace}/validate
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/namespaces/{namespace}/validate",
+    response_model=BackupJobSnapshot,
+    status_code=202,
+    summary="Verify a namespace's referential and identity integrity",
+)
+async def start_validation(
+    namespace: str,
+    check_term_refs: bool = Query(
+        True,
+        description=(
+            "Check term references. One cached lookup per distinct term, so "
+            "the cost scales with vocabulary size rather than document count."
+        ),
+    ),
+    check_identity: bool = Query(
+        True,
+        description=(
+            "Recompute each document's identity hash from its own data and "
+            "compare it to the stored one."
+        ),
+    ),
+    limit: int = Query(
+        0, ge=0, description="Stop after this many documents (0 = all)"
+    ),
+    identity: UserIdentity = Depends(require_api_key),
+) -> BackupJobSnapshot:
+    """Check that a namespace's data is internally consistent.
+
+    Every reference resolves — template, term, document, file — and every
+    document's stored identity hash still matches its own content. This is the
+    referential twin of reporting-sync's parity check: that one compares
+    MongoDB against PostgreSQL, this one compares MongoDB against itself.
+
+    It matters most after a restore, which writes with `insert_many` and
+    validates nothing (deliberately — per-record validation while writing
+    would undo the bulk write path that makes restore fast). A restore starts
+    one of these per restored namespace automatically and records the job ids
+    on its own record; this endpoint is the same check on demand.
+
+    Findings do not fail the job. The check ran and its answer is the
+    deliverable: the job completes, `result.status` is healthy / warning /
+    error, and `result.issues` carries a capped sample.
+    """
+    await check_namespace_permission(identity, namespace, "read")
+
+    job_id = f"val-{uuid.uuid4().hex[:16]}"
+    options = {
+        "check_term_refs": check_term_refs,
+        "check_identity": check_identity,
+        "limit": limit,
+    }
+    job = BackupJob(
+        job_id=job_id,
+        kind=BackupJobKind.VALIDATE,
+        namespace=namespace,
+        namespaces=[namespace],
+        options=options,
+        created_by=identity.identity_string if hasattr(identity, "identity_string") else str(identity),
+    )
+    await job.insert()
+
+    runner = backup_service.make_validation_runner(job_id, namespace, options)
+    try:
+        await backup_service.start_async_job(job_id, runner)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

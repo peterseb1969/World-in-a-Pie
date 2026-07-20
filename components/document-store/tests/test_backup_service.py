@@ -322,5 +322,77 @@ class TestRestoreRunnerModeRouting:
         engine.run_restore.assert_called_once()
 
 
+
+class TestValidationAfterRestore:
+    """A completed restore verifies what it wrote.
+
+    Restore validates nothing while writing, so this follow-up is the only
+    thing that would notice a dangling reference or a drifted identity hash.
+    It runs as its own job and the restore does not wait for it — the data is
+    committed either way.
+    """
+
+    async def test_one_validation_job_per_restored_namespace(self, fresh_job):
+        fresh_job.kind = BackupJobKind.RESTORE
+        fresh_job.namespaces = ["kb", "library"]
+        await fresh_job.save()
+
+        with patch.object(
+            backup_service, "start_async_job", new=AsyncMock()
+        ) as start:
+            started = await backup_service.trigger_validation_for(fresh_job)
+
+        assert len(started) == 2
+        assert start.await_count == 2
+        jobs = [
+            await BackupJob.find_one(BackupJob.job_id == job_id)
+            for job_id in started
+        ]
+        assert sorted(j.namespace for j in jobs) == ["kb", "library"]
+        assert {j.kind for j in jobs} == {BackupJobKind.VALIDATE}
+
+    async def test_the_restore_records_the_jobs_it_started(self, fresh_job):
+        fresh_job.kind = BackupJobKind.RESTORE
+        fresh_job.namespaces = ["kb"]
+        await fresh_job.save()
+
+        with patch.object(backup_service, "start_async_job", new=AsyncMock()):
+            started = await backup_service.trigger_validation_for(fresh_job)
+
+        updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert updated.validation_job_ids == started
+
+    async def test_a_failure_to_start_never_fails_the_restore(self, fresh_job):
+        # The restore succeeded. Reporting it as failed because a follow-up
+        # check could not start would be a lie about the data.
+        fresh_job.kind = BackupJobKind.RESTORE
+        fresh_job.namespaces = ["kb"]
+        await fresh_job.save()
+
+        with patch.object(
+            backup_service, "start_async_job",
+            new=AsyncMock(side_effect=RuntimeError("boom")),
+        ):
+            started = await backup_service.trigger_validation_for(fresh_job)
+
+        assert started == []
+
+    async def test_a_validation_job_does_not_trigger_another(self, fresh_job):
+        # Only restores trigger validation; otherwise each check would spawn
+        # the next one forever.
+        fresh_job.kind = BackupJobKind.VALIDATE
+        fresh_job.status = BackupJobStatus.RUNNING
+        await fresh_job.save()
+
+        with patch.object(
+            backup_service, "trigger_validation_for", new=AsyncMock()
+        ) as trigger:
+            await backup_service._persist_event(
+                fresh_job.job_id,
+                ProgressEvent(phase="complete", message="done", percent=100.0),
+            )
+
+        trigger.assert_not_awaited()
+
 # Need asyncio mode for async tests in this module
 pytestmark = pytest.mark.asyncio

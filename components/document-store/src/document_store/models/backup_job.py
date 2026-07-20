@@ -21,10 +21,15 @@ from pymongo import DESCENDING, IndexModel
 
 
 class BackupJobKind(StrEnum):
-    """Whether this job is exporting (backup) or importing (restore)."""
+    """What long-running operation this job is running."""
 
     BACKUP = "backup"
     RESTORE = "restore"
+    # Verifies a namespace's referential and identity integrity. Shares this
+    # record because it shares the machinery — progress events, SSE, persisted
+    # status, the warnings list — and a restore links to the validation it
+    # triggered, so the two belong in one place.
+    VALIDATE = "validate"
 
 
 class BackupJobStatus(StrEnum):
@@ -138,6 +143,23 @@ class BackupJob(BeanieDocument):
     options: dict[str, Any] = Field(
         default_factory=dict,
         description="The request body / options that initiated the job"
+    )
+
+    # A validation job's findings: status, summary counts, and a capped
+    # sample of issues. Capped deliberately — a namespace with a systematic
+    # problem produces one issue per document, and the job record is not the
+    # right place to hold a quarter of a million of them.
+    result: dict[str, Any] | None = Field(
+        default=None,
+        description="Structured outcome for jobs that produce one (validation)"
+    )
+
+    # Validation jobs a completed restore kicked off, one per restored
+    # namespace. The restore does not wait for them: its own data is committed
+    # either way, and blocking on verification would make a fast restore slow.
+    validation_job_ids: list[str] = Field(
+        default_factory=list,
+        description="Validation jobs triggered by this restore"
     )
 
     # Non-fatal findings surfaced during the job (e.g. reporting count-parity
@@ -358,6 +380,8 @@ class BackupJobSnapshot(BaseModel):
     archive_backend: str = "local"
     options: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+    result: dict[str, Any] | None = None
+    validation_job_ids: list[str] = Field(default_factory=list)
     created_by: str
 
     @classmethod
@@ -380,5 +404,7 @@ class BackupJobSnapshot(BaseModel):
             archive_backend=job.archive_backend,
             options=job.options,
             warnings=job.warnings,
+            result=job.result,
+            validation_job_ids=job.validation_job_ids,
             created_by=job.created_by,
         )

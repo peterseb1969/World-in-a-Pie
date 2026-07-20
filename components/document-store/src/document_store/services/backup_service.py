@@ -22,6 +22,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -146,6 +147,13 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
         # reporting-sync normally subscribes to.
         if job.kind == BackupJobKind.RESTORE and job.namespace:
             _track(asyncio.ensure_future(_trigger_reporting_batch_sync(job.namespace)))
+            # And verify what was written. A restore validates nothing while
+            # writing, so this is the only thing that would notice a dangling
+            # reference or an identity hash that no longer matches its data.
+            # It runs as its own job and the restore does not wait for it —
+            # the data is committed either way, and blocking a fast restore on
+            # verification would defeat the point.
+            _track(asyncio.ensure_future(trigger_validation_for(job)))
     elif event.phase == "error":
         job.status = BackupJobStatus.FAILED
         job.error = event.message
@@ -331,6 +339,137 @@ def make_direct_backup_runner(
         )
 
     return runner
+
+
+# Issues stored on the job record. A namespace with a systematic problem
+# produces one issue per document; the full set belongs in a re-run with the
+# endpoint, not in a job record other endpoints page through.
+VALIDATION_ISSUE_SAMPLE = 50
+
+
+def make_validation_runner(
+    job_id: str,
+    namespace: str,
+    options: dict[str, Any] | None = None,
+) -> AsyncRunner:
+    """Build an :data:`AsyncRunner` that verifies one namespace's integrity.
+
+    Restore writes without validating — deliberately, for speed — so this is
+    where a restored namespace gets checked: every reference resolves, and
+    every identity hash still matches its own document's data.
+
+    The outcome lands on the job record rather than being returned, because
+    the caller is an HTTP client that already left with a job id.
+    """
+    opts = dict(options or {})
+
+    async def runner(progress_callback: Callable[[ProgressEvent], None]) -> Any:
+        from .integrity_service import check_all_documents
+
+        progress_callback(ProgressEvent(
+            phase="start",
+            message=f"Validating namespace '{namespace}'",
+            percent=0,
+        ))
+
+        def on_progress(checked: int, total: int) -> None:
+            progress_callback(ProgressEvent(
+                phase="phase_validate",
+                message=f"[{namespace}] checked {checked}/{total} document(s)",
+                percent=min(round(checked / total * 95, 1), 95.0) if total else 95.0,
+                current=checked,
+                total=total,
+            ))
+
+        result = await check_all_documents(
+            namespace=namespace,
+            check_term_refs=opts.get("check_term_refs", True),
+            check_identity=opts.get("check_identity", True),
+            limit=opts.get("limit", 0),
+            progress=on_progress,
+        )
+
+        job = await BackupJob.find_one(BackupJob.job_id == job_id)
+        if job is not None:
+            job.result = {
+                "status": result.status,
+                "summary": result.summary.model_dump(),
+                "issues": [
+                    issue.model_dump()
+                    for issue in result.issues[:VALIDATION_ISSUE_SAMPLE]
+                ],
+                "issues_truncated": max(
+                    0, len(result.issues) - VALIDATION_ISSUE_SAMPLE
+                ),
+            }
+            await job.save()
+
+        # A namespace with problems is a completed job with findings, not a
+        # failed one: the check ran, and its answer is the deliverable.
+        if result.status != "healthy":
+            progress_callback(ProgressEvent(
+                phase="warning",
+                message=(
+                    f"[{namespace}] integrity {result.status}: "
+                    f"{result.summary.documents_with_issues} document(s) with "
+                    f"issues out of {result.summary.documents_checked} checked"
+                ),
+            ))
+
+        progress_callback(ProgressEvent(
+            phase="complete",
+            message=(
+                f"[{namespace}] validation complete — {result.status}, "
+                f"{result.summary.documents_checked} document(s) checked"
+            ),
+            percent=100,
+        ))
+
+    return runner
+
+
+async def trigger_validation_for(restore_job: BackupJob) -> list[str]:
+    """Start a validation job per namespace a restore wrote, and link them.
+
+    One job per namespace rather than one for the archive: a multi-namespace
+    restore's namespaces are verified independently, and a single combined
+    result would not say which of them is unhealthy.
+
+    Best-effort. A restore that succeeded must not be reported as failed
+    because its follow-up check could not be started.
+    """
+    namespaces = restore_job.namespaces or (
+        [restore_job.namespace] if restore_job.namespace else []
+    )
+    started: list[str] = []
+    for namespace in namespaces:
+        job_id = f"val-{uuid.uuid4().hex[:16]}"
+        try:
+            job = BackupJob(
+                job_id=job_id,
+                kind=BackupJobKind.VALIDATE,
+                namespace=namespace,
+                namespaces=[namespace],
+                options={"triggered_by": restore_job.job_id},
+                created_by=restore_job.created_by,
+            )
+            await job.insert()
+            await start_async_job(
+                job_id, make_validation_runner(job_id, namespace)
+            )
+            started.append(job_id)
+        except Exception:
+            logger.warning(
+                "Could not start validation for namespace %s after restore %s",
+                namespace, restore_job.job_id, exc_info=True,
+            )
+
+    if started:
+        fresh = await BackupJob.find_one(BackupJob.job_id == restore_job.job_id)
+        if fresh is not None:
+            fresh.validation_job_ids = started
+            await fresh.save()
+    return started
 
 
 def make_direct_restore_runner(
