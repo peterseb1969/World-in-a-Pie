@@ -125,6 +125,27 @@ export type SyncStrategy = 'latest_only' | 'all_versions'
  */
 export type TemplateUsage = 'entity' | 'reference' | 'relationship'
 
+/**
+ * Opt-in cross-version entity view over a template's per-version reporting
+ * tables — the config behind the bare `doc_<value>` name.
+ *
+ * The identity core (the typed intersection of the selected versions'
+ * tables) is always included; `columns` adds mappings beyond it. Anything
+ * unmapped and not provably identical across the selected versions is
+ * absent from the view — the backend never silently merges columns it
+ * cannot prove compatible.
+ */
+export interface CrossVersionView {
+  /** Version tables the view spans. Server default is 'all'. */
+  versions: 'all' | number[]
+  /**
+   * Target column → optional source. `{ from: old }` maps a renamed column
+   * (declared renames land here). `{}` or `null` means the column keeps its
+   * own name in the versions that have it, and is NULL elsewhere.
+   */
+  columns: Record<string, { from?: string } | null>
+}
+
 export interface ReportingConfig {
   sync_enabled: boolean
   sync_strategy: SyncStrategy
@@ -132,6 +153,12 @@ export interface ReportingConfig {
   include_metadata: boolean
   flatten_arrays: boolean
   max_array_elements: number
+  /**
+   * Opt-in cross-version view config. Stored pass-through on the template;
+   * the shape is owned and validated by reporting-sync, which builds the
+   * view. Absent / null means the bare name exposes the identity core only.
+   */
+  cross_version_view?: CrossVersionView | null
 }
 
 export interface TemplateMetadata {
@@ -184,6 +211,12 @@ export interface Template {
    * Immutable after creation. See PoNIF #8.
    */
   versioned?: boolean
+  /**
+   * Field renames this version declared relative to the previous one, as
+   * `{new_field: old_field}`. Persisted, so it comes back on read — a
+   * template editor renders the declaration it was created with.
+   */
+  renames?: Record<string, string> | null
   fields: FieldDefinition[]
   rules: ValidationRule[]
   metadata: TemplateMetadata
@@ -219,6 +252,14 @@ export interface CreateTemplateRequest {
   target_templates?: string[]
   /** Defaults to true. Immutable after creation. See PoNIF #8. */
   versioned?: boolean
+  /**
+   * Field renames relative to the previous version, `{new_field: old_field}`.
+   * Validated against the version being renamed from (the old name existed
+   * and is gone, the new one is new, types match, identity fields excluded)
+   * and rejected on a first version. A declared rename migrates losslessly
+   * and maps in reporting; an undeclared one strands the old column's data.
+   */
+  renames?: Record<string, string>
   fields?: FieldDefinition[]
   rules?: ValidationRule[]
   metadata?: Partial<TemplateMetadata>
@@ -237,6 +278,13 @@ export interface UpdateTemplateRequest {
   identity_fields?: string[]
   /** Update peer/header-projection fields (CASE-343). */
   header_fields?: string[]
+  /**
+   * Field renames the new version declares relative to the current one,
+   * `{new_field: old_field}`. This is the path an interactive editor takes —
+   * renaming a field on an existing template — so it matters here as much as
+   * on create. Same validation as the create path.
+   */
+  renames?: Record<string, string>
   fields?: FieldDefinition[]
   rules?: ValidationRule[]
   metadata?: Partial<TemplateMetadata>
@@ -299,4 +347,83 @@ export interface CascadeResponse {
   unchanged: number
   failed: number
   results: CascadeResult[]
+}
+
+/**
+ * Live-document impact of a version event, computed advisory-side from
+ * document-store.
+ *
+ * `status: 'unavailable'` is a real answer, not an error: document-store
+ * could not be reached, so the counts are unknown. It is deliberately never
+ * a silent zero, which would read as "no documents affected".
+ */
+export interface TemplateVersionImpact {
+  status: 'ok' | 'unavailable'
+  /** Present when status === 'ok'. */
+  total_live_docs?: number
+  /** Live document count keyed by the template version they validated against. */
+  docs_per_version?: Record<string, number>
+  /** Per-field count of live documents where the field is non-empty. */
+  field_nonempty_counts?: Record<string, number>
+  /** Present when status === 'unavailable' — why the counts are missing. */
+  reason?: string
+}
+
+/**
+ * Whether the platform can offer to move existing documents onto the new
+ * version, and how.
+ */
+export interface TemplateMigrationOffer {
+  /**
+   * true = offerable; false = needs app-side data decisions (type changes,
+   * newly-required fields, removed fields carrying live data); null =
+   * removed fields present but the counts were unavailable, so run the
+   * dry-run for a per-document readiness report.
+   */
+  eligible: boolean | null
+  reason: string
+  /** The operation to run — the migrate dry-run/apply cycle. */
+  via: string
+}
+
+/**
+ * `details` on a bulk result item that minted a new template version: the
+ * schema diff, plus the consequences of having minted it.
+ *
+ * Both write paths carry this — create-as-upsert (`POST /templates`) and
+ * update (`PUT /templates`). Older backends attached it on create only, so
+ * treat it as optional and narrow with `asVersionEventDetails`.
+ */
+export interface TemplateVersionEventDetails {
+  added_optional: string[]
+  added_required: string[]
+  removed: string[]
+  changed_type: Array<{ name: string; old_type: string; new_type: string }>
+  made_required: string[]
+  modified_existing: string[]
+  identity_changed: { old: string[]; new: string[] } | null
+  relationship_refs_changed: unknown | null
+  impact: TemplateVersionImpact
+  migration: TemplateMigrationOffer
+}
+
+/**
+ * Narrow a bulk result item's untyped `details` to the version-event shape.
+ *
+ * `BulkResultItem.details` is `Record<string, unknown>` because the envelope
+ * is shared by every bulk endpoint — documents, terms, templates. Rather
+ * than widening it with template-specific members, narrow here at the point
+ * of use.
+ *
+ * Returns null when the item did not mint a version, or when the backend
+ * predates the impact block on the path that was used.
+ */
+export function asVersionEventDetails(
+  details: Record<string, unknown> | undefined | null,
+): TemplateVersionEventDetails | null {
+  if (!details) return null
+  const impact = details.impact as TemplateVersionImpact | undefined
+  const migration = details.migration as TemplateMigrationOffer | undefined
+  if (!impact || !migration) return null
+  return details as unknown as TemplateVersionEventDetails
 }

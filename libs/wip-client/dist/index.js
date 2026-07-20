@@ -1424,6 +1424,15 @@ function createWipClient(config) {
   };
 }
 
+// src/types/template.ts
+function asVersionEventDetails(details) {
+  if (!details) return null;
+  const impact = details.impact;
+  const migration = details.migration;
+  if (!impact || !migration) return null;
+  return details;
+}
+
 // src/utils/query-string.ts
 function buildQueryString(params) {
   const searchParams = new URLSearchParams();
@@ -1574,6 +1583,6 @@ async function resolveReference(client, templateId, searchTerm, limit = 10) {
   }));
 }
 
-export { ApiKeyAuthProvider, DefStoreService, DocumentStoreService, FetchTransport, FileStoreService, OidcAuthProvider, RegistryService, ReportingSyncService, TemplateStoreService, WipAuthError, WipBulkItemError, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };
+export { ApiKeyAuthProvider, DefStoreService, DocumentStoreService, FetchTransport, FileStoreService, OidcAuthProvider, RegistryService, ReportingSyncService, TemplateStoreService, WipAuthError, WipBulkItemError, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, asVersionEventDetails, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

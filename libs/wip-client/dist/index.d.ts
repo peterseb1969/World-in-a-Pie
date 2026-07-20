@@ -594,6 +594,28 @@ type SyncStrategy = 'latest_only' | 'all_versions';
  * (`versioned: false` is an option on relationship templates).
  */
 type TemplateUsage = 'entity' | 'reference' | 'relationship';
+/**
+ * Opt-in cross-version entity view over a template's per-version reporting
+ * tables — the config behind the bare `doc_<value>` name.
+ *
+ * The identity core (the typed intersection of the selected versions'
+ * tables) is always included; `columns` adds mappings beyond it. Anything
+ * unmapped and not provably identical across the selected versions is
+ * absent from the view — the backend never silently merges columns it
+ * cannot prove compatible.
+ */
+interface CrossVersionView {
+    /** Version tables the view spans. Server default is 'all'. */
+    versions: 'all' | number[];
+    /**
+     * Target column → optional source. `{ from: old }` maps a renamed column
+     * (declared renames land here). `{}` or `null` means the column keeps its
+     * own name in the versions that have it, and is NULL elsewhere.
+     */
+    columns: Record<string, {
+        from?: string;
+    } | null>;
+}
 interface ReportingConfig {
     sync_enabled: boolean;
     sync_strategy: SyncStrategy;
@@ -601,6 +623,12 @@ interface ReportingConfig {
     include_metadata: boolean;
     flatten_arrays: boolean;
     max_array_elements: number;
+    /**
+     * Opt-in cross-version view config. Stored pass-through on the template;
+     * the shape is owned and validated by reporting-sync, which builds the
+     * view. Absent / null means the bare name exposes the identity core only.
+     */
+    cross_version_view?: CrossVersionView | null;
 }
 interface TemplateMetadata {
     domain?: string;
@@ -651,6 +679,12 @@ interface Template {
      * Immutable after creation. See PoNIF #8.
      */
     versioned?: boolean;
+    /**
+     * Field renames this version declared relative to the previous one, as
+     * `{new_field: old_field}`. Persisted, so it comes back on read — a
+     * template editor renders the declaration it was created with.
+     */
+    renames?: Record<string, string> | null;
     fields: FieldDefinition[];
     rules: ValidationRule[];
     metadata: TemplateMetadata;
@@ -685,6 +719,14 @@ interface CreateTemplateRequest {
     target_templates?: string[];
     /** Defaults to true. Immutable after creation. See PoNIF #8. */
     versioned?: boolean;
+    /**
+     * Field renames relative to the previous version, `{new_field: old_field}`.
+     * Validated against the version being renamed from (the old name existed
+     * and is gone, the new one is new, types match, identity fields excluded)
+     * and rejected on a first version. A declared rename migrates losslessly
+     * and maps in reporting; an undeclared one strands the old column's data.
+     */
+    renames?: Record<string, string>;
     fields?: FieldDefinition[];
     rules?: ValidationRule[];
     metadata?: Partial<TemplateMetadata>;
@@ -702,6 +744,13 @@ interface UpdateTemplateRequest {
     identity_fields?: string[];
     /** Update peer/header-projection fields (CASE-343). */
     header_fields?: string[];
+    /**
+     * Field renames the new version declares relative to the current one,
+     * `{new_field: old_field}`. This is the path an interactive editor takes —
+     * renaming a field on an existing template — so it matters here as much as
+     * on create. Same validation as the create path.
+     */
+    renames?: Record<string, string>;
     fields?: FieldDefinition[];
     rules?: ValidationRule[];
     metadata?: Partial<TemplateMetadata>;
@@ -773,6 +822,80 @@ interface CascadeResponse {
     failed: number;
     results: CascadeResult[];
 }
+/**
+ * Live-document impact of a version event, computed advisory-side from
+ * document-store.
+ *
+ * `status: 'unavailable'` is a real answer, not an error: document-store
+ * could not be reached, so the counts are unknown. It is deliberately never
+ * a silent zero, which would read as "no documents affected".
+ */
+interface TemplateVersionImpact {
+    status: 'ok' | 'unavailable';
+    /** Present when status === 'ok'. */
+    total_live_docs?: number;
+    /** Live document count keyed by the template version they validated against. */
+    docs_per_version?: Record<string, number>;
+    /** Per-field count of live documents where the field is non-empty. */
+    field_nonempty_counts?: Record<string, number>;
+    /** Present when status === 'unavailable' — why the counts are missing. */
+    reason?: string;
+}
+/**
+ * Whether the platform can offer to move existing documents onto the new
+ * version, and how.
+ */
+interface TemplateMigrationOffer {
+    /**
+     * true = offerable; false = needs app-side data decisions (type changes,
+     * newly-required fields, removed fields carrying live data); null =
+     * removed fields present but the counts were unavailable, so run the
+     * dry-run for a per-document readiness report.
+     */
+    eligible: boolean | null;
+    reason: string;
+    /** The operation to run — the migrate dry-run/apply cycle. */
+    via: string;
+}
+/**
+ * `details` on a bulk result item that minted a new template version: the
+ * schema diff, plus the consequences of having minted it.
+ *
+ * Both write paths carry this — create-as-upsert (`POST /templates`) and
+ * update (`PUT /templates`). Older backends attached it on create only, so
+ * treat it as optional and narrow with `asVersionEventDetails`.
+ */
+interface TemplateVersionEventDetails {
+    added_optional: string[];
+    added_required: string[];
+    removed: string[];
+    changed_type: Array<{
+        name: string;
+        old_type: string;
+        new_type: string;
+    }>;
+    made_required: string[];
+    modified_existing: string[];
+    identity_changed: {
+        old: string[];
+        new: string[];
+    } | null;
+    relationship_refs_changed: unknown | null;
+    impact: TemplateVersionImpact;
+    migration: TemplateMigrationOffer;
+}
+/**
+ * Narrow a bulk result item's untyped `details` to the version-event shape.
+ *
+ * `BulkResultItem.details` is `Record<string, unknown>` because the envelope
+ * is shared by every bulk endpoint — documents, terms, templates. Rather
+ * than widening it with template-specific members, narrow here at the point
+ * of use.
+ *
+ * Returns null when the item did not mint a version, or when the backend
+ * predates the impact block on the path that was used.
+ */
+declare function asVersionEventDetails(details: Record<string, unknown> | undefined | null): TemplateVersionEventDetails | null;
 
 declare class TemplateStoreService extends BaseService {
     constructor(transport: FetchTransport);
@@ -2756,4 +2879,4 @@ interface ResolvedReference {
  */
 declare function resolveReference(client: WipClient, templateId: string, searchTerm: string, limit?: number): Promise<ResolvedReference[]>;
 
-export { type APIKeyInfo, type APIKeyListResponse, type ActivateTemplateResponse, type ActivationDetail, type ActivityItem, type ActivityResponse, type AddSynonymRequest, type Alert, type AlertConfig, type AlertSeverity, type AlertThresholds, type AlertType, type AlertsResponse, type ApiError, ApiKeyAuthProvider, type AuditLogEntry, type AuditLogResponse, type AuthProvider, type BackupJobKind, type BackupJobSnapshot, type BackupJobStatus, type BackupProgressMessage, type BackupRequest, type BatchEntitySyncResult, type BatchJobCancelResult, type BatchJobsCleared, type BatchSyncJob, type BatchSyncRequest, type BatchSyncResponse, type BatchSyncStatus, type BulkImportOptions, type BulkImportProgress, type BulkResponse, type BulkResultItem, type BulkValidateRequest, type BulkValidateResponse, type BulkValidationResponse, type CascadeResponse, type CascadeResult, type ClashPolicy, type Condition, type ConditionOperator, type ConsumerInfo, type CreateAPIKeyRequest, type CreateAPIKeyResponse, type CreateDocumentRequest, type CreateGrantRequest, type CreateNamespaceRequest, type CreateTemplateRequest, type CreateTermRelationRequest, type CreateTermRequest, type CreateTerminologyRequest, type CsvExportQuery, DefStoreService, type DeleteTermRelationRequest, type DeprecateTermRequest, type Document, type DocumentCreateResponse, type DocumentListResponse, type DocumentMetadata, type DocumentMigrateRequest, type DocumentMigrateResponse, type DocumentQueryParams, type DocumentQueryRequest, type DocumentReference, type DocumentRelationshipsParams, type DocumentStatus, DocumentStoreService, type DocumentTraverseNode, type DocumentTraverseParams, type DocumentTraverseResponse, type DocumentValidationResponse, type DocumentVersionResponse, type DocumentVersionSummary, type EntityDetails, type EntityReference, type EntityReferencesResponse, type ExportResponse, type ExportTerminologyResponse, FetchTransport, type FetchTransportConfig, type FieldDefinition, type FieldType, type FieldValidation, type FileDownloadResponse, type FileEntity, type FileFieldConfig, type FileIntegrityIssue, type FileIntegrityResponse, type FileListResponse, type FileMetadata, type FileQueryParams, type FileStatus, FileStoreService, type FileUploadMetadata, type FormField, type FormInputType, type Grant, type GrantBulkResponse, type GrantBulkResult, type GrantPermission, type GrantRevokeBulkResponse, type GrantRevokeResult, type GrantSubjectType, type HealthResponse, type IdAlgorithmConfig, type ImportDocumentError, type ImportDocumentResult, type ImportDocumentsOptions, type ImportDocumentsResponse, type ImportPreviewResponse, type ImportResponse, type ImportTerminologyRequest, type IncomingReference, type IntegrityCheckResult, type IntegrityIssue, type IntegritySummary, type LatencyStats, type ListAPIKeysParams, type ListBackupJobsParams, type MergeRequest, type MetricsResponse, type Namespace, type NamespaceStats, OidcAuthProvider, type PaginatedResponse, type PatchDocumentRequest, type PeerProjection, type PerTemplateStats, type QueryFilter, type QueryFilterOperator, type Reference, type ReferenceType, type ReferencedByResponse, type RegistryBrowseParams, type RegistryByTermHit, type RegistryEntry, type RegistryEntryFull, type RegistryEntryListResponse, type RegistryLookupResponse, type RegistrySearchParams, type RegistrySearchResponse, type RegistrySearchResult, RegistryService, type RegistrySourceInfo, type RegistrySynonym, type RemoveSynonymRequest, type ReplayFilter, type ReplayRequest, type ReplaySessionResponse, type ReplayStatus, type ReportEntity, type ReportEntityVersion, type ReportQueryParams, type ReportQueryResult, type ReportTable, type ReportTableColumn, type ReportTableSchema, type ReportingConfig, ReportingSyncService, type ResolvedReference, type RestoreMode, type RestoreOptions, type RetryConfig, type RevokeGrantRequest, type RuleType, type SearchResponse, type SearchResult, type SearchTypeResults, type SemanticType, type SyncStatus, type SyncStrategy, type TableColumn, type TableViewParams, type TableViewResponse, type Template, type TemplateListResponse, type TemplateMetadata, TemplateStoreService, type TemplateUpdateResponse, type TemplateUsage, type Term, type TermDocumentsResponse, type TermListResponse, type TermReference, type TermRelation, type TermRelationListResponse, type TermTranslation, type Terminology, type TerminologyListResponse, type TerminologyMetadata, type TraversalNode, type TraversalResponse, type UpdateAPIKeyRequest, type UpdateFileMetadataRequest, type UpdateNamespaceRequest, type UpdateTemplateRequest, type UpdateTermRequest, type UpdateTerminologyRequest, type ValidateDocumentRequest, type ValidateDocumentsRequest, type ValidateTemplateRequest, type ValidateTemplateResponse, type ValidateValueRequest, type ValidateValueResponse, type ValidationRule, type VersionStrategy, WipAuthError, WipBulkItemError, type WipClient, type WipClientConfig, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };
+export { type APIKeyInfo, type APIKeyListResponse, type ActivateTemplateResponse, type ActivationDetail, type ActivityItem, type ActivityResponse, type AddSynonymRequest, type Alert, type AlertConfig, type AlertSeverity, type AlertThresholds, type AlertType, type AlertsResponse, type ApiError, ApiKeyAuthProvider, type AuditLogEntry, type AuditLogResponse, type AuthProvider, type BackupJobKind, type BackupJobSnapshot, type BackupJobStatus, type BackupProgressMessage, type BackupRequest, type BatchEntitySyncResult, type BatchJobCancelResult, type BatchJobsCleared, type BatchSyncJob, type BatchSyncRequest, type BatchSyncResponse, type BatchSyncStatus, type BulkImportOptions, type BulkImportProgress, type BulkResponse, type BulkResultItem, type BulkValidateRequest, type BulkValidateResponse, type BulkValidationResponse, type CascadeResponse, type CascadeResult, type ClashPolicy, type Condition, type ConditionOperator, type ConsumerInfo, type CreateAPIKeyRequest, type CreateAPIKeyResponse, type CreateDocumentRequest, type CreateGrantRequest, type CreateNamespaceRequest, type CreateTemplateRequest, type CreateTermRelationRequest, type CreateTermRequest, type CreateTerminologyRequest, type CrossVersionView, type CsvExportQuery, DefStoreService, type DeleteTermRelationRequest, type DeprecateTermRequest, type Document, type DocumentCreateResponse, type DocumentListResponse, type DocumentMetadata, type DocumentMigrateRequest, type DocumentMigrateResponse, type DocumentQueryParams, type DocumentQueryRequest, type DocumentReference, type DocumentRelationshipsParams, type DocumentStatus, DocumentStoreService, type DocumentTraverseNode, type DocumentTraverseParams, type DocumentTraverseResponse, type DocumentValidationResponse, type DocumentVersionResponse, type DocumentVersionSummary, type EntityDetails, type EntityReference, type EntityReferencesResponse, type ExportResponse, type ExportTerminologyResponse, FetchTransport, type FetchTransportConfig, type FieldDefinition, type FieldType, type FieldValidation, type FileDownloadResponse, type FileEntity, type FileFieldConfig, type FileIntegrityIssue, type FileIntegrityResponse, type FileListResponse, type FileMetadata, type FileQueryParams, type FileStatus, FileStoreService, type FileUploadMetadata, type FormField, type FormInputType, type Grant, type GrantBulkResponse, type GrantBulkResult, type GrantPermission, type GrantRevokeBulkResponse, type GrantRevokeResult, type GrantSubjectType, type HealthResponse, type IdAlgorithmConfig, type ImportDocumentError, type ImportDocumentResult, type ImportDocumentsOptions, type ImportDocumentsResponse, type ImportPreviewResponse, type ImportResponse, type ImportTerminologyRequest, type IncomingReference, type IntegrityCheckResult, type IntegrityIssue, type IntegritySummary, type LatencyStats, type ListAPIKeysParams, type ListBackupJobsParams, type MergeRequest, type MetricsResponse, type Namespace, type NamespaceStats, OidcAuthProvider, type PaginatedResponse, type PatchDocumentRequest, type PeerProjection, type PerTemplateStats, type QueryFilter, type QueryFilterOperator, type Reference, type ReferenceType, type ReferencedByResponse, type RegistryBrowseParams, type RegistryByTermHit, type RegistryEntry, type RegistryEntryFull, type RegistryEntryListResponse, type RegistryLookupResponse, type RegistrySearchParams, type RegistrySearchResponse, type RegistrySearchResult, RegistryService, type RegistrySourceInfo, type RegistrySynonym, type RemoveSynonymRequest, type ReplayFilter, type ReplayRequest, type ReplaySessionResponse, type ReplayStatus, type ReportEntity, type ReportEntityVersion, type ReportQueryParams, type ReportQueryResult, type ReportTable, type ReportTableColumn, type ReportTableSchema, type ReportingConfig, ReportingSyncService, type ResolvedReference, type RestoreMode, type RestoreOptions, type RetryConfig, type RevokeGrantRequest, type RuleType, type SearchResponse, type SearchResult, type SearchTypeResults, type SemanticType, type SyncStatus, type SyncStrategy, type TableColumn, type TableViewParams, type TableViewResponse, type Template, type TemplateListResponse, type TemplateMetadata, type TemplateMigrationOffer, TemplateStoreService, type TemplateUpdateResponse, type TemplateUsage, type TemplateVersionEventDetails, type TemplateVersionImpact, type Term, type TermDocumentsResponse, type TermListResponse, type TermReference, type TermRelation, type TermRelationListResponse, type TermTranslation, type Terminology, type TerminologyListResponse, type TerminologyMetadata, type TraversalNode, type TraversalResponse, type UpdateAPIKeyRequest, type UpdateFileMetadataRequest, type UpdateNamespaceRequest, type UpdateTemplateRequest, type UpdateTermRequest, type UpdateTerminologyRequest, type ValidateDocumentRequest, type ValidateDocumentsRequest, type ValidateTemplateRequest, type ValidateTemplateResponse, type ValidateValueRequest, type ValidateValueResponse, type ValidationRule, type VersionStrategy, WipAuthError, WipBulkItemError, type WipClient, type WipClientConfig, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, asVersionEventDetails, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };

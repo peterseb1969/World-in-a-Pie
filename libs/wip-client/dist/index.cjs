@@ -1426,6 +1426,15 @@ function createWipClient(config) {
   };
 }
 
+// src/types/template.ts
+function asVersionEventDetails(details) {
+  if (!details) return null;
+  const impact = details.impact;
+  const migration = details.migration;
+  if (!impact || !migration) return null;
+  return details;
+}
+
 // src/utils/query-string.ts
 function buildQueryString(params) {
   const searchParams = new URLSearchParams();
@@ -1593,6 +1602,7 @@ exports.WipNetworkError = WipNetworkError;
 exports.WipNotFoundError = WipNotFoundError;
 exports.WipServerError = WipServerError;
 exports.WipValidationError = WipValidationError;
+exports.asVersionEventDetails = asVersionEventDetails;
 exports.buildQueryString = buildQueryString;
 exports.bulkImport = bulkImport;
 exports.createWipClient = createWipClient;
