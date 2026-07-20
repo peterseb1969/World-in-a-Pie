@@ -537,7 +537,7 @@ class DirectRestoreEngine:
     # (terminologies, terms, templates) are a precondition instead: a merge
     # that had to reconcile schemas while writing data would be validating one
     # side's documents against the other's contract.
-    MERGE_CLASH_POLICIES = ("skip", "overwrite")
+    MERGE_CLASH_POLICIES = ("skip", "overwrite", "newer")
 
     async def run_merge(
         self,
@@ -1087,8 +1087,10 @@ class DirectRestoreEngine:
             if entity_type == "templates":
                 await self._reporting_phase_structure(namespace)
 
-            if entity_type == "documents" and on_clash == "overwrite":
-                await self._overwrite_documents(namespace, plan, doc_groups)
+            if entity_type == "documents" and on_clash in ("overwrite", "newer"):
+                await self._overwrite_documents(
+                    namespace, plan, doc_groups, on_clash=on_clash
+                )
 
         entries_plan = plans.get("registry_entries")
         if entries_plan and entries_plan.to_insert:
@@ -1100,11 +1102,52 @@ class DirectRestoreEngine:
                 ],
             )
 
+    @staticmethod
+    def _as_timestamp(value: Any) -> datetime | None:
+        """Normalize a stored timestamp for comparison, or None if unusable.
+
+        The two sides arrive in different shapes: the target's rows come from
+        MongoDB as naive datetimes that are UTC by convention, the archive's
+        come from JSONL as ISO-8601 strings. Comparing them raw raises rather
+        than answering, so both are coerced to aware UTC and anything
+        unparseable becomes None — which the caller treats as "cannot tell".
+        """
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=UTC)
+        if isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        return None
+
+    def _archive_is_newer(
+        self, archive_row: dict[str, Any], target_row: dict[str, Any]
+    ) -> bool | None:
+        """Is the archive's copy more recently updated? None = cannot tell.
+
+        Compares ``updated_at`` — when the content last changed — rather than
+        the document_id's embedded UUID7 time, which records when the document
+        was first CREATED. A document created in January and edited yesterday
+        would otherwise lose to one created in June and never touched.
+
+        Across two installs this is only as good as the two machines' clock
+        discipline: UTC removes timezone error, not skew.
+        """
+        archive_at = self._as_timestamp(archive_row.get("updated_at"))
+        target_at = self._as_timestamp(target_row.get("updated_at"))
+        if archive_at is None or target_at is None:
+            return None
+        return archive_at > target_at
+
     async def _overwrite_documents(
         self,
         namespace: str,
         plan: EntityPlan,
         doc_groups: dict[str, list[dict[str, Any]]],
+        *,
+        on_clash: str = "overwrite",
     ) -> None:
         """Let the archive win, going forward.
 
@@ -1116,6 +1159,13 @@ class DirectRestoreEngine:
 
         A ``versioned: false`` template has no such contract to protect — its
         lifecycle IS overwrite-in-place — so there the single row is replaced.
+
+        Under ``newer`` the same write happens, but only where the archive's
+        copy is STRICTLY more recently updated. A tie keeps the target: equal
+        timestamps carry no information about which side to prefer, and
+        writing on no information is worse than leaving a live namespace
+        alone. An unusable timestamp on either side is reported and also keeps
+        the target.
         """
         clashes = plan.differing_clashes
         if not clashes:
@@ -1129,6 +1179,8 @@ class DirectRestoreEngine:
 
         appended = 0
         replaced = 0
+        kept = 0
+        undecidable = 0
         new_rows: list[dict[str, Any]] = []
         for clash in clashes:
             source_rows = doc_groups.get(
@@ -1136,6 +1188,16 @@ class DirectRestoreEngine:
             )
             latest = max(source_rows, key=lambda r: r.get("version", 1))
             target_head = max(clash.targets, key=lambda r: r.get("version", 1))
+
+            if on_clash == "newer":
+                verdict = self._archive_is_newer(latest, target_head)
+                if verdict is None:
+                    undecidable += 1
+                    kept += 1
+                    continue
+                if not verdict:
+                    kept += 1
+                    continue
 
             row = dict(latest)
             row["document_id"] = target_head.get("document_id")
@@ -1159,12 +1221,22 @@ class DirectRestoreEngine:
         if new_rows:
             await self._insert_batch(collection, new_rows, "documents")
 
-        self._emit(
-            "phase_documents",
-            f"[{namespace}] overwrote {appended + replaced} clashing document(s) "
-            f"({appended} appended as a new version, {replaced} replaced in "
-            "place on versioned:false templates)",
+        summary = (
+            f"[{namespace}] {appended + replaced} clashing document(s) taken "
+            f"from the archive ({appended} appended as a new version, "
+            f"{replaced} replaced in place on versioned:false templates)"
         )
+        if on_clash == "newer":
+            summary += f", {kept} kept because the target's copy is not older"
+        self._emit("phase_documents", summary)
+
+        if undecidable:
+            self._emit(
+                "warning",
+                f"[{namespace}] {undecidable} document(s) could not be compared "
+                "by update time (a missing or unparseable updated_at on one "
+                "side) — the target's copy was kept for those.",
+            )
 
     async def _template_versioned_flags(
         self, namespace: str, template_ids: list[str | None]

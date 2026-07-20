@@ -3882,7 +3882,12 @@ async def start_restore(
     Then documents merge under on_clash — 'skip' (default) keeps the target's
     version, 'overwrite' appends the archive's latest version on top of the
     target's head, keeping both histories (on a versioned:false template it
-    replaces the single version in place instead). A merge refuses outright
+    replaces the single version in place instead), and 'newer' does what
+    'overwrite' does but ONLY where the archive's copy has a more recent
+    updated_at. A tie keeps the target, as does a missing or unparseable
+    timestamp on either side (reported as a job warning). Across two installs
+    'newer' is only as reliable as the two machines' clocks: UTC removes
+    timezone error, not skew. A merge refuses outright
     only when one ID names two different entities across the two sides.
 
     dry_run is exact for a merge: the plan is computed before anything is
@@ -3905,7 +3910,8 @@ async def start_restore(
         namespace: URL-path namespace (the auth check target).
         archive_path: Local filesystem path to the .zip archive to upload.
         mode: 'restore' (empty target) or 'merge' (existing namespace).
-        on_clash: Merge only — 'skip' or 'overwrite' for clashing documents.
+        on_clash: Merge only — 'skip', 'overwrite' or 'newer' for clashing
+            documents.
         add_missing: Merge only — insert terminologies and templates the
             target does not have, instead of refusing.
         extend_terminologies: Merge only — add terms the target's terminology

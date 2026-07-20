@@ -31,8 +31,15 @@ export type RestoreMode = 'restore' | 'merge' | 'fresh'
  * target's document_id — both histories survive, and the archive's is not
  * spliced in. On a `versioned: false` template it replaces the single
  * version in place instead, matching that template's own lifecycle.
+ *
+ * `'newer'` does what `'overwrite'` does, but only where the archive's copy
+ * has a more recent `updated_at`. A tie keeps the target — equal timestamps
+ * say nothing about which side to prefer — as does a missing or unparseable
+ * timestamp on either side, which is reported as a job warning. Across two
+ * installs this is only as reliable as the two machines' clocks: UTC removes
+ * timezone error, not skew.
  */
-export type ClashPolicy = 'skip' | 'overwrite'
+export type ClashPolicy = 'skip' | 'overwrite' | 'newer'
 
 
 

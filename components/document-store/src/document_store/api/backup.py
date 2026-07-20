@@ -140,10 +140,13 @@ def _validate_merge_options(
                 )
         return
 
-    if on_clash not in ("skip", "overwrite"):
+    if on_clash not in ("skip", "overwrite", "newer"):
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid on_clash '{on_clash}' — must be 'skip' or 'overwrite'",
+            detail=(
+                f"Invalid on_clash '{on_clash}' — must be 'skip', 'overwrite' "
+                "or 'newer'"
+            ),
         )
     if drop_stale_reporting:
         raise HTTPException(
@@ -331,7 +334,9 @@ async def start_restore(
             "Merge only — what to do when the target already holds a "
             "document's identity. 'skip' (default) keeps the target's "
             "version; 'overwrite' appends the archive's latest version on "
-            "top of the target's head, preserving both histories."
+            "top of the target's head, preserving both histories; 'newer' "
+            "does the same but only where the archive's copy was updated "
+            "more recently, keeping the target's on a tie."
         ),
     ),
     add_missing: bool = Form(

@@ -304,7 +304,8 @@ class RestoreFromJobRequest(BaseModel):
         description=(
             "Merge only — what to do when the target already holds a "
             "document's identity. 'skip' keeps the target's; 'overwrite' "
-            "appends the archive's latest version on top of it."
+            "appends the archive's latest version on top of it; 'newer' does "
+            "so only when the archive's copy was updated more recently."
         ),
     )
     add_missing: bool = Field(

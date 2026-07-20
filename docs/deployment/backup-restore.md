@@ -154,6 +154,20 @@ With a schema both sides agree on, documents merge per identity under
 - `skip` (default) — target wins; the archive's version is not imported.
 - `overwrite` — the archive's **latest** version is appended on top of the
   target's head, adopting the target's `document_id`.
+- `newer` — the same write, but only where the archive's copy has a more
+  recent `updated_at`.
+
+`newer` compares when the content last *changed*, not when the document was
+created: a document created in January and edited yesterday should beat one
+created in June and never touched, and the `document_id`'s embedded UUID7
+time would get that backwards. A tie keeps the target — equal timestamps say
+nothing about which side to prefer, and writing on no information is worse
+than leaving a live namespace alone. A missing or unparseable timestamp on
+either side also keeps the target, and is reported as a job warning rather
+than passing silently.
+
+> Merging between two installs, `newer` is only as reliable as the two
+> machines' clocks. UTC removes timezone error, not skew.
 
 Overwrite never splices histories. The target's versions are kept and the
 archive's are not interleaved into them — two independent version chains have

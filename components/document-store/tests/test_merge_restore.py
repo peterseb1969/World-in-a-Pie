@@ -17,6 +17,7 @@ as they do on a core-preset deploy.
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -617,3 +618,125 @@ class TestMergeDryRun:
             if e.phase == "phase_definitions" and "to add" in (e.message or "")
         )
         assert "1 to add" in plan.message
+
+
+# ---------------------------------------------------------------------------
+# on_clash = newer
+# ---------------------------------------------------------------------------
+
+
+def _dated(version, when, *, doc_id="D1", data=None):
+    """A document row carrying an explicit updated_at."""
+    return {**_document(version, doc_id=doc_id, data=data), "updated_at": when}
+
+
+class TestNewerPolicy:
+    """`newer` takes the archive's copy only when it is genuinely fresher.
+
+    The comparison is on updated_at — when the content last changed — not on
+    the document_id's embedded UUID7 time, which records creation.
+    """
+
+    @staticmethod
+    async def _merge(mongo, target_row, archive_row, events=None):
+        await _seed_namespace(mongo)
+        await _seed(mongo, "templates", [_template()])
+        await _seed(mongo, "documents", [target_row])
+        await _run_merge(
+            mongo,
+            _archive({"templates": [_template()], "documents": [archive_row]}),
+            events,
+            on_clash="newer",
+        )
+        return await _rows(mongo, "documents", sort_key=lambda d: d["version"])
+
+    @pytest.mark.asyncio
+    async def test_a_newer_archive_copy_is_taken(self, mongo):
+        docs = await self._merge(
+            mongo,
+            _dated(1, datetime(2026, 1, 1, tzinfo=UTC), data={"n": "target"}),
+            _dated(1, "2026-07-01T00:00:00+00:00", data={"n": "archive"}),
+        )
+
+        assert [d["version"] for d in docs] == [1, 2]
+        assert docs[-1]["data"]["n"] == "archive"
+
+    @pytest.mark.asyncio
+    async def test_an_older_archive_copy_is_left_alone(self, mongo):
+        docs = await self._merge(
+            mongo,
+            _dated(1, datetime(2026, 7, 1, tzinfo=UTC), data={"n": "target"}),
+            _dated(1, "2026-01-01T00:00:00+00:00", data={"n": "archive"}),
+        )
+
+        assert len(docs) == 1 and docs[0]["data"]["n"] == "target"
+
+    @pytest.mark.asyncio
+    async def test_a_tie_keeps_the_target(self, mongo):
+        # Equal timestamps carry no information about which side to prefer,
+        # and writing on no information is worse than leaving a live namespace
+        # alone.
+        docs = await self._merge(
+            mongo,
+            _dated(1, datetime(2026, 7, 1, tzinfo=UTC), data={"n": "target"}),
+            _dated(1, "2026-07-01T00:00:00+00:00", data={"n": "archive"}),
+        )
+
+        assert len(docs) == 1 and docs[0]["data"]["n"] == "target"
+
+    @pytest.mark.asyncio
+    async def test_naive_stored_datetimes_compare_as_utc(self, mongo):
+        # MongoDB hands back naive datetimes that are UTC by convention, while
+        # the archive's are ISO strings. Comparing them raw would raise rather
+        # than answer.
+        docs = await self._merge(
+            mongo,
+            _dated(1, datetime(2026, 1, 1), data={"n": "target"}),
+            _dated(1, "2026-07-01T00:00:00", data={"n": "archive"}),
+        )
+
+        assert [d["data"]["n"] for d in docs] == ["target", "archive"]
+
+    @pytest.mark.asyncio
+    async def test_an_unusable_timestamp_keeps_the_target_and_warns(self, mongo):
+        events: list[ProgressEvent] = []
+        docs = await self._merge(
+            mongo,
+            _dated(1, datetime(2026, 1, 1, tzinfo=UTC), data={"n": "target"}),
+            _dated(1, "not-a-date", data={"n": "archive"}),
+            events,
+        )
+
+        assert len(docs) == 1 and docs[0]["data"]["n"] == "target"
+        warning = next(e for e in events if e.phase == "warning")
+        assert "could not be compared by update time" in warning.message
+
+    @pytest.mark.asyncio
+    async def test_a_missing_timestamp_keeps_the_target(self, mongo):
+        docs = await self._merge(
+            mongo,
+            _dated(1, datetime(2026, 1, 1, tzinfo=UTC), data={"n": "target"}),
+            _document(1, data={"n": "archive"}),
+        )
+
+        assert len(docs) == 1 and docs[0]["data"]["n"] == "target"
+
+    @pytest.mark.asyncio
+    async def test_the_report_says_how_many_were_kept(self, mongo):
+        events: list[ProgressEvent] = []
+        await self._merge(
+            mongo,
+            _dated(1, datetime(2026, 7, 1, tzinfo=UTC), data={"n": "target"}),
+            _dated(1, "2026-01-01T00:00:00+00:00", data={"n": "archive"}),
+            events,
+        )
+
+        report = next(
+            e for e in events if "not older" in (e.message or "")
+        )
+        assert "1 kept" in report.message
+
+    @pytest.mark.asyncio
+    async def test_newer_is_accepted_as_a_policy(self, mongo):
+        await _seed_namespace(mongo)
+        await _run_merge(mongo, _archive(), on_clash="newer")

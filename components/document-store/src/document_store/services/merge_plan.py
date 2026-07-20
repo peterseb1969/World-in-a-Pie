@@ -82,6 +82,10 @@ MERGE_ENTITY_SPECS: dict[str, EntitySpec] = {
             "template_version",
             "identity_hash",
             "status",
+            # The `newer` clash policy compares this against the archive's;
+            # projecting it away would silently make every comparison
+            # unresolvable and fall back to keeping the target.
+            "updated_at",
         ),
     ),
     "files": EntitySpec(("file_id",), ("checksum",)),
