@@ -134,6 +134,12 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
         job.status = BackupJobStatus.COMPLETE
         job.percent = 100.0
         job.completed_at = datetime.now(UTC)
+        # A structured outcome rides on the terminal event rather than being
+        # written separately afterwards. Saving it in a second pass raced this
+        # one: the consumer had already loaded the record, so its save put the
+        # result back to null. Observed exactly that on a live dry run.
+        if event.details:
+            job.result = dict(event.details)
         # Populate archive_size from disk if the archive file exists.
         # This is the first opportunity after the backup engine has finalized
         # the ZIP; the API layer set archive_path at job creation but
@@ -145,7 +151,18 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
         # picks up the restored documents in PostgreSQL. The restore engine
         # writes directly to MongoDB and bypasses the NATS event path that
         # reporting-sync normally subscribes to.
-        if job.kind == BackupJobKind.RESTORE and job.namespace:
+        #
+        # A dry run gets neither this nor the validation below. It wrote
+        # nothing, so there is nothing to sync and nothing to verify — and a
+        # preview that spawns follow-up jobs against a namespace it did not
+        # create is not a preview. Observed doing exactly that: a dry run into
+        # a non-existent namespace produced a validation job reporting
+        # "healthy, 0 documents".
+        if (
+            job.kind == BackupJobKind.RESTORE
+            and job.namespace
+            and not job.options.get("dry_run")
+        ):
             _track(asyncio.ensure_future(_trigger_reporting_batch_sync(job.namespace)))
             # And verify what was written. A restore validates nothing while
             # writing, so this is the only thing that would notice a dangling
@@ -475,6 +492,7 @@ async def trigger_validation_for(restore_job: BackupJob) -> list[str]:
 def make_direct_restore_runner(
     archive_path: str | Path,
     options: dict[str, Any] | None = None,
+    job_id: str | None = None,
 ) -> AsyncRunner:
     """Build an :data:`AsyncRunner` that writes ``archive_path`` into MongoDB.
 
@@ -499,6 +517,7 @@ def make_direct_restore_runner(
             mongo_client, storage, progress_callback,
             reporting_client=ReportingSyncClient(),
         )
+
         if opts.get("mode") == "fresh":
             await engine.run_remap(
                 Path(archive_path),

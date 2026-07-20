@@ -516,6 +516,7 @@ async def start_restore(
     runner = backup_service.make_direct_restore_runner(
         archive_path=archive_path,
         options=options,
+        job_id=job_id,
     )
     try:
         await backup_service.start_async_job(
@@ -922,6 +923,7 @@ async def restore_from_job(
     runner = backup_service.make_direct_restore_runner(
         archive_path=scratch,
         options=options,
+        job_id=new_job_id,
     )
     try:
         await backup_service.start_async_job(

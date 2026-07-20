@@ -327,6 +327,7 @@ class DirectBackupEngine:
         percent: float | None = None,
         current: int | None = None,
         total: int | None = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         self._progress(
             ProgressEvent(
@@ -335,6 +336,7 @@ class DirectBackupEngine:
                 percent=percent,
                 current=current,
                 total=total,
+                details=details or {},
             )
         )
 
@@ -372,6 +374,11 @@ class DirectRestoreEngine:
         self._mongo = mongo_client
         self._storage = storage_client
         self._progress = progress
+        # Structured outcome for a caller that was not watching the event
+        # stream. Progress events overwrite each other on the job record, so a
+        # dry run's per-type counts — the whole reason to ask — are gone by the
+        # time it completes unless they are collected here.
+        self.result: dict[str, Any] = {}
         self._registry_url = registry_base_url or os.getenv(
             "REGISTRY_URL", "http://localhost:8001"
         )
@@ -444,6 +451,21 @@ class DirectRestoreEngine:
             ]
 
             if dry_run:
+                self.result = {
+                    "mode": "restore",
+                    "dry_run": True,
+                    "namespaces": {
+                        tgt: {
+                            entity_type: (
+                                getattr(entry_by_prefix[src].counts, entity_type, 0)
+                                if src in entry_by_prefix
+                                else reader.entity_count(entity_type, namespace=src)
+                            )
+                            for entity_type in restore_order
+                        }
+                        for src, tgt in targets
+                    },
+                }
                 self._dry_run_report(
                     reader, targets, entry_by_prefix, restore_order,
                     skip_documents=skip_documents, skip_files=skip_files,
@@ -642,6 +664,13 @@ class DirectRestoreEngine:
             for entity_type, count in plan.summary().items():
                 if count:
                     self._emit(phase, f"[{target_namespace}] {entity_type}: {count}")
+            self.result = {
+                "mode": "fresh",
+                "dry_run": dry_run,
+                "source_namespace": src,
+                "target_namespace": target_namespace,
+                "planned": plan.summary(),
+            }
 
             if dry_run:
                 self._emit(
@@ -649,6 +678,7 @@ class DirectRestoreEngine:
                     "Remap dry run complete — nothing provisioned, nothing "
                     "written",
                     percent=100,
+                    details=self.result,
                 )
                 return
 
@@ -671,7 +701,8 @@ class DirectRestoreEngine:
                 target_namespace, skip_documents=skip_documents
             )
 
-        self._emit("complete", "Remap restore complete", percent=100)
+        self._emit("complete", "Remap restore complete", percent=100,
+                   details=self.result)
 
     def _registry_provisioner(self, namespace: str) -> Any:
         """Ask the Registry for ids. It is the identity authority; a service
@@ -1014,6 +1045,18 @@ class DirectRestoreEngine:
                         f"rewritten onto the target's definitions",
                     )
                 self._emit_merge_plan(tgt, built, on_clash=on_clash, dry_run=dry_run)
+                self.result.setdefault("mode", "merge")
+                self.result["dry_run"] = dry_run
+                self.result.setdefault("namespaces", {})[tgt] = {
+                    "definitions": definitions.summary(),
+                    "incompatibilities": len(definitions.incompatibilities),
+                    "target_wins": len(definitions.target_wins),
+                    "entities": {
+                        entity_type: plan.summary()
+                        for entity_type, plan in built.items()
+                        if any(plan.summary().values())
+                    },
+                }
                 self._enforce_merge_gates(tgt, built)
 
                 # What this merge is about to bring with it — a reference is
@@ -1078,6 +1121,7 @@ class DirectRestoreEngine:
                     "complete",
                     "Merge dry run complete — plan computed, no changes made",
                     percent=100,
+                    details=self.result,
                 )
                 return
 
@@ -1087,7 +1131,7 @@ class DirectRestoreEngine:
             if not skip_files and self._storage and inserted_file_ids:
                 await self._restore_blobs(reader, targets[0][1], only=inserted_file_ids)
 
-        self._emit("complete", "Merge complete", percent=100)
+        self._emit("complete", "Merge complete", percent=100, details=self.result)
 
     def _build_merge_plan_inputs(
         self,
@@ -2185,6 +2229,7 @@ class DirectRestoreEngine:
             "complete",
             "Dry run complete — preconditions passed, no changes made",
             percent=100,
+            details=self.result,
         )
 
     # -- Reporting verification phases (restore-verification design) --------
@@ -2489,6 +2534,7 @@ class DirectRestoreEngine:
         percent: float | None = None,
         current: int | None = None,
         total: int | None = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         self._progress(
             ProgressEvent(
@@ -2497,6 +2543,7 @@ class DirectRestoreEngine:
                 percent=percent,
                 current=current,
                 total=total,
+                details=details or {},
             )
         )
 

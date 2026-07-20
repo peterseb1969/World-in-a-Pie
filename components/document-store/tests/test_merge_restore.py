@@ -1351,6 +1351,38 @@ class TestRemapRestore:
         await _clear_remap_target(mongo)
 
     @pytest.mark.asyncio
+    async def test_the_plan_is_recorded_as_a_structured_result(self, mongo):
+        # Progress events overwrite each other on the job record, so the
+        # per-type counts have to be handed back separately or a dry run's
+        # answer is lost to anyone who was not streaming while it ran.
+        await _clear_remap_target(mongo)
+        engine_result = {}
+
+        registry = _FakeRegistry()
+        http = MagicMock()
+        http.post = registry.post
+        http.put = AsyncMock(return_value=MagicMock(status_code=200, text="ok"))
+        http.__aenter__ = AsyncMock(return_value=http)
+        http.__aexit__ = AsyncMock(return_value=None)
+
+        engine = DirectRestoreEngine(mongo, None, lambda _e: None)
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=_archive({"terminologies": [
+                {"terminology_id": "L1", "namespace": NAMESPACE, "value": "A"},
+            ]}),
+        ), patch("httpx.AsyncClient", return_value=http):
+            await engine.run_remap(MagicMock(), REMAP_TARGET, dry_run=True)
+        engine_result = engine.result
+
+        assert engine_result["mode"] == "fresh"
+        assert engine_result["dry_run"] is True
+        assert engine_result["source_namespace"] == NAMESPACE
+        assert engine_result["target_namespace"] == REMAP_TARGET
+        assert engine_result["planned"]["terminologies"] == 1
+        await _clear_remap_target(mongo)
+
+    @pytest.mark.asyncio
     async def test_a_target_namespace_is_required(self, mongo):
         engine = DirectRestoreEngine(mongo, None, lambda _e: None)
         with pytest.raises(RestoreEngineError, match="needs a target namespace"):

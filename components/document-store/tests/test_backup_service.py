@@ -424,5 +424,108 @@ class TestValidationAfterRestore:
 
         trigger.assert_not_awaited()
 
+
+class TestDryRunSideEffects:
+    """A preview must not do anything a real run would.
+
+    Observed live: a dry run into a namespace that did not exist spawned a
+    validation job which reported "healthy, 0 documents", and tried a
+    reporting batch sync. Both key off kind==RESTORE; neither checked
+    dry_run.
+    """
+
+    async def test_a_dry_run_triggers_neither_sync_nor_validation(self, fresh_job):
+        fresh_job.kind = BackupJobKind.RESTORE
+        fresh_job.status = BackupJobStatus.RUNNING
+        fresh_job.options = {"dry_run": True}
+        await fresh_job.save()
+
+        with (
+            patch.object(
+                backup_service, "_trigger_reporting_batch_sync", new=AsyncMock()
+            ) as sync,
+            patch.object(
+                backup_service, "trigger_validation_for", new=AsyncMock()
+            ) as validate,
+        ):
+            await backup_service._persist_event(
+                fresh_job.job_id,
+                ProgressEvent(phase="complete", message="dry run done", percent=100.0),
+            )
+
+        sync.assert_not_called()
+        validate.assert_not_called()
+
+    async def test_a_real_restore_still_triggers_both(self, fresh_job):
+        fresh_job.kind = BackupJobKind.RESTORE
+        fresh_job.status = BackupJobStatus.RUNNING
+        fresh_job.options = {"dry_run": False}
+        await fresh_job.save()
+
+        with (
+            patch.object(
+                backup_service, "_trigger_reporting_batch_sync", new=AsyncMock()
+            ) as sync,
+            patch.object(
+                backup_service, "trigger_validation_for", new=AsyncMock()
+            ) as validate,
+        ):
+            await backup_service._persist_event(
+                fresh_job.job_id,
+                ProgressEvent(phase="complete", message="done", percent=100.0),
+            )
+
+        sync.assert_called_once()
+        validate.assert_called_once()
+
+
+class TestPlanSurvivesOnTheJob:
+    """The counts a dry run produces have to outlive the run.
+
+    Progress events overwrite job.message, so the per-type plan was visible
+    only to whoever happened to be streaming SSE at the time — and the plan is
+    the entire reason to ask for a dry run.
+
+    The result rides on the TERMINAL EVENT rather than being written in a
+    second pass. The second pass raced this one and lost: the event consumer
+    had already loaded the record, so its save put the result back to null.
+    Observed on a live dry run, which is the only place the race showed.
+    """
+
+    async def test_the_terminal_events_details_land_on_the_record(self, fresh_job):
+        fresh_job.status = BackupJobStatus.RUNNING
+        await fresh_job.save()
+        plan = {"mode": "fresh", "dry_run": True, "planned": {"documents": 7}}
+
+        await backup_service._persist_event(
+            fresh_job.job_id,
+            ProgressEvent(
+                phase="complete", message="done", percent=100.0, details=plan
+            ),
+        )
+
+        updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert updated.result == plan
+        assert updated.status == BackupJobStatus.COMPLETE
+
+    async def test_a_terminal_event_without_details_leaves_result_alone(
+        self, fresh_job
+    ):
+        # Backups and plain restores carry no structured outcome; they must
+        # not blank one that something else recorded.
+        fresh_job.status = BackupJobStatus.RUNNING
+        fresh_job.result = {"kept": True}
+        await fresh_job.save()
+
+        await backup_service._persist_event(
+            fresh_job.job_id,
+            ProgressEvent(phase="complete", message="done", percent=100.0),
+        )
+
+        updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert updated.result == {"kept": True}
+
+
+
 # Need asyncio mode for async tests in this module
 pytestmark = pytest.mark.asyncio
