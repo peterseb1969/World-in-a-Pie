@@ -117,6 +117,38 @@ class IDRemapper:
 
         return result
 
+    def remap_term(self, term: dict[str, Any]) -> dict[str, Any]:
+        """Remap the terminology a term belongs to.
+
+        A term's only outward reference is its parent terminology, but it is
+        load-bearing: leave it pointing at the source install's terminology ID
+        and the imported term is orphaned.
+        """
+        result = dict(term)
+        if result.get("terminology_id"):
+            result["terminology_id"] = self.terminology_map.get(
+                result["terminology_id"], result["terminology_id"]
+            )
+        return result
+
+    def remap_term_relation(self, relation: dict[str, Any]) -> dict[str, Any]:
+        """Remap both endpoints of an ontology relation, and its type.
+
+        ``relation_type`` holds a term ID *or* a plain value (e.g. ``is_a``)
+        depending on how the relation was created, so it is looked up in the
+        term map and passes through untouched when it is a value.
+        """
+        result = dict(relation)
+        for field in ("source_term_id", "target_term_id", "relation_type"):
+            if result.get(field):
+                result[field] = self.term_map.get(result[field], result[field])
+        for field in ("source_terminology_id", "target_terminology_id"):
+            if result.get(field):
+                result[field] = self.terminology_map.get(
+                    result[field], result[field]
+                )
+        return result
+
     def remap_document(self, document: dict[str, Any]) -> dict[str, Any]:
         """Remap all references in a document.
 

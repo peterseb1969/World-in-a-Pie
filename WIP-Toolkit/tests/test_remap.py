@@ -255,3 +255,71 @@ class TestIDRemapper:
         assert ("0190b000-0000-7000-0000-000000000001", "0190e000-0000-7000-0000-000000000011", "terms") in pairs
         assert ("0190c000-0000-7000-0000-000000000001", "0190e000-0000-7000-0000-000000000021", "templates") in pairs
         assert ("FILE-000001", "0190e000-0000-7000-0000-000000000031", "files") in pairs
+
+
+class TestRemapTerm:
+    """A term's parent terminology is its only outward reference — and it is
+    load-bearing: left unmapped, the imported term is orphaned."""
+
+    def setup_method(self):
+        self.remapper = IDRemapper()
+        self.remapper.add_terminology_mapping("old-lov", "new-lov")
+
+    def test_terminology_id_is_remapped(self):
+        result = self.remapper.remap_term(
+            {"term_id": "T1", "terminology_id": "old-lov", "value": "M"}
+        )
+        assert result["terminology_id"] == "new-lov"
+
+    def test_unmapped_terminology_passes_through(self):
+        result = self.remapper.remap_term(
+            {"term_id": "T1", "terminology_id": "untouched", "value": "M"}
+        )
+        assert result["terminology_id"] == "untouched"
+
+    def test_other_fields_are_untouched_and_input_is_not_mutated(self):
+        source = {"term_id": "T1", "terminology_id": "old-lov", "value": "M"}
+        result = self.remapper.remap_term(source)
+        assert result["term_id"] == "T1" and result["value"] == "M"
+        assert source["terminology_id"] == "old-lov"
+
+
+class TestRemapTermRelation:
+    def setup_method(self):
+        self.remapper = IDRemapper()
+        self.remapper.add_term_mapping("old-a", "new-a")
+        self.remapper.add_term_mapping("old-b", "new-b")
+        self.remapper.add_terminology_mapping("old-lov", "new-lov")
+
+    def test_both_endpoints_are_remapped(self):
+        result = self.remapper.remap_term_relation(
+            {"source_term_id": "old-a", "target_term_id": "old-b",
+             "relation_type": "is_a"}
+        )
+        assert result["source_term_id"] == "new-a"
+        assert result["target_term_id"] == "new-b"
+
+    def test_denormalized_terminologies_are_remapped(self):
+        result = self.remapper.remap_term_relation({
+            "source_term_id": "old-a", "target_term_id": "old-b",
+            "source_terminology_id": "old-lov",
+            "target_terminology_id": "old-lov",
+        })
+        assert result["source_terminology_id"] == "new-lov"
+        assert result["target_terminology_id"] == "new-lov"
+
+    def test_relation_type_as_a_value_passes_through(self):
+        # relation_type holds a term ID *or* a plain value depending on how
+        # the relation was created; a value must survive the term lookup.
+        result = self.remapper.remap_term_relation(
+            {"source_term_id": "old-a", "target_term_id": "old-b",
+             "relation_type": "part_of"}
+        )
+        assert result["relation_type"] == "part_of"
+
+    def test_relation_type_as_a_term_id_is_remapped(self):
+        result = self.remapper.remap_term_relation(
+            {"source_term_id": "old-a", "target_term_id": "old-b",
+             "relation_type": "old-b"}
+        )
+        assert result["relation_type"] == "new-b"

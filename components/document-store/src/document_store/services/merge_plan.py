@@ -138,6 +138,20 @@ class Conflict:
 
 
 @dataclass
+class Match:
+    """An archive entity the target already holds under a *different* ID.
+
+    Only cross-install merge produces these. The same evidence in a
+    same-install merge is a :class:`Conflict` — see :class:`MergePlanner`.
+    """
+
+    entity: dict[str, Any]
+    target: dict[str, Any]
+    old_id: str
+    new_id: str
+
+
+@dataclass
 class EntityPlan:
     """What a merge would do to one entity type."""
 
@@ -145,6 +159,10 @@ class EntityPlan:
     to_insert: list[dict[str, Any]] = field(default_factory=list)
     clashes: list[Clash] = field(default_factory=list)
     conflicts: list[Conflict] = field(default_factory=list)
+    # Cross-install only: the target holds this entity under another ID, so
+    # the incoming copy is dropped and everything pointing at it is rewritten
+    # to the target's ID.
+    matches: list[Match] = field(default_factory=list)
     # False when the target was read through a projection, so the two sides
     # cannot be compared field by field. Such a clash is never "unchanged" —
     # the archive may well carry different content, and the caller's policy
@@ -164,12 +182,15 @@ class EntityPlan:
         return [c for c in self.clashes if not c.identical]
 
     def summary(self) -> dict[str, int]:
-        return {
+        counts = {
             "insert": len(self.to_insert),
             "unchanged": len(self.identical_clashes),
             "clash": len(self.differing_clashes),
             "conflict": len(self.conflicts),
         }
+        if self.matches:
+            counts["matched"] = len(self.matches)
+        return counts
 
 
 def diff_entities(
@@ -229,9 +250,24 @@ class MergePlanner:
     and the real merge's first phase.
     """
 
-    def __init__(self, mongo_client: Any, collection_map: dict[str, tuple[str, str]]):
+    def __init__(
+        self,
+        mongo_client: Any,
+        collection_map: dict[str, tuple[str, str]],
+        *,
+        cross_install: bool = False,
+    ):
         self._mongo = mongo_client
         self._collection_map = collection_map
+        # Same evidence, opposite reading. Same-install: the archive and the
+        # target share an ID space, so "same logical key, different ID" means
+        # identity has been corrupted — a conflict. Cross-install: the two
+        # installs never shared an ID space, so it means both sides
+        # independently created the same real-world entity — a match, and the
+        # target's ID is the survivor. Nothing in the data distinguishes the
+        # two cases, which is why this is a caller's declaration and is never
+        # inferred.
+        self._cross_install = cross_install
 
     async def plan(
         self,
@@ -268,12 +304,18 @@ class MergePlanner:
                 logical_index.get(logical_key) if logical_key is not None else None
             )
 
-            conflict = self._identity_conflict(
-                entity, spec, id_key, logical_key, by_id, by_logical
-            )
-            if conflict is not None:
-                plan.conflicts.append(conflict)
-                continue
+            if self._cross_install:
+                match = self._cross_install_match(entity, spec, by_id, by_logical)
+                if match is not None:
+                    plan.matches.append(match)
+                    continue
+            else:
+                conflict = self._identity_conflict(
+                    entity, spec, id_key, logical_key, by_id, by_logical
+                )
+                if conflict is not None:
+                    plan.conflicts.append(conflict)
+                    continue
 
             targets = by_id or by_logical
             if not targets:
@@ -291,6 +333,42 @@ class MergePlanner:
                 )
 
         return plan
+
+    def _cross_install_match(
+        self,
+        entity: dict[str, Any],
+        spec: EntitySpec,
+        by_id: list[dict[str, Any]] | None,
+        by_logical: list[dict[str, Any]] | None,
+    ) -> Match | None:
+        """The target holds this entity under a different ID.
+
+        Returns None when there is nothing to reconcile — either the target
+        does not have it (an insert) or it already agrees on the ID (an
+        ordinary clash, handled by policy like any same-install one).
+
+        When the two do differ, the **target's ID wins**. That is not a
+        preference: the target's ID is already referenced by everything
+        already in the namespace, while the archive's is referenced only by
+        the rows still being imported — which the caller is about to rewrite.
+        Rewriting the smaller side is the only choice that leaves every
+        reference resolvable.
+        """
+        if by_id or not by_logical:
+            return None
+        old_id = key_of(entity, spec.id_fields)
+        new_id = key_of(by_logical[0], spec.id_fields)
+        if old_id is None or new_id is None or old_id == new_id:
+            return None
+        # Compound-keyed types (templates carry (template_id, version)) map on
+        # their first component: the version is a coordinate on the entity,
+        # not part of its identity, and references point at the ID alone.
+        return Match(
+            entity=entity,
+            target=by_logical[0],
+            old_id=str(old_id[0]),
+            new_id=str(new_id[0]),
+        )
 
     def _identity_conflict(
         self,

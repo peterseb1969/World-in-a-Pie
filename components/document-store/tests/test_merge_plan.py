@@ -375,3 +375,133 @@ class TestBatching:
         assert plan.summary() == {
             "insert": 0, "unchanged": 0, "clash": 0, "conflict": 0,
         }
+
+
+# ---------------------------------------------------------------------------
+# Cross-install matching
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def cross_planner():
+    """A planner in cross-install mode over the real databases."""
+    client = AsyncIOMotorClient(
+        os.environ.get("MONGO_URI", "mongodb://localhost:27017/")
+    )
+
+    async def _clear():
+        for db_name, coll_name in COLLECTION_MAP.values():
+            await client[db_name][coll_name].delete_many({"namespace": NAMESPACE})
+
+    await _clear()
+    instance = MergePlanner(client, COLLECTION_MAP, cross_install=True)
+    instance.seed = _seeder(client)  # type: ignore[attr-defined]
+    yield instance
+    await _clear()
+    client.close()
+
+
+class TestCrossInstallMatching:
+    """Two installs that never shared an ID space.
+
+    The evidence that means "identity is corrupted" on one install means
+    "both sides created the same real-world thing" across two. Nothing in the
+    data distinguishes them — hence the caller's declaration.
+    """
+
+    @pytest.mark.asyncio
+    async def test_same_logical_key_under_another_id_is_a_match(self, cross_planner):
+        await cross_planner.seed("terminologies", [
+            {"terminology_id": "B-uuid", "namespace": NAMESPACE, "value": "GENDER"},
+        ])
+
+        plan = await cross_planner.plan(
+            "terminologies",
+            [{"terminology_id": "A-uuid", "namespace": NAMESPACE, "value": "GENDER"}],
+            NAMESPACE,
+        )
+
+        assert plan.conflicts == []
+        assert plan.to_insert == []
+        (match,) = plan.matches
+        assert (match.old_id, match.new_id) == ("A-uuid", "B-uuid")
+
+    @pytest.mark.asyncio
+    async def test_the_same_case_is_a_conflict_for_a_same_install_merge(self, planner):
+        # The discriminating test: identical data, opposite verdicts. If these
+        # two ever agree, the mode flag has stopped doing anything.
+        await planner.seed("terminologies", [
+            {"terminology_id": "B-uuid", "namespace": NAMESPACE, "value": "GENDER"},
+        ])
+
+        plan = await planner.plan(
+            "terminologies",
+            [{"terminology_id": "A-uuid", "namespace": NAMESPACE, "value": "GENDER"}],
+            NAMESPACE,
+        )
+
+        assert plan.matches == []
+        assert len(plan.conflicts) == 1
+
+    @pytest.mark.asyncio
+    async def test_entity_the_target_lacks_is_still_an_insert(self, cross_planner):
+        plan = await cross_planner.plan(
+            "terminologies",
+            [{"terminology_id": "A-uuid", "namespace": NAMESPACE, "value": "GENDER"}],
+            NAMESPACE,
+        )
+
+        assert plan.matches == []
+        assert [e["terminology_id"] for e in plan.to_insert] == ["A-uuid"]
+
+    @pytest.mark.asyncio
+    async def test_agreeing_ids_are_an_ordinary_clash_not_a_match(self, cross_planner):
+        # UUIDs are unique enough that the two installs can genuinely share an
+        # entity ID (a common ancestor archive). Nothing to remap, so it falls
+        # through to the normal policy path.
+        row = {"terminology_id": "SHARED", "namespace": NAMESPACE, "value": "GENDER"}
+        await cross_planner.seed("terminologies", [row])
+
+        plan = await cross_planner.plan("terminologies", [dict(row)], NAMESPACE)
+
+        assert plan.matches == []
+        assert len(plan.clashes) == 1
+
+    @pytest.mark.asyncio
+    async def test_matches_are_counted_in_the_summary(self, cross_planner):
+        await cross_planner.seed("terminologies", [
+            {"terminology_id": "B-uuid", "namespace": NAMESPACE, "value": "GENDER"},
+        ])
+
+        plan = await cross_planner.plan(
+            "terminologies",
+            [
+                {"terminology_id": "A-uuid", "namespace": NAMESPACE,
+                 "value": "GENDER"},
+                {"terminology_id": "A-other", "namespace": NAMESPACE,
+                 "value": "COUNTRY"},
+            ],
+            NAMESPACE,
+        )
+
+        assert plan.summary()["matched"] == 1
+        assert plan.summary()["insert"] == 1
+
+    @pytest.mark.asyncio
+    async def test_template_match_maps_the_id_not_the_version(self, cross_planner):
+        # Templates key on (template_id, version); a reference points at the
+        # template, never at one of its versions.
+        await cross_planner.seed("templates", [
+            {"template_id": "B-tpl", "namespace": NAMESPACE, "value": "PATIENT",
+             "version": 1},
+        ])
+
+        plan = await cross_planner.plan(
+            "templates",
+            [{"template_id": "A-tpl", "namespace": NAMESPACE, "value": "PATIENT",
+              "version": 1}],
+            NAMESPACE,
+        )
+
+        (match,) = plan.matches
+        assert (match.old_id, match.new_id) == ("A-tpl", "B-tpl")
