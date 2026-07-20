@@ -565,6 +565,42 @@ async def test_start_restore_omits_clash_policies_outside_merge(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_start_restore_fresh_sends_the_target(tmp_path):
+    """A fresh restore mints new identities, so it must say where they go."""
+    archive = tmp_path / "ns.zip"
+    archive.write_bytes(b"PK\x03\x04 fake zip")
+    mock_http = _mock_http(_mock_response({"job_id": "rst-4", "status": "pending"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.start_restore(
+            namespace="wip",
+            archive_path=str(archive),
+            mode="fresh",
+            target_namespace="kb-copy",
+        )
+
+    data = mock_http.post.call_args.kwargs["data"]
+    assert data["mode"] == "fresh"
+    assert data["target_namespace"] == "kb-copy"
+
+
+@pytest.mark.asyncio
+async def test_start_restore_omits_an_unset_target(tmp_path):
+    """The endpoint derives the target from the manifest for the id-preserving
+    modes; sending an empty value would override it."""
+    archive = tmp_path / "ns.zip"
+    archive.write_bytes(b"PK\x03\x04 fake zip")
+    mock_http = _mock_http(_mock_response({"job_id": "rst-5", "status": "pending"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.start_restore(namespace="wip", archive_path=str(archive))
+
+    assert "target_namespace" not in mock_http.post.call_args.kwargs["data"]
+
+
+@pytest.mark.asyncio
 async def test_start_validation_posts_to_the_namespace(tmp_path):
     """Validation is the post-restore check; it must reach document-store's
     validate endpoint with its options as query params."""

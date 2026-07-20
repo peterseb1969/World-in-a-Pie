@@ -3848,6 +3848,7 @@ async def start_restore(
     namespace: str,
     archive_path: str,
     mode: str = "restore",
+    target_namespace: str | None = None,
     on_clash: str = "skip",
     add_missing: bool = False,
     extend_terminologies: bool = False,
@@ -3865,7 +3866,17 @@ async def start_restore(
     required on every namespace the archive carries.
 
     mode='restore' (default) requires every target namespace to be EMPTY and
-    inserts the archive wholesale.
+    inserts the archive wholesale, preserving every id.
+
+    mode='fresh' keeps NOTHING: every terminology, term, template, document
+    and file is registered anew with a Registry-minted id, and every reference
+    between them is rewritten. That is what lets a namespace be restored
+    BESIDE the one it came from — two live copies cannot share a canonical id.
+    It needs target_namespace, and that namespace must be empty. Identities
+    are provisioned as reserved (which do not resolve) and activated in one
+    step at the end, so a job that dies partway leaves an invisible,
+    reconcilable namespace rather than a half-live one. Single-namespace
+    archives only for now.
 
     mode='merge' takes the archive as a delta against a namespace that already
     holds data, in two passes. First it checks that both sides' DEFINITIONS —
@@ -3909,7 +3920,11 @@ async def start_restore(
     Args:
         namespace: URL-path namespace (the auth check target).
         archive_path: Local filesystem path to the .zip archive to upload.
-        mode: 'restore' (empty target) or 'merge' (existing namespace).
+        mode: 'restore' (empty target, ids preserved), 'merge' (existing
+            namespace, ids preserved) or 'fresh' (new namespace, ids re-minted).
+        target_namespace: Where to write. Required for 'fresh'; for the other
+            modes the archive manifest decides, and merge may use it to write
+            into a differently-named namespace.
         on_clash: Merge only — 'skip', 'overwrite' or 'newer' for clashing
             documents.
         add_missing: Merge only — insert terminologies and templates the
@@ -3928,6 +3943,7 @@ async def start_restore(
             namespace=namespace,
             archive_path=archive_path,
             mode=mode,
+            target_namespace=target_namespace,
             on_clash=on_clash,
             add_missing=add_missing,
             extend_terminologies=extend_terminologies,

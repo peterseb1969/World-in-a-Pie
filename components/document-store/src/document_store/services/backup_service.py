@@ -479,11 +479,12 @@ def make_direct_restore_runner(
     """Build an :data:`AsyncRunner` that writes ``archive_path`` into MongoDB.
 
     ``options['mode']`` picks the engine entry point: ``restore`` inserts an
-    archive into an empty namespace, ``merge`` reconciles it against a
-    namespace that already holds data. They differ in preconditions and in
-    what they do on a collision, so each takes its own parameter set — a merge
-    option reaching a plain restore is rejected at the API surface rather than
-    dropped here.
+    archive into an empty namespace preserving every id, ``merge`` reconciles
+    it against a namespace that already holds data, and ``fresh`` re-mints
+    every identity so a namespace can be restored beside the one it came from.
+    They differ in preconditions and in what they do on a collision, so each
+    takes its own parameter set — an option reaching the wrong mode is
+    rejected at the API surface rather than dropped here.
     """
     opts = dict(options or {})
 
@@ -498,6 +499,16 @@ def make_direct_restore_runner(
             mongo_client, storage, progress_callback,
             reporting_client=ReportingSyncClient(),
         )
+        if opts.get("mode") == "fresh":
+            await engine.run_remap(
+                Path(archive_path),
+                target_namespace=opts.get("target_namespace", ""),
+                skip_documents=opts.get("skip_documents", False),
+                skip_files=opts.get("skip_files", False),
+                batch_size=opts.get("batch_size", 500),
+                dry_run=opts.get("dry_run", False),
+            )
+            return
         if opts.get("mode") == "merge":
             await engine.run_merge(
                 Path(archive_path),

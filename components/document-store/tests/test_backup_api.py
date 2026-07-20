@@ -397,18 +397,83 @@ async def test_merge_rejects_drop_stale_reporting(
 
 
 @pytest.mark.asyncio
-async def test_fresh_mode_points_at_the_two_real_modes(
+async def test_fresh_mode_reaches_the_runner_with_its_target(
     client: AsyncClient, auth_headers: dict
 ):
+    """mode='fresh' re-mints every identity, so the target it writes to has to
+    reach the engine."""
+    fake_task = asyncio.get_running_loop().create_future()
+    fake_task.set_result(None)
+    with (
+        patch(
+            "document_store.api.backup.backup_service.make_direct_restore_runner",
+            return_value=AsyncMock(),
+        ) as mk_runner,
+        patch(
+            "document_store.api.backup.backup_service.start_async_job",
+            new=AsyncMock(return_value=fake_task),
+        ),
+    ):
+        resp = await client.post(
+            "/api/document-store/backup/namespaces/wip/restore",
+            headers=auth_headers,
+            files={"archive": ("b.zip", b"PK\x03\x04x", "application/zip")},
+            data={"mode": "fresh", "target_namespace": "wip"},
+        )
+
+    assert resp.status_code == 202, resp.text
+    options = mk_runner.call_args.kwargs["options"]
+    assert options["mode"] == "fresh"
+    assert options["target_namespace"] == "wip"
+
+
+@pytest.mark.asyncio
+async def test_fresh_mode_requires_a_target(
+    client: AsyncClient, auth_headers: dict
+):
+    """It is placing new identities somewhere, so it cannot infer where from
+    the archive the way the id-preserving modes do."""
     resp = await client.post(
         "/api/document-store/backup/namespaces/wip/restore",
         headers=auth_headers,
         files={"archive": ("b.zip", b"x", "application/zip")},
         data={"mode": "fresh"},
     )
+
+    assert resp.status_code == 400
+    assert "target_namespace" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_merge_policies_are_rejected_for_fresh_mode(
+    client: AsyncClient, auth_headers: dict
+):
+    # A fresh restore writes into an empty namespace, so there is nothing for
+    # a clash policy to resolve.
+    resp = await client.post(
+        "/api/document-store/backup/namespaces/wip/restore",
+        headers=auth_headers,
+        files={"archive": ("b.zip", b"x", "application/zip")},
+        data={"mode": "fresh", "target_namespace": "wip", "on_clash": "overwrite"},
+    )
+
+    assert resp.status_code == 400
+    assert "on_clash" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_mode_names_all_three(
+    client: AsyncClient, auth_headers: dict
+):
+    resp = await client.post(
+        "/api/document-store/backup/namespaces/wip/restore",
+        headers=auth_headers,
+        files={"archive": ("b.zip", b"x", "application/zip")},
+        data={"mode": "nuke-it"},
+    )
     assert resp.status_code == 400
     detail = resp.json()["detail"]
-    assert "merge" in detail and "restore" in detail
+    assert "restore" in detail and "merge" in detail and "fresh" in detail
 
 
 # ---------------------------------------------------------------------------

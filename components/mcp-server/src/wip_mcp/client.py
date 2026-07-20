@@ -1523,6 +1523,7 @@ class WipClient:
         namespace: str,
         archive_path: str,
         mode: str = "restore",
+        target_namespace: str | None = None,
         on_clash: str = "skip",
         add_missing: bool = False,
         extend_terminologies: bool = False,
@@ -1552,12 +1553,17 @@ class WipClient:
         client = await self._get_client()
         data: dict[str, str] = {
             "mode": mode,
+            "target_namespace": target_namespace or "",
             "skip_documents": str(skip_documents).lower(),
             "skip_files": str(skip_files).lower(),
             "batch_size": str(batch_size),
             "dry_run": str(dry_run).lower(),
             "drop_stale_reporting": str(drop_stale_reporting).lower(),
         }
+        if not target_namespace:
+            # The endpoint derives the target from the archive manifest for
+            # restore and merge; sending an empty value would override it.
+            data.pop("target_namespace")
         if mode == "merge":
             data["on_clash"] = on_clash
             data["add_missing"] = str(add_missing).lower()

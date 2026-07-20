@@ -1397,13 +1397,20 @@ interface DocumentMigrateResponse extends BulkResponse {
 type BackupJobKind = 'backup' | 'restore' | 'validate';
 type BackupJobStatus = 'pending' | 'running' | 'complete' | 'failed';
 /**
- * Restore mode. Both implemented modes are ID-preserving and write each
- * namespace in the archive back to itself. `'restore'` requires every
- * target namespace to be EMPTY and inserts the archive wholesale.
+ * Restore mode.
+ *
+ * `'restore'` requires every target namespace to be EMPTY and inserts the
+ * archive wholesale, preserving every canonical id.
+ *
  * `'merge'` takes the archive as a delta against a namespace that already
- * holds data. `'fresh'` is RESERVED — the backend rejects it with 400; the
- * planned new-namespace (remap) mode with re-minted IDs does not exist
- * yet. Kept in the union for forward-compat, but do not send it.
+ * holds data, also preserving ids. It may target a differently-named
+ * namespace, provided the archive's ids are not already registered here.
+ *
+ * `'fresh'` keeps nothing: every entity is registered anew with a
+ * Registry-minted id and every reference between them is rewritten, which is
+ * what lets a namespace be restored BESIDE the one it came from — two live
+ * copies cannot share a canonical id. Requires `target_namespace`, and that
+ * namespace must be empty.
  */
 type RestoreMode = 'restore' | 'merge' | 'fresh';
 /**
@@ -1536,6 +1543,13 @@ interface BackupRequest {
  */
 interface RestoreOptions {
     mode?: RestoreMode;
+    /**
+     * Where to write. Required for `mode: 'fresh'`, which is placing new
+     * identities somewhere. For the other modes the archive manifest decides,
+     * except that a merge may use it to write into a differently-named
+     * namespace.
+     */
+    target_namespace?: string;
     /** Merge only — resolution for a document identity the target already holds. */
     on_clash?: ClashPolicy;
     /**

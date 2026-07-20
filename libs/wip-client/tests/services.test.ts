@@ -1047,6 +1047,21 @@ describe('Service classes via createWipClient', () => {
       expect(fd.get('extend_terminologies')).toBe('true')
     })
 
+    it('startRestore sends the target for a fresh restore', async () => {
+      mockJsonResponse(backupSnapshot({ kind: 'restore', namespace: 'kb-copy' }))
+
+      const archive = new Blob([new Uint8Array([0x50, 0x4b])], { type: 'application/zip' })
+      await client.documents.startRestore('kb', archive, {
+        mode: 'fresh',
+        target_namespace: 'kb-copy',
+      })
+
+      const [, options] = fetchMock.mock.calls[0]
+      const fd = options.body as FormData
+      expect(fd.get('mode')).toBe('fresh')
+      expect(fd.get('target_namespace')).toBe('kb-copy')
+    })
+
     it('startRestore omits unset option fields', async () => {
       mockJsonResponse(backupSnapshot({ kind: 'restore' }))
 

@@ -137,8 +137,9 @@ def _validate_merge_options(
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"'{name}' applies to mode='merge' only — a plain "
-                        "restore requires an empty target, so nothing can clash."
+                        f"'{name}' applies to mode='merge' only. Both other "
+                        "modes write into an empty namespace, so there is "
+                        "nothing for them to clash with."
                     ),
                 )
         return
@@ -323,14 +324,25 @@ async def start_restore(
     mode: str = Form(
         "restore",
         description=(
-            "'restore' requires an empty target and inserts everything. "
-            "'merge' takes the archive as a delta against an existing, "
-            "possibly non-empty namespace, resolving anything the target "
-            "already holds by the on_clash policy, after checking that both "
-            "sides' definitions are compatible."
+            "'restore' requires an empty target and inserts everything, "
+            "preserving every id. 'merge' takes the archive as a delta "
+            "against an existing, possibly non-empty namespace, preserving "
+            "ids and resolving what the target already holds by the on_clash "
+            "policy. 'fresh' keeps nothing: every entity is registered anew "
+            "with a Registry-minted id and every reference is rewritten, "
+            "which is what lets a namespace be restored beside the one it "
+            "came from."
         ),
     ),
-    target_namespace: str | None = Form(None),
+    target_namespace: str | None = Form(
+        None,
+        description=(
+            "Where to write. A restore and a merge write each archived "
+            "namespace to itself unless merging into a different one; a "
+            "'fresh' restore requires this, since it is placing new "
+            "identities somewhere."
+        ),
+    ),
     on_clash: str = Form(
         "skip",
         description=(
@@ -393,14 +405,16 @@ async def start_restore(
     if mode not in ("restore", "merge", "fresh"):
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid mode '{mode}' — must be 'restore' or 'merge'",
+            detail=(
+                f"Invalid mode '{mode}' — must be 'restore', 'merge' or 'fresh'"
+            ),
         )
-    if mode == "fresh":
+    if mode == "fresh" and not target_namespace:
         raise HTTPException(
             status_code=400,
             detail=(
-                "Fresh mode is not implemented. Use 'restore' for an empty "
-                "target or 'merge' for an existing namespace."
+                "mode='fresh' mints new identities, so it must be told where "
+                "to put them: pass target_namespace."
             ),
         )
 
@@ -452,7 +466,13 @@ async def start_restore(
     archive_size = archive_path.stat().st_size
 
     prefixes: list[str] = []
-    if mode in ("restore", "merge"):
+    if mode == "fresh":
+        # A fresh restore reads the archive but writes only to the target, so
+        # admin there is the permission that matters — requiring it on the
+        # source namespaces would demand rights over an instance the caller
+        # may have nothing to do with.
+        await check_namespace_permission(identity, effective_target, "admin")
+    elif mode in ("restore", "merge"):
         try:
             prefixes, effective_target = await _authorize_archive_restore(
                 archive_path, identity, fallback_target=effective_target

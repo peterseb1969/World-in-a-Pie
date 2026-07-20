@@ -348,6 +348,8 @@ export class DocumentStoreService extends BaseService {
     const form = new FormData()
     form.append('archive', archive, filename)
     if (options.mode !== undefined) form.append('mode', options.mode)
+    if (options.target_namespace !== undefined)
+      form.append('target_namespace', options.target_namespace)
     if (options.on_clash !== undefined) form.append('on_clash', options.on_clash)
     if (options.add_missing !== undefined)
       form.append('add_missing', String(options.add_missing))

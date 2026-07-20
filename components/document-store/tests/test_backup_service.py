@@ -298,9 +298,38 @@ class TestRestoreRunnerModeRouting:
         assert kwargs["add_missing"] is True
         assert kwargs["dry_run"] is True
 
+    async def test_fresh_mode_runs_the_remap(self, tmp_path):
+        engine = MagicMock()
+        engine.run_remap = AsyncMock()
+        engine.run_merge = AsyncMock()
+        engine.run_restore = AsyncMock()
+
+        runner = backup_service.make_direct_restore_runner(
+            tmp_path / "a.zip",
+            {"mode": "fresh", "target_namespace": "kb-copy", "dry_run": True},
+        )
+        with (
+            patch(
+                "document_store.services.backup_engine.DirectRestoreEngine",
+                return_value=engine,
+            ),
+            patch(
+                "document_store.services.file_storage_client.is_file_storage_enabled",
+                return_value=False,
+            ),
+        ):
+            await runner(lambda _event: None)
+
+        engine.run_restore.assert_not_called()
+        engine.run_merge.assert_not_called()
+        kwargs = engine.run_remap.call_args.kwargs
+        assert kwargs["target_namespace"] == "kb-copy"
+        assert kwargs["dry_run"] is True
+
     async def test_default_mode_runs_the_plain_restore(self, tmp_path):
         engine = MagicMock()
         engine.run_merge = AsyncMock()
+        engine.run_remap = AsyncMock()
         engine.run_restore = AsyncMock()
 
         runner = backup_service.make_direct_restore_runner(
@@ -319,6 +348,7 @@ class TestRestoreRunnerModeRouting:
             await runner(lambda _event: None)
 
         engine.run_merge.assert_not_called()
+        engine.run_remap.assert_not_called()
         engine.run_restore.assert_called_once()
 
 
