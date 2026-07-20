@@ -41,6 +41,7 @@ from .merge_definitions import (
     DefinitionsPlanner,
 )
 from .merge_plan import MERGE_ENTITY_SPECS, EntityPlan, MergePlanner
+from .remap_restore import REMAP_ENTITY_ORDER, RemapPlan, RemapRestore
 from .reporting_client import ReportingSyncClient
 
 logger = logging.getLogger("document_store.backup_engine")
@@ -547,6 +548,319 @@ class DirectRestoreEngine:
     # that had to reconcile schemas while writing data would be validating one
     # side's documents against the other's contract.
     MERGE_CLASH_POLICIES = ("skip", "overwrite", "newer")
+
+    async def run_remap(
+        self,
+        archive_path: Path,
+        target_namespace: str,
+        *,
+        skip_documents: bool = False,
+        skip_files: bool = False,
+        batch_size: int = 500,
+        dry_run: bool = False,
+    ) -> None:
+        """Restore an archive's content as brand-new entities.
+
+        Nothing is kept: every entity is registered afresh with a
+        Registry-minted id, and every reference between them is rewritten. It
+        is what lets a namespace be restored beside the one it came from —
+        two live copies cannot share a canonical id.
+
+        The target must be empty, as for a plain restore. What differs is that
+        the archive's own registry entries are NOT written: provisioning
+        creates the entries, so importing the archived ones would duplicate
+        every identity under its old id.
+
+        Ordering is deliberate. Entries are provisioned as *reserved*, which
+        does not resolve, so a job that dies partway leaves an invisible and
+        reconcilable namespace; a single activation at the end makes the whole
+        set visible at once.
+        """
+        if not target_namespace:
+            raise RestoreEngineError(
+                "A remap restore needs a target namespace — it mints new "
+                "identities, so it must be told where to put them."
+            )
+
+        with ArchiveReader(archive_path) as reader:
+            manifest = reader.read_manifest()
+            sources = self._archive_namespaces(reader, manifest)
+            if len(sources) > 1:
+                raise RestoreEngineError(
+                    "This archive carries "
+                    f"{len(sources)} namespaces {sources}. A remap restore "
+                    "needs an explicit source-to-target mapping for each one; "
+                    "only single-namespace archives are supported so far."
+                )
+            src = sources[0]
+
+            self._emit(
+                "start",
+                f"Starting remap restore of '{src}' into '{target_namespace}'",
+                percent=0,
+            )
+            self._emit("phase_validate", "Checking the target is empty", percent=2)
+            await self._check_namespace_empty(target_namespace)
+            await self._check_reporting_precondition(
+                target_namespace, False, dry_run=dry_run
+            )
+
+            entry = {e.prefix: e for e in manifest.namespaces}.get(src)
+            ns_config = entry.namespace_config if entry else manifest.namespace_config
+
+            entities_by_type: dict[str, list[dict[str, Any]]] = {}
+            for entity_type in (*REMAP_ENTITY_ORDER, "term_relations"):
+                if skip_documents and entity_type == "documents":
+                    continue
+                if skip_files and entity_type == "files":
+                    continue
+                rows = []
+                for row in reader.read_entities(entity_type, namespace=src):
+                    row.pop("_id", None)
+                    rows.append(row)
+                entities_by_type[entity_type] = rows
+
+            # Identity fields come from the ARCHIVE's templates: the target has
+            # none yet, and these are the definitions the documents were
+            # written against.
+            identity_fields = {
+                template.get("value"): list(template.get("identity_fields") or [])
+                for template in entities_by_type.get("templates", [])
+                if template.get("value")
+            }
+
+            remapper = IDRemapper()
+            planner = RemapRestore(
+                self._dry_run_provisioner() if dry_run
+                else self._registry_provisioner(target_namespace),
+                remapper,
+                identity_fields_by_template=identity_fields,
+            )
+            plan = await planner.plan(entities_by_type, target_namespace)
+
+            phase = "phase_dry_run" if dry_run else "phase_remap"
+            for entity_type, count in plan.summary().items():
+                if count:
+                    self._emit(phase, f"[{target_namespace}] {entity_type}: {count}")
+
+            if dry_run:
+                self._emit(
+                    "complete",
+                    "Remap dry run complete — nothing provisioned, nothing "
+                    "written",
+                    percent=100,
+                )
+                return
+
+            await self._upsert_namespace(target_namespace, ns_config)
+            await self._write_remapped(target_namespace, plan, batch_size)
+
+            if not skip_files and self._storage:
+                await self._remap_blobs(reader, plan.id_map["files"])
+
+            await self._activate_entries(
+                target_namespace,
+                [
+                    new_id
+                    for mapping in plan.id_map.values()
+                    for new_id in mapping.values()
+                ],
+            )
+            await self._record_provenance(target_namespace, src, manifest)
+            await self._reporting_phase_counts(
+                target_namespace, skip_documents=skip_documents
+            )
+
+        self._emit("complete", "Remap restore complete", percent=100)
+
+    def _registry_provisioner(self, namespace: str) -> Any:
+        """Ask the Registry for ids. It is the identity authority; a service
+        minting its own UUIDs would be inventing identity for itself."""
+        async def provision(
+            entity_type: str, keys: list[dict[str, Any]]
+        ) -> list[str]:
+            import httpx
+
+            if not keys:
+                return []
+            url = f"{self._registry_url}/api/registry/entries/provision"
+            headers = {
+                "X-API-Key": self._registry_api_key,
+                "Content-Type": "application/json",
+            }
+            body = {
+                "namespace": namespace,
+                "entity_type": entity_type,
+                "count": len(keys),
+                "composite_keys": keys,
+            }
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.post(url, json=body, headers=headers)
+                if resp.status_code != 200:
+                    raise RestoreEngineError(
+                        f"Could not provision {len(keys)} {entity_type} id(s) "
+                        f"in '{namespace}': {resp.status_code} — {resp.text}"
+                    )
+                return [item["entry_id"] for item in resp.json()["ids"]]
+
+        return provision
+
+    @staticmethod
+    def _dry_run_provisioner() -> Any:
+        """Stand-in ids for a dry run.
+
+        Provisioning writes reserved entries, so a dry run must not call the
+        Registry — a preview that leaves rows behind is not a preview.
+        """
+        counter = {"n": 0}
+
+        async def provision(
+            entity_type: str, keys: list[dict[str, Any]]
+        ) -> list[str]:
+            ids = []
+            for _ in keys:
+                counter["n"] += 1
+                ids.append(f"would-mint-{counter['n']}")
+            return ids
+
+        return provision
+
+    async def _write_remapped(
+        self, namespace: str, plan: RemapPlan, batch_size: int
+    ) -> None:
+        """Insert the rewritten rows, in dependency order.
+
+        Registry entries are absent on purpose: provisioning created them, so
+        writing the archive's would duplicate every identity under its old id.
+        """
+        for entity_type in (*REMAP_ENTITY_ORDER, "term_relations"):
+            rows = plan.rows.get(entity_type) or []
+            if not rows:
+                continue
+            db_name, coll_name = COLLECTION_MAP[entity_type]
+            collection = self._mongo[db_name][coll_name]
+            for start in range(0, len(rows), batch_size):
+                await self._insert_batch(
+                    collection, rows[start:start + batch_size], entity_type
+                )
+            self._emit(
+                f"phase_{entity_type}",
+                f"[{namespace}] wrote {len(rows)} {entity_type} under new ids",
+            )
+            if entity_type == "templates":
+                await self._reporting_phase_structure(namespace)
+
+    async def _remap_blobs(
+        self, reader: ArchiveReader, file_id_map: dict[str, str]
+    ) -> None:
+        """Copy each blob under its file's new id.
+
+        The storage key follows the file id, so re-minting the id means the
+        bytes need a new home rather than a second reference to the old one —
+        which would leave two files sharing one object and either one able to
+        delete it.
+        """
+        assert self._storage is not None
+        if not file_id_map:
+            return
+        self._emit("phase_blobs", f"Copying {len(file_id_map)} blob(s)", percent=92)
+        copied = 0
+        for old_id, new_id in file_id_map.items():
+            data = reader.read_blob(old_id)
+            if data is None:
+                logger.warning("Blob %s missing from archive; skipped", old_id)
+                continue
+            await self._storage.upload(
+                storage_key=new_id,
+                content=data,
+                content_type="application/octet-stream",
+            )
+            copied += 1
+        logger.info("Copied %d blob(s) under new ids", copied)
+
+    async def _activate_entries(
+        self, namespace: str, entry_ids: list[str]
+    ) -> None:
+        """Make the provisioned entries resolvable, in one step.
+
+        Until this runs the namespace is invisible: reserved entries do not
+        resolve. That is the property that makes a failed remap recoverable
+        rather than half-live.
+        """
+        import httpx
+
+        if not entry_ids:
+            return
+        self._emit(
+            "phase_activate",
+            f"[{namespace}] activating {len(entry_ids)} identit(ies)",
+        )
+        url = f"{self._registry_url}/api/registry/entries/activate"
+        headers = {
+            "X-API-Key": self._registry_api_key,
+            "Content-Type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            for start in range(0, len(entry_ids), 500):
+                batch = entry_ids[start:start + 500]
+                resp = await client.post(
+                    url,
+                    json=[{"entry_id": entry_id} for entry_id in batch],
+                    headers=headers,
+                )
+                if resp.status_code != 200:
+                    raise RestoreEngineError(
+                        f"Could not activate {len(batch)} restored identit(ies) "
+                        f"in '{namespace}': {resp.status_code} — {resp.text}. "
+                        "The data is written but invisible; re-run activation "
+                        "or delete the namespace and retry."
+                    )
+                errors = resp.json().get("errors", 0)
+                if errors:
+                    self._emit(
+                        "warning",
+                        f"[{namespace}] {errors} identit(ies) did not activate "
+                        "— they remain reserved and will not resolve",
+                    )
+
+    async def _record_provenance(
+        self, namespace: str, source: str, manifest: Any
+    ) -> None:
+        """Note where a remapped namespace came from, on the namespace itself.
+
+        Per-entity lineage was rejected: a synonym asserts that two ids denote
+        the same entity, and a re-minted copy is a fork that diverges on the
+        first write. Provenance belongs to the namespace, which is one line
+        that cannot drift — and it travels forward, since a later backup
+        captures the description into its own manifest.
+
+        Written after the namespace upsert, which sets the description from
+        the manifest and would otherwise overwrite it.
+        """
+        exported = getattr(manifest, "exported_at", None)
+        host = getattr(manifest, "source_host", None) or "unknown host"
+        note = (
+            f"Restored {datetime.now(UTC).date().isoformat()} from an archive "
+            f"of '{source}' taken {exported or 'at an unrecorded time'} on {host}."
+        )
+        collection = self._mongo[_DB_REGISTRY]["namespaces"]
+        live = await collection.find_one({"prefix": namespace})
+        existing = (live or {}).get("description") or ""
+        result = await collection.update_one(
+            {"prefix": namespace},
+            {"$set": {"description": f"{existing} {note}".strip()}},
+        )
+        if not getattr(result, "matched_count", 1):
+            # The namespace upsert should have created this row. Losing the
+            # provenance line is not worth failing a completed restore over,
+            # but it should not vanish quietly either.
+            self._emit(
+                "warning",
+                f"[{namespace}] could not record restore provenance — no "
+                "namespace record to write it to",
+            )
+            return
+        self._emit("phase_namespace", f"[{namespace}] {note}")
 
     async def run_merge(
         self,
@@ -1609,6 +1923,36 @@ class DirectRestoreEngine:
                 "never applies the archive's.",
             )
 
+    def _archive_namespaces(
+        self, reader: ArchiveReader, manifest: Any
+    ) -> list[str]:
+        """The namespaces an archive actually carries, or a loud failure.
+
+        Belt behind the endpoint's synchronous 400: a pre-v3 archive is flat,
+        so every namespaces/<ns>/<entity>.jsonl read would find nothing and the
+        job would complete "successfully" having written zero entities.
+
+        A manifest may also *claim* 3.x yet carry no namespaces/ subtree
+        (hand-assembled or truncated zip). ``namespace_prefixes()`` can be
+        non-empty from the manifest alone, so the actual layout is checked too
+        — otherwise the same silent zero-entity run happens.
+        """
+        if not manifest.format_version.startswith("3"):
+            raise RestoreEngineError(
+                f"Archive is format v{manifest.format_version} — the restore "
+                "engine reads the v3 layout. Convert it first: "
+                "python -m wip_toolkit convert-archive <src> <dst>"
+            )
+        if not reader.list_namespaces():
+            raise RestoreEngineError(
+                "Archive manifest claims v3 but the zip has no namespaces/ "
+                "tree — malformed archive, nothing to restore"
+            )
+        namespaces = manifest.namespace_prefixes() or reader.list_namespaces()
+        if not namespaces:
+            raise RestoreEngineError("Archive contains no namespaces to restore")
+        return namespaces
+
     def _resolve_targets(
         self,
         reader: ArchiveReader,
@@ -1630,29 +1974,7 @@ class DirectRestoreEngine:
         is what makes "fold NS2's archive into NS1" work. The IDs still have
         to be free — see :meth:`_check_ids_are_free`.
         """
-        # Belt behind the endpoint's synchronous 400: a pre-v3 archive is
-        # flat, so every namespaces/<ns>/<entity>.jsonl read would find
-        # nothing and the job would complete "successfully" having written
-        # zero entities. Fail loud for any caller that bypasses the endpoint.
-        if not manifest.format_version.startswith("3"):
-            raise RestoreEngineError(
-                f"Archive is format v{manifest.format_version} — the restore "
-                "engine reads the v3 layout. Convert it first: "
-                "python -m wip_toolkit convert-archive <src> <dst>"
-            )
-        # A manifest may *claim* 3.x yet carry no namespaces/ subtree
-        # (hand-assembled or truncated zip). namespace_prefixes() can be
-        # non-empty from the manifest alone, so check the actual layout —
-        # otherwise the same silent zero-entity run happens.
-        if not reader.list_namespaces():
-            raise RestoreEngineError(
-                "Archive manifest claims v3 but the zip has no namespaces/ "
-                "tree — malformed archive, nothing to restore"
-            )
-
-        source_namespaces = manifest.namespace_prefixes() or reader.list_namespaces()
-        if not source_namespaces:
-            raise RestoreEngineError("Archive contains no namespaces to restore")
+        source_namespaces = self._archive_namespaces(reader, manifest)
 
         if target_namespace:
             if len(source_namespaces) > 1:

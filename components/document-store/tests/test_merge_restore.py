@@ -18,12 +18,18 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
-from wip_toolkit.models import EntityCounts, Manifest, NamespaceConfig, ProgressEvent
+from wip_toolkit.models import (
+    EntityCounts,
+    Manifest,
+    NamespaceConfig,
+    NamespaceEntry,
+    ProgressEvent,
+)
 
 from document_store.services.backup_engine import (
     _DB_REGISTRY,
@@ -1095,3 +1101,257 @@ class TestMergeReferenceCheck:
                 }),
                 dry_run=True,
             )
+
+
+# ---------------------------------------------------------------------------
+# Remap restore (mode 3)
+# ---------------------------------------------------------------------------
+
+
+REMAP_TARGET = "remap-target-ns"
+
+
+async def _clear_remap_target(mongo):
+    for db_name, coll_name in _all_collections():
+        key = "prefix" if coll_name == "namespaces" else "namespace"
+        await mongo[db_name][coll_name].delete_many({key: REMAP_TARGET})
+
+
+async def _remap_rows(mongo, entity_type):
+    db_name, coll_name = COLLECTION_MAP[entity_type]
+    return await mongo[db_name][coll_name].find(
+        {"namespace": REMAP_TARGET}, {"_id": 0}
+    ).to_list(length=None)
+
+
+class _FakeRegistry:
+    """Stands in for the Registry's provision and activate endpoints.
+
+    The endpoints' own behaviour is pinned in the registry component's
+    reservation-lifecycle tests; what matters here is that the engine calls
+    them in the right order with the right payloads, and writes what comes
+    back.
+    """
+
+    def __init__(self):
+        self.provisioned: list[tuple[str, list[dict]]] = []
+        self.activated: list[str] = []
+        self._n = 0
+
+    async def post(self, url, json=None, headers=None):
+        if url.endswith("/entries/provision"):
+            self.provisioned.append((json["entity_type"], json["composite_keys"]))
+            ids = []
+            for _ in range(json["count"]):
+                self._n += 1
+                ids.append(f"MINT-{self._n}")
+            return MagicMock(
+                status_code=200,
+                json=MagicMock(return_value={
+                    "ids": [{"entry_id": i, "status": "reserved"} for i in ids]
+                }),
+            )
+        if url.endswith("/entries/activate"):
+            self.activated.extend(item["entry_id"] for item in json)
+            return MagicMock(
+                status_code=200,
+                json=MagicMock(return_value={"activated": len(json), "errors": 0}),
+            )
+        # Namespace upsert
+        return MagicMock(status_code=200, text="ok")
+
+
+async def _run_remap(mongo, reader, events=None, *, registry=None, **kwargs):
+    def callback(event: ProgressEvent) -> None:
+        if events is not None:
+            events.append(event)
+
+    registry = registry or _FakeRegistry()
+    http = MagicMock()
+    http.post = registry.post
+    http.put = AsyncMock(return_value=MagicMock(status_code=200, text="ok"))
+    http.__aenter__ = AsyncMock(return_value=http)
+    http.__aexit__ = AsyncMock(return_value=None)
+
+    engine = DirectRestoreEngine(mongo, None, callback)
+    with patch(
+        "document_store.services.backup_engine.ArchiveReader", return_value=reader
+    ), patch("httpx.AsyncClient", return_value=http):
+        await engine.run_remap(MagicMock(), REMAP_TARGET, **kwargs)
+    return registry
+
+
+class TestRemapRestore:
+    """Everything is registered afresh; nothing keeps its old identity."""
+
+    @pytest.mark.asyncio
+    async def test_entities_land_under_new_ids_in_the_target(self, mongo):
+        await _clear_remap_target(mongo)
+
+        await _run_remap(mongo, _archive({
+            "terminologies": [
+                {"terminology_id": "OLD-LOV", "namespace": NAMESPACE,
+                 "value": "GENDER"},
+            ],
+        }))
+
+        (row,) = await _remap_rows(mongo, "terminologies")
+        assert row["terminology_id"].startswith("MINT-")
+        assert row["namespace"] == REMAP_TARGET
+        await _clear_remap_target(mongo)
+
+    @pytest.mark.asyncio
+    async def test_references_follow_the_new_ids(self, mongo):
+        await _clear_remap_target(mongo)
+
+        await _run_remap(mongo, _archive({
+            "templates": [
+                {"template_id": "OLD-TPL", "namespace": NAMESPACE,
+                 "value": "PATIENT", "identity_fields": []},
+            ],
+            "documents": [
+                {"document_id": "OLD-DOC", "namespace": NAMESPACE,
+                 "template_id": "OLD-TPL", "template_version": 1,
+                 "identity_hash": "h1", "version": 1, "data": {"age": 3}},
+            ],
+        }))
+
+        (template,) = await _remap_rows(mongo, "templates")
+        (document,) = await _remap_rows(mongo, "documents")
+        assert document["template_id"] == template["template_id"]
+        assert document["document_id"] != "OLD-DOC"
+        await _clear_remap_target(mongo)
+
+    @pytest.mark.asyncio
+    async def test_the_archives_registry_entries_are_not_written(self, mongo):
+        # Provisioning creates the entries. Importing the archived ones would
+        # duplicate every identity under its old id.
+        await _clear_remap_target(mongo)
+
+        await _run_remap(mongo, _archive({
+            "terminologies": [
+                {"terminology_id": "OLD-LOV", "namespace": NAMESPACE,
+                 "value": "GENDER"},
+            ],
+            "registry_entries": [
+                {"entry_id": "OLD-LOV", "namespace": NAMESPACE,
+                 "entity_type": "terminologies",
+                 "primary_composite_key_hash": "h", "synonyms": []},
+            ],
+        }))
+
+        assert await _remap_rows(mongo, "registry_entries") == []
+        await _clear_remap_target(mongo)
+
+    @pytest.mark.asyncio
+    async def test_composite_keys_are_built_for_the_target_namespace(self, mongo):
+        await _clear_remap_target(mongo)
+
+        registry = await _run_remap(mongo, _archive({
+            "terminologies": [
+                {"terminology_id": "OLD-LOV", "namespace": NAMESPACE,
+                 "value": "GENDER", "label": "Gender"},
+            ],
+        }))
+
+        (entity_type, keys) = registry.provisioned[0]
+        assert entity_type == "terminologies"
+        assert keys[0] == {
+            "ns": REMAP_TARGET, "value": "GENDER", "label": "Gender",
+        }
+        await _clear_remap_target(mongo)
+
+    @pytest.mark.asyncio
+    async def test_everything_is_activated_at_the_end(self, mongo):
+        # Until activation the namespace is invisible; that is what makes a
+        # failed remap recoverable rather than half-live.
+        await _clear_remap_target(mongo)
+
+        registry = await _run_remap(mongo, _archive({
+            "terminologies": [
+                {"terminology_id": "L1", "namespace": NAMESPACE, "value": "A"},
+                {"terminology_id": "L2", "namespace": NAMESPACE, "value": "B"},
+            ],
+        }))
+
+        assert sorted(registry.activated) == ["MINT-1", "MINT-2"]
+        await _clear_remap_target(mongo)
+
+    @pytest.mark.asyncio
+    async def test_provenance_is_recorded_on_the_namespace(self, mongo):
+        await _clear_remap_target(mongo)
+        # The namespace upsert creates this row through the Registry; the
+        # Registry is stubbed here, so stand it up directly.
+        await mongo[_DB_REGISTRY]["namespaces"].insert_one(
+            {"prefix": REMAP_TARGET, "description": "", "isolation_mode": "open"}
+        )
+
+        await _run_remap(mongo, _archive({
+            "terminologies": [
+                {"terminology_id": "L1", "namespace": NAMESPACE, "value": "A"},
+            ],
+        }))
+
+        live = await mongo[_DB_REGISTRY]["namespaces"].find_one(
+            {"prefix": REMAP_TARGET}
+        )
+        assert live is not None
+        assert f"of '{NAMESPACE}'" in live["description"]
+        await _clear_remap_target(mongo)
+
+    @pytest.mark.asyncio
+    async def test_a_non_empty_target_is_refused(self, mongo):
+        await _clear_remap_target(mongo)
+        db_name, coll_name = COLLECTION_MAP["terminologies"]
+        await mongo[db_name][coll_name].insert_one(
+            {"terminology_id": "SQUATTER", "namespace": REMAP_TARGET, "value": "X"}
+        )
+
+        with pytest.raises(RestoreEngineError, match="not empty"):
+            await _run_remap(mongo, _archive())
+        await _clear_remap_target(mongo)
+
+    @pytest.mark.asyncio
+    async def test_a_dry_run_provisions_nothing_and_writes_nothing(self, mongo):
+        # Provisioning writes reserved entries, so a preview that called the
+        # Registry would leave rows behind and not be a preview.
+        await _clear_remap_target(mongo)
+        events: list[ProgressEvent] = []
+
+        registry = await _run_remap(
+            mongo,
+            _archive({"terminologies": [
+                {"terminology_id": "L1", "namespace": NAMESPACE, "value": "A"},
+            ]}),
+            events,
+            dry_run=True,
+        )
+
+        assert registry.provisioned == [] and registry.activated == []
+        assert await _remap_rows(mongo, "terminologies") == []
+        assert "nothing provisioned" in events[-1].message
+        await _clear_remap_target(mongo)
+
+    @pytest.mark.asyncio
+    async def test_a_multi_namespace_archive_is_refused_for_now(self, mongo):
+        await _clear_remap_target(mongo)
+        reader = _archive()
+        reader.list_namespaces = MagicMock(return_value=["kb", "library"])
+        reader.read_manifest = MagicMock(return_value=Manifest(
+            format_version="3.0",
+            namespaces=[
+                NamespaceEntry(prefix="kb", counts=EntityCounts()),
+                NamespaceEntry(prefix="library", counts=EntityCounts()),
+            ],
+            counts=EntityCounts(),
+        ))
+
+        with pytest.raises(RestoreEngineError, match="explicit source-to-target"):
+            await _run_remap(mongo, reader)
+        await _clear_remap_target(mongo)
+
+    @pytest.mark.asyncio
+    async def test_a_target_namespace_is_required(self, mongo):
+        engine = DirectRestoreEngine(mongo, None, lambda _e: None)
+        with pytest.raises(RestoreEngineError, match="needs a target namespace"):
+            await engine.run_remap(MagicMock(), "")
