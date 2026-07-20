@@ -25,6 +25,7 @@ correctly without exercising ZIP I/O.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -922,113 +923,96 @@ class TestRunRestoreDryRun:
 # ---------------------------------------------------------------------------
 
 
-class TestRecreateClaims:
-    """Restored registry entries must get their uniqueness gate back.
+class TestClaimDerivation:
+    """Registry entries imply claim rows; claims are the uniqueness gate.
 
-    Claims are derived state and never travel in an archive, so a restore
-    that only inserts entries leaves every restored composite key unclaimed —
-    the next registration reusing one of those keys passes the gate and mints
-    a duplicate identity.
+    Derived inline as entries are written — each entry is already in hand at
+    that point, so a namespace-wide re-scan afterwards is pure waste on top of
+    the inserts that are genuinely required.
     """
 
+    NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
+
+    def test_primary_key_and_every_synonym_are_claimed(self):
+        rows = DirectRestoreEngine._claim_rows_for([{
+            "entry_id": "E1",
+            "namespace": "kb",
+            "entity_type": "templates",
+            "primary_composite_key_hash": "hash-primary",
+            "synonyms": [{
+                "namespace": "kb",
+                "entity_type": "templates",
+                "composite_key_hash": "hash-syn",
+            }],
+        }], self.NOW)
+
+        assert [(r["composite_key_hash"], r["kind"]) for r in rows] == [
+            ("hash-primary", "primary"),
+            ("hash-syn", "synonym"),
+        ]
+        assert {r["owner_entry_id"] for r in rows} == {"E1"}
+        assert {r["state"] for r in rows} == {"confirmed"}
+
+    def test_synonym_claim_uses_the_synonyms_own_scope(self):
+        # A synonym may live in a different namespace/entity_type than the
+        # entry that owns it; the claim key must follow the synonym, or the
+        # gate protects the wrong (namespace, type) pair.
+        rows = DirectRestoreEngine._claim_rows_for([{
+            "entry_id": "E1",
+            "namespace": "kb",
+            "entity_type": "documents",
+            "primary_composite_key_hash": "hash-primary",
+            "synonyms": [{
+                "namespace": "legacy",
+                "entity_type": "terms",
+                "composite_key_hash": "hash-syn",
+            }],
+        }], self.NOW)
+
+        synonym_claim = next(r for r in rows if r["kind"] == "synonym")
+        assert synonym_claim["namespace"] == "legacy"
+        assert synonym_claim["entity_type"] == "terms"
+
+    def test_empty_hashes_are_not_claimed(self):
+        # An empty hash means "this entity opts out of dedup" (legacy template
+        # entries, identity-less documents). The claims unique index exempts
+        # it; so must this, or every such entry collides with the next.
+        rows = DirectRestoreEngine._claim_rows_for([{
+            "entry_id": "E1",
+            "namespace": "kb",
+            "entity_type": "templates",
+            "primary_composite_key_hash": "",
+            "synonyms": [{
+                "namespace": "kb",
+                "entity_type": "templates",
+                "composite_key_hash": "",
+            }],
+        }], self.NOW)
+
+        assert rows == []
+
+
+class TestClaimInsertion:
     @staticmethod
-    def _engine_with_entries(entries, *, insert_result=None, insert_error=None):
-        mongo, _colls = _make_mongo_mock(
-            docs_per_collection={"registry_entries": entries}
-        )
+    def _engine(*, insert_error=None):
+        mongo, _colls = _make_mongo_mock()
         claims = mongo["wip_registry"]["composite_key_claims"]
         if insert_error is not None:
             claims.insert_many = AsyncMock(side_effect=insert_error)
-        elif insert_result is not None:
-            claims.insert_many = AsyncMock(return_value=insert_result)
         events: list[ProgressEvent] = []
         engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
         return engine, claims, events
 
-    @pytest.mark.asyncio
-    async def test_claims_primary_key_and_every_synonym(self):
-        engine, claims, _ = self._engine_with_entries([
-            {
-                "entry_id": "E1",
-                "namespace": "kb",
-                "entity_type": "templates",
-                "primary_composite_key_hash": "hash-primary",
-                "synonyms": [
-                    {
-                        "namespace": "kb",
-                        "entity_type": "templates",
-                        "composite_key_hash": "hash-syn",
-                    },
-                ],
-            },
-        ])
-
-        await engine._recreate_claims("kb", batch_size=500)
-
-        (inserted,), kwargs = claims.insert_many.call_args
-        assert kwargs["ordered"] is False
-        assert [(c["composite_key_hash"], c["kind"]) for c in inserted] == [
-            ("hash-primary", "primary"),
-            ("hash-syn", "synonym"),
-        ]
-        assert {c["owner_entry_id"] for c in inserted} == {"E1"}
-        assert {c["state"] for c in inserted} == {"confirmed"}
-
-    @pytest.mark.asyncio
-    async def test_synonym_claim_uses_the_synonyms_own_scope(self):
-        # A synonym may live in a different namespace/entity_type than the
-        # entry that owns it; the claim key must follow the synonym, not the
-        # owner, or the gate protects the wrong (namespace, type) pair.
-        engine, claims, _ = self._engine_with_entries([
-            {
-                "entry_id": "E1",
-                "namespace": "kb",
-                "entity_type": "documents",
-                "primary_composite_key_hash": "hash-primary",
-                "synonyms": [
-                    {
-                        "namespace": "legacy",
-                        "entity_type": "terms",
-                        "composite_key_hash": "hash-syn",
-                    },
-                ],
-            },
-        ])
-
-        await engine._recreate_claims("kb", batch_size=500)
-
-        (inserted,), _ = claims.insert_many.call_args
-        synonym_claim = next(c for c in inserted if c["kind"] == "synonym")
-        assert synonym_claim["namespace"] == "legacy"
-        assert synonym_claim["entity_type"] == "terms"
-
-    @pytest.mark.asyncio
-    async def test_empty_hashes_are_not_claimed(self):
-        # An empty hash means "this entity opts out of dedup" (legacy template
-        # entries, identity-less documents). The claims unique index exempts
-        # it; so must the rebuild, or every such entry collides with the next.
-        engine, claims, _ = self._engine_with_entries([
-            {
-                "entry_id": "E1",
-                "namespace": "kb",
-                "entity_type": "templates",
-                "primary_composite_key_hash": "",
-                "synonyms": [
-                    {
-                        "namespace": "kb",
-                        "entity_type": "templates",
-                        "composite_key_hash": "",
-                    },
-                ],
-            },
-        ])
-
-        await engine._recreate_claims("kb", batch_size=500)
-
-        assert not claims.insert_many.called
+    @staticmethod
+    def _rows(owner="E1"):
+        return [{
+            "namespace": "kb", "entity_type": "templates",
+            "composite_key_hash": "hash-taken", "owner_entry_id": owner,
+            "kind": "primary", "state": "confirmed",
+        }]
 
     @staticmethod
-    def _duplicate_error(owner):
+    def _duplicate_error(owner="E1"):
         return BulkWriteError({
             "writeErrors": [{
                 "code": 11000,
@@ -1044,100 +1028,57 @@ class TestRecreateClaims:
         })
 
     @pytest.mark.asyncio
-    async def test_key_claimed_by_another_entry_warns_instead_of_failing(self):
-        # The incumbent keeps the key, so the restored entry sharing it is not
-        # gate-protected. The restore's data is already committed — warn.
-        engine, claims, events = self._engine_with_entries(
-            [
-                {
-                    "entry_id": "E1",
-                    "namespace": "kb",
-                    "entity_type": "templates",
-                    "primary_composite_key_hash": "hash-taken",
-                    "synonyms": [],
-                },
-            ],
-            insert_error=self._duplicate_error("E1"),
-        )
+    async def test_claims_are_inserted_unordered(self):
+        engine, claims, _ = self._engine()
+
+        await engine._insert_claims("kb", self._rows())
+
+        assert claims.insert_many.call_args.kwargs["ordered"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_key_held_by_another_entry_is_counted_as_theirs(self):
+        engine, claims, _ = self._engine(insert_error=self._duplicate_error())
         claims.find_one = AsyncMock(return_value={"owner_entry_id": "SOMEONE-ELSE"})
 
-        await engine._recreate_claims("kb", batch_size=500)
+        claimed, taken_by_other = await engine._insert_claims("kb", self._rows())
 
-        warning = next(e for e in events if e.phase == "warning")
-        assert "already" in warning.message and "claimed" in warning.message
+        assert (claimed, taken_by_other) == (0, 1)
 
     @pytest.mark.asyncio
-    async def test_key_already_claimed_by_the_same_entry_is_silent(self):
-        # Re-claiming what this entry already owns is the rebuild being
+    async def test_a_key_this_entry_already_holds_is_not_a_collision(self):
+        # Re-claiming what this entry already owns is the write being
         # idempotent, not a collision — warning here would cry wolf on every
-        # merge and every re-run.
-        engine, claims, events = self._engine_with_entries(
-            [
-                {
-                    "entry_id": "E1",
-                    "namespace": "kb",
-                    "entity_type": "templates",
-                    "primary_composite_key_hash": "hash-taken",
-                    "synonyms": [],
-                },
-            ],
-            insert_error=self._duplicate_error("E1"),
-        )
+        # merge into a namespace that already has claims.
+        engine, claims, _ = self._engine(insert_error=self._duplicate_error())
         claims.find_one = AsyncMock(return_value={"owner_entry_id": "E1"})
 
-        await engine._recreate_claims("kb", batch_size=500)
+        claimed, taken_by_other = await engine._insert_claims("kb", self._rows())
 
-        assert [e for e in events if e.phase == "warning"] == []
-
-    @pytest.mark.asyncio
-    async def test_entry_ids_narrow_the_rebuild(self):
-        # A merge claims only what it inserted — everything already in the
-        # namespace has its claims, and re-reading them all would turn every
-        # pre-existing entry into a duplicate to classify.
-        engine, _claims, _events = self._engine_with_entries([])
-        entries = engine._mongo["wip_registry"]["registry_entries"]
-
-        await engine._recreate_claims("kb", batch_size=500, entry_ids=["E1", "E2"])
-
-        query = entries.find.call_args.args[0]
-        assert query == {"namespace": "kb", "entry_id": {"$in": ["E1", "E2"]}}
+        assert (claimed, taken_by_other) == (0, 0)
 
     @pytest.mark.asyncio
     async def test_non_duplicate_write_error_is_fatal(self):
         error = BulkWriteError({
             "writeErrors": [{"code": 121, "errmsg": "document validation failed"}],
         })
-        engine, _claims, _events = self._engine_with_entries(
-            [
-                {
-                    "entry_id": "E1",
-                    "namespace": "kb",
-                    "entity_type": "templates",
-                    "primary_composite_key_hash": "hash-1",
-                    "synonyms": [],
-                },
-            ],
-            insert_error=error,
-        )
+        engine, _claims, _events = self._engine(insert_error=error)
 
         with pytest.raises(RestoreEngineError, match="Claim rebuild failed"):
-            await engine._recreate_claims("kb", batch_size=500)
+            await engine._insert_claims("kb", self._rows())
 
     @pytest.mark.asyncio
-    async def test_claims_are_flushed_in_batches(self):
-        entries = [
-            {
-                "entry_id": f"E{i}",
-                "namespace": "kb",
-                "entity_type": "documents",
-                "primary_composite_key_hash": f"hash-{i}",
-                "synonyms": [],
-            }
-            for i in range(5)
-        ]
-        engine, claims, _ = self._engine_with_entries(entries)
+    async def test_nothing_to_claim_touches_nothing(self):
+        engine, claims, _ = self._engine()
 
-        await engine._recreate_claims("kb", batch_size=2)
+        assert await engine._insert_claims("kb", []) == (0, 0)
+        assert not claims.insert_many.called
 
-        # 5 claims at batch_size 2 → flushes of 2, 2, then the trailing 1.
-        assert [len(call.args[0]) for call in claims.insert_many.call_args_list] == [2, 2, 1]
+    def test_only_a_foreign_owner_warns(self):
+        engine, _claims, events = self._engine()
+
+        engine._report_claims("kb", claimed=5, taken_by_other=0)
+        assert [e for e in events if e.phase == "warning"] == []
+
+        engine._report_claims("kb", claimed=0, taken_by_other=2)
+        warning = next(e for e in events if e.phase == "warning")
+        assert "already" in warning.message and "claimed" in warning.message

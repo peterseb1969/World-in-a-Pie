@@ -68,7 +68,7 @@ _ID_FIELDS = frozenset({
 # incompatible — it is cosmetic, the target's wins, and it gets reported so an
 # operator can see what their side kept.
 _COSMETIC_FIELDS = frozenset({
-    "label", "description", "aliases", "display_order", "definition",
+    "label", "description", "aliases",
 })
 
 

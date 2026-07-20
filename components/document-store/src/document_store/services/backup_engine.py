@@ -482,6 +482,8 @@ class DirectRestoreEngine:
 
                     batch: list[dict[str, Any]] = []
                     count = 0
+                    claimed = 0
+                    taken_by_other = 0
 
                     for entity in reader.read_entities(entity_type, namespace=src):
                         entity.pop("_id", None)  # Strip MongoDB internal ID
@@ -489,6 +491,12 @@ class DirectRestoreEngine:
 
                         if len(batch) >= batch_size:
                             await self._insert_batch(collection, batch, entity_type)
+                            if entity_type == "registry_entries":
+                                ok, theirs = await self._claim_inserted_entries(
+                                    tgt, batch
+                                )
+                                claimed += ok
+                                taken_by_other += theirs
                             count += len(batch)
                             processed += len(batch)
                             batch = []
@@ -503,10 +511,16 @@ class DirectRestoreEngine:
 
                     if batch:
                         await self._insert_batch(collection, batch, entity_type)
+                        if entity_type == "registry_entries":
+                            ok, theirs = await self._claim_inserted_entries(tgt, batch)
+                            claimed += ok
+                            taken_by_other += theirs
                         count += len(batch)
                         processed += len(batch)
 
                     logger.info("Restored %d %s into namespace %s", count, entity_type, tgt)
+                    if entity_type == "registry_entries":
+                        self._report_claims(tgt, claimed, taken_by_other)
 
                     # Structural gate between templates and documents: the
                     # reporting tables the restored templates imply must be
@@ -515,11 +529,6 @@ class DirectRestoreEngine:
                     # at the first template instead of after a full restore.
                     if entity_type == "templates":
                         await self._reporting_phase_structure(tgt)
-
-                # Rebuild the Registry's uniqueness gate for the entries just
-                # restored. Runs after registry_entries (last in restore_order)
-                # so every entry a claim points at exists.
-                await self._recreate_claims(tgt, batch_size=batch_size)
 
                 # Count parity after the namespace's data is in: expected vs
                 # actual rows, bounded wait. Mismatch completes WITH a
@@ -1094,13 +1103,10 @@ class DirectRestoreEngine:
 
         entries_plan = plans.get("registry_entries")
         if entries_plan and entries_plan.to_insert:
-            await self._recreate_claims(
-                namespace,
-                batch_size=batch_size,
-                entry_ids=[
-                    e["entry_id"] for e in entries_plan.to_insert if e.get("entry_id")
-                ],
+            claimed, taken_by_other = await self._claim_inserted_entries(
+                namespace, entries_plan.to_insert
             )
+            self._report_claims(namespace, claimed, taken_by_other)
 
     @staticmethod
     def _as_timestamp(value: Any) -> datetime | None:
@@ -1396,109 +1402,29 @@ class DirectRestoreEngine:
                 )
         return [(ns, ns) for ns in source_namespaces]
 
-    async def _recreate_claims(
-        self,
-        namespace: str,
-        *,
-        batch_size: int,
-        entry_ids: list[str] | None = None,
-    ) -> None:
-        """Rebuild composite-key claims for a namespace's restored entries.
+    @staticmethod
+    def _claim_rows_for(
+        entries: list[dict[str, Any]], now: datetime
+    ) -> list[dict[str, Any]]:
+        """Derive the claim rows a batch of registry entries implies.
 
-        A claim is derived state — (namespace, entity_type, hash) → owning
-        entry — so archives never carry it, but a restored namespace whose
-        entries have no claims has lost its uniqueness gate: the next
-        registration of an already-taken composite key sails through and mints
-        a second entity for one identity. This phase reconstructs one claim per
-        entry primary key plus one per embedded synonym, mirroring the
-        Registry's own backfill.
+        One per entry primary key, one per embedded synonym. Synonyms carry
+        their own namespace/entity_type — a synonym may live in a different
+        namespace than the entry it points at — so claims are keyed from the
+        synonym's fields, not the owner's.
 
-        Synonyms carry their own namespace/entity_type (a synonym may live in a
-        different namespace than the entry it points at), so claims are keyed
-        from the synonym's fields, not the owner's.
-
-        A duplicate is one of two things, and the phase tells them apart before
-        it says anything: the key is already claimed by *this* entry (nothing
-        to do — the rebuild is idempotent) or by a *different* one, which means
-        the incumbent keeps the key and the restored entry sharing it is not
-        gate-protected. Only the second warrants a warning, and neither fails a
-        restore whose data is already committed.
-
-        ``entry_ids`` narrows the rebuild to specific entries — a merge claims
-        only what it inserted, since everything already in the namespace has
-        its claims. Omitted, every entry in the namespace is (re)claimed.
+        An empty hash means "this entity opts out of dedup" (legacy template
+        entries, identity-less documents). The claims unique index exempts it
+        and so does this.
         """
-        entries_db, entries_coll_name = COLLECTION_MAP["registry_entries"]
-        entries = self._mongo[entries_db][entries_coll_name]
-        claims_db, claims_coll_name = CLAIMS_COLLECTION
-        claims = self._mongo[claims_db][claims_coll_name]
-
-        self._emit(
-            "phase_claims",
-            f"[{namespace}] rebuilding composite-key claims",
-        )
-
-        now = datetime.now(UTC)
-        batch: list[dict[str, Any]] = []
-        claimed = 0
-        already_owned = 0
-        taken_by_other = 0
-
-        async def flush() -> tuple[int, int, int]:
-            """Insert a batch unordered, classifying any duplicates."""
-            from pymongo.errors import BulkWriteError
-
-            if not batch:
-                return (0, 0, 0)
-            try:
-                result = await claims.insert_many(batch, ordered=False)
-                return (len(result.inserted_ids), 0, 0)
-            except BulkWriteError as exc:
-                write_errors = exc.details.get("writeErrors", [])
-                duplicates = [e for e in write_errors if e.get("code") == 11000]
-                if len(duplicates) != len(write_errors):
-                    raise RestoreEngineError(
-                        f"Claim rebuild failed for namespace '{namespace}': "
-                        f"{write_errors[0].get('errmsg', 'unknown error')}"
-                    ) from exc
-                mine = 0
-                for write_error in duplicates:
-                    rejected = write_error.get("op") or batch[write_error["index"]]
-                    incumbent = await claims.find_one({
-                        "namespace": rejected["namespace"],
-                        "entity_type": rejected["entity_type"],
-                        "composite_key_hash": rejected["composite_key_hash"],
-                    })
-                    if incumbent and incumbent.get("owner_entry_id") == rejected["owner_entry_id"]:
-                        mine += 1
-                return (
-                    len(batch) - len(duplicates),
-                    mine,
-                    len(duplicates) - mine,
-                )
-
-        entry_query: dict[str, Any] = {"namespace": namespace}
-        if entry_ids is not None:
-            entry_query["entry_id"] = {"$in": entry_ids}
-        cursor = entries.find(
-            entry_query,
-            {
-                "entry_id": 1,
-                "namespace": 1,
-                "entity_type": 1,
-                "primary_composite_key_hash": 1,
-                "synonyms": 1,
-            },
-        )
-        async for entry in cursor:
-            pairs = [
-                (
-                    entry.get("namespace"),
-                    entry.get("entity_type"),
-                    entry.get("primary_composite_key_hash"),
-                    "primary",
-                )
-            ]
+        rows: list[dict[str, Any]] = []
+        for entry in entries:
+            pairs = [(
+                entry.get("namespace"),
+                entry.get("entity_type"),
+                entry.get("primary_composite_key_hash"),
+                "primary",
+            )]
             pairs += [
                 (
                     syn.get("namespace"),
@@ -1507,14 +1433,12 @@ class DirectRestoreEngine:
                     "synonym",
                 )
                 for syn in entry.get("synonyms", [])
+                if isinstance(syn, dict)
             ]
             for ns, entity_type, key_hash, kind in pairs:
-                # An empty hash means "no dedup for this entity" (legacy
-                # template entries, identity-less documents). The claims
-                # unique index exempts it and so does this rebuild.
                 if not key_hash or not ns or not entity_type:
                     continue
-                batch.append({
+                rows.append({
                     "namespace": ns,
                     "entity_type": entity_type,
                     "composite_key_hash": key_hash,
@@ -1523,37 +1447,141 @@ class DirectRestoreEngine:
                     "state": "confirmed",
                     "created_at": now,
                 })
+        return rows
 
-            if len(batch) >= batch_size:
-                ok, mine, theirs = await flush()
-                claimed += ok
-                already_owned += mine
-                taken_by_other += theirs
-                batch = []
+    async def _insert_claims(
+        self, namespace: str, claim_rows: list[dict[str, Any]]
+    ) -> tuple[int, int]:
+        """Insert derived claims. Returns (claimed, taken_by_other).
 
-        ok, mine, theirs = await flush()
-        claimed += ok
-        already_owned += mine
-        taken_by_other += theirs
+        A duplicate is one of two things and they are told apart before
+        anything is said: the key is already claimed by *this* entry (the
+        rebuild is simply idempotent, and a merge into a namespace that
+        already has claims hits this on every row) or by a *different* one,
+        which means the incumbent keeps the key and the entry sharing it is
+        not gate-protected. Only the second is worth a warning, and neither
+        fails a restore whose data is already committed.
+        """
+        from pymongo.errors import BulkWriteError
 
+        if not claim_rows:
+            return (0, 0)
+
+        claims_db, claims_coll_name = CLAIMS_COLLECTION
+        claims = self._mongo[claims_db][claims_coll_name]
+        try:
+            result = await claims.insert_many(claim_rows, ordered=False)
+            return (len(result.inserted_ids), 0)
+        except BulkWriteError as exc:
+            write_errors = exc.details.get("writeErrors", [])
+            duplicates = [e for e in write_errors if e.get("code") == 11000]
+            if len(duplicates) != len(write_errors):
+                raise RestoreEngineError(
+                    f"Claim rebuild failed for namespace '{namespace}': "
+                    f"{write_errors[0].get('errmsg', 'unknown error')}"
+                ) from exc
+            mine = 0
+            for write_error in duplicates:
+                rejected = write_error.get("op") or claim_rows[write_error["index"]]
+                incumbent = await claims.find_one({
+                    "namespace": rejected["namespace"],
+                    "entity_type": rejected["entity_type"],
+                    "composite_key_hash": rejected["composite_key_hash"],
+                })
+                if incumbent and incumbent.get("owner_entry_id") == rejected["owner_entry_id"]:
+                    mine += 1
+            return (len(claim_rows) - len(duplicates), len(duplicates) - mine)
+
+    async def _claim_inserted_entries(
+        self, namespace: str, entries: list[dict[str, Any]]
+    ) -> tuple[int, int]:
+        """Claim the keys of registry entries as they are written.
+
+        Derived inline rather than by re-reading the collection afterwards:
+        each entry is already in hand at this point, and a namespace-wide
+        re-scan is pure waste on top of the inserts that are genuinely
+        required.
+        """
+        rows = self._claim_rows_for(entries, datetime.now(UTC))
+        return await self._insert_claims(namespace, rows)
+
+    def _report_claims(
+        self, namespace: str, claimed: int, taken_by_other: int
+    ) -> None:
         logger.info(
-            "Rebuilt %d composite-key claims for namespace %s "
-            "(%d already held, %d owned by other entries)",
-            claimed, namespace, already_owned, taken_by_other,
+            "Claimed %d composite key(s) for namespace %s (%d owned by other "
+            "entries)", claimed, namespace, taken_by_other,
         )
         if taken_by_other:
             self._emit(
                 "warning",
                 f"[{namespace}] {taken_by_other} composite key(s) were already "
                 "claimed by other entries and were left with their existing "
-                "owner — the restored entries sharing those keys are not "
-                "gate-protected. Review with the Registry's claim reconcile.",
+                "owner — the entries sharing those keys are not gate-protected. "
+                "Review with the Registry's claim reconcile.",
             )
-        else:
+        elif claimed:
             self._emit(
                 "phase_claims",
-                f"[{namespace}] rebuilt {claimed} composite-key claim(s)",
+                f"[{namespace}] claimed {claimed} composite key(s)",
             )
+
+    def _resolve_targets(
+        self,
+        reader: ArchiveReader,
+        manifest: Any,
+        target_namespace: str,
+    ) -> list[tuple[str, str]]:
+        """Validate the archive's shape and pair each source namespace with
+        its target. Shared by every mode that reads an archive.
+
+        Both modes here write each namespace to itself. A different target is
+        rejected rather than honoured: the archived entities, registry entries,
+        and composite keys all embed the source namespace, so writing them
+        elsewhere would produce records still carrying the source namespace
+        after checking only the target. Re-namespacing means new IDs and
+        rewritten references — the new-namespace mode's job.
+        """
+        # Belt behind the endpoint's synchronous 400: a pre-v3 archive is
+        # flat, so every namespaces/<ns>/<entity>.jsonl read would find
+        # nothing and the job would complete "successfully" having written
+        # zero entities. Fail loud for any caller that bypasses the endpoint.
+        if not manifest.format_version.startswith("3"):
+            raise RestoreEngineError(
+                f"Archive is format v{manifest.format_version} — the restore "
+                "engine reads the v3 layout. Convert it first: "
+                "python -m wip_toolkit convert-archive <src> <dst>"
+            )
+        # A manifest may *claim* 3.x yet carry no namespaces/ subtree
+        # (hand-assembled or truncated zip). namespace_prefixes() can be
+        # non-empty from the manifest alone, so check the actual layout —
+        # otherwise the same silent zero-entity run happens.
+        if not reader.list_namespaces():
+            raise RestoreEngineError(
+                "Archive manifest claims v3 but the zip has no namespaces/ "
+                "tree — malformed archive, nothing to restore"
+            )
+
+        source_namespaces = manifest.namespace_prefixes() or reader.list_namespaces()
+        if not source_namespaces:
+            raise RestoreEngineError("Archive contains no namespaces to restore")
+
+        if target_namespace:
+            if len(source_namespaces) > 1:
+                raise RestoreEngineError(
+                    "target_namespace override is not supported for a "
+                    "multi-namespace archive; each namespace restores "
+                    "to itself."
+                )
+            if target_namespace != source_namespaces[0]:
+                raise RestoreEngineError(
+                    f"target_namespace '{target_namespace}' differs from "
+                    f"the archive's namespace '{source_namespaces[0]}' — "
+                    "an ID-preserving restore cannot re-namespace data. "
+                    "Restore to the archive's own namespace, or use the "
+                    "new-namespace (remap) restore mode once available."
+                )
+        return [(ns, ns) for ns in source_namespaces]
 
     async def _check_namespace_empty(self, namespace: str) -> None:
         """Verify no data exists for this namespace across all collections."""
