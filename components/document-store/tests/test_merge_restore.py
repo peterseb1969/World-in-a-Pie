@@ -740,3 +740,216 @@ class TestNewerPolicy:
     async def test_newer_is_accepted_as_a_policy(self, mongo):
         await _seed_namespace(mongo)
         await _run_merge(mongo, _archive(), on_clash="newer")
+
+
+# ---------------------------------------------------------------------------
+# Merging into a different namespace
+# ---------------------------------------------------------------------------
+
+
+OTHER_NAMESPACE = "merge-source-ns"
+
+
+async def _clear_other(mongo):
+    for db_name, coll_name in _all_collections():
+        key = "prefix" if coll_name == "namespaces" else "namespace"
+        await mongo[db_name][coll_name].delete_many({key: OTHER_NAMESPACE})
+
+
+def _archive_from_other(entities=None):
+    """An archive whose namespace differs from the merge target."""
+    reader = _archive(entities)
+    reader.read_manifest = MagicMock(return_value=Manifest(
+        format_version="3.0",
+        namespace=OTHER_NAMESPACE,
+        namespace_config=NamespaceConfig(
+            prefix=OTHER_NAMESPACE, isolation_mode="open"
+        ),
+        counts=EntityCounts(),
+    ))
+    reader.list_namespaces = MagicMock(return_value=[OTHER_NAMESPACE])
+    return reader
+
+
+class TestMergeIntoADifferentNamespace:
+    """Folding NS2's archive into NS1 — the second driving use case.
+
+    Works because a canonical UUID carries no namespace: what has to move is
+    the `namespace` field and the composite keys that embed it. It requires
+    the source's entities to be gone from this instance, since one ID cannot
+    name an entity in two namespaces.
+    """
+
+    @pytest.mark.asyncio
+    async def test_entities_land_in_the_target_namespace(self, mongo):
+        await _clear_other(mongo)
+        await _seed_namespace(mongo)
+
+        await _run_merge(
+            mongo,
+            _archive_from_other({"terminologies": [
+                {"terminology_id": "T1", "namespace": OTHER_NAMESPACE,
+                 "value": "GENDER"},
+            ]}),
+            add_missing=True,
+        )
+
+        rows = await _rows(mongo, "terminologies")
+        assert [r["terminology_id"] for r in rows] == ["T1"]
+        assert rows[0]["namespace"] == NAMESPACE
+        await _clear_other(mongo)
+
+    @pytest.mark.asyncio
+    async def test_composite_keys_are_re_scoped_and_rehashed(self, mongo):
+        # The key embeds the namespace and its hash is what the uniqueness
+        # gate is built on. Moved without rehashing, the entry would claim a
+        # key naming the old namespace and collide with nothing.
+        from wip_auth.composite_key import compute_composite_key_hash
+
+        await _clear_other(mongo)
+        await _seed_namespace(mongo)
+        source_key = {"ns": OTHER_NAMESPACE, "value": "GENDER", "label": "Gender"}
+
+        await _run_merge(
+            mongo,
+            _archive_from_other({"registry_entries": [{
+                "entry_id": "E1",
+                "namespace": OTHER_NAMESPACE,
+                "entity_type": "terminologies",
+                "primary_composite_key": source_key,
+                "primary_composite_key_hash": compute_composite_key_hash(source_key),
+                "synonyms": [],
+            }]}),
+            add_missing=True,
+        )
+
+        (entry,) = await _rows(mongo, "registry_entries")
+        expected_key = {"ns": NAMESPACE, "value": "GENDER", "label": "Gender"}
+        assert entry["primary_composite_key"] == expected_key
+        assert entry["primary_composite_key_hash"] == compute_composite_key_hash(
+            expected_key
+        )
+        await _clear_other(mongo)
+
+    @pytest.mark.asyncio
+    async def test_a_synonym_scoped_elsewhere_keeps_its_own_namespace(self, mongo):
+        # Only components naming the SOURCE move. A synonym deliberately
+        # scoped to a third namespace is not part of this migration.
+        await _clear_other(mongo)
+        await _seed_namespace(mongo)
+
+        await _run_merge(
+            mongo,
+            _archive_from_other({"registry_entries": [{
+                "entry_id": "E1",
+                "namespace": OTHER_NAMESPACE,
+                "entity_type": "terminologies",
+                "primary_composite_key": {"ns": OTHER_NAMESPACE, "value": "GENDER"},
+                "primary_composite_key_hash": "h1",
+                "synonyms": [{
+                    "namespace": "third-party",
+                    "entity_type": "terminologies",
+                    "composite_key": {"ns": "third-party", "value": "SEX"},
+                    "composite_key_hash": "h2",
+                }],
+            }]}),
+            add_missing=True,
+        )
+
+        (entry,) = await _rows(mongo, "registry_entries")
+        assert entry["synonyms"][0]["namespace"] == "third-party"
+        assert entry["synonyms"][0]["composite_key"]["ns"] == "third-party"
+        await _clear_other(mongo)
+
+    @pytest.mark.asyncio
+    async def test_ids_still_registered_here_refuse_the_merge(self, mongo):
+        # One canonical ID cannot name an entity in two namespaces. This is
+        # not a policy question — it is a request the identity model cannot
+        # represent.
+        await _clear_other(mongo)
+        await _seed_namespace(mongo)
+        await _seed(mongo, "registry_entries", [{
+            "entry_id": "E1", "namespace": NAMESPACE,
+            "entity_type": "terminologies",
+            "primary_composite_key_hash": "h", "synonyms": [],
+        }])
+
+        with pytest.raises(RestoreEngineError, match="still registered"):
+            await _run_merge(
+                mongo,
+                _archive_from_other({"registry_entries": [{
+                    "entry_id": "E1", "namespace": OTHER_NAMESPACE,
+                    "entity_type": "terminologies",
+                    "primary_composite_key_hash": "h", "synonyms": [],
+                }]}),
+                add_missing=True,
+            )
+        await _clear_other(mongo)
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_names_where_the_id_already_lives(self, mongo):
+        await _clear_other(mongo)
+        await _seed_namespace(mongo)
+        await _seed(mongo, "registry_entries", [{
+            "entry_id": "E1", "namespace": NAMESPACE,
+            "entity_type": "terminologies",
+            "primary_composite_key_hash": "h", "synonyms": [],
+        }])
+
+        with pytest.raises(RestoreEngineError) as excinfo:
+            await _run_merge(
+                mongo,
+                _archive_from_other({"registry_entries": [{
+                    "entry_id": "E1", "namespace": OTHER_NAMESPACE,
+                    "entity_type": "terminologies",
+                    "primary_composite_key_hash": "h", "synonyms": [],
+                }]}),
+                add_missing=True,
+            )
+
+        assert NAMESPACE in str(excinfo.value)
+        await _clear_other(mongo)
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_written_when_the_ids_are_taken(self, mongo):
+        # The check runs before any write; left to the unique index, the same
+        # collision would surface partway through an applied merge.
+        await _clear_other(mongo)
+        await _seed_namespace(mongo)
+        await _seed(mongo, "registry_entries", [{
+            "entry_id": "E1", "namespace": NAMESPACE,
+            "entity_type": "terminologies",
+            "primary_composite_key_hash": "h", "synonyms": [],
+        }])
+
+        with pytest.raises(RestoreEngineError):
+            await _run_merge(
+                mongo,
+                _archive_from_other({
+                    "registry_entries": [{
+                        "entry_id": "E1", "namespace": OTHER_NAMESPACE,
+                        "entity_type": "terminologies",
+                        "primary_composite_key_hash": "h", "synonyms": [],
+                    }],
+                    "terminologies": [
+                        {"terminology_id": "T-NEW", "namespace": OTHER_NAMESPACE,
+                         "value": "COUNTRY"},
+                    ],
+                }),
+                add_missing=True,
+            )
+
+        assert await _rows(mongo, "terminologies") == []
+        await _clear_other(mongo)
+
+    @pytest.mark.asyncio
+    async def test_a_plain_restore_still_refuses_to_re_namespace(self, mongo):
+        # Only merge redirects. A restore preserves everything verbatim.
+        engine = DirectRestoreEngine(mongo, None, lambda _e: None)
+        reader = _archive_from_other()
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=reader,
+        ), pytest.raises(RestoreEngineError, match="cannot re-namespace"):
+            await engine.run_restore(MagicMock(), NAMESPACE)

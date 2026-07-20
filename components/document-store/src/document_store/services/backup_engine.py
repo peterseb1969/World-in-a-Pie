@@ -590,7 +590,9 @@ class DirectRestoreEngine:
 
         with ArchiveReader(archive_path) as reader:
             manifest = reader.read_manifest()
-            targets = self._resolve_targets(reader, manifest, target_namespace)
+            targets = self._resolve_targets(
+                reader, manifest, target_namespace, allow_redirect=True
+            )
 
             self._emit(
                 "start",
@@ -618,6 +620,31 @@ class DirectRestoreEngine:
                     reader, src, skip_documents=skip_documents,
                     skip_files=skip_files,
                 )
+
+                if src != tgt:
+                    # Redirected merge: the IDs must be free here, and every
+                    # entity has to be moved to the target namespace before it
+                    # is matched — the keys it matches on embed the namespace.
+                    await self._check_ids_are_free(
+                        archive_entities.get("registry_entries") or [], src, tgt
+                    )
+                    for entity_type, entities in archive_entities.items():
+                        archive_entities[entity_type] = [
+                            self._rewrite_namespace(entity_type, entity, src, tgt)
+                            for entity in entities
+                        ]
+                    doc_groups = {
+                        doc_id: [
+                            self._rewrite_namespace("documents", row, src, tgt)
+                            for row in rows
+                        ]
+                        for doc_id, rows in doc_groups.items()
+                    }
+                    self._emit(
+                        "phase_merge_plan",
+                        f"[{tgt}] merging from namespace '{src}' — entities "
+                        "and composite keys re-scoped to the target",
+                    )
 
                 # ---- Pass 1: definitions -------------------------------
                 definitions = await DefinitionsPlanner(
@@ -748,6 +775,111 @@ class DirectRestoreEngine:
             entities_by_type[entity_type] = entities
 
         return entities_by_type, doc_groups
+
+    async def _check_ids_are_free(
+        self, entries: list[dict[str, Any]], source: str, target: str
+    ) -> None:
+        """A redirected merge may only carry IDs this Registry does not know.
+
+        Canonical IDs are preserved by a merge, and a Registry entry belongs to
+        exactly one namespace — so an entity that still exists here cannot also
+        be placed in another namespace under the same ID. That is not a policy
+        question with a sensible default; it is a request the identity model
+        cannot represent, and the only honest answer is to refuse.
+
+        In practice this holds whenever the archive comes from somewhere else:
+        another instance, or a namespace since deleted here. When it does not
+        hold, the caller wants a copy, and a copy needs re-minted IDs.
+
+        Checked before anything is written. Left to the database, the same
+        collision surfaces as a duplicate-key error partway through, with some
+        of the merge already applied.
+        """
+        entry_ids = [e["entry_id"] for e in entries if e.get("entry_id")]
+        if not entry_ids:
+            return
+
+        db_name, coll_name = COLLECTION_MAP["registry_entries"]
+        collection = self._mongo[db_name][coll_name]
+        taken: list[dict[str, Any]] = []
+        for start in range(0, len(entry_ids), 500):
+            batch = entry_ids[start:start + 500]
+            cursor = collection.find(
+                {"entry_id": {"$in": batch}},
+                {"entry_id": 1, "namespace": 1, "entity_type": 1},
+            )
+            async for row in cursor:
+                taken.append(row)
+                if len(taken) >= 5:
+                    break
+            if len(taken) >= 5:
+                break
+
+        if not taken:
+            return
+
+        detail = "; ".join(
+            f"{row.get('entry_id')} (already in '{row.get('namespace')}' "
+            f"as {row.get('entity_type')})"
+            for row in taken[:5]
+        )
+        raise RestoreEngineError(
+            f"Merge of '{source}' into '{target}' refused — the archive's "
+            f"entities are still registered on this instance: {detail}. A "
+            "merge preserves canonical IDs, and one ID cannot name an entity "
+            "in two namespaces. Merge an archive whose namespace no longer "
+            "exists here, or from another instance."
+        )
+
+    def _rewrite_namespace(
+        self,
+        entity_type: str,
+        entity: dict[str, Any],
+        source: str,
+        target: str,
+    ) -> dict[str, Any]:
+        """Move one entity from the source namespace to the target.
+
+        The ``namespace`` field is the easy half. The load-bearing half is the
+        Registry composite key, which embeds the namespace as ``ns`` and is
+        hashed into the value the uniqueness gate and every claim are built
+        on: left alone, the imported entry would claim a key naming the old
+        namespace and collide with nothing, silently opting out of the gate.
+
+        Only ``ns`` components equal to the SOURCE namespace are rewritten. A
+        synonym legitimately scoped to some third namespace keeps its own.
+        """
+        result = dict(entity)
+        if result.get("namespace") == source:
+            result["namespace"] = target
+        if entity_type != "registry_entries":
+            return result
+
+        key = result.get("primary_composite_key")
+        if isinstance(key, dict) and key.get("ns") == source:
+            new_key = {**key, "ns": target}
+            result["primary_composite_key"] = new_key
+            result["primary_composite_key_hash"] = compute_composite_key_hash(new_key)
+
+        synonyms = result.get("synonyms")
+        if isinstance(synonyms, list):
+            rewritten = []
+            for synonym in synonyms:
+                if not isinstance(synonym, dict):
+                    rewritten.append(synonym)
+                    continue
+                syn = dict(synonym)
+                if syn.get("namespace") == source:
+                    syn["namespace"] = target
+                syn_key = syn.get("composite_key")
+                if isinstance(syn_key, dict) and syn_key.get("ns") == source:
+                    new_syn_key = {**syn_key, "ns": target}
+                    syn["composite_key"] = new_syn_key
+                    syn["composite_key_hash"] = compute_composite_key_hash(new_syn_key)
+                rewritten.append(syn)
+            result["synonyms"] = rewritten
+
+        return result
 
     def _rewrite_entities(
         self,
@@ -1350,16 +1482,21 @@ class DirectRestoreEngine:
         reader: ArchiveReader,
         manifest: Any,
         target_namespace: str,
+        *,
+        allow_redirect: bool = False,
     ) -> list[tuple[str, str]]:
         """Validate the archive's shape and pair each source namespace with
         its target. Shared by every mode that reads an archive.
 
-        Both modes here write each namespace to itself. A different target is
-        rejected rather than honoured: the archived entities, registry entries,
-        and composite keys all embed the source namespace, so writing them
-        elsewhere would produce records still carrying the source namespace
-        after checking only the target. Re-namespacing means new IDs and
-        rewritten references — the new-namespace mode's job.
+        A plain restore writes each namespace to itself and rejects a
+        different target: it preserves everything verbatim, and the archived
+        entities and composite keys embed the source namespace, so writing
+        them elsewhere would produce records still carrying it.
+
+        A merge may redirect (``allow_redirect``). It rewrites the namespace
+        on every entity and rehashes the composite keys that embed it, which
+        is what makes "fold NS2's archive into NS1" work. The IDs still have
+        to be free — see :meth:`_check_ids_are_free`.
         """
         # Belt behind the endpoint's synchronous 400: a pre-v3 archive is
         # flat, so every namespaces/<ns>/<entity>.jsonl read would find
@@ -1393,12 +1530,14 @@ class DirectRestoreEngine:
                     "to itself."
                 )
             if target_namespace != source_namespaces[0]:
+                if allow_redirect:
+                    return [(source_namespaces[0], target_namespace)]
                 raise RestoreEngineError(
                     f"target_namespace '{target_namespace}' differs from "
                     f"the archive's namespace '{source_namespaces[0]}' — "
                     "an ID-preserving restore cannot re-namespace data. "
-                    "Restore to the archive's own namespace, or use the "
-                    "new-namespace (remap) restore mode once available."
+                    "Restore to the archive's own namespace, or merge it into "
+                    "the namespace you want it in."
                 )
         return [(ns, ns) for ns in source_namespaces]
 
@@ -1525,63 +1664,6 @@ class DirectRestoreEngine:
                 "phase_claims",
                 f"[{namespace}] claimed {claimed} composite key(s)",
             )
-
-    def _resolve_targets(
-        self,
-        reader: ArchiveReader,
-        manifest: Any,
-        target_namespace: str,
-    ) -> list[tuple[str, str]]:
-        """Validate the archive's shape and pair each source namespace with
-        its target. Shared by every mode that reads an archive.
-
-        Both modes here write each namespace to itself. A different target is
-        rejected rather than honoured: the archived entities, registry entries,
-        and composite keys all embed the source namespace, so writing them
-        elsewhere would produce records still carrying the source namespace
-        after checking only the target. Re-namespacing means new IDs and
-        rewritten references — the new-namespace mode's job.
-        """
-        # Belt behind the endpoint's synchronous 400: a pre-v3 archive is
-        # flat, so every namespaces/<ns>/<entity>.jsonl read would find
-        # nothing and the job would complete "successfully" having written
-        # zero entities. Fail loud for any caller that bypasses the endpoint.
-        if not manifest.format_version.startswith("3"):
-            raise RestoreEngineError(
-                f"Archive is format v{manifest.format_version} — the restore "
-                "engine reads the v3 layout. Convert it first: "
-                "python -m wip_toolkit convert-archive <src> <dst>"
-            )
-        # A manifest may *claim* 3.x yet carry no namespaces/ subtree
-        # (hand-assembled or truncated zip). namespace_prefixes() can be
-        # non-empty from the manifest alone, so check the actual layout —
-        # otherwise the same silent zero-entity run happens.
-        if not reader.list_namespaces():
-            raise RestoreEngineError(
-                "Archive manifest claims v3 but the zip has no namespaces/ "
-                "tree — malformed archive, nothing to restore"
-            )
-
-        source_namespaces = manifest.namespace_prefixes() or reader.list_namespaces()
-        if not source_namespaces:
-            raise RestoreEngineError("Archive contains no namespaces to restore")
-
-        if target_namespace:
-            if len(source_namespaces) > 1:
-                raise RestoreEngineError(
-                    "target_namespace override is not supported for a "
-                    "multi-namespace archive; each namespace restores "
-                    "to itself."
-                )
-            if target_namespace != source_namespaces[0]:
-                raise RestoreEngineError(
-                    f"target_namespace '{target_namespace}' differs from "
-                    f"the archive's namespace '{source_namespaces[0]}' — "
-                    "an ID-preserving restore cannot re-namespace data. "
-                    "Restore to the archive's own namespace, or use the "
-                    "new-namespace (remap) restore mode once available."
-                )
-        return [(ns, ns) for ns in source_namespaces]
 
     async def _check_namespace_empty(self, namespace: str) -> None:
         """Verify no data exists for this namespace across all collections."""
