@@ -1,8 +1,24 @@
-"""Hash computation service for composite keys."""
+"""Hash computation service for composite keys.
 
-import hashlib
-import json
+The algorithm itself moved to :mod:`wip_auth.composite_key`, which is now its
+canonical home — restore has to construct and compare composite keys off the
+Registry's write path (a cross-install merge rewrites the parent IDs embedded
+in a key and must recompute its hash), and a second hand-rolled "sort, dump,
+sha256" is exactly how a hash that looks right comes to match nothing.
+
+This class stays as the Registry's in-house name for it: it has many call
+sites, and the indirection is one line each. New callers, inside the Registry
+or out, should import from ``wip_auth.composite_key`` directly.
+"""
+
 from typing import Any
+
+from wip_auth.composite_key import (
+    compute_composite_key_hash as _compute_composite_key_hash,
+)
+from wip_auth.composite_key import (
+    verify_composite_key_hash as _verify_composite_key_hash,
+)
 
 
 class HashService:
@@ -10,60 +26,15 @@ class HashService:
 
     @staticmethod
     def compute_composite_key_hash(composite_key: dict[str, Any]) -> str:
+        """Deterministic SHA-256 hex digest for a composite key.
+
+        Keys sorted recursively, serialized with sorted keys and no
+        whitespace, then SHA-256. Exact and case-sensitive: a normalizing
+        variant was deleted in CASE-568 because it disagreed with this one.
         """
-        Compute a deterministic SHA-256 hash for a composite key.
-
-        Algorithm:
-        1. Sort dictionary keys recursively
-        2. Serialize to JSON with sorted keys
-        3. Compute SHA-256 hash
-        4. Return hex digest
-
-        Args:
-            composite_key: Dictionary of key-value pairs
-
-        Returns:
-            SHA-256 hex digest string
-        """
-        # Recursively sort the dictionary
-        sorted_key = HashService._sort_dict_recursive(composite_key)
-
-        # Serialize to JSON with sorted keys and no extra whitespace
-        key_string = json.dumps(sorted_key, sort_keys=True, separators=(',', ':'))
-
-        # Compute and return SHA-256 hash
-        return hashlib.sha256(key_string.encode('utf-8')).hexdigest()
-
-    @staticmethod
-    def _sort_dict_recursive(obj: Any) -> Any:
-        """
-        Recursively sort dictionary keys.
-
-        Handles nested dictionaries and lists.
-        """
-        if isinstance(obj, dict):
-            return {k: HashService._sort_dict_recursive(v) for k, v in sorted(obj.items())}
-        elif isinstance(obj, list):
-            return [HashService._sort_dict_recursive(item) for item in obj]
-        else:
-            return obj
-
-    # CASE-568: normalize_value + compute_field_hash removed — no production
-    # callers, and their case-insensitive normalization disagreed with the
-    # live compute_composite_key_hash (exact-value, case-sensitive). Reviving
-    # them would have silently hashed differently than every stored key.
+        return _compute_composite_key_hash(composite_key)
 
     @staticmethod
     def verify_hash(composite_key: dict[str, Any], expected_hash: str) -> bool:
-        """
-        Verify that a composite key matches an expected hash.
-
-        Args:
-            composite_key: Dictionary of key-value pairs
-            expected_hash: Expected SHA-256 hex digest
-
-        Returns:
-            True if the computed hash matches the expected hash
-        """
-        computed = HashService.compute_composite_key_hash(composite_key)
-        return computed == expected_hash
+        """True if ``composite_key`` hashes to ``expected_hash``."""
+        return _verify_composite_key_hash(composite_key, expected_hash)
