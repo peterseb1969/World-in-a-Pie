@@ -1361,6 +1361,15 @@ interface RestoreOptions {
     on_clash?: ClashPolicy;
     /** Merge only — resolution for a diverged terminology, term or template. */
     on_schema_clash?: SchemaClashPolicy;
+    /**
+     * Merge only — the archive comes from a DIFFERENT install, so the two
+     * sides never shared an ID space. An entity the target already holds under
+     * another ID is then matched and skipped (the target's ID survives, and
+     * incoming references to it are rewritten) instead of being refused as an
+     * identity conflict. Never inferred: the same evidence means identity
+     * corruption within one install and ordinary divergence across two.
+     */
+    cross_install?: boolean;
     skip_documents?: boolean;
     skip_files?: boolean;
     batch_size?: number;

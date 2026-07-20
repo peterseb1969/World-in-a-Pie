@@ -327,9 +327,42 @@ async def test_merge_rejects_unknown_policies(
 
 
 @pytest.mark.asyncio
+async def test_cross_install_flag_reaches_the_runner(
+    client: AsyncClient, auth_headers: dict
+):
+    """cross_install decides whether a duplicate identity is a match or a
+    refusal, so it must reach the engine rather than sit on the job record."""
+    fake_task = asyncio.get_running_loop().create_future()
+    fake_task.set_result(None)
+    with (
+        patch(
+            "document_store.api.backup.backup_service.make_direct_restore_runner",
+            return_value=AsyncMock(),
+        ) as mk_runner,
+        patch(
+            "document_store.api.backup.backup_service.start_async_job",
+            new=AsyncMock(return_value=fake_task),
+        ),
+    ):
+        resp = await client.post(
+            "/api/document-store/backup/namespaces/wip/restore",
+            headers=auth_headers,
+            files={"archive": ("b.zip", b"PK\x03\x04x", "application/zip")},
+            data={"mode": "merge", "cross_install": "true"},
+        )
+
+    assert resp.status_code == 202, resp.text
+    assert mk_runner.call_args.kwargs["options"]["cross_install"] is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("on_clash", "overwrite"), ("on_schema_clash", "upsert")],
+    [
+        ("on_clash", "overwrite"),
+        ("on_schema_clash", "upsert"),
+        ("cross_install", "true"),
+    ],
 )
 async def test_plain_restore_rejects_merge_policies(
     client: AsyncClient, auth_headers: dict, field: str, value: str

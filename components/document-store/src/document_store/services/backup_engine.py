@@ -23,6 +23,7 @@ from typing import Any, cast
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from wip_toolkit.archive import ArchiveReader, ArchiveWriter
+from wip_toolkit.import_.remap import IDRemapper
 from wip_toolkit.models import (
     EntityCounts,
     Manifest,
@@ -30,6 +31,8 @@ from wip_toolkit.models import (
     NamespaceEntry,
     ProgressEvent,
 )
+
+from wip_auth.composite_key import compute_composite_key_hash
 
 from .file_storage_client import FileStorageClient
 from .merge_plan import MERGE_ENTITY_SPECS, EntityPlan, MergePlanner
@@ -541,6 +544,7 @@ class DirectRestoreEngine:
         *,
         on_clash: str = "skip",
         on_schema_clash: str = "fail",
+        cross_install: bool = False,
         skip_documents: bool = False,
         skip_files: bool = False,
         batch_size: int = 500,
@@ -548,9 +552,18 @@ class DirectRestoreEngine:
     ) -> None:
         """Merge an archive into an existing, possibly non-empty namespace.
 
-        Same install, same namespace name, IDs preserved: the archive is a
-        delta source, not a replacement. Entities the target lacks are
-        inserted; entities it already holds are resolved by policy.
+        Same namespace name, IDs preserved: the archive is a delta source, not
+        a replacement. Entities the target lacks are inserted; entities it
+        already holds are resolved by policy.
+
+        ``cross_install`` declares that the archive comes from a *different*
+        install, so the two sides never shared an ID space. It changes one
+        thing and everything that follows from it: an entity the target holds
+        under a different ID becomes a match rather than an identity conflict,
+        the target's ID survives, and every incoming reference to the
+        archive's ID is rewritten before insert. It cannot be inferred — the
+        same evidence means corruption within one install and normal
+        divergence across two — so it is always the caller's declaration.
 
         The plan is built before anything is written, which makes ``dry_run``
         exact rather than indicative — it reports the same classification the
@@ -598,10 +611,44 @@ class DirectRestoreEngine:
                 plans, doc_groups = self._build_merge_plan_inputs(
                     reader, src, skip_documents=skip_documents, skip_files=skip_files
                 )
-                planner = MergePlanner(self._mongo, COLLECTION_MAP)
+                planner = MergePlanner(
+                    self._mongo, COLLECTION_MAP, cross_install=cross_install
+                )
+                remapper = IDRemapper()
                 built: dict[str, EntityPlan] = {}
-                for entity_type, entities in plans.items():
-                    built[entity_type] = await planner.plan(entity_type, entities, tgt)
+                rewritten = 0
+                # Dependency order matters twice over here. A cross-install
+                # merge must rewrite an entity's parent references BEFORE
+                # matching it, because the logical key it matches on contains
+                # them: a term's key is (terminology_id, value), and the
+                # archive's terminology_id belongs to the other install. So
+                # each type is planned only after the types it points at have
+                # contributed their matches to the remapper.
+                for entity_type in MERGE_ENTITY_ORDER:
+                    entities = plans.get(entity_type)
+                    if entities is None:
+                        continue
+                    if cross_install:
+                        entities, changed = self._rewrite_entities(
+                            entity_type, entities, remapper
+                        )
+                        rewritten += changed
+                        plans[entity_type] = entities
+                        if entity_type == "documents":
+                            doc_groups = self._regroup_documents(
+                                doc_groups, remapper
+                            )
+                    plan = await planner.plan(entity_type, entities, tgt)
+                    built[entity_type] = plan
+                    if cross_install:
+                        self._record_matches(entity_type, plan, remapper)
+                if cross_install:
+                    self._emit(
+                        "phase_merge_plan",
+                        f"[{tgt}] cross-install: {remapper.total_mappings} "
+                        f"identit(ies) matched to the target's IDs, "
+                        f"{rewritten} incoming entit(ies) had references rewritten",
+                    )
 
                 self._emit_merge_plan(
                     tgt, built, on_clash=on_clash,
@@ -682,6 +729,151 @@ class DirectRestoreEngine:
             entities_by_type[entity_type] = entities
 
         return entities_by_type, doc_groups
+
+    def _rewrite_entities(
+        self,
+        entity_type: str,
+        entities: list[dict[str, Any]],
+        remapper: IDRemapper,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Point one type's outward references at the surviving IDs.
+
+        Returns the rewritten entities and how many actually changed. Skipping
+        an entity because the target already has it is only half the job — the
+        rows that referenced it are still carrying the other install's ID, and
+        inserting those unrewritten is how a merge imports dangling
+        references.
+        """
+        rewriter = {
+            "terms": remapper.remap_term,
+            "term_relations": remapper.remap_term_relation,
+            "templates": remapper.remap_template,
+            "documents": remapper.remap_document,
+            "registry_entries": lambda e: self._rewrite_registry_entry(e, remapper),
+        }.get(entity_type)
+        # Terminologies and files have no outward references of their own.
+        if rewriter is None:
+            return entities, 0
+
+        rewritten: list[dict[str, Any]] = []
+        changed = 0
+        for entity in entities:
+            new_entity = rewriter(entity)
+            if new_entity != entity:
+                changed += 1
+            rewritten.append(new_entity)
+        return rewritten, changed
+
+    def _rewrite_registry_entry(
+        self, entry: dict[str, Any], remapper: IDRemapper
+    ) -> dict[str, Any]:
+        """Rewrite the IDs embedded in an entry's composite keys, and rehash.
+
+        A registry entry's key is what the uniqueness gate and every claim are
+        built on, and for most entity types it embeds a parent's canonical ID
+        (a term's key carries ``terminology_id``, a document's carries
+        ``template_id``). Left alone, the imported entry would claim a key
+        naming an entity that does not exist here — and would fail to match
+        the target's equivalent entry, which is keyed on the surviving ID.
+
+        The hash must be recomputed from the rewritten key using the Registry's
+        own algorithm, which is why it lives in wip_auth rather than being
+        re-derived here.
+        """
+        result = dict(entry)
+        key = result.get("primary_composite_key")
+        if isinstance(key, dict):
+            new_key = self._remap_key_values(key, remapper)
+            if new_key != key:
+                result["primary_composite_key"] = new_key
+                result["primary_composite_key_hash"] = compute_composite_key_hash(
+                    new_key
+                )
+
+        synonyms = result.get("synonyms")
+        if isinstance(synonyms, list):
+            new_synonyms = []
+            for synonym in synonyms:
+                if not isinstance(synonym, dict):
+                    new_synonyms.append(synonym)
+                    continue
+                syn = dict(synonym)
+                syn_key = syn.get("composite_key")
+                if isinstance(syn_key, dict):
+                    new_syn_key = self._remap_key_values(syn_key, remapper)
+                    if new_syn_key != syn_key:
+                        syn["composite_key"] = new_syn_key
+                        syn["composite_key_hash"] = compute_composite_key_hash(
+                            new_syn_key
+                        )
+                new_synonyms.append(syn)
+            result["synonyms"] = new_synonyms
+
+        return result
+
+    @staticmethod
+    def _remap_key_values(
+        key: dict[str, Any], remapper: IDRemapper
+    ) -> dict[str, Any]:
+        """Replace any ID-valued component of a composite key.
+
+        Composite keys are flat maps of scalars, and only the ID-shaped values
+        are remappable — ``ns``, ``value`` and ``label`` components pass
+        through because no map contains them.
+        """
+        maps = (
+            remapper.terminology_map,
+            remapper.term_map,
+            remapper.template_map,
+            remapper.document_map,
+            remapper.file_map,
+        )
+        result = dict(key)
+        for name, value in key.items():
+            if not isinstance(value, str):
+                continue
+            for id_map in maps:
+                if value in id_map:
+                    result[name] = id_map[value]
+                    break
+        return result
+
+    def _regroup_documents(
+        self,
+        doc_groups: dict[str, list[dict[str, Any]]],
+        remapper: IDRemapper,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Apply the document rewrite to every version row, not just the head.
+
+        Planning sees one head row per document, but an insert carries the
+        whole chain — and every row in it references the same rewritten
+        template and terms.
+        """
+        return {
+            doc_id: [remapper.remap_document(row) for row in rows]
+            for doc_id, rows in doc_groups.items()
+        }
+
+    @staticmethod
+    def _record_matches(
+        entity_type: str, plan: EntityPlan, remapper: IDRemapper
+    ) -> None:
+        """Feed a type's matches into the remapper for the types that follow.
+
+        Term relations and registry entries get no map: nothing references
+        them by ID, so a match there is simply a skip.
+        """
+        add = {
+            "terminologies": remapper.add_terminology_mapping,
+            "terms": remapper.add_term_mapping,
+            "templates": remapper.add_template_mapping,
+            "documents": remapper.add_document_mapping,
+            "files": remapper.add_file_mapping,
+        }.get(entity_type)
+        if add is None:
+            return
+        for match in plan.matches:
+            add(match.old_id, match.new_id)
 
     def _merge_policy_for(
         self, entity_type: str, *, on_clash: str, on_schema_clash: str

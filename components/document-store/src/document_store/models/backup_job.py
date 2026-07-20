@@ -315,6 +315,15 @@ class RestoreFromJobRequest(BaseModel):
             "the target's, 'upsert' takes the archive's."
         ),
     )
+    cross_install: bool = Field(
+        False,
+        description=(
+            "Merge only — the archive comes from a different install, so an "
+            "entity the target holds under another ID is matched and skipped "
+            "(the target's ID survives, incoming references are rewritten) "
+            "rather than refused as an identity conflict."
+        ),
+    )
     skip_documents: bool = Field(
         False, description="Skip the documents phase entirely"
     )

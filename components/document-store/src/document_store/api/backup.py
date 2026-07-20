@@ -111,6 +111,7 @@ def _validate_merge_options(
     on_clash: str,
     on_schema_clash: str,
     drop_stale_reporting: bool,
+    cross_install: bool = False,
 ) -> None:
     """Reject policy options the chosen mode cannot honour.
 
@@ -126,6 +127,7 @@ def _validate_merge_options(
         for name, value, default in (
             ("on_clash", on_clash, "skip"),
             ("on_schema_clash", on_schema_clash, "fail"),
+            ("cross_install", cross_install, False),
         ):
             if value != default:
                 raise HTTPException(
@@ -348,6 +350,18 @@ async def start_restore(
             "an in-place update for terminologies and terms)."
         ),
     ),
+    cross_install: bool = Form(
+        False,
+        description=(
+            "Merge only — the archive comes from a DIFFERENT install, so the "
+            "two sides never shared an ID space. An entity the target already "
+            "holds under another ID is then matched and skipped (the target's "
+            "ID survives) and incoming references to it are rewritten, instead "
+            "of being refused as an identity conflict. Never inferred: the "
+            "same evidence means corruption within one install and normal "
+            "divergence across two."
+        ),
+    ),
     register_synonyms: bool = Form(False),
     skip_documents: bool = Form(False),
     skip_files: bool = Form(False),
@@ -397,6 +411,7 @@ async def start_restore(
         mode,
         on_clash=on_clash,
         on_schema_clash=on_schema_clash,
+        cross_install=cross_install,
         drop_stale_reporting=drop_stale_reporting,
     )
     # Parameters of the retired toolkit import path. The direct restore engine
@@ -454,6 +469,7 @@ async def start_restore(
         "target_namespace": effective_target,
         "on_clash": on_clash,
         "on_schema_clash": on_schema_clash,
+        "cross_install": cross_install,
         "register_synonyms": register_synonyms,
         "skip_documents": skip_documents,
         "skip_files": skip_files,
@@ -740,6 +756,7 @@ async def restore_from_job(
         request.mode,
         on_clash=request.on_clash,
         on_schema_clash=request.on_schema_clash,
+        cross_install=request.cross_install,
         drop_stale_reporting=False,
     )
 
@@ -786,6 +803,7 @@ async def restore_from_job(
         "target_namespace": effective_target,
         "on_clash": request.on_clash,
         "on_schema_clash": request.on_schema_clash,
+        "cross_install": request.cross_install,
         "skip_documents": request.skip_documents,
         "skip_files": request.skip_files,
         "batch_size": request.batch_size,

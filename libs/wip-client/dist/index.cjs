@@ -873,6 +873,8 @@ var DocumentStoreService = class extends BaseService {
     if (options.on_clash !== void 0) form.append("on_clash", options.on_clash);
     if (options.on_schema_clash !== void 0)
       form.append("on_schema_clash", options.on_schema_clash);
+    if (options.cross_install !== void 0)
+      form.append("cross_install", String(options.cross_install));
     if (options.skip_documents !== void 0)
       form.append("skip_documents", String(options.skip_documents));
     if (options.skip_files !== void 0)

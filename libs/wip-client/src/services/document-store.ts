@@ -350,6 +350,8 @@ export class DocumentStoreService extends BaseService {
     if (options.on_clash !== undefined) form.append('on_clash', options.on_clash)
     if (options.on_schema_clash !== undefined)
       form.append('on_schema_clash', options.on_schema_clash)
+    if (options.cross_install !== undefined)
+      form.append('cross_install', String(options.cross_install))
     if (options.skip_documents !== undefined)
       form.append('skip_documents', String(options.skip_documents))
     if (options.skip_files !== undefined)

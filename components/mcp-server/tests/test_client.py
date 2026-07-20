@@ -545,6 +545,7 @@ async def test_start_restore_merge_sends_the_clash_policies(tmp_path):
     assert data["mode"] == "merge"
     assert data["on_clash"] == "overwrite"
     assert data["on_schema_clash"] == "upsert"
+    assert data["cross_install"] == "false"
 
 
 @pytest.mark.asyncio

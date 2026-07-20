@@ -1,6 +1,8 @@
-"""Merge-mode restore (restore modes, Phase 1).
+"""Merge-mode restore (restore modes, Phases 1 and 2).
 
 Merge takes an archive as a delta against a namespace that already holds data.
+Phase 1 is the same-install case (IDs preserved); Phase 2 adds the
+cross-install case, where the two sides never shared an ID space.
 These tests run the real engine against the real test MongoDB, so each case
 asserts the namespace's actual end state — the difference matters for a mode
 whose whole job is deciding what to write, and a mocked collection would
@@ -613,3 +615,217 @@ class TestMergeDryRun:
 
         plan = next(e for e in events if e.phase == "phase_merge_plan")
         assert "insert=1" in plan.message
+
+
+# ---------------------------------------------------------------------------
+# Cross-install merge
+# ---------------------------------------------------------------------------
+
+
+class TestCrossInstallMerge:
+    """Consolidating two installs' copies of one namespace.
+
+    The two never shared an ID space, so the same logical entity exists under
+    two UUIDs. Skip-if-exists is only half the job: everything pointing at the
+    dropped copy has to be repointed, or the merge imports references that
+    resolve to nothing.
+    """
+
+    @pytest.mark.asyncio
+    async def test_duplicate_identity_is_skipped_not_refused(self, mongo):
+        await _seed_namespace(mongo)
+        await _seed(mongo, "terminologies", [
+            {"terminology_id": "B-lov", "namespace": NAMESPACE, "value": "GENDER"},
+        ])
+
+        await _run_merge(
+            mongo,
+            _archive({"terminologies": [
+                {"terminology_id": "A-lov", "namespace": NAMESPACE,
+                 "value": "GENDER"},
+            ]}),
+            cross_install=True,
+        )
+
+        rows = await _rows(mongo, "terminologies")
+        assert [r["terminology_id"] for r in rows] == ["B-lov"]
+
+    @pytest.mark.asyncio
+    async def test_same_archive_without_the_flag_refuses(self, mongo):
+        # The discriminating case: identical inputs, opposite outcomes. The
+        # flag is the only thing that can tell corruption from divergence.
+        await _seed_namespace(mongo)
+        await _seed(mongo, "terminologies", [
+            {"terminology_id": "B-lov", "namespace": NAMESPACE, "value": "GENDER"},
+        ])
+
+        with pytest.raises(RestoreEngineError, match="identity conflict"):
+            await _run_merge(mongo, _archive({"terminologies": [
+                {"terminology_id": "A-lov", "namespace": NAMESPACE,
+                 "value": "GENDER"},
+            ]}))
+
+    @pytest.mark.asyncio
+    async def test_children_of_a_skipped_parent_are_repointed(self, mongo):
+        # The whole point. A's GENDER is dropped for B's, so A's incoming term
+        # must end up under B-lov — not orphaned under A-lov.
+        await _seed_namespace(mongo)
+        await _seed(mongo, "terminologies", [
+            {"terminology_id": "B-lov", "namespace": NAMESPACE, "value": "GENDER"},
+        ])
+
+        await _run_merge(
+            mongo,
+            _archive({
+                "terminologies": [
+                    {"terminology_id": "A-lov", "namespace": NAMESPACE,
+                     "value": "GENDER"},
+                ],
+                "terms": [
+                    {"term_id": "A-term", "namespace": NAMESPACE,
+                     "terminology_id": "A-lov", "value": "NONBINARY"},
+                ],
+            }),
+            cross_install=True,
+        )
+
+        (term,) = await _rows(mongo, "terms")
+        assert term["terminology_id"] == "B-lov"
+        assert term["term_id"] == "A-term"
+
+    @pytest.mark.asyncio
+    async def test_a_term_the_target_already_has_is_matched_through_its_parent(
+        self, mongo
+    ):
+        # The term's logical key is (terminology_id, value), and the archive's
+        # terminology_id is the other install's. It can only match after its
+        # parent reference has been rewritten — which is why planning runs in
+        # dependency order.
+        await _seed_namespace(mongo)
+        await _seed(mongo, "terminologies", [
+            {"terminology_id": "B-lov", "namespace": NAMESPACE, "value": "GENDER"},
+        ])
+        await _seed(mongo, "terms", [
+            {"term_id": "B-term", "namespace": NAMESPACE,
+             "terminology_id": "B-lov", "value": "M"},
+        ])
+
+        await _run_merge(
+            mongo,
+            _archive({
+                "terminologies": [
+                    {"terminology_id": "A-lov", "namespace": NAMESPACE,
+                     "value": "GENDER"},
+                ],
+                "terms": [
+                    {"term_id": "A-term", "namespace": NAMESPACE,
+                     "terminology_id": "A-lov", "value": "M"},
+                ],
+            }),
+            cross_install=True,
+        )
+
+        rows = await _rows(mongo, "terms")
+        assert [r["term_id"] for r in rows] == ["B-term"]
+
+    @pytest.mark.asyncio
+    async def test_documents_are_repointed_at_the_surviving_template(self, mongo):
+        await _seed_namespace(mongo)
+        await _seed(mongo, "templates", [
+            {"template_id": "B-tpl", "namespace": NAMESPACE, "value": "PATIENT",
+             "version": 1, "versioned": True,
+             "fields": [{"name": "age", "type": "integer"}]},
+        ])
+
+        archived_template = {
+            "template_id": "A-tpl", "namespace": NAMESPACE, "value": "PATIENT",
+            "version": 1, "versioned": True,
+            "fields": [{"name": "age", "type": "integer"}],
+        }
+        document = {
+            "document_id": "A-doc", "namespace": NAMESPACE,
+            "template_id": "A-tpl", "template_version": 1,
+            "identity_hash": "h-new", "version": 1, "data": {"age": 40},
+            "status": "active",
+        }
+
+        await _run_merge(
+            mongo,
+            _archive({"templates": [archived_template], "documents": [document]}),
+            cross_install=True,
+        )
+
+        (doc,) = await _rows(mongo, "documents")
+        assert doc["template_id"] == "B-tpl"
+
+    @pytest.mark.asyncio
+    async def test_registry_entry_keys_are_rewritten_and_rehashed(self, mongo):
+        # An entry's composite key embeds its parent's ID, and the key's hash
+        # is what the uniqueness gate and every claim are built on. Rewriting
+        # the key without rehashing would claim the wrong identity.
+        from wip_auth.composite_key import compute_composite_key_hash
+
+        await _seed_namespace(mongo)
+        await _seed(mongo, "terminologies", [
+            {"terminology_id": "B-lov", "namespace": NAMESPACE, "value": "GENDER"},
+        ])
+        stale_key = {"ns": NAMESPACE, "terminology_id": "A-lov", "value": "X"}
+
+        await _run_merge(
+            mongo,
+            _archive({
+                "terminologies": [
+                    {"terminology_id": "A-lov", "namespace": NAMESPACE,
+                     "value": "GENDER"},
+                ],
+                "registry_entries": [
+                    {"entry_id": "A-entry", "namespace": NAMESPACE,
+                     "entity_type": "terms",
+                     "primary_composite_key": stale_key,
+                     "primary_composite_key_hash": compute_composite_key_hash(
+                         stale_key
+                     ),
+                     "synonyms": []},
+                ],
+            }),
+            cross_install=True,
+        )
+
+        (entry,) = await _rows(mongo, "registry_entries")
+        expected_key = {"ns": NAMESPACE, "terminology_id": "B-lov", "value": "X"}
+        assert entry["primary_composite_key"] == expected_key
+        assert entry["primary_composite_key_hash"] == compute_composite_key_hash(
+            expected_key
+        )
+
+    @pytest.mark.asyncio
+    async def test_dry_run_reports_matches_and_rewrites(self, mongo):
+        await _seed_namespace(mongo)
+        await _seed(mongo, "terminologies", [
+            {"terminology_id": "B-lov", "namespace": NAMESPACE, "value": "GENDER"},
+        ])
+        events: list[ProgressEvent] = []
+
+        await _run_merge(
+            mongo,
+            _archive({
+                "terminologies": [
+                    {"terminology_id": "A-lov", "namespace": NAMESPACE,
+                     "value": "GENDER"},
+                ],
+                "terms": [
+                    {"term_id": "A-term", "namespace": NAMESPACE,
+                     "terminology_id": "A-lov", "value": "NONBINARY"},
+                ],
+            }),
+            events,
+            cross_install=True,
+            dry_run=True,
+        )
+
+        assert await _rows(mongo, "terms") == []
+        report = next(
+            e for e in events if "identit(ies) matched" in (e.message or "")
+        )
+        assert "1 identit(ies) matched" in report.message
+        assert "1 incoming entit(ies) had references rewritten" in report.message

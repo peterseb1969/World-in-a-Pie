@@ -365,6 +365,7 @@ def make_direct_restore_runner(
                 target_namespace=opts.get("target_namespace", ""),
                 on_clash=opts.get("on_clash", "skip"),
                 on_schema_clash=opts.get("on_schema_clash", "fail"),
+                cross_install=opts.get("cross_install", False),
                 skip_documents=opts.get("skip_documents", False),
                 skip_files=opts.get("skip_files", False),
                 batch_size=opts.get("batch_size", 500),

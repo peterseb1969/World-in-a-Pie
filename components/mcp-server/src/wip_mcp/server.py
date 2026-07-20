@@ -3850,6 +3850,7 @@ async def start_restore(
     mode: str = "restore",
     on_clash: str = "skip",
     on_schema_clash: str = "fail",
+    cross_install: bool = False,
     skip_documents: bool = False,
     skip_files: bool = False,
     batch_size: int = 500,
@@ -3880,6 +3881,14 @@ async def start_restore(
     outright when the archive and target disagree about identity — the same ID
     under a different logical key, or one logical key under two IDs.
 
+    Set cross_install=True when the archive comes from a DIFFERENT install.
+    The two sides then never shared an ID space, so an entity the target
+    already holds under another ID is matched and skipped — the target's ID
+    survives and every incoming reference to the archive's ID is rewritten —
+    instead of being refused as an identity conflict. This is the
+    consolidation case, and it can never be inferred: the same evidence means
+    identity corruption within one install and ordinary divergence across two.
+
     dry_run is exact for a merge: the plan is computed before anything is
     written, so the report is what a real run would do, and it still fails on
     what a real run would refuse.
@@ -3903,6 +3912,9 @@ async def start_restore(
         on_clash: Merge only — 'skip' or 'overwrite' for clashing documents.
         on_schema_clash: Merge only — 'fail', 'skip' or 'upsert' for a
             terminology, term or template that differs from the target's.
+        cross_install: Merge only — the archive comes from a different
+            install, so duplicate identities are matched and skipped rather
+            than refused.
         skip_documents: Skip documents (definitions only).
         skip_files: Skip file blobs.
         batch_size: Bulk-insert batch size (1-500).
@@ -3917,6 +3929,7 @@ async def start_restore(
             mode=mode,
             on_clash=on_clash,
             on_schema_clash=on_schema_clash,
+            cross_install=cross_install,
             skip_documents=skip_documents,
             skip_files=skip_files,
             batch_size=batch_size,
