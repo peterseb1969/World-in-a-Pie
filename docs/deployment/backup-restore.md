@@ -51,6 +51,10 @@ created them had. Only the volume wipe (or an explicit migration) renews them.
 Restore is not blind anymore. The engine runs three verification phases per
 namespace, backed by reporting-sync's parity check:
 
+(This section describes `mode=restore`, the wholesale restore into an empty
+target. For merging an archive into a namespace that already holds data, see
+the next section — the preconditions differ.)
+
 1. **Precondition (before anything is written):** the target namespace must
    be empty in Mongo AND its reporting schema must be absent/empty. Stale
    reporting tables fail the job with a message naming the remedy:
@@ -80,6 +84,72 @@ namespace, backed by reporting-sync's parity check:
 If reporting-sync is not deployed (core preset), the phases degrade to a
 logged warning — a restore never fails because the optional reporting layer
 is absent.
+
+Whatever the mode, the restore also rebuilds the Registry's **composite-key
+claims** for the entries it wrote. Claims are derived state (one row per
+namespace + entity type + composite-key hash, naming the entry that owns it),
+so they never travel in an archive — but a namespace whose entries have no
+claims has lost its uniqueness gate, and the next registration reusing one of
+those keys would mint a second entity for one identity. A key already claimed
+by a *different* entry is left with its incumbent and reported as a warning.
+
+---
+
+## Merging an archive into a live namespace
+
+`mode=merge` (REST form field, MCP `start_restore`, `@wip/client`
+`startRestore`) treats the archive as a **delta** against a namespace that
+already holds data, instead of requiring an empty target. Same install, same
+namespace name, IDs preserved. Use it to bring a namespace up to an archive's
+state without tearing it down.
+
+The preconditions invert accordingly: the namespace must **exist**, its
+reporting schema is expected to hold tables (so `drop_stale_reporting` is
+rejected — it would discard the data you are merging into), and only unusable
+bookkeeping still refuses. The archive's namespace config is compared and any
+drift reported, never applied: the live namespace's configuration belongs to
+whoever runs it.
+
+Entities the target lacks are inserted. Everything else is policy:
+
+| Option | Applies to | Values |
+|---|---|---|
+| `on_clash` | documents | `skip` (default) — target wins. `overwrite` — the archive's LATEST version is appended on top of the target's head, adopting the target's `document_id`. |
+| `on_schema_clash` | terminologies, terms, templates | `fail` (default) — refuse and report the differences. `skip` — target's schema wins. `upsert` — take the archive's. |
+
+Two deliberate shapes worth knowing before you choose:
+
+- **Overwrite never splices histories.** The target's versions are kept and the
+  archive's are not interleaved into them — two independent version chains have
+  no defined order, and merging them would corrupt the `(document_id, version)`
+  contract. You get the target's history plus one new head. On a
+  `versioned: false` template the single version is replaced in place instead,
+  which is that template's own lifecycle.
+- **`fail` is the schema default on purpose.** The platform's write path treats
+  create as upsert, but a restore action's clash handling is the operator's
+  decision, not the platform's. Merging data into a namespace whose schema has
+  diverged from the archive is a migration someone should look at. Under
+  `upsert`, a template lands as a NEW version (nothing overwritten);
+  terminologies and terms have no version axis, so there `upsert` updates the
+  row in place.
+
+A merge **refuses outright** when the archive and target disagree about
+identity — the same ID under a different logical key, or one logical key under
+two IDs. Merge preserves IDs and cannot reconcile that; such an archive needs
+the ID-reminting (new-namespace) mode, which does not exist yet.
+
+`dry_run` is exact for a merge: the plan is computed before anything is
+written, so the report is what a real run would do — per entity type, how many
+would be inserted, are unchanged, clash, or conflict, with the first few
+differences named. It still fails on everything a real run would refuse, which
+is the point of asking first.
+
+```bash
+# See what would happen, decide, then run it
+start_restore(namespace="kb", archive_path="kb.zip", mode="merge", dry_run=True)
+start_restore(namespace="kb", archive_path="kb.zip", mode="merge",
+              on_clash="overwrite", on_schema_clash="skip")
+```
 
 ---
 

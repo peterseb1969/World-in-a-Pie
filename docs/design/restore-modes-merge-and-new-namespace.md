@@ -1,6 +1,7 @@
 # Restore Modes: Merge and New-Namespace
 
-**Status:** Draft for review — analysis + plan, no implementation yet
+**Status:** Phase 0 and Phase 1 (merge mode) shipped; Phases 2-3 planned.
+See Part 4 for what each phase delivered and what remains open.
 **Author:** BE-YAC-20260718-222350
 **Context:** Extends `backup-restore-redesign.md` (v3 multi-namespace archives,
 direct-Mongo engine). Picks up the remap half deferred by CASE-542 and filed as
@@ -415,11 +416,33 @@ must *never* fall back to per-entity HTTP.
    claims `insert_many`) + an exercising test for
    provision/reserve/activate (currently zero callers).
 
-**Phase 1 — merge mode:** RemapPlan (same-ID matching only), clash policies
-skip/overwrite for documents, validate-or-error for schema entities,
-precondition inversion, dry-run-as-plan, REST/MCP/`@wip/client` surface
-(`mode=merge`, `on_clash=skip|overwrite`), reporting-parity intact.
-Scale test against a clintrial-sized namespace.
+**Phase 1 — merge mode: SHIPPED** (2026-07-20). Delivered as planned:
+the plan builder (`services/merge_plan.py` — same-ID matching, two-keyed with
+identity-conflict detection), `DirectRestoreEngine.run_merge` with
+`on_clash=skip|overwrite` for documents and `on_schema_clash=fail|skip|upsert`
+for schema entities, precondition inversion (namespace must exist; reporting
+schema expected; `drop_stale_reporting` rejected), namespace-config drift
+reported not applied, dry-run-as-plan, and the REST / MCP / `@wip/client`
+0.37.0 surface. Reporting structural gate and count parity run unchanged.
+
+Two decisions made during implementation, beyond what this plan specified:
+
+1. **`upsert` on terminologies and terms updates the row in place.** §2.2 gave
+   them the same policy parameter as templates, but they have no version axis,
+   so "the archive wins" has only one possible meaning. Reported explicitly in
+   the job events.
+2. **Blobs upload only for inserted files, and claims are rebuilt only for
+   inserted registry entries.** Both follow from merge's delta nature; the
+   claim rebuild also gained an "already claimed by the same entry" case so a
+   merge into a namespace that already has claims does not cry wolf.
+
+Also shipped alongside, from §1.6 item 1: **restore now recreates
+composite-key claims** for every entry it writes — the verified live gap that
+merge's clash detection depends on. It applies to plain restore too.
+
+Still open from this phase: the **scale test against a clintrial-sized
+namespace**. The read path is batched-by-archive-key (cost scales with the
+delta, not the target), but that is a code-reading claim, not a measurement.
 
 **Phase 2 — new-namespace mode:** provision/activate integration, remapper
 reuse + identity_hash recompute, qualified lineage synonyms, multi-namespace
