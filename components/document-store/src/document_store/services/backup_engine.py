@@ -565,7 +565,13 @@ class DirectRestoreEngine:
 
         self._emit("complete", "Restore complete", percent=100)
 
-    async def _recreate_claims(self, namespace: str, *, batch_size: int) -> None:
+    async def _recreate_claims(
+        self,
+        namespace: str,
+        *,
+        batch_size: int,
+        entry_ids: list[str] | None = None,
+    ) -> None:
         """Rebuild composite-key claims for a namespace's restored entries.
 
         A claim is derived state — (namespace, entity_type, hash) → owning
@@ -580,10 +586,16 @@ class DirectRestoreEngine:
         different namespace than the entry it points at), so claims are keyed
         from the synonym's fields, not the owner's.
 
-        A duplicate means some *other* entry already owns that hash. Skipping
-        it is the correct outcome — the incumbent keeps the key — so the phase
-        counts collisions and warns rather than failing a restore whose data is
-        already committed.
+        A duplicate is one of two things, and the phase tells them apart before
+        it says anything: the key is already claimed by *this* entry (nothing
+        to do — the rebuild is idempotent) or by a *different* one, which means
+        the incumbent keeps the key and the restored entry sharing it is not
+        gate-protected. Only the second warrants a warning, and neither fails a
+        restore whose data is already committed.
+
+        ``entry_ids`` narrows the rebuild to specific entries — a merge claims
+        only what it inserted, since everything already in the namespace has
+        its claims. Omitted, every entry in the namespace is (re)claimed.
         """
         entries_db, entries_coll_name = COLLECTION_MAP["registry_entries"]
         entries = self._mongo[entries_db][entries_coll_name]
@@ -598,17 +610,18 @@ class DirectRestoreEngine:
         now = datetime.now(UTC)
         batch: list[dict[str, Any]] = []
         claimed = 0
-        collisions = 0
+        already_owned = 0
+        taken_by_other = 0
 
-        async def flush() -> tuple[int, int]:
-            """Insert a batch unordered; duplicates are expected losers."""
+        async def flush() -> tuple[int, int, int]:
+            """Insert a batch unordered, classifying any duplicates."""
             from pymongo.errors import BulkWriteError
 
             if not batch:
-                return (0, 0)
+                return (0, 0, 0)
             try:
                 result = await claims.insert_many(batch, ordered=False)
-                return (len(result.inserted_ids), 0)
+                return (len(result.inserted_ids), 0, 0)
             except BulkWriteError as exc:
                 write_errors = exc.details.get("writeErrors", [])
                 duplicates = [e for e in write_errors if e.get("code") == 11000]
@@ -617,10 +630,27 @@ class DirectRestoreEngine:
                         f"Claim rebuild failed for namespace '{namespace}': "
                         f"{write_errors[0].get('errmsg', 'unknown error')}"
                     ) from exc
-                return (len(batch) - len(duplicates), len(duplicates))
+                mine = 0
+                for write_error in duplicates:
+                    rejected = write_error.get("op") or batch[write_error["index"]]
+                    incumbent = await claims.find_one({
+                        "namespace": rejected["namespace"],
+                        "entity_type": rejected["entity_type"],
+                        "composite_key_hash": rejected["composite_key_hash"],
+                    })
+                    if incumbent and incumbent.get("owner_entry_id") == rejected["owner_entry_id"]:
+                        mine += 1
+                return (
+                    len(batch) - len(duplicates),
+                    mine,
+                    len(duplicates) - mine,
+                )
 
+        entry_query: dict[str, Any] = {"namespace": namespace}
+        if entry_ids is not None:
+            entry_query["entry_id"] = {"$in": entry_ids}
         cursor = entries.find(
-            {"namespace": namespace},
+            entry_query,
             {
                 "entry_id": 1,
                 "namespace": 1,
@@ -664,23 +694,26 @@ class DirectRestoreEngine:
                 })
 
             if len(batch) >= batch_size:
-                ok, dup = await flush()
+                ok, mine, theirs = await flush()
                 claimed += ok
-                collisions += dup
+                already_owned += mine
+                taken_by_other += theirs
                 batch = []
 
-        ok, dup = await flush()
+        ok, mine, theirs = await flush()
         claimed += ok
-        collisions += dup
+        already_owned += mine
+        taken_by_other += theirs
 
         logger.info(
-            "Rebuilt %d composite-key claims for namespace %s (%d collisions)",
-            claimed, namespace, collisions,
+            "Rebuilt %d composite-key claims for namespace %s "
+            "(%d already held, %d owned by other entries)",
+            claimed, namespace, already_owned, taken_by_other,
         )
-        if collisions:
+        if taken_by_other:
             self._emit(
                 "warning",
-                f"[{namespace}] {collisions} composite key(s) were already "
+                f"[{namespace}] {taken_by_other} composite key(s) were already "
                 "claimed by other entries and were left with their existing "
                 "owner — the restored entries sharing those keys are not "
                 "gate-protected. Review with the Registry's claim reconcile.",

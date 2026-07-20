@@ -1027,14 +1027,27 @@ class TestRecreateClaims:
 
         assert not claims.insert_many.called
 
-    @pytest.mark.asyncio
-    async def test_duplicate_claims_warn_instead_of_failing(self):
-        # The key is already owned by another entry — the incumbent keeps it.
-        # The restore's data is already committed, so this is a warning.
-        error = BulkWriteError({
-            "writeErrors": [{"code": 11000, "errmsg": "duplicate key"}],
+    @staticmethod
+    def _duplicate_error(owner):
+        return BulkWriteError({
+            "writeErrors": [{
+                "code": 11000,
+                "errmsg": "duplicate key",
+                "index": 0,
+                "op": {
+                    "namespace": "kb",
+                    "entity_type": "templates",
+                    "composite_key_hash": "hash-taken",
+                    "owner_entry_id": owner,
+                },
+            }],
         })
-        engine, _claims, events = self._engine_with_entries(
+
+    @pytest.mark.asyncio
+    async def test_key_claimed_by_another_entry_warns_instead_of_failing(self):
+        # The incumbent keeps the key, so the restored entry sharing it is not
+        # gate-protected. The restore's data is already committed — warn.
+        engine, claims, events = self._engine_with_entries(
             [
                 {
                     "entry_id": "E1",
@@ -1044,13 +1057,50 @@ class TestRecreateClaims:
                     "synonyms": [],
                 },
             ],
-            insert_error=error,
+            insert_error=self._duplicate_error("E1"),
         )
+        claims.find_one = AsyncMock(return_value={"owner_entry_id": "SOMEONE-ELSE"})
 
         await engine._recreate_claims("kb", batch_size=500)
 
         warning = next(e for e in events if e.phase == "warning")
         assert "already" in warning.message and "claimed" in warning.message
+
+    @pytest.mark.asyncio
+    async def test_key_already_claimed_by_the_same_entry_is_silent(self):
+        # Re-claiming what this entry already owns is the rebuild being
+        # idempotent, not a collision — warning here would cry wolf on every
+        # merge and every re-run.
+        engine, claims, events = self._engine_with_entries(
+            [
+                {
+                    "entry_id": "E1",
+                    "namespace": "kb",
+                    "entity_type": "templates",
+                    "primary_composite_key_hash": "hash-taken",
+                    "synonyms": [],
+                },
+            ],
+            insert_error=self._duplicate_error("E1"),
+        )
+        claims.find_one = AsyncMock(return_value={"owner_entry_id": "E1"})
+
+        await engine._recreate_claims("kb", batch_size=500)
+
+        assert [e for e in events if e.phase == "warning"] == []
+
+    @pytest.mark.asyncio
+    async def test_entry_ids_narrow_the_rebuild(self):
+        # A merge claims only what it inserted — everything already in the
+        # namespace has its claims, and re-reading them all would turn every
+        # pre-existing entry into a duplicate to classify.
+        engine, _claims, _events = self._engine_with_entries([])
+        entries = engine._mongo["wip_registry"]["registry_entries"]
+
+        await engine._recreate_claims("kb", batch_size=500, entry_ids=["E1", "E2"])
+
+        query = entries.find.call_args.args[0]
+        assert query == {"namespace": "kb", "entry_id": {"$in": ["E1", "E2"]}}
 
     @pytest.mark.asyncio
     async def test_non_duplicate_write_error_is_fatal(self):
