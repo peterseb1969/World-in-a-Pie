@@ -65,7 +65,18 @@ Modes
 Output contract (stdout, last lines, machine-readable):
     PRIOR_ID=<id or ->
     NEW_ID=<id>
+    PRIOR_SUMMARY=content|stub|absent
 Progress/warnings go to stderr.
+
+PRIOR_SUMMARY describes the prior's `## Session Summary` as it stands once
+the rollover is done: `content` = a real summary someone wrote, `stub` = a
+heading with nothing under it, `absent` = no heading, no prior, or no
+readable session.md. A session that died active reports `stub`, because the
+close phase has just written the placeholder — that is the dominant case and
+the whole point of the signal. `stub` is the caller's cue to backfill from
+the durable artifacts; `content` means never overwrite. The state is
+reported rather than left for the caller to re-derive, because a
+discretionary check is one an agent reliably skips.
 
 Idempotence / partial-failure recovery: every write is atomic; re-running
 after a failure converges (an already-closed prior is skipped, kb mirrors
@@ -186,6 +197,47 @@ def kb_mirror(root: Path, session_md: Path, dry_run: bool) -> None:
             )
     except (OSError, subprocess.TimeoutExpired) as e:
         log(f"WARNING: kb mirror unreachable (local write is authoritative): {e}")
+
+
+def summary_state(root: Path, prior_id: str | None) -> str:
+    """Classify the prior's `## Session Summary` as content | stub | absent.
+
+    `stub` means a heading with nothing under it — the placeholder close_prior
+    writes when a session dies without /wip-report session-end. It reads
+    identically to a real close on a `status: closed` check, which is why the
+    state is reported explicitly rather than left to be re-derived: an agent
+    that has to remember to look will not look.
+
+    Call this AFTER close_prior, so the answer describes the prior as it now
+    stands. The dominant case is a session that died active: close_prior has
+    just appended the placeholder, and `stub` — the cue to backfill — is
+    exactly right. Reading before the append would report `absent` there and
+    silently skip the backfill in the very case it exists for.
+
+    Any summary section carrying content wins, so a real summary is never
+    misreported as a stub because an append landed after it. Emptiness is
+    judged strictly (nothing but whitespace under the heading): a terse but
+    real summary counts as content, and no length threshold needs defending.
+    """
+    if prior_id is None:
+        return "absent"
+    session_md = root / "reports" / prior_id / "session.md"
+    if not session_md.is_file():
+        return "absent"
+    _, body = parse_frontmatter(session_md.read_text())
+
+    lines = body.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith("## Session Summary")]
+    if not starts:
+        return "absent"
+
+    for start in starts:
+        for line in lines[start + 1 :]:
+            if line.startswith("## "):
+                break
+            if line.strip():
+                return "content"
+    return "stub"
 
 
 def close_prior(root: Path, prior_id: str, dry_run: bool) -> bool:
@@ -328,7 +380,7 @@ def prior_status(root: Path, prior_id: str) -> str | None:
     return "closed" if fm.get("status") == "closed" else "active"
 
 
-def wake(root: Path, dry_run: bool) -> tuple[str, str]:
+def wake(root: Path, dry_run: bool) -> tuple[str, str, str]:
     prior = read_sentinel(root)
     if prior is None:
         print(
@@ -356,16 +408,24 @@ def wake(root: Path, dry_run: bool) -> tuple[str, str]:
     flipped = close_prior(root, prior, dry_run)
     if flipped:
         kb_mirror(root, prior_dir / "session.md", dry_run)
+    # After the close: a session that died active has just been given the
+    # placeholder, and `stub` is the state the caller must act on.
+    prior_summary = summary_state(root, prior)
+    if dry_run and flipped and prior_summary == "absent":
+        # The close we deliberately didn't perform would have left a stub;
+        # report the plan's outcome, not the untouched file.
+        prior_summary = "stub"
 
     new_id = mint_and_create(root, role, continues_from=prior, dry_run=dry_run)
     swap_sentinel(root, new_id, dry_run)
     kb_mirror(root, root / "reports" / new_id / "session.md", dry_run)
-    return prior, new_id
+    return prior, new_id, prior_summary
 
 
-def fresh(root: Path, dry_run: bool) -> tuple[str, str]:
+def fresh(root: Path, dry_run: bool) -> tuple[str, str, str]:
     role = read_role(root)
     prior = read_sentinel(root)
+    prior_summary = summary_state(root, prior)
     if prior is not None:
         status = prior_status(root, prior)
         if status != "closed":
@@ -382,7 +442,7 @@ def fresh(root: Path, dry_run: bool) -> tuple[str, str]:
     new_id = mint_and_create(root, role, continues_from=None, dry_run=dry_run)
     swap_sentinel(root, new_id, dry_run)
     kb_mirror(root, root / "reports" / new_id / "session.md", dry_run)
-    return prior or "-", new_id
+    return prior or "-", new_id, prior_summary
 
 
 def main(argv: list[str]) -> int:
@@ -396,12 +456,13 @@ def main(argv: list[str]) -> int:
 
     root = project_root()
     if mode_fresh:
-        prior, new_id = fresh(root, dry_run)
+        prior, new_id, prior_summary = fresh(root, dry_run)
     else:
-        prior, new_id = wake(root, dry_run)
+        prior, new_id, prior_summary = wake(root, dry_run)
 
     print(f"PRIOR_ID={prior}")
     print(f"NEW_ID={new_id}")
+    print(f"PRIOR_SUMMARY={prior_summary}")
     return 0
 
 

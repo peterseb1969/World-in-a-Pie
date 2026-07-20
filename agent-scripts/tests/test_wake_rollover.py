@@ -239,6 +239,92 @@ class TestFreshMode:
         assert (root / ".claude" / ".session-id").read_text().strip() == PRIOR_ID
 
 
+class TestPriorSummarySignal:
+    """CASE-708 — the rollover reports whether the prior's summary is real.
+
+    A bare `## Session Summary — auto-closed by /wip-wake (<ts>)` and a
+    written summary are indistinguishable to a `status: closed` check, so the
+    empty ones used to stay empty forever: the agent who could have written
+    one is gone, and nobody runs session-end against someone else's session.
+    Detection is mechanical here so the backfill prose acts on a signal
+    instead of remembering to look.
+    """
+
+    def _write_body(self, root: Path, body: str, *, status: str = "closed") -> None:
+        d = root / "reports" / PRIOR_ID / "session.md"
+        fm = (
+            "---\n"
+            f"session_id: {PRIOR_ID}\n"
+            "role: BE-YAC\n"
+            "started_at: 2026-07-01T12:00:00\n"
+            f"status: {status}\n"
+            "---\n"
+        )
+        d.write_text(fm + body)
+
+    def test_session_that_died_active_reports_stub(self, tmp_path):
+        # The dominant case: close_prior writes the placeholder on this run,
+        # and the signal must name it so the caller backfills.
+        root = make_project(tmp_path, prior_status="active")
+        res = run(root, kbc=make_fake_kbc(tmp_path)[0])
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res)["PRIOR_SUMMARY"] == "stub"
+
+    def test_real_summary_reports_content(self, tmp_path):
+        root = make_project(tmp_path, prior_status="closed")
+        self._write_body(
+            root,
+            "\n# Session\n\n## Session Summary\n**Duration:** 10:00 - 12:00\n"
+            "**What happened:** Shipped the thing.\n",
+        )
+        res = run(root, kbc=make_fake_kbc(tmp_path)[0])
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res)["PRIOR_SUMMARY"] == "content"
+
+    def test_stub_left_by_an_earlier_wake_reports_stub(self, tmp_path):
+        root = make_project(tmp_path, prior_status="closed")
+        self._write_body(
+            root,
+            "\n# Session\n\nBody text.\n\n"
+            "## Session Summary — auto-closed by /wip-wake (2026-07-01T13:00:00)\n",
+        )
+        res = run(root, kbc=make_fake_kbc(tmp_path)[0])
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res)["PRIOR_SUMMARY"] == "stub"
+
+    def test_content_wins_over_a_trailing_empty_heading(self, tmp_path):
+        # An active session that had already written a summary gets the
+        # placeholder appended anyway; the real one must still win, or the
+        # backfill would overwrite a summary someone actually wrote.
+        root = make_project(tmp_path, prior_status="active")
+        self._write_body(
+            root,
+            "\n# Session\n\n## Session Summary\nReal content someone wrote.\n",
+            status="active",
+        )
+        res = run(root, kbc=make_fake_kbc(tmp_path)[0])
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res)["PRIOR_SUMMARY"] == "content"
+
+    def test_no_prior_reports_absent(self, tmp_path):
+        root = make_project(tmp_path, with_prior=False)
+        res = run(root, "--fresh")
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res)["PRIOR_SUMMARY"] == "absent"
+
+    def test_fresh_mode_reports_the_closed_prior_it_leaves_behind(self, tmp_path):
+        root = make_project(tmp_path, prior_status="closed")
+        self._write_body(
+            root,
+            "\n# Session\n\n"
+            "## Session Summary — auto-closed by /wip-wake (2026-07-01T13:00:00)\n",
+        )
+        res = run(root, "--fresh")
+        assert res.returncode == 0, res.stderr
+        # --fresh doesn't touch the prior, but a stub is still worth naming.
+        assert out_ids(res)["PRIOR_SUMMARY"] == "stub"
+
+
 class TestDryRun:
     def test_dry_run_writes_nothing(self, tmp_path):
         root = make_project(tmp_path)
@@ -252,3 +338,6 @@ class TestDryRun:
         assert not log.exists()
         # Still prints the contract lines so agents can preview.
         assert out_ids(res)["NEW_ID"] == f"BE-YAC-{FROZEN}"
+        # Reports the plan's outcome — the close it didn't perform would have
+        # left a placeholder — rather than the untouched file's state.
+        assert out_ids(res)["PRIOR_SUMMARY"] == "stub"
