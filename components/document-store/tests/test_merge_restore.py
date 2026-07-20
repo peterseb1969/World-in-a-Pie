@@ -246,9 +246,12 @@ class TestMergeInserts:
         # Planning happens at the logical level (one archived document is a
         # chain of version rows), but inserting must not drop the history.
         await _seed_namespace(mongo)
+        await _seed(mongo, "templates", [_template()])
         chain = [_document(v, data={"n": v}) for v in (1, 2, 3)]
 
-        await _run_merge(mongo, _archive({"documents": chain}))
+        await _run_merge(
+            mongo, _archive({"templates": [_template()], "documents": chain})
+        )
 
         docs = await _rows(mongo, "documents")
         assert sorted(d["version"] for d in docs) == [1, 2, 3]
@@ -953,3 +956,142 @@ class TestMergeIntoADifferentNamespace:
             return_value=reader,
         ), pytest.raises(RestoreEngineError, match="cannot re-namespace"):
             await engine.run_restore(MagicMock(), NAMESPACE)
+
+
+# ---------------------------------------------------------------------------
+# Pre-write reference check
+# ---------------------------------------------------------------------------
+
+
+class TestMergeReferenceCheck:
+    """A merge lands in a live namespace that cannot be deleted to recover.
+
+    A restore into a fresh namespace can be thrown away and retried, so it
+    verifies afterwards. A merge cannot, so it verifies first.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_reference_nothing_supplies_refuses_the_merge(self, mongo):
+        await _seed_namespace(mongo)
+        await _seed(mongo, "templates", [_template()])
+
+        with pytest.raises(RestoreEngineError, match="resolve to nothing"):
+            await _run_merge(mongo, _archive({
+                "templates": [_template()],
+                "documents": [{
+                    **_document(1),
+                    "references": [{
+                        "field_path": "supervisor",
+                        "reference_type": "document",
+                        "resolved": {"document_id": "NOT-HERE"},
+                    }],
+                }],
+            }))
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_written_when_a_reference_is_unresolvable(self, mongo):
+        await _seed_namespace(mongo)
+        await _seed(mongo, "templates", [_template()])
+
+        with pytest.raises(RestoreEngineError):
+            await _run_merge(mongo, _archive({
+                "templates": [_template()],
+                "documents": [{
+                    **_document(1),
+                    "file_references": [{"field_path": "scan", "file_id": "GONE"}],
+                }],
+            }))
+
+        assert await _rows(mongo, "documents") == []
+
+    @pytest.mark.asyncio
+    async def test_a_reference_the_target_already_holds_is_fine(self, mongo):
+        await _seed_namespace(mongo)
+        await _seed(mongo, "templates", [_template()])
+        await _seed(mongo, "documents", [_document(1, doc_id="EXISTING")])
+
+        await _run_merge(mongo, _archive({
+            "templates": [_template()],
+            "documents": [{
+                **_document(1, doc_id="D-NEW"),
+                "identity_hash": "h-new",
+                "references": [{
+                    "field_path": "supervisor",
+                    "reference_type": "document",
+                    "resolved": {"document_id": "EXISTING"},
+                }],
+            }],
+        }))
+
+        assert len(await _rows(mongo, "documents")) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_reference_this_merge_supplies_is_fine(self, mongo):
+        # Two documents arriving together, one pointing at the other: the
+        # target has neither, and the merge is still coherent.
+        await _seed_namespace(mongo)
+        await _seed(mongo, "templates", [_template()])
+
+        await _run_merge(mongo, _archive({
+            "templates": [_template()],
+            "documents": [
+                {**_document(1, doc_id="D-A"), "identity_hash": "h-a"},
+                {
+                    **_document(1, doc_id="D-B"), "identity_hash": "h-b",
+                    "references": [{
+                        "field_path": "supervisor",
+                        "reference_type": "document",
+                        "resolved": {"document_id": "D-A"},
+                    }],
+                },
+            ],
+        }))
+
+        assert len(await _rows(mongo, "documents")) == 2
+
+    @pytest.mark.asyncio
+    async def test_skipped_clashes_are_not_reference_checked(self, mongo):
+        # Under skip the archive's copy is never written, so its references
+        # are irrelevant — refusing on them would block a merge over data the
+        # target was always going to keep.
+        await _seed_namespace(mongo)
+        await _seed(mongo, "templates", [_template()])
+        await _seed(mongo, "documents", [_document(1)])
+
+        await _run_merge(
+            mongo,
+            _archive({
+                "templates": [_template()],
+                "documents": [{
+                    **_document(1),
+                    "references": [{
+                        "field_path": "supervisor",
+                        "reference_type": "document",
+                        "resolved": {"document_id": "NEVER-EXISTED"},
+                    }],
+                }],
+            }),
+            on_clash="skip",
+        )
+
+        assert len(await _rows(mongo, "documents")) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_dry_run_refuses_too(self, mongo):
+        await _seed_namespace(mongo)
+        await _seed(mongo, "templates", [_template()])
+
+        with pytest.raises(RestoreEngineError, match="resolve to nothing"):
+            await _run_merge(
+                mongo,
+                _archive({
+                    "templates": [_template()],
+                    "documents": [{
+                        **_document(1),
+                        "term_references": [
+                            {"field_path": "gender", "term_id": "T-GONE"},
+                        ],
+                    }],
+                }),
+                dry_run=True,
+            )

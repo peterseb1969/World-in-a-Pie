@@ -702,6 +702,47 @@ class DirectRestoreEngine:
                 self._emit_merge_plan(tgt, built, on_clash=on_clash, dry_run=dry_run)
                 self._enforce_merge_gates(tgt, built)
 
+                # What this merge is about to bring with it — a reference is
+                # satisfied by the target OR by something arriving alongside.
+                arriving = {
+                    "templates": {
+                        t["template_id"]
+                        for t in definitions.to_add["templates"]
+                        if t.get("template_id")
+                    },
+                    "terms": {
+                        t["term_id"]
+                        for t in definitions.to_add["terms"]
+                        if t.get("term_id")
+                    },
+                    "documents": {
+                        d["document_id"]
+                        for d in built.get(
+                            "documents", EntityPlan(entity_type="documents")
+                        ).to_insert
+                        if d.get("document_id")
+                    },
+                    "files": {
+                        f["file_id"]
+                        for f in built.get(
+                            "files", EntityPlan(entity_type="files")
+                        ).to_insert
+                        if f.get("file_id")
+                    },
+                }
+                documents_plan = built.get("documents")
+                rows_to_write: list[dict[str, Any]] = []
+                if documents_plan is not None:
+                    for head in documents_plan.to_insert:
+                        rows_to_write.extend(
+                            doc_groups.get(head.get("document_id", ""), [head])
+                        )
+                    if on_clash != "skip":
+                        rows_to_write.extend(
+                            clash.entity for clash in documents_plan.differing_clashes
+                        )
+                await self._check_merge_references(tgt, rows_to_write, arriving)
+
                 if dry_run:
                     continue
 
@@ -1161,6 +1202,97 @@ class DirectRestoreEngine:
             for name in (spec.logical_fields or spec.id_fields)
         ]
         return " ".join(parts) or "<unidentified>"
+
+    @staticmethod
+    def _referenced_ids(rows: list[dict[str, Any]]) -> dict[str, set[str]]:
+        """Every entity id the given document rows point at, by kind."""
+        wanted: dict[str, set[str]] = {
+            "templates": set(), "terms": set(),
+            "documents": set(), "files": set(),
+        }
+        for row in rows:
+            if row.get("template_id"):
+                wanted["templates"].add(row["template_id"])
+            for ref in row.get("term_references") or []:
+                if ref.get("term_id"):
+                    wanted["terms"].add(ref["term_id"])
+            for ref in row.get("references") or []:
+                resolved = ref.get("resolved") or {}
+                if resolved.get("document_id"):
+                    wanted["documents"].add(resolved["document_id"])
+            for ref in row.get("file_references") or []:
+                if ref.get("file_id"):
+                    wanted["files"].add(ref["file_id"])
+        return wanted
+
+    async def _resolvable_ids(
+        self, entity_type: str, wanted: set[str]
+    ) -> set[str]:
+        """Which of these ids the target instance already holds.
+
+        Not namespace-scoped: a document referencing one in another namespace
+        is legitimate, and shared vocabularies are the normal case.
+        """
+        if not wanted:
+            return set()
+        id_field = {
+            "templates": "template_id", "terms": "term_id",
+            "documents": "document_id", "files": "file_id",
+        }[entity_type]
+        db_name, coll_name = COLLECTION_MAP[entity_type]
+        collection = self._mongo[db_name][coll_name]
+        found: set[str] = set()
+        ids = list(wanted)
+        for start in range(0, len(ids), 500):
+            batch = ids[start:start + 500]
+            found.update(
+                await collection.distinct(id_field, {id_field: {"$in": batch}})
+            )
+        return found
+
+    async def _check_merge_references(
+        self,
+        namespace: str,
+        rows_to_write: list[dict[str, Any]],
+        arriving: dict[str, set[str]],
+    ) -> None:
+        """Refuse a merge that would import references resolving to nothing.
+
+        Checked BEFORE writing, unlike a restore's post-hoc verification, and
+        for one reason: a merge lands in a live namespace that cannot be
+        deleted to recover. A restore into a fresh namespace can be thrown
+        away and retried; a merge that pollutes production data cannot.
+
+        A reference is satisfied if the target already holds its target, or if
+        this merge is about to insert it. ``arriving`` carries the second set.
+
+        This is the same question ``integrity_service`` answers after the fact,
+        asked on a different substrate: that one walks Beanie documents through
+        the service clients, this walks raw archive dicts through direct Mongo
+        batches. The post-merge validation job remains the authoritative check.
+        """
+        if not rows_to_write:
+            return
+
+        wanted = self._referenced_ids(rows_to_write)
+        problems: list[str] = []
+        for entity_type, ids in wanted.items():
+            unresolved = ids - arriving.get(entity_type, set())
+            if not unresolved:
+                continue
+            unresolved -= await self._resolvable_ids(entity_type, unresolved)
+            for missing in sorted(unresolved)[:5]:
+                problems.append(f"{entity_type[:-1]} '{missing}'")
+
+        if problems:
+            raise RestoreEngineError(
+                f"Merge into '{namespace}' refused — incoming documents "
+                f"reference {len(problems)} entit(ies) that neither the target "
+                f"holds nor this merge supplies: {', '.join(problems[:5])}. "
+                "Merging them would import references that resolve to nothing. "
+                "Include the missing entities in the archive, or merge the "
+                "namespace that holds them first."
+            )
 
     def _enforce_merge_gates(
         self, namespace: str, plans: dict[str, EntityPlan]
