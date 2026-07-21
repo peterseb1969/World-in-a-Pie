@@ -270,12 +270,22 @@ class BatchSyncService:
 
         If an active job with an overlapping scope already exists for the
         same template, that job is returned instead of starting a second
-        concurrent writer — the trigger is idempotent. To force a restart,
-        cancel the active job first.
+        concurrent writer — the trigger is idempotent, and the returned
+        job is marked ``deduplicated`` so the caller can see it joined an
+        existing run. This holds for force too: force never cancels an
+        active job (the dedup is a correctness guard against concurrent
+        writers on one table) — cancel the active job first, then
+        re-trigger.
 
         Args:
             template_value: Template code to sync
-            force: Accepted for API compatibility; currently a no-op
+            force: Drop the template's existing reporting relations in the
+                target namespace (version tables, entity views, and any
+                legacy pre-split table) before syncing — rebuild from
+                source. Requires an explicit ``namespace``: table names
+                derive from the template value, so an instance-wide drop
+                could destroy same-valued foreign templates' tables that
+                this job would never rebuild.
             page_size: Number of documents to fetch per page
             namespace: Scope the sync to this namespace's documents
                 (None = all namespaces). Also disambiguates the template
@@ -287,12 +297,19 @@ class BatchSyncService:
         Returns:
             BatchSyncJob with job status
         """
+        if force and namespace is None:
+            raise ValueError(
+                "force=true requires an explicit namespace — the "
+                "drop-and-rebuild is namespace-scoped"
+            )
+
         if template is None:
             template = await self._fetch_template_by_value(template_value, namespace)
 
         if template is not None:
             existing = self._find_active_job(template["template_id"], namespace)
             if existing is not None:
+                existing.deduplicated = True
                 return existing
 
         job_id = str(uuid.uuid4())[:8]
@@ -391,6 +408,24 @@ class BatchSyncService:
             # foreign kb/probe tables). Foreign-template tables are created
             # lazily below, only when scoped documents actually exist.
             tpl_ns = template.get("namespace") or "wip"
+
+            # Force = drop-and-rebuild: remove the template's existing
+            # relations in the target namespace before the sync recreates
+            # them from current template shapes. Upserts cannot heal
+            # mis-shaped DDL (a table created from a same-valued foreign
+            # template rejects the namespace's own documents); only
+            # drop-and-recreate can. Guarded to templates that belong to the
+            # job's scope, mirroring the eager-ensure guard below: table
+            # names derive from the template VALUE, so a foreign same-valued
+            # template's job dropping here would race the owning template's
+            # rebuild of the identically-named tables.
+            if force and job.namespace is not None and job.namespace == tpl_ns:
+                job.dropped_relations = (
+                    await self.schema_manager.drop_relations_for_template(
+                        tpl_ns, job.template_value, config
+                    )
+                )
+
             tpl_table = None
             if job.namespace is None or job.namespace == tpl_ns:
                 tpl_table = await self.schema_manager.ensure_table_for_template(tpl_ns, template)
@@ -600,6 +635,13 @@ class BatchSyncService:
         Scoping the list to the namespace's own templates would silently
         miss those documents; a foreign-template job with no documents in
         the namespace completes after one empty page fetch instead.
+
+        With `force` (requires `namespace`), each job whose template
+        belongs to the namespace drops that template's existing reporting
+        relations before rebuilding — the namespace-wide recovery path for
+        schema-drift residue. Foreign-template jobs never drop (see
+        _run_batch_sync); a residue table under a shared value is removed
+        by the namespace's own same-valued template's job.
 
         The whole fan-out is acknowledgement-only: jobs (and the
         definitions pre-sync) run as background tasks, so the call returns

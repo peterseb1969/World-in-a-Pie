@@ -251,6 +251,15 @@ class BatchSyncJob(BaseModel):
     upsert_ms: int = 0
     sibling_ms: int = 0
     rows_written: int = 0
+    # True once a duplicate trigger was answered with this job instead of a
+    # second concurrent writer. The trigger response reads it to say honestly
+    # whether it started a job or joined one — in particular, a force trigger
+    # that lands on an active job must report that force was NOT applied.
+    deduplicated: bool = False
+    # Relations removed by a force rebuild before this job's sync ran
+    # (schema-qualified). A destructive step must be auditable from the job
+    # record, not only from service logs.
+    dropped_relations: list[str] = []
 
 
 class BatchSyncResponse(BaseModel):

@@ -1053,3 +1053,75 @@ class TestEnsureTableForTemplate:
         assert "email" in v2_cols
         v1_cols = await sm.get_existing_columns("testns", "doc_evolving2__v1")
         assert "email" not in v1_cols
+
+
+# =============================================================================
+# Force rebuild — drop_relations_for_template (CASE-738)
+# =============================================================================
+
+
+@requires_postgres
+class TestDropRelationsForTemplate:
+    """The destructive half of a force rebuild: real DDL against real PG.
+
+    Upserts cannot heal mis-shaped DDL; the recovery is dropping the
+    template's relations (views first — explicitly, never CASCADE — then
+    version tables, plus a legacy pre-split bare-name table) and letting
+    the sync recreate them from current template shapes.
+    """
+
+    async def test_drops_version_tables_and_views(self, pg_pool):
+        await init_postgres_schema(pg_pool)
+        sm = SchemaManager(pg_pool)
+        await sm.ensure_table_for_template(
+            "testns",
+            {"value": "Droppable", "version": 1,
+             "fields": [{"name": "name", "type": "string"}]},
+        )
+        await sm.ensure_table_for_template(
+            "testns",
+            {"value": "Droppable", "version": 2,
+             "fields": [{"name": "name", "type": "string"},
+                        {"name": "email", "type": "string"}]},
+        )
+        # Precondition: two version tables and both entity views exist.
+        assert set(await sm.list_version_tables("testns", "Droppable")) == {1, 2}
+        assert await sm.relation_kind("testns", "doc_droppable") == "view"
+        assert await sm.relation_kind("testns", "doc_droppable__entities") == "view"
+
+        dropped = await sm.drop_relations_for_template("testns", "Droppable")
+
+        assert set(dropped) == {
+            "testns.doc_droppable__entities",
+            "testns.doc_droppable",
+            "testns.doc_droppable__v1",
+            "testns.doc_droppable__v2",
+        }
+        assert await sm.list_version_tables("testns", "Droppable") == {}
+        assert await sm.relation_kind("testns", "doc_droppable") is None
+        assert await sm.relation_kind("testns", "doc_droppable__entities") is None
+
+    async def test_drops_legacy_presplit_table(self, pg_pool):
+        # The bare name occupied by a physical TABLE is the pre-split layout
+        # ensure_views_for_template can only report ("drop it and re-run the
+        # batch sync") — force is the supported API for that remediation.
+        await init_postgres_schema(pg_pool)
+        sm = SchemaManager(pg_pool)
+        schema = await sm.ensure_schema("testns")
+        async with pg_pool.acquire() as conn:
+            await conn.execute(
+                f'CREATE TABLE IF NOT EXISTS "{schema}"."doc_legacyshape" '
+                f"(document_id TEXT PRIMARY KEY)"
+            )
+        assert await sm.relation_kind("testns", "doc_legacyshape") == "table"
+
+        dropped = await sm.drop_relations_for_template("testns", "LegacyShape")
+
+        assert dropped == ["testns.doc_legacyshape"]
+        assert await sm.relation_kind("testns", "doc_legacyshape") is None
+
+    async def test_nothing_to_drop_returns_empty(self, pg_pool):
+        await init_postgres_schema(pg_pool)
+        sm = SchemaManager(pg_pool)
+
+        assert await sm.drop_relations_for_template("testns", "NeverExisted") == []

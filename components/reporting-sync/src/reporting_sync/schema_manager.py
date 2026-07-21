@@ -1269,3 +1269,58 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
                 with contextlib.suppress(ValueError, IndexError):
                     deleted += int(result.split()[-1])
         return deleted
+
+    async def drop_relations_for_template(
+        self,
+        namespace: str,
+        template_value: str,
+        config: ReportingConfig | None = None,
+    ) -> list[str]:
+        """Drop every reporting relation for a template in ONE namespace's
+        schema: the entity views, all per-version tables, and — if present —
+        a legacy pre-split physical table occupying the bare name (the shape
+        ``ensure_views_for_template`` can only report, never fix).
+
+        This is the destructive half of a force rebuild: mis-shaped DDL
+        (e.g. a table created from a same-valued foreign template) cannot be
+        healed by upserts, only by drop-and-recreate. Namespace-scoped by
+        design — table names derive from the template VALUE, not the
+        template_id, so a cross-schema sweep could destroy tables belonging
+        to a different template that shares the value.
+
+        Views are dropped explicitly before their tables rather than via
+        CASCADE: a dependent relation this method does not know about (a
+        user-created view over a version table) makes the transaction fail
+        loudly instead of being silently cascaded away.
+
+        Returns the dropped relation names, schema-qualified. All-or-nothing
+        (single transaction).
+        """
+        schema = self.schema_for(namespace)
+        base = self.get_table_name(template_value, config)
+        entities_view = f"{base}__entities"
+        version_tables = await self.list_version_tables(namespace, template_value, config)
+        entities_kind = await self.relation_kind(schema, entities_view)
+        bare_kind = await self.relation_kind(schema, base)
+
+        dropped: list[str] = []
+        async with self.pool.acquire() as conn, conn.transaction():
+            if entities_kind == "view":
+                await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{entities_view}"')
+                dropped.append(f"{schema}.{entities_view}")
+            if bare_kind == "view":
+                await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{base}"')
+                dropped.append(f"{schema}.{base}")
+            elif bare_kind == "table":
+                await conn.execute(f'DROP TABLE IF EXISTS "{schema}"."{base}"')
+                dropped.append(f"{schema}.{base}")
+            for version in sorted(version_tables):
+                table = version_tables[version]
+                await conn.execute(f'DROP TABLE IF EXISTS "{schema}"."{table}"')
+                dropped.append(f"{schema}.{table}")
+        if dropped:
+            logger.info(
+                f'Dropped {len(dropped)} relation(s) for "{schema}"."{base}": '
+                f"{dropped}"
+            )
+        return dropped

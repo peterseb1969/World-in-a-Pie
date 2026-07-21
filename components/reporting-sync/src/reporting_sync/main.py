@@ -911,15 +911,30 @@ async def trigger_template_metadata_sync(
     }
 
 
-def _batch_sync_response(job) -> BatchSyncResponse:
+def _batch_sync_response(job, force_requested: bool = False) -> BatchSyncResponse:
     """Response line for one job: distinguishes started / already-running /
-    failed so a deduplicated trigger is visible to the caller."""
+    failed so a deduplicated trigger is visible to the caller. A force
+    trigger that landed on an active job must say so explicitly — silently
+    joining the existing (non-dropping) run would make force a conditional
+    no-op, which is the false model the flag had before it got semantics."""
     if job.status == BatchSyncStatus.FAILED:
         message = job.error_message or f"Batch sync failed for {job.template_value}"
-    elif job.status == BatchSyncStatus.RUNNING:
+    elif job.deduplicated:
+        if force_requested:
+            message = (
+                f"Batch sync already active for {job.template_value} "
+                f"(job {job.job_id}) — force NOT applied; cancel the job "
+                f"and re-trigger"
+            )
+        else:
+            message = (
+                f"Batch sync already running for {job.template_value} — "
+                f"returning existing job"
+            )
+    elif force_requested:
         message = (
-            f"Batch sync already running for {job.template_value} — "
-            f"returning existing job"
+            f"Force rebuild started for {job.template_value} — existing "
+            f"reporting relations are dropped and rebuilt from source"
         )
     else:
         message = f"Batch sync started for {job.template_value}"
@@ -945,7 +960,14 @@ async def trigger_batch_sync_all(
     Templates with sync_enabled=false are skipped.
 
     Args:
-        force: Accepted for API compatibility; currently a no-op
+        force: Drop each in-scope template's existing reporting relations
+            (version tables, entity views, any legacy pre-split table)
+            before its sync runs — rebuild from source. Requires an
+            explicit namespace. Mid-rebuild, SQL readers see
+            relation-does-not-exist for the affected templates until their
+            jobs complete. A template with an already-active sync is NOT
+            force-rebuilt (its per-item message says so) — cancel the job
+            and re-trigger.
         page_size: Page size for document fetches
         namespace: Scope every job to this namespace's documents (the
             template list stays instance-wide — documents may be based on
@@ -957,13 +979,24 @@ async def trigger_batch_sync_all(
     if not state.batch_sync_service:
         raise HTTPException(status_code=503, detail="Batch sync service not available")
 
+    if force and namespace is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "force=true requires an explicit namespace: the "
+                "drop-and-rebuild is namespace-scoped (reporting table "
+                "names derive from the template value, so an instance-wide "
+                "drop could destroy same-valued foreign templates' tables)"
+            ),
+        )
+
     jobs = await state.batch_sync_service.start_batch_sync_all(
         force=force,
         page_size=page_size,
         namespace=namespace,
     )
 
-    return [_batch_sync_response(job) for job in jobs]
+    return [_batch_sync_response(job, force_requested=force) for job in jobs]
 
 
 @router.get("/sync/batch/jobs", response_model=list[BatchSyncJob])
@@ -1003,7 +1036,13 @@ async def trigger_batch_sync(
 
     Args:
         template_value: Template code to sync
-        force: Accepted for API compatibility; currently a no-op
+        force: Drop the template's existing reporting relations in the
+            target namespace (version tables, entity views, any legacy
+            pre-split table) before syncing — rebuild from source. This is
+            the recovery path for mis-shaped DDL that upserts cannot heal.
+            Requires an explicit namespace. Mid-rebuild, SQL readers see
+            relation-does-not-exist for this template until the job
+            completes.
         page_size: Number of documents to fetch per page (10-1000)
         namespace: Disambiguates the template lookup (a value is unique
             only within a namespace) AND scopes the sync to that
@@ -1012,13 +1051,25 @@ async def trigger_batch_sync(
 
     If a sync for this template is already active with an overlapping
     scope, the existing job is returned instead of starting a second
-    concurrent writer. Cancel the job to force a restart.
+    concurrent writer — and force is NOT applied (the response message
+    says so). Cancel the job, then re-trigger.
     """
     if not state.batch_sync_service:
         raise HTTPException(status_code=503, detail="Batch sync service not available")
 
     if page_size < 10 or page_size > 1000:
         raise HTTPException(status_code=400, detail="page_size must be between 10 and 1000")
+
+    if force and namespace is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "force=true requires an explicit namespace: the "
+                "drop-and-rebuild is namespace-scoped (reporting table "
+                "names derive from the template value, so an instance-wide "
+                "drop could destroy same-valued foreign templates' tables)"
+            ),
+        )
 
     job = await state.batch_sync_service.start_batch_sync(
         template_value=template_value,
@@ -1027,7 +1078,7 @@ async def trigger_batch_sync(
         namespace=namespace,
     )
 
-    return _batch_sync_response(job)
+    return _batch_sync_response(job, force_requested=force)
 
 
 @router.delete("/sync/batch/jobs/{job_id}")

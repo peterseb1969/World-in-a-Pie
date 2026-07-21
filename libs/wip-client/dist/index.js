@@ -1289,6 +1289,14 @@ var ReportingSyncService = class extends BaseService {
    * templates owned by other namespaces). A template whose sync is
    * already active returns its existing job instead of stacking a
    * duplicate; the trigger is idempotent and acknowledges promptly.
+   *
+   * `force` drops each in-scope template's existing reporting relations
+   * (version tables, entity views, any legacy pre-split table) before
+   * its sync — rebuild from source, the recovery path for mis-shaped
+   * DDL that upserts cannot heal. Requires `namespace` (400 without
+   * it). Mid-rebuild, SQL readers see relation-does-not-exist for the
+   * affected templates. An already-active sync is NOT force-rebuilt —
+   * its per-item message says so; cancel the job and re-trigger.
    */
   async triggerBatchSyncAll(options) {
     return this.post("/sync/batch", void 0, { ...options });
@@ -1301,6 +1309,12 @@ var ReportingSyncService = class extends BaseService {
    * only within a namespace) AND scopes the sync to that namespace's
    * documents. If an overlapping sync is already active, the existing
    * job is returned instead of a duplicate.
+   *
+   * `force` drops the template's existing reporting relations in the
+   * target namespace before syncing — rebuild from source. Requires
+   * `namespace` (400 without it). If an overlapping sync is active,
+   * force is NOT applied (the response message says so); cancel the
+   * job and re-trigger.
    */
   async triggerBatchSync(templateValue, options) {
     return this.post(`/sync/batch/${templateValue}`, void 0, { ...options });
