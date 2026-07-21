@@ -16,9 +16,11 @@ Two distinct events look like "session ending" but have different recovery seman
 |---|---|---|---|
 | `/compact` | Yes — conversation summarized; agent identity persists | **Mode 2** (running log) | Post-compaction self reads `session-updates.md` and picks up where the pre-compacted self left off. A Session Summary is wasted effort — it'd be re-overwritten next compaction. |
 | `/clear` | No — conversation reset; agent re-reads CLAUDE.md cold | **Mode 3** (session-end) | The post-clear agent has no in-conversation memory; the Session Summary is the artifact it starts from. |
-| End-of-day / new session | No — next session is a different `<PREFIX>-YYYYMMDD-HHMM` agent | **Mode 3** (session-end) | Same reason — next agent reads cold from `session.md` + `commits.md` + `session-updates.md`. |
+| Context near full (a `/clear` is coming) | No — the next session is a fresh `<PREFIX>-YYYYMMDD-HHMMSS` agent reading cold | **Mode 3** (session-end) | Same reason. The trigger is context pressure, not the clock: a session ends when the window fills, not when the day does. `/clear` is the human's call — your job is to be ready for it (Mode 2 snapshots as context fills), never to propose it on a schedule. |
 
 Reflex check: if the agent identity persists across the event, you want the running log. If a fresh agent starts from durable artifacts, you want the wrap-up.
+
+**A session is bounded by context usage, not by the calendar.** It does not end because a day ended or because the human stopped for the night — a session ID several days old means the context lasted, which is the good outcome, not an orphan. The date in the session ID (`<PREFIX>-YYYYMMDD-HHMMSS`) is a mint timestamp, not a validity range: a session keeps its birth date for its whole life, however many days that is.
 
 ### Prerequisites
 
@@ -103,7 +105,7 @@ Use for session-meaningful work that is **neither a change, an end-state, nor a 
 
 1. **Discovery without a commit anchor.** Something you learned while reading or exploring that isn't about any specific commit you're about to make. Example: "templates/bootstrap/bootstrap.server.ts.template imports ./wip-api.js and ./lib/sse.js; neither file exists in the scaffold."
 2. **Scope-trim decision mid-session.** Why you're doing less than originally pitched, when the rationale isn't architectural enough for a fireside but matters for reading the resulting commit. Example: "Trimmed Step 2 to seed-files-only because the BootstrapGate wiring requires scaffolding that does not yet exist."
-3. **Block/unblock state and pre-compaction snapshots.** "Blocked on X waiting for Y." Pre-`/compact` "where I am now" written when context is filling — so the post-compaction same-agent self has more than just the last commit message and a stale session.md. (For `/clear` or end-of-day instead, use Mode 3 — see the "Picking a mode" table at the top.)
+3. **Block/unblock state and pre-compaction snapshots.** "Blocked on X waiting for Y." Pre-`/compact` "where I am now" written when context is filling — so the post-compaction same-agent self has more than just the last commit message and a stale session.md. (For an imminent `/clear` instead, use Mode 3 — see the "Picking a mode" table at the top.)
 
 **Do NOT use for:**
 
@@ -151,7 +153,7 @@ Before writing an entry, ask: *"Would future-me reading this in 6 hours, after a
 
 ## Mode 3 — `/wip-report session-end` (wrap-up)
 
-Closes the session: writes the operator-curated `## Session Summary`, flips the local frontmatter to `status: closed`, and mirrors the closed record to kb. Use before `/clear` or genuine end-of-day — when the next agent reads `session.md` cold. Skip before `/compact`: same agent continues, Mode 2 is the right artifact (see "Picking a mode" at the top).
+Closes the session: writes the operator-curated `## Session Summary`, flips the local frontmatter to `status: closed`, and mirrors the closed record to kb. Use before `/clear` — when the next agent reads `session.md` cold. Skip before `/compact`: same agent continues, Mode 2 is the right artifact (see "Picking a mode" at the top).
 
 Three things happen, in order:
 

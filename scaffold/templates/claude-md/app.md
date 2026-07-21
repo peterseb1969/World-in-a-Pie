@@ -325,7 +325,7 @@ For session-meaningful work that is **neither a change, an end-state, nor a fire
 2. **Scope-trim decisions mid-session** — why you're doing less than originally pitched, when the rationale matters for reading the resulting commit but isn't architectural enough for a fireside.
 3. **Block/unblock state and pre-`/compact` snapshots** — written when context is filling so the post-compaction same-agent self has more than just the last commit message and a stale session.md.
 
-**`/compact` vs `/clear`:** before `/compact` (same agent continues, conversation just summarized) write a running-log entry — this mode. Before `/clear` or end-of-day (next agent starts cold from durable artifacts) run `/wip-report session-end`. The two events look similar but have different recovery semantics.
+**`/compact` vs `/clear`:** before `/compact` (same agent continues, conversation just summarized) write a running-log entry — this mode. Before `/clear` (next agent starts cold from durable artifacts) run `/wip-report session-end`. The two events look similar but have different recovery semantics. A session is bounded by context usage, not by the calendar: it does not end because a day ended or because the human stopped for the night — a session ID several days old means the context lasted, which is the good outcome. `/clear` is the human's call, made when the window nears full; never propose it on a schedule.
 
 Append-only — distinct from `session.md` (overwritten at end) and `report-<slug>.md` (per-decision). Each entry is **timestamp + short headline + one paragraph**.
 
