@@ -1527,10 +1527,11 @@ interface BackupRequest {
 /**
  * Form fields accompanying a multipart restore upload.
  *
- * Both modes are ID-preserving and write each namespace in the archive back
- * to ITSELF. A `target_namespace` differing from the archive's namespace is
- * rejected — re-namespacing needs the planned remap mode (`'fresh'` still
- * 400s server-side). `dry_run` is real, and for a merge it is exact: the
+ * `'restore'` and `'merge'` are ID-preserving and write each namespace in
+ * the archive back to itself (a merge may target a differently-named
+ * namespace). `'fresh'` re-mints every identity: it takes
+ * `target_namespace` (single-namespace archive) or `namespace_map`
+ * (multi-namespace). `dry_run` is real, and for a merge it is exact: the
  * plan is computed before anything is written, so the report is what a real
  * run would do — and it still fails on what a real run would refuse. The
  * retired toolkit-era params (`register_synonyms`, `continue_on_error`) are
@@ -1544,12 +1545,22 @@ interface BackupRequest {
 interface RestoreOptions {
     mode?: RestoreMode;
     /**
-     * Where to write. Required for `mode: 'fresh'`, which is placing new
-     * identities somewhere. For the other modes the archive manifest decides,
-     * except that a merge may use it to write into a differently-named
-     * namespace.
+     * Where to write. Required for `mode: 'fresh'` on a single-namespace
+     * archive, which is placing new identities somewhere. For the other modes
+     * the archive manifest decides, except that a merge may use it to write
+     * into a differently-named namespace.
      */
     target_namespace?: string;
+    /**
+     * Fresh only — explicit `{source: target}` for EVERY namespace in a
+     * multi-namespace archive; there is no implicit default, because an
+     * unmapped namespace restored to its old name would collide with the live
+     * original. Several sources may share one target (Registry-key collisions
+     * between them refuse at plan time); a target may equal its source name
+     * only when that namespace is absent. Pass exactly one of this or
+     * `target_namespace` for `'fresh'`.
+     */
+    namespace_map?: Record<string, string>;
     /** Merge only — resolution for a document identity the target already holds. */
     on_clash?: ClashPolicy;
     /**

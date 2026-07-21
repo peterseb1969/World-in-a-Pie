@@ -1,0 +1,150 @@
+"""Multi-namespace fresh restore planning.
+
+What multi adds over single is exactly what can fail silently: a reference
+crossing archived namespaces that stays on its old id, a Registry key built
+from an old parent id, and two sources collapsing into one target whose
+same-shaped keys would silently MERGE under the Registry's upsert instead of
+failing. These tests pin all three, plus the mapping-resolution contract.
+"""
+
+from __future__ import annotations
+
+import pytest
+from wip_toolkit.import_.remap import IDRemapper
+
+from document_store.services.backup_engine import (
+    DirectRestoreEngine,
+    RestoreEngineError,
+)
+from document_store.services.remap_restore import (
+    RemapCollisionError,
+    RemapSource,
+    plan_multi,
+)
+
+
+def _provision_factory():
+    """Per-target Registry stand-in; records every call with its target."""
+    calls: list[tuple[str, str, list[dict]]] = []
+    counter = {"n": 0}
+
+    def for_target(target: str):
+        async def provision(entity_type, keys):
+            calls.append((target, entity_type, keys))
+            ids = []
+            for _ in keys:
+                counter["n"] += 1
+                ids.append(f"NEW-{target}-{counter['n']}")
+            return ids
+        return provision
+
+    for_target.calls = calls  # type: ignore[attr-defined]
+    return for_target
+
+
+def _template(tid, value):
+    return {"template_id": tid, "value": value, "version": 1}
+
+
+def _doc(did, tid, value, data, identity_hash="hash-1"):
+    return {
+        "document_id": did, "template_id": tid, "template_value": value,
+        "data": data, "identity_hash": identity_hash, "version": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_cross_source_template_pin_follows_the_new_id():
+    """A ns-a document pinned to ns-b's template (legal on the live create
+    path) must end up on that template's NEW id — in its rewritten row AND
+    in the Registry key it was provisioned under. Source-major planning
+    fails both; a per-source id_map fails the second."""
+    tpl_b = _template("OLD-TPL-B", "SHARED_SCHEMA")
+    doc_a = _doc("OLD-DOC-A", "OLD-TPL-B", "SHARED_SCHEMA", {"name": "x"})
+
+    factory = _provision_factory()
+    plans = await plan_multi(
+        [
+            RemapSource("ns-a", "copy-a", {"documents": [doc_a]}),
+            RemapSource("ns-b", "copy-b", {"templates": [tpl_b]}),
+        ],
+        IDRemapper(),
+        factory,
+    )
+
+    new_tpl_id = plans["ns-b"].id_map["templates"]["OLD-TPL-B"]
+    row = plans["ns-a"].rows["documents"][0]
+    assert row["template_id"] == new_tpl_id
+    assert row["namespace"] == "copy-a"
+
+    doc_calls = [c for c in factory.calls if c[1] == "documents"]
+    assert doc_calls[0][0] == "copy-a"
+    assert doc_calls[0][2][0]["template_id"] == new_tpl_id
+
+
+@pytest.mark.asyncio
+async def test_n_to_one_key_collision_refuses():
+    """Same template value from two sources into one target: the Registry
+    upsert would silently merge them — the plan refuses instead."""
+    with pytest.raises(RemapCollisionError) as exc:
+        await plan_multi(
+            [
+                RemapSource("ns-a", "one", {"templates": [_template("T-A", "TRIAL")]}),
+                RemapSource("ns-b", "one", {"templates": [_template("T-B", "TRIAL")]}),
+            ],
+            IDRemapper(),
+            _provision_factory(),
+        )
+    assert "ns-a" in str(exc.value) and "ns-b" in str(exc.value)
+    assert "merge" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_n_to_one_disjoint_content_lands_in_one_target():
+    factory = _provision_factory()
+    plans = await plan_multi(
+        [
+            RemapSource("ns-a", "one", {"templates": [_template("T-A", "ALPHA")]}),
+            RemapSource("ns-b", "one", {"templates": [_template("T-B", "BETA")]}),
+        ],
+        IDRemapper(),
+        factory,
+    )
+    assert plans["ns-a"].rows["templates"][0]["namespace"] == "one"
+    assert plans["ns-b"].rows["templates"][0]["namespace"] == "one"
+    new_ids = {
+        plans["ns-a"].id_map["templates"]["T-A"],
+        plans["ns-b"].id_map["templates"]["T-B"],
+    }
+    assert len(new_ids) == 2
+
+
+def _resolve(sources, target="", nsmap=None):
+    return DirectRestoreEngine._resolve_remap_mapping(
+        None, sources, target, nsmap  # type: ignore[arg-type]
+    )
+
+
+class TestResolveRemapMapping:
+    def test_map_must_cover_every_archive_namespace(self):
+        with pytest.raises(RestoreEngineError, match="unmapped"):
+            _resolve(["a", "b"], nsmap={"a": "x"})
+
+    def test_map_must_not_name_strangers(self):
+        with pytest.raises(RestoreEngineError, match="not in the archive"):
+            _resolve(["a"], nsmap={"a": "x", "ghost": "y"})
+
+    def test_empty_target_refused(self):
+        with pytest.raises(RestoreEngineError, match="empty target"):
+            _resolve(["a"], nsmap={"a": ""})
+
+    def test_multi_namespace_without_map_refused(self):
+        with pytest.raises(RestoreEngineError, match="namespace_map"):
+            _resolve(["a", "b"], target="somewhere")
+
+    def test_single_namespace_sugar_still_works(self):
+        assert _resolve(["a"], target="copy") == {"a": "copy"}
+
+    def test_archive_order_wins_over_caller_order(self):
+        got = _resolve(["a", "b"], nsmap={"b": "y", "a": "x"})
+        assert list(got) == ["a", "b"]

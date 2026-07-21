@@ -56,6 +56,42 @@ ID_FIELDS: dict[str, str] = {
 Provisioner = Callable[[str, list[dict[str, Any]]], Awaitable[list[str]]]
 
 
+class RemapCollisionError(ValueError):
+    """Two sources collapsing into one target claim the same Registry key.
+
+    Provisioning would not fail on this — the Registry's composite key is an
+    upsert, so the second claim silently RESOLVES to the first entity's id and
+    two definitions that may disagree become one identity. Merging same-keyed
+    content is merge-mode's job; a fresh restore refuses instead.
+    """
+
+    def __init__(self, target: str, collisions: list[tuple[str, str, dict[str, Any]]]):
+        self.target = target
+        self.collisions = collisions
+        lines = "; ".join(
+            f"{entity_type} key {key} claimed by sources {srcs}"
+            for entity_type, srcs, key in collisions[:10]
+        )
+        more = f" (+{len(collisions) - 10} more)" if len(collisions) > 10 else ""
+        super().__init__(
+            f"Namespaces mapped into '{target}' collide on "
+            f"{len(collisions)} Registry key(s): {lines}{more}. Same-keyed "
+            "content cannot be freshly restored into one namespace — use "
+            "mode=merge for the overlapping namespace instead, or map it to "
+            "its own target."
+        )
+
+
+@dataclass
+class RemapSource:
+    """One archive namespace and where it is going."""
+
+    source: str
+    target: str
+    entities_by_type: dict[str, list[dict[str, Any]]]
+    identity_fields: dict[str, list[str]] = field(default_factory=dict)
+
+
 @dataclass
 class RemapPlan:
     """Old→new ids per entity type, and the rewritten rows to write."""
@@ -163,52 +199,115 @@ class RemapRestore:
         plan = RemapPlan(id_map={t: {} for t in REMAP_ENTITY_ORDER})
 
         for entity_type in REMAP_ENTITY_ORDER:
-            entities = entities_by_type.get(entity_type) or []
-            if not entities:
-                plan.rows[entity_type] = []
+            groups, keys = self._stage(plan, entity_type, entities_by_type, namespace)
+            if groups is None:
                 continue
+            new_ids = await self._provision_and_map(
+                plan, entity_type, groups, keys, self._provision
+            )
+            self._rewrite_type(plan, entity_type, groups, new_ids, namespace)
 
-            id_field = ID_FIELDS[entity_type]
-            # One identity per ENTITY, not per row. A versioned type's rows
-            # are versions of one thing: they share a composite key, so asking
-            # the Registry for an id per row collides on the second version.
-            groups: dict[str, list[dict[str, Any]]] = {}
-            for entity in entities:
-                groups.setdefault(str(entity.get(id_field)), []).append(entity)
+        self._finish(plan, entities_by_type, namespace)
+        return plan
 
-            representatives = [rows[0] for rows in groups.values()]
-            keys = [
-                composite_key_for(entity_type, entity, namespace, plan.id_map)
-                for entity in representatives
-            ]
-            new_ids = await self._provision(entity_type, keys)
-            if len(new_ids) != len(representatives):
-                raise ValueError(
-                    f"Registry provisioned {len(new_ids)} id(s) for "
-                    f"{len(representatives)} {entity_type} — refusing to guess "
-                    "which entity got which id"
-                )
+    def _stage(
+        self,
+        plan: RemapPlan,
+        entity_type: str,
+        entities_by_type: dict[str, list[dict[str, Any]]],
+        namespace: str,
+        id_map: dict[str, dict[str, str]] | None = None,
+    ) -> tuple[dict[str, list[dict[str, Any]]] | None, list[dict[str, Any]]]:
+        """Group one type's rows into entities and build their Registry keys.
 
-            for old_id, new_id in zip(groups, new_ids, strict=True):
-                if old_id and old_id != "None":
-                    plan.id_map[entity_type][old_id] = new_id
-            self._feed_remapper(entity_type, plan.id_map[entity_type])
+        One identity per ENTITY, not per row: a versioned type's rows are
+        versions of one thing — they share a composite key, so asking the
+        Registry for an id per row collides on the second version.
 
-            plan.rows[entity_type] = [
-                self._rewrite(entity_type, row, namespace, new_id)
-                for (rows, new_id) in zip(groups.values(), new_ids, strict=True)
-                for row in rows
-            ]
+        A multi-namespace plan passes the GLOBAL old→new map as ``id_map``: a
+        document may be pinned to another archived namespace's template
+        (legal — verified against the live create path), so its Registry key
+        must embed that template's NEW id, which this source's own plan never
+        learns.
+        """
+        entities = entities_by_type.get(entity_type) or []
+        if not entities:
+            plan.rows[entity_type] = []
+            return None, []
 
-        # Term relations carry no id of their own — they ARE their endpoints,
-        # so they only need those rewritten.
+        id_field = ID_FIELDS[entity_type]
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for entity in entities:
+            groups.setdefault(str(entity.get(id_field)), []).append(entity)
+
+        keys = [
+            composite_key_for(
+                entity_type, rows[0], namespace,
+                id_map if id_map is not None else plan.id_map,
+            )
+            for rows in groups.values()
+        ]
+        return groups, keys
+
+    async def _provision_and_map(
+        self,
+        plan: RemapPlan,
+        entity_type: str,
+        groups: dict[str, list[dict[str, Any]]],
+        keys: list[dict[str, Any]],
+        provision: Provisioner,
+    ) -> list[str]:
+        """Provision one staged type and record the old→new mapping.
+
+        Rewriting is a separate step (`_rewrite_type`): in a multi-namespace
+        plan, a type's rows may reference same-type entities from another
+        source, so no source's rows may be rewritten until every source's
+        mapping for the type has been fed to the shared remapper.
+        """
+        new_ids = await provision(entity_type, keys)
+        if len(new_ids) != len(groups):
+            raise ValueError(
+                f"Registry provisioned {len(new_ids)} id(s) for "
+                f"{len(groups)} {entity_type} — refusing to guess "
+                "which entity got which id"
+            )
+
+        for old_id, new_id in zip(groups, new_ids, strict=True):
+            if old_id and old_id != "None":
+                plan.id_map[entity_type][old_id] = new_id
+        self._feed_remapper(entity_type, plan.id_map[entity_type])
+        return new_ids
+
+    def _rewrite_type(
+        self,
+        plan: RemapPlan,
+        entity_type: str,
+        groups: dict[str, list[dict[str, Any]]],
+        new_ids: list[str],
+        namespace: str,
+    ) -> None:
+        plan.rows[entity_type] = [
+            self._rewrite(entity_type, row, namespace, new_id)
+            for (rows, new_id) in zip(groups.values(), new_ids, strict=True)
+            for row in rows
+        ]
+
+    def _finish(
+        self,
+        plan: RemapPlan,
+        entities_by_type: dict[str, list[dict[str, Any]]],
+        namespace: str,
+    ) -> None:
+        """Term relations + identity-hash recompute — the post-mapping tail.
+
+        Term relations carry no id of their own — they ARE their endpoints,
+        so they only need those rewritten.
+        """
         plan.rows["term_relations"] = [
             {**self._remapper.remap_term_relation(relation), "namespace": namespace}
             for relation in entities_by_type.get("term_relations") or []
         ]
-
         plan.rehashed_documents = self._recompute_identity_hashes(plan, namespace)
-        return plan
 
     def _feed_remapper(self, entity_type: str, mapping: dict[str, str]) -> None:
         add = {
@@ -272,3 +371,98 @@ class RemapRestore:
                 row["identity_hash"] = recomputed
                 rehashed += 1
         return rehashed
+
+
+async def plan_multi(
+    sources: list[RemapSource],
+    remapper: Any,
+    provision_for_target: Callable[[str], Provisioner],
+) -> dict[str, RemapPlan]:
+    """Plan a fresh restore of several namespaces at once, keyed by source.
+
+    Type-major on purpose: for each entity type, EVERY source is provisioned
+    and fed into the one shared remapper before ANY source's rows of that
+    type are rewritten. Source-major ordering would rewrite namespace A's
+    documents while namespace B's terms and documents still map to nothing,
+    leaving every cross-namespace reference on its old id. One remapper
+    suffices because canonical ids are globally unique.
+
+    N:1 mappings (several sources into one target) are checked for Registry
+    key collisions per type BEFORE provisioning — the Registry key is an
+    upsert, so a collision would silently merge two entities rather than
+    fail (RemapCollisionError explains the refusal). Empty document keys are
+    exempt: an identity-less document opts out of dedup by design.
+    """
+    planners = {
+        s.source: RemapRestore(
+            provision_for_target(s.target),
+            remapper,
+            identity_fields_by_template=s.identity_fields,
+        )
+        for s in sources
+    }
+    plans = {
+        s.source: RemapPlan(id_map={t: {} for t in REMAP_ENTITY_ORDER})
+        for s in sources
+    }
+
+    global_id_map: dict[str, dict[str, str]] = {
+        t: {} for t in REMAP_ENTITY_ORDER
+    }
+    for entity_type in REMAP_ENTITY_ORDER:
+        staged: list[tuple[RemapSource, dict, list]] = []
+        for s in sources:
+            groups, keys = planners[s.source]._stage(
+                plans[s.source], entity_type, s.entities_by_type, s.target,
+                id_map=global_id_map,
+            )
+            if groups is not None:
+                staged.append((s, groups, keys))
+
+        _check_target_collisions(entity_type, staged)
+
+        rewrites: list[tuple[RemapSource, dict, list[str]]] = []
+        for s, groups, keys in staged:
+            new_ids = await planners[s.source]._provision_and_map(
+                plans[s.source], entity_type, groups, keys,
+                provision_for_target(s.target),
+            )
+            global_id_map[entity_type].update(plans[s.source].id_map[entity_type])
+            rewrites.append((s, groups, new_ids))
+
+        # Only now — with every source's mapping for this type fed — rewrite.
+        for s, groups, new_ids in rewrites:
+            planners[s.source]._rewrite_type(
+                plans[s.source], entity_type, groups, new_ids, s.target
+            )
+
+    for s in sources:
+        planners[s.source]._finish(plans[s.source], s.entities_by_type, s.target)
+    return plans
+
+
+def _check_target_collisions(
+    entity_type: str,
+    staged: list[tuple[RemapSource, dict[str, list[dict[str, Any]]], list[dict[str, Any]]]],
+) -> None:
+    """Refuse duplicate non-empty Registry keys within one target namespace."""
+    import json as _json
+
+    claimed: dict[tuple[str, str], list[str]] = {}
+    for s, _groups, keys in staged:
+        for key in keys:
+            if not key:
+                continue  # identity-less document — no dedup key to collide on
+            canon = _json.dumps(key, sort_keys=True, default=str)
+            claimed.setdefault((s.target, canon), []).append(s.source)
+
+    collisions = [
+        (entity_type, ", ".join(sorted(set(srcs))), _json.loads(canon))
+        for (target, canon), srcs in claimed.items()
+        if len(set(srcs)) > 1
+    ]
+    if collisions:
+        target = next(
+            t for (t, canon), srcs in claimed.items() if len(set(srcs)) > 1
+        )
+        raise RemapCollisionError(target, collisions)

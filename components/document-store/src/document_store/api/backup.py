@@ -343,6 +343,19 @@ async def start_restore(
             "identities somewhere."
         ),
     ),
+    namespace_map: str | None = Form(
+        None,
+        description=(
+            "Fresh only — JSON object mapping EVERY archived namespace to "
+            "its target, e.g. {\"ns-a\": \"copy-a\", \"ns-b\": \"copy-a\"}. "
+            "Required for multi-namespace archives (there is no implicit "
+            "default: an unmapped namespace restored to its old name would "
+            "collide with the live original). Several sources may share one "
+            "target; Registry-key collisions between them refuse at plan "
+            "time. A target may equal its source name only when that "
+            "namespace is empty or absent."
+        ),
+    ),
     on_clash: str = Form(
         "skip",
         description=(
@@ -409,12 +422,43 @@ async def start_restore(
                 f"Invalid mode '{mode}' — must be 'restore', 'merge' or 'fresh'"
             ),
         )
-    if mode == "fresh" and not target_namespace:
+
+    parsed_namespace_map: dict[str, str] | None = None
+    if namespace_map is not None:
+        if mode != "fresh":
+            raise HTTPException(
+                status_code=400,
+                detail="namespace_map applies only to mode='fresh'",
+            )
+        try:
+            parsed_namespace_map = json.loads(namespace_map)
+        except json.JSONDecodeError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"namespace_map is not valid JSON: {e}",
+            ) from e
+        if not isinstance(parsed_namespace_map, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) and v
+            for k, v in parsed_namespace_map.items()
+        ) or not parsed_namespace_map:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "namespace_map must be a non-empty JSON object of "
+                    "{source: target} strings"
+                ),
+            )
+        # New identities land in every mapped target — each needs admin.
+        for target in set(parsed_namespace_map.values()):
+            await check_namespace_permission(identity, target, "admin")
+
+    if mode == "fresh" and not target_namespace and not parsed_namespace_map:
         raise HTTPException(
             status_code=400,
             detail=(
                 "mode='fresh' mints new identities, so it must be told where "
-                "to put them: pass target_namespace."
+                "to put them: pass target_namespace (single-namespace "
+                "archive) or namespace_map."
             ),
         )
 
@@ -484,6 +528,7 @@ async def start_restore(
     options = {
         "mode": mode,
         "target_namespace": effective_target,
+        "namespace_map": parsed_namespace_map,
         "on_clash": on_clash,
         "add_missing": add_missing,
         "extend_terminologies": extend_terminologies,

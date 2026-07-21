@@ -872,6 +872,8 @@ var DocumentStoreService = class extends BaseService {
     if (options.mode !== void 0) form.append("mode", options.mode);
     if (options.target_namespace !== void 0)
       form.append("target_namespace", options.target_namespace);
+    if (options.namespace_map !== void 0)
+      form.append("namespace_map", JSON.stringify(options.namespace_map));
     if (options.on_clash !== void 0) form.append("on_clash", options.on_clash);
     if (options.add_missing !== void 0)
       form.append("add_missing", String(options.add_missing));

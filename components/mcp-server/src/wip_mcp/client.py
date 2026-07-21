@@ -4,6 +4,7 @@ Wraps httpx to provide a unified interface to all WIP services.
 Handles the bulk response envelope so callers get clean results.
 """
 
+import json
 import os
 from typing import Any, cast
 
@@ -1524,6 +1525,7 @@ class WipClient:
         archive_path: str,
         mode: str = "restore",
         target_namespace: str | None = None,
+        namespace_map: dict[str, str] | None = None,
         on_clash: str = "skip",
         add_missing: bool = False,
         extend_terminologies: bool = False,
@@ -1564,6 +1566,9 @@ class WipClient:
             # The endpoint derives the target from the archive manifest for
             # restore and merge; sending an empty value would override it.
             data.pop("target_namespace")
+        if namespace_map:
+            # Multipart form field — the route parses the JSON object.
+            data["namespace_map"] = json.dumps(namespace_map)
         if mode == "merge":
             data["on_clash"] = on_clash
             data["add_missing"] = str(add_missing).lower()

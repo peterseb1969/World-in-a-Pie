@@ -41,7 +41,13 @@ from .merge_definitions import (
     DefinitionsPlanner,
 )
 from .merge_plan import MERGE_ENTITY_SPECS, EntityPlan, MergePlanner
-from .remap_restore import REMAP_ENTITY_ORDER, RemapPlan, RemapRestore
+from .remap_restore import (
+    REMAP_ENTITY_ORDER,
+    RemapPlan,
+    RemapRestore,
+    RemapSource,
+    plan_multi,
+)
 from .reporting_client import ReportingSyncClient
 
 logger = logging.getLogger("document_store.backup_engine")
@@ -579,8 +585,9 @@ class DirectRestoreEngine:
     async def run_remap(
         self,
         archive_path: Path,
-        target_namespace: str,
+        target_namespace: str = "",
         *,
+        namespace_map: dict[str, str] | None = None,
         skip_documents: bool = False,
         skip_files: bool = False,
         batch_size: int = 500,
@@ -593,8 +600,15 @@ class DirectRestoreEngine:
         is what lets a namespace be restored beside the one it came from —
         two live copies cannot share a canonical id.
 
-        The target must be empty, as for a plain restore. What differs is that
-        the archive's own registry entries are NOT written: provisioning
+        A single-namespace archive takes ``target_namespace``. A
+        multi-namespace archive takes ``namespace_map`` — an explicit
+        ``{source: target}`` for EVERY namespace it carries; several sources
+        may share one target (Registry-key collisions between them refuse at
+        plan time), and cross-namespace references between archived
+        namespaces follow their entities to the new names.
+
+        The targets must be empty, as for a plain restore. What differs is
+        that the archive's own registry entries are NOT written: provisioning
         creates the entries, so importing the archived ones would duplicate
         every identity under its old id.
 
@@ -609,7 +623,7 @@ class DirectRestoreEngine:
         nothing to say yet. Verify afterwards — `check_reporting_parity` and
         the namespace validation job both exist for that.
         """
-        if not target_namespace:
+        if not target_namespace and not namespace_map:
             raise RestoreEngineError(
                 "A remap restore needs a target namespace — it mints new "
                 "identities, so it must be told where to put them."
@@ -618,78 +632,93 @@ class DirectRestoreEngine:
         with ArchiveReader(archive_path) as reader:
             manifest = reader.read_manifest()
             sources = self._archive_namespaces(reader, manifest)
-            if len(sources) > 1:
-                raise RestoreEngineError(
-                    "This archive carries "
-                    f"{len(sources)} namespaces {sources}. A remap restore "
-                    "needs an explicit source-to-target mapping for each one; "
-                    "only single-namespace archives are supported so far."
-                )
-            src = sources[0]
+            mapping = self._resolve_remap_mapping(
+                sources, target_namespace, namespace_map
+            )
+            targets = list(dict.fromkeys(mapping.values()))
 
             self._emit(
                 "start",
-                f"Starting remap restore of '{src}' into '{target_namespace}'",
+                "Starting remap restore: "
+                + ", ".join(f"'{s}' → '{t}'" for s, t in mapping.items()),
                 percent=0,
             )
-            self._emit("phase_validate", "Checking the target is empty", percent=2)
-            await self._check_namespace_empty(target_namespace)
-            await self._check_reporting_precondition(
-                target_namespace, False, dry_run=dry_run
-            )
+            self._emit("phase_validate", "Checking the targets are empty", percent=2)
+            for target in targets:
+                await self._check_namespace_empty(target)
+                await self._check_reporting_precondition(
+                    target, False, dry_run=dry_run
+                )
 
-            entry = {e.prefix: e for e in manifest.namespaces}.get(src)
-            ns_config = entry.namespace_config if entry else manifest.namespace_config
+            entries = {e.prefix: e for e in manifest.namespaces}
+            remap_sources: list[RemapSource] = []
+            for src, target in mapping.items():
+                entities_by_type: dict[str, list[dict[str, Any]]] = {}
+                for entity_type in (*REMAP_ENTITY_ORDER, "term_relations"):
+                    if skip_documents and entity_type == "documents":
+                        continue
+                    if skip_files and entity_type == "files":
+                        continue
+                    rows = []
+                    for row in reader.read_entities(entity_type, namespace=src):
+                        row.pop("_id", None)
+                        rows.append(row)
+                    entities_by_type[entity_type] = rows
 
-            entities_by_type: dict[str, list[dict[str, Any]]] = {}
-            for entity_type in (*REMAP_ENTITY_ORDER, "term_relations"):
-                if skip_documents and entity_type == "documents":
-                    continue
-                if skip_files and entity_type == "files":
-                    continue
-                rows = []
-                for row in reader.read_entities(entity_type, namespace=src):
-                    row.pop("_id", None)
-                    rows.append(row)
-                entities_by_type[entity_type] = rows
+                # Identity fields come from the ARCHIVE's templates: the
+                # target has none yet, and these are the definitions the
+                # documents were written against.
+                identity_fields = {
+                    template.get("value"): list(template.get("identity_fields") or [])
+                    for template in entities_by_type.get("templates", [])
+                    if template.get("value")
+                }
+                remap_sources.append(RemapSource(
+                    source=src, target=target,
+                    entities_by_type=entities_by_type,
+                    identity_fields=identity_fields,
+                ))
 
-            # Identity fields come from the ARCHIVE's templates: the target has
-            # none yet, and these are the definitions the documents were
-            # written against.
-            identity_fields = {
-                template.get("value"): list(template.get("identity_fields") or [])
-                for template in entities_by_type.get("templates", [])
-                if template.get("value")
-            }
-
-            # The namespace has to exist before anything is provisioned: the
+            # The namespaces have to exist before anything is provisioned: the
             # Registry mints ids per the TARGET namespace's id_config, and
-            # refuses outright for a namespace it does not know. Creating it
+            # refuses outright for a namespace it does not know. Creating them
             # is a write, so a dry run skips it — which is exactly why the dry
             # run cannot catch this ordering: its stand-in provisioner never
-            # asks the Registry anything.
+            # asks the Registry anything. For several sources collapsing into
+            # one target, the FIRST source's config wins (archive order);
+            # allowed_external_refs naming other archive sources are rewritten
+            # through the mapping, names outside the archive are kept.
             if not dry_run:
-                await self._upsert_namespace(target_namespace, ns_config)
+                for target in targets:
+                    first_src = next(s for s, t in mapping.items() if t == target)
+                    entry = entries.get(first_src)
+                    ns_config = (
+                        entry.namespace_config if entry
+                        else manifest.namespace_config
+                    )
+                    ns_config = self._rewrite_ns_config_refs(ns_config, mapping)
+                    await self._upsert_namespace(target, ns_config)
 
             remapper = IDRemapper()
-            planner = RemapRestore(
-                self._dry_run_provisioner() if dry_run
-                else self._registry_provisioner(target_namespace),
-                remapper,
-                identity_fields_by_template=identity_fields,
+            provision_for = (
+                (lambda _target: self._dry_run_provisioner()) if dry_run
+                else self._registry_provisioner
             )
-            plan = await planner.plan(entities_by_type, target_namespace)
+            plans = await plan_multi(remap_sources, remapper, provision_for)
 
             phase = "phase_dry_run" if dry_run else "phase_remap"
-            for entity_type, count in plan.summary().items():
-                if count:
-                    self._emit(phase, f"[{target_namespace}] {entity_type}: {count}")
+            for src, target in mapping.items():
+                for entity_type, count in plans[src].summary().items():
+                    if count:
+                        self._emit(phase, f"[{src} → {target}] {entity_type}: {count}")
             self.result = {
                 "mode": "fresh",
                 "dry_run": dry_run,
-                "source_namespace": src,
-                "target_namespace": target_namespace,
-                "planned": plan.summary(),
+                "namespace_map": dict(mapping),
+                # Kept for single-namespace callers; absent shape-change risk.
+                "source_namespace": next(iter(mapping)),
+                "target_namespace": mapping[next(iter(mapping))],
+                "planned": {src: plans[src].summary() for src in mapping},
             }
 
             if dry_run:
@@ -702,23 +731,106 @@ class DirectRestoreEngine:
                 )
                 return
 
-            await self._write_remapped(target_namespace, plan, batch_size)
+            for src, target in mapping.items():
+                await self._write_remapped(target, plans[src], batch_size)
 
             if not skip_files and self._storage:
-                await self._remap_blobs(reader, plan.id_map["files"])
+                merged_file_map: dict[str, str] = {}
+                for plan in plans.values():
+                    merged_file_map.update(plan.id_map["files"])
+                await self._remap_blobs(reader, merged_file_map)
 
-            await self._activate_entries(
-                target_namespace,
-                [
-                    new_id
-                    for mapping in plan.id_map.values()
-                    for new_id in mapping.values()
-                ],
-            )
-            await self._record_provenance(target_namespace, src, manifest)
+            for target in targets:
+                await self._activate_entries(
+                    target,
+                    [
+                        new_id
+                        for src, t in mapping.items() if t == target
+                        for m in plans[src].id_map.values()
+                        for new_id in m.values()
+                    ],
+                )
+            for src, target in mapping.items():
+                await self._record_provenance(target, src, manifest)
 
         self._emit("complete", "Remap restore complete", percent=100,
                    details=self.result)
+
+    def _resolve_remap_mapping(
+        self,
+        sources: list[str],
+        target_namespace: str,
+        namespace_map: dict[str, str] | None,
+    ) -> dict[str, str]:
+        """Settle where every archived namespace goes.
+
+        Without a map, only a single-namespace archive is unambiguous and
+        target_namespace names its destination. With a map, EVERY archived
+        namespace must be mapped — restoring an unmapped namespace to its old
+        name by default would silently collide with the live original, which
+        is the exact accident this mode exists to avoid. A target equal to
+        the source name is legal precisely when that namespace is absent (the
+        per-target emptiness check enforces it). Several sources may share
+        one target; key collisions refuse at plan time.
+        """
+        if namespace_map:
+            unknown = sorted(set(namespace_map) - set(sources))
+            unmapped = sorted(set(sources) - set(namespace_map))
+            if unknown or unmapped:
+                problems = []
+                if unmapped:
+                    problems.append(f"unmapped archive namespace(s) {unmapped}")
+                if unknown:
+                    problems.append(f"mapped but not in the archive: {unknown}")
+                raise RestoreEngineError(
+                    "namespace_map must cover exactly the archive's "
+                    f"namespaces {sorted(sources)} — " + "; ".join(problems)
+                )
+            invalid = {s: t for s, t in namespace_map.items() if not t}
+            if invalid:
+                raise RestoreEngineError(
+                    f"namespace_map has empty target(s) for {sorted(invalid)}"
+                )
+            # Preserve archive order, not caller order — provisioning order
+            # and the N:1 first-source-config rule both key off it.
+            return {s: namespace_map[s] for s in sources}
+
+        if not target_namespace:
+            raise RestoreEngineError(
+                "A remap restore needs a target namespace — it mints new "
+                "identities, so it must be told where to put them."
+            )
+        if len(sources) > 1:
+            raise RestoreEngineError(
+                f"This archive carries {len(sources)} namespaces {sources}. "
+                "A remap restore needs an explicit source-to-target mapping "
+                "for each one: pass namespace_map."
+            )
+        return {sources[0]: target_namespace}
+
+    @staticmethod
+    def _rewrite_ns_config_refs(
+        ns_config: Any, mapping: dict[str, str]
+    ) -> Any:
+        """allowed_external_refs that name other ARCHIVE namespaces must
+        follow them to their new names; names outside the archive (e.g.
+        'wip') are kept as-is."""
+        if not ns_config:
+            return ns_config
+        config = dict(ns_config) if isinstance(ns_config, dict) else ns_config
+        refs = (
+            config.get("allowed_external_refs")
+            if isinstance(config, dict)
+            else getattr(config, "allowed_external_refs", None)
+        )
+        if not refs:
+            return ns_config
+        rewritten = [mapping.get(r, r) for r in refs]
+        if isinstance(config, dict):
+            config["allowed_external_refs"] = rewritten
+            return config
+        config.allowed_external_refs = rewritten
+        return config
 
     def _registry_provisioner(self, namespace: str) -> Any:
         """Ask the Registry for ids. It is the identity authority; a service

@@ -3849,6 +3849,7 @@ async def start_restore(
     archive_path: str,
     mode: str = "restore",
     target_namespace: str | None = None,
+    namespace_map: dict[str, str] | None = None,
     on_clash: str = "skip",
     add_missing: bool = False,
     extend_terminologies: bool = False,
@@ -3872,11 +3873,19 @@ async def start_restore(
     and file is registered anew with a Registry-minted id, and every reference
     between them is rewritten. That is what lets a namespace be restored
     BESIDE the one it came from — two live copies cannot share a canonical id.
-    It needs target_namespace, and that namespace must be empty. Identities
-    are provisioned as reserved (which do not resolve) and activated in one
-    step at the end, so a job that dies partway leaves an invisible,
-    reconcilable namespace rather than a half-live one. Single-namespace
-    archives only for now.
+    A single-namespace archive takes target_namespace; a multi-namespace
+    archive takes namespace_map, an explicit {source: target} covering EVERY
+    namespace it carries — there is no implicit default, because an unmapped
+    namespace restored to its old name would collide with the live original.
+    Several sources may map to one target; Registry-key collisions between
+    them (e.g. the same template value on both sides) refuse at plan time —
+    merging same-keyed content is what mode='merge' is for. Cross-namespace
+    references between archived namespaces follow their entities to the new
+    names. Every target must be empty; a target may equal its source name
+    only when that namespace is absent. Identities are provisioned as
+    reserved (which do not resolve) and activated in one step at the end, so
+    a job that dies partway leaves an invisible, reconcilable namespace
+    rather than a half-live one.
 
     mode='merge' takes the archive as a delta against a namespace that already
     holds data, in two passes. First it checks that both sides' DEFINITIONS —
@@ -3922,9 +3931,13 @@ async def start_restore(
         archive_path: Local filesystem path to the .zip archive to upload.
         mode: 'restore' (empty target, ids preserved), 'merge' (existing
             namespace, ids preserved) or 'fresh' (new namespace, ids re-minted).
-        target_namespace: Where to write. Required for 'fresh'; for the other
-            modes the archive manifest decides, and merge may use it to write
-            into a differently-named namespace.
+        target_namespace: Where to write. For 'fresh' on a single-namespace
+            archive this is required; for the other modes the archive
+            manifest decides, and merge may use it to write into a
+            differently-named namespace.
+        namespace_map: Fresh only — {source: target} for EVERY namespace in
+            a multi-namespace archive. Mutually completing with
+            target_namespace: pass exactly one of the two for 'fresh'.
         on_clash: Merge only — 'skip', 'overwrite' or 'newer' for clashing
             documents.
         add_missing: Merge only — insert terminologies and templates the
@@ -3944,6 +3957,7 @@ async def start_restore(
             archive_path=archive_path,
             mode=mode,
             target_namespace=target_namespace,
+            namespace_map=namespace_map,
             on_clash=on_clash,
             add_missing=add_missing,
             extend_terminologies=extend_terminologies,

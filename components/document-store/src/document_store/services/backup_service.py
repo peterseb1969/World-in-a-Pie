@@ -525,6 +525,7 @@ def make_direct_restore_runner(
             await engine.run_remap(
                 Path(archive_path),
                 target_namespace=opts.get("target_namespace", ""),
+                namespace_map=opts.get("namespace_map"),
                 skip_documents=opts.get("skip_documents", False),
                 skip_files=opts.get("skip_files", False),
                 batch_size=opts.get("batch_size", 500),

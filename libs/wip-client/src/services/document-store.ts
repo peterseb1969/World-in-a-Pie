@@ -350,6 +350,8 @@ export class DocumentStoreService extends BaseService {
     if (options.mode !== undefined) form.append('mode', options.mode)
     if (options.target_namespace !== undefined)
       form.append('target_namespace', options.target_namespace)
+    if (options.namespace_map !== undefined)
+      form.append('namespace_map', JSON.stringify(options.namespace_map))
     if (options.on_clash !== undefined) form.append('on_clash', options.on_clash)
     if (options.add_missing !== undefined)
       form.append('add_missing', String(options.add_missing))

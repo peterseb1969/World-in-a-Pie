@@ -1490,7 +1490,10 @@ class TestRemapRestore:
         assert engine_result["dry_run"] is True
         assert engine_result["source_namespace"] == NAMESPACE
         assert engine_result["target_namespace"] == REMAP_TARGET
-        assert engine_result["planned"]["terminologies"] == 1
+        assert engine_result["namespace_map"] == {NAMESPACE: REMAP_TARGET}
+        # planned is keyed by source namespace — a multi-namespace restore
+        # reports each source's counts separately.
+        assert engine_result["planned"][NAMESPACE]["terminologies"] == 1
         await _clear_remap_target(mongo)
 
     @pytest.mark.asyncio
