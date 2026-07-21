@@ -532,7 +532,7 @@ async def test_batch_template_value_route(http_client: AsyncClient, mock_batch_s
     data = resp.json()
     assert data["template_value"] == "person"
     mock_batch_service.start_batch_sync.assert_awaited_once_with(
-        template_value="person", force=False, page_size=100, namespace=None,
+        template_value="person", force=False, page_size=1000, namespace=None,
     )
 
 

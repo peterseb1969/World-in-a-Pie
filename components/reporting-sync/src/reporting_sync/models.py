@@ -240,6 +240,17 @@ class BatchSyncJob(BaseModel):
     documents_failed: int = 0
     current_page: int = 0
     error_message: str | None = None
+    # Per-phase wall-time accumulators (milliseconds) + row count. Permanent
+    # instrumentation rather than one-off profiling: this path's regressions
+    # were invisible until an operator timed a 13-minute sync by hand, and a
+    # job that reports where its time went makes the next one a read of the
+    # job record. rows_written counts physical row upserts — with
+    # flatten_arrays a document is a row MULTIPLE, so documents_synced alone
+    # misattributes throughput.
+    fetch_ms: int = 0
+    upsert_ms: int = 0
+    sibling_ms: int = 0
+    rows_written: int = 0
 
 
 class BatchSyncResponse(BaseModel):

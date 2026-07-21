@@ -935,7 +935,7 @@ def _batch_sync_response(job) -> BatchSyncResponse:
 @router.post("/sync/batch", response_model=list[BatchSyncResponse])
 async def trigger_batch_sync_all(
     force: bool = False,
-    page_size: int = 100,
+    page_size: int = 1000,
     namespace: str | None = None,
 ) -> list[BatchSyncResponse]:
     """
@@ -992,7 +992,7 @@ async def get_batch_job(job_id: str) -> BatchSyncJob:
 async def trigger_batch_sync(
     template_value: str,
     force: bool = False,
-    page_size: int = 100,
+    page_size: int = 1000,
     namespace: str | None = None,
 ) -> BatchSyncResponse:
     """

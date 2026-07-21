@@ -11,6 +11,7 @@ Responsibilities:
 import asyncio
 import json
 import logging
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -260,7 +261,7 @@ class BatchSyncService:
         self,
         template_value: str,
         force: bool = False,
-        page_size: int = 100,
+        page_size: int = 1000,
         namespace: str | None = None,
         template: dict[str, Any] | None = None,
     ) -> BatchSyncJob:
@@ -400,10 +401,29 @@ class BatchSyncService:
             template_id = template["template_id"]
             strategy = config.sync_strategy.value
 
+            # Physical version tables known per namespace: one catalog query
+            # per namespace per job, kept current with tables this job
+            # ensures. The per-document sibling cleanup below consults this
+            # instead of re-asking information_schema for every document —
+            # at restore scale that was one catalog query per document,
+            # almost always to learn there are no siblings at all.
+            ns_versions_on_disk: dict[str, set[int]] = {}
+
+            async def _versions_on_disk(ns: str) -> set[int]:
+                if ns not in ns_versions_on_disk:
+                    ns_versions_on_disk[ns] = set(
+                        (await self.schema_manager.list_version_tables(
+                            ns, job.template_value, config
+                        )).keys()
+                    )
+                return ns_versions_on_disk[ns]
+
             # Fetch first page to get total count
+            fetch_started = time.monotonic()
             documents, total = await self._fetch_documents(
                 template_id, 1, page_size, namespace=job.namespace
             )
+            job.fetch_ms += int((time.monotonic() - fetch_started) * 1000)
             job.total_documents = total
 
             if total == 0:
@@ -424,9 +444,11 @@ class BatchSyncService:
             page = 1
             while True:
                 if page > 1:
+                    fetch_started = time.monotonic()
                     documents, _ = await self._fetch_documents(
                         template_id, page, page_size, namespace=job.namespace
                     )
+                    job.fetch_ms += int((time.monotonic() - fetch_started) * 1000)
 
                 if not documents:
                     break
@@ -448,10 +470,14 @@ class BatchSyncService:
                             )
                         )
                         touched_namespaces.add(ns)
+                        # Keep the sibling-table knowledge current with the
+                        # table this job just ensured.
+                        (await _versions_on_disk(ns)).add(doc_tv)
 
                 # Process documents in this page, routing each to its
                 # (schema, version table) and transforming against the
                 # template version it validated against.
+                upsert_started = time.monotonic()
                 async with self.pool.acquire() as conn:
                     for document in documents:
                         try:
@@ -466,34 +492,48 @@ class BatchSyncService:
                                     table_name, row, strategy
                                 )
                                 await conn.execute(sql, *values)
+                                job.rows_written += 1
                             job.documents_synced += 1
                         except Exception as e:
                             logger.error(
                                 f"Error syncing document {document.get('document_id')}: {e}"
                             )
                             job.documents_failed += 1
+                job.upsert_ms += int((time.monotonic() - upsert_started) * 1000)
 
                 # Version-crossing upserts leave stale rows in sibling
                 # version tables under latest_only — pair the page's upserts
-                # with the sibling cleanup per document.
+                # with the sibling cleanup per document. Only when a sibling
+                # table actually exists, though: the common case (single
+                # version table, every restore) has nothing to clean, and
+                # consulting the per-job knowledge instead of the catalog
+                # keeps the check free per document. A sibling table created
+                # by a concurrent writer mid-job is outside this knowledge —
+                # that writer pairs its own upserts with its own cleanup, so
+                # nothing is orphaned by skipping here.
                 if strategy == "latest_only":
+                    sibling_started = time.monotonic()
                     for document in documents:
                         ns = document.get("namespace") or "wip"
                         doc_tv = int(document.get("template_version", latest_version))
                         doc_id = document.get("document_id")
-                        if doc_id:
+                        if doc_id and ((await _versions_on_disk(ns)) - {doc_tv}):
                             await self.schema_manager.delete_from_sibling_version_tables(
                                 ns, job.template_value, config,
                                 keep_version=doc_tv, document_id=doc_id,
                             )
+                    job.sibling_ms += int((time.monotonic() - sibling_started) * 1000)
 
                 # Check if we've processed all pages
                 if len(documents) < page_size:
                     break
                 page += 1
 
-                # Small delay to avoid overwhelming the services
-                await asyncio.sleep(0.1)
+                # Yield to the event loop between pages. The flat 100 ms
+                # sleep that used to sit here predates the per-template job
+                # concurrency caps and cost ~2.6 min of pure sleep on a
+                # 156k-document sync.
+                await asyncio.sleep(0)
 
             # Rebuild the entity views for every namespace this job touched —
             # the union membership may have grown with lazily created version
@@ -547,7 +587,7 @@ class BatchSyncService:
     async def start_batch_sync_all(
         self,
         force: bool = False,
-        page_size: int = 100,
+        page_size: int = 1000,
         namespace: str | None = None,
     ) -> list[BatchSyncJob]:
         """

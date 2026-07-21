@@ -257,3 +257,73 @@ class TestReserve:
         assert (await _lookup_by_id(client, auth_headers, entry_id))["status"] == (
             "found"
         )
+
+
+class TestBulkActivationContract:
+    """The activate endpoint is bulk-shaped internally (one classify read +
+    one guarded update_many) since the per-entry loop made activation ~50% of
+    restore wall time. These pin the per-item contract the rewrite must keep.
+    """
+
+    @pytest.mark.asyncio
+    async def test_mixed_batch_reports_every_item_with_aligned_indices(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        # One call carrying every classification at once: fresh, already
+        # active, unknown, and non-reserved-non-active. The composed response
+        # must line up per item exactly as the per-entry loop's did.
+        fresh, aging = await _provision(client, auth_headers, count=2)
+        await _activate(client, auth_headers, [aging])
+
+        from registry.models.entry import RegistryEntry
+        retired = (await _provision(client, auth_headers, count=1))[0]
+        entry = await RegistryEntry.find_one({"entry_id": retired})
+        entry.status = "inactive"
+        await entry.save()
+
+        result = await _activate(
+            client, auth_headers, [fresh, aging, "no-such-entry", retired]
+        )
+
+        by_index = {r["index"]: r for r in result["results"]}
+        assert by_index[0]["status"] == "activated"
+        assert by_index[0]["entry_id"] == fresh
+        assert by_index[1]["status"] == "already_active"
+        assert by_index[2]["status"] == "not_found"
+        assert by_index[3]["status"] == "error"
+        assert "inactive" in by_index[3]["error"]
+        assert result["total"] == 4
+        assert result["activated"] == 1
+        assert result["errors"] == 2
+
+    @pytest.mark.asyncio
+    async def test_duplicate_ids_in_one_request_do_not_misreport(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        # update_many matches each document once; a repeated id must not trip
+        # the modified-count cross-check into a phantom concurrency error.
+        (entry_id,) = await _provision(client, auth_headers)
+
+        result = await _activate(client, auth_headers, [entry_id, entry_id])
+
+        statuses = [r["status"] for r in result["results"]]
+        assert "error" not in statuses
+        assert "activated" in statuses
+        assert result["errors"] == 0
+        assert (await _lookup_by_id(client, auth_headers, entry_id))[
+            "status"
+        ] == "found"
+
+    @pytest.mark.asyncio
+    async def test_large_batch_activates_fully(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        # The restore engine sends 500-id chunks; exercise a full-size one so
+        # the $in paths run at their real shape, not toy size.
+        entry_ids = await _provision(client, auth_headers, count=500)
+
+        result = await _activate(client, auth_headers, entry_ids)
+
+        assert result["activated"] == 500
+        assert result["errors"] == 0
+        assert all(r["status"] == "activated" for r in result["results"])

@@ -823,48 +823,117 @@ async def activate_entries(
     items: list[ActivateItem] = Body(...),
     identity: UserIdentity = Depends(require_api_key)
 ) -> ActivateBulkResponse:
-    """Activate reserved entries, making them resolvable."""
-    results = []
+    """Activate reserved entries, making them resolvable.
+
+    Bulk-shaped internally: one classify read plus one guarded update_many,
+    instead of a find_one + full-document save per item. A restore activates
+    hundreds of thousands of identities in one job, and two sequential round
+    trips per identity made this flip the largest single chunk of restore
+    wall time (~50% measured at 235k identities, ~775µs each). The per-item
+    status contract (activated / already_active / not_found / error) is
+    preserved — it is composed from the classify read rather than from
+    per-item lookups.
+
+    The update filter re-asserts status == "reserved", so an entry whose
+    status changes between the read and the write is simply not matched;
+    the modified-count cross-check below turns any such shortfall into
+    per-item errors instead of silently reporting it activated.
+    """
+    results: list[ActivateItemResponse] = []
     activated_count = 0
     error_count = 0
 
-    for i, item in enumerate(items):
+    requested_ids = [item.entry_id for item in items]
+    entries_coll = RegistryEntry.get_motor_collection()
+    status_by_id: dict[str, str] = {}
+    try:
+        # Projected to id + status: activation touches hundreds of thousands
+        # of entries per restore, and pulling full documents (synonyms
+        # included) just to read status would spend the bulk win on payload.
+        async for doc in entries_coll.find(
+            {"entry_id": {"$in": requested_ids}},
+            {"entry_id": 1, "status": 1, "_id": 0},
+        ):
+            status_by_id[doc["entry_id"]] = doc["status"]
+    except Exception as e:
+        return ActivateBulkResponse(
+            results=[
+                ActivateItemResponse(
+                    index=i, status="error", entry_id=item.entry_id, error=str(e)
+                )
+                for i, item in enumerate(items)
+            ],
+            total=len(items),
+            activated=0,
+            errors=len(items),
+        )
+
+    # Deduplicate: a repeated entry_id must not skew the modified-count
+    # cross-check (update_many matches each document once).
+    reserved_ids = [
+        eid for eid in dict.fromkeys(requested_ids)
+        if status_by_id.get(eid) == "reserved"
+    ]
+    flipped_ids: set[str] = set(reserved_ids)
+    if reserved_ids:
         try:
-            entry = await RegistryEntry.find_one({"entry_id": item.entry_id})
+            update_result = await entries_coll.update_many(
+                {"entry_id": {"$in": reserved_ids}, "status": "reserved"},
+                {"$set": {
+                    "status": "active",
+                    "updated_at": datetime.now(UTC),
+                }},
+            )
+            if update_result.modified_count != len(reserved_ids):
+                # A concurrent status change between classify and update: the
+                # guard kept the write safe; re-read to find which ids missed.
+                still_reserved: set[str] = set()
+                async for doc in entries_coll.find(
+                    {"entry_id": {"$in": reserved_ids}, "status": "reserved"},
+                    {"entry_id": 1, "_id": 0},
+                ):
+                    still_reserved.add(doc["entry_id"])
+                flipped_ids -= still_reserved
+        except Exception as e:
+            return ActivateBulkResponse(
+                results=[
+                    ActivateItemResponse(
+                        index=i, status="error", entry_id=item.entry_id,
+                        error=str(e),
+                    )
+                    for i, item in enumerate(items)
+                ],
+                total=len(items),
+                activated=0,
+                errors=len(items),
+            )
 
-            if not entry:
-                results.append(ActivateItemResponse(
-                    index=i, status="not_found", entry_id=item.entry_id
-                ))
-                error_count += 1
-                continue
-
-            if entry.status == "active":
-                results.append(ActivateItemResponse(
-                    index=i, status="already_active", entry_id=item.entry_id
-                ))
-                continue
-
-            if entry.status != "reserved":
-                results.append(ActivateItemResponse(
-                    index=i, status="error", entry_id=item.entry_id,
-                    error=f"Cannot activate entry with status '{entry.status}'"
-                ))
-                error_count += 1
-                continue
-
-            entry.status = "active"
-            entry.updated_at = datetime.now(UTC)
-            await entry.save()
-
+    for i, item in enumerate(items):
+        known_status = status_by_id.get(item.entry_id)
+        if known_status is None:
+            results.append(ActivateItemResponse(
+                index=i, status="not_found", entry_id=item.entry_id
+            ))
+            error_count += 1
+        elif known_status == "active":
+            results.append(ActivateItemResponse(
+                index=i, status="already_active", entry_id=item.entry_id
+            ))
+        elif known_status != "reserved":
+            results.append(ActivateItemResponse(
+                index=i, status="error", entry_id=item.entry_id,
+                error=f"Cannot activate entry with status '{known_status}'"
+            ))
+            error_count += 1
+        elif item.entry_id in flipped_ids:
             results.append(ActivateItemResponse(
                 index=i, status="activated", entry_id=item.entry_id
             ))
             activated_count += 1
-
-        except Exception as e:
+        else:
             results.append(ActivateItemResponse(
-                index=i, status="error", entry_id=item.entry_id, error=str(e)
+                index=i, status="error", entry_id=item.entry_id,
+                error="Entry status changed concurrently; still reserved after update"
             ))
             error_count += 1
 
