@@ -3,9 +3,9 @@
 import hashlib
 import math
 from datetime import UTC, datetime, timedelta
-from beanie.odm.enums import SortDirection
 
 import httpx
+from beanie.odm.enums import SortDirection
 
 # Import identity helper from wip-auth
 from ..api.auth import get_identity_string

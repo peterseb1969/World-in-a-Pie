@@ -44,7 +44,6 @@ from .merge_plan import MERGE_ENTITY_SPECS, EntityPlan, MergePlanner
 from .remap_restore import (
     REMAP_ENTITY_ORDER,
     RemapPlan,
-    RemapRestore,
     RemapSource,
     plan_multi,
 )
