@@ -2469,6 +2469,11 @@ interface BatchSyncRequest {
 interface BatchSyncJob {
     job_id: string;
     template_value: string;
+    /** Resolved canonical template id — a value alone is ambiguous when
+     * several namespaces share it. */
+    template_id?: string | null;
+    /** Document scope: null = all namespaces, set = only that namespace. */
+    namespace?: string | null;
     status: BatchSyncStatus;
     started_at: string | null;
     completed_at: string | null;
@@ -2481,6 +2486,8 @@ interface BatchSyncJob {
 interface BatchSyncResponse {
     job_id: string;
     template_value: string;
+    /** Document scope the job was started with (null = all namespaces). */
+    namespace?: string | null;
     status: BatchSyncStatus;
     message: string;
 }
@@ -2687,18 +2694,31 @@ declare class ReportingSyncService extends BaseService {
      * Returns one BatchSyncResponse per template; jobs run async on
      * the server. Poll `listBatchJobs()` or `getBatchJob(job_id)` for
      * progress.
+     *
+     * `namespace` scopes every job to that namespace's documents (the
+     * template list stays instance-wide — documents may be based on
+     * templates owned by other namespaces). A template whose sync is
+     * already active returns its existing job instead of stacking a
+     * duplicate; the trigger is idempotent and acknowledges promptly.
      */
     triggerBatchSyncAll(options?: {
         force?: boolean;
         page_size?: number;
+        namespace?: string;
     }): Promise<BatchSyncResponse[]>;
     /**
      * Trigger a batch sync for a single template (by value).
      * Job runs async; poll `getBatchJob(job_id)` for progress.
+     *
+     * `namespace` disambiguates the template lookup (a value is unique
+     * only within a namespace) AND scopes the sync to that namespace's
+     * documents. If an overlapping sync is already active, the existing
+     * job is returned instead of a duplicate.
      */
     triggerBatchSync(templateValue: string, options?: {
         force?: boolean;
         page_size?: number;
+        namespace?: string;
     }): Promise<BatchSyncResponse>;
     /**
      * Synchronous batch sync for the terminologies entity table.

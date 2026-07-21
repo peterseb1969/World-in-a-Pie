@@ -38,6 +38,9 @@ class BatchSyncService:
         self.schema_manager = SchemaManager(postgres_pool)
         self._jobs: dict[str, BatchSyncJob] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}
+        # Strong refs to fire-and-forget tasks (definitions pre-sync) so the
+        # event loop cannot garbage-collect them mid-flight.
+        self._background_tasks: set[asyncio.Task] = set()
 
     async def _fetch_template(self, template_id: str) -> dict[str, Any] | None:
         """Fetch template from Template Store."""
@@ -56,12 +59,24 @@ class BatchSyncService:
             logger.error(f"Error fetching template {template_id}: {e}")
             return None
 
-    async def _fetch_template_by_value(self, template_value: str) -> dict[str, Any] | None:
-        """Fetch template by value from Template Store."""
+    async def _fetch_template_by_value(
+        self, template_value: str, namespace: str | None = None
+    ) -> dict[str, Any] | None:
+        """Fetch template by value from Template Store.
+
+        A value is unique only within a namespace — without `namespace` the
+        lookup searches all accessible namespaces and returns an arbitrary
+        match when the value is shared (guaranteed after a remap restore).
+        Pass it whenever the caller knows which namespace it means.
+        """
         try:
+            params: dict[str, str] = {}
+            if namespace:
+                params["namespace"] = namespace
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     f"{settings.template_store_url}/api/template-store/templates/by-value/{template_value}",
+                    params=params,
                     headers={"X-API-Key": settings.api_key},
                     timeout=30.0,
                 )
@@ -177,23 +192,32 @@ class BatchSyncService:
         page: int,
         page_size: int,
         status: str = "active",
+        namespace: str | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """
         Fetch documents from Document Store.
+
+        `namespace` scopes to that namespace's documents. The filter is on
+        the DOCUMENT, not the template: a document may be based on a
+        template owned by another namespace, so resolving the template
+        does not scope its documents.
 
         Returns:
             Tuple of (documents, total_count)
         """
         try:
+            params: dict[str, Any] = {
+                "template_id": template_id,
+                "status": status,
+                "page": page,
+                "page_size": page_size,
+            }
+            if namespace:
+                params["namespace"] = namespace
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     f"{settings.document_store_url}/api/document-store/documents",
-                    params={
-                        "template_id": template_id,
-                        "status": status,
-                        "page": page,
-                        "page_size": page_size,
-                    },
+                    params=params,
                     headers={"X-API-Key": settings.api_key},
                     timeout=60.0,
                 )
@@ -211,34 +235,86 @@ class BatchSyncService:
         reporting_data = template.get("reporting", {})
         return ReportingConfig(**reporting_data) if reporting_data else ReportingConfig()
 
+    def _find_active_job(
+        self, template_id: str, namespace: str | None
+    ) -> BatchSyncJob | None:
+        """Find an active (pending/running) job whose scope OVERLAPS.
+
+        Overlap, not equality: a whole-instance job (namespace=None) writes
+        every namespace's tables, so it conflicts with any scoped job for
+        the same template, and vice versa. Two concurrent writers on one
+        table interleave upserts (and, under latest_only, sibling-version
+        deletes) from different page cursors — last-writer-wins ordering is
+        undefined. Dedup is a correctness guard, not just waste avoidance.
+        """
+        for job in self._jobs.values():
+            if job.template_id != template_id:
+                continue
+            if job.status not in (BatchSyncStatus.PENDING, BatchSyncStatus.RUNNING):
+                continue
+            if job.namespace is None or namespace is None or job.namespace == namespace:
+                return job
+        return None
+
     async def start_batch_sync(
         self,
         template_value: str,
         force: bool = False,
         page_size: int = 100,
+        namespace: str | None = None,
+        template: dict[str, Any] | None = None,
     ) -> BatchSyncJob:
         """
         Start a batch sync job for a template.
 
+        If an active job with an overlapping scope already exists for the
+        same template, that job is returned instead of starting a second
+        concurrent writer — the trigger is idempotent. To force a restart,
+        cancel the active job first.
+
         Args:
             template_value: Template code to sync
-            force: Force re-sync even if table has data
+            force: Accepted for API compatibility; currently a no-op
             page_size: Number of documents to fetch per page
+            namespace: Scope the sync to this namespace's documents
+                (None = all namespaces). Also disambiguates the template
+                lookup when the value exists in several namespaces.
+            template: Pre-fetched template dict (batch-all passes the
+                listed template so each job binds to an exact template_id
+                instead of re-resolving by value)
 
         Returns:
             BatchSyncJob with job status
         """
+        if template is None:
+            template = await self._fetch_template_by_value(template_value, namespace)
+
+        if template is not None:
+            existing = self._find_active_job(template["template_id"], namespace)
+            if existing is not None:
+                return existing
+
         job_id = str(uuid.uuid4())[:8]
         job = BatchSyncJob(
             job_id=job_id,
             template_value=template_value,
+            template_id=template.get("template_id") if template else None,
+            namespace=namespace,
             status=BatchSyncStatus.PENDING,
         )
         self._jobs[job_id] = job
 
+        if template is None:
+            # Preserve the async-error contract: an unknown template is a
+            # FAILED job, not an HTTP error from the trigger.
+            job.status = BatchSyncStatus.FAILED
+            job.error_message = f"Template {template_value} not found"
+            job.completed_at = datetime.now(UTC)
+            return job
+
         # Start async task
         task = asyncio.create_task(
-            self._run_batch_sync(job, force, page_size)
+            self._run_batch_sync(job, template, force, page_size)
         )
         self._running_tasks[job_id] = task
 
@@ -247,6 +323,7 @@ class BatchSyncService:
     async def _run_batch_sync(
         self,
         job: BatchSyncJob,
+        template: dict[str, Any],
         force: bool,
         page_size: int,
     ) -> None:
@@ -255,14 +332,6 @@ class BatchSyncService:
         job.started_at = datetime.now(UTC)
 
         try:
-            # Fetch template
-            template = await self._fetch_template_by_value(job.template_value)
-            if not template:
-                job.status = BatchSyncStatus.FAILED
-                job.error_message = f"Template {job.template_value} not found"
-                job.completed_at = datetime.now(UTC)
-                return
-
             # Resolve inherited fields from parent templates
             template = await self._resolve_template_fields(template)
 
@@ -310,30 +379,42 @@ class BatchSyncService:
                 version_templates[version] = resolved
                 return resolved
 
-            # Eagerly ensure the latest version's table in the template's own
-            # namespace even when there are zero documents: a freshly
-            # bootstrapped namespace (templates, no docs yet) must be
-            # SQL-queryable — "no rows yet" is an empty table (and view), not
-            # relation-does-not-exist.
+            # Eagerly ensure the latest version's table even when there are
+            # zero documents: a freshly bootstrapped namespace (templates, no
+            # docs yet) must be SQL-queryable — "no rows yet" is an empty
+            # table (and view), not relation-does-not-exist. ONLY when the
+            # template belongs to the job's scope, though: a scoped run
+            # iterates the instance-wide template list, and eagerly ensuring
+            # foreign templates would stamp every namespace's empty tables
+            # into the target schema (this shipped once — ct-1000 grew 31
+            # foreign kb/probe tables). Foreign-template tables are created
+            # lazily below, only when scoped documents actually exist.
             tpl_ns = template.get("namespace") or "wip"
-            tpl_table = await self.schema_manager.ensure_table_for_template(tpl_ns, template)
-            if tpl_table:
-                ns_tables[(tpl_ns, latest_version)] = tpl_table
-                touched_namespaces.add(tpl_ns)
+            tpl_table = None
+            if job.namespace is None or job.namespace == tpl_ns:
+                tpl_table = await self.schema_manager.ensure_table_for_template(tpl_ns, template)
+                if tpl_table:
+                    ns_tables[(tpl_ns, latest_version)] = tpl_table
+                    touched_namespaces.add(tpl_ns)
 
             template_id = template["template_id"]
             strategy = config.sync_strategy.value
 
             # Fetch first page to get total count
-            documents, total = await self._fetch_documents(template_id, 1, page_size)
+            documents, total = await self._fetch_documents(
+                template_id, 1, page_size, namespace=job.namespace
+            )
             job.total_documents = total
 
             if total == 0:
                 job.status = BatchSyncStatus.COMPLETED
                 job.completed_at = datetime.now(UTC)
+                detail = (
+                    f"(table {tpl_table} ensured empty)" if tpl_table
+                    else "(foreign template — no table created in scope)"
+                )
                 logger.info(
-                    f"No documents to sync for {job.template_value} "
-                    f"(table {tpl_table} ensured empty)"
+                    f"No documents to sync for {job.template_value} {detail}"
                 )
                 return
 
@@ -343,7 +424,9 @@ class BatchSyncService:
             page = 1
             while True:
                 if page > 1:
-                    documents, _ = await self._fetch_documents(template_id, page, page_size)
+                    documents, _ = await self._fetch_documents(
+                        template_id, page, page_size, namespace=job.namespace
+                    )
 
                 if not documents:
                     break
@@ -443,26 +526,57 @@ class BatchSyncService:
             job.completed_at = datetime.now(UTC)
             logger.error(f"Batch sync failed for {job.template_value}: {e}", exc_info=True)
 
+    async def _sync_definitions(
+        self, namespace: str | None, page_size: int
+    ) -> None:
+        """Terminology + term sync, run as a background companion of
+        batch-all. Not a dependency of the document jobs: the document
+        upsert path transforms the document JSON against its template and
+        never reads the terminologies/terms tables."""
+        logger.info("Batch syncing terminologies...")
+        term_results = await self.batch_sync_terminologies(
+            namespace=namespace, page_size=page_size
+        )
+        logger.info(f"Terminologies: {term_results}")
+        logger.info("Batch syncing terms...")
+        terms_results = await self.batch_sync_terms(
+            namespace=namespace, page_size=page_size
+        )
+        logger.info(f"Terms: {terms_results}")
+
     async def start_batch_sync_all(
         self,
         force: bool = False,
         page_size: int = 100,
+        namespace: str | None = None,
     ) -> list[BatchSyncJob]:
         """
         Start batch sync for all templates.
 
+        With `namespace`, every job is scoped to that namespace's DOCUMENTS
+        — but the template list stays instance-wide, because a document may
+        be based on a template owned by another namespace (verified: the
+        create path accepts a foreign template by UUID or qualified value).
+        Scoping the list to the namespace's own templates would silently
+        miss those documents; a foreign-template job with no documents in
+        the namespace completes after one empty page fetch instead.
+
+        The whole fan-out is acknowledgement-only: jobs (and the
+        definitions pre-sync) run as background tasks, so the call returns
+        after one template-list round-trip regardless of template count.
+
         Returns:
             List of BatchSyncJob for each template
         """
-        # Sync terminologies and terms first (reference data)
-        logger.info("Batch syncing terminologies...")
-        term_results = await self.batch_sync_terminologies()
-        logger.info(f"Terminologies: {term_results}")
-        logger.info("Batch syncing terms...")
-        terms_results = await self.batch_sync_terms()
-        logger.info(f"Terms: {terms_results}")
+        # Terminologies + terms sync runs concurrently — the document jobs
+        # do not read those tables, so there is no ordering dependency and
+        # no reason to block the acknowledgement on it.
+        definitions_task = asyncio.create_task(
+            self._sync_definitions(namespace, page_size)
+        )
+        self._background_tasks.add(definitions_task)
+        definitions_task.add_done_callback(self._background_tasks.discard)
 
-        # Then sync documents per template
         templates = await self._list_templates()
         jobs = []
 
@@ -477,11 +591,11 @@ class BatchSyncService:
                 logger.info(f"Skipping {template_value}: sync disabled")
                 continue
 
-            job = await self.start_batch_sync(template_value, force, page_size)
+            job = await self.start_batch_sync(
+                template_value, force, page_size,
+                namespace=namespace, template=template,
+            )
             jobs.append(job)
-
-            # Small delay between starting jobs
-            await asyncio.sleep(0.5)
 
         return jobs
 

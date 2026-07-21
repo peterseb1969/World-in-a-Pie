@@ -1267,6 +1267,12 @@ var ReportingSyncService = class extends BaseService {
    * Returns one BatchSyncResponse per template; jobs run async on
    * the server. Poll `listBatchJobs()` or `getBatchJob(job_id)` for
    * progress.
+   *
+   * `namespace` scopes every job to that namespace's documents (the
+   * template list stays instance-wide — documents may be based on
+   * templates owned by other namespaces). A template whose sync is
+   * already active returns its existing job instead of stacking a
+   * duplicate; the trigger is idempotent and acknowledges promptly.
    */
   async triggerBatchSyncAll(options) {
     return this.post("/sync/batch", void 0, { ...options });
@@ -1274,6 +1280,11 @@ var ReportingSyncService = class extends BaseService {
   /**
    * Trigger a batch sync for a single template (by value).
    * Job runs async; poll `getBatchJob(job_id)` for progress.
+   *
+   * `namespace` disambiguates the template lookup (a value is unique
+   * only within a namespace) AND scopes the sync to that namespace's
+   * documents. If an overlapping sync is already active, the existing
+   * job is returned instead of a duplicate.
    */
   async triggerBatchSync(templateValue, options) {
     return this.post(`/sync/batch/${templateValue}`, void 0, { ...options });

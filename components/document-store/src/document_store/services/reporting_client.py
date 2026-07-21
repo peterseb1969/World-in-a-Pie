@@ -61,12 +61,17 @@ class ReportingSyncClient:
             return None
 
     async def trigger_batch_sync(self, namespace: str) -> bool:
-        """Kick a full namespace batch sync. True when accepted."""
+        """Kick a full namespace batch sync. True when accepted.
+
+        The namespace travels as a query parameter — reporting-sync's
+        route reads it from the query string; a JSON body is silently
+        ignored by FastAPI and the sync degrades to whole-instance.
+        """
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
                     f"{self._base}/api/reporting-sync/sync/batch",
-                    json={"namespace": namespace},
+                    params={"namespace": namespace},
                     headers=self._headers(),
                 )
                 return resp.status_code < 300

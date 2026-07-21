@@ -175,23 +175,21 @@ class TestZeroDocumentMaterialization:
         from reporting_sync.batch_sync import BatchSyncJob, BatchSyncService, BatchSyncStatus
 
         svc = BatchSyncService(pg_pool)
-        svc._fetch_template_by_value = AsyncMock(
-            return_value={
-                "template_id": "TPL-VAL-1",
-                "value": "val_template",
-                "namespace": "wip-val",
-                "version": 1,
-                "fields": [{"name": "name", "type": "string"}],
-                "identity_fields": ["name"],
-                "reporting": {"sync_enabled": True},
-            }
-        )
+        template = {
+            "template_id": "TPL-VAL-1",
+            "value": "val_template",
+            "namespace": "wip-val",
+            "version": 1,
+            "fields": [{"name": "name", "type": "string"}],
+            "identity_fields": ["name"],
+            "reporting": {"sync_enabled": True},
+        }
         svc._fetch_documents = AsyncMock(return_value=([], 0))
 
         job = BatchSyncJob(
             job_id="t636", template_value="val_template", status=BatchSyncStatus.PENDING
         )
-        await svc._run_batch_sync(job, force=False, page_size=100)
+        await svc._run_batch_sync(job, template, force=False, page_size=100)
 
         assert job.status == BatchSyncStatus.COMPLETED
         assert await _table_in_schema(pg_pool, "wip-val", "doc_val_template")

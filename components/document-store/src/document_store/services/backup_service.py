@@ -60,9 +60,12 @@ async def _trigger_reporting_batch_sync(namespace: str) -> None:
     api_key = cast(str, os.getenv("REGISTRY_API_KEY") or os.getenv("WIP_AUTH_LEGACY_API_KEY", ""))
     try:
         async with _httpx.AsyncClient(timeout=10) as client:
+            # Query parameter, not JSON body — the route reads the query
+            # string; a body is silently ignored and the sync degrades to
+            # whole-instance.
             resp = await client.post(
                 f"{url}/api/reporting-sync/sync/batch",
-                json={"namespace": namespace},
+                params={"namespace": namespace},
                 headers={"X-API-Key": api_key},
             )
             logger.info(

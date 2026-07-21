@@ -220,10 +220,18 @@ class BatchSyncStatus(StrEnum):
 
 
 class BatchSyncJob(BaseModel):
-    """Batch sync job status."""
+    """Batch sync job status.
+
+    `namespace` is the job's document scope: None = documents from every
+    namespace; set = only that namespace's documents. `template_id` is the
+    resolved canonical id — two namespaces can share a template value, so
+    the value alone does not identify what a job is syncing.
+    """
 
     job_id: str
     template_value: str
+    template_id: str | None = None
+    namespace: str | None = None
     status: BatchSyncStatus
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -239,6 +247,7 @@ class BatchSyncResponse(BaseModel):
 
     job_id: str
     template_value: str
+    namespace: str | None = None
     status: BatchSyncStatus
     message: str
 

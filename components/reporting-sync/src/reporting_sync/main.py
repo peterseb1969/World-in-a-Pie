@@ -37,6 +37,7 @@ from .models import (
     AlertsResponse,
     BatchSyncJob,
     BatchSyncResponse,
+    BatchSyncStatus,
     ConsumerInfo,
     HealthResponse,
     MetricsResponse,
@@ -910,16 +911,48 @@ async def trigger_template_metadata_sync(
     }
 
 
+def _batch_sync_response(job) -> BatchSyncResponse:
+    """Response line for one job: distinguishes started / already-running /
+    failed so a deduplicated trigger is visible to the caller."""
+    if job.status == BatchSyncStatus.FAILED:
+        message = job.error_message or f"Batch sync failed for {job.template_value}"
+    elif job.status == BatchSyncStatus.RUNNING:
+        message = (
+            f"Batch sync already running for {job.template_value} — "
+            f"returning existing job"
+        )
+    else:
+        message = f"Batch sync started for {job.template_value}"
+    return BatchSyncResponse(
+        job_id=job.job_id,
+        template_value=job.template_value,
+        namespace=job.namespace,
+        status=job.status,
+        message=message,
+    )
+
+
 @router.post("/sync/batch", response_model=list[BatchSyncResponse])
 async def trigger_batch_sync_all(
     force: bool = False,
     page_size: int = 100,
+    namespace: str | None = None,
 ) -> list[BatchSyncResponse]:
     """
     Trigger batch sync for all templates.
 
     This fetches all templates and syncs their documents to PostgreSQL.
     Templates with sync_enabled=false are skipped.
+
+    Args:
+        force: Accepted for API compatibility; currently a no-op
+        page_size: Page size for document fetches
+        namespace: Scope every job to this namespace's documents (the
+            template list stays instance-wide — documents may be based on
+            templates owned by other namespaces). Omit to sync everything.
+
+    Returns promptly: jobs run in the background; a template whose sync is
+    already active gets its existing job back instead of a duplicate.
     """
     if not state.batch_sync_service:
         raise HTTPException(status_code=503, detail="Batch sync service not available")
@@ -927,17 +960,10 @@ async def trigger_batch_sync_all(
     jobs = await state.batch_sync_service.start_batch_sync_all(
         force=force,
         page_size=page_size,
+        namespace=namespace,
     )
 
-    return [
-        BatchSyncResponse(
-            job_id=job.job_id,
-            template_value=job.template_value,
-            status=job.status,
-            message=f"Batch sync started for {job.template_value}",
-        )
-        for job in jobs
-    ]
+    return [_batch_sync_response(job) for job in jobs]
 
 
 @router.get("/sync/batch/jobs", response_model=list[BatchSyncJob])
@@ -967,6 +993,7 @@ async def trigger_batch_sync(
     template_value: str,
     force: bool = False,
     page_size: int = 100,
+    namespace: str | None = None,
 ) -> BatchSyncResponse:
     """
     Trigger a batch sync for a specific template.
@@ -976,8 +1003,16 @@ async def trigger_batch_sync(
 
     Args:
         template_value: Template code to sync
-        force: Force re-sync even if table already has data
+        force: Accepted for API compatibility; currently a no-op
         page_size: Number of documents to fetch per page (10-1000)
+        namespace: Disambiguates the template lookup (a value is unique
+            only within a namespace) AND scopes the sync to that
+            namespace's documents. Omit for the value's single owner and
+            all namespaces' documents.
+
+    If a sync for this template is already active with an overlapping
+    scope, the existing job is returned instead of starting a second
+    concurrent writer. Cancel the job to force a restart.
     """
     if not state.batch_sync_service:
         raise HTTPException(status_code=503, detail="Batch sync service not available")
@@ -989,14 +1024,10 @@ async def trigger_batch_sync(
         template_value=template_value,
         force=force,
         page_size=page_size,
+        namespace=namespace,
     )
 
-    return BatchSyncResponse(
-        job_id=job.job_id,
-        template_value=job.template_value,
-        status=job.status,
-        message=f"Batch sync started for {template_value}",
-    )
+    return _batch_sync_response(job)
 
 
 @router.delete("/sync/batch/jobs/{job_id}")

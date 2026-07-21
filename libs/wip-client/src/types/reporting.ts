@@ -213,6 +213,11 @@ export interface BatchSyncRequest {
 export interface BatchSyncJob {
   job_id: string
   template_value: string
+  /** Resolved canonical template id — a value alone is ambiguous when
+   * several namespaces share it. */
+  template_id?: string | null
+  /** Document scope: null = all namespaces, set = only that namespace. */
+  namespace?: string | null
   status: BatchSyncStatus
   started_at: string | null
   completed_at: string | null
@@ -226,6 +231,8 @@ export interface BatchSyncJob {
 export interface BatchSyncResponse {
   job_id: string
   template_value: string
+  /** Document scope the job was started with (null = all namespaces). */
+  namespace?: string | null
   status: BatchSyncStatus
   message: string
 }
