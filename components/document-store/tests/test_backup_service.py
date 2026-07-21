@@ -478,6 +478,34 @@ class TestDryRunSideEffects:
         sync.assert_called_once()
         validate.assert_called_once()
 
+    async def test_multi_target_restore_syncs_every_target(self, fresh_job):
+        """A fresh restore with several write targets (namespace_map) syncs
+        EACH of them — job.namespace alone would cover only the first, and
+        the remaining targets would silently never reach PostgreSQL."""
+        fresh_job.kind = BackupJobKind.RESTORE
+        fresh_job.status = BackupJobStatus.RUNNING
+        fresh_job.options = {"dry_run": False}
+        fresh_job.namespace = "target-a"
+        fresh_job.namespaces = ["target-a", "target-b"]
+        await fresh_job.save()
+
+        with (
+            patch.object(
+                backup_service, "_trigger_reporting_batch_sync", new=AsyncMock()
+            ) as sync,
+            patch.object(
+                backup_service, "trigger_validation_for", new=AsyncMock()
+            ),
+        ):
+            await backup_service._persist_event(
+                fresh_job.job_id,
+                ProgressEvent(phase="complete", message="done", percent=100.0),
+            )
+
+        assert sorted(c.args[0] for c in sync.call_args_list) == [
+            "target-a", "target-b",
+        ]
+
 
 class TestPlanSurvivesOnTheJob:
     """The counts a dry run produces have to outlive the run.

@@ -166,7 +166,19 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
             and job.namespace
             and not job.options.get("dry_run")
         ):
-            _track(asyncio.ensure_future(_trigger_reporting_batch_sync(job.namespace)))
+            # Persist the terminal state BEFORE scheduling the follow-ups.
+            # trigger_validation_for re-fetches the job and saves the
+            # validation_job_ids back-link; if this function's own save runs
+            # after that (the scheduled task can interleave into any await),
+            # the stale in-memory copy clobbers the link back to [] — a
+            # lost update observed live: validation jobs existed and were
+            # healthy, but the restore job pointed at none of them.
+            await job.save()
+            # One sync per namespace the restore WROTE — a multi-target fresh
+            # restore (namespace_map with several targets) needs each target
+            # synced; job.namespace alone would cover only the first.
+            for target in dict.fromkeys(job.namespaces or [job.namespace]):
+                _track(asyncio.ensure_future(_trigger_reporting_batch_sync(target)))
             # And verify what was written. A restore validates nothing while
             # writing, so this is the only thing that would notice a dangling
             # reference or an identity hash that no longer matches its data.
@@ -174,6 +186,7 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
             # the data is committed either way, and blocking a fast restore on
             # verification would defeat the point.
             _track(asyncio.ensure_future(trigger_validation_for(job)))
+            return
     elif event.phase == "error":
         job.status = BackupJobStatus.FAILED
         job.error = event.message

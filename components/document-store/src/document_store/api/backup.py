@@ -541,16 +541,37 @@ async def start_restore(
         "drop_stale_reporting": drop_stale_reporting,
     }
 
-    job = BackupJob(
-        job_id=job_id,
-        kind=BackupJobKind.RESTORE,
-        namespace=effective_target or namespace,
+    # A fresh restore WRITES to the resolved targets, not to the archive's
+    # namespaces. The job record must say so, because the post-restore
+    # automation (batch sync, validation) derives its scope from the job: a
+    # map-only fresh restore that recorded the URL path param here synced and
+    # "validated healthy" the SOURCE namespace while the target went
+    # unchecked — a green verdict about the wrong namespace (CASE-745).
+    # restore/merge keep the archive-prefixes semantics: they write to the
+    # archived namespaces.
+    if mode == "fresh":
+        write_targets = (
+            list(dict.fromkeys(parsed_namespace_map.values()))
+            if parsed_namespace_map
+            else [effective_target]
+        )
+        job_namespace = write_targets[0]
+    else:
         # The manifest's prefixes are the namespaces this restore writes; a
         # single-namespace archive derives prefixes == [effective_target], so
         # this one expression covers both the single- and multi-namespace
         # paths. Only an unreadable manifest leaves prefixes empty — fall back
-        # to the scalar namespace so the field is never silently blank.
-        namespaces=prefixes or [effective_target or namespace],
+        # to the scalar namespace so the field is never silently blank. The
+        # scalar `namespace` stays the URL auth anchor here — each archived
+        # namespace restores into itself, so no single one of them IS the job.
+        write_targets = prefixes or [effective_target or namespace]
+        job_namespace = effective_target or namespace
+
+    job = BackupJob(
+        job_id=job_id,
+        kind=BackupJobKind.RESTORE,
+        namespace=job_namespace,
+        namespaces=write_targets,
         archive_path=str(archive_path),
         archive_size=archive_size,
         options=options,

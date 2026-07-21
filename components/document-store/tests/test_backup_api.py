@@ -180,6 +180,75 @@ async def test_start_restore_streams_upload_and_creates_job(
     assert archive_file.read_bytes() == payload
 
 
+async def _post_fresh(client, auth_headers, data):
+    """POST a fresh restore with a fake archive and patched runner."""
+    fake_task = asyncio.get_running_loop().create_future()
+    fake_task.set_result(None)
+    payload = b"PK\x03\x04" + b"fake-archive-bytes" * 100
+    with (
+        patch(
+            "document_store.api.backup.backup_service.make_direct_restore_runner",
+            return_value=AsyncMock(),
+        ),
+        patch(
+            "document_store.api.backup.backup_service.start_async_job",
+            new=AsyncMock(return_value=fake_task),
+        ),
+    ):
+        return await client.post(
+            "/api/document-store/backup/namespaces/wip/restore",
+            headers=auth_headers,
+            files={"archive": ("backup.zip", payload, "application/zip")},
+            data={"mode": "fresh", **data},
+        )
+
+
+@pytest.mark.asyncio
+async def test_fresh_job_records_target_namespace_not_source(
+    client: AsyncClient, auth_headers: dict
+):
+    """A fresh restore WRITES to its targets; the job must say so, because
+    the post-restore sync and validation derive their scope from the job.
+    Recording the URL path param here once made a map-only restore sync and
+    'validate healthy' the SOURCE while the target went unchecked."""
+    resp = await _post_fresh(
+        client, auth_headers, {"target_namespace": "copy-ns"}
+    )
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["namespace"] == "copy-ns"
+    assert body["namespaces"] == ["copy-ns"]
+
+
+@pytest.mark.asyncio
+async def test_fresh_job_records_map_targets(
+    client: AsyncClient, auth_headers: dict
+):
+    resp = await _post_fresh(
+        client, auth_headers,
+        {"namespace_map": '{"kb": "copy-kb", "library": "copy-lib"}'},
+    )
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["namespace"] == "copy-kb"
+    assert sorted(body["namespaces"]) == ["copy-kb", "copy-lib"]
+
+
+@pytest.mark.asyncio
+async def test_fresh_job_records_collapsed_target_once(
+    client: AsyncClient, auth_headers: dict
+):
+    """N:1 map — two sources into one target is ONE write target."""
+    resp = await _post_fresh(
+        client, auth_headers,
+        {"namespace_map": '{"kb": "one", "library": "one"}'},
+    )
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["namespace"] == "one"
+    assert body["namespaces"] == ["one"]
+
+
 @pytest.mark.asyncio
 async def test_restore_rejects_invalid_mode(client: AsyncClient, auth_headers: dict):
     resp = await client.post(
