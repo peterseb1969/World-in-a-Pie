@@ -26,6 +26,12 @@
 #   Skip provisioning entirely (e.g. for unit-only runs):
 #     WIP_TEST_SKIP_CONTAINERS=1 ./scripts/wip-test.sh registry tests/test_unit.py
 #
+# Cross-run lock (CASE-742): the test containers are one set per machine
+# with fixed database names, so runs that touch them are serialized via
+# /tmp/wip-test-infra.lock. A concurrent run fails fast naming the holder;
+# WIP_TEST_WAIT=1 queues instead (WIP_TEST_WAIT_TIMEOUT seconds, default
+# 900). Components with no container deps are never serialized.
+#
 # Exits with pytest's exit code (or combined exit code for "all").
 #
 # Path override: if any positional pytest target is supplied (a file
@@ -326,6 +332,122 @@ run_python_tests() {
         (cd "$dir" && PYTHONPATH=src pytest tests/ "$@")
     fi
 }
+
+# --- Cross-run test-infrastructure lock (CASE-742) ---
+#
+# The test containers (test-mongo/test-postgres/test-nats) are one set per
+# MACHINE, and every conftest connects under a fixed database name — so two
+# concurrent suite runs (a second clone's agent, or a backgrounded run in
+# this one) share databases and wipe each other's fixtures mid-flight. The
+# observed symptom is mass failures with rollback / not-found signatures and
+# a failure count that changes on every run: phantom regressions in both
+# directions. Serialize instead: one run of the shared infrastructure at a
+# time, machine-wide.
+#
+# Scoped, not global: components whose _component_deps is empty (deployer,
+# scaffold, agent-scripts, mcp-server, wip-auth, auth-gateway) never touch
+# the shared containers and are not serialized. `all` locks once up front
+# (it includes mongo components; the loop runs inline in this process).
+# WIP_TEST_SKIP_CONTAINERS still locks: it skips PROVISIONING, but the
+# conftests connect to whatever is on the ports regardless.
+#
+# mkdir-based (atomic; bash-3.2- and Darwin-safe — macOS has no flock(1)),
+# with the owner recorded inside. Stale locks are broken by PID liveness,
+# not TTL: a slow `all` run must never have its lock expire out from under
+# it, while a SIGKILLed holder is detected dead and cleared. The EXIT trap
+# releases on every exit set -euo pipefail can produce.
+#
+# On contention: fail fast, printing the holder (clone, pid, component,
+# since) so the operator knows what to wait for. WIP_TEST_WAIT=1 polls
+# instead, bounded by WIP_TEST_WAIT_TIMEOUT seconds (default 900) — bounded
+# because queueing blindly on a wedged holder is the same class of mistake
+# as the corruption this lock prevents.
+
+WIP_TEST_LOCK_DIR="${WIP_TEST_LOCK_DIR:-/tmp/wip-test-infra.lock}"
+
+_lock_owner_summary() {
+    if [[ -f "$WIP_TEST_LOCK_DIR/owner" ]]; then
+        sed 's/^/         /' "$WIP_TEST_LOCK_DIR/owner"
+    else
+        echo "         (owner file missing — lock dir exists without metadata)"
+    fi
+}
+
+_lock_holder_alive() {
+    local pid
+    pid="$(sed -n 's/^pid=//p' "$WIP_TEST_LOCK_DIR/owner" 2>/dev/null)"
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+_try_acquire() {
+    if mkdir "$WIP_TEST_LOCK_DIR" 2>/dev/null; then
+        printf 'pid=%s\nclone=%s\ncomponent=%s\nsince=%s\n' \
+            "$$" "$REPO_ROOT" "$TARGET" "$(date '+%Y-%m-%d %H:%M:%S')" \
+            > "$WIP_TEST_LOCK_DIR/owner"
+        # shellcheck disable=SC2064
+        trap "rm -rf '$WIP_TEST_LOCK_DIR'" EXIT
+        return 0
+    fi
+    return 1
+}
+
+acquire_test_lock() {
+    _try_acquire && return 0
+
+    if ! _lock_holder_alive; then
+        echo "  Stale test-infra lock (holder dead) — breaking it:"
+        _lock_owner_summary
+        rm -rf "$WIP_TEST_LOCK_DIR"
+        _try_acquire && return 0
+    fi
+
+    if [[ "${WIP_TEST_WAIT:-}" == "1" ]]; then
+        local waited=0 timeout="${WIP_TEST_WAIT_TIMEOUT:-900}"
+        echo "  Test infrastructure locked — waiting (WIP_TEST_WAIT=1, up to ${timeout}s):"
+        _lock_owner_summary
+        while (( waited < timeout )); do
+            sleep 5
+            waited=$(( waited + 5 ))
+            if ! ls -d "$WIP_TEST_LOCK_DIR" >/dev/null 2>&1 || ! _lock_holder_alive; then
+                rm -rf "$WIP_TEST_LOCK_DIR" 2>/dev/null || true
+                _try_acquire && return 0
+            fi
+        done
+        echo "ERROR: still locked after ${timeout}s — giving up." >&2
+        _lock_owner_summary >&2
+        return 1
+    fi
+
+    echo "ERROR: another test run holds the shared test infrastructure:" >&2
+    _lock_owner_summary >&2
+    echo "       Concurrent runs share databases and corrupt each other" >&2
+    echo "       (CASE-742). Re-run when it finishes, or WIP_TEST_WAIT=1" >&2
+    echo "       to queue (WIP_TEST_WAIT_TIMEOUT bounds the wait)." >&2
+    return 1
+}
+
+_needs_lock() {
+    [[ "$TARGET" == "all" ]] && return 0
+    [[ -n "$(_component_deps "$TARGET")" ]]
+}
+
+if [[ "${WIP_TEST_LOCK_HELD:-}" != "1" ]] && _needs_lock; then
+    acquire_test_lock || exit 1
+    export WIP_TEST_LOCK_HELD=1
+fi
+
+# Test hook: prove lock behaviour without running a suite. Prints the
+# outcome and exits — LOCK_ACQUIRED (this run holds it), or LOCK_SKIPPED
+# (no-dep target / already held by a parent). Contention exits above with
+# the owner message before reaching this line.
+if [[ "${WIP_TEST_LOCK_PROBE:-}" == "1" ]]; then
+    if [[ -f "$WIP_TEST_LOCK_DIR/owner" ]] && grep -q "^pid=$$\$" "$WIP_TEST_LOCK_DIR/owner"; then
+        echo "LOCK_ACQUIRED"
+    else
+        echo "LOCK_SKIPPED"
+    fi
+    exit 0
+fi
 
 # --- Execute ---
 
