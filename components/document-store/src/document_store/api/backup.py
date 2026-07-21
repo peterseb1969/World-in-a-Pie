@@ -521,6 +521,35 @@ async def start_restore(
             prefixes, effective_target = await _authorize_archive_restore(
                 archive_path, identity, fallback_target=effective_target
             )
+            # A merge honors the caller's redirect. _authorize_archive_restore
+            # resolves the target from the MANIFEST (correct for restore,
+            # where every namespace restores to itself) — for merge that
+            # silently replaced the caller's target with the archive's source,
+            # so "merge into scratch-ns" executed against the live source
+            # namespace instead, and the engine's whole redirect path
+            # (namespace rewrite, composite-key rehash, ids-must-be-free) was
+            # unreachable from the API.
+            if mode == "merge" and target_namespace:
+                if len(prefixes) > 1:
+                    # The engine would refuse this too, but only after a job
+                    # exists; refusing here turns a silent self-merge of live
+                    # namespaces into an immediate, visible error.
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "target_namespace override is not supported for a "
+                            "multi-namespace archive in merge mode — merge "
+                            "each namespace to itself (omit target_namespace) "
+                            "or split the archive."
+                        ),
+                    )
+                # The archive prefixes were admin-checked above, but a
+                # redirected merge WRITES to the caller's target — admin
+                # there is the permission that gates the operation.
+                await check_namespace_permission(
+                    identity, target_namespace, "admin"
+                )
+                effective_target = target_namespace
         except HTTPException:
             archive_path.unlink(missing_ok=True)
             raise
@@ -556,6 +585,12 @@ async def start_restore(
             else [effective_target]
         )
         job_namespace = write_targets[0]
+    elif mode == "merge" and target_namespace:
+        # A redirected merge writes to the caller's target, not the archive's
+        # namespace — same reasoning as fresh above: sync and validation
+        # derive their scope from the job record.
+        write_targets = [effective_target]
+        job_namespace = effective_target
     else:
         # The manifest's prefixes are the namespaces this restore writes; a
         # single-namespace archive derives prefixes == [effective_target], so
