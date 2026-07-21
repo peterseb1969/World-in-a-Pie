@@ -498,10 +498,12 @@ async def trigger_validation_for(restore_job: BackupJob) -> list[str]:
             )
 
     if started:
+        # Atomic field update: this task runs detached from the progress
+        # pipeline, concurrent with the archive lifecycle hook — a full save
+        # from either side erases the other's fields.
         fresh = await BackupJob.find_one(BackupJob.job_id == restore_job.job_id)
         if fresh is not None:
-            fresh.validation_job_ids = started
-            await fresh.save()
+            await fresh.set({BackupJob.validation_job_ids: started})
     return started
 
 

@@ -190,9 +190,15 @@ class ArchiveStore:
                 job.job_id,
             )
             return
-        job.archive_backend = BACKEND_MINIO
-        job.archive_path = key
-        await job.save()
+        # Atomic field update, never a full-document save: this runs after a
+        # slow bucket upload, and other writers (the validation back-link)
+        # land on the job during that await. A save() here replays the whole
+        # pre-upload copy and silently erases their fields — observed live as
+        # validation_job_ids flipping back to [] ~50ms after being written.
+        await job.set({
+            BackupJob.archive_backend: BACKEND_MINIO,
+            BackupJob.archive_path: key,
+        })
         with contextlib.suppress(OSError):
             scratch.unlink()
 
@@ -223,9 +229,14 @@ class ArchiveStore:
                 await self._ensure_bucket()
                 if not await self._storage().exists(key):
                     await self._storage().upload_file(key, str(scratch))
-                job.archive_backend = BACKEND_MINIO
-                job.archive_path = key
-                await job.save()
+                # Atomic field update — see finalize_backup. This exact site
+                # was the CASE-747 clobber: it held a copy across the upload
+                # await while trigger_validation_for wrote the back-link,
+                # then save() replaced the document from the stale copy.
+                await job.set({
+                    BackupJob.archive_backend: BACKEND_MINIO,
+                    BackupJob.archive_path: key,
+                })
             except FileStorageError:
                 logger.exception(
                     "Restore-input upload to bucket failed for %s — input retained locally",
@@ -313,9 +324,13 @@ def archive_lifecycle_hook(job_id: str):
 
     Wired into ``start_async_job(on_event=...)`` so it runs on the consumer
     task AFTER the terminal event has been persisted — sequential with the
-    job saves, so there is no read-modify-write race against the progress
-    pipeline. Only the ``phase`` attribute of the event is touched, keeping
-    this module free of toolkit types.
+    progress pipeline, but CONCURRENT with the detached follow-up tasks the
+    terminal event schedules (batch sync, validation): those interleave into
+    this hook's awaits and write their own fields on the same job document.
+    The hook must therefore only ever write the fields it owns, via atomic
+    updates — a full-document save from its held copy erases the concurrent
+    writers' work. Only the ``phase`` attribute of the event is touched,
+    keeping this module free of toolkit types.
     """
 
     async def hook(event) -> None:

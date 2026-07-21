@@ -506,6 +506,53 @@ class TestDryRunSideEffects:
             "target-a", "target-b",
         ]
 
+    async def test_archive_finalize_preserves_concurrent_field_writes(
+        self, fresh_job, tmp_path
+    ):
+        """The archive lifecycle hook settles the input archive AFTER the
+        terminal event, concurrent with the detached follow-up tasks. A
+        writer landing during its slow bucket upload (here: the validation
+        back-link) must survive the hook's own write — the hook once did a
+        full-document save from its pre-upload copy and erased the link
+        ~50ms after it was written."""
+        from document_store.services.archive_store import ArchiveStore
+
+        scratch = tmp_path / "input.zip"
+        scratch.write_bytes(b"PK\x03\x04fake")
+        fresh_job.kind = BackupJobKind.RESTORE
+        fresh_job.archive_path = str(scratch)
+        fresh_job.archive_backend = "local"
+        await fresh_job.save()
+
+        job_id = fresh_job.job_id
+
+        async def upload_with_concurrent_writer(key, path):
+            # Deterministic interleave: the back-link lands mid-upload.
+            other = await backup_service.BackupJob.find_one(
+                backup_service.BackupJob.job_id == job_id
+            )
+            await other.set(
+                {backup_service.BackupJob.validation_job_ids: ["val-x"]}
+            )
+
+        storage = MagicMock()
+        storage.exists = AsyncMock(return_value=False)
+        storage.upload_file = AsyncMock(side_effect=upload_with_concurrent_writer)
+        store = ArchiveStore(storage_client=storage)
+
+        with (
+            patch.object(type(store), "backend", property(lambda self: "minio")),
+            patch.object(store, "_ensure_bucket", new=AsyncMock()),
+        ):
+            await store.finalize_restore_input(fresh_job)
+
+        stored = await backup_service.BackupJob.find_one(
+            backup_service.BackupJob.job_id == job_id
+        )
+        assert stored.validation_job_ids == ["val-x"]
+        assert stored.archive_backend == "minio"
+        assert stored.archive_path.endswith(f"{job_id}.zip") or "zip" in stored.archive_path
+
 
 class TestPlanSurvivesOnTheJob:
     """The counts a dry run produces have to outlive the run.
