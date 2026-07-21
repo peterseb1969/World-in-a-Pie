@@ -165,17 +165,22 @@ anything.
 
 ## Measured performance
 
-From live runs against localhost (Apple silicon, podman):
+From live runs against localhost (Apple silicon, podman), 2.25 GB clintrial
+archive — 252,586 document rows, 235,162 identities, 232,051 synced docs.
+Post CASE-740/741 (bulk activation, batch-sync throughput):
 
-- Fresh restore, 65,923 document rows / 61k identities: **93 s**.
-- Fresh restore, 252,586 document rows / 235,162 identities (2.25 GB
-  archive): **5 min 58 s** — linear in rows (3.83× rows, 3.85× time).
+- Fresh restore engine total: **3 min 6 s** (was 5 min 58 s pre-fix).
   Breakdown: provision + definitions + documents + file rows ~2 min 30 s;
-  570 blobs ~21 s; activation of 235k identities ~3 min (CASE-740 tracks
-  activation throughput).
-- Post-restore namespace-scoped batch sync of 232,051 documents:
-  **13 min 8 s**, bounded by one large template at ~200 docs/s (CASE-741
-  tracks batch-sync throughput).
+  570 blobs ~21 s; activation of 235k identities **~8 s** (471 bulk
+  activate calls = ⌈235,162/500⌉ at ~65 calls/s — was ~3 min).
+- Post-restore namespace-scoped batch sync: **1 min 52 s** (was 13 min 8 s).
+  The largest template (156,561 docs) runs at ~1,395 docs/s; its job
+  instrumentation reads fetch_ms=70,605 / upsert_ms=40,468 / sibling_ms=2 —
+  fetch dominates at ~450 ms per 1,000-doc page, so cursor pagination on
+  the document fetch is the known next lever.
+- End to end, upload trigger → SQL-readable: **~5 min 30 s** (was ~19 min).
+- Restore scales linearly in rows (65,923 rows took 93 s pre-fix at the
+  same per-row cost as the 252k run).
 - Provisioning emits no progress events (~40 s per 61k identities looks
   stalled at `phase_validate`) — known gap.
 
