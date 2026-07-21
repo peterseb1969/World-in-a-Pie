@@ -728,12 +728,19 @@ class TemplateService:
             query["value"] = value
 
         if latest_only and not value:
-            # Use aggregation to get only the latest version of each value
+            # Use aggregation to get only the latest version of each
+            # template. The group key is template_id — the stable canonical
+            # handle for one (namespace, value) identity — NOT the bare
+            # value: a value is unique only within a namespace, and grouping
+            # by value collapses same-valued templates across namespaces
+            # into one arbitrary survivor (after a remap restore, which
+            # duplicates every value by construction, an unfiltered
+            # latest_only list silently dropped one namespace's templates).
             pipeline = [
                 {"$match": query} if query else {"$match": {}},
                 {"$sort": {"value": 1, "version": -1}},
                 {"$group": {
-                    "_id": "$value",
+                    "_id": "$template_id",
                     "doc": {"$first": "$$ROOT"}
                 }},
                 {"$replaceRoot": {"newRoot": "$doc"}},

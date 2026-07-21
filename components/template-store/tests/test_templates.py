@@ -176,6 +176,39 @@ async def test_list_templates(client: AsyncClient, auth_headers: dict):
 
 
 @pytest.mark.asyncio
+async def test_list_latest_only_keeps_same_value_across_namespaces(
+    client: AsyncClient, auth_headers: dict
+):
+    """latest_only groups per template identity (template_id), never per bare
+    value: a value is unique only within a namespace, and grouping by value
+    collapses same-valued templates from different namespaces into one
+    arbitrary survivor. After a remap restore — which duplicates every value
+    by construction — that collapse silently dropped one namespace's
+    templates from every unfiltered latest_only list."""
+    for ns in ("wip", "test-ns"):
+        await _create_one(client, auth_headers, {
+            "namespace": ns, "value": "SHARED_LATEST", "label": f"Shared in {ns}",
+        })
+    # A second version in one namespace: latest_only must return v2 for it,
+    # not a duplicate row per version.
+    await _create_one(client, auth_headers, {
+        "namespace": "wip", "value": "SHARED_LATEST", "label": "Shared in wip v2",
+    })
+
+    response = await client.get(
+        "/api/template-store/templates?latest_only=true",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    items = [i for i in response.json()["items"] if i["value"] == "SHARED_LATEST"]
+    assert {i["namespace"] for i in items} == {"wip", "test-ns"}
+    assert len(items) == 2
+    by_ns = {i["namespace"]: i for i in items}
+    assert by_ns["wip"]["version"] == 2
+    assert by_ns["test-ns"]["version"] == 1
+
+
+@pytest.mark.asyncio
 async def test_list_templates_with_pagination(client: AsyncClient, auth_headers: dict):
     """Test listing templates with pagination."""
     # Create templates
