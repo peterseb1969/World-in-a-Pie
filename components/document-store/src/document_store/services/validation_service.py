@@ -28,6 +28,11 @@ class ValidationResult:
         self.identity_fields: list[str] = []
         self.template_version: int | None = None
         self.template_value: str | None = None
+        # The template's OWN namespace — which may differ from the document's
+        # (a document may be based on a shared or foreign template). The
+        # isolation check needs this real value; passing the document's
+        # namespace in its place makes the template branch constant-false.
+        self.template_namespace: str | None = None
         # Array format for indexing: [{"field_path": "gender", "term_id": "019abc42-..."}, ...]
         self.term_references: list[dict[str, Any]] = []
         # Array format: [{"field_path": "supervisor", "reference_type": "document", "resolved": {...}}, ...]
@@ -210,6 +215,7 @@ class ValidationService:
 
         result.template_version = template.get("version", 1)
         result.template_value = template.get("value")
+        result.template_namespace = template.get("namespace")
 
         # Stage 3: Field validation
         start = time.perf_counter()

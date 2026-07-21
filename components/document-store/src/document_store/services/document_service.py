@@ -386,12 +386,19 @@ class DocumentService:
         if not validation_result.valid:
             return None, self._format_validation_errors(validation_result.errors)
 
-        # Validate cross-namespace references (isolation mode check)
+        # Validate cross-namespace references (isolation mode check). The
+        # template's REAL namespace arms the template-isolation branch — a
+        # document may be based on a shared or foreign template, and that use
+        # follows the same isolation rules as term references (own + wip +
+        # allowed_external_refs under open; own + list under strict). Passing
+        # the document's namespace here made the branch constant-false for its
+        # whole life. Falls back to the document's namespace (= skip the
+        # template branch) when the template dict carries no namespace.
         try:
             validator = get_reference_validator()
             await validator.validate_document_references(
                 document_namespace=namespace,
-                template_namespace=namespace,
+                template_namespace=validation_result.template_namespace or namespace,
                 term_references=validation_result.term_references,
                 file_references=validation_result.file_references,
                 document_references=validation_result.references,
@@ -3427,12 +3434,19 @@ class DocumentService:
                     warnings=validation_result.warnings,
                 )
 
-            # 8. Cross-namespace reference validation (matches POST flow).
+            # 8. Cross-namespace reference validation (matches POST flow,
+            #    including the armed template-isolation branch: a PATCH is a
+            #    new write, so it follows the same rules — warn-only here
+            #    would leave the contract unenforced on half the surface. An
+            #    out-of-policy grandfathered document becomes un-PATCHable
+            #    until its template's namespace is allow-listed; the
+            #    remediation is one namespace-config PUT, not data surgery.
             try:
                 validator = get_reference_validator()
                 await validator.validate_document_references(
                     document_namespace=current.namespace,
-                    template_namespace=current.namespace,
+                    template_namespace=validation_result.template_namespace
+                    or current.namespace,
                     term_references=validation_result.term_references,
                     file_references=validation_result.file_references,
                     document_references=validation_result.references,
