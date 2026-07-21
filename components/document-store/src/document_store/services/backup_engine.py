@@ -699,7 +699,10 @@ class DirectRestoreEngine:
                     ns_config = self._rewrite_ns_config_refs(ns_config, mapping)
                     await self._upsert_namespace(target, ns_config)
 
-            remapper = IDRemapper()
+            # The remapper gets the namespace mapping so reference snapshots
+            # (resolved.namespace) follow their entities — after a fresh
+            # restore no data may point at the original namespaces.
+            remapper = IDRemapper(namespace_map=dict(mapping))
             provision_for = (
                 (lambda _target: self._dry_run_provisioner()) if dry_run
                 else self._registry_provisioner

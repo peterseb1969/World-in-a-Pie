@@ -119,6 +119,53 @@ async def test_n_to_one_disjoint_content_lands_in_one_target():
     assert len(new_ids) == 2
 
 
+@pytest.mark.asyncio
+async def test_reference_snapshots_carry_no_trace_of_the_source():
+    """CASE-743, Peter's ruling: after a fresh restore NO data points at the
+    original namespaces. The reference snapshot's denormalized namespace
+    follows the map, and a lookup_value that was a canonical id follows its
+    entity. A sweep over the serialized row catches any future snapshot
+    field that would reintroduce the leak."""
+    import json
+
+    tpl_b = _template("OLD-TPL-B", "SHARED_SCHEMA")
+    doc_b = _doc("OLD-DOC-B", "OLD-TPL-B", "SHARED_SCHEMA", {"name": "target"})
+    doc_a = _doc("OLD-DOC-A", "OLD-TPL-B", "SHARED_SCHEMA", {"name": "src"})
+    doc_a["references"] = [{
+        "field_path": "link",
+        "reference_type": "document",
+        "lookup_value": "OLD-DOC-B",
+        "resolved": {
+            "document_id": "OLD-DOC-B", "template_id": "OLD-TPL-B",
+            "identity_hash": "h", "namespace": "ns-b", "version": 1,
+        },
+    }]
+
+    remapper = IDRemapper(namespace_map={"ns-a": "copy-a", "ns-b": "copy-b"})
+    plans = await plan_multi(
+        [
+            RemapSource("ns-a", "copy-a", {"documents": [doc_a]}),
+            RemapSource("ns-b", "copy-b", {"templates": [tpl_b], "documents": [doc_b]}),
+        ],
+        remapper,
+        _provision_factory(),
+    )
+
+    row = next(
+        r for r in plans["ns-a"].rows["documents"]
+        if r["data"]["name"] == "src"
+    )
+    ref = row["references"][0]
+    assert ref["resolved"]["namespace"] == "copy-b"
+    assert ref["resolved"]["document_id"] == plans["ns-b"].id_map["documents"]["OLD-DOC-B"]
+    assert ref["lookup_value"] == plans["ns-b"].id_map["documents"]["OLD-DOC-B"]
+
+    # Sweep: nothing anywhere in the row mentions an old id or source ns.
+    blob = json.dumps(row)
+    for old in ("OLD-DOC-A", "OLD-DOC-B", "OLD-TPL-B", '"ns-a"', '"ns-b"'):
+        assert old not in blob, f"{old} leaked into {blob[:200]}"
+
+
 def _resolve(sources, target="", nsmap=None):
     return DirectRestoreEngine._resolve_remap_mapping(
         None, sources, target, nsmap  # type: ignore[arg-type]

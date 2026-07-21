@@ -10,14 +10,24 @@ from typing import Any
 
 
 class IDRemapper:
-    """Manages old→new ID mappings and rewrites entity references."""
+    """Manages old→new ID mappings and rewrites entity references.
 
-    def __init__(self) -> None:
+    ``namespace_map`` ({source: target}) rewrites the namespace fields
+    embedded in reference snapshots. After a fresh restore NO data may point
+    to anything from the original namespaces — history lives in the archive,
+    not in the restored rows. A namespace absent from the map passes through
+    unchanged, which is correct: a reference into a namespace OUTSIDE the
+    archive (e.g. a shared 'wip' term) names an entity that was not
+    re-minted, so its snapshot still describes it.
+    """
+
+    def __init__(self, namespace_map: dict[str, str] | None = None) -> None:
         self.terminology_map: dict[str, str] = {}
         self.term_map: dict[str, str] = {}
         self.template_map: dict[str, str] = {}
         self.document_map: dict[str, str] = {}
         self.file_map: dict[str, str] = {}
+        self.namespace_map: dict[str, str] = dict(namespace_map or {})
 
     @property
     def total_mappings(self) -> int:
@@ -210,8 +220,22 @@ class IDRemapper:
         return result
 
     def _remap_document_reference(self, ref: dict[str, Any]) -> dict[str, Any]:
-        """Remap a single document reference."""
+        """Remap a single document reference.
+
+        The whole snapshot must describe the re-minted entity: ids through
+        the id maps, the denormalized namespace through the namespace map,
+        and a lookup_value that was a canonical id follows its entity — an
+        old id kept anywhere is a pointer into the original namespace
+        (CASE-743: 'fresh means fresh'). A human-readable lookup_value stays:
+        it is namespace-agnostic text that resolves in the new context.
+        """
         result = dict(ref)
+        lookup = result.get("lookup_value")
+        if isinstance(lookup, str):
+            for m in (self.document_map, self.template_map, self.term_map):
+                if lookup in m:
+                    result["lookup_value"] = m[lookup]
+                    break
         resolved = result.get("resolved")
         if resolved:
             resolved = dict(resolved)
@@ -222,6 +246,10 @@ class IDRemapper:
             if resolved.get("template_id"):
                 resolved["template_id"] = self.template_map.get(
                     resolved["template_id"], resolved["template_id"]
+                )
+            if resolved.get("namespace"):
+                resolved["namespace"] = self.namespace_map.get(
+                    resolved["namespace"], resolved["namespace"]
                 )
             # identity_hash passes through unchanged
             result["resolved"] = resolved
