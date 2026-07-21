@@ -231,6 +231,62 @@ class TestIDRemapper:
         assert result["version"] == 2
         assert result["identity_hash"] == "abc"
 
+    # --- Data-value id rewriting (recursive walk) ---
+
+    def test_remap_data_scalar_document_id(self):
+        doc = {
+            "document_id": "DOC-X",
+            "data": {"link": "019abc00-0000-7000-8000-000000000001"},
+        }
+        result = self.remapper.remap_document(doc)
+        assert result["data"]["link"] == "019def00-0000-7000-8000-000000000001"
+
+    def test_remap_data_array_of_reference_ids(self):
+        doc = {
+            "document_id": "DOC-X",
+            "data": {
+                "kb_refs": [
+                    "019abc00-0000-7000-8000-000000000001",
+                    "not-an-archived-id",
+                ],
+            },
+        }
+        result = self.remapper.remap_document(doc)
+        assert result["data"]["kb_refs"] == [
+            "019def00-0000-7000-8000-000000000001",
+            "not-an-archived-id",
+        ]
+
+    def test_remap_data_id_nested_in_object_and_array_of_objects(self):
+        doc = {
+            "document_id": "DOC-X",
+            "data": {
+                "meta": {"source_doc": "019abc00-0000-7000-8000-000000000001"},
+                "rows": [
+                    {"file": "FILE-000001", "count": 3},
+                ],
+            },
+        }
+        result = self.remapper.remap_document(doc)
+        assert result["data"]["meta"]["source_doc"] == "019def00-0000-7000-8000-000000000001"
+        assert result["data"]["rows"][0]["file"] == "0190e000-0000-7000-0000-000000000031"
+        assert result["data"]["rows"][0]["count"] == 3
+
+    def test_remap_data_non_string_values_untouched(self):
+        doc = {
+            "document_id": "DOC-X",
+            "data": {"n": 42, "flag": True, "none": None, "tags": [1, 2.5, False]},
+        }
+        result = self.remapper.remap_document(doc)
+        assert result["data"] == {"n": 42, "flag": True, "none": None, "tags": [1, 2.5, False]}
+
+    def test_remap_data_does_not_mutate_input(self):
+        data = {"kb_refs": ["019abc00-0000-7000-8000-000000000001"], "meta": {"k": "v"}}
+        doc = {"document_id": "DOC-X", "data": data}
+        self.remapper.remap_document(doc)
+        assert data["kb_refs"] == ["019abc00-0000-7000-8000-000000000001"]
+        assert data["meta"] == {"k": "v"}
+
     def test_remap_document_empty_refs(self):
         doc = {
             "document_id": "DOC-X",

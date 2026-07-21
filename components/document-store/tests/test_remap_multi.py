@@ -130,9 +130,16 @@ async def test_reference_snapshots_carry_no_trace_of_the_source():
 
     tpl_b = _template("OLD-TPL-B", "SHARED_SCHEMA")
     doc_b = _doc("OLD-DOC-B", "OLD-TPL-B", "SHARED_SCHEMA", {"name": "target"})
-    doc_a = _doc("OLD-DOC-A", "OLD-TPL-B", "SHARED_SCHEMA", {"name": "src"})
+    # The reference lives in BOTH halves of the document: the data payload
+    # (here as an array-of-references value — the shape CASE-746 caught
+    # leaking) and the references[] snapshot. The serialized-row sweep below
+    # must see old ids in neither.
+    doc_a = _doc(
+        "OLD-DOC-A", "OLD-TPL-B", "SHARED_SCHEMA",
+        {"name": "src", "links": ["OLD-DOC-B"]},
+    )
     doc_a["references"] = [{
-        "field_path": "link",
+        "field_path": "links",
         "reference_type": "document",
         "lookup_value": "OLD-DOC-B",
         "resolved": {
@@ -156,9 +163,11 @@ async def test_reference_snapshots_carry_no_trace_of_the_source():
         if r["data"]["name"] == "src"
     )
     ref = row["references"][0]
+    new_doc_b = plans["ns-b"].id_map["documents"]["OLD-DOC-B"]
     assert ref["resolved"]["namespace"] == "copy-b"
-    assert ref["resolved"]["document_id"] == plans["ns-b"].id_map["documents"]["OLD-DOC-B"]
-    assert ref["lookup_value"] == plans["ns-b"].id_map["documents"]["OLD-DOC-B"]
+    assert ref["resolved"]["document_id"] == new_doc_b
+    assert ref["lookup_value"] == new_doc_b
+    assert row["data"]["links"] == [new_doc_b]
 
     # Sweep: nothing anywhere in the row mentions an old id or source ns.
     blob = json.dumps(row)

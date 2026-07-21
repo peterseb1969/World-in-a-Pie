@@ -265,17 +265,30 @@ class IDRemapper:
         return result
 
     def _remap_data_ids(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Remap any known IDs (file, document, template, term) in data values."""
-        result = dict(data)
-        # Combined lookup across all maps for ID-shaped string values
+        """Remap any known IDs (file, document, template, term) in data values.
+
+        The walk is recursive on purpose: a reference id can sit at any depth
+        of the payload — an array-of-references field, an object field, an
+        array of objects — and every position must follow the same id maps as
+        a top-level scalar. A string absent from every map passes through
+        unchanged, which keeps the pass-through rule for targets outside the
+        archive: they were never re-minted, so no map knows them.
+        """
         all_maps = [self.file_map, self.document_map, self.template_map, self.term_map]
-        for key, value in result.items():
+
+        def walk(value: Any) -> Any:
             if isinstance(value, str):
                 for m in all_maps:
                     if value in m:
-                        result[key] = m[value]
-                        break
-        return result
+                        return m[value]
+                return value
+            if isinstance(value, list):
+                return [walk(item) for item in value]
+            if isinstance(value, dict):
+                return {key: walk(item) for key, item in value.items()}
+            return value
+
+        return {key: walk(value) for key, value in data.items()}
 
     def all_synonym_pairs(self) -> list[tuple[str, str, str]]:
         """Return all (old_id, new_id, entity_type) pairs for synonym registration."""
