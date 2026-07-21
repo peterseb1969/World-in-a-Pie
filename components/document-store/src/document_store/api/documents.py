@@ -27,6 +27,7 @@ from ..models.api_models import (
     DocumentVersionResponse,
     PatchDocumentItem,
     RelationshipListResponse,
+    TemplateFacetsResponse,
     TemplateImpactStatsResponse,
     TraverseResponse,
 )
@@ -301,6 +302,49 @@ async def get_template_impact_stats(
         template_id=resolved_id, namespace=ns, fields=field_list,
     )
     return TemplateImpactStatsResponse(**stats)
+
+
+@router.get(
+    "/template-facets",
+    response_model=TemplateFacetsResponse,
+    summary="Which templates are this namespace's documents instances of?",
+    description="""
+Grouped from the namespace's documents, not from template ownership: a
+document's namespace is independent of its template's namespace, so listing
+the templates a namespace owns cannot answer this — a namespace whose
+documents sit on shared or foreign templates would look empty. Counts are
+distinct logical documents (version rows collapse before counting).
+`status=all` disables the default active-only filter. Each facet carries the
+template's own namespace, which may differ from the queried one.
+""",
+)
+async def get_template_facets(
+    namespace: str | None = Query(
+        None,
+        description="Namespace. Omittable only for single-namespace API keys.",
+    ),
+    status: str = Query(
+        "active",
+        pattern="^(active|inactive|archived|all)$",
+        description="Count documents in this status ('all' disables the filter)",
+    ),
+    identity: UserIdentity = Depends(require_api_key),
+):
+    """Distinct templates referenced by one namespace's documents."""
+    nsf = await resolve_namespace_filter(identity, namespace, "read")
+    if namespace:
+        ns = namespace
+    elif nsf.namespaces and len(nsf.namespaces) == 1:
+        ns = nsf.namespaces[0]
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="namespace is required (omittable only for single-namespace keys)",
+        )
+
+    service = get_document_service()
+    result = await service.get_template_facets(namespace=ns, status=status)
+    return TemplateFacetsResponse(**result)
 
 
 @router.get(

@@ -440,6 +440,27 @@ describe('Service classes via createWipClient', () => {
       expect(url).toContain('template_id=0190c000-0000-7000-0000-000000000001')
     })
 
+    it('getTemplateFacets sends GET with namespace and status params', async () => {
+      mockJsonResponse({
+        namespace: 'lab',
+        facets: [{
+          template_id: '0190c000-0000-7000-0000-000000000001',
+          template_value: 'SHARED_ASSET',
+          template_namespace: 'other-ns',
+          document_count: 2,
+        }],
+      })
+
+      const result = await client.documents.getTemplateFacets({ namespace: 'lab', status: 'all' })
+
+      expect(result.facets[0].template_namespace).toBe('other-ns')
+      expect(result.facets[0].document_count).toBe(2)
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/documents/template-facets')
+      expect(url).toContain('namespace=lab')
+      expect(url).toContain('status=all')
+    })
+
     it('getDocument fetches by ID', async () => {
       mockJsonResponse({ document_id: 'D-001', data: { name: 'Test' }, version: 1 })
 

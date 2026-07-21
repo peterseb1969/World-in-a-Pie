@@ -3079,6 +3079,66 @@ class DocumentService:
             "field_nonempty_counts": field_nonempty_counts,
         }
 
+    async def get_template_facets(
+        self,
+        namespace: str,
+        status: str = "active",
+    ) -> dict[str, Any]:
+        """Distinct templates one namespace's documents are instances of.
+
+        Grouped from the documents, NOT from template ownership: a document's
+        namespace is independent of its template's namespace, so an
+        owner-based template listing misses shared and foreign templates the
+        namespace's documents actually use.
+
+        Counts are logical documents — version rows collapse on document_id
+        before counting, so a heavily-versioned document still counts once.
+        The `$match` runs inside the (namespace, template_id, status) index;
+        the intermediate group is bounded by the namespace's live documents.
+
+        Each facet carries the template's own namespace so consumers can
+        label cross-namespace templates honestly. That lookup is one
+        template-cache fetch per DISTINCT template; a fetch failure degrades
+        that facet's template_namespace to None instead of failing the call.
+        """
+        match: dict[str, Any] = {"namespace": namespace}
+        if status != "all":
+            match["status"] = status
+        rows = await Document.aggregate([
+            {"$match": match},
+            {"$group": {
+                "_id": {"template_id": "$template_id", "document_id": "$document_id"},
+                "template_value": {"$first": "$template_value"},
+            }},
+            {"$group": {
+                "_id": "$_id.template_id",
+                "template_value": {"$first": "$template_value"},
+                "document_count": {"$sum": 1},
+            }},
+            {"$sort": {"document_count": -1, "_id": 1}},
+        ]).to_list()
+
+        template_client = get_template_store_client()
+        facets: list[dict[str, Any]] = []
+        for row in rows:
+            template_namespace = None
+            try:
+                tpl = await template_client.get_template(template_id=row["_id"])
+                if tpl:
+                    template_namespace = tpl.get("namespace")
+            except Exception:
+                logger.warning(
+                    "template-facets: get_template(%s) failed; leaving "
+                    "template_namespace unset", row["_id"],
+                )
+            facets.append({
+                "template_id": row["_id"],
+                "template_value": row.get("template_value"),
+                "template_namespace": template_namespace,
+                "document_count": row["document_count"],
+            })
+        return {"namespace": namespace, "facets": facets}
+
     async def _migrate_one(
         self,
         index: int,

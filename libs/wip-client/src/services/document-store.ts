@@ -24,6 +24,8 @@ import type {
   DocumentTraverseResponse,
   DocumentMigrateRequest,
   DocumentMigrateResponse,
+  TemplateFacetsParams,
+  TemplateFacetsResponse,
 } from '../types/document.js'
 import type {
   BackupJobSnapshot,
@@ -43,6 +45,21 @@ export class DocumentStoreService extends BaseService {
 
   async listDocuments(params?: DocumentQueryParams): Promise<DocumentListResponse> {
     return this.get('/documents', params)
+  }
+
+  /**
+   * Which templates are a namespace's documents instances of?
+   *
+   * Grouped from the documents themselves, not from template ownership: a
+   * document's namespace is independent of its template's namespace, so a
+   * template picker built from the namespace's OWN templates misses shared
+   * and foreign templates its documents actually use. Counts are distinct
+   * logical documents (version rows collapse before counting); each facet
+   * carries the template's own namespace so cross-namespace entries can be
+   * labeled honestly.
+   */
+  async getTemplateFacets(params?: TemplateFacetsParams): Promise<TemplateFacetsResponse> {
+    return this.get('/documents/template-facets', params)
   }
 
   /**

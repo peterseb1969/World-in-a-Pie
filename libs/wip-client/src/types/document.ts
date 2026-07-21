@@ -239,6 +239,33 @@ export interface TableViewParams {
   max_cross_product?: number
 }
 
+// ---- Template facets ----
+
+export interface TemplateFacet {
+  template_id: string
+  template_value: string | null
+  /**
+   * The template's OWN namespace — may differ from the queried namespace
+   * (shared / cross-namespace templates). Null when the template could not
+   * be fetched.
+   */
+  template_namespace: string | null
+  /** Distinct logical documents (version rows collapse before counting). */
+  document_count: number
+}
+
+export interface TemplateFacetsResponse {
+  namespace: string
+  facets: TemplateFacet[]
+}
+
+export interface TemplateFacetsParams {
+  /** Omittable only under a single-namespace API key. */
+  namespace?: string
+  /** Document status to count; 'all' disables the default active-only filter. */
+  status?: DocumentStatus | 'all'
+}
+
 // ---- Import ----
 
 export interface ImportPreviewResponse {

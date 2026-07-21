@@ -2528,6 +2528,38 @@ async def list_documents(
 
 
 @mcp.tool()
+async def get_template_facets(
+    namespace: str | None = None, status: str = "active"
+) -> str:
+    """Which templates are this namespace's documents instances of?
+
+    Grouped from the documents themselves, not from template ownership: a
+    document's namespace is independent of its template's namespace, so
+    list_templates(namespace=X) — the templates X owns — cannot answer this.
+    A namespace whose documents sit on shared or foreign templates would
+    look empty there; these facets reach every template the documents
+    actually use. Use this to build template pickers or namespace overviews.
+
+    Each facet carries template_id, template_value, the template's OWN
+    namespace (may differ from the queried one), and document_count —
+    distinct logical documents, version rows collapse before counting.
+
+    Args:
+        namespace: Namespace to facet. Omittable only for single-namespace
+            API keys (implicit derivation).
+        status: Count documents in this status — 'active' (default),
+            'inactive', 'archived', or 'all' to disable the filter.
+    """
+    try:
+        data = await get_client().get_template_facets(
+            namespace=namespace, status=status
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def get_document(document_id: str, version: int | None = None) -> str:
     """Get a document by ID.
 

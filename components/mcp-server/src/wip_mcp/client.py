@@ -1012,6 +1012,16 @@ class WipClient:
             page_size=page_size,
         )
 
+    async def get_template_facets(
+        self, namespace: str | None = None, status: str = "active"
+    ) -> dict:
+        return await self._get(
+            self.document_store_url,
+            "/api/document-store/documents/template-facets",
+            namespace=namespace,
+            status=status,
+        )
+
     async def get_document(
         self, document_id: str, version: int | None = None
     ) -> dict:

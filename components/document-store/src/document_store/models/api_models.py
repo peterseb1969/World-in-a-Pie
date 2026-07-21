@@ -526,6 +526,44 @@ class TemplateImpactStatsResponse(BaseModel):
     )
 
 
+class TemplateFacet(BaseModel):
+    """One template referenced by a namespace's documents, with its live count."""
+
+    template_id: str
+    template_value: str | None = Field(
+        default=None,
+        description="Denormalized template value carried on the counted documents"
+    )
+    template_namespace: str | None = Field(
+        default=None,
+        description=(
+            "The template's OWN namespace — may differ from the queried "
+            "namespace (shared / cross-namespace templates). None when the "
+            "template could not be fetched."
+        )
+    )
+    document_count: int = Field(
+        description=(
+            "Distinct logical documents (version rows collapse on document_id "
+            "before counting) of this template in the queried namespace"
+        )
+    )
+
+
+class TemplateFacetsResponse(BaseModel):
+    """Answer to: which templates are namespace X's documents instances of?
+
+    A document's namespace is independent of its template's namespace, so
+    listing the templates a namespace OWNS cannot answer this — a namespace
+    whose documents sit on shared or foreign templates would look empty.
+    These facets are grouped from the documents themselves, so every
+    reachable template appears, labeled with its true namespace.
+    """
+
+    namespace: str
+    facets: list[TemplateFacet]
+
+
 # ============================================================================
 # Validation
 # ============================================================================
