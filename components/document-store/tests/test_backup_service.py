@@ -604,3 +604,99 @@ class TestPlanSurvivesOnTheJob:
 
 # Need asyncio mode for async tests in this module
 pytestmark = pytest.mark.asyncio
+
+
+class TestValidationResultSurvives:
+    """CASE-750 — the integrity result rides the terminal event.
+
+    The runner used to write job.result in a separate second pass after the
+    work; that save raced the consumer's per-event load-modify-save and an
+    in-flight progress event's full save put the result back to null. Small
+    namespaces lost it almost always (tail events still draining at save
+    time); the 252k-doc job survived because its queue had drained. Measured
+    live: 3 of 4 fresh validate jobs on a quiet stack had result=null while
+    message said "validation complete — healthy".
+    """
+
+    def _stub_integrity(self, *, status: str = "healthy", issues=None):
+        from document_store.services.integrity_service import (
+            IntegrityCheckResult,
+            IntegrityIssue,
+            IntegritySummary,
+        )
+        issues = issues or []
+        return IntegrityCheckResult(
+            status=status,
+            summary=IntegritySummary(
+                total_documents=40,
+                documents_checked=40,
+                documents_with_issues=len(issues),
+            ),
+            issues=[IntegrityIssue(**i) for i in issues],
+        )
+
+    async def test_result_survives_a_busy_event_queue(self, fresh_job: BackupJob):
+        # Flood the queue with progress events right up to the end — the
+        # exact condition under which the second-pass write lost the race.
+        async def fake_check(namespace, progress=None, **_kw):
+            if progress:
+                for i in range(50):
+                    progress(i + 1, 50)
+            return self._stub_integrity()
+
+        runner = backup_service.make_validation_runner(
+            fresh_job.job_id, "probe-ns", {}
+        )
+        with patch(
+            "document_store.services.integrity_service.check_all_documents",
+            new=AsyncMock(side_effect=fake_check),
+        ):
+            task = await backup_service.start_async_job(fresh_job.job_id, runner)
+            await asyncio.wait_for(task, timeout=10.0)
+
+        updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert updated is not None
+        assert updated.status == BackupJobStatus.COMPLETE
+        assert updated.result is not None, (
+            "integrity result was lost — the terminal event must carry it"
+        )
+        assert updated.result["result_kind"] == "namespace_integrity"
+        assert updated.result["status"] == "healthy"
+        assert updated.result["summary"]["documents_checked"] == 40
+        assert updated.result["issues"] == []
+        assert updated.result["issues_truncated"] == 0
+
+    async def test_unhealthy_result_lands_with_warning_and_findings(
+        self, fresh_job: BackupJob
+    ):
+        issues = [{
+            "type": "orphaned_term_ref",
+            "severity": "warning",
+            "document_id": "d-1",
+            "template_id": "t-1",
+            "version": 1,
+            "reference": "TERM-GONE",
+            "message": "term gone",
+        }]
+
+        async def fake_check(namespace, progress=None, **_kw):
+            return self._stub_integrity(status="warning", issues=issues)
+
+        runner = backup_service.make_validation_runner(
+            fresh_job.job_id, "probe-ns", {}
+        )
+        with patch(
+            "document_store.services.integrity_service.check_all_documents",
+            new=AsyncMock(side_effect=fake_check),
+        ):
+            task = await backup_service.start_async_job(fresh_job.job_id, runner)
+            await asyncio.wait_for(task, timeout=10.0)
+
+        updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert updated is not None
+        assert updated.result is not None
+        assert updated.result["status"] == "warning"
+        assert len(updated.result["issues"]) == 1
+        assert updated.result["issues"][0]["type"] == "orphaned_term_ref"
+        # The warning event accumulated alongside, not instead of, the result.
+        assert any("integrity warning" in w for w in updated.warnings)

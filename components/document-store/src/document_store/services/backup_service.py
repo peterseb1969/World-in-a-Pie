@@ -422,21 +422,6 @@ def make_validation_runner(
             progress=on_progress,
         )
 
-        job = await BackupJob.find_one(BackupJob.job_id == job_id)
-        if job is not None:
-            job.result = {
-                "status": result.status,
-                "summary": result.summary.model_dump(),
-                "issues": [
-                    issue.model_dump()
-                    for issue in result.issues[:VALIDATION_ISSUE_SAMPLE]
-                ],
-                "issues_truncated": max(
-                    0, len(result.issues) - VALIDATION_ISSUE_SAMPLE
-                ),
-            }
-            await job.save()
-
         # A namespace with problems is a completed job with findings, not a
         # failed one: the check ran, and its answer is the deliverable.
         if result.status != "healthy":
@@ -449,6 +434,15 @@ def make_validation_runner(
                 ),
             ))
 
+        # The integrity result rides the terminal event, the same fix the
+        # dry-run path already received: writing it in a separate second
+        # pass raced the consumer's per-event load-modify-save — the save
+        # landed inside an in-flight progress event's persist window and
+        # that event's full save put the result back to null. Small jobs
+        # lost it almost always (their tail events were still draining);
+        # long jobs survived (queue empty by save time). result_kind
+        # discriminates this payload from the restore dry-run plan that
+        # shares the job.result field.
         progress_callback(ProgressEvent(
             phase="complete",
             message=(
@@ -456,6 +450,18 @@ def make_validation_runner(
                 f"{result.summary.documents_checked} document(s) checked"
             ),
             percent=100,
+            details={
+                "result_kind": "namespace_integrity",
+                "status": result.status,
+                "summary": result.summary.model_dump(),
+                "issues": [
+                    issue.model_dump()
+                    for issue in result.issues[:VALIDATION_ISSUE_SAMPLE]
+                ],
+                "issues_truncated": max(
+                    0, len(result.issues) - VALIDATION_ISSUE_SAMPLE
+                ),
+            },
         ))
 
     return runner
