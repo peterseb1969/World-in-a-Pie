@@ -28,10 +28,22 @@ app.use('/wip', wipProxy({
 ## What It Does
 
 - **API proxy:** `GET|POST|PUT|DELETE /api/{service}/*` forwarded to WIP with API key injected
-- **File proxy:** `GET /files/:fileId/content` proxies file downloads (resolves MinIO URLs server-side)
-- **Raw body forwarding:** Uses `express.raw()` to avoid JSON parsing — request bodies are forwarded unchanged
+- **File proxy:** `GET /files/:fileId/content` proxies file downloads (resolves MinIO URLs server-side, following redirects so internal storage URLs never reach the browser)
+- **Streaming both directions:** request bodies pipe into the upstream and upstream responses pipe back out, with backpressure — proxy memory is O(1) in payload size, so multi-GB archive uploads/downloads pass through flat. Built on `node:http` deliberately: a `fetch`-based streamed request body still buffers whole inside undici (its backpressure never reaches the source socket)
 - **Header forwarding:** Propagates `content-type`, `content-disposition`, `content-length` from upstream
-- **Error handling:** WIP's own responses — including 4xx/5xx — are forwarded verbatim (status, headers, body). Only proxy-level failures to reach WIP (network error, unreachable backend) return `502` with structured error JSON
+- **Error handling:** WIP's own responses — including 4xx/5xx — are forwarded verbatim (status, headers, body). Proxy-level failures to reach WIP return `502` with structured error JSON when nothing has been sent yet; a failure mid-stream destroys the connection (a truncated transfer is the honest signal once bytes have flowed). API-route redirects are forwarded to the client, not followed — a streamed request body cannot be replayed on a 307
+
+### Mount order matters
+
+The proxy consumes the request as a raw stream. Mount it **before** any
+body-parsing middleware (`express.json()`, `express.raw()`, …) that would
+match the same paths — a parser ahead of the proxy drains the body, and the
+proxy then forwards an empty stream:
+
+```typescript
+app.use('/wip', wipProxy({ ... }))  // proxy first
+app.use(express.json())             // parsers after, or scoped to app routes
+```
 
 ## Proxied Services
 
@@ -49,7 +61,7 @@ app.use('/wip', wipProxy({
 | `baseUrl` | `string` | required | WIP instance URL |
 | `apiKey` | `string` | — | API key for upstream requests (provide this or `apiKeyFile`) |
 | `apiKeyFile` | `string` | — | Path to a file containing the API key (e.g. the live wip-deploy secrets file); read once at construction; takes precedence over `apiKey` |
-| `bodyLimit` | `string` | `'100mb'` | Max request body size |
+| `bodyLimit` | `string` | — | **Deprecated, no effect since 0.5.0** — bodies stream instead of buffering, so there is no buffer for a limit to protect. Accepted for config compatibility |
 | `extraHeaders` | `Record<string, string>` | `{}` | Additional headers forwarded upstream |
 | `forwardIdentity` | `boolean` | `false` | Forward `X-WIP-User`, `X-WIP-Groups`, `X-WIP-Auth-Method` from the incoming request |
 | `defaultNamespace` | `string` | — | Namespace appended to the documents query endpoint when the caller hasn't scoped it (guards the multi-namespace-key silent-zero-rows trap) |

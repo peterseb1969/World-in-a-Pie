@@ -1,14 +1,27 @@
+import { request as httpRequest, type IncomingMessage } from 'node:http'
+import { request as httpsRequest } from 'node:https'
 import { type Request, type Response } from 'express'
 
 /** Identity headers forwarded from gateway auth to WIP services */
 const IDENTITY_HEADERS = ['x-wip-user', 'x-wip-groups', 'x-wip-auth-method'] as const
+
+/** Upstream response headers forwarded back to the client */
+const FORWARDED_RESPONSE_HEADERS = [
+  'content-type',
+  'content-disposition',
+  'content-length',
+] as const
 
 export interface ApiProxyOptions {
   /** WIP instance base URL (e.g., 'https://localhost:8443') */
   baseUrl: string
   /** API key injected into upstream requests */
   apiKey: string
-  /** Request body size limit (default: '100mb') */
+  /**
+   * @deprecated No effect since the proxy streams request bodies instead of
+   * buffering them — there is no buffer for a limit to protect. Accepted for
+   * config compatibility.
+   */
   bodyLimit?: string
   /** Additional headers to forward upstream */
   extraHeaders?: Record<string, string>
@@ -63,71 +76,112 @@ const WIP_API_PREFIXES = [
   '/api/ingest-gateway',
 ]
 
+/** `node:http` or `node:https` request function for a target URL. */
+export function requestFnFor(url: URL): typeof httpRequest {
+  return url.protocol === 'https:' ? httpsRequest : httpRequest
+}
+
+/**
+ * Forward status and the allow-listed headers of an upstream response, then
+ * pipe its body to the client. Shared by the API and file proxies — this is
+ * the response half of the streaming contract: bytes flow through as they
+ * arrive, so proxy memory is O(1) in payload size.
+ */
+export function streamUpstreamResponse(
+  upstreamRes: IncomingMessage,
+  res: Response,
+): void {
+  res.status(upstreamRes.statusCode ?? 502)
+  for (const h of FORWARDED_RESPONSE_HEADERS) {
+    const value = upstreamRes.headers[h]
+    if (value) res.setHeader(h, value)
+  }
+  // A failure after bytes have flowed cannot become a tidy error response —
+  // destroying the client socket (truncated transfer) is the honest signal.
+  upstreamRes.on('error', () => res.destroy())
+  upstreamRes.pipe(res)
+}
+
 /**
  * Handle a proxied API request by forwarding it to the WIP backend
  * with the API key injected.
  *
+ * Both directions stream: the incoming request pipes into the upstream
+ * request and the upstream response pipes back out, with backpressure in
+ * both directions, so proxying is O(1) in payload size. Deliberately built
+ * on `node:http` rather than `fetch` — undici buffers a streamed request
+ * body whole because its backpressure never propagates to the source
+ * socket, so a fetch-based version looks streamed and still holds the
+ * payload (measured on an 808MB archive: +2.4GB buffered, +919MB via
+ * fetch duplex, +39MB flat with a real pipe).
+ *
+ * Redirects are forwarded to the client, not followed: following a 307/308
+ * would require replaying a request body this handler has already streamed
+ * away. WIP's APIs are served on exact paths; a client that meets a
+ * redirect re-issues through the proxy and stays same-origin.
+ *
  * When mounted inside a Router via `app.use('/wip', router)`, Express
  * strips the mount prefix from `req.url`. So `req.url` is already the
  * correct upstream path (e.g., `/api/def-store/terminologies?page=1`).
+ * The proxy consumes `req` as a raw stream — it must be mounted before any
+ * body-parsing middleware covering the same paths, or the body will have
+ * been drained before it gets here.
  */
-export async function handleApiProxy(
+export function handleApiProxy(
   req: Request,
   res: Response,
   options: ApiProxyOptions,
-): Promise<void> {
+): void {
   // req.url has the path relative to the router mount (includes query string)
-  // For the per-prefix route mounted at '/wip':
-  //   request to /wip/api/def-store/terminologies?page=1
-  //   → req.url = /api/def-store/terminologies?page=1
   const upstreamPath = applyDefaultNamespace(req.url, options.defaultNamespace)
-  const url = `${options.baseUrl}${upstreamPath}`
+  const url = new URL(`${options.baseUrl}${upstreamPath}`)
 
-  try {
-    const headers: Record<string, string> = {
-      'X-API-Key': options.apiKey,
-      ...options.extraHeaders,
-    }
+  const headers: Record<string, string> = {
+    'X-API-Key': options.apiKey,
+    ...options.extraHeaders,
+  }
 
-    // Forward gateway identity headers to WIP services
-    if (options.forwardIdentity) {
-      for (const h of IDENTITY_HEADERS) {
-        const value = req.headers[h]
-        if (typeof value === 'string') {
-          headers[h] = value
-        }
+  // Forward gateway identity headers to WIP services
+  if (options.forwardIdentity) {
+    for (const h of IDENTITY_HEADERS) {
+      const value = req.headers[h]
+      if (typeof value === 'string') {
+        headers[h] = value
       }
     }
+  }
 
-    if (req.headers['content-type']) {
-      headers['content-type'] = req.headers['content-type'] as string
-    }
+  if (req.headers['content-type']) {
+    headers['content-type'] = req.headers['content-type'] as string
+  }
+  // Pass the client's content-length through when it sent one; a request
+  // without it goes upstream chunked, which the services accept.
+  if (req.headers['content-length']) {
+    headers['content-length'] = req.headers['content-length'] as string
+  }
 
-    const upstream = await fetch(url, {
-      method: req.method,
-      headers,
-      body: ['GET', 'HEAD'].includes(req.method) ? undefined : req.body,
-    })
+  const upstreamReq = requestFnFor(url)(url, { method: req.method, headers }, (upstreamRes) => {
+    streamUpstreamResponse(upstreamRes, res)
+  })
 
-    // Forward status
-    res.status(upstream.status)
-
-    // Forward response headers
-    const ct = upstream.headers.get('content-type')
-    if (ct) res.setHeader('content-type', ct)
-
-    const cd = upstream.headers.get('content-disposition')
-    if (cd) res.setHeader('content-disposition', cd)
-
-    const cl = upstream.headers.get('content-length')
-    if (cl) res.setHeader('content-length', cl)
-
-    // Stream the response body
-    const body = await upstream.arrayBuffer()
-    res.send(Buffer.from(body))
-  } catch (err) {
+  upstreamReq.on('error', (err) => {
     console.error(`[@wip/proxy] Proxy error ${req.method} ${req.url}:`, err)
-    res.status(502).json({ error: 'Upstream request failed' })
+    if (res.headersSent) {
+      res.destroy()
+    } else {
+      res.status(502).json({ error: 'Upstream request failed' })
+    }
+  })
+
+  // Client gone before the upstream finished → stop pumping upstream.
+  res.on('close', () => {
+    if (!res.writableEnded) upstreamReq.destroy()
+  })
+
+  if (['GET', 'HEAD'].includes(req.method)) {
+    upstreamReq.end()
+  } else {
+    req.pipe(upstreamReq)
   }
 }
 

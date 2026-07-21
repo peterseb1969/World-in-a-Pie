@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { Router, raw } from 'express'
+import { Router } from 'express'
 import { handleApiProxy, WIP_API_PREFIXES, type ApiProxyOptions } from './api-proxy.js'
 import { handleFileContent, type FileProxyOptions } from './file-proxy.js'
 
@@ -20,7 +20,11 @@ export interface WipProxyOptions {
    * Takes precedence over `apiKey`.
    */
   apiKeyFile?: string
-  /** Request body size limit (default: '100mb') */
+  /**
+   * @deprecated No effect since 0.5.0: request and response bodies stream
+   * through the proxy instead of being buffered, so there is no buffer for
+   * a limit to protect. Accepted (and ignored) for config compatibility.
+   */
   bodyLimit?: string
   /** Additional headers to forward upstream */
   extraHeaders?: Record<string, string>
@@ -52,18 +56,21 @@ export interface WipProxyOptions {
  * This creates:
  * - `GET|POST|PUT|DELETE /wip/api/{service}/*` — proxied to WIP with API key
  * - `GET /wip/files/:fileId/content` — proxied file download (resolves MinIO URLs server-side)
+ *
+ * Both directions STREAM — proxy memory is O(1) in payload size, so large
+ * archive uploads/downloads pass through without buffering. Consequence:
+ * the proxy consumes the request as a raw stream, so it must be mounted
+ * BEFORE any body-parsing middleware (`express.json()`, `express.raw()`, …)
+ * that would match the same paths — a parser ahead of the proxy drains the
+ * body and an empty stream gets forwarded.
  */
 export function wipProxy(options: WipProxyOptions): Router {
   const router = Router()
-  const bodyLimit = options.bodyLimit || '100mb'
   const apiKey = resolveApiKey(options)
-
-  const rawBody = raw({ type: '*/*', limit: bodyLimit })
 
   const apiOptions: ApiProxyOptions = {
     baseUrl: options.baseUrl,
     apiKey,
-    bodyLimit,
     extraHeaders: options.extraHeaders,
     forwardIdentity: options.forwardIdentity,
     defaultNamespace: options.defaultNamespace,
@@ -89,7 +96,7 @@ export function wipProxy(options: WipProxyOptions): Router {
   // (e.g. GET /api/def-store) in the same route. Handlers are unaffected:
   // the upstream path comes from req.url, never from the wildcard capture.
   for (const prefix of WIP_API_PREFIXES) {
-    router.all(prefixPattern(prefix), rawBody, (req, res) => {
+    router.all(prefixPattern(prefix), (req, res) => {
       handleApiProxy(req, res, apiOptions)
     })
   }
