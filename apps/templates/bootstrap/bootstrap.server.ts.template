@@ -25,10 +25,21 @@
  *
  * SEED FILE CONVENTION (read before adapting):
  *   server/seed/terminologies/<VALUE>.json
- *     { value, label, description, mutable?, terms[], ontology?: { relationships[] } }
+ *     { value, label, description, mutable?, extensible?, case_sensitive?,
+ *       allow_multiple?, terms[], ontology?: { relationships[] } }
+ *     All four behavioural flags are forwarded to the platform verbatim
+ *     (including explicit false) — a seed flag the builder does not forward
+ *     is a lie to the seed author.
  *   server/seed/templates/<NN>_<VALUE>.json    (numeric prefix orders dependencies)
  *     { value, label, description, identity_fields[], fields[], reporting? }
  *   The runBootstrap loop reads these at runtime — no schema in code.
+ *
+ *   If you RENAME any template value (e.g. adopting the namespace-prefixed
+ *   bootstrap value), grep the WHOLE seed dir for the old literal — sibling
+ *   seeds may reference it in target_templates / source_templates
+ *   allow-lists (flag records, edge types), and a fresh bootstrap fails at
+ *   their creation until they match. Inspection misses this; verify with a
+ *   real bootstrap into a throwaway namespace, then delete it.
  *
  * REQUIRED before this works in your app:
  *   - A bootstrap-record template in server/seed/templates/ whose value is
@@ -181,12 +192,21 @@ export async function runBootstrap(
     }
 
     progress('terminologies', `Creating ${terminologies.length} terminologies...`)
+    // Forward EVERY behavioural flag the seed declares, preserving explicit
+    // false. A builder that whitelists a subset makes the seed file look
+    // authoritative while the platform silently never sees the rest — that
+    // shipped once (extensible dropped from every seed, masked for
+    // mutable:true seeds because def-store derives extensible from mutable).
+    // Truthy spreads are the same disease: they eat a declared false.
     const termBulk = terminologies.map((t) => ({
       value: t.value,
       label: t.label,
       description: t.description || '',
       namespace: NAMESPACE,
-      ...(t.mutable ? { mutable: true } : {}),
+      ...(t.mutable !== undefined ? { mutable: t.mutable } : {}),
+      ...(t.extensible !== undefined ? { extensible: t.extensible } : {}),
+      ...(t.case_sensitive !== undefined ? { case_sensitive: t.case_sensitive } : {}),
+      ...(t.allow_multiple !== undefined ? { allow_multiple: t.allow_multiple } : {}),
     }))
     const termResult = (await wipPost('/api/def-store/terminologies', termBulk)) as {
       results: Array<{ status: string; id: string; error?: string }>
