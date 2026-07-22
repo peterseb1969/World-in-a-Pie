@@ -400,52 +400,50 @@ async def _register_templates_in_registry(registry_transport):
     headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
     mapping: dict[str, str] = {}
 
+    # Batched, not per-template (CASE-770): the register and synonyms/add
+    # endpoints are both bulk (list bodies), so all templates register in
+    # ONE round-trip and all their synonyms in ONE more — 2 in-process
+    # calls instead of 2 per template. This fixture runs once per test
+    # (function scope, motor is loop-bound), so per-test setup was the
+    # suite's dominant cost; collapsing ~2N round-trips to 2 removes the
+    # bulk of it without weakening isolation (same entries, same synonyms).
     async with AsyncClient(transport=registry_transport, base_url="http://registry") as client:
-        for tdef in _TEMPLATE_DEFS:
-            # Register entry
-            resp = await client.post(
-                "/api/registry/entries/register",
-                headers=headers,
-                json=[{
+        resp = await client.post(
+            "/api/registry/entries/register",
+            headers=headers,
+            json=[
+                {
                     "namespace": "wip",
                     "entity_type": "templates",
                     "composite_key": {"value": tdef["value"], "label": tdef["label"]},
-                }],
-            )
-            assert resp.status_code == 200, f"Register template failed: {resp.text}"
-            entry_id = resp.json()["results"][0]["registry_id"]
-            mapping[tdef["legacy_key"]] = entry_id
+                }
+                for tdef in _TEMPLATE_DEFS
+            ],
+        )
+        assert resp.status_code == 200, f"Register templates failed: {resp.text}"
+        results = resp.json()["results"]
+        assert len(results) == len(_TEMPLATE_DEFS), (
+            f"register returned {len(results)} results for {len(_TEMPLATE_DEFS)} templates"
+        )
 
-            # Register synonyms so resolution works:
-            # 1. Value-based: {"ns": "wip", "type": "template", "value": "PERSON"}
-            # 2. Legacy key: {"ns": "wip", "type": "template", "value": "0190c000-0000-7000-0000-000000000001"}
-            synonyms = [
-                {
+        synonyms = []
+        for tdef, result in zip(_TEMPLATE_DEFS, results, strict=True):
+            entry_id = result["registry_id"]
+            mapping[tdef["legacy_key"]] = entry_id
+            # Value-based + legacy-key synonyms so both resolve to the ID.
+            for syn_value in (tdef["value"], tdef["legacy_key"]):
+                synonyms.append({
                     "target_id": entry_id,
                     "synonym_namespace": "wip",
                     "synonym_entity_type": "templates",
                     "synonym_composite_key": {
-                        "ns": "wip",
-                        "type": "template",
-                        "value": tdef["value"],
+                        "ns": "wip", "type": "template", "value": syn_value,
                     },
-                },
-                {
-                    "target_id": entry_id,
-                    "synonym_namespace": "wip",
-                    "synonym_entity_type": "templates",
-                    "synonym_composite_key": {
-                        "ns": "wip",
-                        "type": "template",
-                        "value": tdef["legacy_key"],
-                    },
-                },
-            ]
-            await client.post(
-                "/api/registry/synonyms/add",
-                headers=headers,
-                json=synonyms,
-            )
+                })
+
+        await client.post(
+            "/api/registry/synonyms/add", headers=headers, json=synonyms,
+        )
 
     return mapping
 
