@@ -190,7 +190,6 @@ class TestArchiveRoundTrip:
         manifest = Manifest(
             source_host="pi-poe-8gb.local",
             namespace="custom-ns",
-            include_inactive=True,
             include_files=True,
             counts=EntityCounts(terminologies=5, terms=100, templates=3),
         )
@@ -200,7 +199,6 @@ class TestArchiveRoundTrip:
             m = reader.read_manifest()
             assert m.source_host == "pi-poe-8gb.local"
             assert m.namespace == "custom-ns"
-            assert m.include_inactive is True
             assert m.include_files is True
             assert m.counts.terminologies == 5
             assert m.counts.terms == 100

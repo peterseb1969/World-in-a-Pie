@@ -61,9 +61,11 @@ class TestManifest:
         m = Manifest()
         assert m.namespace == ""
 
-    def test_default_include_inactive_false(self):
-        m = Manifest()
-        assert m.include_inactive is False
+    def test_legacy_include_inactive_key_is_ignored(self):
+        # Manifests written before the field's removal carry the key; parsing
+        # must tolerate it (the flag never influenced archive content).
+        m = Manifest.model_validate({"include_inactive": True})
+        assert not hasattr(m, "include_inactive")
 
     def test_default_include_files_false(self):
         m = Manifest()
@@ -98,7 +100,6 @@ class TestManifest:
             format_version="2.0",
             source_host="pi-poe-8gb.local",
             namespace="custom-ns",
-            include_inactive=True,
             include_files=True,
             include_all_versions=True,
             counts=EntityCounts(terminologies=5, terms=100),
@@ -106,7 +107,6 @@ class TestManifest:
         assert m.format_version == "2.0"
         assert m.source_host == "pi-poe-8gb.local"
         assert m.namespace == "custom-ns"
-        assert m.include_inactive is True
         assert m.include_files is True
         assert m.include_all_versions is True
         assert m.counts.terminologies == 5

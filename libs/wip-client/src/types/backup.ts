@@ -138,14 +138,16 @@ export interface ValidateNamespaceParams {
  * Request body for `POST /backup/namespaces/{namespace}/backup`.
  *
  * Only the options the direct backup engine consumes are typed — the
- * endpoint rejects the retired toolkit-era fields (`skip_closure`,
- * `skip_synonyms`, `latest_only`, `template_prefixes`, `dry_run`) with a
- * 400 when set. Blob bytes stream to the server's backup scratch dir, so
- * `include_files: true` is safe at any content volume.
+ * endpoint rejects the retired fields (`skip_closure`, `skip_synonyms`,
+ * `latest_only`, `template_prefixes`, `dry_run`, `include_inactive`) with a
+ * 400 when set. Backups always contain every entity in every status:
+ * inactive and archived entities are referenced by live data, so an archive
+ * missing them would be a restore trap. Blob bytes stream to the server's
+ * backup scratch dir, so `include_files: true` is safe at any content
+ * volume.
  */
 export interface BackupRequest {
   include_files?: boolean
-  include_inactive?: boolean
   skip_documents?: boolean
   namespaces?: string[]
   all_namespaces?: boolean

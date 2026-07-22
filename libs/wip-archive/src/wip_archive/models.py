@@ -86,7 +86,9 @@ class Manifest(BaseModel):
     namespace: str = ""
     namespace_config: NamespaceConfig | None = None
     source_install: dict[str, Any] | None = None
-    include_inactive: bool = False
+    # include_inactive was removed from the manifest: the backup engine always
+    # exports every entity in every status, so the field carried no signal.
+    # Old manifests that recorded it still parse (extra keys are ignored).
     include_files: bool = False
     include_all_versions: bool = False
     closure: ClosureInfo = Field(default_factory=ClosureInfo)

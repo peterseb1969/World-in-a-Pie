@@ -465,7 +465,6 @@ async def test_start_backup_sends_full_body():
         result = await client.start_backup(
             namespace="wip",
             include_files=True,
-            include_inactive=True,
         )
 
     assert result == expected
@@ -474,7 +473,7 @@ async def test_start_backup_sends_full_body():
     assert "/api/document-store/backup/namespaces/wip/backup" in url
     body = mock_http.post.call_args.kwargs["json"]
     assert body["include_files"] is True
-    assert body["include_inactive"] is True
+    assert "include_inactive" not in body
 
 
 @pytest.mark.asyncio

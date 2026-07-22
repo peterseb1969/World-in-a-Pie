@@ -264,7 +264,14 @@ class BackupRequest(BaseModel):
         False, description="Include file blobs in the archive"
     )
     include_inactive: bool = Field(
-        False, description="Include inactive (soft-deleted) entities"
+        False,
+        description="Retired parameter — rejected with 400 if set. Backups "
+                    "always include every entity in every status: live data "
+                    "references inactive and archived entities (documents pin "
+                    "inactive template versions), so an archive missing them "
+                    "would be a restore trap. The flag never excluded "
+                    "anything — its filter matched a status no persisted "
+                    "entity carries.",
     )
     skip_documents: bool = Field(
         False, description="Skip the documents phase entirely"

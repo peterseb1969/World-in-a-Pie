@@ -248,6 +248,10 @@ async def start_backup(
         ("template_prefixes", request.template_prefixes is not None),
         ("dry_run", request.dry_run),
         ("latest_only", request.latest_only),
+        # include_inactive joined the club later: its status filter matched a
+        # status no persisted entity ever carried, so it never excluded
+        # anything — backups always include every entity in every status.
+        ("include_inactive", request.include_inactive),
     )
     for _dead_name, _dead_set in _dead_backup_fields:
         if _dead_set:
@@ -255,8 +259,9 @@ async def start_backup(
                 status_code=400,
                 detail=(
                     f"'{_dead_name}' is not supported by the backup engine — "
-                    "it belonged to the retired toolkit export path and has "
-                    "no effect. Remove it from the request."
+                    "it is a retired parameter with no effect (the request "
+                    "model's field description carries each field's story). "
+                    "Remove it from the request."
                 ),
             )
 

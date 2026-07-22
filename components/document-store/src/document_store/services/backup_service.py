@@ -372,7 +372,6 @@ def make_direct_backup_runner(
             ns_list,
             Path(archive_path),
             include_files=opts.get("include_files", False),
-            include_inactive=opts.get("include_inactive", False),
             skip_documents=opts.get("skip_documents", False),
             latest_only=opts.get("latest_only", False),
             tmp_dir=Path(backup_dir),

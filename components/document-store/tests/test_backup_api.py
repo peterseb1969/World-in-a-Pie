@@ -103,7 +103,7 @@ async def test_start_backup_creates_job_and_returns_snapshot(
         resp = await client.post(
             "/api/document-store/backup/namespaces/wip/backup",
             headers=auth_headers,
-            json={"include_files": True, "include_inactive": True},
+            json={"include_files": True},
         )
 
     assert resp.status_code == 202, resp.text
@@ -113,7 +113,7 @@ async def test_start_backup_creates_job_and_returns_snapshot(
     assert body["status"] == "pending"
     assert body["job_id"].startswith("bkp-")
     assert body["options"]["include_files"] is True
-    assert body["options"]["include_inactive"] is True
+    assert body["options"]["include_inactive"] is False
 
     # Runner factory received the snapshot options; start_async_job was called once.
     assert mk_runner.called
@@ -290,6 +290,7 @@ async def test_restore_rejects_toolkit_era_params(
         ("template_prefixes", ["TPL-"]),
         ("dry_run", True),
         ("latest_only", True),
+        ("include_inactive", True),
     ],
 )
 async def test_backup_rejects_toolkit_era_fields(

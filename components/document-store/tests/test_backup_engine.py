@@ -77,10 +77,14 @@ def _make_mongo_mock(*, docs_per_collection=None, counts_per_collection=None,
         if coll_name in collection_mocks:
             return collection_mocks[coll_name]
         coll = MagicMock()
-        # find() returns an async iterator over the configured docs
-        coll.find = MagicMock(
+        # find() returns a cursor mock whose .sort() yields the configured
+        # docs — mirroring the engine's find(...).sort(natural_key) chain;
+        # the sort spec lands in cursor_mock.sort.call_args for assertions
+        cursor = MagicMock()
+        cursor.sort = MagicMock(
             return_value=_AsyncIter(docs_per_collection.get(coll_name, []))
         )
+        coll.find = MagicMock(return_value=cursor)
         # count_documents is async, returns int
         coll.count_documents = AsyncMock(
             return_value=counts_per_collection.get(coll_name, 0)
@@ -143,14 +147,12 @@ class TestModuleStructure:
 class TestBuildQuery:
     """Verify the namespace + status query construction."""
 
-    def test_default_excludes_deleted(self):
+    def test_query_is_namespace_alone(self):
+        # A backup is a full copy: every entity, every status. No status
+        # filter may reappear here — an archive missing inactive or archived
+        # entities that live data references would be a restore trap.
         engine = DirectBackupEngine(MagicMock(), None, lambda _: None)
-        q = engine._build_query("kb", include_inactive=False)
-        assert q == {"namespace": "kb", "status": {"$ne": "deleted"}}
-
-    def test_include_inactive_drops_status_filter(self):
-        engine = DirectBackupEngine(MagicMock(), None, lambda _: None)
-        q = engine._build_query("kb", include_inactive=True)
+        q = engine._build_query("kb")
         assert q == {"namespace": "kb"}
 
 
@@ -205,7 +207,7 @@ class TestPreCount:
             }
         )
         engine = DirectBackupEngine(mongo, None, lambda _: None)
-        counts = await engine._pre_count("kb", include_inactive=False, skip_documents=False)
+        counts = await engine._pre_count("kb", skip_documents=False)
         assert counts["terminologies"] == 3
         assert counts["documents"] == 100
         assert counts["registry_entries"] == 150
@@ -219,7 +221,7 @@ class TestPreCount:
             counts_per_collection={"documents": 100}
         )
         engine = DirectBackupEngine(mongo, None, lambda _: None)
-        counts = await engine._pre_count("kb", include_inactive=False, skip_documents=True)
+        counts = await engine._pre_count("kb", skip_documents=True)
         # documents count returns 0; count_documents on documents collection was NOT called
         assert counts["documents"] == 0
         if "documents" in colls:
@@ -412,6 +414,41 @@ class TestRunBackupBasicFlow:
         for call in add_calls:
             payload = call[0][1]
             assert "_id" not in payload
+
+    @pytest.mark.asyncio
+    async def test_export_sorts_every_entity_stream_by_natural_key(self, tmp_path):
+        """Every entity stream is exported through a natural-key sort.
+
+        Unordered exports made archive bytes depend on the Mongo query plan:
+        identical corpora produced row-permuted (and up to ~32% worse
+        compressed) archives. The cursor must be built with allow_disk_use
+        (the sort may not ride an index on big namespaces) and sorted with
+        the entity's EXPORT_SORT_ORDER spec.
+        """
+        from document_store.services.backup_engine import EXPORT_SORT_ORDER
+
+        mongo, collections = _make_mongo_mock(
+            docs_per_collection={},
+            counts_per_collection={et: 0 for et in BACKUP_ENTITY_ORDER},
+            namespace_config_doc={"prefix": "kb", "description": "kb test"},
+        )
+        engine = DirectBackupEngine(mongo, None, _collect_progress([]))
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveWriter"
+        ) as mock_writer_cls:
+            mock_writer = MagicMock()
+            mock_writer.entity_count = MagicMock(return_value=0)
+            mock_writer_cls.return_value = mock_writer
+            await engine.run_backup("kb", tmp_path / "sorted.zip")
+
+        for entity_type in BACKUP_ENTITY_ORDER:
+            _, coll_name = COLLECTION_MAP[entity_type]
+            coll = collections[coll_name]
+            find_kwargs = coll.find.call_args.kwargs
+            assert find_kwargs.get("allow_disk_use") is True, entity_type
+            sort_spec = coll.find.return_value.sort.call_args.args[0]
+            assert sort_spec == EXPORT_SORT_ORDER[entity_type], entity_type
 
     @pytest.mark.asyncio
     async def test_skip_documents_omits_documents_phase(self, tmp_path):

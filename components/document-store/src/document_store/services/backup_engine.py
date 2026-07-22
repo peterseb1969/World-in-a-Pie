@@ -92,6 +92,24 @@ BACKUP_ENTITY_ORDER = [
     "registry_entries",
 ]
 
+# Every entity stream is exported in natural-key order, so an archive
+# member's bytes are a pure function of corpus content — not of whichever
+# index the query planner happened to walk. Unordered exports produced row
+# permutations across otherwise-identical backups, which broke byte-level
+# parity checks and cost up to ~32% archive size: near-identical versions of
+# the same document only deflate well when they sit inside the same 32 KB
+# compression window. allow_disk_use on the cursor covers namespaces where
+# the sort cannot ride an index.
+EXPORT_SORT_ORDER: dict[str, list[tuple[str, int]]] = {
+    "terminologies": [("terminology_id", 1)],
+    "terms": [("terminology_id", 1), ("value", 1)],
+    "term_relations": [("source_term_id", 1), ("relation_type", 1), ("target_term_id", 1)],
+    "templates": [("template_id", 1), ("version", 1)],
+    "documents": [("document_id", 1), ("version", 1)],
+    "files": [("file_id", 1)],
+    "registry_entries": [("entry_id", 1)],
+}
+
 # Merge writes in the same order for the same reason a restore does: it is
 # dependency order. Terms need their terminology, documents need their
 # template, and registry entries come last so nothing claims an identity
@@ -141,7 +159,6 @@ class DirectBackupEngine:
         archive_path: Path,
         *,
         include_files: bool = False,
-        include_inactive: bool = False,
         skip_documents: bool = False,
         latest_only: bool = False,
         tmp_dir: Path | None = None,
@@ -168,7 +185,7 @@ class DirectBackupEngine:
         # Pre-count entities across all namespaces for percent calculation
         per_ns_counts: dict[str, dict[str, int]] = {}
         for ns in namespaces:
-            per_ns_counts[ns] = await self._pre_count(ns, include_inactive, skip_documents)
+            per_ns_counts[ns] = await self._pre_count(ns, skip_documents)
         total_entities = sum(sum(c.values()) for c in per_ns_counts.values())
 
         writer = ArchiveWriter(archive_path, tmp_dir=tmp_dir)
@@ -183,7 +200,7 @@ class DirectBackupEngine:
                     db_name, coll_name = COLLECTION_MAP[entity_type]
                     collection = self._mongo[db_name][coll_name]
 
-                    query = self._build_query(ns, include_inactive)
+                    query = self._build_query(ns)
 
                     phase_name = f"phase_{entity_type}"
                     expected = per_ns_counts[ns].get(entity_type, 0)
@@ -194,7 +211,10 @@ class DirectBackupEngine:
                     )
 
                     count = 0
-                    async for doc in collection.find(query):
+                    cursor = collection.find(query, allow_disk_use=True).sort(
+                        EXPORT_SORT_ORDER[entity_type]
+                    )
+                    async for doc in cursor:
                         doc.pop("_id", None)
                         writer.add_entity(entity_type, doc, namespace=ns)
                         count += 1
@@ -244,7 +264,6 @@ class DirectBackupEngine:
                     "schema_version": "1.4",
                     "hash_version": 1,
                 },
-                include_inactive=include_inactive,
                 include_files=include_files,
                 include_all_versions=not latest_only,
                 counts=EntityCounts(**agg),
@@ -262,10 +281,10 @@ class DirectBackupEngine:
             raise
 
     async def _pre_count(
-        self, namespace: str, include_inactive: bool, skip_documents: bool
+        self, namespace: str, skip_documents: bool
     ) -> dict[str, int]:
         """Count documents per entity type for progress reporting."""
-        query = self._build_query(namespace, include_inactive)
+        query = self._build_query(namespace)
         counts: dict[str, int] = {}
         for entity_type in BACKUP_ENTITY_ORDER:
             if skip_documents and entity_type == "documents":
@@ -275,11 +294,15 @@ class DirectBackupEngine:
             counts[entity_type] = await self._mongo[db_name][coll_name].count_documents(query)
         return counts
 
-    def _build_query(self, namespace: str, include_inactive: bool) -> dict[str, Any]:
-        query: dict[str, Any] = {"namespace": namespace}
-        if not include_inactive:
-            query["status"] = {"$ne": "deleted"}
-        return query
+    def _build_query(self, namespace: str) -> dict[str, Any]:
+        # A backup is a full copy of the namespace — every entity, every
+        # status, deliberately. Live data references inactive and archived
+        # entities (documents pin inactive template versions, edges point at
+        # archived documents), so an archive missing them would be a restore
+        # trap. The retired include_inactive flag's status filter matched a
+        # status no persisted entity ever carried; the query is the namespace
+        # alone.
+        return {"namespace": namespace}
 
     async def _backup_blobs(
         self,

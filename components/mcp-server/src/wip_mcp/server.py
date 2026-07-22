@@ -3870,28 +3870,27 @@ async def resume_replay(session_id: str) -> str:
 async def start_backup(
     namespace: str | None = None,
     include_files: bool = False,
-    include_inactive: bool = False,
     skip_documents: bool = False,
 ) -> str:
     """Start a backup of a namespace. Returns the initial BackupJobSnapshot.
 
     Backups run in the background; poll get_backup_job to track progress until
     status is 'complete' or 'failed', then download_backup_archive to fetch
-    the .zip. The archive always contains every entity version, term
-    relations, and the registry entries (synonyms travel inside them); blob
-    bytes are staged to the server's backup scratch dir, not RAM.
+    the .zip. The archive always contains every entity in every status and
+    every version — inactive and archived entities included, since live data
+    references them — plus term relations and the registry entries (synonyms
+    travel inside them); blob bytes are staged to the server's backup scratch
+    dir, not RAM.
 
     Args:
         namespace: Source namespace (uses WIP_MCP_DEFAULT_NAMESPACE if unset).
         include_files: Include file blobs in the archive.
-        include_inactive: Include soft-deleted entities.
         skip_documents: Skip the documents phase entirely (definitions only).
     """
     try:
         data = await get_client().start_backup(
             namespace=namespace,
             include_files=include_files,
-            include_inactive=include_inactive,
             skip_documents=skip_documents,
         )
         return json.dumps(data, indent=2, default=str)

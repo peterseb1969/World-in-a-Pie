@@ -1511,19 +1511,18 @@ class WipClient:
         self,
         namespace: str | None = None,
         include_files: bool = False,
-        include_inactive: bool = False,
         skip_documents: bool = False,
     ) -> dict:
         """Kick off a namespace backup. Returns the initial BackupJobSnapshot (HTTP 202).
 
         Only the options the direct backup engine consumes are sent — the
         endpoint rejects retired toolkit-era fields (skip_closure,
-        skip_synonyms, latest_only, template_prefixes, dry_run) with 400.
+        skip_synonyms, latest_only, template_prefixes, dry_run,
+        include_inactive) with 400.
         """
         namespace = self._ns(namespace)
         body: dict[str, Any] = {
             "include_files": include_files,
-            "include_inactive": include_inactive,
             "skip_documents": skip_documents,
         }
         return await self._post(
