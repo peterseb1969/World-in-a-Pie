@@ -57,11 +57,12 @@ class ImportExportService:
         Returns:
             Export data in requested format
         """
-        # Get terminology
+        # Get terminology — an unscoped value that exists in several
+        # namespaces raises rather than exporting an arbitrary one
         if terminology_id:
             terminology = await Terminology.find_one({"terminology_id": terminology_id})
         elif terminology_value:
-            terminology = await Terminology.find_one({"value": terminology_value})
+            terminology = await TerminologyService.find_by_value(terminology_value, None)
         else:
             raise ValueError("Must provide terminology_id or terminology_value")
 

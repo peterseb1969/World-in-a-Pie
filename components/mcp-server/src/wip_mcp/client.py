@@ -530,10 +530,11 @@ class WipClient:
             page_size=page_size,
         )
 
-    async def get_terminology(self, terminology_id: str) -> dict:
+    async def get_terminology(self, terminology_id: str, namespace: str | None = None) -> dict:
         return await self._get(
             self.def_store_url,
             f"/api/def-store/terminologies/{terminology_id}",
+            namespace=namespace,
         )
 
     async def get_terminology_by_value(self, value: str, namespace: str | None = None) -> dict:
@@ -608,6 +609,7 @@ class WipClient:
         search: str | None = None,
         page: int = 1,
         page_size: int = 50,
+        namespace: str | None = None,
     ) -> dict:
         return await self._get(
             self.def_store_url,
@@ -615,6 +617,7 @@ class WipClient:
             search=search,
             page=page,
             page_size=page_size,
+            namespace=namespace,
         )
 
     async def get_term(self, term_id: str, namespace: str | None = None) -> dict:

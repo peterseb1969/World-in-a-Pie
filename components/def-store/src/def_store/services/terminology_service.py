@@ -55,6 +55,26 @@ class EntityExistsError(ValueError):
         self.changed = changed
 
 
+class AmbiguousTerminologyValueError(ValueError):
+    """An unscoped value lookup matched terminologies in several namespaces.
+
+    A terminology value is unique only within its namespace. When no
+    namespace is supplied and the value exists in more than one, there is
+    no correct pick among the matches — returning whichever document the
+    storage engine yields first silently hands the caller another
+    namespace's data. The lookup fails loud instead, carrying the
+    candidate namespaces so callers can tell the user how to disambiguate.
+    """
+
+    def __init__(self, value: str, namespaces: list[str]) -> None:
+        self.value = value
+        self.namespaces = namespaces
+        super().__init__(
+            f"Terminology value '{value}' exists in multiple namespaces "
+            f"{namespaces} — pass namespace to disambiguate"
+        )
+
+
 def conflict_result(
     index: int,
     exc: EntityExistsError,
@@ -266,6 +286,10 @@ class TerminologyService:
 
         Returns:
             Terminology if found, None otherwise
+
+        Raises:
+            AmbiguousTerminologyValueError: unscoped value lookup with the
+                value present in more than one namespace.
         """
         if terminology_id:
             # ID lookups can be global (for cross-namespace refs in open mode)
@@ -274,16 +298,32 @@ class TerminologyService:
                 query["namespace"] = namespace
             terminology = await Terminology.find_one(query)
         elif value:
-            query = {"value": value}
-            if namespace is not None:
-                query["namespace"] = namespace
-            terminology = await Terminology.find_one(query)
+            terminology = await TerminologyService.find_by_value(value, namespace)
         else:
             return None
 
         if terminology:
             return TerminologyService._to_terminology_response(terminology)
         return None
+
+    @staticmethod
+    async def find_by_value(value: str, namespace: str | None) -> Terminology | None:
+        """Find a terminology document by its value code.
+
+        With a namespace: exact scoped match. Without one, the lookup is
+        only safe while the value is globally unique — the same value live
+        in several namespaces has no correct arbitrary pick, so that case
+        raises AmbiguousTerminologyValueError instead of returning
+        whichever document the storage engine yields first.
+        """
+        if namespace is not None:
+            return await Terminology.find_one({"value": value, "namespace": namespace})
+        matches = await Terminology.find({"value": value}).to_list()
+        if len(matches) > 1:
+            raise AmbiguousTerminologyValueError(
+                value, sorted({m.namespace for m in matches})
+            )
+        return matches[0] if matches else None
 
     @staticmethod
     async def list_terminologies(
@@ -1517,11 +1557,12 @@ class TerminologyService:
             Tuple of (is_valid, matched_term, matched_via, suggestion)
             matched_via is 'value' or 'alias' if matched
         """
-        # Find terminology
+        # Find terminology — an unscoped value that exists in several
+        # namespaces raises rather than validating against an arbitrary one
         if terminology_id:
             terminology = await Terminology.find_one({"terminology_id": terminology_id})
         elif terminology_value:
-            terminology = await Terminology.find_one({"value": terminology_value})
+            terminology = await TerminologyService.find_by_value(terminology_value, None)
         else:
             return (False, None, None, None)
 

@@ -240,7 +240,26 @@ async def test_get_terminology_success():
     assert data["terminology_id"] == "0190b000-0000-7000-0000-000000000001"
     assert data["value"] == "COUNTRY"
     assert data["term_count"] == 195
-    mock.get_terminology.assert_awaited_once_with("0190b000-0000-7000-0000-000000000001")
+    mock.get_terminology.assert_awaited_once_with(
+        "0190b000-0000-7000-0000-000000000001", namespace=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_terminology_forwards_namespace():
+    """The namespace argument reaches the client for value-form lookups.
+
+    Regression: the tool used to have no namespace parameter at all, so a
+    caller's namespace was silently discarded and an unscoped value lookup
+    could resolve to another namespace's same-value terminology (CASE-763).
+    """
+    mock = _mock_client()
+    mock.get_terminology.return_value = {"terminology_id": "T-1", "value": "COUNTRY"}
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await get_terminology(terminology_id="COUNTRY", namespace="kb")
+
+    mock.get_terminology.assert_awaited_once_with("COUNTRY", namespace="kb")
 
 
 @pytest.mark.asyncio
@@ -320,7 +339,8 @@ async def test_list_terms_by_terminology_id():
     assert data["total"] == 2
     assert len(data["items"]) == 2
     mock.list_terms.assert_awaited_once_with(
-        terminology_id="0190b000-0000-7000-0000-000000000001", search=None, page=1, page_size=50
+        terminology_id="0190b000-0000-7000-0000-000000000001",
+        search=None, page=1, page_size=50, namespace=None,
     )
 
 
@@ -339,7 +359,27 @@ async def test_list_terms_with_search_filter():
     data = json.loads(result)
     assert data["total"] == 1
     mock.list_terms.assert_awaited_once_with(
-        terminology_id="0190b000-0000-7000-0000-000000000001", search="switz", page=1, page_size=50
+        terminology_id="0190b000-0000-7000-0000-000000000001",
+        search="switz", page=1, page_size=50, namespace=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_terms_forwards_namespace():
+    """The namespace argument reaches the client for value-form lookups.
+
+    Regression: the tool used to have no namespace parameter at all, so a
+    caller's namespace was silently discarded and an unscoped value lookup
+    could resolve to another namespace's same-value terminology (CASE-763).
+    """
+    mock = _mock_client()
+    mock.list_terms.return_value = {"items": [], "total": 0}
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await list_terms(terminology_id="KB_TOPIC", namespace="kb")
+
+    mock.list_terms.assert_awaited_once_with(
+        terminology_id="KB_TOPIC", search=None, page=1, page_size=50, namespace="kb",
     )
 
 

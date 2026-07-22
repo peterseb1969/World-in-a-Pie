@@ -24,6 +24,7 @@ from ..models.api_models import (
 from ..services.dependency_service import DependencyService, TerminologyDependencies
 from ..services.registry_client import RegistryError
 from ..services.terminology_service import (
+    AmbiguousTerminologyValueError,
     EntityExistsError,
     TerminologyService,
     conflict_result,
@@ -120,7 +121,10 @@ async def get_terminology_by_value(
     if namespace:
         await check_namespace_permission(identity, namespace, "read")
 
-    result = await TerminologyService.get_terminology(value=value, namespace=namespace)
+    try:
+        result = await TerminologyService.get_terminology(value=value, namespace=namespace)
+    except AmbiguousTerminologyValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if not result:
         raise HTTPException(status_code=404, detail="Terminology not found")
     return result
@@ -146,7 +150,12 @@ async def get_terminology(
     # Try as ID first, then as value
     result = await TerminologyService.get_terminology(terminology_id=terminology_id)
     if not result:
-        result = await TerminologyService.get_terminology(value=terminology_id, namespace=namespace)
+        try:
+            result = await TerminologyService.get_terminology(
+                value=terminology_id, namespace=namespace
+            )
+        except AmbiguousTerminologyValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     if not result:
         raise HTTPException(status_code=404, detail="Terminology not found")

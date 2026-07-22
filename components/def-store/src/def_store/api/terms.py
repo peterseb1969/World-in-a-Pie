@@ -28,6 +28,7 @@ from ..models.api_models import (
 from ..models.terminology import Terminology
 from ..services.registry_client import RegistryError
 from ..services.terminology_service import (
+    AmbiguousTerminologyValueError,
     EntityExistsError,
     TerminologyService,
     conflict_result,
@@ -164,11 +165,11 @@ async def list_terms(
     # Get terminology info
     terminology = await Terminology.find_one({"terminology_id": terminology_id})
     if not terminology:
-        # Try by value
-        if namespace:
-            terminology = await Terminology.find_one({"namespace": namespace, "value": terminology_id})
-        else:
-            terminology = await Terminology.find_one({"value": terminology_id})
+        # Try by value — unscoped lookups fail loud on an ambiguous value
+        try:
+            terminology = await TerminologyService.find_by_value(terminology_id, namespace)
+        except AmbiguousTerminologyValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         if not terminology:
             raise HTTPException(status_code=404, detail="Terminology not found")
 
@@ -383,11 +384,21 @@ async def validate_value(
             request.terminology_id, "terminology", namespace=None, param_name="terminology_id"
         )
 
-    # Get terminology for response
+    # Get terminology for response — an ambiguous unscoped value is a
+    # validation failure, reported in the response shape like not-found
     if request.terminology_id:
         terminology = await Terminology.find_one({"terminology_id": request.terminology_id})
     else:
-        terminology = await Terminology.find_one({"value": request.terminology_value})
+        try:
+            terminology = await TerminologyService.find_by_value(request.terminology_value, None)
+        except AmbiguousTerminologyValueError as e:
+            return ValidateValueResponse(
+                valid=False,
+                terminology_id="",
+                terminology_value=request.terminology_value or "",
+                value=request.value,
+                error=str(e),
+            )
 
     if not terminology:
         return ValidateValueResponse(
@@ -442,11 +453,23 @@ async def validate_values_bulk(
                 item.terminology_id, "terminology", namespace=None, param_name="terminology_id"
             )
 
-        # Get terminology
+        # Get terminology — per-item: an ambiguous unscoped value fails
+        # that item, not the request (bulk-first)
         if item.terminology_id:
             terminology = await Terminology.find_one({"terminology_id": item.terminology_id})
         elif item.terminology_value:
-            terminology = await Terminology.find_one({"value": item.terminology_value})
+            try:
+                terminology = await TerminologyService.find_by_value(item.terminology_value, None)
+            except AmbiguousTerminologyValueError as e:
+                results.append(ValidateValueResponse(
+                    valid=False,
+                    terminology_id="",
+                    terminology_value=item.terminology_value,
+                    value=item.value,
+                    error=str(e),
+                ))
+                invalid_count += 1
+                continue
         else:
             results.append(ValidateValueResponse(
                 valid=False,

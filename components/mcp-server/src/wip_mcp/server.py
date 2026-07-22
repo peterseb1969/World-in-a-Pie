@@ -1411,10 +1411,19 @@ async def list_terminologies(
 
 
 @mcp.tool()
-async def get_terminology(terminology_id: str) -> str:
-    """Get a terminology by ID or value (e.g., 'COUNTRY' or UUID)."""
+async def get_terminology(terminology_id: str, namespace: str | None = None) -> str:
+    """Get a terminology by ID or value (e.g., 'COUNTRY' or UUID).
+
+    Args:
+        terminology_id: Terminology ID (UUID) or value code.
+        namespace: Namespace for value-form lookup (required with
+            multi-namespace or privileged keys; single-namespace keys
+            derive it). An unscoped value that exists in several
+            namespaces is rejected as ambiguous, never resolved to an
+            arbitrary namespace's copy.
+    """
     try:
-        data = await get_client().get_terminology(terminology_id)
+        data = await get_client().get_terminology(terminology_id, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1592,12 +1601,18 @@ async def list_terms(
     search: str | None = None,
     page: int = 1,
     page_size: int = 50,
+    namespace: str | None = None,
 ) -> str:
     """List terms in a terminology. Use search to filter by value/label/alias.
 
     Args:
         terminology_id: Terminology ID (UUID) or value (e.g., 'COUNTRY').
         search: Optional search string to filter terms.
+        namespace: Namespace for value-form lookup (required with
+            multi-namespace or privileged keys; single-namespace keys
+            derive it). An unscoped value that exists in several
+            namespaces is rejected as ambiguous, never resolved to an
+            arbitrary namespace's copy.
     """
     try:
         data = await get_client().list_terms(
@@ -1605,6 +1620,7 @@ async def list_terms(
             search=search,
             page=page,
             page_size=page_size,
+            namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
