@@ -1628,16 +1628,25 @@ async def list_terms(
 
 
 @mcp.tool()
-async def get_term(term_id: str, namespace: str | None = None) -> str:
+async def get_term(
+    term_id: str, namespace: str | None = None, terminology: str | None = None
+) -> str:
     """Get a term by ID, value (e.g., 'STATUS:approved'), or synonym.
 
     Args:
-        term_id: Term ID, value, or synonym.
+        term_id: Term ID, value, or synonym. With terminology set, this is
+            the OPAQUE raw value — never colon-parsed.
         namespace: Namespace for value/synonym resolution (required with
             multi-namespace or privileged keys; single-namespace keys derive it).
+        terminology: Terminology scoping a value-form identifier. REQUIRED
+            for values that themselves contain ':' (OBO ids like
+            GO:0000278) — the 'TERMINOLOGY:VALUE' shorthand mis-parses
+            those; prefer this field form for any colon-carrying vocabulary.
     """
     try:
-        data = await get_client().get_term(term_id, namespace=namespace)
+        data = await get_client().get_term(
+            term_id, namespace=namespace, terminology=terminology
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1793,11 +1802,15 @@ async def get_term_hierarchy(
     relation_type: str | None = None,
     max_depth: int = 10,
     namespace: str | None = None,
+    terminology: str | None = None,
 ) -> str:
     """Traverse ontology relations for a term.
 
     Args:
         term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
+            With terminology set, this is the OPAQUE raw value — never
+            colon-parsed. Use that field form for any value that itself
+            contains ':' (OBO ids like GO:0000278).
         direction: One of 'children', 'parents', 'ancestors', 'descendants'.
         relation_type: Relation type to follow (is_a, part_of, has_part, etc.).
             Defaults to is_a. Exactly one type is followed per call — there is
@@ -1805,16 +1818,19 @@ async def get_term_hierarchy(
         max_depth: Max traversal depth, for ancestors/descendants only.
             children/parents are direct neighbors (always depth 1).
         namespace: Namespace to query in. Omit to use server default.
+        terminology: Terminology scoping a value-form term_id (see term_id).
     """
     try:
         client = get_client()
         if direction == "children":
             data = await client.get_term_children(
                 term_id, relation_type=relation_type, namespace=namespace,
+                terminology=terminology,
             )
         elif direction == "parents":
             data = await client.get_term_parents(
                 term_id, relation_type=relation_type, namespace=namespace,
+                terminology=terminology,
             )
         elif direction == "ancestors":
             data = await client.get_term_ancestors(
@@ -1822,6 +1838,7 @@ async def get_term_hierarchy(
                 relation_type=relation_type,
                 max_depth=max_depth,
                 namespace=namespace,
+                terminology=terminology,
             )
         elif direction == "descendants":
             data = await client.get_term_descendants(
@@ -1829,6 +1846,7 @@ async def get_term_hierarchy(
                 relation_type=relation_type,
                 max_depth=max_depth,
                 namespace=namespace,
+                terminology=terminology,
             )
         else:
             return "Error: direction must be children, parents, ancestors, or descendants"
@@ -1871,6 +1889,7 @@ async def list_term_relations(
     direction: str = "outgoing",
     relation_type: str | None = None,
     namespace: str | None = None,
+    terminology: str | None = None,
     page: int = 1,
     page_size: int = 50,
 ) -> str:
@@ -1878,9 +1897,13 @@ async def list_term_relations(
 
     Args:
         term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
+            With terminology set, this is the OPAQUE raw value — never
+            colon-parsed. Use that field form for any value that itself
+            contains ':' (OBO ids like GO:0000278).
         direction: 'outgoing' (this term is source), 'incoming' (this term is target), or 'both'.
         relation_type: Filter by type (is_a, part_of, etc.). None = all types.
         namespace: Namespace to query in. Omit to use server default.
+        terminology: Terminology scoping a value-form term_id (see term_id).
         page: Page number.
         page_size: Results per page (max 100).
     """
@@ -1888,6 +1911,7 @@ async def list_term_relations(
         data = await get_client().list_term_relations(
             term_id=term_id, direction=direction,
             relation_type=relation_type, namespace=namespace,
+            terminology=terminology,
             page=page, page_size=page_size,
         )
         return json.dumps(data, indent=2, default=str)

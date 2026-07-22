@@ -19,7 +19,12 @@ from typing import cast
 from fastapi import HTTPException
 
 from .identity import get_current_identity
-from .resolve import EntityNotFoundError, _looks_like_uuid, resolve_entity_id
+from .resolve import (
+    EntityNotFoundError,
+    _looks_like_uuid,
+    resolve_entity_id,
+    resolve_term_by_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,9 +113,56 @@ async def resolve_or_404(
         return await resolve_entity_id(raw_id, entity_type, namespace)
     except EntityNotFoundError:
         label = param_name or entity_type
+        detail = f"Could not resolve {label} '{raw_id}' in namespace '{namespace}'"
+        if entity_type == "term" and ":" in raw_id and len(raw_id.split(":", 2)) < 3:
+            # The bare and 2-part colon forms mis-parse any VALUE that itself
+            # contains ':' (OBO ids: GO:, CHEBI:, ...) — the parser cannot
+            # tell a structural colon from a data colon. Point at the two
+            # lossless doors instead of failing bare.
+            detail += (
+                ". If the term VALUE itself contains ':', the shorthand "
+                "cannot parse it — use the fully qualified form "
+                f"'{namespace}:<terminology>:{raw_id}', or pass "
+                "terminology= separately with the raw value."
+            )
+        raise HTTPException(status_code=404, detail=detail) from None
+
+
+async def resolve_term_by_fields_or_404(
+    value: str,
+    terminology: str,
+    namespace: str | None,
+    *,
+    param_name: str = "term",
+) -> str:
+    """Resolve a term from structured (terminology, value) fields, 404 on miss.
+
+    The field-form counterpart to resolve_or_404: the value is an opaque
+    scalar (never colon-parsed), so colon-carrying vocabularies resolve
+    like any other. If ``namespace`` is None it is derived from a
+    single-namespace key; field-form resolution has no pass-through
+    fallback, so a missing namespace is a 422, not a silent miss.
+    """
+    if namespace is None:
+        namespace = _derive_namespace_from_identity()
+    if namespace is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Cannot resolve {param_name} by terminology+value: no "
+                "namespace context. Pass ?namespace= or use a "
+                "single-namespace API key."
+            ),
+        )
+    try:
+        return await resolve_term_by_fields(value, terminology, namespace)
+    except EntityNotFoundError:
         raise HTTPException(
             status_code=404,
-            detail=f"Could not resolve {label} '{raw_id}' in namespace '{namespace}'",
+            detail=(
+                f"Could not resolve {param_name} value '{value}' in "
+                f"terminology '{terminology}' (namespace '{namespace}')"
+            ),
         ) from None
 
 

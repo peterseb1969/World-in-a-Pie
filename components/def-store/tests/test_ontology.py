@@ -858,3 +858,77 @@ class TestNonIsATraversal:
         data = resp.json()
         assert data["total"] == 2
         assert data["relation_type"] == "part_of"
+
+
+# =============================================================================
+# CASE-776: field-form term addressing for colon-carrying (OBO) values
+# =============================================================================
+
+class TestFieldFormTraversal:
+    """terminology= + raw value resolves OBO-style ids the colon shorthand can't.
+
+    A value like 'GO:0000278' mis-parses through the TERMINOLOGY:VALUE
+    string shorthand (split on ':' → wrong terminology/value). The field
+    form treats the identifier as the opaque raw value, so it resolves.
+    """
+
+    @pytest.mark.asyncio
+    async def test_ancestors_by_field_form_with_colon_value(self, client, auth_headers):
+        tid = await create_terminology(client, auth_headers, value="GO_SLIM", label="GO Slim")
+        parent = await create_term(client, auth_headers, tid, "GO:0005694")
+        child = await create_term(client, auth_headers, tid, "GO:0000228")
+        await create_relation(client, auth_headers, child, parent, "is_a")
+
+        # String shorthand cannot address the colon value — bare form 404s
+        bare = await client.get(
+            f"{API}/ontology/terms/GO:0000228/ancestors",
+            params={"namespace": "wip", "relation_type": "is_a"},
+            headers=auth_headers,
+        )
+        assert bare.status_code == 404
+        assert "terminology=" in bare.json()["detail"]
+
+        # Field form resolves the same value and traverses
+        resp = await client.get(
+            f"{API}/ontology/terms/GO:0000228/ancestors",
+            params={"namespace": "wip", "relation_type": "is_a", "terminology": "GO_SLIM"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["nodes"][0]["term_id"] == parent
+
+    @pytest.mark.asyncio
+    async def test_field_form_is_immune_to_terminology_named_like_a_prefix(
+        self, client, auth_headers
+    ):
+        """Wrong-hit guard: a terminology literally named 'GO' must not
+        capture the field-form lookup of value 'GO:0000228' in GO_SLIM."""
+        slim = await create_terminology(client, auth_headers, value="GO_SLIM", label="GO Slim")
+        # A decoy terminology named 'GO' with a term whose value is the
+        # local-id tail the string shorthand would extract.
+        decoy = await create_terminology(client, auth_headers, value="GO", label="Decoy")
+        await create_term(client, auth_headers, decoy, "0000228")
+        target = await create_term(client, auth_headers, slim, "GO:0000228")
+
+        resp = await client.get(
+            f"{API}/ontology/term-relations",
+            params={"term_id": "GO:0000228", "namespace": "wip", "terminology": "GO_SLIM"},
+            headers=auth_headers,
+        )
+        # Resolves to the GO_SLIM term (target), not the decoy's 0000228.
+        assert resp.status_code == 200, resp.text
+
+    @pytest.mark.asyncio
+    async def test_field_form_get_term(self, client, auth_headers):
+        tid = await create_terminology(client, auth_headers, value="CHEBI", label="ChEBI")
+        term = await create_term(client, auth_headers, tid, "CHEBI:15377")
+
+        resp = await client.get(
+            f"{API}/terms/CHEBI:15377",
+            params={"namespace": "wip", "terminology": "CHEBI"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["term_id"] == term

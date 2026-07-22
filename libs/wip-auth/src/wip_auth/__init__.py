@@ -41,7 +41,11 @@ from .dependencies import (
     require_namespace_read,
     require_namespace_write,
 )
-from .fastapi_helpers import resolve_bulk_ids, resolve_or_404
+from .fastapi_helpers import (
+    resolve_bulk_ids,
+    resolve_or_404,
+    resolve_term_by_fields_or_404,
+)
 from .identity import (
     clear_current_identity,
     get_actor_info,
@@ -147,6 +151,7 @@ __all__ = [
     "resolve_entity_ids",
     "resolve_namespace_filter",
     "resolve_or_404",
+    "resolve_term_by_fields_or_404",
     "resolve_permission",
     "retry_async",
     "set_auth_config",

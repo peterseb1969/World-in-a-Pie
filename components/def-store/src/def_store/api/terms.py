@@ -9,6 +9,7 @@ from wip_auth import (
     check_namespace_permission,
     resolve_namespace_filter,
     resolve_or_404,
+    resolve_term_by_fields_or_404,
 )
 
 from ..models.api_models import (
@@ -201,11 +202,24 @@ async def list_terms(
 async def get_term(
     term_id: str,
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology scoping a value-form term identifier. When "
+                    "present, the identifier is treated as the OPAQUE raw value "
+                    "(never colon-parsed) — required for values that themselves "
+                    "contain ':' (OBO ids like GO:0000278).",
+    ),
     identity: UserIdentity = Depends(require_api_key)
 ) -> TermResponse:
     """Get a term by its ID or synonym (e.g., "STATUS:approved")."""
-    # Resolve synonym — supports colon notation for terms
-    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
+    if terminology is not None:
+        # Field-form door: the identifier is the raw value, uninterpreted
+        term_id = await resolve_term_by_fields_or_404(
+            term_id, terminology, namespace, param_name="term_id"
+        )
+    else:
+        # Resolve synonym — supports colon notation for terms
+        term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     result = await TerminologyService.get_term(term_id=term_id)
     if not result:

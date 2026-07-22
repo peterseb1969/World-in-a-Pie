@@ -620,10 +620,14 @@ class WipClient:
             namespace=namespace,
         )
 
-    async def get_term(self, term_id: str, namespace: str | None = None) -> dict:
+    async def get_term(
+        self, term_id: str, namespace: str | None = None,
+        terminology: str | None = None,
+    ) -> dict:
         return await self._get(
             self.def_store_url, f"/api/def-store/terms/{term_id}",
             namespace=namespace,
+            terminology=terminology,
         )
 
     async def create_terms(
@@ -703,7 +707,7 @@ class WipClient:
 
     async def get_term_children(
         self, term_id: str, relation_type: str | None = None,
-        namespace: str | None = None,
+        namespace: str | None = None, terminology: str | None = None,
     ) -> list[dict]:
         # Ontology endpoints return a bare JSON array; _get is typed dict, so
         # cast to the real shape.
@@ -712,22 +716,25 @@ class WipClient:
             f"/api/def-store/ontology/terms/{term_id}/children",
             relation_type=relation_type,
             namespace=namespace,
+            terminology=terminology,
         ))
 
     async def get_term_parents(
         self, term_id: str, relation_type: str | None = None,
-        namespace: str | None = None,
+        namespace: str | None = None, terminology: str | None = None,
     ) -> list[dict]:
         return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/parents",
             relation_type=relation_type,
             namespace=namespace,
+            terminology=terminology,
         ))
 
     async def get_term_ancestors(
         self, term_id: str, relation_type: str | None = None,
         max_depth: int = 10, namespace: str | None = None,
+        terminology: str | None = None,
     ) -> list[dict]:
         return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
@@ -735,11 +742,13 @@ class WipClient:
             relation_type=relation_type,
             max_depth=max_depth,
             namespace=namespace,
+            terminology=terminology,
         ))
 
     async def get_term_descendants(
         self, term_id: str, relation_type: str | None = None,
         max_depth: int = 10, namespace: str | None = None,
+        terminology: str | None = None,
     ) -> list[dict]:
         return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
@@ -747,6 +756,7 @@ class WipClient:
             relation_type=relation_type,
             max_depth=max_depth,
             namespace=namespace,
+            terminology=terminology,
         ))
 
     async def create_term_relations(
@@ -781,6 +791,7 @@ class WipClient:
         direction: str = "outgoing",
         relation_type: str | None = None,
         namespace: str | None = None,
+        terminology: str | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> dict:
@@ -791,6 +802,7 @@ class WipClient:
             direction=direction,
             relation_type=relation_type,
             namespace=namespace,
+            terminology=terminology,
             page=page,
             page_size=page_size,
         )

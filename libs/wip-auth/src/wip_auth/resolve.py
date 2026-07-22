@@ -237,7 +237,19 @@ async def resolve_entity_id(
             return cached
 
     payload = _build_resolve_payload(raw_id, entity_type, namespace, include_statuses)
+    canonical_id = await _post_resolve(payload, raw_id, entity_type)
+    _set_cached(cache_key, canonical_id)
+    return canonical_id
 
+
+async def _post_resolve(payload: dict[str, Any], identifier: str, entity_type: str) -> str:
+    """POST one item to Registry /resolve and return the canonical id.
+
+    Shared HTTP + error mapping for every resolution entry point — one
+    implementation so transport injection and failure semantics cannot
+    drift between the string-form and field-form resolvers. Raises
+    EntityNotFoundError on unreachable Registry, non-200, or not-found.
+    """
     registry_url = _get_registry_url()
     api_key = _get_api_key()
 
@@ -254,23 +266,68 @@ async def resolve_entity_id(
             )
     except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
         logger.debug("Registry unreachable for resolution: %s", e)
-        raise EntityNotFoundError(raw_id, entity_type) from e
+        raise EntityNotFoundError(identifier, entity_type) from e
 
     if response.status_code != 200:
         logger.warning(
             "Registry resolve failed for %s (%s): %s",
-            raw_id, entity_type, response.status_code,
+            identifier, entity_type, response.status_code,
         )
-        raise EntityNotFoundError(raw_id, entity_type)
+        raise EntityNotFoundError(identifier, entity_type)
 
     data = response.json()
     results = data.get("results", [])
     if results and results[0].get("status") == "found":
-        canonical_id = results[0]["entry_id"]
-        _set_cached(cache_key, canonical_id)
-        return cast(str, canonical_id)
+        return cast(str, results[0]["entry_id"])
 
-    raise EntityNotFoundError(raw_id, entity_type)
+    raise EntityNotFoundError(identifier, entity_type)
+
+
+async def resolve_term_by_fields(
+    value: str,
+    terminology: str,
+    namespace: str,
+    *,
+    bypass_cache: bool = False,
+) -> str:
+    """Resolve a term to its canonical ID from structured fields.
+
+    The field-form door: the composite key is built directly from the
+    (namespace, terminology, value) tuple, so the value is an OPAQUE
+    scalar — a value containing ':' (OBO ids like 'GO:0000278') resolves
+    exactly like any other. The colon-notation string parser is never
+    involved. Identity lives in fields; delimiter conventions belong to
+    format parsers at import boundaries, not to WIP-internal addressing.
+
+    Args:
+        value: The term's raw value, uninterpreted.
+        terminology: The terminology's value or ID scoping the term.
+        namespace: Namespace holding the terminology.
+        bypass_cache: As on resolve_entity_id — write paths must not
+            answer from cache.
+
+    Raises:
+        EntityNotFoundError: no term matches the tuple.
+    """
+    cache_key = f"{namespace}:term-fields:{terminology}:{value}"
+    if not bypass_cache:
+        cached = _get_cached(cache_key)
+        if cached:
+            return cached
+
+    payload: dict[str, Any] = {
+        "composite_key": {
+            "ns": namespace,
+            "type": "term",
+            "terminology": terminology,
+            "value": value,
+        }
+    }
+    canonical_id = await _post_resolve(
+        payload, f"{terminology}/{value}", "term"
+    )
+    _set_cached(cache_key, canonical_id)
+    return canonical_id
 
 
 async def resolve_entity_ids(
