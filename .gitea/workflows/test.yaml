@@ -292,6 +292,27 @@ jobs:
           . .venv/bin/activate
           pytest libs/wip-auth/tests/ -v --tb=short
 
+  # wip-archive library (archive format + id remap) — pure unit tests
+  test-wip-archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: |
+          . .venv/bin/activate
+          pip install -e libs/wip-archive pytest
+
+      - name: Run tests
+        run: |
+          . .venv/bin/activate
+          pytest libs/wip-archive/tests/ -v --tb=short
+
   # Deployer (wip-deploy CLI) — pure unit tests, no DB or NATS needed
   test-deployer:
     runs-on: ubuntu-latest
@@ -365,6 +386,10 @@ jobs:
       - name: Install dependencies
         run: |
           . .venv/bin/activate
+          # wip-archive first: the toolkit's pyproject declares it as a
+          # dependency, and it lives in this repo, not on PyPI — a bare
+          # `pip install -e WIP-Toolkit` dies resolving it.
+          pip install -e libs/wip-archive
           pip install -e WIP-Toolkit
           # The component requirements files carry an editable install
           # (-e ../../libs/wip-auth) whose relative path pip resolves against
