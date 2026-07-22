@@ -204,3 +204,43 @@ class TestResolveRemapMapping:
     def test_archive_order_wins_over_caller_order(self):
         got = _resolve(["a", "b"], nsmap={"b": "y", "a": "x"})
         assert list(got) == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_dry_run_placeholders_unique_across_sources():
+    """An N:1 dry run must not report collisions the real run would never
+    hit. Registry-minted ids are globally unique; the dry-run placeholders
+    must be too. With a placeholder counter per SOURCE, two sources'
+    terminologies get the same stand-in id, their terms' Registry keys then
+    embed identical parents, and the collapse falsely refuses — found live
+    on a kb+library two-into-one dry run whose real run succeeds."""
+    from document_store.services.backup_engine import DirectRestoreEngine
+
+    def _terminology(tid, value):
+        return {"terminology_id": tid, "value": value, "label": value}
+
+    def _term(tid, parent, value):
+        return {"term_id": tid, "terminology_id": parent, "value": value}
+
+    provision_for = DirectRestoreEngine._dry_run_provisioner()
+    plans = await plan_multi(
+        [
+            RemapSource("kb", "one", {
+                "terminologies": [_terminology("T-KB", "KB_STATUS")],
+                "terms": [_term("TM-KB", "T-KB", "draft")],
+            }),
+            RemapSource("library", "one", {
+                "terminologies": [_terminology("T-LIB", "LIB_STATUS")],
+                "terms": [_term("TM-LIB", "T-LIB", "draft")],
+            }),
+        ],
+        IDRemapper(),
+        provision_for,
+    )
+
+    kb_parent = plans["kb"].id_map["terminologies"]["T-KB"]
+    lib_parent = plans["library"].id_map["terminologies"]["T-LIB"]
+    assert kb_parent != lib_parent, (
+        "dry-run placeholders collided across sources — same-valued terms "
+        "under different terminologies would falsely refuse the collapse"
+    )

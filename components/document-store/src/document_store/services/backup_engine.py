@@ -703,7 +703,7 @@ class DirectRestoreEngine:
             # restore no data may point at the original namespaces.
             remapper = IDRemapper(namespace_map=dict(mapping))
             provision_for = (
-                (lambda _target: self._dry_run_provisioner()) if dry_run
+                self._dry_run_provisioner() if dry_run
                 else self._registry_provisioner
             )
             plans = await plan_multi(remap_sources, remapper, provision_for)
@@ -880,10 +880,19 @@ class DirectRestoreEngine:
 
     @staticmethod
     def _dry_run_provisioner() -> Any:
-        """Stand-in ids for a dry run.
+        """Factory for stand-in ids, ONE counter per dry run.
 
         Provisioning writes reserved entries, so a dry run must not call the
         Registry — a preview that leaves rows behind is not a preview.
+
+        Returns a per-target factory (the shape plan_multi expects) whose
+        provisioners all share one counter: placeholder ids must be unique
+        across every source and entity type in the run, exactly as
+        Registry-minted ids are. A counter per source hands two sources'
+        terminologies the same placeholder, their terms' Registry keys then
+        embed identical parent ids, and an N:1 dry run reports a collision
+        the real run would never hit — a preview that refuses what apply
+        allows.
         """
         counter = {"n": 0}
 
@@ -896,7 +905,7 @@ class DirectRestoreEngine:
                 ids.append(f"would-mint-{counter['n']}")
             return ids
 
-        return provision
+        return lambda _target: provision
 
     async def _write_remapped(
         self, namespace: str, plan: RemapPlan, batch_size: int
