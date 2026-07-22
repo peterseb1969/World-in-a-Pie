@@ -48,25 +48,47 @@ def make_project(tmp_path: Path, *, role: str = "BE-YAC", prior_status: str = "a
     return root
 
 
+def _write_fake_kbc(fake: Path, log: Path, exit_code: int = 0) -> None:
+    fake.write_text(f'#!/bin/bash\necho "$@" >> "{log}"\nexit {exit_code}\n')
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+
+
 def make_fake_kbc(tmp_path: Path, *, exit_code: int = 0) -> tuple[str, Path]:
     log = tmp_path / "kbc-calls.log"
     fake = tmp_path / "fake-kbc.sh"
-    fake.write_text(f'#!/bin/bash\necho "$@" >> "{log}"\nexit {exit_code}\n')
-    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    _write_fake_kbc(fake, log, exit_code)
     return str(fake), log
 
 
 def run(root: Path, *args: str, kbc: str | None = None, frozen: str | None = FROZEN):
+    """Run the rollover script against a tmp project root, ALWAYS isolated.
+
+    CASE-736 provenance: the kb shim override is unconditional — a caller
+    that passes no ``kbc=`` gets a throwaway fake, never the real served
+    client. The old shape (unset the override when the argument was absent)
+    made forgetting ``kbc=`` a silent production write: the script fell
+    through to ``~/.cache/wip-kb-client/kb-client.sh``, which resolved the
+    REAL repo config from the pytest CWD, and ~20 suite runs upserted two
+    fixture SESSION records onto the live kb. Touching a live instance from
+    this suite must be impossible, not merely avoidable.
+
+    ``cwd=root`` is the second layer: anything that resolves config relative
+    to the working directory sees the fixture project, not this repo.
+    """
     env = dict(os.environ)
     env["CLAUDE_PROJECT_DIR"] = str(root)
     env.pop("WAKE_ROLLOVER_NOW", None)
-    env.pop("WAKE_ROLLOVER_KBC", None)
     if frozen:
         env["WAKE_ROLLOVER_NOW"] = frozen
-    if kbc:
-        env["WAKE_ROLLOVER_KBC"] = kbc
+    if kbc is None:
+        fake = root.parent / "default-fake-kbc.sh"
+        if not fake.exists():
+            _write_fake_kbc(fake, root.parent / "default-kbc-calls.log")
+        kbc = str(fake)
+    env["WAKE_ROLLOVER_KBC"] = kbc
     return subprocess.run(
-        [sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=env
+        [sys.executable, str(SCRIPT), *args],
+        capture_output=True, text=True, env=env, cwd=root,
     )
 
 
@@ -170,6 +192,26 @@ class TestWakeHardStops:
 
 
 class TestKbBehaviour:
+    def test_bare_run_is_isolated_by_default(self, tmp_path):
+        """Tripwire for the isolation default itself: a run() WITHOUT kbc=
+        must land its kb mirror on the throwaway fake — never on the real
+        served client. If this fails, the suite has regressed to opt-OUT
+        isolation, the exact shape that let ~20 runs write fixture SESSION
+        records onto the production kb before anyone noticed."""
+        root = make_project(tmp_path)
+        res = run(root)
+        assert res.returncode == 0, res.stderr
+
+        # The default fake logged the mirror calls — the override was set
+        # and honored (prior close + new session = 2 calls).
+        default_log = root.parent / "default-kbc-calls.log"
+        assert default_log.exists(), "default fake shim was never invoked"
+        calls = default_log.read_text().splitlines()
+        assert len(calls) == 2
+        assert PRIOR_ID in calls[0]
+        # And the mirror genuinely ran (not skipped by the tier gate).
+        assert "tier 2" not in res.stderr
+
     def test_tier2_no_kb_json_skips_silently(self, tmp_path):
         root = make_project(tmp_path, with_kb=False)
         kbc, log = make_fake_kbc(tmp_path)
