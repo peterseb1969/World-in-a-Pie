@@ -387,12 +387,12 @@ async def test_delete_template(client: AsyncClient, auth_headers: dict):
         client, auth_headers, {"namespace": "wip", "value": "DELETE", "label": "Delete Template"}
     )
 
-    # Delete it via bulk DELETE
+    # Delete it via bulk DELETE — version is required for a soft delete
     response = await client.request(
         "DELETE",
         "/api/template-store/templates",
         headers=auth_headers,
-        json=[{"id": template_id}],
+        json=[{"id": template_id, "version": 1}],
     )
     assert response.status_code == 200
     data = response.json()
@@ -406,6 +406,45 @@ async def test_delete_template(client: AsyncClient, auth_headers: dict):
     )
     assert get_response.status_code == 200
     assert get_response.json()["status"] == "inactive"
+
+
+@pytest.mark.asyncio
+async def test_soft_delete_without_version_is_rejected_with_listing(
+    client: AsyncClient, auth_headers: dict
+):
+    """A version-less soft delete is refused per-item, naming the versions.
+
+    The old default (version-less = deactivate LATEST) silently retired the
+    wrong version right after a version event — once making a namespace's
+    archives unrestorable because documents stayed pinned to the retired
+    version. The refusal must list the versions and statuses so the caller
+    can immediately pick, and hard_delete keeps its version-less
+    all-versions meaning (covered in test_hard_delete.py).
+    """
+    template_id = await _create_one_id(
+        client, auth_headers,
+        {"namespace": "wip", "value": "NOVERSION", "label": "No Version"},
+    )
+
+    response = await client.request(
+        "DELETE",
+        "/api/template-store/templates",
+        headers=auth_headers,
+        json=[{"id": template_id}],
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["failed"] == 1
+    error = data["results"][0]["error"]
+    assert "version is required" in error
+    assert "v1 (active)" in error
+
+    # Nothing was deactivated by the refused call.
+    get_response = await client.get(
+        f"/api/template-store/templates/{template_id}",
+        headers=auth_headers,
+    )
+    assert get_response.json()["status"] == "active"
 
 
 @pytest.mark.asyncio

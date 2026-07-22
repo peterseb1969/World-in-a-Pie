@@ -2357,12 +2357,20 @@ async def deactivate_template(
     """Delete a template version. Soft-delete (deactivate) by default.
     Set hard_delete=true to permanently remove (requires namespace deletion_mode='full').
 
+    `version` is REQUIRED for a soft-delete: the store rejects a
+    version-less deactivate (the old default targeted the LATEST version,
+    which silently retires the wrong one right after a version event — the
+    common intent there is retiring the PREVIOUS version). The rejection
+    lists the template's versions and statuses so you can pick. Only
+    hard_delete=true may omit version, meaning: remove ALL versions.
+
     Blocked if other templates extend it.
     If documents reference it, use force=true to delete anyway.
 
     Args:
         template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
-        version: Specific version (default: latest for soft-delete, all for hard-delete).
+        version: The version to retire. Required for soft-delete; omit only
+            with hard_delete=true (removes all versions).
         force: Force deletion even if documents exist.
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
     """

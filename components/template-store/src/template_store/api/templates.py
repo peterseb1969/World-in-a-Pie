@@ -448,6 +448,40 @@ async def delete_templates(
     results = []
     for i, item in enumerate(items):
         try:
+            # A soft-delete REQUIRES an explicit version. The old default
+            # (version-less = deactivate the LATEST) was a foot-gun: right
+            # after a version event the overwhelmingly common intent is
+            # "retire the PREVIOUS version", and the default silently did
+            # the opposite — once retiring a doc-bearing version and making
+            # its namespace's archives unrestorable at the reporting gate.
+            # A UI that loses the selected version in transit now gets this
+            # loud error instead of retiring the wrong version. Hard-delete
+            # without a version keeps its distinct, deliberate meaning:
+            # remove ALL versions (namespace-teardown flows).
+            if not item.hard_delete and item.version is None:
+                version_rows = await Template.find(
+                    {"template_id": item.id}
+                ).sort("version").to_list()
+                # An unknown template falls through to the normal not-found
+                # path — "version is required" would be nonsense there.
+                if version_rows:
+                    listing = ", ".join(
+                        f"v{t.version} ({getattr(t.status, 'value', t.status)})"
+                        for t in version_rows
+                    )
+                    results.append(BulkResultItem(
+                        index=i, status="error", id=item.id,
+                        error=(
+                            "version is required to deactivate a template: a "
+                            "version-less deactivate targeted the LATEST version, "
+                            "which silently retires the wrong one right after a "
+                            f"version event. This template's versions: {listing}. "
+                            "Pass the version to retire. (hard_delete=true without "
+                            "a version still means: remove all versions.)"
+                        ),
+                    ))
+                    continue
+
             # Check dependencies
             deps = await DependencyService.check_template_dependencies(item.id)
 

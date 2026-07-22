@@ -256,7 +256,7 @@ class TestSoftDeleteRegression:
         """Default delete sets template status to inactive."""
         tid = await _create_template(client, auth_headers, "SOFT_TPL", "Soft Delete")
 
-        data = await _delete_template(client, auth_headers, tid)
+        data = await _delete_template(client, auth_headers, tid, version=1)
         assert data["succeeded"] == 1
 
         # Template still exists, just inactive

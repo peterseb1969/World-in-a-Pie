@@ -155,7 +155,7 @@ async def test_dependencies_prevents_delete_with_children(
         "DELETE",
         "/api/template-store/templates",
         headers=auth_headers,
-        json=[{"id": parent_id}],
+        json=[{"id": parent_id, "version": 1}],
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -188,7 +188,7 @@ async def test_dependencies_allows_delete_without_children(
         "DELETE",
         "/api/template-store/templates",
         headers=auth_headers,
-        json=[{"id": template_id}],
+        json=[{"id": template_id, "version": 1}],
     )
     assert resp.status_code == 200
     assert resp.json()["succeeded"] == 1
