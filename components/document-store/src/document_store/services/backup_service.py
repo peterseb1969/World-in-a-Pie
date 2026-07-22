@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import httpx as _httpx
+from beanie.odm.operators.update.array import Push
 from wip_toolkit.models import ProgressEvent
 
 from ..models.backup_job import BackupJob, BackupJobKind, BackupJobStatus
@@ -97,59 +98,66 @@ _job_queues: dict[str, asyncio.Queue[ProgressEvent | _Sentinel]] = {}
 _job_tasks: dict[str, asyncio.Task[None]] = {}
 
 
-def _percent_for_status(status: BackupJobStatus, event: ProgressEvent) -> float | None:
-    """Pick the percent to persist.
-
-    Preserve the last-known percent on error events (which carry None) so the
-    UI doesn't snap back to 0% on failure.
-    """
-    if event.phase == "error":
-        return None
-    return cast(float | None, event.percent)
-
-
 async def _persist_event(job_id: str, event: ProgressEvent) -> None:
-    """Apply a ProgressEvent to the BackupJob MongoDB record."""
+    """Apply a ProgressEvent to the BackupJob MongoDB record.
+
+    Every write here is field-scoped (atomic $set / $push), never a
+    full-document save. This pipeline runs concurrently with detached
+    writers on the same record — the validation back-link, the archive
+    lifecycle hook, any future follow-up — and a full save from a copy
+    loaded before their write silently erases it. That lost-update class
+    bit twice (the result null-out, the back-link clobber) before the
+    remaining sites here were converted; each writer now touches exactly
+    the fields it owns, so interleaving cannot destroy another's write.
+    """
     job = await BackupJob.find_one(BackupJob.job_id == job_id)
     if job is None:
         logger.warning("BackupJob %s disappeared while streaming progress", job_id)
         return
 
-    # Transition from PENDING to RUNNING on the first 'start' event.
-    if event.phase == "start" and job.status == BackupJobStatus.PENDING:
-        job.status = BackupJobStatus.RUNNING
-        job.started_at = datetime.now(UTC)
-
     # Warnings accumulate on the job record instead of overwriting the
     # rolling phase/message — a completed job with warnings succeeded; the
     # warnings say what to double-check (e.g. reporting parity incomplete).
+    # An atomic push: two warnings landing concurrently both survive, and
+    # nothing else on the record is touched.
     if event.phase == "warning":
-        job.warnings.append(event.message)
-        await job.save()
+        await job.update(Push({BackupJob.warnings: event.message}))
         return
 
-    job.phase = event.phase
-    job.message = event.message
+    fields: dict[Any, Any] = {
+        BackupJob.phase: event.phase,
+        BackupJob.message: event.message,
+    }
+
+    # Transition from PENDING to RUNNING on the first 'start' event. The
+    # read-then-set is safe single-writer: the per-job queue serializes
+    # this pipeline's events in-process.
+    if event.phase == "start" and job.status == BackupJobStatus.PENDING:
+        fields[BackupJob.status] = BackupJobStatus.RUNNING
+        fields[BackupJob.started_at] = datetime.now(UTC)
+
+    # Percent is preserved on error events (which carry None) so the UI
+    # doesn't snap back to 0% on failure — simply not written here.
     if event.percent is not None:
-        job.percent = event.percent
+        fields[BackupJob.percent] = event.percent
 
     if event.phase == "complete":
-        job.status = BackupJobStatus.COMPLETE
-        job.percent = 100.0
-        job.completed_at = datetime.now(UTC)
+        fields[BackupJob.status] = BackupJobStatus.COMPLETE
+        fields[BackupJob.percent] = 100.0
+        fields[BackupJob.completed_at] = datetime.now(UTC)
         # A structured outcome rides on the terminal event rather than being
         # written separately afterwards. Saving it in a second pass raced this
         # one: the consumer had already loaded the record, so its save put the
         # result back to null. Observed exactly that on a live dry run.
         if event.details:
-            job.result = dict(event.details)
+            fields[BackupJob.result] = dict(event.details)
         # Populate archive_size from disk if the archive file exists.
         # This is the first opportunity after the backup engine has finalized
         # the ZIP; the API layer set archive_path at job creation but
         # cannot know the size until the worker writes the file.
         if job.archive_path:
             with contextlib.suppress(OSError):
-                job.archive_size = Path(job.archive_path).stat().st_size
+                fields[BackupJob.archive_size] = Path(job.archive_path).stat().st_size
         # After a successful restore, trigger a batch sync so reporting-sync
         # picks up the restored documents in PostgreSQL. The restore engine
         # writes directly to MongoDB and bypasses the NATS event path that
@@ -166,14 +174,12 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
             and job.namespace
             and not job.options.get("dry_run")
         ):
-            # Persist the terminal state BEFORE scheduling the follow-ups.
-            # trigger_validation_for re-fetches the job and saves the
-            # validation_job_ids back-link; if this function's own save runs
-            # after that (the scheduled task can interleave into any await),
-            # the stale in-memory copy clobbers the link back to [] — a
-            # lost update observed live: validation jobs existed and were
-            # healthy, but the restore job pointed at none of them.
-            await job.save()
+            # Persist the terminal state BEFORE scheduling the follow-ups —
+            # they read the record and must see it terminal. (The write
+            # being field-scoped already protects the validation back-link
+            # from being clobbered; the ordering keeps the follow-ups from
+            # observing a job that still looks RUNNING.)
+            await job.set(fields)
             # One sync per namespace the restore WROTE — a multi-target fresh
             # restore (namespace_map with several targets) needs each target
             # synced; job.namespace alone would cover only the first.
@@ -188,11 +194,11 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
             _track(asyncio.ensure_future(trigger_validation_for(job)))
             return
     elif event.phase == "error":
-        job.status = BackupJobStatus.FAILED
-        job.error = event.message
-        job.completed_at = datetime.now(UTC)
+        fields[BackupJob.status] = BackupJobStatus.FAILED
+        fields[BackupJob.error] = event.message
+        fields[BackupJob.completed_at] = datetime.now(UTC)
 
-    await job.save()
+    await job.set(fields)
 
 
 async def _mark_failed(job_id: str, error: str) -> None:
@@ -200,11 +206,12 @@ async def _mark_failed(job_id: str, error: str) -> None:
     job = await BackupJob.find_one(BackupJob.job_id == job_id)
     if job is None:
         return
-    job.status = BackupJobStatus.FAILED
-    job.error = error
-    job.phase = "error"
-    job.completed_at = datetime.now(UTC)
-    await job.save()
+    await job.set({
+        BackupJob.status: BackupJobStatus.FAILED,
+        BackupJob.error: error,
+        BackupJob.phase: "error",
+        BackupJob.completed_at: datetime.now(UTC),
+    })
 
 
 async def start_async_job(

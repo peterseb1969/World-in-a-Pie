@@ -700,3 +700,164 @@ class TestValidationResultSurvives:
         assert updated.result["issues"][0]["type"] == "orphaned_term_ref"
         # The warning event accumulated alongside, not instead of, the result.
         assert any("integrity warning" in w for w in updated.warnings)
+
+
+class TestFieldScopedJobWrites:
+    """No BackupJob.save() anywhere in the pipeline (CASE-749).
+
+    The lost-update class: a writer holds a full document copy across an
+    await while another writer lands, then save() full-replaces the record
+    and silently erases the other's fields. It bit twice (the result
+    null-out, the validation back-link clobber) before the remaining
+    full-save sites were converted to field-scoped writes. These tests pin
+    the conversion with the CASE-747 deterministic-interleave shape: a
+    concurrent writer lands INSIDE the site's read-to-write window — after
+    its find_one, before its write — and must survive. Under the old
+    save() code every one of these fails.
+    """
+
+    def _set_with_interleaved_writer(self, job_id: str):
+        """Wrap BackupJob.set so a concurrent field write lands exactly once,
+        after the production read (its in-memory copy is already stale) and
+        immediately before the production write — the lost-update window.
+
+        The seam is the WRITE, not find_one: Beanie's own Document.set
+        routes through find_one(...).update() internally, so patching
+        find_one poisons the machinery under test. The concurrent write
+        goes through the raw motor collection for the same reason. A
+        regression back to full-document save() never enters this seam, so
+        the concurrent write never lands and the survival assert fails —
+        which is the point.
+        """
+        orig_set = BackupJob.set
+        fired = {"done": False}
+
+        async def wrapped(doc_self, expression, *args, **kwargs):
+            if not fired["done"]:
+                fired["done"] = True
+                await BackupJob.get_motor_collection().update_one(
+                    {"job_id": job_id},
+                    {"$set": {"validation_job_ids": ["val-concurrent"]}},
+                )
+            return await orig_set(doc_self, expression, *args, **kwargs)
+
+        return wrapped
+
+    async def test_progress_event_preserves_concurrent_field_write(
+        self, fresh_job: BackupJob
+    ):
+        job_id = fresh_job.job_id
+        with patch.object(
+            backup_service.BackupJob, "set",
+            new=self._set_with_interleaved_writer(job_id),
+        ):
+            await backup_service._persist_event(
+                job_id,
+                ProgressEvent(phase="phase_documents", message="docs", percent=50.0),
+            )
+
+        stored = await BackupJob.find_one(BackupJob.job_id == job_id)
+        assert stored.validation_job_ids == ["val-concurrent"]  # survived
+        assert stored.phase == "phase_documents"  # and the event landed too
+        assert stored.percent == 50.0
+
+    async def test_terminal_event_preserves_concurrent_field_write(
+        self, fresh_job: BackupJob
+    ):
+        job_id = fresh_job.job_id
+        with patch.object(
+            backup_service.BackupJob, "set",
+            new=self._set_with_interleaved_writer(job_id),
+        ):
+            await backup_service._persist_event(
+                job_id,
+                ProgressEvent(phase="complete", message="done", percent=100.0),
+            )
+
+        stored = await BackupJob.find_one(BackupJob.job_id == job_id)
+        assert stored.validation_job_ids == ["val-concurrent"]
+        assert stored.status == BackupJobStatus.COMPLETE
+        assert stored.percent == 100.0
+
+    async def test_mark_failed_preserves_concurrent_field_write(
+        self, fresh_job: BackupJob
+    ):
+        job_id = fresh_job.job_id
+        with patch.object(
+            backup_service.BackupJob, "set",
+            new=self._set_with_interleaved_writer(job_id),
+        ):
+            await backup_service._mark_failed(job_id, "worker died")
+
+        stored = await BackupJob.find_one(BackupJob.job_id == job_id)
+        assert stored.validation_job_ids == ["val-concurrent"]
+        assert stored.status == BackupJobStatus.FAILED
+        assert stored.error == "worker died"
+        assert stored.phase == "error"
+
+    async def test_two_warning_events_both_survive(self, fresh_job: BackupJob):
+        # The warning branch is an atomic $push — concurrent appends
+        # compose instead of last-writer-wins.
+        await asyncio.gather(
+            backup_service._persist_event(
+                fresh_job.job_id,
+                ProgressEvent(phase="warning", message="first warning"),
+            ),
+            backup_service._persist_event(
+                fresh_job.job_id,
+                ProgressEvent(phase="warning", message="second warning"),
+            ),
+        )
+
+        stored = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert sorted(stored.warnings) == ["first warning", "second warning"]
+
+    async def test_warning_event_touches_nothing_else(self, fresh_job: BackupJob):
+        # A warning must not drag the rolling phase/message (or anything
+        # else it holds in memory) along with it.
+        await fresh_job.set({
+            BackupJob.phase: "phase_documents",
+            BackupJob.message: "in flight",
+            BackupJob.percent: 40.0,
+        })
+
+        await backup_service._persist_event(
+            fresh_job.job_id,
+            ProgressEvent(phase="warning", message="heads up"),
+        )
+
+        stored = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert stored.warnings == ["heads up"]
+        assert stored.phase == "phase_documents"
+        assert stored.message == "in flight"
+        assert stored.percent == 40.0
+
+    async def test_error_event_preserves_last_known_percent(
+        self, fresh_job: BackupJob
+    ):
+        # The preserve-percent-on-error behavior survives the conversion:
+        # percent is simply absent from the error event's field set.
+        await fresh_job.set({BackupJob.percent: 70.0})
+
+        await backup_service._persist_event(
+            fresh_job.job_id,
+            ProgressEvent(phase="error", message="boom"),
+        )
+
+        stored = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert stored.percent == 70.0
+        assert stored.status == BackupJobStatus.FAILED
+        assert stored.error == "boom"
+
+    async def test_no_backupjob_save_remains_in_backup_service(self):
+        # The class-level guard: the module must not regrow a full-document
+        # save. Source-level, deliberately blunt — any new `.save()` on a
+        # BackupJob in this module is a regression of the whole class.
+        import inspect
+
+        source = inspect.getsource(backup_service)
+        assert ".save()" not in source, (
+            "backup_service must use field-scoped writes (set/Push), "
+            "never BackupJob.save() — see the lost-update class this "
+            "module's docstrings describe"
+        )
