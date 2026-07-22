@@ -4,7 +4,7 @@ Replaces the toolkit-based HTTP-fan-out engine with direct motor cursor
 reads for backup and bulk inserts for restore. Runs inside document-store,
 which shares the MongoDB instance with all other services.
 
-The engine emits :class:`~wip_toolkit.models.ProgressEvent` via a callback,
+The engine emits :class:`~wip_archive.models.ProgressEvent` via a callback,
 making it compatible with the existing ``start_async_job`` / SSE machinery
 in :mod:`backup_service`.
 """
@@ -22,9 +22,9 @@ from pathlib import Path
 from typing import Any, cast
 
 from motor.motor_asyncio import AsyncIOMotorClient
-from wip_toolkit.archive import ArchiveReader, ArchiveWriter
-from wip_toolkit.import_.remap import IDRemapper
-from wip_toolkit.models import (
+from wip_archive.archive import ArchiveReader, ArchiveWriter
+from wip_archive.remap import IDRemapper
+from wip_archive.models import (
     EntityCounts,
     Manifest,
     NamespaceConfig,
@@ -122,7 +122,7 @@ class DirectBackupEngine:
 
     Reads from all service databases (registry, def-store, template-store,
     document-store) using the shared motor client. Writes to a ZIP archive
-    via :class:`~wip_toolkit.archive.ArchiveWriter`.
+    via :class:`~wip_archive.archive.ArchiveWriter`.
     """
 
     def __init__(
@@ -367,7 +367,7 @@ class DirectRestoreEngine:
     """Restore a namespace from an archive via direct MongoDB bulk inserts.
 
     ID-preserving restore into an empty namespace. Reads the archive with
-    :class:`~wip_toolkit.archive.ArchiveReader`, bulk-inserts into all
+    :class:`~wip_archive.archive.ArchiveReader`, bulk-inserts into all
     service databases.
     """
 

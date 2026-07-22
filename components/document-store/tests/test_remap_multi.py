@@ -10,7 +10,7 @@ failing. These tests pin all three, plus the mapping-resolution contract.
 from __future__ import annotations
 
 import pytest
-from wip_toolkit.import_.remap import IDRemapper
+from wip_archive.remap import IDRemapper
 
 from document_store.services.backup_engine import (
     DirectRestoreEngine,

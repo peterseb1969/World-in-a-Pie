@@ -129,7 +129,7 @@ async def _job(
 
 def _make_v3_archive(path, prefixes):
     """A minimal real v3 archive: just a parseable manifest."""
-    from wip_toolkit.models import Manifest, NamespaceEntry
+    from wip_archive.models import Manifest, NamespaceEntry
 
     manifest = Manifest(
         namespaces=[NamespaceEntry(prefix=p) for p in prefixes],

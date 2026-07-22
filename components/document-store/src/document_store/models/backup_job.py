@@ -194,7 +194,7 @@ class BackupProgressMessage(BaseModel):
     """SSE wire envelope for backup/restore progress events.
 
     **Guardrail 2 (CASE-23 Phase 3)** — this type is the public contract for
-    the SSE endpoint. It is deliberately **not** ``wip_toolkit.models.ProgressEvent``:
+    the SSE endpoint. It is deliberately **not** ``wip_archive.models.ProgressEvent``:
     the toolkit's event type is an implementation detail that must not leak
     to clients, so a future v1.1 rewrite that replaces the toolkit can still
     emit the same wire format without breaking clients or the @wip/client

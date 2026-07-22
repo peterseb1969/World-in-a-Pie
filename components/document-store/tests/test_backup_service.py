@@ -20,7 +20,7 @@ import pytest
 import pytest_asyncio
 from beanie import init_beanie
 from motor.motor_asyncio import AsyncIOMotorClient
-from wip_toolkit.models import ProgressEvent
+from wip_archive.models import ProgressEvent
 
 from document_store.models.backup_job import (
     BackupJob,

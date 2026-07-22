@@ -1,9 +1,9 @@
 """REST endpoints for backup/restore (CASE-23 Phase 3 STEP 5).
 
 This module is the public HTTP surface for the backup/restore subsystem. It
-intentionally does **not** import ``wip_toolkit`` — that is Guardrail 1. All
-toolkit interaction goes through the factory functions in
-:mod:`document_store.services.backup_service`.
+intentionally does **not** import ``wip_archive`` (the archive-format /
+remap library) — that is Guardrail 1. All archive interaction goes through
+the factory functions in :mod:`document_store.services.backup_service`.
 
 Endpoints
 ---------
@@ -26,7 +26,7 @@ Endpoints
 * ``GET  /backup/jobs/{job_id}/events``
     Server-Sent Events stream of :class:`BackupProgressMessage` envelopes.
     **Guardrail 2:** the wire type is ``BackupProgressMessage``, never
-    ``wip_toolkit.models.ProgressEvent``.
+    ``wip_archive.models.ProgressEvent``.
 * ``GET  /backup/jobs/{job_id}/download``
     Stream a job's retained archive. Backup jobs: their COMPLETE output
     (read permission, as before). Restore jobs: their input archive —
@@ -93,10 +93,10 @@ from ..services.archive_store import (
     scratch_path_for,
 )
 
-# NOTE — GUARDRAIL 1: do not add `import wip_toolkit` or `from wip_toolkit ...`
+# NOTE — GUARDRAIL 1: do not add `import wip_archive` or `from wip_archive ...`
 # anywhere in this file. Use the factory helpers in backup_service instead.
 # Verification during review:
-#   grep -rn "wip_toolkit" components/document-store/src/document_store/api/
+#   grep -rn "wip_archive" components/document-store/src/document_store/api/
 # must return zero hits.
 
 logger = logging.getLogger("document_store.api.backup")
@@ -826,7 +826,7 @@ async def stream_job_events(
     -----------
     The ``data:`` payload of every ``progress`` event is a JSON-encoded
     :class:`BackupProgressMessage` (see ``models/backup_job.py``). **This is
-    not ``wip_toolkit.models.ProgressEvent``** — that type is an
+    not ``wip_archive.models.ProgressEvent``** — that type is an
     implementation detail and must not be exposed on the wire (Guardrail 2).
     """
     # Permission check on the job's namespace before we start streaming.

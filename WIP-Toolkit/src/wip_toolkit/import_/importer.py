@@ -9,9 +9,9 @@ from rich.console import Console
 
 from .._progress import ProgressCallback
 from .._progress import emit as _emit
-from ..archive import ArchiveReader
+from wip_archive.archive import ArchiveReader
 from ..client import WIPClient
-from ..models import ImportStats, ProgressEvent
+from wip_archive.models import ImportStats, ProgressEvent
 from .fresh import fresh_import
 from .restore import restore_import
 

@@ -23,9 +23,9 @@ from rich.console import Console
 
 from .._progress import ProgressCallback
 from .._progress import emit as _emit
-from ..archive import ENTITY_FILES, ArchiveWriter
+from wip_archive.archive import ENTITY_FILES, ArchiveWriter
 from ..client import WIPClient
-from ..models import (
+from wip_archive.models import (
     ClosureInfo,
     EntityCounts,
     ExportStats,

@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from wip_toolkit.models import ClosureInfo, EntityCounts, ExportStats
+from wip_archive.models import ClosureInfo, EntityCounts, ExportStats
 
 # ---------------------------------------------------------------------------
 # Module-level patch targets

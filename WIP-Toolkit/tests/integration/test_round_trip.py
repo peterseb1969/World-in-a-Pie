@@ -19,7 +19,7 @@ versioned=false), multi-version documents, and relationship documents.
 from __future__ import annotations
 
 import pytest
-from wip_toolkit.archive import ArchiveReader
+from wip_archive.archive import ArchiveReader
 from wip_toolkit.client import WIPClientError
 from wip_toolkit.export.exporter import run_export
 from wip_toolkit.import_.importer import run_import

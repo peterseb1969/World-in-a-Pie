@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 import pytest
-from wip_toolkit.import_.remap import IDRemapper
+from wip_archive.remap import IDRemapper
 
 from document_store.services.remap_restore import (
     REMAP_ENTITY_ORDER,

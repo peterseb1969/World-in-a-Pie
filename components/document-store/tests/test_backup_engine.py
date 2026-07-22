@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pymongo.errors import BulkWriteError
-from wip_toolkit.models import EntityCounts, Manifest, NamespaceConfig, ProgressEvent
+from wip_archive.models import EntityCounts, Manifest, NamespaceConfig, ProgressEvent
 
 from document_store.services.backup_engine import (
     BACKUP_ENTITY_ORDER,

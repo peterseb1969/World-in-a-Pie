@@ -10,7 +10,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from .archive import ENTITY_FILES, ArchiveReader
+from wip_archive.archive import ENTITY_FILES, ArchiveReader
 from .backfill import backfill_synonyms
 from .client import WIPClient
 from .config import WIPConfig

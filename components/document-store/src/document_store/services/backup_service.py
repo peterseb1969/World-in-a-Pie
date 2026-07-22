@@ -30,7 +30,7 @@ from typing import Any, cast
 
 import httpx as _httpx
 from beanie.odm.operators.update.array import Push
-from wip_toolkit.models import ProgressEvent
+from wip_archive.models import ProgressEvent
 
 from ..models.backup_job import BackupJob, BackupJobKind, BackupJobStatus
 
@@ -326,7 +326,7 @@ def read_archive_manifest(archive_path: str | Path) -> Any | None:
     function-local toolkit import inside the restore endpoint, which the
     guardrail's own verification grep would have flagged.
     """
-    from wip_toolkit.archive import ArchiveReader
+    from wip_archive.archive import ArchiveReader
 
     try:
         with ArchiveReader(Path(archive_path)) as reader:

@@ -17,8 +17,8 @@ import sys
 import zipfile
 from pathlib import Path
 
-from .archive import BLOBS_DIR, ENTITY_FILES, MANIFEST_FILE, SYNONYMS_FILE, _entity_path
-from .models import Manifest, NamespaceEntry
+from wip_archive.archive import BLOBS_DIR, ENTITY_FILES, MANIFEST_FILE, SYNONYMS_FILE, _entity_path
+from wip_archive.models import Manifest, NamespaceEntry
 
 
 def convert_archive(src_path: str | Path, dst_path: str | Path) -> Path:

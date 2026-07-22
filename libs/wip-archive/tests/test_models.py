@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from wip_toolkit.models import (
+from wip_archive.models import (
     ClosureInfo,
     EntityCounts,
     ExportStats,

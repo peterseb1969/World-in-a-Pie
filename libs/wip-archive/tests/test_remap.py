@@ -1,6 +1,6 @@
 """Tests for the ID remapping engine."""
 
-from wip_toolkit.import_.remap import IDRemapper
+from wip_archive.remap import IDRemapper
 
 
 class TestIDRemapper:

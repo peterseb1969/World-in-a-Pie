@@ -2,7 +2,7 @@
 
 A misbehaving observer must never break a long-running export or import.
 :func:`emit` is the single entrypoint for invoking a caller-supplied
-:class:`~wip_toolkit.models.ProgressEvent` callback; any exception raised
+:class:`~wip_archive.models.ProgressEvent` callback; any exception raised
 inside the callback is logged to stderr and swallowed.
 """
 
@@ -12,7 +12,7 @@ from collections.abc import Callable
 
 from rich.console import Console
 
-from .models import ProgressEvent
+from wip_archive.models import ProgressEvent
 
 ProgressCallback = Callable[[ProgressEvent], None]
 

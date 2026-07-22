@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from wip_toolkit.models import EntityCounts, ImportStats
+from wip_archive.models import EntityCounts, ImportStats
 
 
 def _make_manifest(namespace="source-ns"):

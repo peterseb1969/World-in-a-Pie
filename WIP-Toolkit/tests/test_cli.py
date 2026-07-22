@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
-from wip_toolkit.models import EntityCounts, ExportStats, ImportStats
+from wip_archive.models import EntityCounts, ExportStats, ImportStats
 
 
 def _healthy_services():
@@ -375,8 +375,8 @@ class TestInspectMultiNamespace:
     @staticmethod
     def _write_archive(path, ns_entities):
         """A real v3 archive. ns_entities: {ns: {entity_type: [entities]}}."""
-        from wip_toolkit.archive import ArchiveWriter
-        from wip_toolkit.models import EntityCounts, Manifest, NamespaceEntry
+        from wip_archive.archive import ArchiveWriter
+        from wip_archive.models import EntityCounts, Manifest, NamespaceEntry
 
         writer = ArchiveWriter(path)
         entries = []

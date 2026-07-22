@@ -22,7 +22,7 @@ from wip_toolkit.import_.restore import (
     _upload_files,
     restore_import,
 )
-from wip_toolkit.models import EntityCounts, ImportStats, NamespaceConfig
+from wip_archive.models import EntityCounts, ImportStats, NamespaceConfig
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -16,8 +16,8 @@ from wip_toolkit.import_.fresh import (
     _upload_files,
     fresh_import,
 )
-from wip_toolkit.import_.remap import IDRemapper
-from wip_toolkit.models import ImportStats, NamespaceConfig
+from wip_archive.remap import IDRemapper
+from wip_archive.models import ImportStats, NamespaceConfig
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -29,7 +29,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport
 from motor.motor_asyncio import AsyncIOMotorClient
-from wip_toolkit.models import EntityCounts, Manifest, NamespaceConfig, ProgressEvent
+from wip_archive.models import EntityCounts, Manifest, NamespaceConfig, ProgressEvent
 
 from document_store.services.backup_engine import (
     COLLECTION_MAP,

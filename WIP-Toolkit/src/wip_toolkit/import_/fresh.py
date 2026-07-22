@@ -16,10 +16,10 @@ from rich.console import Console
 
 from .._progress import ProgressCallback
 from .._progress import emit as _emit
-from ..archive import ArchiveReader
+from wip_archive.archive import ArchiveReader
 from ..client import WIPClient, WIPClientError
-from ..models import ImportStats, Manifest, NamespaceConfig, ProgressEvent
-from .remap import IDRemapper
+from wip_archive.models import ImportStats, Manifest, NamespaceConfig, ProgressEvent
+from wip_archive.remap import IDRemapper
 
 console = Console(stderr=True)
 

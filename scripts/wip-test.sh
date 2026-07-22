@@ -91,7 +91,7 @@ _component_deps() {
         reporting-sync)
             echo "postgres nats"
             ;;
-        mcp-server|wip-auth|deployer|agent-scripts|scaffold|auth-gateway)
+        mcp-server|wip-auth|wip-archive|deployer|agent-scripts|scaffold|auth-gateway)
             echo ""
             ;;
         *)
@@ -203,7 +203,7 @@ if [[ $# -lt 1 ]]; then
     echo "" >&2
     echo "Components: registry, def-store, template-store, document-store," >&2
     echo "            reporting-sync, ingest-gateway, mcp-server" >&2
-    echo "Libraries:  wip-auth" >&2
+    echo "Libraries:  wip-auth, wip-archive" >&2
     echo "Tools:      deployer, agent-scripts, scaffold" >&2
     echo "Special:    all (run everything)" >&2
     exit 1
@@ -215,7 +215,7 @@ shift
 # --- Resolve component to directory ---
 
 PYTHON_COMPONENTS=(registry def-store template-store document-store reporting-sync ingest-gateway mcp-server auth-gateway)
-PYTHON_LIBS=(wip-auth)
+PYTHON_LIBS=(wip-auth wip-archive)
 PYTHON_TOOLS=(deployer agent-scripts scaffold)
 
 # One-time-per-component test-dep provisioning, mirroring the CI recipe
