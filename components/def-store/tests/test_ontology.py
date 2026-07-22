@@ -917,8 +917,17 @@ class TestFieldFormTraversal:
             params={"term_id": "GO:0000228", "namespace": "wip", "terminology": "GO_SLIM"},
             headers=auth_headers,
         )
-        # Resolves to the GO_SLIM term (target), not the decoy's 0000228.
         assert resp.status_code == 200, resp.text
+
+        # Assert the resolved IDENTITY, not just a 200: the field form must
+        # yield the GO_SLIM term, never the decoy terminology's '0000228'.
+        got = await client.get(
+            f"{API}/terms/GO:0000228",
+            params={"namespace": "wip", "terminology": "GO_SLIM"},
+            headers=auth_headers,
+        )
+        assert got.status_code == 200, got.text
+        assert got.json()["term_id"] == target
 
     @pytest.mark.asyncio
     async def test_field_form_get_term(self, client, auth_headers):

@@ -9,8 +9,8 @@ from importlib.metadata import version
 import click
 from rich.console import Console
 from rich.table import Table
-
 from wip_archive.archive import ENTITY_FILES, ArchiveReader
+
 from .backfill import backfill_synonyms
 from .client import WIPClient
 from .config import WIPConfig
@@ -150,7 +150,6 @@ def inspect(archive_path: str, show_ids: bool, show_references: bool) -> None:
             # the scalar for legacy-shaped manifests, so this row is correct
             # for both shapes.
             table.add_row("Namespaces", ", ".join(manifest.namespace_prefixes()))
-            table.add_row("Include inactive", str(manifest.include_inactive))
             table.add_row("Include files", str(manifest.include_files))
             console.print(table)
 

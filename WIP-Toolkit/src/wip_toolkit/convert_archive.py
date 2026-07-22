@@ -61,7 +61,6 @@ def convert_archive(src_path: str | Path, dst_path: str | Path) -> Path:
             namespace=ns,
             namespace_config=old.namespace_config,
             source_install=old.source_install,
-            include_inactive=old.include_inactive,
             include_files=old.include_files,
             include_all_versions=old.include_all_versions,
             closure=old.closure,
