@@ -126,7 +126,7 @@ Every WIP-consuming app must follow the **offer-on-empty / use-on-exists** disci
 
 1. **Namespace missing on launch** → show the user an explicit bootstrap offer. Do **not** auto-bootstrap silently. The user can either (a) confirm bootstrap or (b) restore from a backup via the WIP console / `wip-deploy` first and reload.
 2. **Namespace exists on launch** → use it as-is. **No** schema reconciliation, **no** "templates differ" check, **no** merge logic. Rolling redeploys against an existing namespace must come up clean. A partially-bootstrapped namespace is the user's signal to use the console, not the app's signal to silently re-bootstrap.
-3. **On user-initiated bootstrap** → write one **`BOOTSTRAP_RECORD`** audit doc capturing: `bootstrap_id`, `app_version`, `bootstrapped_at`, `commit_sha`, `templates_created`, `edge_types_created`, `terminologies_created`. This is the provenance trail any future YAC reading the namespace can rely on.
+3. **On user-initiated bootstrap** → write one **`<NS_PREFIX>_BOOTSTRAP_RECORD`** audit doc (the template value is namespace-prefixed, e.g. `KB_BOOTSTRAP_RECORD` — derived from your namespace in the server template's `BOOTSTRAP_RECORD_VALUE`; a shared literal value made every app-to-app merge collide on this one template, and the prefix also makes a merged-in record self-labeling about its origin) capturing: `bootstrap_id`, `app_version`, `bootstrapped_at`, `commit_sha`, `templates_created`, `edge_types_created`, `terminologies_created`. This is the provenance trail any future YAC reading the namespace can rely on.
 
 **Restore is not an app concern.** The bootstrap UI mentions restore as an alternative the user may prefer; it does not provide UI for it. Restore is console-initiated.
 
@@ -135,7 +135,7 @@ Every WIP-consuming app must follow the **offer-on-empty / use-on-exists** disci
 - `bootstrap.routes.ts.template` — Express `GET /server-api/bootstrap/status` and `POST /server-api/bootstrap/run` (SSE streaming for progress)
 - `BootstrapGate.tsx.template` — React component that wraps the app and renders the four states (checking / unreachable / needs-bootstrap / bootstrapping / error / ready)
 
-Read each template's header comment, fill in the TODO markers (namespace, app title), drop a `BOOTSTRAP_RECORD` template into `server/seed/templates/`, and you're done. The seed-file convention (`server/seed/terminologies/<VALUE>.json`, `server/seed/templates/<NN>_<VALUE>.json`) is documented in the server template's header.
+Read each template's header comment, fill in the TODO markers (namespace, app title), drop a `<NS_PREFIX>_BOOTSTRAP_RECORD` template into `server/seed/templates/` (value must match the server template's derived `BOOTSTRAP_RECORD_VALUE`), and you're done. The seed-file convention (`server/seed/terminologies/<VALUE>.json`, `server/seed/templates/<NN>_<VALUE>.json`) is documented in the server template's header.
 
 ## Reference Documentation
 

@@ -88,6 +88,33 @@ verifies before it writes. Clash policies refuse at the API surface when
 sent with a plain restore (nothing can clash in an empty target; silently
 accepting the option would misreport what ran).
 
+**Bootstrap-record collisions between app-derived namespaces.** Scaffolded
+apps historically minted their bootstrap provenance template under one
+shared value, `BOOTSTRAP_RECORD`, with per-app shapes that drift — so any
+merge of two app-derived archives refused at pass 1 on that one template.
+The scaffold now namespace-prefixes the value (`KB_BOOTSTRAP_RECORD`,
+`CT_BOOTSTRAP_RECORD`, …), which prevents the collision for newly
+bootstrapped namespaces and makes a merged-in record self-labeling: a
+prefixed bootstrap record inside a merged namespace announces which
+namespace's bootstrap it documents. For EXISTING namespaces that still
+carry the unprefixed value, there is deliberately no drop parameter and no
+platform special-case — the remediation is an operational recipe made of
+first-class operations, self-expiring once the last unprefixed pair is
+retired. Either variant works; both rely on the definitions pass comparing
+per (value, version) over the archive's entities only, and on the default
+export excluding inactive template versions:
+
+1. *Retire the source's record*: deactivate the source namespace's
+   bootstrap template and archive its record(s), re-export, merge. The
+   target keeps its own provenance; the source's stays recoverable in the
+   source (soft states only). If the source must stay pristine, reactivate
+   after the export.
+2. *Converge*: update BOTH sides' templates from one identical payload
+   (version slots must align), `migrate` the source's records to the
+   converged version (dry-run first), deactivate the source's old version,
+   re-export, merge — both provenance trails survive the merge as
+   documents of the shared shape.
+
 ## Mode: fresh
 
 Nothing is kept. Every terminology, term, template, document and file is
