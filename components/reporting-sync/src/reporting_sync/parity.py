@@ -89,8 +89,16 @@ class NamespaceParityResult(BaseModel):
 
 
 async def _fetch_namespace_templates(namespace: str) -> list[dict[str, Any]]:
-    """All active templates of a namespace, latest version each — the same
-    template-store listing the batch sync builds tables from."""
+    """All ACTIVE templates of a namespace, latest version each — the
+    structural contract: the latest-active version is the one a new write
+    lands on, so its table is what must exist.
+
+    Deliberately NOT the same listing the batch sync iterates: the batch
+    sync's instance-wide list is status-free (a fully-deactivated
+    template's documents must still sync), and its eager table-ensure is
+    active-aware to match THIS listing. A template whose every version is
+    inactive is absent here and exempt from the structural gate — its
+    documents' tables materialize lazily at sync time."""
     templates: list[dict[str, Any]] = []
     page = 1
     async with httpx.AsyncClient() as client:

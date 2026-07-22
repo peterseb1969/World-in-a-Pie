@@ -89,6 +89,45 @@ class BatchSyncService:
             logger.error(f"Error fetching template by code {template_value}: {e}")
             return None
 
+    async def _fetch_latest_active_version(
+        self, template_value: str, namespace: str
+    ) -> dict[str, Any] | None:
+        """The highest ACTIVE version of a template value in a namespace —
+        the version a new write would land on.
+
+        Deliberately NOT the by-id or by-value GET: both return the highest
+        version REGARDLESS of status, which is the wrong shape for the
+        eager table-ensure — with the newest version deactivated (a normal
+        state: docs stay pinned to it), they hand back a version no new
+        write can target, and the structural parity gate demands the
+        latest-ACTIVE table instead. A restore once halted on exactly that
+        mismatch: the eager ensure built the inactive version's table while
+        the gate polled 30s for the active one's.
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{settings.template_store_url}/api/template-store/templates",
+                    params={
+                        "namespace": namespace, "value": template_value,
+                        "status": "active", "page_size": 1,
+                    },
+                    headers={"X-API-Key": settings.api_key},
+                    timeout=30.0,
+                )
+                if response.status_code != 200:
+                    logger.error(
+                        f"Failed to fetch active version of {template_value}: "
+                        f"{response.status_code}"
+                    )
+                    return None
+                items = response.json().get("items", [])
+                # The value branch sorts version-descending: first = latest active.
+                return cast(dict[str, Any] | None, items[0] if items else None)
+        except Exception as e:
+            logger.error(f"Error fetching active version of {template_value}: {e}")
+            return None
+
     async def _fetch_template_version(
         self, template_id: str, version: int
     ) -> dict[str, Any] | None:
@@ -428,10 +467,41 @@ class BatchSyncService:
 
             tpl_table = None
             if job.namespace is None or job.namespace == tpl_ns:
-                tpl_table = await self.schema_manager.ensure_table_for_template(tpl_ns, template)
-                if tpl_table:
-                    ns_tables[(tpl_ns, latest_version)] = tpl_table
-                    touched_namespaces.add(tpl_ns)
+                # The eager ensure targets the latest ACTIVE version — the
+                # version a new write lands on, and the version the restore
+                # gate's structural parity demands. The template in hand may
+                # be an INACTIVE newest version (the instance-wide listing
+                # is deliberately status-free, so fully-deactivated
+                # templates' documents still sync); ensuring ITS table while
+                # parity waits for the active one's halted a restore at the
+                # 30s gate. Documents pinned to inactive versions are
+                # unaffected: their tables materialize lazily per page below.
+                eager_template = template
+                eager_version = latest_version
+                # Absent status means active (the platform default) — only a
+                # template explicitly deactivated triggers the re-fetch.
+                if template.get("status", "active") != "active":
+                    fetched_active = await self._fetch_latest_active_version(
+                        job.template_value, tpl_ns
+                    )
+                    if fetched_active is None:
+                        # No active version at all — parity's active-only
+                        # listing skips this template too; nothing to ensure
+                        # eagerly, the lazy path covers its documents.
+                        eager_template = None
+                    else:
+                        eager_template = await self._resolve_template_fields(
+                            fetched_active
+                        )
+                        eager_version = int(eager_template.get("version", 1))
+                        version_templates[eager_version] = eager_template
+                if eager_template is not None:
+                    tpl_table = await self.schema_manager.ensure_table_for_template(
+                        tpl_ns, eager_template
+                    )
+                    if tpl_table:
+                        ns_tables[(tpl_ns, eager_version)] = tpl_table
+                        touched_namespaces.add(tpl_ns)
 
             template_id = template["template_id"]
             strategy = config.sync_strategy.value

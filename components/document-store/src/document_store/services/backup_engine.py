@@ -2502,7 +2502,11 @@ class DirectRestoreEngine:
         raise RestoreEngineError(
             f"Reporting tables for namespace '{namespace}' did not verify "
             f"within {self._REPORTING_STRUCTURE_TIMEOUT_S}s — halting before "
-            f"document restore. Issues: {'; '.join(issues[:5]) or 'unknown'}"
+            f"document restore. Issues: {'; '.join(issues[:5]) or 'unknown'}. "
+            f"NOTE: namespace '{namespace}' is now PARTIAL — definitions were "
+            "restored but documents and registry identities were NOT, so "
+            "namespaced lookups against it will fail to resolve. Delete the "
+            "namespace and re-restore after remediating."
         )
 
     async def _reporting_phase_counts(
