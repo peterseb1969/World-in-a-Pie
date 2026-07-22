@@ -101,6 +101,26 @@ class TestPerNamespaceSchemas:
         await sm.ensure_schema("clinic_a")
         assert await _schema_exists(pg_pool, "clinic_a")
 
+    async def test_ensure_schema_survives_the_concurrent_create_race(self, pg_pool):
+        """CREATE SCHEMA IF NOT EXISTS is not concurrency-safe: two callers
+        can both pass the exists-check and the loser dies on the catalog's
+        unique index. A restore fans out per-template batch syncs that all
+        ensure the same namespace at once — losing the race must mean
+        "someone else created it", never a failed sync. (Live incident: a
+        kb restore halted at the structure gate because three templates'
+        syncs lost this race and their tables were never created.)"""
+        import asyncio
+
+        sm = SchemaManager(pg_pool)
+        results = await asyncio.gather(
+            *(sm.ensure_schema("clinic_race") for _ in range(12)),
+            return_exceptions=True,
+        )
+        errors = [r for r in results if isinstance(r, Exception)]
+        assert not errors, f"concurrent ensure_schema raised: {errors[:3]}"
+        assert all(r == "clinic_race" for r in results)
+        assert await _schema_exists(pg_pool, "clinic_race")
+
     async def test_create_table_lands_in_namespace_schema(self, pg_pool):
         sm = SchemaManager(pg_pool)
         await sm.create_table("clinic_a", "patient", 1, _fields(), identity_fields=["name"])

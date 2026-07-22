@@ -501,10 +501,24 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
         return expected
 
     async def ensure_schema(self, namespace: str) -> str:
-        """Create the namespace's PostgreSQL schema if absent. Returns its name."""
+        """Create the namespace's PostgreSQL schema if absent. Returns its name.
+
+        Concurrency-safe on purpose: ``CREATE SCHEMA IF NOT EXISTS`` is NOT —
+        two concurrent callers can both pass the exists-check and the loser
+        dies on the catalog's unique index (pg_namespace_nspname_index). A
+        restore fans out per-template batch syncs that all ensure the same
+        namespace schema at once; losing that race must mean "someone else
+        just created it", never a failed sync (it halted a live kb restore
+        at the structure gate: three templates lost, three tables missing).
+        """
         schema = self.schema_for(namespace)
         async with self.pool.acquire() as conn:
-            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+            try:
+                await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+            except asyncpg.UniqueViolationError:
+                # A concurrent caller created it between the existence check
+                # and the create — the desired state holds either way.
+                pass
         return schema
 
     async def drop_namespace_schema(self, namespace: str) -> int:
