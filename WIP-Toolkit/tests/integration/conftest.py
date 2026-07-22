@@ -67,6 +67,15 @@ TEST_DB = "wip_toolkit_integration_test"
 # at import time — document-store builds its auth middleware then).
 os.environ.setdefault("MONGO_URI", "mongodb://localhost:27017/")
 os.environ["DATABASE_NAME"] = TEST_DB
+# The restore engine addresses the OTHER services' databases by name
+# (module-level env reads in backup_engine) — every one must resolve to
+# this harness's single test database, or the engine's empty-target check
+# and bulk inserts run against the production-named databases instead of
+# the one the in-process services actually use.
+os.environ["REGISTRY_DATABASE_NAME"] = TEST_DB
+os.environ["DEF_STORE_DATABASE_NAME"] = TEST_DB
+os.environ["TEMPLATE_STORE_DATABASE_NAME"] = TEST_DB
+os.environ["DOCUMENT_STORE_DATABASE_NAME"] = TEST_DB
 os.environ["API_KEY"] = TEST_API_KEY
 os.environ["MASTER_API_KEY"] = TEST_API_KEY
 os.environ["AUTH_ENABLED"] = "true"

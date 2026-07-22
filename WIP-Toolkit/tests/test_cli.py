@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
-from wip_archive.models import EntityCounts, ExportStats, ImportStats
+from wip_archive.models import EntityCounts, ExportStats
 
 
 def _healthy_services():
@@ -84,7 +84,6 @@ class TestMainGroup:
         assert result.exit_code == 0
         assert "WIP Toolkit" in result.output
         assert "export" in result.output
-        assert "import" in result.output
         assert "inspect" in result.output
 
     def test_group_is_accessible(self):
@@ -183,127 +182,6 @@ class TestExportCommand:
         assert kwargs["skip_documents"] is True
         assert kwargs["latest_only"] is True
         assert kwargs["dry_run"] is True
-
-
-class TestImportCommand:
-    """Tests for the import CLI command."""
-
-    @patch("wip_toolkit.cli.run_import")
-    @patch("wip_toolkit.cli.WIPClient")
-    def test_import_default_mode_is_fresh(self, MockClient, mock_run_import):
-        from wip_toolkit.cli import main
-
-        mock_client = _make_mock_client()
-        MockClient.return_value = mock_client
-        mock_run_import.return_value = ImportStats(
-            mode="fresh", target_namespace="wip"
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["import", "/tmp/test.zip"])
-
-        assert result.exit_code == 0
-        _, kwargs = mock_run_import.call_args
-        assert kwargs["mode"] == "fresh"
-
-    @patch("wip_toolkit.cli.run_import")
-    @patch("wip_toolkit.cli.WIPClient")
-    def test_import_restore_mode(self, MockClient, mock_run_import):
-        from wip_toolkit.cli import main
-
-        mock_client = _make_mock_client()
-        MockClient.return_value = mock_client
-        mock_run_import.return_value = ImportStats(
-            mode="restore", target_namespace="wip"
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["import", "--mode", "restore", "/tmp/test.zip"])
-
-        assert result.exit_code == 0
-        _, kwargs = mock_run_import.call_args
-        assert kwargs["mode"] == "restore"
-
-    @patch("wip_toolkit.cli.run_import")
-    @patch("wip_toolkit.cli.WIPClient")
-    def test_import_fresh_mode(self, MockClient, mock_run_import):
-        from wip_toolkit.cli import main
-
-        mock_client = _make_mock_client()
-        MockClient.return_value = mock_client
-        mock_run_import.return_value = ImportStats(
-            mode="fresh", target_namespace="wip"
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["import", "/tmp/test.zip", "--mode", "fresh"])
-
-        assert result.exit_code == 0
-        _, kwargs = mock_run_import.call_args
-        assert kwargs["mode"] == "fresh"
-
-    @patch("wip_toolkit.cli.run_import")
-    @patch("wip_toolkit.cli.WIPClient")
-    def test_import_with_options(self, MockClient, mock_run_import):
-        from wip_toolkit.cli import main
-
-        mock_client = _make_mock_client()
-        MockClient.return_value = mock_client
-        mock_run_import.return_value = ImportStats(
-            mode="fresh", target_namespace="new-ns"
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(main, [
-            "import", "/tmp/test.zip",
-            "--mode", "fresh",
-            "--target-namespace", "new-ns",
-            "--register-synonyms",
-            "--batch-size", "200",
-            "--continue-on-error",
-            "--dry-run",
-        ])
-
-        assert result.exit_code == 0
-        _, kwargs = mock_run_import.call_args
-        assert kwargs["target_namespace"] == "new-ns"
-        assert kwargs["register_synonyms"] is True
-        assert kwargs["batch_size"] == 200
-        assert kwargs["continue_on_error"] is True
-        assert kwargs["dry_run"] is True
-
-    @patch("wip_toolkit.cli.run_import")
-    @patch("wip_toolkit.cli.WIPClient")
-    def test_import_errors_exit_1(self, MockClient, mock_run_import):
-        from wip_toolkit.cli import main
-
-        mock_client = _make_mock_client()
-        MockClient.return_value = mock_client
-
-        stats = ImportStats(mode="restore", target_namespace="wip")
-        stats.errors = ["Something went wrong"]
-        mock_run_import.return_value = stats
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["import", "/tmp/test.zip"])
-
-        assert result.exit_code == 1
-
-    @patch("wip_toolkit.cli.run_import")
-    @patch("wip_toolkit.cli.WIPClient")
-    def test_import_success_exit_0(self, MockClient, mock_run_import):
-        from wip_toolkit.cli import main
-
-        mock_client = _make_mock_client()
-        MockClient.return_value = mock_client
-        mock_run_import.return_value = ImportStats(
-            mode="restore", target_namespace="wip"
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["import", "/tmp/test.zip"])
-
-        assert result.exit_code == 0
 
 
 class TestInspectCommand:

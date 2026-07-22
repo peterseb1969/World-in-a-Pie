@@ -15,8 +15,6 @@ from .backfill import backfill_synonyms
 from .client import WIPClient
 from .config import WIPConfig
 from .export.exporter import run_export
-from .import_.importer import run_import
-from .import_.restore import RestorePreflightError
 from .seed import run_seed
 from .status import StatusThresholds, collect_status
 
@@ -123,56 +121,6 @@ def export(
             console.print(f"\n[yellow]{len(stats.warnings)} warning(s)[/yellow]")
 
         console.print(f"\n[bold green]Export completed[/bold green] in {stats.duration_seconds}s")
-
-
-@main.command(name="import")
-@click.argument("archive_path")
-@click.option("--mode", type=click.Choice(["fresh", "restore"]), default="fresh",
-              help="Import mode (default: fresh)")
-@click.option("--target-namespace", default=None, help="Override target namespace")
-@click.option("--register-synonyms", is_flag=True, help="Register old→new ID synonyms (fresh mode)")
-@click.option("--skip-documents", is_flag=True, help="Skip document import")
-@click.option("--skip-files", is_flag=True, help="Skip file upload")
-@click.option("--batch-size", default=50, type=int, help="Document batch size (default: 50)")
-@click.option("--dry-run", is_flag=True, help="Preview without making changes")
-@click.option("--continue-on-error", is_flag=True, help="Don't stop on individual failures")
-@click.pass_context
-def import_cmd(
-    ctx: click.Context,
-    archive_path: str,
-    mode: str,
-    target_namespace: str | None,
-    register_synonyms: bool,
-    skip_documents: bool,
-    skip_files: bool,
-    batch_size: int,
-    dry_run: bool,
-    continue_on_error: bool,
-) -> None:
-    """Import an archive into a WIP instance.
-
-    ARCHIVE_PATH is the path to the ZIP archive to import.
-    """
-    config = ctx.obj["config"]
-    with WIPClient(config) as client:
-        try:
-            stats = run_import(
-                client, archive_path,
-                mode=mode,
-                target_namespace=target_namespace,
-                register_synonyms=register_synonyms,
-                skip_documents=skip_documents,
-                skip_files=skip_files,
-                batch_size=batch_size,
-                continue_on_error=continue_on_error,
-                dry_run=dry_run,
-            )
-        except RestorePreflightError as e:
-            console.print(f"[red bold]Refused:[/red bold] {e}")
-            sys.exit(1)
-
-        if stats.errors:
-            sys.exit(1)
 
 
 @main.command()
