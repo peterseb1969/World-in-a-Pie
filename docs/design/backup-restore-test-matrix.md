@@ -139,6 +139,9 @@ Layer key: **U** unit (no services) · **C** component/in-process
 (document-store suite or toolkit harness) · **L** live stack (scripted
 against a dev install; the layer where CASE-745/747 class bugs live).
 
+Layer **L** is the manual runner defined in §7 — invoked on demand against
+a named deployment, never part of the routine suites.
+
 ### 5.1 Producer tests
 
 | ID | Layer | Test | Planes |
@@ -213,17 +216,47 @@ layer **L** as a scripted suite (the session's live checks were manual),
 R-03 (cross-instance DR), R-09 `newer`, R-11, R-15, X-01 as a harness,
 X-04, X-05, X-06.
 
-## 7. Open decisions for Peter (besides the test data)
+## 7. The layer-L runner (ruled by Peter, 2026-07-22)
 
-1. **Layer L home**: a `scripts/` E2E runner against the attached dev
-   install (fast to build, uses the real stack) vs a compose-provisioned
-   ephemeral stack in CI (hermetic, slower). Recommendation: start as a
-   script against the dev install with guarded cleanup
-   (`deletion_mode=full` targets, `00…`-prefixed namespaces), promote to
-   CI later.
-2. **R-03 (cross-instance)**: needs either a second install on this
-   machine (`prod-test` exists) or a wipe-and-restore drill on a
-   throwaway install. Which is acceptable to script against?
-3. Whether `register_synonyms` (old→new id synonyms on fresh restore) is
+Layer L is a **manual, on-demand test** — run by the operator after
+backup/restore changes, deliberately NOT part of `wip-test.sh all` or CI.
+Routine test runs keep getting longer; this one is invoked when its
+subject changed, not on every push.
+
+**Runner contract:**
+
+- **Deployment-pointable.** The script takes its target explicitly and
+  works against ANY deployment: `--install <name>` (reads
+  `~/.wip-deploy/<name>/` for URL + key — `default`, `prod-test`, …) or
+  raw `--base-url` + `--key-file` for anything else. No implicit
+  "current install" magic; the target is always stated in the invocation
+  and echoed in the report header.
+- **Namespace naming: `<HHMMSS>-00a`, `<HHMMSS>-00b`, …** — the run's
+  start time (from `date '+%H%M%S'`) prefixes every namespace the run
+  creates. Collision risk against anything live (and against a
+  concurrent or crashed earlier run) is minimized by construction, and
+  leftovers are recognizable at a glance.
+- **Writes only inside its own minted namespaces.** The runner never
+  touches `wip` or any pre-existing namespace — which is what makes
+  pointing it at `prod-test`-class deployments safe. Fixture namespaces
+  are CREATED with `deletion_mode: 'full'` (allowed directly on create,
+  no transition confirm), so cleanup is a straight namespace delete.
+  Consequence: B-03 (`all_namespaces` backup) is out of the runner's
+  default set — it spans namespaces the runner doesn't own; it runs only
+  under an explicit `--allow-instance-wide` flag, intended for dev
+  installs.
+- **Cleanup:** deletes its namespaces on success; `--keep` preserves them
+  for debugging; `--cleanup-only` sweeps `??????-00*` namespaces left by
+  earlier crashed/kept runs (list, show, confirm, delete).
+- **Report:** one table — cell ID × planes asserted × pass/fail × wall
+  time, target named in the header; non-zero exit on any failure. The
+  table IS the artifact to paste into a case or commit message.
+- **R-03 (cross-instance DR)** takes a second target
+  (`--dr-install <name>` / `--dr-base-url …`); without it the cell is
+  reported as SKIPPED, never silently omitted.
+
+## 8. Remaining open decisions (besides the test data)
+
+1. Whether `register_synonyms` (old→new id synonyms on fresh restore) is
    a supported surface to pin or a candidate for removal — it appears in
    job options today; the matrix pins whatever the ruling is.
