@@ -573,7 +573,7 @@ def create_mock_def_store_client():
             return {"terminology_id": f"TERM-{terminology_value}", "status": "active"}
         return None
 
-    async def mock_validate_value(terminology_ref, value):
+    async def mock_validate_value(terminology_ref, value, namespace=None):
         # Strip prefix for lookup
         code = terminology_ref
         for prefix in ("TERM-",):
@@ -584,7 +584,7 @@ def create_mock_def_store_client():
             return {"valid": True, "matched_term": {"term_id": "0190b000-0000-7000-0000-000000000001", "value": value}}
         return {"valid": False, "suggestion": None}
 
-    async def mock_validate_values_bulk(items):
+    async def mock_validate_values_bulk(items, namespace=None):
         results = []
         for item in items:
             terminology_ref = item["terminology_ref"]
