@@ -301,16 +301,6 @@ class TestIDRemapper:
         assert result["references"] == []
         assert result["file_references"] == []
 
-    # --- Synonym pairs ---
-
-    def test_all_synonym_pairs(self):
-        pairs = self.remapper.all_synonym_pairs()
-        assert len(pairs) == 8
-        # Check one pair from each type
-        assert ("0190a000-0000-7000-0000-000000000001", "0190e000-0000-7000-0000-000000000001", "terminologies") in pairs
-        assert ("0190b000-0000-7000-0000-000000000001", "0190e000-0000-7000-0000-000000000011", "terms") in pairs
-        assert ("0190c000-0000-7000-0000-000000000001", "0190e000-0000-7000-0000-000000000021", "templates") in pairs
-        assert ("FILE-000001", "0190e000-0000-7000-0000-000000000031", "files") in pairs
 
 
 class TestRemapTerm:

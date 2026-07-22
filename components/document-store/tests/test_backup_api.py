@@ -157,7 +157,7 @@ async def test_start_restore_streams_upload_and_creates_job(
             "/api/document-store/backup/namespaces/wip/restore",
             headers=auth_headers,
             files={"archive": ("backup.zip", payload, "application/zip")},
-            data={"mode": "restore", "register_synonyms": "false"},
+            data={"mode": "restore"},
         )
 
     assert resp.status_code == 202, resp.text
@@ -262,11 +262,15 @@ async def test_restore_rejects_invalid_mode(client: AsyncClient, auth_headers: d
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("dead_param", ["register_synonyms", "continue_on_error"])
+@pytest.mark.parametrize("dead_param", ["continue_on_error"])
 async def test_restore_rejects_toolkit_era_params(
     client: AsyncClient, auth_headers: dict, dead_param: str
 ):
-    """Setting a retired toolkit import param is a loud 400, never a silent no-op."""
+    """Setting the retired toolkit import param is a loud 400, never a silent
+    no-op. (register_synonyms, once in this list, was removed from the API
+    entirely — fresh means fresh; an unknown form field is dropped by the
+    framework, which is acceptable for a param that spent its tombstone
+    period rejecting loudly.)"""
     resp = await client.post(
         "/api/document-store/backup/namespaces/wip/restore",
         headers=auth_headers,

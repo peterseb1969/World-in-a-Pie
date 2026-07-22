@@ -289,18 +289,3 @@ class IDRemapper:
             return value
 
         return {key: walk(value) for key, value in data.items()}
-
-    def all_synonym_pairs(self) -> list[tuple[str, str, str]]:
-        """Return all (old_id, new_id, entity_type) pairs for synonym registration."""
-        pairs: list[tuple[str, str, str]] = []
-        for old, new in self.terminology_map.items():
-            pairs.append((old, new, "terminologies"))
-        for old, new in self.term_map.items():
-            pairs.append((old, new, "terms"))
-        for old, new in self.template_map.items():
-            pairs.append((old, new, "templates"))
-        for old, new in self.document_map.items():
-            pairs.append((old, new, "documents"))
-        for old, new in self.file_map.items():
-            pairs.append((old, new, "files"))
-        return pairs

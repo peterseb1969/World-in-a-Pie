@@ -384,7 +384,6 @@ async def start_restore(
             "entries is not the same decision as allowing new schemas."
         ),
     ),
-    register_synonyms: bool = Form(False),
     skip_documents: bool = Form(False),
     skip_files: bool = Form(False),
     batch_size: int = Form(500, ge=1, le=500),
@@ -469,12 +468,13 @@ async def start_restore(
         extend_terminologies=extend_terminologies,
         drop_stale_reporting=drop_stale_reporting,
     )
-    # Parameters of the retired toolkit import path. The direct restore engine
-    # has no per-item error tolerance and no synonym registration; silently
-    # ignoring a request for either would misrepresent what the restore did,
-    # so a request that sets them is rejected outright.
+    # Parameter of the retired toolkit import path. The direct restore engine
+    # has no per-item error tolerance; silently ignoring a request for it
+    # would misrepresent what the restore did, so a request that sets it is
+    # rejected outright. (register_synonyms, the other retired param, was
+    # removed entirely: fresh means fresh — a restored copy is severed from
+    # its source, and old→new id back-ties contradict that ruling.)
     for _dead_name, _dead_value in (
-        ("register_synonyms", register_synonyms),
         ("continue_on_error", continue_on_error),
     ):
         if _dead_value:
@@ -561,7 +561,6 @@ async def start_restore(
         "on_clash": on_clash,
         "add_missing": add_missing,
         "extend_terminologies": extend_terminologies,
-        "register_synonyms": register_synonyms,
         "skip_documents": skip_documents,
         "skip_files": skip_files,
         "batch_size": batch_size,

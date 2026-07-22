@@ -1556,8 +1556,10 @@ interface BackupRequest {
  * (multi-namespace). `dry_run` is real, and for a merge it is exact: the
  * plan is computed before anything is written, so the report is what a real
  * run would do — and it still fails on what a real run would refuse. The
- * retired toolkit-era params (`register_synonyms`, `continue_on_error`) are
- * gone from this type — the endpoint 400s when they are set.
+ * retired toolkit-era params are gone from this type: `register_synonyms`
+ * was removed from the API entirely (fresh means fresh — no old→new id
+ * back-ties), and `continue_on_error` is a tombstone the endpoint 400s
+ * when set.
  *
  * The clash policies apply to `mode: 'merge'` only. Sending a non-default
  * one with a plain restore is a 400 rather than a silent no-op: a restore

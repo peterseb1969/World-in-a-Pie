@@ -75,8 +75,11 @@ producer where it exists): `include_files`, `include_inactive`,
 Restore options that multiply cells: `dry_run` (paired with every R-*),
 `skip_documents`, `skip_files`, `batch_size` (1, default, max — boundary),
 `on_clash` (skip/overwrite/newer — merge only), `add_missing`,
-`extend_terminologies` (merge only), `drop_stale_reporting`,
-`continue_on_error`, `register_synonyms`.
+`extend_terminologies` (merge only), `drop_stale_reporting`. Retired
+toolkit-era params are NOT options: `register_synonyms` was removed from
+the API (fresh means fresh — no old→new id back-ties), and
+`continue_on_error` is a tombstone the endpoint rejects (F-08 pins the
+rejection).
 
 ### D3 — Content classes the fixtures must span (→ §3)
 
@@ -189,7 +192,7 @@ a named deployment, never part of the routine suites.
 | F-05 | L | Kill the engine mid-fresh-restore (or fault-inject provisioning): reserved entries do NOT resolve; target invisible; a re-run converges (the crash-behaviour promise in remap_restore's docstring) |
 | F-06 | L | Restore with reporting-sync stopped: completes with warnings, never fails (operator ruling); PL-REP backfills after `force` rebuild (CASE-738) |
 | F-07 | C | Permission: non-admin key refused per namespace on backup, restore, download — per-item/early, nothing partial |
-| F-08 | C | `continue_on_error`: per-item failures collected, job completes with warnings; without it, first failure aborts |
+| F-08 | C | `continue_on_error` tombstone: setting it is a loud 400 naming the param (the engine has no per-item tolerance; a silent no-op would misreport what ran) |
 
 ### 5.4 Cross-cutting invariant sweeps
 
@@ -254,9 +257,3 @@ subject changed, not on every push.
 - **R-03 (cross-instance DR)** takes a second target
   (`--dr-install <name>` / `--dr-base-url …`); without it the cell is
   reported as SKIPPED, never silently omitted.
-
-## 8. Remaining open decisions (besides the test data)
-
-1. Whether `register_synonyms` (old→new id synonyms on fresh restore) is
-   a supported surface to pin or a candidate for removal — it appears in
-   job options today; the matrix pins whatever the ruling is.

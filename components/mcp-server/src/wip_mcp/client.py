@@ -1551,8 +1551,9 @@ class WipClient:
         back to ITSELF — the endpoint determines the targets from the archive
         manifest. ``restore`` requires an empty target; ``merge`` reconciles
         into a namespace that already holds data. Retired toolkit-era params
-        (register_synonyms, continue_on_error) are not sent; the endpoint
-        rejects them with 400 when set.
+        are not sent: register_synonyms was removed from the API (fresh
+        means fresh — no old-to-new id back-ties), and continue_on_error is
+        a tombstone the endpoint rejects with 400 when set.
 
         The clash policies are only sent for a merge: the endpoint rejects a
         non-default policy on a plain restore rather than ignoring it.
