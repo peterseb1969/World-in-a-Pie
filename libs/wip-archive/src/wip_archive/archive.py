@@ -113,6 +113,16 @@ class ArchiveWriter:
         fh.write("\n")
         self._counts[(ns, entity_type)] = self._counts.get((ns, entity_type), 0) + 1
 
+    def flush(self) -> None:
+        """Flush every open entity-file handle.
+
+        Callers that scan the staged temp files while the writer is still
+        open (an exporter collecting entity ids for its registry pass) must
+        see complete lines, not whatever happens to have left the buffers.
+        """
+        for fh in self._handles.values():
+            fh.flush()
+
     @contextmanager
     def open_blob(self, file_id: str) -> Iterator[BinaryIO]:
         """Open a binary file handle for streaming a blob to disk.

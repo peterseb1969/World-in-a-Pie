@@ -23,6 +23,9 @@ from ..models.api_models import (
     DeleteItem,
     DeleteResponse,
     EntryDetailResponse,
+    ExportEntriesRequest,
+    ExportEntriesResponse,
+    ExportEntryItem,
     LookupBulkResponse,
     LookupByIdItem,
     LookupByKeyItem,
@@ -942,6 +945,77 @@ async def activate_entries(
         total=len(items),
         activated=activated_count,
         errors=error_count,
+    )
+
+
+@router.post(
+    "/export",
+    response_model=ExportEntriesResponse,
+    summary="Export raw registry entries by id (bulk, admin-gated)"
+)
+async def export_entries(
+    request: ExportEntriesRequest,
+    identity: UserIdentity = Depends(require_api_key)
+) -> ExportEntriesResponse:
+    """Full raw entry rows for backup/export tooling.
+
+    Unlike the browse and lookup surfaces (trimmed projections for humans
+    and resolvers), this returns the row as stored — composite-key hash,
+    complete synonyms, search_values, source_info, timestamps, status —
+    because an archive that carries anything less cannot restore identity
+    byte-faithfully. Entries are returned regardless of status (an archive
+    records the instance as it is, inactive rows included).
+
+    Admin-gated per entry namespace, matching the backup/restore surfaces
+    (archive download requires admin on every namespace it spans). Ids the
+    caller lacks admin on come back per-item `forbidden`, never a
+    whole-call 403 — bulk-first.
+    """
+    from .grants import _is_superadmin, _resolve_permission
+
+    entries_by_id: dict[str, RegistryEntry] = {}
+    found_rows = await RegistryEntry.find(
+        {"entry_id": {"$in": request.entry_ids}}
+    ).to_list()
+    for row in found_rows:
+        entries_by_id[row.entry_id] = row
+
+    superadmin = _is_superadmin(identity)
+    admin_by_namespace: dict[str, bool] = {}
+
+    async def _admin_on(namespace: str) -> bool:
+        if superadmin:
+            return True
+        if namespace not in admin_by_namespace:
+            perm = await _resolve_permission(identity, namespace)
+            admin_by_namespace[namespace] = perm == "admin"
+        return admin_by_namespace[namespace]
+
+    results: list[ExportEntryItem] = []
+    found = not_found = forbidden = 0
+    for i, entry_id in enumerate(request.entry_ids):
+        entry = entries_by_id.get(entry_id)
+        if entry is None:
+            results.append(ExportEntryItem(
+                index=i, entry_id=entry_id, status="not_found"
+            ))
+            not_found += 1
+            continue
+        if not await _admin_on(entry.namespace):
+            results.append(ExportEntryItem(
+                index=i, entry_id=entry_id, status="forbidden"
+            ))
+            forbidden += 1
+            continue
+        results.append(ExportEntryItem(
+            index=i, entry_id=entry_id, status="found",
+            entry=entry.model_dump(mode="json", exclude={"id"}),
+        ))
+        found += 1
+
+    return ExportEntriesResponse(
+        results=results, total=len(request.entry_ids),
+        found=found, not_found=not_found, forbidden=forbidden,
     )
 
 

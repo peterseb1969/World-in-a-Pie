@@ -58,7 +58,7 @@ def mock_collector():
     def _download(file_id, dest):
         dest.write(b"binary-data")
     collector.download_file_content.side_effect = _download
-    collector.fetch_registry_entries.return_value = {}
+    collector.export_registry_entries.return_value = []
     return collector
 
 
@@ -344,7 +344,7 @@ class TestRunExportSkipSynonyms:
         run_export(mock_client, "wip", "/tmp/export.zip", skip_synonyms=True)
 
         # No Registry lookups for synonyms
-        mock_collector.fetch_registry_entries.assert_not_called()
+        mock_collector.export_registry_entries.assert_not_called()
         mock_writer.write_synonyms_file.assert_not_called()
 
 
@@ -558,7 +558,7 @@ class TestRunExportProgressCallback:
         assert "phase_1a_entities" in phases
         assert "phase_closure" in phases
         assert "phase_1b_documents" in phases
-        assert "phase_2_synonyms" in phases
+        assert "phase_2_registry" in phases
         assert "phase_3_finalize" in phases
         assert "complete" in phases
 

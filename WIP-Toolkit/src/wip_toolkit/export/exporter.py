@@ -23,7 +23,7 @@ from rich.console import Console
 
 from .._progress import ProgressCallback
 from .._progress import emit as _emit
-from wip_archive.archive import ENTITY_FILES, ArchiveWriter
+from wip_archive.archive import ENTITY_FILES, NAMESPACES_DIR, ArchiveWriter
 from ..client import WIPClient
 from wip_archive.models import (
     ClosureInfo,
@@ -330,23 +330,35 @@ def run_export(
         console.print("\n[dim]Skipping documents (--skip-documents)[/dim]")
         files = []
 
-    # Phase 2: Registry synonyms (unless --skip-synonyms)
+    # Phase 2: Registry identity — raw entry rows + the custom-synonyms file
+    # (unless --skip-synonyms). The raw rows are what make the archive
+    # restorable by the SERVER engine: it re-inserts registry_entries
+    # byte-faithfully and re-claims their composite keys; an archive without
+    # them restores into a namespace where nothing resolves.
+    registry_count = 0
     if not skip_synonyms:
-        console.print("\n[bold cyan]Phase 2:[/bold cyan] Fetching Registry synonyms")
+        console.print("\n[bold cyan]Phase 2:[/bold cyan] Fetching Registry identity")
         _emit(progress_callback, ProgressEvent(
-            phase="phase_2_synonyms",
-            message="Fetching Registry synonyms",
+            phase="phase_2_registry",
+            message="Fetching Registry entries",
             percent=80.0,
         ))
-        synonyms = _fetch_synonyms(collector, terminologies, terms, templates,
-                                   writer, namespace)
+        registry_rows = _fetch_registry_rows(
+            collector, terminologies, terms, templates, writer,
+        )
+        for row in registry_rows:
+            writer.add_entity("registry_entries", row)
+        registry_count = len(registry_rows)
+        console.print(f"  Wrote {registry_count} registry entr(y/ies) to archive")
+
+        synonyms = _extract_custom_synonyms(registry_rows, namespace)
         if synonyms:
             writer.write_synonyms_file(synonyms)
             console.print(f"  Wrote {len(synonyms)} synonym(s) to archive")
         else:
             console.print("  No custom synonyms found")
     else:
-        console.print("\n[dim]Skipping synonyms (--skip-synonyms)[/dim]")
+        console.print("\n[dim]Skipping registry identity (--skip-synonyms)[/dim]")
 
     # Phase 3: Write manifest + finalize ZIP
     counts = EntityCounts(
@@ -356,6 +368,7 @@ def run_export(
         templates=len(templates),
         documents=doc_count,
         files=file_count,
+        registry_entries=registry_count,
     )
 
     console.print("\n[bold cyan]Phase 3:[/bold cyan] Finalizing archive")
@@ -429,18 +442,19 @@ def _fetch_raw_templates(
     return raw_templates
 
 
-def _fetch_synonyms(
+def _fetch_registry_rows(
     collector: EntityCollector,
     terminologies: list[dict[str, Any]],
     terms: list[dict[str, Any]],
     templates: list[dict[str, Any]],
     writer: ArchiveWriter,
-    namespace: str,
 ) -> list[dict[str, Any]]:
-    """Fetch custom Registry synonyms for all entities in the archive.
+    """Fetch the FULL raw registry rows for every entity in the archive.
 
     Reads document/file entity IDs from the writer's temp files to avoid
-    holding them all in memory. Returns a list of synonym dicts.
+    holding them all in memory. One raw-export fetch serves both archive
+    surfaces: the rows themselves (registry_entries entity file) and the
+    custom-synonyms file derived from them.
     """
     # Collect all entity IDs from small entities (in memory)
     id_fields = {
@@ -458,10 +472,15 @@ def _fetch_synonyms(
                 seen.add(eid)
                 unique_ids.append(eid)
 
-    # Read document/file IDs from temp files (O(scan) not O(memory))
+    # Read document/file IDs from the staged temp files (O(scan) not
+    # O(memory)). The v3 writer stages per-namespace subtrees
+    # (namespaces/<prefix>/<entity>.jsonl) — scanning the v2-era flat path
+    # here silently collected ZERO document/file ids for years, which is
+    # exactly how document identity dropped out of every CLI export.
+    writer.flush()
+    ns_root = Path(writer._tmp_dir) / NAMESPACES_DIR
     for entity_type, id_field in [("documents", "document_id"), ("files", "file_id")]:
-        tmp_path = Path(writer._tmp_dir) / ENTITY_FILES[entity_type]
-        if tmp_path.exists():
+        for tmp_path in sorted(ns_root.glob(f"*/{ENTITY_FILES[entity_type]}")):
             with open(tmp_path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
@@ -476,20 +495,24 @@ def _fetch_synonyms(
     if not unique_ids:
         return []
 
-    # Bulk fetch registry entries
-    registry_map = collector.fetch_registry_entries(unique_ids)
+    return collector.export_registry_entries(unique_ids)
 
-    # Extract synonyms (only non-primary composite keys)
+
+def _extract_custom_synonyms(
+    registry_rows: list[dict[str, Any]],
+    namespace: str,
+) -> list[dict[str, Any]]:
+    """Non-primary composite keys from the raw rows — the synonyms file."""
     synonyms: list[dict[str, Any]] = []
-    for eid, reg_data in registry_map.items():
-        primary_key = reg_data.get("primary_composite_key", {})
-        for syn in reg_data.get("synonyms", []):
+    for row in registry_rows:
+        primary_key = row.get("primary_composite_key", {})
+        for syn in row.get("synonyms", []):
             composite_key = syn.get("composite_key", {})
             # Skip the primary key — it's not a "custom" synonym
             if composite_key == primary_key:
                 continue
             synonyms.append({
-                "entry_id": eid,
+                "entry_id": row.get("entry_id"),
                 "namespace": syn.get("namespace", namespace),
                 "entity_type": syn.get("entity_type", ""),
                 "composite_key": composite_key,

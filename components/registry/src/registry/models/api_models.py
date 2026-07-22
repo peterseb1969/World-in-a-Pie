@@ -389,6 +389,40 @@ class LookupBulkResponse(BaseModel):
     errors: int
 
 
+class ExportEntriesRequest(StrictModel):
+    """Request model for the raw-entries export (backup/export tooling)."""
+
+    entry_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="Entry ids to export (batch, max 500 per call)"
+    )
+
+
+class ExportEntryItem(BaseModel):
+    """One entry in the raw export response."""
+
+    index: int
+    entry_id: str
+    status: str = Field(description="found | not_found | forbidden")
+    entry: dict[str, Any] | None = Field(
+        default=None,
+        description="The FULL raw registry entry row (hash, synonyms, "
+                    "search_values, source_info, timestamps, status) when found"
+    )
+
+
+class ExportEntriesResponse(BaseModel):
+    """Response model for the raw-entries export."""
+
+    results: list[ExportEntryItem]
+    total: int
+    found: int
+    not_found: int
+    forbidden: int
+
+
 # =============================================================================
 # Resolve API Models (synonym resolution)
 # =============================================================================
