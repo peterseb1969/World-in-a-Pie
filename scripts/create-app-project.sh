@@ -718,6 +718,28 @@ else
     echo "            cd $WIP_ROOT/WIP-Toolkit && $WIP_ROOT/.venv/bin/python -m build . --wheel"
 fi
 
+# wip-archive wheel — the toolkit wheel's dependency (archive format +
+# remap library, not on PyPI): both wheels must land in the app's libs/
+# or `pip install libs/*.whl` cannot resolve the toolkit's requirement.
+ARCHIVE_WHEEL=$(find "$WIP_ROOT/libs/wip-archive/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1 || true)
+if [ -z "$ARCHIVE_WHEEL" ] && [ -n "${TOOLKIT_PYTHON:-}" ]; then
+    echo "   Building wip-archive wheel (using $TOOLKIT_PYTHON)..."
+    if ! (cd "$WIP_ROOT/libs/wip-archive" && "$TOOLKIT_PYTHON" -m build . --wheel -q 2>&1); then
+        echo "   Warning: wip-archive wheel build failed — ensure 'build' is installed:"
+        echo "            $TOOLKIT_PYTHON -m pip install build"
+    fi
+    ARCHIVE_WHEEL=$(find "$WIP_ROOT/libs/wip-archive/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1 || true)
+fi
+
+ARCHIVE_FLAG=""
+if [ -n "$ARCHIVE_WHEEL" ]; then
+    ARCHIVE_FLAG="--archive-wheel $ARCHIVE_WHEEL"
+elif [ -n "$TOOLKIT_WHEEL" ]; then
+    echo "   Warning: wip-archive wheel not found — the toolkit wheel's"
+    echo "            wip-archive dependency will not resolve offline. Build it with:"
+    echo "            cd $WIP_ROOT/libs/wip-archive && $WIP_ROOT/.venv/bin/python -m build . --wheel"
+fi
+
 # --- Query scaffold (--preset query only, new projects only) ---
 # Engine surfaces: a curated copy (package-lock.json and strays deliberately
 # excluded) with in-process placeholder substitution — the sed -i calls that
@@ -829,7 +851,7 @@ PYTHONPATH="$WIP_ROOT/scaffold/src${PYTHONPATH:+:$PYTHONPATH}" \
     --preset "$PRESET" --role-prefix "$APP_PREFIX" \
     --mcp-python "$PYTHON_PATH" --mcp-base-url "$WIP_BASE_URL" \
     --mcp-key-file "$WIP_API_KEY_FILE" \
-    $LIB_FLAGS $TOOLKIT_FLAG $QUERY_FLAG $SEED_BOOTSTRAP_FLAG $WRITE_ENV_FLAG $ENGINE_FLAGS
+    $LIB_FLAGS $TOOLKIT_FLAG $ARCHIVE_FLAG $QUERY_FLAG $SEED_BOOTSTRAP_FLAG $WRITE_ENV_FLAG $ENGINE_FLAGS
 
 # Lockfile sync (refresh only) — an npm ACTION, so it stays wrapper-side,
 # and it must run AFTER the engine has copied the tarballs it re-hashes.

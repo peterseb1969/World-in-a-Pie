@@ -343,6 +343,22 @@ def toolkit_surface(wheel_path: str) -> Surface:
     )
 
 
+def archive_wheel_surface(wheel_path: str) -> Surface:
+    """Vendored wip-archive wheel copy — the toolkit wheel's dependency
+    (archive format + remap library). Ships alongside the toolkit wheel so
+    `pip install libs/*.whl` resolves the toolkit's `wip-archive` requirement
+    offline; same wrapper-builds / engine-ships split as toolkit_surface."""
+    return Surface(
+        name="archive-wheel",
+        policy=Policy.REGENERATE,
+        rationale="the toolkit wheel declares wip-archive as a dependency that is not on PyPI; shipping its wheel beside the toolkit's keeps app installs offline and version-matched",
+        wipe_glob="libs/wip_archive-*.whl",
+        produce=lambda ctx: {
+            f"libs/{Path(wheel_path).name}": Path(wheel_path).read_bytes()
+        },
+    )
+
+
 # --- backend matrix ----------------------------------------------------------
 
 def backend_surfaces() -> list[Surface]:

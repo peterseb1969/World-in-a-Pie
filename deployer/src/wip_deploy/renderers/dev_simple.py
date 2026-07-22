@@ -8,7 +8,7 @@ file set as the compose renderer but with three dev-friendly changes:
      build-contexts/<name>/ — no pulling from a registry. For the 5
      Python services that use `wip_auth` the context is patched to
      COPY + pip install `libs/wip-auth` (mirrors `build-release.sh`
-     for production). `document-store` additionally gets `WIP-Toolkit`
+     for production). `document-store` additionally gets `libs/wip-archive`
      baked in.
   2. Source volume mounts (`./components/<name>/src:/app/src:ro`) for
      every component with a build_context — edits to Python source show
@@ -80,8 +80,9 @@ _AUTH_SERVICES: frozenset[str] = frozenset({
     "registry", "def-store", "template-store", "document-store", "reporting-sync",
 })
 
-# Services that additionally import from WIP-Toolkit.
-_TOOLKIT_SERVICES: frozenset[str] = frozenset({"document-store"})
+# Services that additionally import from libs/wip-archive (the archive
+# format + remap library the backup/restore engine consumes in-process).
+_ARCHIVE_SERVICES: frozenset[str] = frozenset({"document-store"})
 
 # Directories/files to skip when copying a component tree into the
 # render output. Caches and test fixtures aren't needed in the build
@@ -119,8 +120,8 @@ def _copy_tree_into(src: Path, tree: FileTree, prefix: str) -> None:
         tree.add(f"{prefix}/{rel}", content)
 
 
-def _patch_dockerfile_for_dev(content: str, *, bake_toolkit: bool) -> str:
-    """Insert wip-auth (and optionally wip-toolkit) installs into a
+def _patch_dockerfile_for_dev(content: str, *, bake_archive: bool) -> str:
+    """Insert wip-auth (and optionally wip-archive) installs into a
     component's Dockerfile, right after the requirements install.
 
     Mirrors the awk patch in `scripts/build-release.sh`. If the trigger
@@ -134,12 +135,12 @@ def _patch_dockerfile_for_dev(content: str, *, bake_toolkit: bool) -> str:
         "COPY wip-auth /tmp/wip-auth",
         "RUN pip install --no-cache-dir /tmp/wip-auth && rm -rf /tmp/wip-auth",
     ]
-    if bake_toolkit:
+    if bake_archive:
         insert.extend([
             "",
-            "# Install wip-toolkit library (dev-bake)",
-            "COPY wip-toolkit /tmp/wip-toolkit",
-            "RUN pip install --no-cache-dir /tmp/wip-toolkit && rm -rf /tmp/wip-toolkit",
+            "# Install wip-archive library (dev-bake)",
+            "COPY wip-archive /tmp/wip-archive",
+            "RUN pip install --no-cache-dir /tmp/wip-archive && rm -rf /tmp/wip-archive",
         ])
     out_lines: list[str] = []
     patched = False
@@ -156,7 +157,7 @@ def _materialize_dev_build_context(
     repo_root: Path,
     tree: FileTree,
 ) -> str | None:
-    """Copy a component's build inputs + wip-auth (+ wip-toolkit) into
+    """Copy a component's build inputs + wip-auth (+ wip-archive) into
     the render tree under build-contexts/<name>/.
 
     Returns the relative path the compose `build.context:` field should
@@ -176,15 +177,15 @@ def _materialize_dev_build_context(
 
     if name in _AUTH_SERVICES:
         _copy_tree_into(repo_root / "libs" / "wip-auth", tree, f"{prefix}/wip-auth")
-    if name in _TOOLKIT_SERVICES:
-        _copy_tree_into(repo_root / "WIP-Toolkit", tree, f"{prefix}/wip-toolkit")
+    if name in _ARCHIVE_SERVICES:
+        _copy_tree_into(repo_root / "libs" / "wip-archive", tree, f"{prefix}/wip-archive")
 
     if name in _AUTH_SERVICES:
         dockerfile_path = Path(f"{prefix}/Dockerfile")
         if dockerfile_path in tree.files:
             patched = _patch_dockerfile_for_dev(
                 tree.files[dockerfile_path].content,
-                bake_toolkit=(name in _TOOLKIT_SERVICES),
+                bake_archive=(name in _ARCHIVE_SERVICES),
             )
             tree.add(str(dockerfile_path), patched)
 
@@ -220,7 +221,7 @@ def render_dev_simple(
     tree = FileTree()
 
     # Materialize a self-contained build context per Python service so
-    # wip-auth (and WIP-Toolkit for document-store) get baked in the
+    # wip-auth (and wip-archive for document-store) get baked in the
     # image. Without this, services crash at import with
     # `ModuleNotFoundError: No module named 'wip_auth'`.
     build_context_paths: dict[str, str] = {}
@@ -454,14 +455,14 @@ def _dev_service_block(
     # restart. The build-time pip install stays as a fallback — if the
     # bind-mount is somehow missing, the site-packages copy still lets
     # the container boot.
-    # The same applies to WIP-Toolkit for the services that use it: the
+    # The same applies to wip-archive for the services that use it: the
     # bind-mount has to come first, or the copy baked at image build wins and
-    # toolkit edits stay invisible until someone rebuilds.
+    # library edits stay invisible until someone rebuilds.
     python_path = [
         path
         for path, applies in (
             ("/app/libs/wip-auth/src", name in _AUTH_SERVICES),
-            ("/app/libs/wip-toolkit/src", name in _TOOLKIT_SERVICES),
+            ("/app/libs/wip-archive/src", name in _ARCHIVE_SERVICES),
         )
         if applies
     ]
@@ -597,17 +598,17 @@ def _dev_volumes_for(
             wip_auth_src = (repo_root / "libs" / "wip-auth" / "src").resolve()
             if wip_auth_src.is_dir():
                 volumes.append(f"{wip_auth_src}:/app/libs/wip-auth/src:ro")
-        # Same treatment for WIP-Toolkit, for the same reason. Without it,
-        # wip-auth edits propagated on a restart while toolkit edits silently
+        # Same treatment for wip-archive, for the same reason. Without it,
+        # wip-auth edits propagated on a restart while archive-lib edits silently
         # did not — the service kept running the copy pip-installed at image
         # build, and the only symptom was behaviour that did not match the
         # source in front of you. Found the hard way: a restore mode calling a
-        # toolkit function added the same day failed with AttributeError
+        # library function added the same day failed with AttributeError
         # against a container whose code was days old.
-        if owner.metadata.name in _TOOLKIT_SERVICES:
-            toolkit_src = (repo_root / "WIP-Toolkit" / "src").resolve()
-            if toolkit_src.is_dir():
-                volumes.append(f"{toolkit_src}:/app/libs/wip-toolkit/src:ro")
+        if owner.metadata.name in _ARCHIVE_SERVICES:
+            archive_src = (repo_root / "libs" / "wip-archive" / "src").resolve()
+            if archive_src.is_dir():
+                volumes.append(f"{archive_src}:/app/libs/wip-archive/src:ro")
 
     # CASE-55: app source-mount for --app-source overrides. Mount the
     # entire app directory into /app (including package.json + src/ +
