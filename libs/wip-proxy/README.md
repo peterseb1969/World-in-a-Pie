@@ -75,6 +75,7 @@ import { createWipClient } from '@wip/client'
 
 const wip = createWipClient({
   baseUrl: '/wip',          // or '' if proxy is mounted at root
-  auth: { type: 'none' },   // proxy handles auth
+  // no `auth` — the proxy injects credentials server-side. (`auth` is
+  // optional; there is no `{ type: 'none' }` variant in @wip/client.)
 })
 ```
