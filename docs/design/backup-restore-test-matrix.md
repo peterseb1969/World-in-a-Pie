@@ -55,9 +55,15 @@ Principles the matrix encodes:
 | P-BAD | Malformed: no manifest / v2.0 unconverted / unknown entity file / truncated zip | refusal family |
 
 Producer options that multiply cells (exercise each at least once, on the
-producer where it exists): `include_files`, `include_inactive`,
-`skip_documents`, `latest_only`, `template_prefixes`, CLI
-`skip_closure`/`skip_synonyms`, backup `dry_run`.
+producer where it exists): `include_files` and `skip_documents` (both
+producers); `include_inactive`, `latest_only`, `template_prefixes`,
+`skip_closure`/`skip_synonyms`, and `dry_run` (**P-CLI only** — the
+server backup 400-rejects all five as dead fields). The server backup is
+a full copy of every entity in every status, with **no dry-run by
+design**: its predicted counts are just the namespace's entity counts (a
+namespace-stats read, no job machinery needed), a compressed archive size
+cannot be honestly predicted without reading the payload, and the write
+is non-destructive — there is no risk for a rehearsal to mitigate.
 
 ### D2 — Restore mode × topology
 
@@ -153,12 +159,16 @@ a named deployment, never part of the routine suites.
 | B-02 | C | P-SRVN of NS-A+NS-B: per-namespace subtrees, per-ns counts, blobs flat | counts |
 | B-03 | L | P-SRVALL: includes `wip`; admin required on every namespace (a partial-grant key is refused) | counts, perm |
 | B-04 | C | P-CLI of NS-A: archive equivalent to B-01's for every entity class (the producer-parity assert — diff the two archives' class counts) | counts |
-| B-05 | C | `include_inactive` off/on: E12 entities absent/present | counts |
-| B-06 | C | `latest_only`: E6 docs carry 1 version; full: all versions | counts |
-| B-07 | C | `skip_documents`, `template_prefixes`, CLI `skip_synonyms`/`skip_closure`: each drops exactly its class, LOUDLY (manifest counts reflect it) | counts |
-| B-08 | C | backup `dry_run`: counts predicted, nothing written | PL-JOB |
+| B-05 | C | P-CLI `include_inactive` off/on: E12 entities absent/present (server backup 400-rejects the flag — it always copies every status) | counts |
+| B-06 | C | P-CLI `latest_only`: E6 docs carry 1 version; full: all versions (server backup 400-rejects the flag — it always copies every version) | counts |
+| B-07 | C | `skip_documents` (both producers), P-CLI `template_prefixes`/`skip_synonyms`/`skip_closure`: each drops exactly its class, LOUDLY (manifest counts reflect it) | counts |
 | B-09 | U | P-BAD family: no manifest / v2.0 / truncated → typed refusals; v2.0 message names `convert_archive` | refusal |
 | B-10 | U | P-CONV: convert v2.0 → v3, reader parity; already-v3 refused | counts |
+
+B-08 is retired, not renumbered: it asserted a server backup `dry_run`
+(plane PL-JOB) that does not exist — the server backup has no dry-run by
+design (see D1). The CLI exporter's real `dry_run` remains available if a
+dry-run assert is ever wanted on the P-CLI side.
 
 ### 5.2 Restore-mode cells (each is a dry-run/apply PAIR)
 
