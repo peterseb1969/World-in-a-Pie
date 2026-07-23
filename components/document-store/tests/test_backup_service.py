@@ -12,14 +12,11 @@ The engine is entirely mocked — these tests verify the pipeline itself:
 from __future__ import annotations
 
 import asyncio
-import os
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
-from beanie import init_beanie
-from motor.motor_asyncio import AsyncIOMotorClient
 from wip_archive.models import ProgressEvent
 
 from document_store.models.backup_job import (
@@ -31,17 +28,22 @@ from document_store.services import backup_service
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _init_backup_service_beanie():
-    """Initialize Beanie per-test — Motor binds to the active loop."""
-    mongo = AsyncIOMotorClient(os.environ["MONGO_URI"])
-    db = mongo[os.environ["DATABASE_NAME"] + "_backup_service"]
-    await init_beanie(database=db, document_models=[BackupJob])
+async def _init_backup_service_beanie(session_mongo_client):
+    """Bind Beanie via the shared session client, isolate per test.
+
+    Re-running init_beanie on a private client here (the old per-test
+    pattern from function-scoped-loop days) would re-bind BackupJob to a
+    client this fixture then closes — leaving every later test in the
+    session holding a model bound to a dead client. Under the
+    session-scoped loop the one union binding serves everyone; per-test
+    isolation is the delete_all, not a private database.
+    """
+    from tests.conftest import _ensure_beanie
+    await _ensure_beanie(session_mongo_client)
     await BackupJob.delete_all()
     # Also reset the in-process pipeline state — previous test may have leaked
     backup_service._job_queues.clear()
     backup_service._job_tasks.clear()
-    yield
-    mongo.close()
 
 
 @pytest_asyncio.fixture

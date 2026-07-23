@@ -25,6 +25,7 @@ correctly without exercising ZIP I/O.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1076,7 +1077,7 @@ class TestClaimInsertion:
     @staticmethod
     def _engine(*, insert_error=None):
         mongo, _colls = _make_mongo_mock()
-        claims = mongo["wip_registry"]["composite_key_claims"]
+        claims = mongo[os.environ.get("REGISTRY_DATABASE_NAME", "wip_registry")]["composite_key_claims"]
         if insert_error is not None:
             claims.insert_many = AsyncMock(side_effect=insert_error)
         events: list[ProgressEvent] = []

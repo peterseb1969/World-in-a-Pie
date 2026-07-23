@@ -261,7 +261,7 @@ _ensure_component_test_deps() {
     echo "  Provisioning $name test deps (CI recipe, one-time)..."
     if (cd "$dir" && pip install -q -r requirements.txt) \
         && (cd "$REPO_ROOT/components/registry" && pip install -q -r requirements.txt) \
-        && pip install -q pytest-asyncio httpx; then
+        && pip install -q pytest-asyncio pytest-xdist httpx; then
         touch "$marker"
     else
         echo "  WARNING: test-dep provisioning failed — imports may error below." >&2
@@ -324,12 +324,32 @@ run_python_tests() {
         esac
     done
 
+    # Intra-run parallelism, opt-in per component: document-store's
+    # conftest gives every xdist worker its own set of databases, so its
+    # suite runs -n auto by default. Other suites join this list only
+    # after getting the same per-worker isolation — without it, workers
+    # wipe each other's fixtures (the corruption class the machine lock
+    # serializes at run granularity). WIP_TEST_XDIST=0 disables; a
+    # caller-supplied -n/--numprocesses wins.
+    local xdist_args=()
+    if [[ "$name" == "document-store" && "${WIP_TEST_XDIST:-1}" != "0" ]]; then
+        local caller_n=0
+        for arg in "$@"; do
+            case "$arg" in
+                -n|-n*|--numprocesses*) caller_n=1 ;;
+            esac
+        done
+        (( caller_n )) || xdist_args=(-n auto)
+    fi
+
     echo "=== $name ==="
     ensure_test_containers "$name" || return 1
+    # The ${arr[@]+...} guard keeps an EMPTY xdist_args from tripping
+    # `set -u` on bash < 4.4 (macOS system bash is 3.2).
     if (( has_target )); then
-        (cd "$dir" && PYTHONPATH=src pytest "$@")
+        (cd "$dir" && PYTHONPATH=src pytest ${xdist_args[@]+"${xdist_args[@]}"} "$@")
     else
-        (cd "$dir" && PYTHONPATH=src pytest tests/ "$@")
+        (cd "$dir" && PYTHONPATH=src pytest tests/ ${xdist_args[@]+"${xdist_args[@]}"} "$@")
     fi
 }
 

@@ -17,12 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 
 import pytest
 import pytest_asyncio
-from beanie import init_beanie
-from motor.motor_asyncio import AsyncIOMotorClient
 
 from document_store.models.document import Document
 from document_store.services import nats_client
@@ -32,14 +29,17 @@ NS = "replayns"
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _init_beanie():
-    """Initialize Beanie per-test — Motor binds to the active loop."""
-    mongo = AsyncIOMotorClient(os.environ["MONGO_URI"])
-    db = mongo[os.environ["DATABASE_NAME"] + "_replay_query"]
-    await init_beanie(database=db, document_models=[Document])
+async def _init_beanie(session_mongo_client):
+    """Bind Beanie via the shared session client, isolate per test.
+
+    A private client + re-init here would re-bind Document and then die
+    with this fixture, stranding later tests on a closed client. The
+    session-wide union binding serves everyone; isolation is the
+    delete_all.
+    """
+    from tests.conftest import _ensure_beanie
+    await _ensure_beanie(session_mongo_client)
     await Document.delete_all()
-    yield
-    mongo.close()
 
 
 class _FakeJetStream:
