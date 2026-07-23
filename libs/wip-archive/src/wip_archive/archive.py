@@ -8,7 +8,7 @@ import shutil
 import tempfile
 import zipfile
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO
 
@@ -105,7 +105,11 @@ class ArchiveWriter:
         if key not in self._handles:
             d = Path(self._tmp_dir) / NAMESPACES_DIR / namespace
             d.mkdir(parents=True, exist_ok=True)
-            self._handles[key] = open(d / ENTITY_FILES[entity_type], "w", encoding="utf-8")
+            # A long-lived handle stored per (ns, entity) and closed in
+            # write()/_cleanup; a `with` block would close it too early.
+            self._handles[key] = open(  # noqa: SIM115
+                d / ENTITY_FILES[entity_type], "w", encoding="utf-8"
+            )
         return self._handles[key]
 
     def add_entity(
@@ -206,18 +210,14 @@ class ArchiveWriter:
 
     def _cleanup(self) -> None:
         """Remove the temp directory."""
-        try:
+        with suppress(Exception):
             shutil.rmtree(self._tmp_dir, ignore_errors=True)
-        except Exception:
-            pass
 
     def __del__(self) -> None:
         # Safety cleanup if write() was never called
         for fh in self._handles.values():
-            try:
+            with suppress(Exception):
                 fh.close()
-            except Exception:
-                pass
         self._cleanup()
 
 
