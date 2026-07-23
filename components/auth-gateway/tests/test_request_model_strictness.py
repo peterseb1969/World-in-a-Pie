@@ -13,4 +13,6 @@ from wip_auth.testing import assert_strict_request_models
 
 
 def test_request_models_forbid_unknown_keys():
-    assert_strict_request_models(app)
+    # The gateway is a proxy shim with no request-body models of its own;
+    # the gate still guards any future ones.
+    assert_strict_request_models(app, expect_request_bodies=False)

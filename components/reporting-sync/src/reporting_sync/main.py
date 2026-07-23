@@ -41,6 +41,7 @@ from .models import (
     ConsumerInfo,
     HealthResponse,
     MetricsResponse,
+    StrictModel,
     SyncStatus,
 )
 from .parity import NamespaceParityResult, check_namespace_parity
@@ -1648,11 +1649,11 @@ async def list_tables(
     return result
 
 
-class ReportQuery(BaseModel):
+class ReportQuery(StrictModel):
     """Request model for ad-hoc reporting queries."""
 
     sql: str
-    params: list[Any] = []
+    params: list[Any] = Field(default_factory=list)
     timeout_seconds: int = Field(default=30, ge=1, le=300)
     max_rows: int = Field(default=1000, ge=1, le=50000)
     namespace: str | None = Field(
@@ -1763,11 +1764,11 @@ def _is_allowed_table(name: str) -> bool:
     return name.startswith(_EXPORT_ALLOWED_PREFIXES) or name in _EXPORT_ALLOWED_EXACT
 
 
-class CsvExportQuery(BaseModel):
+class CsvExportQuery(StrictModel):
     """Request model for query-based CSV export."""
 
     sql: str
-    params: list[Any] = []
+    params: list[Any] = Field(default_factory=list)
     timeout_seconds: int = Field(default=120, ge=1, le=600)
     filename: str = Field(default="export.csv", pattern=r"^[\w\-. ]+\.csv$")
 

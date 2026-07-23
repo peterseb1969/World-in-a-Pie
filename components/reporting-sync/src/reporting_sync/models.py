@@ -372,7 +372,7 @@ class Alert(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
-class AlertThresholds(BaseModel):
+class AlertThresholds(StrictModel):
     """Configurable alert thresholds."""
 
     # Queue lag alert
@@ -388,7 +388,7 @@ class AlertThresholds(BaseModel):
     stall_critical_seconds: int = Field(default=600, description="Seconds for stall critical")
 
 
-class AlertConfig(BaseModel):
+class AlertConfig(StrictModel):
     """Alert configuration."""
 
     enabled: bool = True
