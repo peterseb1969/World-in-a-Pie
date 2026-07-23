@@ -588,6 +588,49 @@ class TestUpsertNamespace:
             assert body["deletion_mode"] == "retain"
 
     @pytest.mark.asyncio
+    async def test_fresh_restore_drops_the_source_id_config(self):
+        """A fresh restore re-mints every id, so it must NOT stamp the target
+        with the source's id_config. preserve_id_config=False keeps a prefixed
+        source scheme out of the PUT body, so the target defaults to UUID7
+        instead of re-minting the source's exact prefixed ids and colliding
+        with the live original on the global entry_id index (CASE-784). Every
+        other config field still carries over."""
+        mongo, _ = _make_mongo_mock()
+        engine = DirectRestoreEngine(
+            mongo, None, lambda _: None,
+            registry_base_url="http://registry:8001",
+            registry_api_key="test-key",
+        )
+        config = NamespaceConfig(
+            prefix="src",
+            description="prefixed source",
+            isolation_mode="open",
+            id_config={
+                "documents": {"algorithm": "prefixed", "prefix": "SRC-", "pad": 6}
+            },
+        )
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "ok"
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.put = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+
+            await engine._upsert_namespace(
+                "copy", config, preserve_id_config=False
+            )
+
+            body = mock_client.put.await_args.kwargs["json"]
+            assert "id_config" not in body  # the fix: source scheme not inherited
+            assert body["description"] == "prefixed source"  # rest still carries
+            assert body["isolation_mode"] == "open"
+
+    @pytest.mark.asyncio
     async def test_body_omits_fields_absent_from_old_archives(self):
         """A pre-fix archive (fields None) must not touch an existing
         namespace's allowlist or deletion policy."""

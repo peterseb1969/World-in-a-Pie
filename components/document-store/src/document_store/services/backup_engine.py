@@ -719,7 +719,15 @@ class DirectRestoreEngine:
                         else manifest.namespace_config
                     )
                     ns_config = self._rewrite_ns_config_refs(ns_config, mapping)
-                    await self._upsert_namespace(target, ns_config)
+                    # Fresh means fresh: a remap re-mints every id, so the target
+                    # must not inherit the source's id_config. A prefixed source
+                    # scheme would otherwise re-mint the source's exact ids and
+                    # collide with the live original on the global entry_id index
+                    # (CASE-784). preserve_id_config=False defaults the target to
+                    # UUID7 (or keeps a pre-created target's own config).
+                    await self._upsert_namespace(
+                        target, ns_config, preserve_id_config=False
+                    )
 
             # The remapper gets the namespace mapping so reference snapshots
             # (resolved.namespace) follow their entities — after a fresh
@@ -2579,16 +2587,31 @@ class DirectRestoreEngine:
         )
 
     async def _upsert_namespace(
-        self, namespace: str, ns_config: NamespaceConfig | None
+        self,
+        namespace: str,
+        ns_config: NamespaceConfig | None,
+        *,
+        preserve_id_config: bool = True,
     ) -> None:
-        """Upsert the namespace via Registry HTTP PUT."""
+        """Upsert the namespace via Registry HTTP PUT.
+
+        ``preserve_id_config`` carries the source's id_config onto the target.
+        That is correct for an id-preserving restore (the DR case): the archived
+        ids are re-inserted unchanged and the copy should continue the source's
+        minting sequence. A FRESH restore passes False, because it re-mints every
+        id — inheriting a prefixed source scheme would re-mint the source's exact
+        prefixed ids and collide with the live original on the global entry_id
+        index, and stamp the copy's ids with the source's prefix. With it False
+        the fresh target defaults to UUID7, or keeps its own config if the
+        operator pre-created the target namespace.
+        """
         import httpx
 
         body: dict[str, Any] = {}
         if ns_config:
             body["description"] = ns_config.description
             body["isolation_mode"] = ns_config.isolation_mode
-            if ns_config.id_config:
+            if preserve_id_config and ns_config.id_config:
                 body["id_config"] = ns_config.id_config
             # None means the archive predates these manifest fields — omit
             # them so the PUT leaves an existing namespace's config untouched
