@@ -185,6 +185,16 @@ class ProvisionRequest(StrictModel):
         default=None,
         description="Optional composite keys to associate with provisioned IDs"
     )
+    defer_claim: bool = Field(
+        default=False,
+        description="Reserve the IDs WITHOUT claiming their composite keys — the "
+                    "claim is committed at activation instead. Used by a fresh "
+                    "restore, where an id-valued-identity document's final "
+                    "identity_hash is not known until every referenced id has "
+                    "been minted; deferring lets all ids be reserved first "
+                    "(defusing circular references) and the correct key claimed "
+                    "at activation. Default False = claim at provision.",
+    )
     created_by: str | None = Field(default=None, description="Creator identifier")
 
 
@@ -244,6 +254,16 @@ class ActivateItem(StrictModel):
     """Request model for activating a reserved entry."""
 
     entry_id: str = Field(..., description="ID to activate")
+    composite_key: dict[str, Any] | None = Field(
+        default=None,
+        description="Final composite key to set on the entry and CLAIM at "
+                    "activation (the deferred-claim counterpart of "
+                    "provision's defer_claim). When provided, the entry's "
+                    "primary_composite_key is set to this and claimed here — a "
+                    "collision fails the item loudly rather than duplicating an "
+                    "identity. When omitted, activation only flips status (the "
+                    "key was already claimed at provision).",
+    )
 
 
 class ActivateItemResponse(BaseModel):

@@ -45,6 +45,7 @@ from .remap_restore import (
     REMAP_ENTITY_ORDER,
     RemapPlan,
     RemapSource,
+    composite_key_for,
     plan_multi,
 )
 from .reporting_client import ReportingSyncClient
@@ -774,15 +775,29 @@ class DirectRestoreEngine:
                 await self._remap_blobs(reader, merged_file_map)
 
             for target in targets:
-                await self._activate_entries(
-                    target,
-                    [
-                        new_id
-                        for src, t in mapping.items() if t == target
-                        for m in plans[src].id_map.values()
-                        for new_id in m.values()
-                    ],
-                )
+                # Documents were reserved with a deferred claim; their FINAL
+                # composite key (built from the rewritten + rehashed row) is
+                # claimed now, at activation (CASE-787). An identity-less doc
+                # has an empty key — it stays keyless (opts out of dedup).
+                # Other entity types were already claimed at provision, so they
+                # activate keyless (a bare status flip).
+                items: list[dict[str, Any]] = []
+                for src, t in mapping.items():
+                    if t != target:
+                        continue
+                    plan = plans[src]
+                    doc_keys: dict[str, dict[str, Any]] = {}
+                    for row in plan.rows.get("documents", []):
+                        key = composite_key_for("documents", row, target, plan.id_map)
+                        if key:
+                            doc_keys[row["document_id"]] = key
+                    for m in plan.id_map.values():
+                        for new_id in m.values():
+                            item: dict[str, Any] = {"entry_id": new_id}
+                            if new_id in doc_keys:
+                                item["composite_key"] = doc_keys[new_id]
+                            items.append(item)
+                await self._activate_entries(target, items)
             for src, target in mapping.items():
                 await self._record_provenance(target, src, manifest)
 
@@ -895,6 +910,14 @@ class DirectRestoreEngine:
                             "entity_type": entity_type,
                             "count": len(chunk),
                             "composite_keys": chunk,
+                            # Documents defer their claim to activation: an
+                            # id-valued-identity document's final hash isn't
+                            # known until every referenced id is minted, so the
+                            # correct key is claimed at activation instead of
+                            # here (CASE-787). Definitions/terms/templates/files
+                            # have value-based identities that survive re-minting
+                            # unchanged, so they claim at provision as before.
+                            "defer_claim": entity_type == "documents",
                         },
                         headers=headers,
                     )
@@ -990,21 +1013,27 @@ class DirectRestoreEngine:
         logger.info("Copied %d blob(s) under new ids", copied)
 
     async def _activate_entries(
-        self, namespace: str, entry_ids: list[str]
+        self, namespace: str, items: list[dict[str, Any]]
     ) -> None:
         """Make the provisioned entries resolvable, in one step.
 
         Until this runs the namespace is invisible: reserved entries do not
         resolve. That is the property that makes a failed remap recoverable
         rather than half-live.
+
+        Each item is ``{entry_id, composite_key?}``. A document carries its
+        FINAL composite key here — its claim was deferred at provision and is
+        committed now, when the rehashed key is known (CASE-787). A collision
+        at this point is a genuine duplicate identity: it fails loud rather than
+        leaving a written-but-unresolvable document behind.
         """
         import httpx
 
-        if not entry_ids:
+        if not items:
             return
         self._emit(
             "phase_activate",
-            f"[{namespace}] activating {len(entry_ids)} identit(ies)",
+            f"[{namespace}] activating {len(items)} identit(ies)",
         )
         url = f"{self._registry_url}/api/registry/entries/activate"
         headers = {
@@ -1012,13 +1041,9 @@ class DirectRestoreEngine:
             "Content-Type": "application/json",
         }
         async with httpx.AsyncClient(timeout=120.0) as client:
-            for start in range(0, len(entry_ids), 500):
-                batch = entry_ids[start:start + 500]
-                resp = await client.post(
-                    url,
-                    json=[{"entry_id": entry_id} for entry_id in batch],
-                    headers=headers,
-                )
+            for start in range(0, len(items), 500):
+                batch = items[start:start + 500]
+                resp = await client.post(url, json=batch, headers=headers)
                 if resp.status_code != 200:
                     raise RestoreEngineError(
                         f"Could not activate {len(batch)} restored identit(ies) "
@@ -1026,12 +1051,18 @@ class DirectRestoreEngine:
                         "The data is written but invisible; re-run activation "
                         "or delete the namespace and retry."
                     )
-                errors = resp.json().get("errors", 0)
-                if errors:
-                    self._emit(
-                        "warning",
-                        f"[{namespace}] {errors} identit(ies) did not activate "
-                        "— they remain reserved and will not resolve",
+                body = resp.json()
+                if body.get("errors", 0):
+                    failed = [
+                        r for r in body.get("results", [])
+                        if r.get("status") not in ("activated", "already_active")
+                    ]
+                    raise RestoreEngineError(
+                        f"[{namespace}] {body['errors']} identit(ies) failed to "
+                        f"activate — a restored identity could not claim its "
+                        f"composite key (a genuine duplicate). The namespace is "
+                        f"partially written and invisible; delete it and retry. "
+                        f"First failures: {failed[:5]}"
                     )
 
     async def _record_provenance(

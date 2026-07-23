@@ -239,6 +239,79 @@ class TestRemapAgainstARealRegistry:
         assert claim.state == "confirmed"
 
     @pytest.mark.asyncio
+    async def test_an_id_identity_document_claims_its_recomputed_key(
+        self, live_registry
+    ):
+        # CASE-787: a document whose identity field holds another document's id
+        # (an edge's source_ref/target_ref — here a "ref" field) is re-minted
+        # and its referenced id rewritten, so its identity_hash changes. The
+        # remap recomputes the STORED hash; the claim must carry the SAME hash,
+        # or the document is registered under a key that no longer describes it
+        # and the next write on that identity duplicates instead of updating.
+        # Before the fix the stored hash and the claim's hash diverged.
+        from wip_auth.document_identity import compute_hash
+
+        pre_remap_hash = compute_hash({"ref": "OLD-REF"})
+        await _run_remap(live_registry, {
+            "templates": [
+                {"template_id": "OLD-ENT", "namespace": SOURCE,
+                 "value": "THING", "version": 1, "identity_fields": []},
+                {"template_id": "OLD-LINK", "namespace": SOURCE,
+                 "value": "LINK", "version": 1, "identity_fields": ["ref"]},
+            ],
+            "documents": [
+                {"document_id": "OLD-REF", "namespace": SOURCE,
+                 "template_id": "OLD-ENT", "template_value": "THING",
+                 "template_version": 1, "identity_hash": "", "version": 1,
+                 "data": {"note": "the referenced entity"}},
+                {"document_id": "OLD-EDGE", "namespace": SOURCE,
+                 "template_id": "OLD-LINK", "template_value": "LINK",
+                 "template_version": 1, "identity_hash": pre_remap_hash,
+                 "version": 1, "data": {"ref": "OLD-REF"}},
+            ],
+        })
+
+        docs = await _rows(live_registry, "documents")
+        ref_doc = next(d for d in docs if d["data"].get("note"))
+        edge = next(d for d in docs if "ref" in d["data"])
+
+        # The reference was rewritten to the referenced doc's NEW id, and the
+        # stored identity_hash was recomputed from it.
+        assert edge["data"]["ref"] == ref_doc["document_id"]
+        expected_hash = compute_hash({"ref": ref_doc["document_id"]})
+        assert edge["identity_hash"] == expected_hash
+        assert edge["identity_hash"] != pre_remap_hash
+
+        # THE FIX: the Registry claim carries the SAME (recomputed) hash the
+        # document stores — not the stale pre-remap one.
+        entry = await RegistryEntry.find_one(
+            RegistryEntry.entry_id == edge["document_id"]
+        )
+        assert entry is not None and entry.status == "active"
+        assert entry.primary_composite_key["identity_hash"] == expected_hash
+
+        # And a later write of the same identity dedups against the restored
+        # edge instead of minting a second one.
+        transport = ASGITransport(app=registry_app)
+        async with httpx.AsyncClient(transport=transport) as client:
+            resp = await client.post(
+                "http://registry/api/registry/entries/register",
+                json=[{
+                    "namespace": TARGET,
+                    "entity_type": "documents",
+                    "composite_key": {
+                        "ns": TARGET,
+                        "template_id": edge["template_id"],
+                        "identity_hash": expected_hash,
+                    },
+                }],
+                headers={"X-API-Key": os.environ["MASTER_API_KEY"]},
+            )
+        result = resp.json()["results"][0]
+        assert result["status"] == "already_exists"
+        assert result["registry_id"] == edge["document_id"]
+
+    @pytest.mark.asyncio
     async def test_documents_land_under_new_ids_pointing_at_new_templates(
         self, live_registry
     ):

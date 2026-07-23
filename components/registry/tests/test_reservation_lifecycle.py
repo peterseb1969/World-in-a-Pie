@@ -27,6 +27,7 @@ async def _provision(
     count: int = 1,
     entity_type: str = "terms",
     composite_keys: list[dict] | None = None,
+    defer_claim: bool = False,
 ) -> list[str]:
     payload: dict = {
         "namespace": NAMESPACE,
@@ -35,6 +36,8 @@ async def _provision(
     }
     if composite_keys is not None:
         payload["composite_keys"] = composite_keys
+    if defer_claim:
+        payload["defer_claim"] = True
     resp = await client.post(
         "/api/registry/entries/provision", json=payload, headers=auth_headers
     )
@@ -43,12 +46,17 @@ async def _provision(
 
 
 async def _activate(
-    client: AsyncClient, auth_headers: dict, entry_ids: list[str]
+    client: AsyncClient, auth_headers: dict, entry_ids: list[str],
+    composite_keys: list[dict | None] | None = None,
 ) -> dict:
+    items: list[dict] = []
+    for i, entry_id in enumerate(entry_ids):
+        item: dict = {"entry_id": entry_id}
+        if composite_keys is not None and composite_keys[i] is not None:
+            item["composite_key"] = composite_keys[i]
+        items.append(item)
     resp = await client.post(
-        "/api/registry/entries/activate",
-        json=[{"entry_id": entry_id} for entry_id in entry_ids],
-        headers=auth_headers,
+        "/api/registry/entries/activate", json=items, headers=auth_headers,
     )
     assert resp.status_code == 200, resp.text
     return resp.json()
@@ -327,3 +335,98 @@ class TestBulkActivationContract:
         assert result["activated"] == 500
         assert result["errors"] == 0
         assert all(r["status"] == "activated" for r in result["results"])
+
+
+class TestClaimAtActivation:
+    """Deferred-claim reservation: the id is minted at provision but the
+    composite-key claim is committed at ACTIVATION with the final key.
+
+    A fresh restore re-mints every id, so an id-valued-identity document's
+    final identity_hash is not known until all referenced ids exist. Deferring
+    the claim lets every id be reserved first (defusing circular references)
+    and the correct key claimed once it can be computed — the fix for the
+    stale-claim bug where a remap-restored edge stored the recomputed hash but
+    the claim kept the pre-remap one (un-re-addressable → duplicates on write).
+    """
+
+    @pytest.mark.asyncio
+    async def test_defer_claim_does_not_claim_at_provision(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        # The contrast to TestProvisionHoldsTheKey: with defer_claim, the same
+        # key can be provisioned twice without conflict — nothing is claimed yet.
+        key = {"ns": NAMESPACE, "value": "DEFERRED"}
+        await _provision(
+            client, auth_headers, composite_keys=[key], defer_claim=True
+        )
+        resp = await client.post(
+            "/api/registry/entries/provision",
+            json={
+                "namespace": NAMESPACE,
+                "entity_type": "terms",
+                "count": 1,
+                "composite_keys": [key],
+                "defer_claim": True,
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.text  # no 409 — claim deferred
+
+    @pytest.mark.asyncio
+    async def test_activation_with_the_final_key_claims_and_resolves(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        # Reserve with a placeholder key, activate with the FINAL key — the
+        # entry now resolves by that final key, and the key is now claimed.
+        placeholder = {"ns": NAMESPACE, "value": "PLACEHOLDER"}
+        final = {"ns": NAMESPACE, "value": "FINAL-KEY"}
+        (entry_id,) = await _provision(
+            client, auth_headers, composite_keys=[placeholder], defer_claim=True
+        )
+
+        result = await _activate(
+            client, auth_headers, [entry_id], composite_keys=[final]
+        )
+        assert result["activated"] == 1 and result["errors"] == 0
+
+        by_key = await _lookup_by_key(client, auth_headers, final)
+        assert by_key["status"] == "found" and by_key["entry_id"] == entry_id
+        # The placeholder was never claimed and does not resolve.
+        assert (await _lookup_by_key(client, auth_headers, placeholder))[
+            "status"
+        ] == "not_found"
+        # The final key is now claimed — a plain provision of it conflicts.
+        resp = await client.post(
+            "/api/registry/entries/provision",
+            json={
+                "namespace": NAMESPACE, "entity_type": "terms",
+                "count": 1, "composite_keys": [final],
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 409, resp.text
+
+    @pytest.mark.asyncio
+    async def test_activation_with_a_colliding_key_fails_loud(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        # Two deferred reservations, activated with the SAME final key: the
+        # first claims it, the second fails loudly rather than duplicating.
+        key = {"ns": NAMESPACE, "value": "COLLIDES-AT-ACTIVATION"}
+        (id_a,) = await _provision(client, auth_headers, defer_claim=True)
+        (id_b,) = await _provision(client, auth_headers, defer_claim=True)
+
+        first = await _activate(
+            client, auth_headers, [id_a], composite_keys=[key]
+        )
+        assert first["activated"] == 1 and first["errors"] == 0
+
+        second = await _activate(
+            client, auth_headers, [id_b], composite_keys=[key]
+        )
+        assert second["activated"] == 0 and second["errors"] == 1
+        assert "already registered" in second["results"][0]["error"].lower()
+        # The loser is still reserved (not activated), not a duplicate.
+        assert (await _lookup_by_id(client, auth_headers, id_b))[
+            "status"
+        ] == "not_found"
