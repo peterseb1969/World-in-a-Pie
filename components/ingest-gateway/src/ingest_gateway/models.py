@@ -1,13 +1,18 @@
 """Data models for the Ingest Gateway service."""
 
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class IngestAction(str, Enum):
+class StrictModel(BaseModel):
+    """Base for caller-input models — rejects unknown fields."""
+    model_config = ConfigDict(extra='forbid')
+
+
+class IngestAction(StrEnum):
     """Types of ingest actions mapped from NATS subjects."""
 
     # Terminology operations
@@ -36,7 +41,7 @@ SUBJECT_TO_ACTION: dict[str, IngestAction] = {
 }
 
 
-class IngestMessage(BaseModel):
+class IngestMessage(StrictModel):
     """Incoming ingest message structure."""
 
     correlation_id: str = Field(
@@ -56,7 +61,7 @@ class IngestMessage(BaseModel):
     )
 
 
-class IngestResultStatus(str, Enum):
+class IngestResultStatus(StrEnum):
     """Status of an ingest result."""
 
     SUCCESS = "success"

@@ -19,6 +19,8 @@ from beanie import Document as BeanieDocument
 from pydantic import BaseModel, Field
 from pymongo import DESCENDING, IndexModel
 
+from .api_models import StrictModel
+
 
 class BackupJobKind(StrEnum):
     """What long-running operation this job is running."""
@@ -237,7 +239,7 @@ class BackupProgressMessage(BaseModel):
     )
 
 
-class BackupRequest(BaseModel):
+class BackupRequest(StrictModel):
     """Request body for POST /backup/namespaces/{namespace}/backup.
 
     Most fields map to keyword arguments of the underlying backup engine; the
@@ -312,7 +314,7 @@ class BackupRequest(BaseModel):
 # one meaningful bound (batch_size 1..500) lives on the Form declaration.
 
 
-class RestoreFromJobRequest(BaseModel):
+class RestoreFromJobRequest(StrictModel):
     """Request body for POST /backup/jobs/{job_id}/restore.
 
     Unlike the upload restore (multipart form), this endpoint takes JSON —
