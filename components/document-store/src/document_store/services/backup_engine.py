@@ -23,7 +23,6 @@ from typing import Any, cast
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from wip_archive.archive import ArchiveReader, ArchiveWriter
-from wip_archive.remap import IDRemapper
 from wip_archive.models import (
     EntityCounts,
     Manifest,
@@ -31,6 +30,7 @@ from wip_archive.models import (
     NamespaceEntry,
     ProgressEvent,
 )
+from wip_archive.remap import IDRemapper
 
 from wip_auth.composite_key import compute_composite_key_hash
 
