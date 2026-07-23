@@ -12,6 +12,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO
 
+from .exceptions import (
+    ManifestParseError,
+    MissingManifestError,
+    NotAnArchiveError,
+)
 from .models import Manifest
 
 # JSONL file names within the archive
@@ -223,7 +228,12 @@ class ArchiveReader:
         self.archive_path = Path(archive_path)
         if not self.archive_path.exists():
             raise FileNotFoundError(f"Archive not found: {self.archive_path}")
-        self._zf = zipfile.ZipFile(self.archive_path, "r")
+        try:
+            self._zf = zipfile.ZipFile(self.archive_path, "r")
+        except zipfile.BadZipFile as exc:
+            raise NotAnArchiveError(
+                f"not a valid archive (unreadable zip): {self.archive_path}"
+            ) from exc
 
     def close(self) -> None:
         self._zf.close()
@@ -235,8 +245,23 @@ class ArchiveReader:
         self.close()
 
     def read_manifest(self) -> Manifest:
-        """Read and parse the manifest."""
-        data = json.loads(self._zf.read(MANIFEST_FILE))
+        """Read and parse the manifest.
+
+        Raises MissingManifestError when manifest.json is absent and
+        ManifestParseError when it is not valid JSON, so a malformed archive
+        fails with a typed, actionable error rather than a raw KeyError /
+        JSONDecodeError.
+        """
+        try:
+            raw = self._zf.read(MANIFEST_FILE)
+        except KeyError as exc:
+            raise MissingManifestError("archive has no manifest.json") from exc
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ManifestParseError(
+                f"archive manifest.json is not valid JSON: {exc}"
+            ) from exc
         return Manifest(**data)
 
     def list_namespaces(self) -> list[str]:

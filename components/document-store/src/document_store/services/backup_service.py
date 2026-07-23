@@ -30,6 +30,7 @@ from typing import Any, cast
 
 import httpx as _httpx
 from beanie.odm.operators.update.array import Push
+from wip_archive.exceptions import ArchiveError
 from wip_archive.models import ProgressEvent
 
 from ..models.backup_job import BackupJob, BackupJobKind, BackupJobStatus
@@ -319,7 +320,13 @@ async def wait_for_job(job_id: str, timeout: float | None = None) -> None:
 
 
 def read_archive_manifest(archive_path: str | Path) -> Any | None:
-    """Read an archive's manifest, or None if it is unreadable.
+    """Read an archive's manifest.
+
+    A malformed archive raises a typed ``ArchiveError`` (not-a-zip, no
+    manifest, unparseable manifest) so the restore route can refuse it with a
+    400 at upload time instead of minting a job that fails later. Only a
+    genuinely UNEXPECTED read error falls through to None (logged) — the caller
+    treats an absent manifest as "proceed with the request's target".
 
     Lives here (not in the API layer) so ``api/backup.py`` keeps its
     no-toolkit-imports guardrail intact — the manifest read used to be a
@@ -331,6 +338,8 @@ def read_archive_manifest(archive_path: str | Path) -> Any | None:
     try:
         with ArchiveReader(Path(archive_path)) as reader:
             return reader.read_manifest()
+    except ArchiveError:
+        raise  # typed malformed-archive error → the route turns it into a 400
     except Exception as exc:
         logger.warning("Could not read manifest from archive %s: %s", archive_path, exc)
         return None

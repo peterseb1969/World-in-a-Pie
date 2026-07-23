@@ -5,6 +5,12 @@ from pathlib import Path
 
 import pytest
 from wip_archive.archive import ENTITY_FILES, ArchiveReader, ArchiveWriter
+from wip_archive.exceptions import (
+    ArchiveError,
+    ManifestParseError,
+    MissingManifestError,
+    NotAnArchiveError,
+)
 from wip_archive.models import EntityCounts, Manifest, NamespaceEntry
 
 
@@ -568,3 +574,35 @@ class TestStreamingReads:
             first = list(reader.read_entities("documents", namespace="kb"))
             second = list(reader.read_entities("documents", namespace="kb"))
         assert first == second and len(first) == 10
+
+
+class TestMalformedArchive:
+    """Malformed archives raise typed ArchiveError subclasses (CASE-783), so a
+    caller can refuse with an actionable message instead of a raw library
+    exception (BadZipFile / KeyError / JSONDecodeError)."""
+
+    def test_not_a_zip_raises_not_an_archive(self, tmp_path):
+        bad = tmp_path / "garbage.zip"
+        bad.write_bytes(b"this is not a zip file at all")
+        with pytest.raises(NotAnArchiveError):
+            ArchiveReader(bad)
+
+    def test_missing_manifest_raises_missing_manifest(self, tmp_path):
+        no_manifest = tmp_path / "no_manifest.zip"
+        with zipfile.ZipFile(no_manifest, "w") as zf:
+            zf.writestr("terminologies.jsonl", "")
+        with ArchiveReader(no_manifest) as reader, pytest.raises(MissingManifestError):
+            reader.read_manifest()
+
+    def test_unparseable_manifest_raises_manifest_parse(self, tmp_path):
+        bad_manifest = tmp_path / "bad_manifest.zip"
+        with zipfile.ZipFile(bad_manifest, "w") as zf:
+            zf.writestr("manifest.json", "{not valid json")
+        with ArchiveReader(bad_manifest) as reader, pytest.raises(ManifestParseError):
+            reader.read_manifest()
+
+    def test_the_typed_errors_are_archive_errors(self):
+        """A caller can catch the whole family with the base type."""
+        assert issubclass(NotAnArchiveError, ArchiveError)
+        assert issubclass(MissingManifestError, ArchiveError)
+        assert issubclass(ManifestParseError, ArchiveError)

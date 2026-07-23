@@ -28,7 +28,7 @@ them first, they change how several cells are interpreted.
 | B-06 latest_only (E6 1 version vs all) | **GAP / see R1** | `wip-archive::test_include_all_versions_manifest_field` covers the manifest flag. **Server backup rejects `latest_only`** (R1). CLI all-versions behaviour otherwise unexercised end-to-end → L. |
 | B-07 skip_documents / template_prefixes / CLI skip_synonyms / skip_closure — each drops its class loudly | **MOSTLY COVERED / see R1** | skip_documents: `test_backup_engine::TestPreCount::test_skip_documents_zeros_doc_count_without_querying` + `test_skip_documents_omits_documents_phase`; CLI skip_synonyms/skip_closure/skip_documents/dry_run: `test_exporter::{test_skip_synonyms_no_registry_lookup, test_skip_closure_not_called, test_closure_called_by_default, test_skip_documents_no_docs_fetched, test_dry_run_still_fetches_entities}`. **`template_prefixes` is rejected on server backup** (R1) → not a supported drop. |
 | ~~B-08 backup dry_run~~ | **DROPPED (Peter's ruling, CASE-782)** | Backup has no dry-run and won't get one: the server backup is a full copy (CASE-768), so predicted counts are just the namespace-stats read, honest size prediction needs reading the payload, and the write is non-destructive. Cell retired from the matrix; the design-doc §2 D1 + §5.1 edit is the sibling's `b782a13c` (pending push). CLI dry-run remains real: `test_exporter::test_dry_run_still_fetches_entities`. |
-| B-09 P-BAD malformed family (no manifest / v2.0 unconverted / unknown entity / truncated zip → typed refusals) | **GAP (robustness) → CASE-783** | The reader throws RAW exceptions, not typed refusals: no-manifest → bare `KeyError`; truncated → `BadZipFile`; v2.0 → pydantic error with no `convert_archive` hint; unknown entity file → silent yield-nothing (`archive.py`). `wip-archive::test_archive` covers only `test_nonexistent_archive_raises` + `test_a_missing_entity_file_yields_nothing`. Filed CASE-783. |
+| B-09 P-BAD malformed family (no manifest / v2.0 unconverted / unknown entity / truncated zip → typed refusals) | **DONE (CASE-783 shape 1+2)** | wip-archive now raises typed `ArchiveError` subclasses (`NotAnArchiveError` / `MissingManifestError` / `ManifestParseError`), and the restore route 400s synchronously at upload — no doomed job (`test_archive::TestMalformedArchive`, `test_backup_api::test_restore_refuses_*`). v2.0-names-convert already worked (route version gate). Unknown/missing entity file is by-design (writer omits empty members). **Residual → runner:** the honest partial-damage check (some members lost after a valid write) is a manifest-count vs streamed-count cross-check — folded into the layer-L runner below (X-02), not a leftover on 783. |
 | B-10 P-CONV convert v2.0→v3, already-v3 refused | **COVERED (U)** | `test_convert_archive::{test_convert_v2_to_v3, test_convert_rejects_already_v3}`. |
 
 ## 5.2 Restore-mode cells (dry-run/apply pairs)
@@ -86,8 +86,10 @@ them first, they change how several cells are interpreted.
 - F-07 permission refusals on backup / restore / download for a non-admin key.
 
 **Blocked on a fix first:**
-- R-15 prefixed `id_config` through a fresh restore — **CASE-784 must land before the cell can pass**; today it 500s. Build the cell as the regression guard alongside the fix.
-- B-09 malformed-archive typed refusals — **CASE-783 must land**; the reader has no typed refusals to assert yet.
+- R-15 prefixed `id_config` through a fresh restore — **CASE-784 fixed** (`e32d8c3f`); build the L-cell as the regression guard.
+
+**Runner obligation folded in (no leftover case):**
+- Partial-damage detection (the residual of B-09 after CASE-783 shape 1+2): the layer-L counts-conservation harness (X-02) must cross-check per-entity streamed counts against the manifest's declared counts and refuse on mismatch — a partial archive that reads as fewer entities with no error is the trap typed refusals cannot catch.
 
 **Retired:** B-08 backup dry-run — dropped per Peter's ruling (CASE-782); design-doc edit is the sibling's `b782a13c`.
 
@@ -112,7 +114,7 @@ suspected cells into verdicts:
 
 Plus two confirmed by code-reading:
 - **B-08 backup dry-run → CASE-782** (not implemented; restore's works).
-- **B-09 malformed-archive refusals → CASE-783** (reader throws raw exceptions).
+- **B-09 malformed-archive refusals → CASE-783 (fixed, shape 1+2)** — typed `ArchiveError`s + synchronous 400 at upload; partial-damage count cross-check folded into the runner (X-02).
 
 ## Design-doc reconciliations (flag to Peter before building)
 

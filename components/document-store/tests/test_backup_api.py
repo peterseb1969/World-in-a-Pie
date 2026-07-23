@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import json
 import uuid
+import zipfile
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
@@ -30,6 +32,25 @@ from document_store.models.backup_job import (
     BackupJobStatus,
     BackupProgressMessage,
 )
+
+
+def _valid_archive_bytes(namespace: str = "wip") -> bytes:
+    """A real minimal v3 archive: a zip carrying a valid manifest.json.
+
+    Restore/merge uploads read the manifest (`_authorize_archive_restore`),
+    so a test that exercises endpoint wiring — not the malformed-archive
+    refusal (CASE-783) — must post a real archive rather than fake bytes.
+    """
+    manifest = {
+        "format_version": "3.0",
+        "namespace": namespace,
+        "namespaces": [{"prefix": namespace}],
+        "counts": {},
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("manifest.json", json.dumps(manifest))
+    return buf.getvalue()
 
 
 @pytest.fixture(autouse=True)
@@ -141,7 +162,7 @@ async def test_start_restore_streams_upload_and_creates_job(
     fake_task = asyncio.get_running_loop().create_future()
     fake_task.set_result(None)
 
-    payload = b"PK\x03\x04" + b"fake-archive-bytes" * 100  # ~1800 bytes
+    payload = _valid_archive_bytes("wip")
 
     with (
         patch(
@@ -164,8 +185,8 @@ async def test_start_restore_streams_upload_and_creates_job(
     body = resp.json()
     assert body["kind"] == "restore"
     assert body["namespace"] == "wip"
-    # Unreadable manifest → prefixes is empty, so namespaces falls back to the
-    # scalar namespace rather than staying blank (CASE-547).
+    # The manifest names one namespace (wip), so namespaces carries it (CASE-547
+    # populates the restore snapshot's namespace set from the manifest).
     assert body["namespaces"] == ["wip"]
     assert body["archive_size"] == len(payload)
     assert body["options"]["mode"] == "restore"
@@ -262,6 +283,40 @@ async def test_restore_rejects_invalid_mode(client: AsyncClient, auth_headers: d
 
 
 @pytest.mark.asyncio
+async def test_restore_refuses_a_malformed_archive_at_upload(
+    client: AsyncClient, auth_headers: dict
+):
+    """A malformed archive 400s synchronously at upload (CASE-783) rather than
+    minting a job that fails later in the engine. Not-a-zip → typed message."""
+    resp = await client.post(
+        "/api/document-store/backup/namespaces/wip/restore",
+        headers=auth_headers,
+        files={"archive": ("b.zip", b"not a zip at all", "application/zip")},
+        data={"mode": "restore"},
+    )
+    assert resp.status_code == 400
+    assert "not a valid archive" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_restore_refuses_an_archive_with_no_manifest(
+    client: AsyncClient, auth_headers: dict
+):
+    """A readable zip with no manifest.json also 400s at upload, named."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("terminologies.jsonl", "")
+    resp = await client.post(
+        "/api/document-store/backup/namespaces/wip/restore",
+        headers=auth_headers,
+        files={"archive": ("b.zip", buf.getvalue(), "application/zip")},
+        data={"mode": "restore"},
+    )
+    assert resp.status_code == 400
+    assert "manifest" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("dead_param", ["continue_on_error"])
 async def test_restore_rejects_toolkit_era_params(
     client: AsyncClient, auth_headers: dict, dead_param: str
@@ -331,7 +386,7 @@ async def test_restore_dry_run_reaches_the_runner(
         resp = await client.post(
             "/api/document-store/backup/namespaces/wip/restore",
             headers=auth_headers,
-            files={"archive": ("b.zip", b"PK\x03\x04x", "application/zip")},
+            files={"archive": ("b.zip", _valid_archive_bytes(), "application/zip")},
             data={"mode": "restore", "dry_run": "true"},
         )
 
@@ -367,7 +422,7 @@ async def test_merge_mode_forwards_its_policies_to_the_runner(
         resp = await client.post(
             "/api/document-store/backup/namespaces/wip/restore",
             headers=auth_headers,
-            files={"archive": ("b.zip", b"PK\x03\x04x", "application/zip")},
+            files={"archive": ("b.zip", _valid_archive_bytes(), "application/zip")},
             data={
                 "mode": "merge",
                 "on_clash": "overwrite",
@@ -421,7 +476,7 @@ async def test_extend_terminologies_reaches_the_runner(
         resp = await client.post(
             "/api/document-store/backup/namespaces/wip/restore",
             headers=auth_headers,
-            files={"archive": ("b.zip", b"PK\x03\x04x", "application/zip")},
+            files={"archive": ("b.zip", _valid_archive_bytes(), "application/zip")},
             data={"mode": "merge", "extend_terminologies": "true"},
         )
 

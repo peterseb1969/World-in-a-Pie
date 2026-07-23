@@ -6,7 +6,22 @@ See docs/design/wip-archive-split.md for the boundary rationale.
 """
 
 from .archive import ArchiveReader, ArchiveWriter
+from .exceptions import (
+    ArchiveError,
+    ManifestParseError,
+    MissingManifestError,
+    NotAnArchiveError,
+)
 from .models import Manifest
 from .remap import IDRemapper
 
-__all__ = ["ArchiveReader", "ArchiveWriter", "IDRemapper", "Manifest"]
+__all__ = [
+    "ArchiveError",
+    "ArchiveReader",
+    "ArchiveWriter",
+    "IDRemapper",
+    "Manifest",
+    "ManifestParseError",
+    "MissingManifestError",
+    "NotAnArchiveError",
+]

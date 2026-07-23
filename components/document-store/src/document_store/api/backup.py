@@ -181,11 +181,18 @@ async def _authorize_archive_restore(
     A pre-v3 archive is flat (no namespaces/ subtree), so the restore loop
     would read nothing, create the namespace, and report success — an empty
     namespace with no error. Reject it synchronously here, before any job
-    or namespace exists. Only an *unreadable* manifest falls through to the
-    fallback target (the engine fails on a truly broken archive later); a
-    readable non-v3 manifest is a caller error.
+    or namespace exists. A malformed archive (not a zip, no manifest,
+    unparseable manifest) likewise 400s here with a typed message, rather
+    than minting a job that fails later inside the engine. Only a genuinely
+    unexpected read error falls through to the fallback target; a readable
+    non-v3 manifest is a caller error.
     """
-    manifest = backup_service.read_archive_manifest(archive_path)
+    try:
+        manifest = backup_service.read_archive_manifest(archive_path)
+    except backup_service.ArchiveError as exc:
+        # GUARDRAIL 1: reference the type via backup_service (which owns the
+        # wip_archive import) rather than importing wip_archive here.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     prefixes: list[str] = []
     if manifest is not None:
