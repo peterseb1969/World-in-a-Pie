@@ -1,7 +1,12 @@
 """Universal entity ID resolution for WIP.
 
-Resolves human-readable identifiers (e.g., "STATUS", "PATIENT", "STATUS:approved")
-and verifies canonical IDs via the Registry's POST /resolve endpoint.
+Resolves human-readable identifiers (e.g., "STATUS", "PATIENT",
+"wip:STATUS:approved") and verifies canonical IDs via the Registry's
+POST /resolve endpoint. Term identifiers are strict: the fully qualified
+3-part form or the structured field form (resolve_term_by_fields) — the
+2-part "TERMINOLOGY:VALUE" shorthand is rejected at the API-door helpers
+in fastapi_helpers, because a value containing ':' is indistinguishable
+from it.
 
 **Every ID goes through Registry.** There is no format-based bypass.
 UUIDs are verified via ``entry_id`` lookup; synonyms are resolved via

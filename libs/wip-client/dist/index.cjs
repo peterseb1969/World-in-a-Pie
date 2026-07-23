@@ -413,8 +413,14 @@ var DefStoreService = class extends BaseService {
   async listTerms(terminologyId, params) {
     return this.get(`/terminologies/${terminologyId}/terms`, params);
   }
-  async getTerm(termId) {
-    return this.get(`/terms/${termId}`);
+  /**
+   * Term identifiers accept a canonical UUID, the fully qualified
+   * 'ns:terminology:value' form, or — with the terminology option set —
+   * the opaque raw term value (never colon-parsed). The ambiguous
+   * 2-part 'TERMINOLOGY:VALUE' shorthand is rejected (422).
+   */
+  async getTerm(termId, options) {
+    return this.get(`/terms/${termId}`, options);
   }
   async createTerm(terminologyId, data, options) {
     const resp = await this.post(
@@ -435,17 +441,28 @@ var DefStoreService = class extends BaseService {
   async createTerms(terminologyId, terms, options) {
     return this.post(`/terminologies/${terminologyId}/terms`, terms, options);
   }
-  async updateTerm(termId, data) {
-    return this.bulkWriteOne("/terms", { ...data, term_id: termId }, "PUT");
+  /**
+   * Term write identifiers accept a canonical UUID, the fully qualified
+   * 'ns:terminology:value' form, or — with the terminology option set —
+   * the opaque raw term value (never colon-parsed). The ambiguous
+   * 2-part 'TERMINOLOGY:VALUE' shorthand is rejected (422).
+   */
+  async updateTerm(termId, data, options) {
+    return this.bulkWriteOne("/terms", { ...data, term_id: termId }, "PUT", options);
   }
-  async deprecateTerm(termId, data) {
-    return this.bulkWriteOne("/terms/deprecate", { ...data, term_id: termId });
+  /**
+   * The terminology option scopes term_id AND replaced_by_term_id — a
+   * replacement lives in the same vocabulary; a cross-terminology
+   * pointer must be a UUID or fully qualified.
+   */
+  async deprecateTerm(termId, data, options) {
+    return this.bulkWriteOne("/terms/deprecate", { ...data, term_id: termId }, "POST", options);
   }
   async deleteTerm(termId, options) {
     return this.bulkWriteOne("/terms", {
       id: termId,
       hard_delete: options?.hardDelete
-    }, "DELETE");
+    }, "DELETE", { namespace: options?.namespace, terminology: options?.terminology });
   }
   // ---- Import/Export ----
   async importTerminology(data) {

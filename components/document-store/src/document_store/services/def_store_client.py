@@ -449,7 +449,9 @@ class DefStoreClient:
         Get a term by ID.
 
         Args:
-            term_id: Term ID (UUID or value code, e.g., '019abc42-...' or 'GENDER:Male')
+            term_id: Term ID — canonical UUID or fully qualified
+                'ns:terminology:value' (the 2-part 'GENDER:Male' shorthand
+                is rejected by def-store)
 
         Returns:
             Term data if found, None otherwise

@@ -361,8 +361,10 @@ POST /api/document-store/documents
 POST /api/document-store/documents
 {"template_id": "PATIENT", "data": {...}}
 
-# Term colon notation for term references
-# Resolves "STATUS:approved" to the canonical term ID
+# Term references are strict: the fully qualified 3-part form
+# "wip:STATUS:approved" or a terminology-scoped opaque value resolve to
+# the canonical term ID; the 2-part "STATUS:approved" shorthand is
+# rejected (a value containing ':' is indistinguishable from it)
 ```
 
 For the full design, see `docs/design/universal-synonym-resolution.md`.

@@ -83,8 +83,17 @@ export class DefStoreService extends BaseService {
     return this.get(`/terminologies/${terminologyId}/terms`, params)
   }
 
-  async getTerm(termId: string): Promise<Term> {
-    return this.get(`/terms/${termId}`)
+  /**
+   * Term identifiers accept a canonical UUID, the fully qualified
+   * 'ns:terminology:value' form, or — with the terminology option set —
+   * the opaque raw term value (never colon-parsed). The ambiguous
+   * 2-part 'TERMINOLOGY:VALUE' shorthand is rejected (422).
+   */
+  async getTerm(termId: string, options?: {
+    namespace?: string
+    terminology?: string
+  }): Promise<Term> {
+    return this.get(`/terms/${termId}`, options)
   }
 
   async createTerm(
@@ -116,19 +125,40 @@ export class DefStoreService extends BaseService {
     return this.post(`/terminologies/${terminologyId}/terms`, terms, options)
   }
 
-  async updateTerm(termId: string, data: UpdateTermRequest): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/terms', { ...data, term_id: termId }, 'PUT')
+  /**
+   * Term write identifiers accept a canonical UUID, the fully qualified
+   * 'ns:terminology:value' form, or — with the terminology option set —
+   * the opaque raw term value (never colon-parsed). The ambiguous
+   * 2-part 'TERMINOLOGY:VALUE' shorthand is rejected (422).
+   */
+  async updateTerm(termId: string, data: UpdateTermRequest, options?: {
+    namespace?: string
+    terminology?: string
+  }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terms', { ...data, term_id: termId }, 'PUT', options)
   }
 
-  async deprecateTerm(termId: string, data: DeprecateTermRequest): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/terms/deprecate', { ...data, term_id: termId })
+  /**
+   * The terminology option scopes term_id AND replaced_by_term_id — a
+   * replacement lives in the same vocabulary; a cross-terminology
+   * pointer must be a UUID or fully qualified.
+   */
+  async deprecateTerm(termId: string, data: DeprecateTermRequest, options?: {
+    namespace?: string
+    terminology?: string
+  }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terms/deprecate', { ...data, term_id: termId }, 'POST', options)
   }
 
-  async deleteTerm(termId: string, options?: { hardDelete?: boolean }): Promise<BulkResultItem> {
+  async deleteTerm(termId: string, options?: {
+    hardDelete?: boolean
+    namespace?: string
+    terminology?: string
+  }): Promise<BulkResultItem> {
     return this.bulkWriteOne('/terms', {
       id: termId,
       hard_delete: options?.hardDelete,
-    }, 'DELETE')
+    }, 'DELETE', { namespace: options?.namespace, terminology: options?.terminology })
   }
 
   // ---- Import/Export ----
@@ -218,6 +248,8 @@ export class DefStoreService extends BaseService {
     direction?: string
     relation_type?: string
     namespace?: string
+    /** Scopes a value-form term_id as the opaque raw value (never colon-parsed). */
+    terminology?: string
     page?: number
     page_size?: number
   }): Promise<TermRelationListResponse> {
@@ -245,6 +277,8 @@ export class DefStoreService extends BaseService {
   async getAncestors(termId: string, params?: {
     relation_type?: string
     namespace?: string
+    /** Scopes a value-form termId as the opaque raw value (never colon-parsed). */
+    terminology?: string
     max_depth?: number
   }): Promise<TraversalResponse> {
     return this.get(`/ontology/terms/${termId}/ancestors`, params)
@@ -253,6 +287,7 @@ export class DefStoreService extends BaseService {
   async getDescendants(termId: string, params?: {
     relation_type?: string
     namespace?: string
+    terminology?: string
     max_depth?: number
   }): Promise<TraversalResponse> {
     return this.get(`/ontology/terms/${termId}/descendants`, params)
@@ -261,6 +296,7 @@ export class DefStoreService extends BaseService {
   async getParents(termId: string, params?: {
     relation_type?: string
     namespace?: string
+    terminology?: string
   }): Promise<TermRelation[]> {
     return this.get(`/ontology/terms/${termId}/parents`, params)
   }
@@ -268,6 +304,7 @@ export class DefStoreService extends BaseService {
   async getChildren(termId: string, params?: {
     relation_type?: string
     namespace?: string
+    terminology?: string
   }): Promise<TermRelation[]> {
     return this.get(`/ontology/terms/${termId}/children`, params)
   }
@@ -284,6 +321,9 @@ export class DefStoreService extends BaseService {
 
   async getTermAuditLog(termId: string, params?: {
     action?: string
+    namespace?: string
+    /** Scopes a value-form termId as the opaque raw value (never colon-parsed). */
+    terminology?: string
     page?: number
     page_size?: number
   }): Promise<AuditLogResponse> {

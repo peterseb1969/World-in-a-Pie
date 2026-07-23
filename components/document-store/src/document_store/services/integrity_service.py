@@ -184,7 +184,8 @@ async def check_term_reference(
     Check if a term reference is valid.
 
     Args:
-        term_id: Term ID (UUID or value code, e.g., '019abc42-...' or 'GENDER:Male')
+        term_id: Term ID — canonical UUID as stored on the document (the
+            2-part 'GENDER:Male' shorthand is rejected by def-store)
         document: Document containing the reference
         field_path: Field path in the document
         issues: List to append issues to

@@ -338,8 +338,20 @@ interface TermRelation {
 }
 type TermRelationListResponse = PaginatedResponse<TermRelation>;
 interface CreateTermRelationRequest {
+    /**
+     * Canonical UUID, fully qualified 'ns:terminology:value', or — with
+     * source_terminology set — the opaque raw term value (never
+     * colon-parsed). The ambiguous 2-part 'TERMINOLOGY:VALUE' shorthand
+     * is rejected by the platform (422).
+     */
     source_term_id: string;
     target_term_id: string;
+    /**
+     * Terminology scoping a value-form source_term_id. Per-item because a
+     * relation's two endpoints may live in different terminologies.
+     */
+    source_terminology?: string;
+    target_terminology?: string;
     relation_type: string;
     metadata?: Record<string, unknown>;
     created_by?: string;
@@ -347,6 +359,8 @@ interface CreateTermRelationRequest {
 interface DeleteTermRelationRequest {
     source_term_id: string;
     target_term_id: string;
+    source_terminology?: string;
+    target_terminology?: string;
     relation_type: string;
     hard_delete?: boolean;
 }
@@ -390,7 +404,16 @@ declare class DefStoreService extends BaseService {
         search?: string;
         namespace?: string;
     }): Promise<TermListResponse>;
-    getTerm(termId: string): Promise<Term>;
+    /**
+     * Term identifiers accept a canonical UUID, the fully qualified
+     * 'ns:terminology:value' form, or — with the terminology option set —
+     * the opaque raw term value (never colon-parsed). The ambiguous
+     * 2-part 'TERMINOLOGY:VALUE' shorthand is rejected (422).
+     */
+    getTerm(termId: string, options?: {
+        namespace?: string;
+        terminology?: string;
+    }): Promise<Term>;
     createTerm(terminologyId: string, data: CreateTermRequest, options: {
         namespace: string;
     }): Promise<BulkResultItem>;
@@ -399,10 +422,29 @@ declare class DefStoreService extends BaseService {
         batch_size?: number;
         registry_batch_size?: number;
     }): Promise<BulkResponse>;
-    updateTerm(termId: string, data: UpdateTermRequest): Promise<BulkResultItem>;
-    deprecateTerm(termId: string, data: DeprecateTermRequest): Promise<BulkResultItem>;
+    /**
+     * Term write identifiers accept a canonical UUID, the fully qualified
+     * 'ns:terminology:value' form, or — with the terminology option set —
+     * the opaque raw term value (never colon-parsed). The ambiguous
+     * 2-part 'TERMINOLOGY:VALUE' shorthand is rejected (422).
+     */
+    updateTerm(termId: string, data: UpdateTermRequest, options?: {
+        namespace?: string;
+        terminology?: string;
+    }): Promise<BulkResultItem>;
+    /**
+     * The terminology option scopes term_id AND replaced_by_term_id — a
+     * replacement lives in the same vocabulary; a cross-terminology
+     * pointer must be a UUID or fully qualified.
+     */
+    deprecateTerm(termId: string, data: DeprecateTermRequest, options?: {
+        namespace?: string;
+        terminology?: string;
+    }): Promise<BulkResultItem>;
     deleteTerm(termId: string, options?: {
         hardDelete?: boolean;
+        namespace?: string;
+        terminology?: string;
     }): Promise<BulkResultItem>;
     importTerminology(data: ImportTerminologyRequest): Promise<{
         terminology: Terminology;
@@ -464,6 +506,8 @@ declare class DefStoreService extends BaseService {
         direction?: string;
         relation_type?: string;
         namespace?: string;
+        /** Scopes a value-form term_id as the opaque raw value (never colon-parsed). */
+        terminology?: string;
         page?: number;
         page_size?: number;
     }): Promise<TermRelationListResponse>;
@@ -479,20 +523,25 @@ declare class DefStoreService extends BaseService {
     getAncestors(termId: string, params?: {
         relation_type?: string;
         namespace?: string;
+        /** Scopes a value-form termId as the opaque raw value (never colon-parsed). */
+        terminology?: string;
         max_depth?: number;
     }): Promise<TraversalResponse>;
     getDescendants(termId: string, params?: {
         relation_type?: string;
         namespace?: string;
+        terminology?: string;
         max_depth?: number;
     }): Promise<TraversalResponse>;
     getParents(termId: string, params?: {
         relation_type?: string;
         namespace?: string;
+        terminology?: string;
     }): Promise<TermRelation[]>;
     getChildren(termId: string, params?: {
         relation_type?: string;
         namespace?: string;
+        terminology?: string;
     }): Promise<TermRelation[]>;
     getTerminologyAuditLog(terminologyId: string, params?: {
         action?: string;
@@ -501,6 +550,9 @@ declare class DefStoreService extends BaseService {
     }): Promise<AuditLogResponse>;
     getTermAuditLog(termId: string, params?: {
         action?: string;
+        namespace?: string;
+        /** Scopes a value-form termId as the opaque raw value (never colon-parsed). */
+        terminology?: string;
         page?: number;
         page_size?: number;
     }): Promise<AuditLogResponse>;

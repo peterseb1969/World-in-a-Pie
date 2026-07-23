@@ -211,7 +211,8 @@ async def get_term(
     ),
     identity: UserIdentity = Depends(require_api_key)
 ) -> TermResponse:
-    """Get a term by its ID or synonym (e.g., "STATUS:approved")."""
+    """Get a term by canonical UUID, fully qualified 'ns:terminology:value',
+    or — with terminology= — the opaque raw value (never colon-parsed)."""
     if terminology is not None:
         # Field-form door: the identifier is the raw value, uninterpreted
         term_id = await resolve_term_by_fields_or_404(
