@@ -191,6 +191,13 @@ class WipClient:
     def get(self, path: str, **kw: Any) -> Any:
         return self.request("GET", path, **kw)
 
+    def get_bytes(self, path: str, *, params: dict[str, Any] | None = None) -> bytes:
+        """GET returning the raw response body (for archive downloads)."""
+        resp = self._client.request("GET", path, params=params)
+        if resp.status_code >= 300:
+            raise ApiError("GET", path, resp.status_code, resp.text)
+        return resp.content
+
     def post(self, path: str, **kw: Any) -> Any:
         return self.request("POST", path, **kw)
 
