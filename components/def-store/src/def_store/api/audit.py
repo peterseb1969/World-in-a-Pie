@@ -1,14 +1,15 @@
 """Audit log API endpoints for the Def-Store service."""
 
 
-from fastapi import APIRouter, Depends, Query
 from beanie.odm.enums import SortDirection
+from fastapi import APIRouter, Depends, Query
 
 from wip_auth import (
     UserIdentity,
     check_namespace_permission,
     resolve_accessible_namespaces,
     resolve_or_404,
+    resolve_term_by_fields_or_404,
 )
 
 from ..models.api_models import AuditLogEntry, AuditLogResponse
@@ -44,10 +45,23 @@ async def get_term_audit_log(
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology scoping a value-form term identifier. When "
+                    "present, the identifier is treated as the OPAQUE raw value "
+                    "(never colon-parsed) — required for values that themselves "
+                    "contain ':' (OBO ids like GO:0000278).",
+    ),
     identity: UserIdentity = Depends(require_api_key)
 ) -> AuditLogResponse:
     """Get audit log entries for a specific term."""
-    term_id = await resolve_or_404(term_id, "term", namespace=namespace, param_name="term_id")
+    if terminology is not None:
+        # Field-form door: the identifier is the raw value, uninterpreted
+        term_id = await resolve_term_by_fields_or_404(
+            term_id, terminology, namespace, param_name="term_id"
+        )
+    else:
+        term_id = await resolve_or_404(term_id, "term", namespace=namespace, param_name="term_id")
 
     # CASE-384 follow-up — audit logs are sensitive: they expose change
     # history including previous_values + new_values. Gate by read on

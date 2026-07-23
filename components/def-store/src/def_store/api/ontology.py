@@ -49,9 +49,18 @@ async def create_term_relations(
     """
     await check_namespace_permission(identity, namespace, "write")
 
-    # Resolve term synonyms in bulk
-    await resolve_bulk_ids(items, "source_term_id", "term", namespace)
-    await resolve_bulk_ids(items, "target_term_id", "term", namespace)
+    # Write door: an endpoint id selects what the new edge connects, so
+    # resolution must ask Registry, not the read cache. Items carrying
+    # source_terminology / target_terminology resolve their id as an
+    # opaque value through the field door.
+    await resolve_bulk_ids(
+        items, "source_term_id", "term", namespace,
+        terminology_field="source_terminology", bypass_cache=True,
+    )
+    await resolve_bulk_ids(
+        items, "target_term_id", "term", namespace,
+        terminology_field="target_terminology", bypass_cache=True,
+    )
 
     results = await OntologyService.create_term_relations(namespace, items)
     succeeded = sum(1 for r in results if r.status == "created")
@@ -128,9 +137,17 @@ async def delete_term_relations(
     """
     await check_namespace_permission(identity, namespace, "write")
 
-    # Resolve term IDs in delete items
-    await resolve_bulk_ids(items, "source_term_id", "term", namespace)
-    await resolve_bulk_ids(items, "target_term_id", "term", namespace)
+    # Write door: the resolved pair selects which edge gets deleted —
+    # resolution must ask Registry, not the read cache. Field-scoped
+    # items resolve their id as an opaque value.
+    await resolve_bulk_ids(
+        items, "source_term_id", "term", namespace,
+        terminology_field="source_terminology", bypass_cache=True,
+    )
+    await resolve_bulk_ids(
+        items, "target_term_id", "term", namespace,
+        terminology_field="target_terminology", bypass_cache=True,
+    )
 
     results = await OntologyService.delete_term_relations(namespace, items)
     succeeded = sum(1 for r in results if r.status in ("deleted", "skipped"))

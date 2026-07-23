@@ -879,13 +879,14 @@ class TestFieldFormTraversal:
         child = await create_term(client, auth_headers, tid, "GO:0000228")
         await create_relation(client, auth_headers, child, parent, "is_a")
 
-        # String shorthand cannot address the colon value — bare form 404s
+        # The 2-part shorthand is ambiguous and rejected outright — the
+        # 422 names the field form as the remediation.
         bare = await client.get(
             f"{API}/ontology/terms/GO:0000228/ancestors",
             params={"namespace": "wip", "relation_type": "is_a"},
             headers=auth_headers,
         )
-        assert bare.status_code == 404
+        assert bare.status_code == 422
         assert "terminology=" in bare.json()["detail"]
 
         # Field form resolves the same value and traverses

@@ -238,11 +238,25 @@ async def get_term(
 async def update_terms(
     items: list[UpdateTermItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology scoping value-form term identifiers. When "
+                    "present, every non-UUID term_id in the batch is treated "
+                    "as the OPAQUE raw value (never colon-parsed) — required "
+                    "for values that themselves contain ':' (OBO ids like "
+                    "GO:0000278). The ambiguous 2-part 'TERMINOLOGY:VALUE' "
+                    "shorthand is rejected on this endpoint.",
+    ),
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """Update one or more terms."""
     from wip_auth import resolve_bulk_ids
-    await resolve_bulk_ids(items, "term_id", "term", namespace=namespace)
+    # Write door: resolution must ask Registry, not the read cache — the
+    # resolved id selects which term the mutation lands on.
+    await resolve_bulk_ids(
+        items, "term_id", "term", namespace=namespace,
+        terminology=terminology, bypass_cache=True,
+    )
 
     # CASE-384 — batched namespace lookup + permission check.
     from ..models.term import Term as _Term
@@ -282,6 +296,17 @@ async def update_terms(
 async def deprecate_terms(
     items: list[DeprecateTermItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology scoping value-form term identifiers — "
+                    "applies to term_id AND replaced_by_term_id (a "
+                    "deprecation's replacement lives in the same vocabulary; "
+                    "a cross-terminology pointer must use a UUID or the "
+                    "fully qualified 'ns:terminology:value' form). When "
+                    "present, non-UUID identifiers are treated as OPAQUE "
+                    "raw values (never colon-parsed). The ambiguous 2-part "
+                    "'TERMINOLOGY:VALUE' shorthand is rejected.",
+    ),
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """
@@ -291,8 +316,17 @@ async def deprecate_terms(
     Optionally specify a replacement term per item.
     """
     from wip_auth import resolve_bulk_ids
-    await resolve_bulk_ids(items, "term_id", "term", namespace=namespace)
-    await resolve_bulk_ids(items, "replaced_by_term_id", "term", namespace=namespace)
+    # Write door: bypass the read cache — replaced_by_term_id is persisted
+    # as a durable pointer, and a stale cached id would pin a dead
+    # reference into the term record.
+    await resolve_bulk_ids(
+        items, "term_id", "term", namespace=namespace,
+        terminology=terminology, bypass_cache=True,
+    )
+    await resolve_bulk_ids(
+        items, "replaced_by_term_id", "term", namespace=namespace,
+        terminology=terminology, bypass_cache=True,
+    )
 
     # CASE-384 — batched namespace lookup + permission check.
     from ..models.term import Term as _Term
@@ -330,11 +364,24 @@ async def deprecate_terms(
 async def delete_terms(
     items: list[DeleteItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology scoping value-form term identifiers. When "
+                    "present, every non-UUID id in the batch is treated as "
+                    "the OPAQUE raw value (never colon-parsed). The "
+                    "ambiguous 2-part 'TERMINOLOGY:VALUE' shorthand is "
+                    "rejected on this endpoint.",
+    ),
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """Soft-delete one or more terms (set status to inactive)."""
     from wip_auth import resolve_bulk_ids
-    await resolve_bulk_ids(items, "id", "term", namespace=namespace)
+    # Write door: resolution must ask Registry, not the read cache — the
+    # resolved id selects which term gets deleted.
+    await resolve_bulk_ids(
+        items, "id", "term", namespace=namespace,
+        terminology=terminology, bypass_cache=True,
+    )
 
     # CASE-384 — batched namespace lookup + permission check.
     from ..models.term import Term as _Term
