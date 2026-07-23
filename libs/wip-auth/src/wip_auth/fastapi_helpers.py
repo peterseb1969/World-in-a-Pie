@@ -29,6 +29,43 @@ from .resolve import (
 logger = logging.getLogger(__name__)
 
 
+def _reject_ambiguous_term_form(raw_id: str, param_name: str | None) -> None:
+    """Reject the lossy 2-part ``TERMINOLOGY:VALUE`` term shorthand with 422.
+
+    A term's identity is the tuple (namespace, terminology, value). The
+    2-part colon shorthand is a lossy serialization of it: no parser can
+    tell a structural colon from a colon inside the value (OBO ids like
+    ``GO:0000278``), so a 2-part string can silently resolve to a term in
+    a decoy terminology — on a write door, that mutates the wrong entity.
+    Term doors therefore accept only the unambiguous forms: canonical
+    UUID, fully qualified ``ns:terminology:value`` (split on the first two
+    colons, so the value keeps any colons it contains), or structured
+    fields (a ``terminology`` scope with the raw value passed opaque).
+
+    Called for every term identifier that resolves WITHOUT a terminology
+    scope. Identifiers under a terminology scope are opaque values and are
+    never colon-parsed, so no rejection applies there.
+    """
+    if _looks_like_uuid(raw_id):
+        return
+    if ":" not in raw_id:
+        return
+    if len(raw_id.split(":", 2)) == 2:
+        label = param_name or "term"
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Ambiguous term identifier '{raw_id}' for {label}: the "
+                "2-part 'TERMINOLOGY:VALUE' shorthand is not accepted — a "
+                "value that itself contains ':' (e.g. OBO ids like "
+                "GO:0000278) cannot be distinguished from it. Use the "
+                "canonical UUID, the fully qualified "
+                "'ns:terminology:value' form, or pass terminology= "
+                "separately with the raw value."
+            ),
+        )
+
+
 def _derive_namespace_from_identity() -> str | None:
     """Derive namespace from the current identity's scope.
 
@@ -81,8 +118,14 @@ async def resolve_or_404(
     Raises:
         HTTPException(404): When the identifier cannot be resolved.
         HTTPException(422): When ``strict`` and the identifier is a non-UUID
-            value with no namespace context to resolve it against.
+            value with no namespace context to resolve it against; or when
+            the identifier is a term in the ambiguous 2-part colon form
+            (see ``_reject_ambiguous_term_form`` — term doors accept only
+            UUID, ``ns:terminology:value``, or field form).
     """
+    if entity_type == "term":
+        _reject_ambiguous_term_form(raw_id, param_name)
+
     if namespace is None:
         namespace = _derive_namespace_from_identity()
 
@@ -114,17 +157,6 @@ async def resolve_or_404(
     except EntityNotFoundError:
         label = param_name or entity_type
         detail = f"Could not resolve {label} '{raw_id}' in namespace '{namespace}'"
-        if entity_type == "term" and ":" in raw_id and len(raw_id.split(":", 2)) < 3:
-            # The bare and 2-part colon forms mis-parse any VALUE that itself
-            # contains ':' (OBO ids: GO:, CHEBI:, ...) — the parser cannot
-            # tell a structural colon from a data colon. Point at the two
-            # lossless doors instead of failing bare.
-            detail += (
-                ". If the term VALUE itself contains ':', the shorthand "
-                "cannot parse it — use the fully qualified form "
-                f"'{namespace}:<terminology>:{raw_id}', or pass "
-                "terminology= separately with the raw value."
-            )
         raise HTTPException(status_code=404, detail=detail) from None
 
 
@@ -171,6 +203,10 @@ async def resolve_bulk_ids(
     id_field: str,
     entity_type: str,
     namespace: str | None,
+    *,
+    bypass_cache: bool = False,
+    terminology: str | None = None,
+    terminology_field: str | None = None,
 ) -> None:
     """Batch-resolve IDs on bulk request items, mutating in place.
 
@@ -179,7 +215,9 @@ async def resolve_bulk_ids(
 
     Resolution failures are logged but do not raise — the downstream
     service will handle the unresolved ID (typically returning per-item errors
-    in the BulkResponse).
+    in the BulkResponse). The exception is the ambiguous 2-part term
+    shorthand, which is a request-shape error and raises 422 for the whole
+    request (like a body-validation failure), before any item resolves.
 
     Args:
         items: List of request items (Pydantic models or dicts).
@@ -187,19 +225,53 @@ async def resolve_bulk_ids(
         entity_type: Entity type for resolution.
         namespace: Namespace for resolution. Per-item namespace is used if
             the item has a ``namespace`` attribute and ``namespace`` is None.
+        bypass_cache: Skip the resolution-cache read and always ask
+            Registry. REQUIRED on write doors: a resolved ID that will be
+            persisted (a deprecation's replacement pointer, a relation's
+            endpoints) must not come from a stale cache entry — answering
+            writes from the cache pins dead IDs into durable state. Reads
+            keep the default (cache on).
+        terminology: Call-scoped terminology for term resolution. When set,
+            every non-UUID identifier is treated as the OPAQUE raw term
+            value (never colon-parsed) and resolves through the structured
+            field door — required for values that themselves contain ':'.
+        terminology_field: Name of a per-item attribute carrying the
+            terminology scope (for request shapes where each item scopes
+            itself, e.g. a relation's ``source_terminology``). An item
+            without the attribute set falls back to the string path.
     """
     # Derive namespace from identity if not provided
     if namespace is None:
         namespace = _derive_namespace_from_identity()
 
-    for item in items:
-        # Get the raw ID
+    def _item_context(item: object) -> tuple[str | None, str | None, str | None]:
         if isinstance(item, dict):
             raw_id = item.get(id_field)
             item_ns = namespace or item.get("namespace")
+            item_terminology = terminology or (
+                item.get(terminology_field) if terminology_field else None
+            )
         else:
             raw_id = getattr(item, id_field, None)
             item_ns = namespace or getattr(item, "namespace", None)
+            item_terminology = terminology or (
+                getattr(item, terminology_field, None) if terminology_field else None
+            )
+        return raw_id, item_ns, item_terminology
+
+    # Form-validation pre-pass: a request-shape error must reject the
+    # request before ANY item resolves — otherwise earlier items reach
+    # Registry (and populate the cache) for a request that then 422s.
+    # Ambiguity is a property of the identifier's form, not the namespace,
+    # so this fires even for items whose resolution would be skipped.
+    if entity_type == "term":
+        for item in items:
+            raw_id, _, item_terminology = _item_context(item)
+            if raw_id and not item_terminology:
+                _reject_ambiguous_term_form(raw_id, id_field)
+
+    for item in items:
+        raw_id, item_ns, item_terminology = _item_context(item)
 
         if not raw_id:
             continue
@@ -213,7 +285,15 @@ async def resolve_bulk_ids(
             continue
 
         try:
-            resolved = await resolve_entity_id(raw_id, entity_type, item_ns)
+            if item_terminology and not _looks_like_uuid(raw_id):
+                # Field door: the identifier is the raw value, uninterpreted.
+                resolved = await resolve_term_by_fields(
+                    raw_id, item_terminology, item_ns, bypass_cache=bypass_cache,
+                )
+            else:
+                resolved = await resolve_entity_id(
+                    raw_id, entity_type, item_ns, bypass_cache=bypass_cache,
+                )
             if isinstance(item, dict):
                 item[id_field] = resolved
             else:

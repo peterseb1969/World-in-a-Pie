@@ -13,9 +13,10 @@ Contract under test:
     travels uninterpreted, colons included.
   - Misses raise EntityNotFoundError; results are cached under a
     field-form key distinct from the string-form cache.
-  - resolve_or_404's 404 for a colon-carrying bare/2-part term identifier
-    names the two lossless doors (fully qualified form / terminology=)
-    instead of failing bare.
+  - The 2-part form no longer reaches resolution at all: term doors
+    reject it upfront with 422 (strict enforcement, covered in
+    test_case_778.py). The lossless forms — 3-part qualified, bare
+    colon-free, UUID — resolve normally and miss with a plain 404.
 """
 
 import json
@@ -81,21 +82,9 @@ class TestResolveTermByFields:
         assert len(httpx_mock.get_requests()) == 1
 
 
-class TestColonMissGuard:
+class TestLosslessFormMisses:
     @pytest.mark.asyncio
-    async def test_bare_colon_value_miss_names_the_lossless_doors(self, httpx_mock):
-        httpx_mock.add_response(
-            url=RESOLVE_URL,
-            json={"results": [{"status": "not_found"}]},
-        )
-        with pytest.raises(HTTPException) as exc:
-            await resolve_or_404("GO:0000278", "term", "onto2", param_name="term_id")
-        assert exc.value.status_code == 404
-        assert "onto2:<terminology>:GO:0000278" in exc.value.detail
-        assert "terminology=" in exc.value.detail
-
-    @pytest.mark.asyncio
-    async def test_qualified_form_miss_gets_no_hint(self, httpx_mock):
+    async def test_qualified_form_miss_is_plain_not_found(self, httpx_mock):
         """The 3-part form is lossless — its miss is a genuine not-found."""
         httpx_mock.add_response(
             url=RESOLVE_URL,
@@ -106,10 +95,10 @@ class TestColonMissGuard:
                 "onto2:GO_SLIM:GO:9999999", "term", "onto2", param_name="term_id"
             )
         assert exc.value.status_code == 404
-        assert "shorthand cannot parse" not in exc.value.detail
+        assert "shorthand" not in exc.value.detail
 
     @pytest.mark.asyncio
-    async def test_colon_free_miss_gets_no_hint(self, httpx_mock):
+    async def test_colon_free_miss_is_plain_not_found(self, httpx_mock):
         httpx_mock.add_response(
             url=RESOLVE_URL,
             json={"results": [{"status": "not_found"}]},
