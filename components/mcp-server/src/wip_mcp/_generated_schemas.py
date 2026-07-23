@@ -7,13 +7,88 @@ Regenerate with: python -m scripts.generate_schemas [--fetch]
 TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'properties': {'source_term_id': {'type': 'string',
                                                                            'description': 'The '
                                                                                           'subject '
+                                                                                          'term: '
+                                                                                          'canonical '
+                                                                                          'UUID, '
+                                                                                          'fully '
+                                                                                          'qualified '
+                                                                                          "'ns:terminology:value', "
+                                                                                          'or — '
+                                                                                          'with '
+                                                                                          'source_terminology '
+                                                                                          'set — '
+                                                                                          'the '
+                                                                                          'OPAQUE '
+                                                                                          'raw '
                                                                                           'term '
-                                                                                          'ID'},
+                                                                                          'value '
+                                                                                          '(never '
+                                                                                          'colon-parsed). '
+                                                                                          'The '
+                                                                                          'ambiguous '
+                                                                                          '2-part '
+                                                                                          "'TERMINOLOGY:VALUE' "
+                                                                                          'shorthand '
+                                                                                          'is '
+                                                                                          'rejected.'},
                                                         'target_term_id': {'type': 'string',
                                                                            'description': 'The '
                                                                                           'object '
-                                                                                          'term '
-                                                                                          'ID'},
+                                                                                          'term; '
+                                                                                          'same '
+                                                                                          'accepted '
+                                                                                          'forms '
+                                                                                          'as '
+                                                                                          'source_term_id, '
+                                                                                          'scoped '
+                                                                                          'by '
+                                                                                          'target_terminology.'},
+                                                        'source_terminology': {'type': 'string',
+                                                                               'description': 'Terminology '
+                                                                                              'scoping '
+                                                                                              'a '
+                                                                                              'value-form '
+                                                                                              'source_term_id. '
+                                                                                              'When '
+                                                                                              'set, '
+                                                                                              'source_term_id '
+                                                                                              'is '
+                                                                                              'treated '
+                                                                                              'as '
+                                                                                              'the '
+                                                                                              'raw '
+                                                                                              'value '
+                                                                                              '— '
+                                                                                              'required '
+                                                                                              'for '
+                                                                                              'values '
+                                                                                              'that '
+                                                                                              'themselves '
+                                                                                              'contain '
+                                                                                              "':' "
+                                                                                              '(OBO '
+                                                                                              'ids '
+                                                                                              'like '
+                                                                                              'GO:0000278). '
+                                                                                              'Per-item '
+                                                                                              'because '
+                                                                                              'a '
+                                                                                              "relation's "
+                                                                                              'two '
+                                                                                              'endpoints '
+                                                                                              'may '
+                                                                                              'live '
+                                                                                              'in '
+                                                                                              'different '
+                                                                                              'terminologies.'},
+                                                        'target_terminology': {'type': 'string',
+                                                                               'description': 'Terminology '
+                                                                                              'scoping '
+                                                                                              'a '
+                                                                                              'value-form '
+                                                                                              'target_term_id '
+                                                                                              '(see '
+                                                                                              'source_terminology).'},
                                                         'relation_type': {'type': 'string',
                                                                           'description': 'Relation '
                                                                                          'type '
@@ -1885,8 +1960,10 @@ Use source_term_id (subject) and target_term_id (object).
 Example: "Lung cancer" --is_a--> "Cancer"
 
 Fields (from OpenAPI — these are the exact field names):
-source_term_id (string, REQUIRED): The subject term ID
-target_term_id (string, REQUIRED): The object term ID
+source_term_id (string, REQUIRED): The subject term: canonical UUID, fully qualified 'ns:terminology:value', or — with source_terminology set — the OPAQUE raw term value (never colon-parsed). The ambiguous 2-part 'TERMINOLOGY:VALUE' shorthand is rejected.
+target_term_id (string, REQUIRED): The object term; same accepted forms as source_term_id, scoped by target_terminology.
+source_terminology (string): Terminology scoping a value-form source_term_id. When set, source_term_id is treated as the raw value — required for values that themselves contain ':' (OBO ids like GO:0000278). Per-item because a relation's two endpoints may live in different terminologies.
+target_terminology (string): Terminology scoping a value-form target_term_id (see source_terminology).
 relation_type (string, REQUIRED): Relation type value (e.g., 'is_a', 'part_of')
 metadata (object): Provenance, confidence, OWL axioms
 created_by (string): User or system creating this relation""",

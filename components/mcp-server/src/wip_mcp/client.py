@@ -656,27 +656,35 @@ class WipClient:
         )
         return self._unwrap_bulk(resp)
 
-    async def update_term(self, term_id: str, updates: dict, namespace: str | None = None) -> dict:
+    async def update_term(
+        self, term_id: str, updates: dict, namespace: str | None = None,
+        terminology: str | None = None,
+    ) -> dict:
         item = {"term_id": term_id, **updates}
         resp = await self._put(
             self.def_store_url, "/api/def-store/terms", json=[item],
             namespace=namespace or self.default_namespace,
+            terminology=terminology,
         )
         return self._unwrap_single(resp)
 
-    async def delete_term(self, term_id: str, hard_delete: bool = False, namespace: str | None = None) -> dict:
+    async def delete_term(
+        self, term_id: str, hard_delete: bool = False, namespace: str | None = None,
+        terminology: str | None = None,
+    ) -> dict:
         item: dict[str, Any] = {"id": term_id}
         if hard_delete:
             item["hard_delete"] = True
         resp = await self._delete(
             self.def_store_url, "/api/def-store/terms", json=[item],
             namespace=namespace or self.default_namespace,
+            terminology=terminology,
         )
         return self._unwrap_single(resp)
 
     async def deprecate_term(
         self, term_id: str, reason: str, replaced_by_term_id: str | None = None,
-        namespace: str | None = None,
+        namespace: str | None = None, terminology: str | None = None,
     ) -> dict:
         item: dict[str, Any] = {"term_id": term_id, "reason": reason}
         if replaced_by_term_id:
@@ -684,6 +692,7 @@ class WipClient:
         resp = await self._post(
             self.def_store_url, "/api/def-store/terms/deprecate", json=[item],
             namespace=namespace or self.default_namespace,
+            terminology=terminology,
         )
         return self._unwrap_single(resp)
 

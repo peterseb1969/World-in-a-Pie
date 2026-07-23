@@ -246,6 +246,22 @@ The same create_document tool handles both — it's an upsert.
 ### Terms
 - (namespace, terminology_id, value) — unique within terminology
 
+### Term Addressing Is Strict
+A term's identity is the tuple (namespace, terminology, value). Wherever a
+term identifier is expected, exactly three forms are accepted:
+- the canonical UUID
+- the fully qualified 'ns:terminology:value' string (split on the first
+  two colons, so the value keeps any colons it contains)
+- the field form: a `terminology` parameter scoping the raw value, which
+  is then treated as OPAQUE and never colon-parsed
+
+The 2-part 'TERMINOLOGY:VALUE' shorthand is REJECTED with 422 on every
+term endpoint, reads and writes alike: a value that itself contains ':'
+(OBO ids like GO:0000278) is indistinguishable from it, so the shorthand
+can silently select a term in the wrong terminology. Prefer the field
+form when addressing terms by value. This is a term-specific carve-out —
+other entity types keep their 'NS:VALUE' qualified form.
+
 ## Namespaces & Authorization
 
 All entities are scoped to a namespace.
@@ -354,6 +370,11 @@ A terminology is a controlled vocabulary (e.g., COUNTRY, GENDER, DIAGNOSIS_CODE)
 A term is an entry in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).
 - Fields: value (unique within terminology), label, aliases, description
 - Terms can have ontology relations (see Ontology section below)
+- Addressing: term identifiers accept a canonical UUID, the fully
+  qualified 'ns:terminology:value' form, or a terminology-scoped opaque
+  value (field form). The 2-part 'TERMINOLOGY:VALUE' shorthand is
+  rejected on all term endpoints — see the conventions resource,
+  "Term Addressing Is Strict".
 - Documents store both the original value AND the resolved term_id
 - Inactive terms are rejected in new documents (enforced by validation)
 
@@ -1631,17 +1652,18 @@ async def list_terms(
 async def get_term(
     term_id: str, namespace: str | None = None, terminology: str | None = None
 ) -> str:
-    """Get a term by ID, value (e.g., 'STATUS:approved'), or synonym.
+    """Get a term by canonical UUID, qualified value, or field form.
 
     Args:
-        term_id: Term ID, value, or synonym. With terminology set, this is
-            the OPAQUE raw value — never colon-parsed.
+        term_id: Canonical UUID, fully qualified 'ns:terminology:value',
+            or — with terminology set — the OPAQUE raw term value (never
+            colon-parsed). The 2-part 'TERMINOLOGY:VALUE' shorthand is
+            rejected (422): a value that itself contains ':' (OBO ids
+            like GO:0000278) cannot be distinguished from it.
         namespace: Namespace for value/synonym resolution (required with
             multi-namespace or privileged keys; single-namespace keys derive it).
-        terminology: Terminology scoping a value-form identifier. REQUIRED
-            for values that themselves contain ':' (OBO ids like
-            GO:0000278) — the 'TERMINOLOGY:VALUE' shorthand mis-parses
-            those; prefer this field form for any colon-carrying vocabulary.
+        terminology: Terminology scoping a value-form identifier — the
+            preferred way to address a term by value.
     """
     try:
         data = await get_client().get_term(
@@ -1711,15 +1733,22 @@ async def update_term(
     description: str | None = None,
     sort_order: int | None = None,
     namespace: str | None = None,
+    terminology: str | None = None,
 ) -> str:
     """Update a term's label, aliases, description, or sort order.
 
     Args:
-        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
+        term_id: Canonical UUID, fully qualified 'ns:terminology:value',
+            or — with terminology set — the OPAQUE raw term value (never
+            colon-parsed). The ambiguous 2-part 'TERMINOLOGY:VALUE'
+            shorthand is rejected (422) on write doors: it could silently
+            select the wrong term when the value contains ':'.
         label: New label (optional).
         aliases: New aliases list (optional). Replaces existing aliases.
         description: New description (optional).
         sort_order: New sort order (optional).
+        terminology: Terminology scoping a value-form term_id — the
+            preferred way to address a term by value.
     """
     try:
         updates: dict = {}
@@ -1733,7 +1762,9 @@ async def update_term(
             updates["sort_order"] = sort_order
         if not updates:
             return "Error: Provide at least one field to update."
-        data = await get_client().update_term(term_id, updates, namespace=namespace)
+        data = await get_client().update_term(
+            term_id, updates, namespace=namespace, terminology=terminology,
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1742,6 +1773,7 @@ async def update_term(
 @mcp.tool()
 async def delete_term(
     term_id: str, hard_delete: bool = False, namespace: str | None = None,
+    terminology: str | None = None,
 ) -> str:
     """Delete a term. Soft-delete (deactivate) by default.
     Terms in mutable terminologies are always hard-deleted.
@@ -1749,12 +1781,19 @@ async def delete_term(
     (requires namespace deletion_mode='full').
 
     Args:
-        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
+        term_id: Canonical UUID, fully qualified 'ns:terminology:value',
+            or — with terminology set — the OPAQUE raw term value (never
+            colon-parsed). The ambiguous 2-part 'TERMINOLOGY:VALUE'
+            shorthand is rejected (422) on write doors: it could silently
+            delete the wrong term when the value contains ':'.
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
+        terminology: Terminology scoping a value-form term_id — the
+            preferred way to address a term by value.
     """
     try:
         data = await get_client().delete_term(
             term_id, hard_delete=hard_delete, namespace=namespace,
+            terminology=terminology,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1767,6 +1806,7 @@ async def deprecate_term(
     reason: str,
     replaced_by_term_id: str | None = None,
     namespace: str | None = None,
+    terminology: str | None = None,
 ) -> str:
     """Deprecate a term with a reason and optional replacement pointer.
 
@@ -1775,15 +1815,23 @@ async def deprecate_term(
     has been replaced by a better term.
 
     Args:
-        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
+        term_id: Canonical UUID, fully qualified 'ns:terminology:value',
+            or — with terminology set — the OPAQUE raw term value (never
+            colon-parsed). The ambiguous 2-part 'TERMINOLOGY:VALUE'
+            shorthand is rejected (422) on write doors.
         reason: Reason for deprecation (e.g., 'Merged with COUNTRY').
-        replaced_by_term_id: Replacement term ID, value, or synonym (optional).
+        replaced_by_term_id: Replacement term (optional); same accepted
+            forms as term_id. The terminology scope applies to it too —
+            a replacement in a DIFFERENT terminology must be a UUID or
+            fully qualified.
+        terminology: Terminology scoping value-form identifiers — the
+            preferred way to address terms by value.
     """
     try:
         data = await get_client().deprecate_term(
             term_id=term_id, reason=reason,
             replaced_by_term_id=replaced_by_term_id,
-            namespace=namespace,
+            namespace=namespace, terminology=terminology,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1807,10 +1855,10 @@ async def get_term_hierarchy(
     """Traverse ontology relations for a term.
 
     Args:
-        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
-            With terminology set, this is the OPAQUE raw value — never
-            colon-parsed. Use that field form for any value that itself
-            contains ':' (OBO ids like GO:0000278).
+        term_id: Canonical UUID, fully qualified 'ns:terminology:value',
+            or — with terminology set — the OPAQUE raw term value (never
+            colon-parsed). The 2-part 'TERMINOLOGY:VALUE' shorthand is
+            rejected (422).
         direction: One of 'children', 'parents', 'ancestors', 'descendants'.
         relation_type: Relation type to follow (is_a, part_of, has_part, etc.).
             Defaults to is_a. Exactly one type is followed per call — there is
@@ -1863,17 +1911,30 @@ async def create_term_relations(
     """Create ontology relations between terms.
 
     Args:
-        relations: List of {source_term_id, target_term_id, relation_type}.
-            source_term_id: Term ID, value (e.g., 'ALZHEIMERS_DISEASE'), or synonym.
-            target_term_id: Term ID, value (e.g., 'NEUROLOGY'), or synonym.
+        term_relations: List of {source_term_id, target_term_id,
+            relation_type} plus optional per-item source_terminology /
+            target_terminology.
+            source_term_id / target_term_id: canonical UUID, bare
+                colon-free value (e.g., 'ALZHEIMERS_DISEASE'), fully
+                qualified 'ns:terminology:value', or — with the matching
+                per-item terminology field set — the OPAQUE raw value
+                (never colon-parsed). The ambiguous 2-part
+                'TERMINOLOGY:VALUE' shorthand is rejected (422): a
+                wrong-hit here would create an edge between wrong terms.
+            source_terminology / target_terminology: terminology scoping
+                the respective endpoint's value form — per-item because
+                an edge's two endpoints may live in different
+                terminologies.
             relation_type: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
         namespace: Namespace to create in. Omit to use server default.
 
     Example:
         create_term_relations([{
-            "source_term_id": "ALZHEIMERS_DISEASE",
+            "source_term_id": "GO:0000228",
+            "source_terminology": "GO_SLIM",
             "relation_type": "is_a",
-            "target_term_id": "NEUROLOGY"
+            "target_term_id": "GO:0005694",
+            "target_terminology": "GO_SLIM"
         }])
     """
     try:
@@ -1896,10 +1957,10 @@ async def list_term_relations(
     """List ontology relations for a specific term.
 
     Args:
-        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
-            With terminology set, this is the OPAQUE raw value — never
-            colon-parsed. Use that field form for any value that itself
-            contains ':' (OBO ids like GO:0000278).
+        term_id: Canonical UUID, fully qualified 'ns:terminology:value',
+            or — with terminology set — the OPAQUE raw term value (never
+            colon-parsed). The 2-part 'TERMINOLOGY:VALUE' shorthand is
+            rejected (422).
         direction: 'outgoing' (this term is source), 'incoming' (this term is target), or 'both'.
         relation_type: Filter by type (is_a, part_of, etc.). None = all types.
         namespace: Namespace to query in. Omit to use server default.
@@ -1928,9 +1989,18 @@ async def delete_term_relations(
     """Delete ontology relations between terms.
 
     Args:
-        relations: List of {source_term_id, target_term_id, relation_type}.
-            source_term_id: Term ID, value (e.g., 'ALZHEIMERS_DISEASE'), or synonym.
-            target_term_id: Term ID, value (e.g., 'NEUROLOGY'), or synonym.
+        term_relations: List of {source_term_id, target_term_id,
+            relation_type} plus optional per-item source_terminology /
+            target_terminology.
+            source_term_id / target_term_id: canonical UUID, bare
+                colon-free value (e.g., 'ALZHEIMERS_DISEASE'), fully
+                qualified 'ns:terminology:value', or — with the matching
+                per-item terminology field set — the OPAQUE raw value
+                (never colon-parsed). The ambiguous 2-part
+                'TERMINOLOGY:VALUE' shorthand is rejected (422): a
+                wrong-hit here would delete the wrong edge.
+            source_terminology / target_terminology: terminology scoping
+                the respective endpoint's value form.
             relation_type: is_a, part_of, has_part, etc.
         namespace: Namespace to delete from. Omit to use server default.
         hard_delete: Permanently remove (requires namespace deletion_mode='full').

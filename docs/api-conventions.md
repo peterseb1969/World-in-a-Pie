@@ -508,14 +508,27 @@ Resolution happens at the API boundary (in the service's route handler) using `r
 | **Template-Store** | `terminology_ref`, `template_ref`, `target_templates`, `target_terminologies` in template fields |
 | **Document-Store** | `template_id` in document creation |
 
-### Term Colon Notation
+### Term Addressing Is Strict
 
-For term references, use `TERMINOLOGY:TERM_VALUE` notation:
+A term's identity is the tuple (namespace, terminology, value). Term
+endpoints accept exactly three identifier forms:
 
 ```
-STATUS:approved    → resolves to the term "approved" in terminology "STATUS"
-COUNTRY:Germany    → resolves to the term "Germany" in terminology "COUNTRY"
+0190b000-…                     → canonical UUID
+wip:STATUS:approved            → fully qualified ns:terminology:value
+                                 (split on the first two colons — the value
+                                 keeps any colons it contains)
+terminology=STATUS + approved  → field form: the identifier is the raw
+                                 value, treated as opaque, never colon-parsed
 ```
+
+The 2-part `TERMINOLOGY:VALUE` shorthand (`STATUS:approved`) is
+**rejected with 422** on every term endpoint, reads and writes alike: a
+value that itself contains `:` (OBO ids like `GO:0000278`) is
+indistinguishable from it, so the shorthand can silently resolve a term
+in the wrong terminology. Prefer the field form when addressing terms by
+value. Other entity types keep their `NS:VALUE` qualified form — this
+carve-out is term-specific.
 
 ### Best-Effort Semantics
 
