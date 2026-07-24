@@ -106,6 +106,8 @@ class DeploymentMetadata(BaseModel):
 
 class DeploymentSpec(BaseModel):
     target: Literal["compose", "k8s", "dev"]
+    variant: Literal["dev", "prod"] = "dev"   # arms prod-safety guards:
+                                              # WIP_VARIANT=prod refuses default secrets
     modules: ModulesSpec
     apps: list[AppRef]
     auth: AuthSpec
@@ -117,8 +119,11 @@ class DeploymentSpec(BaseModel):
 
 class ModulesSpec(BaseModel):
     optional: list[str]                    # e.g., ["console", "oidc", "reporting", "files"]
+    suppress_core: bool = False            # when True, core components are NOT
+                                           # deployed (app-only install against an
+                                           # existing WIP)
     # Core (mongodb, registry, def-store, template-store, document-store) is
-    # always active and not listed here.
+    # otherwise always active and not listed here.
 
 class AppRef(BaseModel):
     name: str                              # matches apps/<name>/
@@ -129,6 +134,9 @@ class AuthSpec(BaseModel):
     gateway: bool                          # Theme 7: auth-gateway in request path
     users: list[DexUser] = Field(default_factory=default_dex_users)
     session_ttl: str = "15m"
+    api_keys: list[SpecAPIKey] = []        # declaratively provisioned keys
+                                           # (agents, external tools) — see
+                                           # config_gen/api_keys.py
 
 class DexUser(BaseModel):
     email: str
@@ -137,13 +145,16 @@ class DexUser(BaseModel):
 
 class NetworkSpec(BaseModel):
     hostname: str                          # e.g., "wip.local", "wip-kubi.local"
-    tls: Literal["internal", "letsencrypt", "external"]
+    tls: Literal["internal", "letsencrypt", "external", "self-signed"]  # self-signed is k8s-only, guarded
     https_port: int = 8443                 # compose only; k8s uses 443 via Ingress
     http_port: int = 8080
 
 class ImagesSpec(BaseModel):
     registry: str | None = None            # None = build from source (compose/dev)
-    tag: str = "latest"
+    tag: str | None = None                 # None = no deployment-wide tag; manifest pins apply.
+                                           # Precedence: tag_overrides[name] > tag > manifest
+                                           # pin (spec.image.tag) > "latest"
+    tag_overrides: dict[str, str] = {}     # per-image tag pins
     pull_policy: Literal["always", "if-not-present"] = "if-not-present"
 
 class PlatformSpec(BaseModel):
@@ -163,6 +174,9 @@ class K8sPlatform(BaseModel):
     tls_secret_name: str = "wip-tls"
 
 class DevPlatform(BaseModel):
+    # NOTE: `tilt` is reserved and NOT implemented — there is no dev_tilt
+    # renderer; only `simple` (dev_simple.py) renders. The field still defaults
+    # to "tilt", so a spec that does not override it is rejected by the renderer.
     mode: Literal["tilt", "simple"] = "tilt"
     source_mount: bool = True
 
@@ -195,13 +209,17 @@ class ApplySpec(BaseModel):
 
 ### Cross-cutting validation
 
-Enforced by Pydantic root validators:
+Enforced by Pydantic root validators on the spec:
 
 - `auth.gateway=True` requires `auth.mode != "api-key-only"`
 - `target=X` requires `platform.X` to be set
 - Every `apps[].name` resolves to an app manifest on disk
 - Every component with `oidc_client` requires `auth.mode != "api-key-only"`
 - `network.tls=letsencrypt` requires a non-localhost hostname
+
+Two further checks are **not** model validators: they depend on what is on disk
+(app-manifest discovery) and therefore run after discovery, via `validate_all()`
+in `spec/validators.py`.
 
 ---
 
@@ -328,6 +346,9 @@ class Route(BaseModel):
     path: str                              # e.g., "/api/document-store"
     auth_required: bool = True
     streaming: bool = False                # disables proxy buffering
+    strip_prefix: bool = False             # handle_path (strip) vs handle (preserve)
+    preserve_prefix_subpaths: list[str] = []   # subpaths exempt from stripping
+    redirect_bare_path: bool = True        # 301 the bare prefix to prefix/
 
 class StorageSpec(BaseModel):
     name: str                              # PVC name / volume name
@@ -420,7 +441,12 @@ Pure functions. Input: `(Deployment, list[Component], list[App], ResolvedSecrets
 | `nginx_ingress.py` | K8s Ingress rules with `auth-url` annotations | `list[IngressRule]` |
 | `env.py` | Per-component env map, with target-aware URL resolution | `dict[component_name, dict[key, val]]` |
 | `routing.py` | Shared: compute the auth/route map once; feed Caddy + NGINX | `list[ResolvedRoute]` |
-| `secrets.py` | Orchestrate the secret backend to ensure all required secrets exist | `ResolvedSecrets` |
+| `router.py` | The `wip-router` component's config — apps' stable handle to the WIP API | router config |
+| `api_keys.py` | Declaratively provisioned API keys (`spec.auth.api_keys`) | key material |
+| `images.py` | Image name/tag resolution (registry, `tag`, `tag_overrides`, manifest pins) | resolved images |
+| `spec_context.py` | Shared derived view of the spec handed to renderers | `SpecContext` |
+
+`secrets.py` lives at the package root (`wip_deploy/secrets.py`), not in `config_gen/`: it orchestrates the secret backend to ensure all required secrets exist, returning `ResolvedSecrets`.
 
 ### No templates
 
@@ -461,7 +487,7 @@ class SopsSecretBackend:
 
 - First install: `get_or_generate` produces a value, persists it. Database volumes initialize with the generated password.
 - Re-install: `get_or_generate` reads the existing value. This is critical — a fresh password would diverge from the stored database initialization.
-- Rotate: explicit `wip-deploy rotate-secrets` command. Regenerates specified secrets, coordinates database-side password update (for Mongo/Postgres admin creds), re-renders, re-applies.
+- Rotate: explicit `wip-deploy rotate-key` command. Regenerates specified secrets, coordinates database-side password update (for Mongo/Postgres admin creds), re-renders, re-applies.
 - Nuke: `wip-deploy nuke` preserves secrets and data by default; wiping either is opt-in (`--remove-secrets`, `--remove-data`).
 
 The current `quick-install.sh`'s "delete volumes on repeat install" is a workaround for the absence of this lifecycle. v2 solves it properly.
@@ -502,9 +528,8 @@ class Renderer(Protocol):
 
 - Emits `docker-compose.yaml` + `.env` (0600) + `config/caddy/Caddyfile` + `config/dex/config.yaml`
 - No compose profiles — module activation happens at render time (inactive components simply aren't emitted)
-- Caddyfile has **two site blocks**:
-  - `localhost:8443 { ... }` — external HTTPS with TLS + gateway `forward_auth` on auth-protected routes
-  - `:8080 { ... }` — internal HTTP, no TLS, no forward_auth — for container-to-container calls (e.g. react-console's SSR proxy at `http://wip-caddy:8080/api/*` with its own `X-API-Key` header)
+- The edge Caddyfile serves `localhost:8443 { ... }` — external HTTPS with TLS + gateway `forward_auth` on auth-protected routes.
+- The internal, no-TLS, no-forward_auth path for container-to-container calls is **no longer a second site block in the edge Caddyfile**: it moved to a first-class `wip-router` component (`components/router/wip-component.yaml`, rendered by `config_gen/router.py`). Server-side callers such as the console's SSR proxy target `http://wip-router:8080/api/*` with their own `X-API-Key` header.
 - `depends_on` is activation-aware: inactive deps are dropped (compose rejects references to services not in the file). Active deps with a healthcheck get `condition: service_healthy`; without, `service_started`.
 - **No local `build:` support in compose.** The renderer requires pre-built images (registry-pulled or loaded). Local source iteration belongs in the dev renderer (step 7).
 - `apply` runs `podman-compose --env-file .env -f docker-compose.yaml up -d`, then waits for healthy (unless `--no-wait`).
@@ -584,9 +609,6 @@ wip-deploy restart [COMPONENT...]
 wip-deploy status
     # Reads deployed state: running containers/pods, health, image tags.
 
-wip-deploy logs [COMPONENT] [--follow] [--tail N]
-    # Shells out to podman logs / kubectl logs / tilt logs.
-
 wip-deploy render --target T --output-dir DIR
     # Dry-run: emit the file tree without applying.
 
@@ -596,9 +618,14 @@ wip-deploy show-spec [--format yaml|json]
 wip-deploy validate
     # Check spec + manifest discovery + cross-cutting validators without rendering.
 
-wip-deploy rotate-secrets [--secret NAME]
+wip-deploy rotate-key [--secret NAME]
     # Regenerate specified secret(s), re-render, re-apply, coordinate
     # database-side password updates.
+
+wip-deploy redeploy | rebuild | restart | start | stop | up
+    # Re-apply from the persisted spec / rebuild an image / restart a container.
+    # (There is no `upgrade`, `logs`, or `dev` command — re-apply is `redeploy`,
+    #  image rebuild is `rebuild`, and dev is `install --target dev`.)
 
 wip-deploy nuke [--remove-data] [--remove-secrets] [--remove-images] [--purge-all] [-y/--yes]
     # Teardown. SAFE BY DEFAULT: bare `nuke` stops/removes containers but
