@@ -86,18 +86,51 @@ seven assertion planes with silence ≠ pass; counts conserved against
 EXPECTED_COUNTS; one table (cell × planes × pass/fail × wall time) as the
 artifact; cleanup on success, `--keep`, `--cleanup-only`.
 
-`run_matrix.py` implements this. **First slice built + green on prod-test:**
-B-01/B-02 (real-archive counts, single + multi namespace), X-02 (counts
-conservation across a fresh restore), and the R-05/R-13/R-15 fresh-restore
-spine. Remaining cells (B-03, R-01/02/03/04/06/07/08/11/14/16, F-05/06,
-X-01/03/04/05/06, cell-zero) land in later slices — see `cell-coverage.md`.
+`run_matrix.py` implements this. **Built + green on prod-test, three slices,
+14 cells:**
+
+| Slice | Cells |
+|---|---|
+| 1 | B-01/B-02 (real-archive counts, single + multi namespace), X-02 (counts conservation), R-05/R-13/R-15 (the fresh-restore spine) |
+| 2 | R-01 (id-preserving DR), R-08 (merge into drift), X-01 (dry-run parity), X-05 (double-restore idempotence) |
+| 3 | X-03 (leak-sweep harness, generalized), X-04 (job-plane field ownership), X-06 (backup-of-a-restore), B-03 (instance-wide, gated) |
+
+Remaining cells (R-02/03/04/06/07/11/14/16, F-05/06, cell-zero) land in later
+slices — see `cell-coverage.md` for the authoritative work list.
 
 ```bash
-# run the slice against a named install (self-signed cert -> --no-verify-tls)
+# run the default set against a named install (self-signed cert -> --no-verify-tls)
 .venv/bin/python tools/backup-matrix/run_matrix.py \
   --install prod-test --no-verify-tls            # add --verbose for every check
+
+# add B-03, the one cell that reaches beyond the runner's own namespaces
+.venv/bin/python tools/backup-matrix/run_matrix.py \
+  --install prod-test --no-verify-tls --allow-instance-wide
 
 # sweep leftover ??????-00* namespaces from a crashed/kept run
 .venv/bin/python tools/backup-matrix/run_matrix.py \
   --install prod-test --no-verify-tls --cleanup-only
 ```
+
+**`--allow-instance-wide` interrupts the target — read CASE-801 first.** B-03
+cannot be asserted from inside the runner's own namespaces: it backs up EVERY
+namespace on the target and mints a partial-grant API key to prove
+admin-on-every-namespace is enforced (revoked in the same run; the archive job
+is deleted so nothing instance-sized is retained). Measured on prod-test, that
+backup built an **853 MB** archive on the document-store's event loop, `/health`
+stopped answering within its 5 s probe timeout, and **every caller got 503 for
+about two and a half minutes**. Point it at a deployment nobody is using.
+Without the flag the cell reports **SKIPPED** with its reason — a gated cell is
+never silently absent, which would read as coverage the run did not deliver.
+
+**Known live-stack flake, CASE-800.** An archive download issued seconds after
+its backup completes can return 200 + `Content-Length` + an empty body (the
+archive itself is fine; the same job downloads whole moments later). The runner
+validates every download against the job's `archive_size` and the zip magic and
+retries, printing a loud warning — the run survives, and the defect stays
+visible.
+
+**Fresh API keys take up to 30 s to work outside the Registry.** A runtime key
+is live on the Registry at once but 401s elsewhere until `KeySyncService`'s
+30 s poll picks it up. A permission test that reads that 401 as a refusal
+proves nothing; B-03 waits for the key and fails loudly on a 401.

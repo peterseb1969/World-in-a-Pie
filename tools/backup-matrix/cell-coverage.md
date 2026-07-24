@@ -22,7 +22,18 @@ them first, they change how several cells are interpreted.
 |---|---|---|
 | B-01 P-SRV1 counts == EXPECTED_COUNTS, all classes incl registry_entries | **PARTIAL → L-GAP** | Structure asserted (`test_backup_engine::TestModuleStructure::*`, `test_backup_entity_order_covers_registry_entries`, `TestPreCount::test_returns_count_per_entity_type`) but **ArchiveWriter is mocked in every engine test** — no real archive is counted against a real seed. The real-count assertion is a Phase-3 L cell against the Phase-1 fixture's EXPECTED_COUNTS. |
 | B-02 P-SRVN multi-ns subtrees/counts | **PARTIAL → L-GAP** | `test_backup_engine::TestRunBackupMultiNamespace::test_two_namespaces_manifest` asserts per-ns subtrees + `namespace_prefixes()`, but counts are all-zero (empty mock). Real per-ns counts = L. `wip-archive::TestMultiNamespaceArchive` covers the archive layout. |
-| B-03 P-SRVALL all_namespaces incl wip; partial-grant refused | **GAP (L)** | No test sets `all_namespaces`; no admin-on-every-ns enforcement test. Runner cell, gated behind `--allow-instance-wide`. |
+| B-03 P-SRVALL all_namespaces incl wip; partial-grant refused | **BUILT (L, gated) — half live-validated** | `run_matrix.py` B-03 (slice 3), behind `--allow-instance-wide`. **Permission half — validated live on prod-test:** `b03_partial_grant_refused()` mints a key with admin on one namespace only, waits for it to go live (see below), attempts an `all_namespaces` backup and gets **404** — refused, and 404 rather than 403 per the don't-leak-existence convention. Key revoked in a `finally`. **Instance-wide half — NOT validated through the cell:** the run that exercised it 503'd mid-poll (CASE-801) before the assertions ran. What *was* observed directly from the surviving job record: `options.all_namespaces=true`, `status=complete`, and `namespaces` = 12 entries including `wip` and every runner namespace. The archive-level asserts (declared == streamed per namespace, job `namespaces` == archive `namespaces`) have never executed. Re-running to close that gap costs the target another outage — see CASE-801. Without the flag the cell reports **SKIPPED**, never silently absent. |
+
+**Gotcha the B-03 build surfaced (not a bug — documented behaviour).** A newly
+created runtime API key is usable against the **Registry** immediately (it owns
+the key store) but 401s on every other service until `KeySyncService` picks it
+up — it polls the Registry every **30 s** by default
+(`libs/wip-auth/src/wip_auth/key_sync.py`). A permission assertion made against
+a not-yet-propagated key returns 401, which is not a refusal: it means the
+check never ran. The first version of this cell read that 401 as its answer.
+`b03_partial_grant_refused` now waits for the key to be recognised before
+asserting, and treats a 401 as an explicit failure ("the check did not run")
+rather than folding it into the accepted-refusal set.
 | B-04 P-CLI parity vs B-01 (diff class counts) | **PARTIAL** | `test_round_trip::test_golden_round_trip` does CLI export + **archive-count parity vs seed** (CASE-666). The *cross-producer diff* (CLI archive vs server archive, same seed) is not done → small L/C gap. |
 | B-05 include_inactive off/on (E12 absent/present) | **COVERED (CLI) / see R1** | CLI: `test_exporter` exercises the export path; `test_round_trip` exports with `include_inactive`. **Server backup rejects `include_inactive`** (see Reconciliation R1) — so this cell is CLI-producer only. |
 | B-06 latest_only (E6 1 version vs all) | **GAP / see R1** | `wip-archive::test_include_all_versions_manifest_field` covers the manifest flag. **Server backup rejects `latest_only`** (R1). CLI all-versions behaviour otherwise unexercised end-to-end → L. |
@@ -71,10 +82,10 @@ them first, they change how several cells are interpreted.
 |---|---|---|
 | X-01 dry-run parity harness — one parametrized runner over every R-* pair | **BUILT (L, fresh) / C per-mode** | `run_matrix.py` X-01 (slice 2): a fresh `dry_run` writes nothing, the apply then produces the source's conserved counts (plan-implied == outcome). Per-mode C parity: `test_merge_restore::TestMergeDryRun::*`, remap `test_a_dry_run_provisions_nothing_and_writes_nothing`. Generalizing X-01 over every R-* mode = later. |
 | X-02 counts conservation harness — one table reused by every cell | **PARTIAL → build** | Seed side done: Phase-1 `FixtureBuilder.count()` → EXPECTED_COUNTS. CLI seed→archive→restore parity: `test_round_trip` (CASE-666). The reusable seed→archive→restore→API harness is Phase 3 (consumes the Phase-1 baseline). |
-| X-03 leak sweep harness — serialized rows × forbidden tokens, every fresh cell | **PARTIAL → build** | One-off sweep exists: `test_remap_multi::test_reference_snapshots_carry_no_trace_of_the_source`. Generalise to a reusable harness. |
-| X-04 job-plane sweep after any L run | **GAP (L)** | Job-plane asserted richly at component layer (`test_backup_service::TestFieldScopedJobWrites::*`, `TestValidationResultSurvives`, `TestPlanSurvivesOnTheJob`) but not as an L-layer post-run sweep. |
+| X-03 leak sweep harness — serialized rows × forbidden tokens, every fresh cell | **BUILT (L) / C one-off** | C: `test_remap_multi::test_reference_snapshots_carry_no_trace_of_the_source`. L: `run_matrix.py` `leak_sweep()` (slice 3) — every restore-written surface (documents, templates, terminologies, terms, registry-entry detail incl. synonyms/`search_values`/`source_info`) crossed with every source identifier (namespace name, document/template/terminology/term/registry-entry ids). Reused: R-05 asserts the document slice, X-06 runs it on the second hop. The target's namespace *description* is excluded by design — a fresh restore writes source provenance there deliberately. |
+| X-04 job-plane sweep after any L run | **BUILT (L)** | Job-plane asserted richly at component layer (`test_backup_service::TestFieldScopedJobWrites::*`, `TestValidationResultSurvives`, `TestPlanSurvivesOnTheJob`). L: `run_matrix.py` X-04 (slice 3) — every job the run drove is **re-read** after the race window and asserted against a field-ownership schema: `namespaces` == real write targets (the CASE-745 pin: a fresh restore names its target, not its source), `options` echoed, `archive_size` set, `result` populated exactly where that kind's terminal event carries details (fresh/merge/any dry run — a backup and an id-preserving restore correctly have none), `validation_job_ids` surviving, and each validation scoped to a written namespace, completed, carrying its `namespace_integrity` findings (PL-AUTO). The re-read is the point: the back-link and archive-lifecycle writers land *after* the job reports terminal, which is where CASE-747/749/750 lived. |
 | X-05 double-restore idempotence | **BUILT (L, id-preserving)** | `run_matrix.py` X-05 (slice 2): a second id-preserving restore into the now-populated namespace is refused, nothing duplicated. The R-MRG all-unchanged re-run variant is still only compositional (C) — a later addition. |
-| X-06 backup-of-a-restore, transitive fidelity | **GAP (L)** | Not exercised anywhere. |
+| X-06 backup-of-a-restore, transitive fidelity | **BUILT (L)** | `run_matrix.py` X-06 (slice 3) — back up the fresh copy in `-00c`, fresh-restore THAT into `-00f`: the second-hop archive is internally consistent (declared == streamed), the second hop conserves the first copy's counts, the `sample_code` identity values survive both hops, value-form resolution still works, and the leak sweep finds no trace of the first copy in the second. Hop one compares against a fixture the runner built, so a self-consistently mangled row survives it; hop two makes such a row either reproduce exactly or diverge visibly. |
 
 ## Gaps to build in Phase 3
 
@@ -104,12 +115,38 @@ Slice 2 **BUILT + green on prod-test 20260724b** (10/10 cells, ~49s):
 - **X-01 (BUILT):** dry-run parity — a fresh `dry_run` writes nothing into the target, and the apply then produces exactly the source's conserved counts (the plan the dry-run implies == the outcome the apply delivers).
 - **X-05 (BUILT):** double-restore idempotence — a second id-preserving restore into the now-populated namespace is refused (empty-target precondition), nothing duplicated.
 
+Slice 3 **BUILT + green on prod-test 20260724b** (14 cells, 13 pass / 0 fail /
+1 skip in the default set; 65 s wall):
+- **X-03 (BUILT):** the leak-sweep harness the design doc asks every fresh cell to reuse. Every restore-written surface (documents, templates, terminologies, terms, and registry-entry *detail* — the only place synonyms / `search_values` / `source_info` are visible) crossed with every source identifier (namespace name plus document/template/terminology/term/registry-entry ids). The sweep asserts its own coverage first (rows > 0 per surface, tokens > 1), because a sweep over nothing finds nothing and proves nothing. R-05 now asserts the document slice of this same sweep instead of its own narrower inline check; X-06 runs it again on the second hop. The target namespace's *description* is excluded on purpose — `_record_provenance` writes "restored from an archive of '<source>'" there by design, and sweeping it would flag a documented feature as a leak.
+- **X-04 (BUILT):** the job-plane sweep, 91 checks over the 10 jobs a default run drives. Every job is **re-read at the end of the run** and asserted against a field-ownership schema: `namespaces` == the real write targets (the CASE-745 pin — a fresh restore must name its target, not the source it read), `options` echoed, `created_by` recorded, `archive_size` populated, and `result` populated *exactly* where that job kind's terminal event carries details (fresh, merge, and every dry run do; a backup and an id-preserving restore correctly carry none — asserting it both ways keeps the sweep from passing on a result that appeared where none belongs). PL-AUTO: `validation_job_ids` survived, and each validation is scoped to a written namespace, completed, and carries its `namespace_integrity` findings. The re-read is the whole point — the validation back-link and the archive-lifecycle hook are detached writers that land *after* the job reports terminal, which is exactly where the CASE-747/749/750 lost-update class lived; an inline assert would pass straight over the race.
+- **X-06 (BUILT):** backup-of-a-restore. Back up the fresh copy in `-00c`, fresh-restore THAT into `-00f`, and assert the second-hop archive is internally consistent (declared == streamed), the second hop conserves the first copy's counts, the `sample_code` identity values survive both hops, value-form resolution still works, and the leak sweep finds no trace of the first copy in the second. Hop one is compared against a fixture the runner itself built, so a row mangled into a self-consistent state survives it; hop two forces such a row to either reproduce exactly or diverge visibly.
+- **B-03 (BUILT, gated; permission half live-validated, instance-wide half not):** see §5.1.
+
+**Two bugs surfaced by the slice-3 runs.** Both were found by the new cells
+doing what the matrix exists for — exercising combinations no unit suite runs:
+- **CASE-800** — archive download truncation (below).
+- **CASE-801** — an `all_namespaces` backup builds its archive (853 MB on prod-test, 12 namespaces) synchronously on the document-store's event loop, so `/health` stops answering inside its 5 s probe timeout: readiness failed 5× over 2m29s, liveness once, and every caller got 503 from the ingress for ~2.5 minutes. The pod did not restart, but two more consecutive liveness failures would have killed it mid-backup. This is why B-03 is gated, and the gate is now documented as "interrupts the target", not merely "reaches outside our namespaces".
+
 **L cells still to build (later slices):**
-- Real-archive: B-03 (`--allow-instance-wide`, partial-grant refused).
 - Restore cells: R-02, R-03 (`--dr-install`), R-04, R-06 (both directions), R-07, R-11, R-14 (blobs + skip_files), R-16 (FTS/PL-REP).
 - Failure injection: F-05 (crash mid-restore + re-run converges), F-06 (reporting-sync stopped + force backfill).
-- Harnesses/sweeps: X-03 (leak sweep, generalized), X-04 (job-plane), X-06 (backup-of-a-restore).
+- Sweep generalizations: X-01 over every R-* mode (currently fresh only), X-05's R-MRG all-unchanged re-run variant.
 - Cell zero (§4 of CASE-773): the CASE-766 inactive-version archive shape — the Phase-1 fixture builds it by construction (SPEC docs pinned to the deactivated v3).
+
+**Bug surfaced by the slice-3 runs — CASE-800, archive download truncation.**
+A `GET /backup/jobs/{id}/download` issued seconds after its backup completed
+returned 200 + `Content-Length: 5786` + a **zero-byte body**. The archive was
+undamaged: the same job downloaded whole (5786 bytes, valid zip) a minute
+later, and the identical run sequence passed before and after. Leading
+hypothesis, from code reading and **not** verified by instrumenting the server:
+`download_archive` checks `archive_exists(job)` and streams from the same
+in-memory job record, while `archive_lifecycle_hook` concurrently uploads the
+scratch file to the bucket, unlinks it, and only *then* flips
+`archive_backend`/`archive_path` on the record — so a download inside that
+window passes the exists check and its generator's `open()` raises after the
+headers are already on the wire. The runner now validates every download
+against the job's `archive_size` and the zip magic and retries loudly
+(`_download_archive`), so a run survives the flake without absorbing it.
 
 **CONFIRMED BUG surfaced by the first L run — fresh restore drops value-form lookup synonyms.** A fresh restore reproduces every entity but its restored registry entries carry **0 synonyms where the source had 9** (`registry_synonyms 9 → 0`). Root-caused on prod-test 20260724a:
 - Each source terminology/term/document carries one auto-synonym — the value-form key `{ns, type, value}` — distinct from the primary key `{ns, value, label}`. def-store/document-store auto-register it on original creation so the entity resolves by value alone (without its label). Templates never had one.
