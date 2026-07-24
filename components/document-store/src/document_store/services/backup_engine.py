@@ -271,7 +271,19 @@ class DirectBackupEngine:
             )
 
             self._emit("phase_finalize", "Writing archive", percent=95)
-            writer.write(manifest)
+            # Offloaded to a thread: this one call closes every staged temp
+            # file and DEFLATE-compresses the whole archive — entity JSONL and
+            # blobs alike — with no await point inside it, so its duration
+            # scales with total archive bytes. Left on the event loop it
+            # starves everything else in the process, including /health: an
+            # instance-wide backup produced an 853 MB archive (~1.5 GB of
+            # input) and the service failed its readiness probes for ~2.5
+            # minutes, dropping out of the ingress while every caller got 503.
+            # Safe to offload wholesale — writer.write touches no async state,
+            # only temp files the engine has already finished writing. Same
+            # reasoning as the executor-wrapped read in archive_store's
+            # download path.
+            await asyncio.to_thread(writer.write, manifest)
 
             self._emit("complete", "Backup complete", percent=100)
 

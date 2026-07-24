@@ -33,6 +33,7 @@ the scratch path as the meeting point.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -112,7 +113,13 @@ class ArchiveStore:
                 return await self._storage().exists(job.archive_path)
             except FileStorageError:
                 return False
-        return Path(job.archive_path).is_file()
+        if Path(job.archive_path).is_file():
+            return True
+        # A caller's copy of the job can predate finalize_backup moving the
+        # archive into the bucket, in which case the scratch path it names is
+        # gone but the archive is not. Answering False there reports a
+        # perfectly good archive as un-retained.
+        return await self._moved_to_bucket(job) is not None
 
     async def stream_archive(self, job: BackupJob) -> AsyncIterator[bytes]:
         """Chunked archive content for the download endpoint."""
@@ -124,15 +131,60 @@ class ArchiveStore:
             return
         # Local file: read in an executor so a slow disk never blocks the
         # event loop mid-download.
-        import asyncio
         loop = asyncio.get_running_loop()
-        path = Path(job.archive_path)
-        with path.open("rb") as fh:
+        try:
+            # Opened outside a `with` on purpose: the open must be able to
+            # fail HERE, before anything is yielded, so the fallback below can
+            # still change course. Closed in the finally that guards the read
+            # loop.
+            fh = Path(job.archive_path).open("rb")  # noqa: SIM115
+        except FileNotFoundError:
+            # The archive moved out from under this request. finalize_backup
+            # uploads the scratch copy, flips archive_backend/archive_path on
+            # the record, and only then unlinks the scratch file — so a
+            # download holding a job loaded before the flip names a path that
+            # stops existing mid-request, while the record already points at
+            # the object. The bytes are never lost: the unlink runs only after
+            # a successful upload.
+            #
+            # Recovering here, BEFORE the first yield, is the whole point.
+            # The download route sends Content-Length from the job, so an
+            # exception raised once streaming has begun truncates a response
+            # whose length was already promised — the client sees 200 plus a
+            # short body rather than an error (CASE-800: 200 +
+            # Content-Length: 5786 + zero bytes).
+            key = await self._moved_to_bucket(job)
+            if key is None:
+                raise
+            async for chunk in self._storage().download_stream(
+                key, chunk_size=1024 * 1024
+            ):
+                yield chunk
+            return
+        try:
             while True:
                 chunk = await loop.run_in_executor(None, fh.read, 1024 * 1024)
                 if not chunk:
                     return
                 yield chunk
+        finally:
+            fh.close()
+
+    async def _moved_to_bucket(self, job: BackupJob) -> str | None:
+        """The object key this job's archive now lives under, or None.
+
+        Re-reads the record rather than deriving the key, so a scratch file
+        that vanished for any OTHER reason (the TTL sweep on a local-only
+        install) still reports honestly as gone. Deterministic, not a second
+        race: finalize_backup flips the record BEFORE unlinking, so any job
+        whose scratch file has disappeared under it already reads as MinIO.
+        """
+        if self.backend != BACKEND_MINIO:
+            return None
+        fresh = await BackupJob.find_one(BackupJob.job_id == job.job_id)
+        if fresh is None or fresh.archive_backend != BACKEND_MINIO:
+            return None
+        return fresh.archive_path or None
 
     async def materialize_for_restore(self, src_job: BackupJob, new_job_id: str) -> Path:
         """Give a new restore job its OWN archive copy, staged locally.

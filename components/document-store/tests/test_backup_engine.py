@@ -25,7 +25,10 @@ correctly without exercising ZIP I/O.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
+import time
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1163,3 +1166,77 @@ class TestClaimInsertion:
         engine._report_claims("kb", claimed=0, taken_by_other=2)
         warning = next(e for e in events if e.phase == "warning")
         assert "already" in warning.message and "claimed" in warning.message
+
+
+# ---------------------------------------------------------------------------
+# CASE-801 — the archive finalize must not run on the event loop
+# ---------------------------------------------------------------------------
+
+
+class TestFinalizeDoesNotBlockTheEventLoop:
+    """ArchiveWriter.write() compresses the whole archive in one synchronous
+    call whose duration scales with total bytes. Run on the event loop it
+    starves every other task in the process — including the health endpoint,
+    which is how an instance-wide backup took the service out of its ingress
+    for ~2.5 minutes while a 853 MB archive was assembled.
+
+    The guard is behavioural rather than a check that to_thread was called:
+    what matters is that other coroutines still get scheduled while the
+    archive is being written, however that ends up being arranged.
+    """
+
+    @pytest.mark.asyncio
+    async def test_other_coroutines_still_run_while_the_archive_is_written(self, tmp_path):
+        mongo, _ = _make_mongo_mock(
+            docs_per_collection={},
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER},
+            namespace_config_doc={"prefix": "empty", "description": "test"},
+        )
+        engine = DirectBackupEngine(mongo, None, lambda _: None)
+
+        # Stands in for the DEFLATE pass: synchronous, and long enough that a
+        # loop-blocking implementation cannot hide behind scheduler noise.
+        block_s = 0.4
+        write_window: list[float] = []
+
+        def blocking_write(_manifest):
+            write_window.append(time.monotonic())
+            time.sleep(block_s)
+            write_window.append(time.monotonic())
+            return tmp_path / "empty-backup.zip"
+
+        # Stands in for /health being served while the backup finalizes.
+        ticks: list[float] = []
+
+        async def heartbeat():
+            while True:
+                ticks.append(time.monotonic())
+                await asyncio.sleep(0.02)
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveWriter"
+        ) as mock_writer_cls:
+            mock_writer = MagicMock()
+            mock_writer.entity_count = MagicMock(return_value=0)
+            mock_writer.write = blocking_write
+            mock_writer_cls.return_value = mock_writer
+
+            beat = asyncio.create_task(heartbeat())
+            await asyncio.sleep(0)  # let the heartbeat reach its first await
+            try:
+                await engine.run_backup("empty", tmp_path / "empty-backup.zip")
+            finally:
+                beat.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await beat
+
+        assert len(write_window) == 2, "the stubbed writer did not run"
+        started, ended = write_window
+        during = [t for t in ticks if started <= t <= ended]
+        # With write() on the loop this is 0: nothing else can be scheduled
+        # for the whole compression. The bound is deliberately loose — the
+        # claim is "the loop kept turning", not a throughput figure.
+        assert len(during) >= 3, (
+            f"the event loop was starved while the archive was written: "
+            f"{len(during)} heartbeat tick(s) in {ended - started:.2f}s"
+        )
