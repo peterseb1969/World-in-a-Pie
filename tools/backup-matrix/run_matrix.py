@@ -37,9 +37,11 @@ import contextlib
 import io
 import json
 import re
+import struct
 import sys
 import time
 import zipfile
+import zlib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -181,22 +183,16 @@ def _poll_job(client: WipClient, job_id: str, *, timeout_s: float = 120.0) -> di
 
 
 def _backup_archive(
-    client: WipClient,
-    anchor_ns: str,
-    *,
-    also: list[str] | None = None,
-    all_namespaces: bool = False,
-    record: bool = True,
+    client: WipClient, anchor_ns: str, *, also: list[str] | None = None
 ) -> tuple[dict, bytes]:
     """Server backup; returns the terminal job record and the archive bytes.
 
-    ``record=False`` keeps the job out of the X-04 sweep — for a job the
-    caller deletes on the way out, which the sweep could then not re-read.
+    Downloads the whole archive, so it is for the runner's OWN namespaces only.
+    The instance-wide cell uses `_start_instance_wide_backup` + a prefix read
+    instead — see the note in cell_b03_instance_wide.
     """
     body: dict[str, Any] = {"include_files": True}
-    if all_namespaces:
-        body["all_namespaces"] = True
-    elif also:
+    if also:
         body["namespaces"] = also
     snap = client.post(
         f"/api/document-store/backup/namespaces/{anchor_ns}/backup", json_body=body
@@ -204,18 +200,17 @@ def _backup_archive(
     done = _poll_job(client, snap["job_id"])
     if done.get("status") != "complete":
         raise RuntimeError(f"backup of {anchor_ns} failed: {done.get('error')}")
-    if record:
-        JOBS.append(JobRun(
-            label=f"backup {anchor_ns}" + (f" + {also}" if also else ""),
-            kind="backup",
-            expect_namespaces=[anchor_ns, *(also or [])],
-            expect_options={"include_files": True, "all_namespaces": all_namespaces},
-            # A backup's terminal event carries no details, so `result` stays
-            # null by design — asserting it populated would fail a correct job.
-            expect_result=False,
-            expect_validation=False,
-            snapshot=done,
-        ))
+    JOBS.append(JobRun(
+        label=f"backup {anchor_ns}" + (f" + {also}" if also else ""),
+        kind="backup",
+        expect_namespaces=[anchor_ns, *(also or [])],
+        expect_options={"include_files": True, "all_namespaces": False},
+        # A backup's terminal event carries no details, so `result` stays
+        # null by design — asserting it populated would fail a correct job.
+        expect_result=False,
+        expect_validation=False,
+        snapshot=done,
+    ))
     return done, _download_archive(
         client, snap["job_id"], expect_size=done.get("archive_size")
     )
@@ -336,6 +331,43 @@ def _drop_ns(client: WipClient, ns: str) -> None:
             f"/api/registry/namespaces/{ns}",
             params={"force": True, "deleted_by": RUNNER_BY},
         )
+
+
+MANIFEST_PREFIX_BYTES = 512 * 1024
+
+
+def _manifest_from_prefix(data: bytes) -> dict:
+    """Parse ``manifest.json`` out of the first bytes of an archive.
+
+    ArchiveWriter writes the manifest as the FIRST member of the zip, ahead of
+    every entity file and blob, so it lands within the first few KB. That makes
+    a prefix enough to read it — which is the only way to inspect an
+    instance-wide archive without pulling the whole thing through the very
+    service the run is trying to measure (CASE-803).
+
+    Reads the local file header at fixed offsets (method, compressed size,
+    name/extra lengths) and inflates that one member. The recorded sizes are
+    trustworthy because the writer targets a real seekable file, so zipfile
+    writes true sizes into the local header instead of deferring them to a
+    trailing data descriptor.
+    """
+    if data[:4] != b"PK\x03\x04":
+        raise ValueError("archive does not start with a zip local file header")
+    (method,) = struct.unpack_from("<H", data, 8)
+    (csize,) = struct.unpack_from("<I", data, 18)
+    nlen, xlen = struct.unpack_from("<HH", data, 26)
+    name = data[30:30 + nlen].decode("utf-8", "replace")
+    if name != "manifest.json":
+        raise ValueError(f"first archive member is {name!r}, expected manifest.json")
+    start = 30 + nlen + xlen
+    blob = data[start:start + csize]
+    if len(blob) < csize:
+        raise ValueError(
+            f"prefix of {len(data)} bytes holds only {len(blob)} of the "
+            f"manifest's {csize} compressed bytes — raise MANIFEST_PREFIX_BYTES"
+        )
+    raw = zlib.decompressobj(-15).decompress(blob) if method == 8 else blob
+    return json.loads(raw)
 
 
 @dataclass
@@ -803,28 +835,53 @@ def cell_b03_instance_wide(
             f"all_namespaces backup: {detail}")
 
     # Half 2 — the admin key's instance-wide archive really spans the instance.
-    job, archive = _backup_archive(
-        client, expect_present[0], all_namespaces=True, record=False
+    #
+    # Only the MANIFEST is read, from a prefix of the download. The earlier
+    # version pulled the entire archive — 853 MB on prod-test — to inspect one
+    # small member, which pushed a gigabyte through the same service the run
+    # was measuring and contaminated its own telemetry (CASE-803). The cost of
+    # that is losing the per-entity declared-vs-streamed cross-check, which
+    # cannot be done without inflating every member: B-01/B-02 already assert
+    # it over the runner's own namespaces every run, and repeating it across
+    # every namespace on the instance was never what made this cell distinct.
+    job = _start_instance_wide_backup(client, expect_present[0])
+    prefix = client.get_prefix(
+        f"/api/document-store/backup/jobs/{job['job_id']}/download",
+        max_bytes=MANIFEST_PREFIX_BYTES,
     )
-    parsed = _parse_archive(archive)
-    present = set(parsed.namespaces())
+    manifest = _manifest_from_prefix(prefix)
+    entries = manifest.get("namespaces") or []
+    present = {e["prefix"] for e in entries if e.get("prefix")}
     c.check("PL-DATA", "wip" in present,
             f"the instance-wide archive includes the 'wip' namespace "
-            f"({len(present)} namespaces in the manifest)")
+            f"({len(present)} namespaces in the manifest, read from a "
+            f"{len(prefix) // 1024} KB prefix of a {job.get('archive_size', 0) // 1024} KB archive)")
     missing = [ns for ns in expect_present if ns not in present]
     c.check("PL-DATA", not missing,
             f"the runner's own namespaces are in the archive (missing={missing})")
     c.check("PL-JOB", sorted(job.get("namespaces") or []) == sorted(present),
-            f"the job's namespaces match the archive's "
+            f"the job's namespaces match the archive's manifest "
             f"({len(job.get('namespaces') or [])} vs {len(present)})")
-    for ns, per_type in parsed.per_ns.items():
-        for etype, (declared, streamed) in per_type.items():
-            c.check("PL-JOB", declared == streamed,
-                    f"[{ns}] {etype}: manifest declares {declared}, archive streams {streamed}")
     # An instance-sized archive is not something to leave lying on the target.
     with contextlib.suppress(ApiError):
         client.delete(f"/api/document-store/backup/jobs/{job['job_id']}")
     return c
+
+
+def _start_instance_wide_backup(client: WipClient, anchor_ns: str) -> dict:
+    """Run an all_namespaces backup to completion; return the terminal job.
+
+    Separate from _backup_archive because this one must NOT download the
+    archive — see the note in cell_b03_instance_wide.
+    """
+    snap = client.post(
+        f"/api/document-store/backup/namespaces/{anchor_ns}/backup",
+        json_body={"include_files": True, "all_namespaces": True},
+    )
+    done = _poll_job(client, snap["job_id"], timeout_s=900.0)
+    if done.get("status") != "complete":
+        raise RuntimeError(f"instance-wide backup failed: {done.get('error')}")
+    return done
 
 
 def cell_x04_job_plane(client: WipClient) -> Cell:

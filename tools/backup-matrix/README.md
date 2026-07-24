@@ -112,16 +112,22 @@ slices — see `cell-coverage.md` for the authoritative work list.
   --install prod-test --no-verify-tls --cleanup-only
 ```
 
-**`--allow-instance-wide` interrupts the target — read CASE-801 first.** B-03
-cannot be asserted from inside the runner's own namespaces: it backs up EVERY
-namespace on the target and mints a partial-grant API key to prove
+**`--allow-instance-wide` is heavy — point it at a deployment nobody is using.**
+B-03 cannot be asserted from inside the runner's own namespaces: it backs up
+EVERY namespace on the target and mints a partial-grant API key to prove
 admin-on-every-namespace is enforced (revoked in the same run; the archive job
-is deleted so nothing instance-sized is retained). Measured on prod-test, that
-backup built an **853 MB** archive on the document-store's event loop, `/health`
-stopped answering within its 5 s probe timeout, and **every caller got 503 for
-about two and a half minutes**. Point it at a deployment nobody is using.
-Without the flag the cell reports **SKIPPED** with its reason — a gated cell is
-never silently absent, which would read as coverage the run did not deliver.
+is deleted so nothing instance-sized is retained). Without the flag the cell
+reports **SKIPPED** with its reason — a gated cell is never silently absent,
+which would read as coverage the run did not deliver.
+
+On `20260724b` this cell took the document-store out of its ingress for ~2.5
+minutes (**CASE-801**: the archive was compressed on the event loop). That is
+fixed as of `20260725a` and the cell now runs clean — but it still drives an
+853 MB archive on a Pi-class node, and **CASE-803** tracks the readiness-probe
+margin it may still cost. The cell reads only the archive's *manifest*, via a
+bounded prefix of the download, rather than materialising the whole thing
+(CASE-803); the cost of that is the per-entity count cross-check, which B-01/B-02
+already cover for the runner's own namespaces.
 
 **Known live-stack flake, CASE-800.** An archive download issued seconds after
 its backup completes can return 200 + `Content-Length` + an empty body (the

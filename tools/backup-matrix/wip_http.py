@@ -198,6 +198,28 @@ class WipClient:
             raise ApiError("GET", path, resp.status_code, resp.text)
         return resp.content
 
+    def get_prefix(
+        self, path: str, *, max_bytes: int, params: dict[str, Any] | None = None
+    ) -> bytes:
+        """GET only the first ``max_bytes`` of a response, then hang up.
+
+        For reading a small header out of a large body. HTTP Range is not an
+        option against these endpoints — the archive download is a bare
+        ``StreamingResponse``, which implements no Range handling and would
+        send the whole body regardless — so the transfer is stopped
+        client-side instead, by leaving the stream context early.
+        """
+        with self._client.stream("GET", path, params=params) as resp:
+            if resp.status_code >= 300:
+                resp.read()
+                raise ApiError("GET", path, resp.status_code, resp.text)
+            buf = bytearray()
+            for chunk in resp.iter_bytes(chunk_size=64 * 1024):
+                buf.extend(chunk)
+                if len(buf) >= max_bytes:
+                    break
+        return bytes(buf)
+
     def post(self, path: str, **kw: Any) -> Any:
         return self.request("POST", path, **kw)
 

@@ -22,7 +22,28 @@ them first, they change how several cells are interpreted.
 |---|---|---|
 | B-01 P-SRV1 counts == EXPECTED_COUNTS, all classes incl registry_entries | **PARTIAL → L-GAP** | Structure asserted (`test_backup_engine::TestModuleStructure::*`, `test_backup_entity_order_covers_registry_entries`, `TestPreCount::test_returns_count_per_entity_type`) but **ArchiveWriter is mocked in every engine test** — no real archive is counted against a real seed. The real-count assertion is a Phase-3 L cell against the Phase-1 fixture's EXPECTED_COUNTS. |
 | B-02 P-SRVN multi-ns subtrees/counts | **PARTIAL → L-GAP** | `test_backup_engine::TestRunBackupMultiNamespace::test_two_namespaces_manifest` asserts per-ns subtrees + `namespace_prefixes()`, but counts are all-zero (empty mock). Real per-ns counts = L. `wip-archive::TestMultiNamespaceArchive` covers the archive layout. |
-| B-03 P-SRVALL all_namespaces incl wip; partial-grant refused | **BUILT (L, gated) — half live-validated** | `run_matrix.py` B-03 (slice 3), behind `--allow-instance-wide`. **Permission half — validated live on prod-test:** `b03_partial_grant_refused()` mints a key with admin on one namespace only, waits for it to go live (see below), attempts an `all_namespaces` backup and gets **404** — refused, and 404 rather than 403 per the don't-leak-existence convention. Key revoked in a `finally`. **Instance-wide half — NOT validated through the cell:** the run that exercised it 503'd mid-poll (CASE-801) before the assertions ran. What *was* observed directly from the surviving job record: `options.all_namespaces=true`, `status=complete`, and `namespaces` = 12 entries including `wip` and every runner namespace. The archive-level asserts (declared == streamed per namespace, job `namespaces` == archive `namespaces`) have never executed. Re-running to close that gap costs the target another outage — see CASE-801. Without the flag the cell reports **SKIPPED**, never silently absent. |
+| B-03 P-SRVALL all_namespaces incl wip; partial-grant refused | **BUILT (L, gated) — live-validated** | `run_matrix.py` B-03 (slice 3), behind `--allow-instance-wide`. Validated end-to-end on prod-test 20260725a (14/14 cells green, B-03 88/88). **Permission half:** `b03_partial_grant_refused()` mints a key with admin on one namespace only, waits for it to go live (see the key-sync gotcha below), attempts an `all_namespaces` backup and gets **404** — refused, and 404 rather than 403 per the don't-leak-existence convention. Key revoked in a `finally`. **Instance-wide half:** the archive spans every namespace — `wip` present, 12 namespaces in the manifest, both runner namespaces present, and the job's `namespaces` matching the archive's. The archive job is deleted afterwards so nothing instance-sized is retained. Without the flag the cell reports **SKIPPED**, never silently absent. **Reads only the manifest** — see CASE-803 below. |
+
+**B-03 reads only the archive's manifest (CASE-803).** The first version
+downloaded the whole instance-wide archive — 853 MB on prod-test, 826 s of the
+run's 887 s — to inspect one small member. That pushed a gigabyte through the
+same service the run was measuring, and the degradation it caused landed in the
+run's own health telemetry: the single unhealthy sample of that run fell
+*outside* the compression window and inside the download. A cell cannot measure
+a service it is saturating. It now reads a bounded prefix
+(`MANIFEST_PREFIX_BYTES`, 512 KB) and parses `manifest.json` out of it —
+possible because `ArchiveWriter.write` emits the manifest as the archive's
+FIRST member, ahead of every entity file and blob. HTTP Range is not usable
+here (the download route is a bare `StreamingResponse`, which ignores it), so
+the transfer is stopped client-side via `WipClient.get_prefix`. **The trade-off,
+deliberate:** the per-entity `declared == streamed` cross-check cannot survive —
+counting JSONL lines means inflating every member — so B-03 gives it up. B-01
+and B-02 already assert it over the runner's own namespaces on every run, and
+repeating it across every namespace on the instance was never what made this
+cell distinct. B-03's four surviving checks (the partial-grant refusal, `wip`
+present, the runner's namespaces present, job-vs-manifest namespace parity) are
+the ones only it can make, and all four passed in the full-download run before
+the change.
 
 **Gotcha the B-03 build surfaced (not a bug — documented behaviour).** A newly
 created runtime API key is usable against the **Registry** immediately (it owns
