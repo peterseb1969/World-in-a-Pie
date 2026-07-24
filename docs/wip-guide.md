@@ -773,7 +773,7 @@ Override with `--failed-events-warning`, `--consumer-lag-warning`, `--consumer-l
 
 ## 8. MCP Server Setup (AI-assisted development)
 
-WIP ships an MCP server exposing **94 tools and 5 resources** to AI coding assistants. An AI agent can discover templates, query documents, manage terminologies, and import data through tool calls — without reading WIP source code. This section is the operator-side setup; for *what the tools do*, see `docs/mcp-server.md` and the `wip://` resources.
+WIP ships an MCP server exposing **101 tools and 5 resources** to AI coding assistants. An AI agent can discover templates, query documents, manage terminologies, and import data through tool calls — without reading WIP source code. This section is the operator-side setup; for *what the tools do*, see `docs/mcp-server.md` and the `wip://` resources.
 
 ### 8.1 Prerequisites
 

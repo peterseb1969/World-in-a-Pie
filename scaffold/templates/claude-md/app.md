@@ -160,7 +160,7 @@ Read these before starting:
 
 ## MCP
 
-WIP is accessed exclusively via MCP tools (94 tools, 5 resources). Before starting:
+WIP is accessed exclusively via MCP tools (101 tools, 5 resources). Before starting:
 - Read `wip://conventions` — bulk-first API, identity hashing, versioning
 - Read `wip://data-model` — terminologies, templates, documents, fields, term-relations
 - Read `wip://ponifs` — 8 behaviours that trip up every new developer
