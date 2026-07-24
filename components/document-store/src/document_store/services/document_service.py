@@ -2522,6 +2522,30 @@ class DocumentService:
             for stage, total_ms in sorted(val_stage_totals.items()):
                 timing[f"1v_{stage}"] = round(total_ms, 1)
 
+        # Stage 1b: relationship-document constraints (CASE-788). The single-item
+        # create path (create_document) enforces the cross-namespace and
+        # archived-endpoint rules for usage=relationship templates; the bulk path
+        # must apply the identical check or the guardrail holds on one path only.
+        # validation_service.validate already populated each reference's resolved
+        # {namespace, status}, so this reuses _validate_relationship_constraints.
+        template_client = get_template_store_client()
+        rel_checked: list = []
+        for entry in validation_results:
+            idx, req, vr = entry
+            tmpl = await template_client.get_template_resolved(req.template_id)
+            if tmpl and tmpl.get("usage") == "relationship":
+                rel_error = await self._validate_relationship_constraints(
+                    tmpl, vr, namespace,
+                )
+                if rel_error:
+                    failed += 1
+                    results.append(BulkResultItem(
+                        index=idx, status="error", error=rel_error,
+                    ))
+                    continue
+            rel_checked.append(entry)
+        validation_results = rel_checked
+
         if not validation_results:
             return self._finalize_bulk_response(results, len(items), timing, total_start)
 
