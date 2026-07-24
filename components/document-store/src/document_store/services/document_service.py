@@ -787,8 +787,19 @@ class DocumentService:
         actor: str,
         now: datetime,
         max_retries: int = 3,
+        entity_created_at: datetime | None = None,
     ) -> "Document":
         """Insert a document, retrying on duplicate key errors.
+
+        ``entity_created_at`` carries the entity's original creation time onto a
+        successor version. Each version is its own row, so writing ``now`` into
+        ``created_at`` made a document appear to be created again on every edit —
+        the field drifted forward and became indistinguishable from
+        ``updated_at``. Callers writing version N+1 pass the existing document's
+        ``created_at``; callers writing version 1 leave it None and get ``now``.
+        (``versioned: false`` templates never came here for updates — they mutate
+        the original row in place — so they always had the correct semantics;
+        this makes versioned templates agree with them.)
 
         When two concurrent requests (or duplicate identity hashes in a batch)
         race to create the same version, the loser gets a DuplicateKeyError.
@@ -813,7 +824,7 @@ class DocumentService:
                 references=references,
                 file_references=file_references,
                 status=DocumentStatus.ACTIVE,
-                created_at=now,
+                created_at=entity_created_at or now,
                 created_by=actor,
                 updated_at=now,
                 updated_by=actor,
@@ -965,6 +976,9 @@ class DocumentService:
             metadata=metadata,
             actor=actor,
             now=now,
+            # Successor version: keep the entity's original creation time
+            # rather than stamping this write as a new creation (CASE-802).
+            entity_created_at=existing.created_at,
         )
         new_version = document.version  # May have been incremented by retry
 
@@ -1807,7 +1821,9 @@ class DocumentService:
                     version=v.version,
                     status=v.status,
                     created_at=v.created_at,
-                    created_by=v.created_by
+                    created_by=v.created_by,
+                    updated_at=v.updated_at,
+                    updated_by=v.updated_by,
                 )
                 for v in versions
             ]
@@ -2417,6 +2433,9 @@ class DocumentService:
             metadata=metadata,
             actor=actor,
             now=now,
+            # An update carries the entity's creation time forward; a brand-new
+            # document (existing is None) gets `now` (CASE-802).
+            entity_created_at=existing.created_at if existing is not None else None,
         )
         new_version = document.version
         is_new = new_version == 1
@@ -3561,6 +3580,9 @@ class DocumentService:
                     metadata=new_metadata,
                     actor=actor,
                     now=now,
+                    # PATCH writes a successor version — the entity was created
+                    # when v1 was written, not now (CASE-802).
+                    entity_created_at=current.created_at,
                 )
             except DuplicateKeyError:
                 # Lost the version race even after _insert_with_retry's internal

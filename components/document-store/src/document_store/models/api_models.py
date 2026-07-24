@@ -305,13 +305,21 @@ class TraverseResponse(BaseModel):
 # ============================================================================
 
 class DocumentVersionSummary(BaseModel):
-    """Summary of a document version."""
+    """Summary of a document version.
+
+    ``created_at`` is the ENTITY's creation time and is therefore identical on
+    every row — it does not tell you when this particular version was written.
+    ``updated_at`` does: it is the moment this version row was persisted, which
+    is what makes the history a usable audit trail.
+    """
 
     document_id: str
     version: int
     status: DocumentStatus
     created_at: datetime
     created_by: str | None
+    updated_at: datetime | None = None
+    updated_by: str | None = None
 
 
 class DocumentVersionResponse(BaseModel):

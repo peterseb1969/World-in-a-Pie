@@ -482,6 +482,17 @@ A document is an instance of a template — a filled-in form.
 - identity_fields (defined on template) control what makes a document "the same"
 - Zero identity fields = append-only (every POST creates a new document; PATCH is rejected with `append_only`)
 
+### Document timestamps
+- `created_at` is the ENTITY's creation time — when version 1 was written. It is
+  carried forward onto every later version, so it does not move when a document
+  is edited, and it is the field to sort or display "when was this created".
+- `updated_at` is when THIS version row was written. On a fresh document the two
+  are equal; after any edit `updated_at` is later.
+- Version history (`GET /documents/{id}/versions`) reports the same `created_at`
+  on every row (it is the entity's) — read `updated_at` there to see when each
+  individual version was written.
+- Both are also reporting columns, with the same meanings.
+
 ## Files
 Binary files stored in MinIO, referenced by documents.
 - Upload returns a file_id (UUID7 format)
