@@ -93,12 +93,23 @@ them first, they change how several cells are interpreted.
 
 **Retired:** B-08 backup dry-run — dropped per Peter's ruling (CASE-782); design-doc edit is the sibling's `b782a13c`.
 
-**Live-stack (L) gaps** — the §7 runner, over the Phase-1 fixture, each a dry-run/apply pair with the seven planes:
-- Real-archive count assertions: B-01, B-02 (vs EXPECTED_COUNTS), B-03 (`--allow-instance-wide`, partial-grant refused).
-- Restore cells at real-stack: R-01, R-02, R-03 (`--dr-install`), R-04, R-05 (+original-untouched), R-06 (both directions), R-07, R-08, R-11, R-13, R-14 (blobs + skip_files), R-16 (FTS/PL-REP).
+**Live-stack (L) runner — `run_matrix.py`.** The §7 runner: deployment-pointable, mints `<HHMMSS>-00a/b/c` namespaces, writes only inside them (`deletion_mode:full`), asserts each cell across the 7 planes, prints one cell×planes×pass/fail×wall table, non-zero exit on failure. `--keep`, `--verbose`, `--cleanup-only`. First slice **BUILT + green on prod-test 20260724a** (BE-YAC-20260724-112448):
+- **B-01 / B-02 (BUILT):** real-archive counts — single-ns (NS-A) and multi-ns (NS-A+NS-B). Each asserts manifest-declared == streamed JSONL (PL-JOB, the B-09 partial-damage cross-check) AND == EXPECTED_COUNTS (PL-DATA). Verified live: NS-A 3 terminologies / 146 terms / 64 relations / 4 templates / 7 doc-versions / 1 file / 157 registry entries.
+- **X-02 (BUILT):** counts conservation — a fresh restore reproduces the source's measured totals in the target (all 11 conserved classes).
+- **R-05 / R-13 / R-15 (BUILT):** the fresh-restore spine — R-05 (copy lands + original untouched + PL-LEAK sweep), R-13 (edge endpoints re-pointed + versioned:false overwrite), R-15 (target UUID7 id_config, no prefix leak, ids disjoint from the live source).
+
+**L cells still to build (later slices):**
+- Real-archive: B-03 (`--allow-instance-wide`, partial-grant refused).
+- Restore cells: R-01, R-02, R-03 (`--dr-install`), R-04, R-06 (both directions), R-07, R-08, R-11, R-14 (blobs + skip_files), R-16 (FTS/PL-REP).
 - Failure injection: F-05 (crash mid-restore + re-run converges), F-06 (reporting-sync stopped + force backfill).
-- Harnesses/sweeps: X-01 (dry-run parity), X-02 (counts conservation), X-03 (leak sweep), X-04 (job-plane), X-05 (double-restore idempotence), X-06 (backup-of-a-restore).
+- Harnesses/sweeps: X-01 (dry-run parity), X-03 (leak sweep, generalized), X-04 (job-plane), X-05 (double-restore idempotence), X-06 (backup-of-a-restore).
 - Cell zero (§4 of CASE-773): the CASE-766 inactive-version archive shape — the Phase-1 fixture builds it by construction (SPEC docs pinned to the deactivated v3).
+
+**CONFIRMED BUG surfaced by the first L run — fresh restore drops value-form lookup synonyms.** A fresh restore reproduces every entity but its restored registry entries carry **0 synonyms where the source had 9** (`registry_synonyms 9 → 0`). Root-caused on prod-test 20260724a:
+- Each source terminology/term/document carries one auto-synonym — the value-form key `{ns, type, value}` — distinct from the primary key `{ns, value, label}`. def-store/document-store auto-register it on original creation so the entity resolves by value alone (without its label). Templates never had one.
+- The fresh-restore (remap) path re-provisions each entity via the registry provision/activate flow, which writes only the PRIMARY composite key; the secondary value-form synonym is never regenerated. The **merge**/id-preserving path preserves synonyms (`_rewrite_registry_entry`); only **fresh** restore drops them.
+- **Functional impact (proven):** a value-form registry lookup (`/lookup/by-key` on `{ns,type,value}`) resolves `MATRIX_PRIORITY` on the source (found) and **fails on the restored copy** (not_found). A fresh-restored terminology can no longer be referenced by value — only by canonical id or the full label-bearing primary key. Violates Vision's "any valid synonym must behave identically to the canonical ID."
+- **Gated in the runner** — `run_matrix.py` R-05 asserts value-form resolution survives (PL-REG), so the run now correctly reports this as a failure until the platform drops the synonym-regeneration gap. Needs a case + fix (regenerate the value-form synonyms on the remap-provision path, matching original registration).
 
 ## Confirmed bugs/gaps from the probe (`probe_backup_restore.py`, prod-test)
 

@@ -15,6 +15,9 @@ producer × restore-mode × seam cell against a real deployment.
 | `wip_http.py` | Deployment-pointable HTTP client + target resolution. A target is stated explicitly — `--install <name>` (reads `~/.wip-deploy/<name>/`) or `--base-url` + `--key-file`. Reused by the fixture builder and the Phase 3 runner. |
 | `fixtures.py` | `FixtureBuilder`: provisions NS-A (rich) / NS-B (counterpart) covering the §3 entity checklist E1–E15, through public APIs only, idempotently; counts every class back into an EXPECTED_COUNTS table; tears the namespaces down. |
 | `provision_fixtures.py` | CLI over `FixtureBuilder` — build, `--count-only`, `--teardown`. |
+| `probe_backup_restore.py` | Targeted confirm/deny probe for R-13/R-15 (the prototype the runner generalizes). |
+| `run_matrix.py` | The §7 **layer-L runner** — provisions the fixture, exercises a slice of the §5 cells across the 7 planes, prints one cell×planes×pass/fail table, tears down. Deployment-pointable; non-zero exit on failure. |
+| `cell-coverage.md` | The §6 mapping: every §5 cell marked COVERED/PARTIAL/GAP with named evidence. The Phase-3 work list. |
 | `expected_counts.sample.json` | A reference EXPECTED_COUNTS from a `default`-install build. Illustrative — real counts are measured per run. |
 
 ## Phase 1 — fixtures (done)
@@ -82,3 +85,19 @@ pointable; mints `<HHMMSS>-00x` namespaces; every cell a dry-run/apply pair;
 seven assertion planes with silence ≠ pass; counts conserved against
 EXPECTED_COUNTS; one table (cell × planes × pass/fail × wall time) as the
 artifact; cleanup on success, `--keep`, `--cleanup-only`.
+
+`run_matrix.py` implements this. **First slice built + green on prod-test:**
+B-01/B-02 (real-archive counts, single + multi namespace), X-02 (counts
+conservation across a fresh restore), and the R-05/R-13/R-15 fresh-restore
+spine. Remaining cells (B-03, R-01/02/03/04/06/07/08/11/14/16, F-05/06,
+X-01/03/04/05/06, cell-zero) land in later slices — see `cell-coverage.md`.
+
+```bash
+# run the slice against a named install (self-signed cert -> --no-verify-tls)
+.venv/bin/python tools/backup-matrix/run_matrix.py \
+  --install prod-test --no-verify-tls            # add --verbose for every check
+
+# sweep leftover ??????-00* namespaces from a crashed/kept run
+.venv/bin/python tools/backup-matrix/run_matrix.py \
+  --install prod-test --no-verify-tls --cleanup-only
+```
