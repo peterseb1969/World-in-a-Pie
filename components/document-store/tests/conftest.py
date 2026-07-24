@@ -685,8 +685,9 @@ async def setup_registry_and_app(mongo_client, document_models=None):
     registry_app.state.mongodb_client = mongo_client
     AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])
 
-    # Create test namespaces
-    for prefix in ("wip", "test-ns"):
+    # Create test namespaces. 'other-ns' exists so the cross-namespace
+    # relationship-rejection tests actually run instead of skipping (CASE-788).
+    for prefix in ("wip", "test-ns", "other-ns"):
         await Namespace(prefix=prefix, description=f"Test namespace: {prefix}").insert()
 
     # Mount Registry in-process
