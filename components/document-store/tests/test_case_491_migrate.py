@@ -163,7 +163,7 @@ async def test_migrate_dry_run_flags_doc_failing_target_validation(client, auth_
 
 @pytest.mark.asyncio
 async def test_migrate_rejects_identity_fields_change_as_fork(client, auth_headers):
-    item = await _create_person(client, auth_headers)
+    await _create_person(client, auth_headers)
     tid = SAMPLE_TEMPLATES["PERSON"]["template_id"]
     VERSIONED_TEMPLATE_OVERRIDES[(tid, 2)] = _person_v2(
         tid, identity_fields=["national_id", "first_name"],
@@ -181,7 +181,7 @@ async def test_migrate_rejects_identity_fields_change_as_fork(client, auth_heade
 
 @pytest.mark.asyncio
 async def test_migrate_rejects_inactive_target(client, auth_headers):
-    item = await _create_person(client, auth_headers)
+    await _create_person(client, auth_headers)
     tid = SAMPLE_TEMPLATES["PERSON"]["template_id"]
     VERSIONED_TEMPLATE_OVERRIDES[(tid, 2)] = _person_v2(tid, status="inactive")
 
