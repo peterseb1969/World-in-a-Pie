@@ -128,37 +128,11 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     from def_store.services.ontology_service import OntologyService
     OntologyService.invalidate_relation_type_cache()
 
-    # Bootstrap system terminologies directly in MongoDB.
-    # These are internal data (relation types etc.) that def-store
-    # creates at startup. They use hardcoded SYS-* IDs and don't need
-    # Registry registration — they're never resolved via synonyms.
-    from def_store.services.system_terminologies import SYSTEM_TERMINOLOGIES
-    for sys_term in SYSTEM_TERMINOLOGIES:
-        terminology = Terminology(
-            terminology_id=f"SYS-{sys_term['value']}",
-            namespace="wip",
-            value=sys_term["value"],
-            label=sys_term["label"],
-            description=sys_term.get("description", ""),
-            case_sensitive=sys_term.get("case_sensitive", False),
-            metadata=sys_term.get("metadata", {}),
-            status="active",
-            term_count=len(sys_term.get("terms", [])),
-        )
-        await terminology.insert()
-        for j, t in enumerate(sys_term.get("terms", [])):
-            term = Term(
-                term_id=f"SYS-T-{sys_term['value']}-{j}",
-                namespace="wip",
-                terminology_id=terminology.terminology_id,
-                value=t["value"],
-                label=t.get("label", t["value"]),
-                description=t.get("description", ""),
-                status="active",
-                sort_order=t.get("sort_order", j),
-                metadata=t.get("metadata", {}),
-            )
-            await term.insert()
+    # System terminologies are seeded below through the real bootstrap
+    # (CASE-799), inside the get_registry_client patch — so they carry their
+    # value-form Registry synonym and resolve by value in tests exactly as in
+    # production, instead of the old direct-insert SYS-* shape that bypassed the
+    # Registry.
 
     app.state.mongodb_client = mongo_client
     set_api_key(os.environ["API_KEY"])
@@ -186,6 +160,14 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
         patch('def_store.services.ontology_service.get_registry_client', return_value=real_registry),
         patch('def_store.main.get_registry_client', return_value=real_registry),
     ):
+        # Seed system terminologies the way production does — the real bootstrap
+        # routes through the create path + Registry, so it must run with
+        # get_registry_client patched to the in-process Registry (CASE-799).
+        from def_store.services.system_terminologies import (
+            ensure_system_terminologies,
+        )
+        await ensure_system_terminologies()
+
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             yield ac
