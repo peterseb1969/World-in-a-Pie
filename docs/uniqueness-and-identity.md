@@ -272,12 +272,15 @@ A query for `{"namespace": "backup", "value": "PERSON"}` returns `019-uuid-42` â
 When you know that entity X in namespace `partner` represents the same real-world thing as entity Y in namespace `wip`, you register X's composite key as a synonym of Y's entry:
 
 ```
-POST /api/registry/entries/{entry_id}/synonyms
-{
-  "namespace": "partner",
-  "entity_type": "documents",
-  "composite_key": { "partner_patient_id": "P-8812" }
-}
+POST /api/registry/synonyms/add
+[
+  {
+    "target_id": "<canonical entry_id of Y>",
+    "synonym_namespace": "partner",
+    "synonym_entity_type": "documents",
+    "synonym_composite_key": { "partner_patient_id": "P-8812" }
+  }
+]
 ```
 
 Now a lookup for `{"partner_patient_id": "P-8812"}` resolves to the canonical WIP document.
@@ -297,12 +300,15 @@ Lookups by either ID now resolve to the surviving canonical entry.
 External systems have their own IDs. Register them as synonyms:
 
 ```
-POST /api/registry/entries/{entry_id}/synonyms
-{
-  "namespace": "wip",
-  "entity_type": "documents",
-  "composite_key": { "vendor": "SAP", "vendor_id": "MAT-4291" }
-}
+POST /api/registry/synonyms/add
+[
+  {
+    "target_id": "<canonical entry_id>",
+    "synonym_namespace": "wip",
+    "synonym_entity_type": "documents",
+    "synonym_composite_key": { "vendor": "SAP", "vendor_id": "MAT-4291" }
+  }
+]
 ```
 
 When a client receives a vendor ID, it queries the Registry to resolve the canonical WIP ID. The client is responsible for this lookup â€” WIP doesn't automatically intercept vendor IDs in document data.

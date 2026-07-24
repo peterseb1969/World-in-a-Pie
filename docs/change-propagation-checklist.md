@@ -33,7 +33,7 @@ Not every change touches every layer — use judgement. But review the full list
 
 ## WIP-Toolkit
 
-- [ ] **Import** — `WIP-Toolkit/src/wip_toolkit/import_/restore.py` and `fresh.py` (explicit field mapping)
+- [ ] **Backup/Restore** — the client-side importer (`WIP-Toolkit/.../import_/`) was retired; restore now flows through `components/document-store/src/document_store/services/backup_engine.py` + `libs/wip-archive/` and stores documents verbatim, so new `data.*` fields need no import mapping
 - [ ] **Export** — usually pass-through, but verify
 
 ## Scripts
@@ -68,7 +68,7 @@ Not every change touches every layer — use judgement. But review the full list
 | @wip/client | `types/terminology.ts` | Add to TS interfaces |
 | @wip/react | `use-mutations.ts` | New hooks if needed |
 | MCP server | `server.py` | Add parameter to create/update tools |
-| WIP-Toolkit | `restore.py`, `fresh.py` | Add to import payload mapping |
+| Backup/Restore | `backup_engine.py`, `libs/wip-archive/` | Verbatim restore — new `data.*` fields ride along; no mapping needed |
 | Console UI | Form, List, Detail views | Checkbox/tag/info display |
 | Scripts | `seed_comprehensive.py` | Exercise the new field |
 | Tests | Component + reporting-sync tests | Cover new behavior |

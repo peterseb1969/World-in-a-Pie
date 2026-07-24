@@ -22,7 +22,7 @@ The server runs in one of two modes, controlled by the `WIP_MCP_MODE` environmen
 
 ### Normal Mode (default)
 
-All 94 tools are available — full read/write access to the WIP data model. This is the mode used during application development (Phases 1–4 below).
+All 101 tools are available — full read/write access to the WIP data model. This is the mode used during application development (Phases 1–4 below).
 
 ```bash
 python -m wip_mcp                  # stdio
@@ -31,7 +31,7 @@ python -m wip_mcp --http           # HTTP streamable
 
 ### Read-Only Mode
 
-Set `WIP_MCP_MODE=readonly` to remove all 39 write tools. The server exposes only 49 read-only tools: queries, searches, exports, and reports. The AI physically cannot create, modify, or delete any entities.
+Set `WIP_MCP_MODE=readonly` to remove all 48 write tools. The server exposes only 53 read-only tools: queries, searches, exports, and reports. The AI physically cannot create, modify, or delete any entities.
 
 ```bash
 WIP_MCP_MODE=readonly python -m wip_mcp
@@ -44,23 +44,24 @@ This is a structural safety mechanism — write tools are removed from the MCP t
 - **Shared/multi-tenant deployments** — expose WIP data to agents you don't fully trust
 - **Demo environments** — let users explore without risk of data modification
 
-**Write tools removed (39):**
+**Write tools removed (48):**
 
 | Category | Tools removed |
 |----------|--------------|
 | Terminologies | `create_terminology`, `create_terminologies_bulk`, `update_terminology`, `delete_terminology`, `restore_terminology` |
 | Terms | `create_terms`, `update_term`, `delete_term`, `deprecate_term` |
 | Term Relations | `create_term_relations`, `delete_term_relations` |
-| Templates | `create_template`, `create_templates_bulk`, `create_edge_type`, `update_template`, `activate_template`, `deactivate_template` |
-| Documents | `create_document`, `create_documents_bulk`, `update_document`, `archive_document`, `delete_document` |
+| Templates | `create_template`, `create_templates_bulk`, `create_edge_type`, `update_template`, `activate_template`, `deactivate_template`, `reactivate_template`, `add_edge_type_endpoints` |
+| Documents | `create_document`, `create_documents_bulk`, `update_document`, `archive_document`, `delete_document`, `delete_documents_bulk`, `migrate_documents` |
 | Files | `upload_file`, `delete_file`, `hard_delete_file` |
 | Import | `import_terminology`, `import_documents_csv` |
 | Replay | `start_replay`, `cancel_replay`, `pause_replay`, `resume_replay` |
 | Backup / Restore | `start_backup`, `start_restore`, `delete_backup_job` |
 | Registry | `add_synonym`, `remove_synonym`, `merge_entries` |
-| Namespace | `create_namespace`, `delete_namespace` |
+| Namespace | `create_namespace`, `upsert_namespace`, `delete_namespace` |
+| Grants / API keys | `create_grant`, `revoke_grant`, `create_api_key`, `revoke_api_key` |
 
-**Read-only tools available (49):**
+**Read-only tools available (53):**
 
 Discovery, listing, get-by-ID, search, query, export, validation, hierarchy, report tables, SQL queries (`run_report_query` — enforces read-only SQL), sync status, file metadata, template fields, and document versions.
 
@@ -110,9 +111,11 @@ The MCP server can route traffic through a unified proxy (like Caddy) or connect
 
 The server authenticates to WIP services using an API key, resolved in priority order:
 
-1. `WIP_API_KEY` — direct env var
-2. `WIP_API_KEY_FILE` — path to a file containing the key (supports key rotation without restarting)
-3. Fallback: `dev_master_key_for_testing` (local development only)
+1. `WIP_API_KEY` — direct env var (set by host-spawned stdio servers / apps)
+2. `MASTER_API_KEY` — set by the deployer via the component manifest (`MASTER_API_KEY: from_secret: api-key`)
+3. `API_KEY` — generic fallback the deployer may set
+4. `WIP_API_KEY_FILE` — path to a file containing the key (supports key rotation without restarting)
+5. Fallback: `dev_master_key_for_testing` (local development only)
 
 ### Optional
 
@@ -188,7 +191,7 @@ You can configure two MCP servers in the same `.mcp.json` — one for building, 
 
 ### Kubernetes (HTTP)
 
-The K8s deployment in `k8s/services/mcp-server.yaml` runs the server in HTTP mode on port 8007 with API key auth and DNS rebinding protection.
+The K8s deployment (rendered by `wip-deploy install --target k8s` from `components/mcp-server/wip-component.yaml`) runs the server in HTTP mode on port 8007 with API key auth and DNS rebinding protection.
 
 To deploy a read-only instance alongside the normal one:
 

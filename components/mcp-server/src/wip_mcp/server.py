@@ -425,8 +425,8 @@ A reference field's reference_type determines what it points to:
 - **terminology**: references a terminology itself (rare — for meta-schemas or config)
 - **template**: references a template (e.g., for typed document-to-template links)
 
-For term references, set terminology_ref to the terminology_id it draws from.
-For document references, set template_ref to constrain which template's documents are valid.
+For term references (reference_type: term), set target_terminologies to the terminology_id(s) it may draw from.
+For document references (reference_type: document), set target_templates to constrain which templates' documents are valid.
 
 ### File Field Configuration
 - allowed_types: MIME type patterns (e.g., ["image/*", "application/pdf"])
@@ -434,8 +434,8 @@ For document references, set template_ref to constrain which template's document
 - multiple: allow multiple files; max_files sets the limit
 
 ### Array Field Configuration
-- array_item_type: string, number, integer, boolean, date, datetime, term, object, or reference
-- array_terminology_ref / array_template_ref for typed array items (term / object)
+- array_item_type: string, number, integer, boolean, date, datetime, term, object, reference, or file
+- array_terminology_ref / array_template_ref / array_file_config for typed array items (term / object / file)
 - For array_item_type "reference", the field carries its reference config in the
   field's own reference_type / target_templates / target_terminologies /
   version_strategy slots (the same slots a single reference field uses), and each

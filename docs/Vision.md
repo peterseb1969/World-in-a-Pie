@@ -280,11 +280,14 @@ During validation, the response tells you **how** the input was matched:
 
 ```json
 {
-  "input_value": "Mr.",
   "valid": true,
-  "term_id": "019abc12-def3-7abc-8def-123456789abc",
+  "terminology_id": "019def01-...",
+  "terminology_value": "GENDER",
+  "value": "Mr.",
+  "matched_term": { "term_id": "019abc12-def3-7abc-8def-123456789abc", "value": "Male", "label": "Male" },
   "matched_via": "alias",
-  "normalized_value": "Male"
+  "suggestion": null,
+  "error": null
 }
 ```
 

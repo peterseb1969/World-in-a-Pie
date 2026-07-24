@@ -462,7 +462,7 @@ class SopsSecretBackend:
 - First install: `get_or_generate` produces a value, persists it. Database volumes initialize with the generated password.
 - Re-install: `get_or_generate` reads the existing value. This is critical — a fresh password would diverge from the stored database initialization.
 - Rotate: explicit `wip-deploy rotate-secrets` command. Regenerates specified secrets, coordinates database-side password update (for Mongo/Postgres admin creds), re-renders, re-applies.
-- Nuke: `wip-deploy nuke` optionally wipes secrets alongside data.
+- Nuke: `wip-deploy nuke` preserves secrets and data by default; wiping either is opt-in (`--remove-secrets`, `--remove-data`).
 
 The current `quick-install.sh`'s "delete volumes on repeat install" is a workaround for the absence of this lifecycle. v2 solves it properly.
 
@@ -600,8 +600,10 @@ wip-deploy rotate-secrets [--secret NAME]
     # Regenerate specified secret(s), re-render, re-apply, coordinate
     # database-side password updates.
 
-wip-deploy nuke [--keep-data] [--keep-secrets] [-y]
-    # Teardown. Data wipe is opt-in via NOT passing --keep-data.
+wip-deploy nuke [--remove-data] [--remove-secrets] [--remove-images] [--purge-all] [-y/--yes]
+    # Teardown. SAFE BY DEFAULT: bare `nuke` stops/removes containers but
+    # PRESERVES data and secrets. Destruction is opt-in via --remove-data /
+    # --remove-secrets / --remove-images (--purge-all widens the scope).
 
 wip-deploy dev [--mode tilt|simple]
     # Alias: install --target dev --preset standard, then tilt up or podman-compose up.
@@ -949,7 +951,7 @@ Outputs:
 - `~/wip-deploy/<name>/Caddyfile`
 - `~/wip-deploy/<name>/.env`
 - `~/wip-deploy/<name>/config/dex/config.yaml`
-- `~/.wip-deploy/<name>/secrets/` (persistent; not removed on nuke unless `--keep-secrets=false`)
+- `~/.wip-deploy/<name>/secrets/` (persistent; not removed on nuke unless `--remove-secrets` is passed)
 
 ### Installing (k8s)
 

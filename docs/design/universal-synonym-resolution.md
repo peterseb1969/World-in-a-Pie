@@ -281,9 +281,10 @@ async def resolve_entity_ids(
 ### Registry API additions
 
 ```
-POST /api/registry/resolve
+POST /api/registry/entries/resolve
   Body: [{"composite_key": {"ns": "wip", "type": "template", "value": "ADDRESS"}}, ...]
-  Response: [{"composite_key": {...}, "entry_id": "TPL-01abc...", "status": "found"}, ...]
+  Response: {"results": [{"index": 0, "composite_key": {...}, "entry_id": "TPL-01abc...", "status": "found"}, ...],
+             "total": N, "found": N, "not_found": 0, "errors": 0}
 ```
 
 This is a read-only batch endpoint optimised for resolution. It does not create entries.

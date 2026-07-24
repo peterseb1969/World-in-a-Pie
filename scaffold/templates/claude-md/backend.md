@@ -40,7 +40,7 @@ Eight services + Caddy reverse proxy. Names you will see constantly:
 - **Reporting-Sync** — MongoDB → PostgreSQL via NATS events
 - **Auth-Gateway** — auth shim in front of every backend service (validates API keys, enforces namespace scoping)
 - **Ingest-Gateway** — async bulk ingest path for instrument data and large imports
-- **MCP Server** — 94 tools for AI-assisted development (stdio / SSE / streamable HTTP)
+- **MCP Server** — 101 tools for AI-assisted development (stdio / SSE / streamable HTTP)
 
 Shared libraries:
 
