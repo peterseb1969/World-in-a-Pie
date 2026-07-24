@@ -2543,6 +2543,13 @@ class DocumentService:
                         index=idx, status="error", error=rel_error,
                     ))
                     continue
+                # Relationship indexes are created lazily on first write. Doing it
+                # only on the single-item path left a namespace that ingests edges
+                # exclusively in bulk without the data.source_ref / data.target_ref
+                # indexes the /relationships and /traverse queries depend on
+                # (CASE-795 F21). Idempotent and per-template-cached, so the cost
+                # is one call per distinct template in the batch.
+                await self._ensure_relationship_indexes(req.template_id, namespace)
             rel_checked.append(entry)
         validation_results = rel_checked
 
