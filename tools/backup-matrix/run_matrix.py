@@ -141,6 +141,53 @@ def _fresh_restore(client: WipClient, archive: bytes, *, target_ns: str) -> dict
     return _poll_job(client, snap["job_id"])
 
 
+def _restore(
+    client: WipClient,
+    archive: bytes,
+    *,
+    url_ns: str,
+    mode: str,
+    target_ns: str | None = None,
+    dry_run: bool = False,
+    on_clash: str = "skip",
+    add_missing: bool = False,
+) -> dict:
+    """Generalized restore over the three modes.
+
+    Returns the terminal job on success, or a synthetic
+    ``{status: "refused", http_status, error}`` when the route rejects the
+    upload synchronously (a refusal is an outcome the cells assert on, not a
+    crash). ``url_ns`` is the auth anchor in the path; ``restore``/``merge``
+    write each archived namespace to itself unless ``target_ns`` redirects.
+    """
+    data: dict[str, str] = {"mode": mode}
+    if dry_run:
+        data["dry_run"] = "true"
+    if target_ns:
+        data["target_namespace"] = target_ns
+    if mode == "merge":
+        data["on_clash"] = on_clash
+        if add_missing:
+            data["add_missing"] = "true"
+    try:
+        snap = client.post(
+            f"/api/document-store/backup/namespaces/{url_ns}/restore",
+            files={"archive": (f"{url_ns}.zip", archive, "application/zip")},
+            data=data,
+        )
+    except ApiError as exc:
+        return {"status": "refused", "http_status": exc.status, "error": exc.body[:300]}
+    return _poll_job(client, snap["job_id"])
+
+
+def _drop_ns(client: WipClient, ns: str) -> None:
+    with contextlib.suppress(ApiError):
+        client.delete(
+            f"/api/registry/namespaces/{ns}",
+            params={"force": True, "deleted_by": RUNNER_BY},
+        )
+
+
 @dataclass
 class ParsedArchive:
     manifest: dict
@@ -356,9 +403,110 @@ def cell_r05_fresh_beside_original(
     return c
 
 
+def cell_x01_dry_run_parity(
+    client: WipClient, builder: Any, archive: bytes, src_ns: str, target_ns: str
+) -> Cell:
+    """X-01: a fresh dry-run writes nothing, and the apply then produces exactly
+    the source's conserved counts — the plan the dry-run implies == the outcome
+    the apply delivers."""
+    c = Cell("X-01", "dry-run parity (fresh restore)")
+    src = builder._count_namespace(src_ns)
+    dry = _restore(client, archive, url_ns=target_ns, mode="fresh",
+                   target_ns=target_ns, dry_run=True)
+    c.check("PL-JOB", dry.get("status") == "complete",
+            f"dry-run completed (status={dry.get('status')})")
+    c.check("PL-DATA", len(_all_docs_serialized(client, target_ns)) == 0,
+            "dry-run wrote nothing into the target")
+    job = _restore(client, archive, url_ns=target_ns, mode="fresh", target_ns=target_ns)
+    if not c.check("PL-JOB", job.get("status") == "complete",
+                   f"apply completed (status={job.get('status')})"):
+        return c
+    applied = builder._count_namespace(target_ns)
+    diffs = {k: (src.get(k), applied.get(k)) for k in CONSERVED_KEYS
+             if src.get(k) != applied.get(k)}
+    c.check("PL-DATA", not diffs,
+            f"apply produced the source's conserved counts (diffs={diffs})")
+    return c
+
+
+def cell_r01_id_preserving(
+    client: WipClient, builder: Any, archive: bytes, ns: str
+) -> Cell:
+    """R-01: id-preserving restore into the emptied namespace (disaster
+    recovery) — every id comes back verbatim, counts conserved, and value-form
+    resolution intact (synonyms restored with the entries)."""
+    c = Cell("R-01", "id-preserving restore into an emptied namespace")
+    before_ids = sorted(d["document_id"] for d in _all_docs_serialized(client, ns))
+    before = builder._count_namespace(ns)
+    _drop_ns(client, ns)
+    job = _restore(client, archive, url_ns=ns, mode="restore")
+    if not c.check("PL-JOB", job.get("status") == "complete",
+                   f"id-preserving restore completed "
+                   f"(status={job.get('status')}, err={job.get('error')})"):
+        return c
+    after_ids = sorted(d["document_id"] for d in _all_docs_serialized(client, ns))
+    c.check("PL-DATA", after_ids == before_ids,
+            f"every document id preserved verbatim ({len(before_ids)} docs)")
+    after = builder._count_namespace(ns)
+    diffs = {k: (before.get(k), after.get(k)) for k in CONSERVED_KEYS
+             if before.get(k) != after.get(k)}
+    c.check("PL-DATA", not diffs,
+            f"all conserved counts match the pre-drop namespace (diffs={diffs})")
+    c.check("PL-REG",
+            _value_form_resolves(client, ns, "terminologies", "terminology", "MATRIX_PRIORITY"),
+            "restored terminology resolves by value-form (ids + synonyms preserved)")
+    return c
+
+
+def cell_x05_double_restore(client: WipClient, builder: Any, ns: str, archive: bytes) -> Cell:
+    """X-05: a second id-preserving restore into the now-populated namespace is
+    refused — the empty-target precondition makes restore non-idempotent by
+    refusal, never by silent duplication."""
+    c = Cell("X-05", "double-restore idempotence (id-preserving re-run refused)")
+    before = len(_all_docs_serialized(client, ns))
+    job = _restore(client, archive, url_ns=ns, mode="restore")
+    c.check("PL-JOB", job.get("status") in ("refused", "failed"),
+            f"second id-preserving restore into the non-empty namespace refused "
+            f"(status={job.get('status')})")
+    after = len(_all_docs_serialized(client, ns))
+    c.check("PL-DATA", after == before, f"nothing duplicated ({before} -> {after} documents)")
+    return c
+
+
+def cell_r08_merge_drift(client: WipClient, archive: bytes, ns: str) -> Cell:
+    """R-08: merge folds an archive into a drifted namespace — a document
+    hard-deleted from the target is re-inserted by the merge, the rest left as
+    the on_clash policy dictates."""
+    c = Cell("R-08", "merge into a drifted namespace")
+    samples = _list_docs(client, ns, "MATRIX_SAMPLE")
+    if not c.check("PL-DATA", len(samples) >= 1, "target has samples to drift"):
+        return c
+    _hard_delete_doc(client, ns, samples[0]["document_id"])
+    drifted = _list_docs(client, ns, "MATRIX_SAMPLE")
+    c.check("PL-DATA", len(drifted) == len(samples) - 1,
+            f"drift created — one sample removed ({len(samples)} -> {len(drifted)})")
+    job = _restore(client, archive, url_ns=ns, mode="merge", on_clash="skip")
+    if not c.check("PL-JOB", job.get("status") == "complete",
+                   f"merge completed (status={job.get('status')}, err={job.get('error')})"):
+        return c
+    merged = _list_docs(client, ns, "MATRIX_SAMPLE")
+    c.check("PL-DATA", len(merged) == len(samples),
+            f"the drifted-away document was re-inserted by the merge "
+            f"({len(drifted)} -> {len(merged)})")
+    return c
+
+
 # --------------------------------------------------------------------------- #
 # Small query helpers
 # --------------------------------------------------------------------------- #
+
+
+def _hard_delete_doc(client: WipClient, ns: str, document_id: str) -> None:
+    client.delete(
+        "/api/document-store/documents",
+        params={"namespace": ns},
+        json_body=[{"id": document_id, "hard_delete": True}],
+    )
 
 
 def _list_docs(client: WipClient, ns: str, template_value: str) -> list[dict]:
@@ -531,6 +679,7 @@ def main(argv: list[str] | None = None) -> int:
 
     tag = time.strftime("%H%M%S")
     ns_a, ns_b, tgt = f"{tag}-00a", f"{tag}-00b", f"{tag}-00c"
+    ns_e = f"{tag}-00e"  # dry-run-parity target (X-01)
     cells: list[Cell] = []
     t0 = time.monotonic()
 
@@ -585,10 +734,25 @@ def main(argv: list[str] | None = None) -> int:
                                    src_doc_ids=src_doc_ids, src_count_before=src_count_b_before,
                                    src_count_after=src_count_b_after,
                                    tgt_docs_present=len(_all_docs_serialized(client, tgt))))
+
+                # Slice 2 — restore-mode variety. These reuse archive_b and NS-B.
+                # X-01 first (reads NS-B while it is still intact); then R-01
+                # empties + id-restores NS-B, X-05 re-restores it (refused), and
+                # R-08 drifts + merges it. Ordered: each of R-01/X-05/R-08
+                # depends on the prior NS-B state.
+                print("[slice2] X-01 dry-run parity ...")
+                cells.append(_wrap("X-01", cell_x01_dry_run_parity, client, builder,
+                                   archive_b, ns_b, ns_e))
+                print("[slice2] R-01 id-preserving restore (drops + restores NS-B) ...")
+                cells.append(_wrap("R-01", cell_r01_id_preserving, client, builder, archive_b, ns_b))
+                print("[slice2] X-05 double-restore idempotence ...")
+                cells.append(_wrap("X-05", cell_x05_double_restore, client, builder, ns_b, archive_b))
+                print("[slice2] R-08 merge into drift ...")
+                cells.append(_wrap("R-08", cell_r08_merge_drift, client, archive_b, ns_b))
         finally:
             if not args.keep:
                 print("\n[teardown] deleting runner namespaces ...")
-                teardown(client, [tgt, ns_a, ns_b])
+                teardown(client, [tgt, ns_e, ns_a, ns_b])
             else:
                 print(f"\n[keep] namespaces preserved: {ns_a}, {ns_b}, {tgt}")
 

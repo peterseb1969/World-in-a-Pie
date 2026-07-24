@@ -35,14 +35,14 @@ them first, they change how several cells are interpreted.
 
 | Cell | Status | Evidence / gap |
 |---|---|---|
-| R-01 P-SRV1 × R-ID into empty ns, full fidelity | **COVERED (C) → L for real archive** | `test_round_trip::test_golden_round_trip` is the id-preserving full-fidelity restore (edge flags, versioned:false overwrite, ontology, aliases, metadata, versions). Engine unit: `test_backup_engine::TestRunRestoreBasicFlow`. L-layer real-stack pass = Phase 3. |
+| R-01 P-SRV1 × R-ID into empty ns, full fidelity | **COVERED (C) → L BUILT** | `test_round_trip::test_golden_round_trip` (C). L: `run_matrix.py` R-01 (slice 2) — drop NS-B, `mode=restore` back; asserts every document id preserved verbatim, conserved counts match the pre-drop namespace, value-form resolution intact. |
 | R-02 P-SRVN × R-ID both ns, cross-ns refs (E8) intact | **GAP (L)** | No multi-namespace real restore with cross-ns refs. |
 | R-03 P-SRV1 × R-ID-X cross-instance DR | **GAP (L)** | Needs `--dr-install`; §6 confirms empty. |
 | R-04 P-CLI × R-ID — the CASE-756 seam | **COVERED (C) → L** | `test_round_trip::test_golden_round_trip` IS this seam (CLI export → engine restore, resolution fidelity without caches, CASE-665/756). L version = Phase 3. |
 | R-05 P-SRV1 × R-FR1 beside live original; LEAK on copy; original untouched | **PARTIAL → L-GAP** | Copy lands active in TARGET: `test_remap_integration::{test_ids_come_from_the_registry_and_are_active, test_documents_land_under_new_ids...}`. LEAK sweep: `test_remap_multi::test_reference_snapshots_carry_no_trace_of_the_source`. **"Original untouched" is never asserted** (source is a mocked reader). L cell + original-untouched diff. |
 | R-06 P-SRVN × R-FRN cross-source refs both ways + template pin | **PARTIAL → L-GAP** | Cross-source template pin + one ref direction: `test_remap_multi::test_cross_source_template_pin_follows_the_new_id`. **Both directions** and real-stack = L. |
 | R-07 P-SRVN × R-FRC collapse; same-valued **terminology** refused naming both sources; dry-run refuses the SAME cell | **PARTIAL → GAP** | Disjoint lands + N:1 refusal naming both sources: `test_remap_multi::{test_n_to_one_disjoint_content_lands_in_one_target, test_n_to_one_key_collision_refuses}` — but the collision is on **templates**, not terminologies, and `test_dry_run_placeholders_unique_across_sources` asserts the *opposite* (avoiding a false refusal). **DONE (C):** `test_remap_multi::test_n_to_one_terminology_collision_refuses` — two same-valued `MATRIX_STATUS` terminologies into one target refuse (apply path AND dry-run, since `_check_target_collisions` runs before provisioning). L real-stack cell remains for Phase 3. |
-| R-08 P-SRV1 × R-MRG into drift; add_missing off/on; extend_terminologies | **COVERED (C) → L** | `test_merge_restore::TestDefinitionsPrecondition::*`, `test_merge_definitions::TestOptInStrategies::{test_add_missing_makes_an_absent_template_addable, test_extend_terminologies_covers_terms_not_templates}`. L = Phase 3. |
+| R-08 P-SRV1 × R-MRG into drift; add_missing off/on; extend_terminologies | **COVERED (C) → L BUILT** | C: `test_merge_restore::TestDefinitionsPrecondition::*`, `test_merge_definitions::TestOptInStrategies::*`. L: `run_matrix.py` R-08 (slice 2) — hard-delete a document, `mode=merge`; the drifted-away document is re-inserted (on_clash=skip). add_missing/extend_terminologies variants still C-only. |
 | R-09 R-MRG on_clash triple (skip / overwrite / newer) | **COVERED (C)** ← §6 was stale | `test_merge_restore::TestDocumentClashPolicy::*` (skip, overwrite, overwrite-in-place on versioned:false, adopts target id) and the whole `TestNewerPolicy` class (newer taken / older left / tie / naive-utc / unparseable-warns / missing / report-counts). **§6 lists R-09 `newer` as known-empty — it is in fact fully covered.** |
 | R-10 R-MRG-T redirect (CASE-748), job record says so | **PARTIAL** | `test_merge_restore::TestMergeIntoADifferentNamespace::*` covers data landing in the target + rescoped/rehashed keys + id-collision refusals — **DONE (C):** `test_merge_restore::test_an_explicit_target_redirect_is_recorded_on_the_job` drives an explicit `target_namespace` differing from the archive manifest and asserts the job result records the redirect. Closing it added one production line — the merge result now records `source_namespace` per target (parity with remap). L cell remains for Phase 3. |
 | R-11 R-JOB restore from a retained job, no re-upload; job independence | **GAP (L)** | Download/delete of retained archives covered (`test_backup_api::test_download_*`, `test_delete_*`) but not restore-from-retained-job. |
@@ -69,11 +69,11 @@ them first, they change how several cells are interpreted.
 
 | Cell | Status | Evidence / gap |
 |---|---|---|
-| X-01 dry-run parity harness — one parametrized runner over every R-* pair | **GAP (harness)** | Parity is tested *per mode* (`test_merge_restore::TestMergeDryRun::*`, `TestMergeReferenceCheck::test_the_dry_run_refuses_too`, remap `test_a_dry_run_provisions_nothing_and_writes_nothing`) but there is no single reusable harness. Build in Phase 3. |
+| X-01 dry-run parity harness — one parametrized runner over every R-* pair | **BUILT (L, fresh) / C per-mode** | `run_matrix.py` X-01 (slice 2): a fresh `dry_run` writes nothing, the apply then produces the source's conserved counts (plan-implied == outcome). Per-mode C parity: `test_merge_restore::TestMergeDryRun::*`, remap `test_a_dry_run_provisions_nothing_and_writes_nothing`. Generalizing X-01 over every R-* mode = later. |
 | X-02 counts conservation harness — one table reused by every cell | **PARTIAL → build** | Seed side done: Phase-1 `FixtureBuilder.count()` → EXPECTED_COUNTS. CLI seed→archive→restore parity: `test_round_trip` (CASE-666). The reusable seed→archive→restore→API harness is Phase 3 (consumes the Phase-1 baseline). |
 | X-03 leak sweep harness — serialized rows × forbidden tokens, every fresh cell | **PARTIAL → build** | One-off sweep exists: `test_remap_multi::test_reference_snapshots_carry_no_trace_of_the_source`. Generalise to a reusable harness. |
 | X-04 job-plane sweep after any L run | **GAP (L)** | Job-plane asserted richly at component layer (`test_backup_service::TestFieldScopedJobWrites::*`, `TestValidationResultSurvives`, `TestPlanSurvivesOnTheJob`) but not as an L-layer post-run sweep. |
-| X-05 double-restore idempotence | **GAP (L)** | R-ID re-run refuses (non-empty); R-MRG re-run all-unchanged is only asserted compositionally (`test_merge_definitions::test_identical_definitions_are_compatible`), never as a literal same-archive re-run. |
+| X-05 double-restore idempotence | **BUILT (L, id-preserving)** | `run_matrix.py` X-05 (slice 2): a second id-preserving restore into the now-populated namespace is refused, nothing duplicated. The R-MRG all-unchanged re-run variant is still only compositional (C) — a later addition. |
 | X-06 backup-of-a-restore, transitive fidelity | **GAP (L)** | Not exercised anywhere. |
 
 ## Gaps to build in Phase 3
@@ -96,13 +96,19 @@ them first, they change how several cells are interpreted.
 **Live-stack (L) runner — `run_matrix.py`.** The §7 runner: deployment-pointable, mints `<HHMMSS>-00a/b/c` namespaces, writes only inside them (`deletion_mode:full`), asserts each cell across the 7 planes, prints one cell×planes×pass/fail×wall table, non-zero exit on failure. `--keep`, `--verbose`, `--cleanup-only`. First slice **BUILT + green on prod-test 20260724a** (BE-YAC-20260724-112448):
 - **B-01 / B-02 (BUILT):** real-archive counts — single-ns (NS-A) and multi-ns (NS-A+NS-B). Each asserts manifest-declared == streamed JSONL (PL-JOB, the B-09 partial-damage cross-check) AND == EXPECTED_COUNTS (PL-DATA). Verified live: NS-A 3 terminologies / 146 terms / 64 relations / 4 templates / 7 doc-versions / 1 file / 157 registry entries.
 - **X-02 (BUILT):** counts conservation — a fresh restore reproduces the source's measured totals in the target (all 11 conserved classes).
-- **R-05 / R-13 / R-15 (BUILT):** the fresh-restore spine — R-05 (copy lands + original untouched + PL-LEAK sweep), R-13 (edge endpoints re-pointed + versioned:false overwrite), R-15 (target UUID7 id_config, no prefix leak, ids disjoint from the live source).
+- **R-05 / R-13 / R-15 (BUILT):** the fresh-restore spine — R-05 (copy lands + original untouched + PL-LEAK sweep + PL-REG value-form resolves), R-13 (edge endpoints re-pointed + versioned:false overwrite), R-15 (target UUID7 id_config, no prefix leak, ids disjoint from the live source).
+
+Slice 2 **BUILT + green on prod-test 20260724b** (10/10 cells, ~49s):
+- **R-01 (BUILT):** id-preserving restore into an emptied namespace (DR round-trip) — drop NS-B, `mode=restore` back into it; asserts every document id preserved verbatim, all conserved counts match the pre-drop namespace (PL-DATA), and value-form resolution intact (PL-REG, synonyms restored with the entries).
+- **R-08 (BUILT):** merge into a drifted namespace — hard-delete a document, `mode=merge`; the drifted-away document is re-inserted, the rest left per `on_clash=skip` (PL-DATA).
+- **X-01 (BUILT):** dry-run parity — a fresh `dry_run` writes nothing into the target, and the apply then produces exactly the source's conserved counts (the plan the dry-run implies == the outcome the apply delivers).
+- **X-05 (BUILT):** double-restore idempotence — a second id-preserving restore into the now-populated namespace is refused (empty-target precondition), nothing duplicated.
 
 **L cells still to build (later slices):**
 - Real-archive: B-03 (`--allow-instance-wide`, partial-grant refused).
-- Restore cells: R-01, R-02, R-03 (`--dr-install`), R-04, R-06 (both directions), R-07, R-08, R-11, R-14 (blobs + skip_files), R-16 (FTS/PL-REP).
+- Restore cells: R-02, R-03 (`--dr-install`), R-04, R-06 (both directions), R-07, R-11, R-14 (blobs + skip_files), R-16 (FTS/PL-REP).
 - Failure injection: F-05 (crash mid-restore + re-run converges), F-06 (reporting-sync stopped + force backfill).
-- Harnesses/sweeps: X-01 (dry-run parity), X-03 (leak sweep, generalized), X-04 (job-plane), X-05 (double-restore idempotence), X-06 (backup-of-a-restore).
+- Harnesses/sweeps: X-03 (leak sweep, generalized), X-04 (job-plane), X-06 (backup-of-a-restore).
 - Cell zero (§4 of CASE-773): the CASE-766 inactive-version archive shape — the Phase-1 fixture builds it by construction (SPEC docs pinned to the deactivated v3).
 
 **CONFIRMED BUG surfaced by the first L run — fresh restore drops value-form lookup synonyms.** A fresh restore reproduces every entity but its restored registry entries carry **0 synonyms where the source had 9** (`registry_synonyms 9 → 0`). Root-caused on prod-test 20260724a:
