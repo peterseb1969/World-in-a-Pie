@@ -218,7 +218,7 @@ async def upsert_namespace(
     (only fields explicitly provided are touched). If the namespace
     does not exist, create it with the supplied fields and defaults
     for anything omitted (`isolation_mode='open'`, `deletion_mode='retain'`,
-    `description=''`, `allowed_external_refs=[]`, `id_config=None`).
+    `description=''`, `allowed_external_refs=[]`, `id_config={}`).
 
     This makes app bootstrap scripts idempotent — a single self-healing
     call replaces the `GET → 404 → POST` dance.

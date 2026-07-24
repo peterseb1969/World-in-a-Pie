@@ -47,7 +47,8 @@ async def create_templates(
         default="error",
         description=(
             "Deprecated — retained for API compatibility, no longer selects "
-            "behavior. Template create is an upsert: a new (namespace, value) "
+            "behavior (though a value other than 'error'/'validate' is still "
+            "rejected with HTTP 400). Template create is an upsert: a new (namespace, value) "
             "creates version 1; an existing one returns 'unchanged' for an "
             "identical schema or bumps to version N+1 for any difference, "
             "with a structured diff in the item's details. Identity-bearing "

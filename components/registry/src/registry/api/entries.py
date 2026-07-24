@@ -348,6 +348,9 @@ async def register_keys(
     """
     Register one or more composite keys. This is sugar for reserve + immediate activate.
 
+    All items in a batch must share the same namespace; a mixed-namespace batch is
+    rejected up front with a whole-call 422 (not a per-item error).
+
     For each key:
     - If the key already exists, returns the existing registry ID
     - If new, generates an ID (or uses client-provided one) and creates an active entry

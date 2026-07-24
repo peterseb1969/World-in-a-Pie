@@ -1176,9 +1176,10 @@ async def aggregated_integrity_check(
     Args:
         template_status: Filter templates by status ('active', 'deprecated', 'inactive')
         document_status: Filter documents by status ('active', 'inactive', 'archived')
-        template_limit: Maximum templates to check (default 1000)
-        document_limit: Maximum documents to check (default 1000)
+        template_limit: Maximum templates to check (default 0 = unbounded / full scan)
+        document_limit: Maximum documents to check (default 0 = unbounded / full scan)
         check_term_refs: Whether to check term references in documents (default true)
+        recent_first: Scan the most-recently-updated documents first (default false)
 
     Returns:
         Aggregated integrity check results from all services

@@ -286,7 +286,7 @@ App (Express)                      @wip/proxy                       WIP Service
 
 ### Enforcement Rollout
 
-Phase 2 is implemented. `check_namespace_permission()` is called from route handlers in document-store, template-store, def-store, and registry.
+Phase 2 is implemented. `check_namespace_permission()` is called from route handlers in document-store, template-store, and def-store. Registry is the permission *authority* — it evaluates grants via `check_permission_internal()` and is queried by those services — rather than a caller of `check_namespace_permission()` (there are no call sites in registry).
 
 ### Single-User Compatibility
 

@@ -145,7 +145,7 @@ class Template(Document):
     )
     extends_version: int | None = Field(
         default=None,
-        description="Pinned parent version (None = always use latest active parent version)"
+        description="Pinned parent version. Required (non-null) whenever the template declares 'extends' — a null there is rejected; the parent is validated against this exact pinned version, never 'latest'. Null only when there is no parent."
     )
 
     # Identity fields for document upsert

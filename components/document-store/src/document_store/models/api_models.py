@@ -460,9 +460,10 @@ class DocumentMigrateRequest(StrictModel):
     templates). The migration is **identity-preserving only**: the two template
     versions must declare the same ``identity_fields``. If they differ the identity
     hash would change — that is a *fork* (create new documents), not a migrate, and
-    the operation is rejected. No data transformation happens here; any per-document
-    data prep (e.g. PATCH-null a removed field) is the app's job, done while the
-    source version is still writable.
+    the operation is rejected. The only data transformation applied is field renames
+    declared on the target template version (mechanical re-keying to the new field
+    names); any other per-document data prep (e.g. PATCH-null a removed field) is the
+    app's job, done while the source version is still writable.
     """
 
     template_id: str = Field(

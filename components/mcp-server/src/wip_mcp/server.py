@@ -343,7 +343,9 @@ and "full" presets, not in "core"). Data syncs within seconds of document change
 
 ## Template Cache
 Template changes may take up to 5 seconds to propagate (cache TTL on "latest"
-resolution). Lookups by explicit version are cached permanently (immutable).
+resolution). The schema for an explicit (pinned) version is immutable, but its active/inactive
+status is not — a deactivate/reactivate still propagates within ~5s, so a
+pinned-version lookup's status is not cached forever.
 If a template update seems to have no effect, wait or pass the explicit version.
 
 ## Namespace-Config Cache
@@ -713,7 +715,7 @@ just receive the new field's value on next backfill.
 
 ## 4. Bulk-First — 200 OK Always
 All WIP write APIs return HTTP 200 even when individual items fail. Per-item
-status is in results[i].status (created, updated, error, skipped).
+status is in results[i].status (created, updated, unchanged, skipped, error).
 
 Trap: You check the HTTP status, see 200, and assume success. Meanwhile,
       items silently failed validation inside the response body.

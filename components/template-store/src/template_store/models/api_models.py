@@ -82,7 +82,7 @@ class CreateTemplateRequest(StrictModel):
     )
     extends_version: int | None = Field(
         default=None,
-        description="Pinned parent version (None = always use latest active parent version)"
+        description="Pinned parent version. Required (non-null) whenever the template declares 'extends' — a null there is rejected; the parent is validated against this exact pinned version, never 'latest'. Null only when there is no parent."
     )
     identity_fields: list[str] = Field(
         default_factory=list,
@@ -111,11 +111,11 @@ class CreateTemplateRequest(StrictModel):
     )
     source_templates: list[str] = Field(
         default_factory=list,
-        description="Template values allowed as edge source (required when usage=relationship; ignored otherwise)"
+        description="Template values allowed as edge source (required when usage=relationship; rejected with an error on non-relationship templates)"
     )
     target_templates: list[str] = Field(
         default_factory=list,
-        description="Template values allowed as edge target (required when usage=relationship; ignored otherwise)"
+        description="Template values allowed as edge target (required when usage=relationship; rejected with an error on non-relationship templates)"
     )
     versioned: bool = Field(
         default=True,
@@ -189,7 +189,7 @@ class UpdateTemplateRequest(StrictModel):
     )
     extends_version: int | None = Field(
         default=None,
-        description="Pinned parent version (None = always use latest active parent version)"
+        description="Pinned parent version. Required (non-null) whenever the template declares 'extends' — a null there is rejected; the parent is validated against this exact pinned version, never 'latest'. Null only when there is no parent."
     )
     identity_fields: list[str] | None = Field(
         default=None,

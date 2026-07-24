@@ -134,7 +134,7 @@ Merge semantics:
 
 Constraints:
 - Identity fields cannot be changed (use POST to create a new document)
-- Namespace cannot be changed (PATCH only modifies `data`)
+- Namespace cannot be changed (PATCH modifies `data`, and `metadata.custom` via `metadata_patch`)
 - Archived documents are rejected; unarchive first
 - Optional per-item `if_match` provides optimistic concurrency control
 
@@ -188,7 +188,9 @@ Each document's existing data is re-validated against the TARGET version
 (which must be active; the source may be inactive/frozen). On apply a new
 document version is created — or the single version is overwritten in place
 for `versioned: false` templates — pinned to `to_version`, keeping the same
-`document_id` and `identity_hash`. No data transformation happens here.
+`document_id` and `identity_hash`. No data transformation happens here, except
+field renames declared on the target template version, which mechanically re-key
+each document's data to the new field names.
 
 Identity-preserving only: the two template versions must declare the same
 `identity_fields`, otherwise the re-pin would change the identity hash — that

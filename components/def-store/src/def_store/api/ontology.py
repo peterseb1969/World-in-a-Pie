@@ -44,8 +44,12 @@ async def create_term_relations(
     """
     Create one or more typed relations between terms.
 
-    Relation types include: is_a, part_of, has_part, maps_to, related_to,
-    finding_site, causative_agent, or any custom type.
+    relation_type must be a value registered in the _ONTOLOGY_RELATIONSHIP_TYPES
+    system terminology; an unregistered type is rejected. Seeded defaults include
+    is_a, has_subtype, part_of, has_part, maps_to, mapped_from, related_to,
+    finding_site, causative_agent, regulates, positively_regulates,
+    negatively_regulates. To use a custom type, add it to that terminology first
+    (OBO Graph import auto-creates any type it references).
     """
     await check_namespace_permission(identity, namespace, "write")
 

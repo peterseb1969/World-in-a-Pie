@@ -1135,7 +1135,14 @@ def compute_identity_hash(
     3. SHA-256 hash the UTF-8 bytes of the canonical string.
     4. Return hex digest.
     """
-    identity_values = {f: data.get(f) for f in identity_fields}
+    # Every identity field must be present and non-null (they are mandatory);
+    # a missing or null value raises rather than hashing an empty slot.
+    identity_values = {}
+    for f in identity_fields:
+        v = data.get(f)
+        if v is None:
+            raise ValueError(f"Identity field '{f}' is missing or null")
+        identity_values[f] = v
 
     canonical = json.dumps(
         identity_values,

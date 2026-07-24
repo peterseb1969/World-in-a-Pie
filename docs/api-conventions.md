@@ -318,8 +318,11 @@ import { WipBulkItemError } from '@wip/client'
 try {
   await client.templateStore.createTemplate(personDef, { onConflict: 'validate' })
 } catch (e) {
-  if (e instanceof WipBulkItemError && e.errorCode === 'incompatible_schema') {
-    console.error('PERSON template drift:', e.details)
+  // Pure schema drift is a loud version event (inspect the result details), NOT
+  // an error. Only identity-bearing or immutable-property differences reject:
+  if (e instanceof WipBulkItemError &&
+      (e.errorCode === 'immutable_property' || e.errorCode === 'identity_fields_immutable')) {
+    console.error('PERSON template immutable-property change:', e.details)
     process.exit(1)
   }
   throw e
@@ -508,7 +511,7 @@ Resolution happens at the API boundary (in the service's route handler) using `r
 |---------|-----------------------------|
 | **Def-Store** | `terminology_id` in term endpoints |
 | **Template-Store** | `terminology_ref`, `template_ref`, `target_templates`, `target_terminologies` in template fields |
-| **Document-Store** | `template_id` in document creation |
+| **Document-Store** | `template_id` in document creation; `document_id` in PATCH, the relationships, and traverse endpoints (accepts a registered synonym) |
 
 ### Term Addressing Is Strict
 

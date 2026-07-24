@@ -247,8 +247,8 @@ Array fields can be flattened into multiple rows (cross-product) or kept as JSON
 **Array Handling:**
 - 0 arrays: 1 row per document
 - 1 array: Flatten into multiple rows
-- 2+ arrays, cross-product ≤1000 rows: Cross-product (flatten all)
-- 2+ arrays, cross-product >1000 rows: Keep arrays as JSON fields
+- 2+ arrays, cross-product ≤ max_cross_product rows (default 1000, tunable up to 10000): Cross-product (flatten all)
+- 2+ arrays, cross-product > max_cross_product rows: Keep arrays as JSON fields
 
 **Metadata Columns:**
 All rows include system columns prefixed with underscore:
