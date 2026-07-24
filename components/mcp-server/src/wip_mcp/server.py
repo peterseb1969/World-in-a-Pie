@@ -634,7 +634,10 @@ record is PERMANENTLY removed, and existing references to it will NOT
 resolve. Trap addendum: in a "full"-mode namespace, do not assume an old
 reference still resolves — it may be gone for real. Independent smaller
 deviations: mutable-terminology terms and binary files are hard-deletable
-regardless of deletion_mode.
+regardless of deletion_mode. One more, privileged and internal: a
+trusted-service rollback primitive (wip-admins/wip-services only) can
+hard-delete a just-reserved, uncommitted entry bypassing the deletion_mode
+gate — a crash-recovery cleanup, not an agent-facing verb.
 
 ## 2. Template Versioning — Update Does NOT Replace
 Updating a template creates a new version. The OLD version stays active.
