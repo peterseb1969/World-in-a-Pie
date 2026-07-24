@@ -312,6 +312,107 @@ class TestRemapAgainstARealRegistry:
         assert result["registry_id"] == edge["document_id"]
 
     @pytest.mark.asyncio
+    async def test_edge_type_endpoints_follow_the_restore_and_stay_addressable(
+        self, live_registry
+    ):
+        # R-13 (CASE-773 backup/restore matrix): the id-identity claim above
+        # proved the mechanism with one generic ref field; an edge type is the
+        # real shape it exists for — usage="relationship", versioned=False, and
+        # TWO id-valued identity fields (source_ref, target_ref). A fresh restore
+        # must (a) re-point BOTH endpoints to the restored documents' NEW ids,
+        # (b) recompute the identity_hash over the rewritten pair, and (c) claim
+        # that recomputed hash so a later overwrite re-addresses the SAME edge
+        # instead of forking a second one — the re-addressability that
+        # versioned:false overwrite-in-place depends on. Live-validated against a
+        # deployed backend via tools/backup-matrix/probe_backup_restore.py; this
+        # pins it as a CI regression guard.
+        from wip_auth.document_identity import compute_hash
+
+        pre_remap_hash = compute_hash(
+            {"source_ref": "OLD-SRC", "target_ref": "OLD-TGT"}
+        )
+        await _run_remap(live_registry, {
+            "templates": [
+                {"template_id": "OLD-THING", "namespace": SOURCE,
+                 "value": "THING", "version": 1, "identity_fields": []},
+                {"template_id": "OLD-LINK", "namespace": SOURCE,
+                 "value": "LINKS", "version": 1, "usage": "relationship",
+                 "versioned": False,
+                 "identity_fields": ["source_ref", "target_ref"]},
+            ],
+            "documents": [
+                {"document_id": "OLD-SRC", "namespace": SOURCE,
+                 "template_id": "OLD-THING", "template_value": "THING",
+                 "template_version": 1, "identity_hash": "", "version": 1,
+                 "data": {"note": "source endpoint"}},
+                {"document_id": "OLD-TGT", "namespace": SOURCE,
+                 "template_id": "OLD-THING", "template_value": "THING",
+                 "template_version": 1, "identity_hash": "", "version": 1,
+                 "data": {"note": "target endpoint"}},
+                {"document_id": "OLD-REL", "namespace": SOURCE,
+                 "template_id": "OLD-LINK", "template_value": "LINKS",
+                 "template_version": 1, "identity_hash": pre_remap_hash,
+                 "version": 1,
+                 "data": {"source_ref": "OLD-SRC", "target_ref": "OLD-TGT"}},
+            ],
+        })
+
+        docs = await _rows(live_registry, "documents")
+        endpoints = {d["data"].get("note"): d["document_id"]
+                     for d in docs if d["data"].get("note")}
+        edge = next(d for d in docs if "source_ref" in d["data"])
+        new_src = endpoints["source endpoint"]
+        new_tgt = endpoints["target endpoint"]
+
+        # The restored edge type is still an edge type — usage/versioned survive.
+        (link_tpl,) = [
+            t for t in await _rows(live_registry, "templates")
+            if t["value"] == "LINKS"
+        ]
+        assert link_tpl["usage"] == "relationship"
+        assert link_tpl["versioned"] is False
+
+        # (a) BOTH endpoints re-pointed to the restored documents' NEW ids.
+        assert edge["data"]["source_ref"] == new_src
+        assert edge["data"]["target_ref"] == new_tgt
+        assert new_src not in ("OLD-SRC", "") and new_tgt not in ("OLD-TGT", "")
+
+        # (b) the stored identity_hash recomputed over the rewritten pair.
+        expected_hash = compute_hash(
+            {"source_ref": new_src, "target_ref": new_tgt}
+        )
+        assert edge["identity_hash"] == expected_hash
+        assert edge["identity_hash"] != pre_remap_hash
+
+        # (c) the Registry claim carries the recomputed hash, so a later write of
+        # the same edge dedups against the restored one (overwrite-in-place)
+        # rather than minting a fork.
+        entry = await RegistryEntry.find_one(
+            RegistryEntry.entry_id == edge["document_id"]
+        )
+        assert entry is not None and entry.status == "active"
+        assert entry.primary_composite_key["identity_hash"] == expected_hash
+
+        transport = ASGITransport(app=registry_app)
+        async with httpx.AsyncClient(transport=transport) as client:
+            resp = await client.post(
+                "http://registry/api/registry/entries/register",
+                json=[{
+                    "namespace": TARGET,
+                    "entity_type": "documents",
+                    "composite_key": {
+                        "ns": TARGET,
+                        "template_id": edge["template_id"],
+                        "identity_hash": expected_hash,
+                    },
+                }],
+                headers={"X-API-Key": os.environ["MASTER_API_KEY"]},
+            )
+        result = resp.json()["results"][0]
+        assert result["status"] == "already_exists"
+        assert result["registry_id"] == edge["document_id"]
+
+    @pytest.mark.asyncio
     async def test_documents_land_under_new_ids_pointing_at_new_templates(
         self, live_registry
     ):
@@ -336,3 +437,48 @@ class TestRemapAgainstARealRegistry:
                 RegistryEntry.entry_id == document["document_id"]
             )
         ).status == "active"
+
+    @pytest.mark.asyncio
+    async def test_an_identity_less_document_stays_append_only_after_restore(
+        self, live_registry
+    ):
+        # R-12 (CASE-773 matrix): an identity-less template (empty
+        # identity_fields) declares append-only — its documents are addressed
+        # only by a surrogate document_id and cannot be PATCHed (error_code
+        # append_only, guarded in document_service by
+        # `not validation_result.identity_fields`). A fresh restore must
+        # preserve that contract: the restored template keeps its empty
+        # identity_fields and the restored document keeps an empty
+        # identity_hash, so it stays un-PATCHable. The guard keys purely on the
+        # template's identity_fields regardless of how the document was
+        # created, so preserving them across the restore is exactly what keeps
+        # the restored document append-only — the rejection itself is pinned by
+        # test_documents_patch::test_patch_no_identity_template_rejected_append_only.
+        await _run_remap(live_registry, {
+            "templates": [
+                {"template_id": "OLD-LOG", "namespace": SOURCE,
+                 "value": "EVENT_LOG", "version": 1, "identity_fields": []},
+            ],
+            "documents": [
+                {"document_id": "OLD-EV", "namespace": SOURCE,
+                 "template_id": "OLD-LOG", "template_value": "EVENT_LOG",
+                 "template_version": 1, "identity_hash": "", "version": 1,
+                 "data": {"event": "boot"}},
+            ],
+        })
+
+        (template,) = await _rows(live_registry, "templates")
+        (document,) = await _rows(live_registry, "documents")
+
+        # The append-only contract survived the restore: no identity_fields on
+        # the template and no identity_hash on the document — the exact
+        # conditions the append_only PATCH guard keys on.
+        assert template["identity_fields"] == []
+        assert document["identity_hash"] == ""
+
+        # And it landed under a fresh surrogate id, still active.
+        assert document["document_id"] not in ("OLD-EV", "")
+        entry = await RegistryEntry.find_one(
+            RegistryEntry.entry_id == document["document_id"]
+        )
+        assert entry is not None and entry.status == "active"

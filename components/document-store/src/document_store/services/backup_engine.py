@@ -1259,6 +1259,11 @@ class DirectRestoreEngine:
                 self.result.setdefault("mode", "merge")
                 self.result["dry_run"] = dry_run
                 self.result.setdefault("namespaces", {})[tgt] = {
+                    # Record where this data came from, so a redirected merge
+                    # (src != tgt) is legible on the job record — parity with the
+                    # remap result, which already carries source/target. For a
+                    # same-namespace merge source_namespace == tgt.
+                    "source_namespace": src,
                     "definitions": definitions.summary(),
                     "incompatibilities": len(definitions.incompatibilities),
                     "target_wins": len(definitions.target_wins),

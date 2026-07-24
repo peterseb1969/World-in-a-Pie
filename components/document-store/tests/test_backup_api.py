@@ -886,3 +886,62 @@ async def test_validation_findings_do_not_fail_the_job(
     assert body["status"] == "complete"
     assert body["result"]["status"] == "error"
     assert body["result"]["issues"][0]["type"] == "orphaned_document_ref"
+
+
+# ---------------------------------------------------------------------------
+# Permission refusals — F-07 (CASE-773 backup/restore matrix)
+# ---------------------------------------------------------------------------
+
+# A non-admin key scoped to a namespace no test data lives in (registered in
+# conftest). It has no access to 'wip', so 'wip' resolves to permission 'none'
+# and the guard answers 404 without leaking the namespace's existence.
+SCOPED_KEY_HEADERS = {"X-API-Key": "test_scoped_key"}
+
+
+@pytest.mark.asyncio
+async def test_non_admin_key_is_refused_on_backup_restore_and_download(
+    client: AsyncClient,
+):
+    """F-07: every other test here drives the endpoints with the superadmin
+    master key, so the auth gate is never exercised. A non-admin key must be
+    refused on all three doors — backup, restore, download — and leave nothing
+    partial behind. Backup and restore need admin; download needs read; the
+    scoped key holds neither on 'wip', so each is a 404, and the two write
+    doors mint no job (the check lands before any archive is read or job
+    created)."""
+    assert len(await BackupJob.find_all().to_list()) == 0
+
+    # Backup (admin-gated) refused — no job minted.
+    resp = await client.post(
+        "/api/document-store/backup/namespaces/wip/backup",
+        headers=SCOPED_KEY_HEADERS,
+        json={"include_files": True},
+    )
+    assert resp.status_code == 404, resp.text
+
+    # Restore (admin-gated) refused at the door, before the archive is read.
+    resp = await client.post(
+        "/api/document-store/backup/namespaces/wip/restore",
+        headers=SCOPED_KEY_HEADERS,
+        files={"archive": ("backup.zip", _valid_archive_bytes("wip"),
+                           "application/zip")},
+        data={"mode": "restore"},
+    )
+    assert resp.status_code == 404, resp.text
+
+    # Nothing partial: neither refused write left a job behind.
+    assert len(await BackupJob.find_all().to_list()) == 0
+
+    # Download (read-gated) refused — the permission check precedes the
+    # status/archive guards, so a job the scoped key cannot see is a 404, not a
+    # 409/410 leaking that the job exists.
+    job = await _make_persisted_job(
+        namespace="wip",
+        status=BackupJobStatus.COMPLETE,
+        archive_path="/tmp/does-not-matter.zip",
+    )
+    resp = await client.get(
+        f"/api/document-store/backup/jobs/{job.job_id}/download",
+        headers=SCOPED_KEY_HEADERS,
+    )
+    assert resp.status_code == 404, resp.text

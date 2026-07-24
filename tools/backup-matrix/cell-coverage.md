@@ -41,15 +41,15 @@ them first, they change how several cells are interpreted.
 | R-04 P-CLI × R-ID — the CASE-756 seam | **COVERED (C) → L** | `test_round_trip::test_golden_round_trip` IS this seam (CLI export → engine restore, resolution fidelity without caches, CASE-665/756). L version = Phase 3. |
 | R-05 P-SRV1 × R-FR1 beside live original; LEAK on copy; original untouched | **PARTIAL → L-GAP** | Copy lands active in TARGET: `test_remap_integration::{test_ids_come_from_the_registry_and_are_active, test_documents_land_under_new_ids...}`. LEAK sweep: `test_remap_multi::test_reference_snapshots_carry_no_trace_of_the_source`. **"Original untouched" is never asserted** (source is a mocked reader). L cell + original-untouched diff. |
 | R-06 P-SRVN × R-FRN cross-source refs both ways + template pin | **PARTIAL → L-GAP** | Cross-source template pin + one ref direction: `test_remap_multi::test_cross_source_template_pin_follows_the_new_id`. **Both directions** and real-stack = L. |
-| R-07 P-SRVN × R-FRC collapse; same-valued **terminology** refused naming both sources; dry-run refuses the SAME cell | **PARTIAL → GAP** | Disjoint lands + N:1 refusal naming both sources: `test_remap_multi::{test_n_to_one_disjoint_content_lands_in_one_target, test_n_to_one_key_collision_refuses}` — but the collision is on **templates**, not terminologies, and `test_dry_run_placeholders_unique_across_sources` asserts the *opposite* (avoiding a false refusal). **No test where dry-run genuinely REFUSES a colliding cell.** The Phase-1 fixture's same-valued `MATRIX_STATUS` terminology in NS-A+NS-B is built precisely for this. Build C + L. |
+| R-07 P-SRVN × R-FRC collapse; same-valued **terminology** refused naming both sources; dry-run refuses the SAME cell | **PARTIAL → GAP** | Disjoint lands + N:1 refusal naming both sources: `test_remap_multi::{test_n_to_one_disjoint_content_lands_in_one_target, test_n_to_one_key_collision_refuses}` — but the collision is on **templates**, not terminologies, and `test_dry_run_placeholders_unique_across_sources` asserts the *opposite* (avoiding a false refusal). **DONE (C):** `test_remap_multi::test_n_to_one_terminology_collision_refuses` — two same-valued `MATRIX_STATUS` terminologies into one target refuse (apply path AND dry-run, since `_check_target_collisions` runs before provisioning). L real-stack cell remains for Phase 3. |
 | R-08 P-SRV1 × R-MRG into drift; add_missing off/on; extend_terminologies | **COVERED (C) → L** | `test_merge_restore::TestDefinitionsPrecondition::*`, `test_merge_definitions::TestOptInStrategies::{test_add_missing_makes_an_absent_template_addable, test_extend_terminologies_covers_terms_not_templates}`. L = Phase 3. |
 | R-09 R-MRG on_clash triple (skip / overwrite / newer) | **COVERED (C)** ← §6 was stale | `test_merge_restore::TestDocumentClashPolicy::*` (skip, overwrite, overwrite-in-place on versioned:false, adopts target id) and the whole `TestNewerPolicy` class (newer taken / older left / tie / naive-utc / unparseable-warns / missing / report-counts). **§6 lists R-09 `newer` as known-empty — it is in fact fully covered.** |
-| R-10 R-MRG-T redirect (CASE-748), job record says so | **PARTIAL** | `test_merge_restore::TestMergeIntoADifferentNamespace::*` covers data landing in the target + rescoped/rehashed keys + id-collision refusals — but the redirect is driven by the *archive's manifest namespace*, not an explicit `target_namespace=` argument, and the **job-record-says-so** assertion exists only for remap. Explicit-option + job-record = C/L gap. |
+| R-10 R-MRG-T redirect (CASE-748), job record says so | **PARTIAL** | `test_merge_restore::TestMergeIntoADifferentNamespace::*` covers data landing in the target + rescoped/rehashed keys + id-collision refusals — **DONE (C):** `test_merge_restore::test_an_explicit_target_redirect_is_recorded_on_the_job` drives an explicit `target_namespace` differing from the archive manifest and asserts the job result records the redirect. Closing it added one production line — the merge result now records `source_namespace` per target (parity with remap). L cell remains for Phase 3. |
 | R-11 R-JOB restore from a retained job, no re-upload; job independence | **GAP (L)** | Download/delete of retained archives covered (`test_backup_api::test_download_*`, `test_delete_*`) but not restore-from-retained-job. |
-| R-12 E7 identity-less through R-ID/R-FR1/R-MRG, un-PATCHable, N:1 empty-key exemption | **PARTIAL → GAP** | Identity-less through remap: `test_remap_restore::{test_an_identity_less_document_gets_an_empty_key, test_distinct_documents_still_get_distinct_ids}` + `test_remap_integration::test_documents_land_under_new_ids...`; through merge-plan: `test_merge_plan::test_identity_less_documents_match_by_document_id_only`. **"still un-PATCHable after restore"** and the R-ID/R-MRG identity-less paths end-to-end = gap. |
-| R-13 E4/E5 edge types through R-FR1; endpoints re-pointed; versioned:false overwrite post-restore | **WORKS — coverage gap only** | **Probed on prod-test (`probe_backup_restore.py --drop-source`): the behaviour is correct** — the restored edge's source_ref/target_ref were re-pointed to the restored samples' NEW ids, and the versioned:false overwrite-in-place held (re-POST kept version=1, count unchanged). No existing automated test (`test_remap_restore::test_term_relations_follow_their_endpoints` covers term-relations only). Not a bug — build the C + L coverage. |
+| R-12 E7 identity-less through R-ID/R-FR1/R-MRG, un-PATCHable, N:1 empty-key exemption | **PARTIAL → GAP** | Identity-less through remap: `test_remap_restore::{test_an_identity_less_document_gets_an_empty_key, test_distinct_documents_still_get_distinct_ids}` + `test_remap_integration::test_documents_land_under_new_ids...`; through merge-plan: `test_merge_plan::test_identity_less_documents_match_by_document_id_only`. **"still un-PATCHable after restore" DONE (C):** `test_remap_integration::test_an_identity_less_document_stays_append_only_after_restore` — restore preserves empty identity_fields + empty identity_hash (the exact conditions the append_only guard keys on); the rejection is pinned by `test_documents_patch::test_patch_no_identity_template_rejected_append_only`. Full R-ID/R-MRG end-to-end at L = Phase 3. |
+| R-13 E4/E5 edge types through R-FR1; endpoints re-pointed; versioned:false overwrite post-restore | **COVERED (C) → L** | Component: `test_remap_integration::test_edge_type_endpoints_follow_the_restore_and_stay_addressable` — a real edge type (usage=relationship, versioned=false, identity_fields=[source_ref,target_ref]) fresh-restored: BOTH endpoints re-pointed to the restored docs' NEW ids, identity_hash recomputed over the pair, and the Registry claim carries it so a later write dedups (the re-addressability overwrite-in-place depends on). Live-validated on prod-test 20260724a via `probe_backup_restore.py` with NO `--drop-source`: version=1, count=1, no fork. L real-stack cell = Phase 3. |
 | R-14 E9 blobs through R-ID/R-FR1 with include_files; skip_files loud | **GAP (L)** | Merge uploads blobs for *inserted* files only (`test_merge_restore::test_only_inserted_files_get_their_blobs_uploaded`); round-trip excludes files (no MinIO). Full blob round-trip + skip_files = L. |
-| R-15 E11 prefixed id_config through R-FR1; re-minted follow TARGET config; next mint no collision | **CONFIRMED BUG → CASE-784** | **Probed on prod-test: fresh-restoring a prefixed-id_config namespace beside its live original 500s.** The fresh restore clones the source `id_config` onto the target verbatim, so the target re-mints the same prefixed sequence (`<src>-D000001`, …) and collides with the live source's ids on the global `entry_id` index. Dropping the source first makes it succeed but the copy's ids still carry the source prefix (PL-LEAK). Filed CASE-784. |
+| R-15 E11 prefixed id_config through R-FR1; re-minted follow TARGET config; next mint no collision | **FIXED (CASE-784) → L guard** | CASE-784 fixed (`e32d8c3f`, `preserve_id_config`): a fresh restore's target defaults to UUID7 instead of cloning the source prefix. Component regression: `test_backup_engine` (preserve_id_config). Live-validated on prod-test 20260724a — fresh-restore-beside-original completes, target id_config is UUID7 (prefix:null), no `entry_id` collision, no prefix leak. Build the L-cell as the real-stack guard in Phase 3. |
 | R-16 E13 FTS + PL-REP full pass after R-FR1 | **GAP (L)** | Reporting/FTS after fresh restore not exercised (reporting is `None`/stubbed in merge+remap suites). L cell. |
 
 ## 5.3 Refusals & failure injection
@@ -62,7 +62,7 @@ them first, they change how several cells are interpreted.
 | F-04 stale reporting schema refused w/o drop_stale_reporting, proceeds with it | **COVERED (U)** | `test_case_689_restore_phases::TestPrecondition::{test_stale_schema_refuses_without_flag, test_stale_schema_drops_with_flag, test_failed_drop_refuses}`; merge rejects the flag: `test_backup_api::test_merge_rejects_drop_stale_reporting`. |
 | F-05 kill engine mid-fresh-restore; reserved don't resolve; re-run converges | **GAP (L)** | Only end-state asserted (`test_remap_integration::test_ids_come_from_the_registry_and_are_active`); the docstring crash promise is never exercised by an interrupted run. |
 | F-06 restore with reporting-sync stopped completes with warnings; PL-REP backfills after force | **PARTIAL → L-GAP** | Unreachable-reporting-warns: `test_case_689_restore_phases::TestPrecondition::test_unreachable_reporting_warns_and_disables`. Force-backfill (CASE-738) after a real restore = L. |
-| F-07 permission: non-admin key refused per ns on backup / restore / download, nothing partial | **GAP** | Every `test_backup_api` test uses the single admin key; no auth-refusal test. Build C. |
+| F-07 permission: non-admin key refused per ns on backup / restore / download, nothing partial | **COVERED (C)** | `test_backup_api::test_non_admin_key_is_refused_on_backup_restore_and_download` — a non-admin key (scoped to `scoped-test-ns`, `none` on `wip`) gets 404 on all three doors; the two write doors mint no job (auth precedes job creation / archive read). |
 | F-08 continue_on_error tombstone → loud 400 | **COVERED (C)** | `test_backup_api::test_restore_rejects_toolkit_era_params[continue_on_error]`. |
 
 ## 5.4 Cross-cutting invariant sweeps (harnesses)
@@ -78,15 +78,15 @@ them first, they change how several cells are interpreted.
 
 ## Gaps to build in Phase 3
 
-**Component-layer (C) gaps** — buildable as doc-store/reporting tests, no live stack:
-- R-07 dry-run genuinely *refuses* an N:1 same-valued **terminology** collision (the fixture's `MATRIX_STATUS` pair).
-- R-10 merge with an explicit `target_namespace=` redirect + job-record assertion.
-- R-12 identity-less docs **un-PATCHable after restore** (R-ID / R-MRG paths).
-- R-13 edge-type **documents** re-pointed through a fresh restore + overwrite-in-place post-fresh-restore — **probe-confirmed working**, so this is pure coverage.
-- F-07 permission refusals on backup / restore / download for a non-admin key.
+**Component-layer (C) gaps — BUILT (BE-YAC-20260724-112448, Tier A):**
+- R-07 dry-run genuinely *refuses* an N:1 same-valued **terminology** collision (the fixture's `MATRIX_STATUS` pair) — `test_remap_multi::test_n_to_one_terminology_collision_refuses` (apply + dry-run both refuse; the check precedes provisioning).
+- R-10 merge with an explicit `target_namespace=` redirect + job-record assertion — `test_merge_restore::test_an_explicit_target_redirect_is_recorded_on_the_job`. Needed a one-line production add: the merge result now records `source_namespace` per target (parity with remap), so a redirect is legible on the job.
+- R-12 identity-less docs **un-PATCHable after restore** — `test_remap_integration::test_an_identity_less_document_stays_append_only_after_restore` (restore preserves empty identity_fields + empty identity_hash; the append_only guard keys purely on those, and the rejection itself is pinned by `test_documents_patch::test_patch_no_identity_template_rejected_append_only`).
+- R-13 edge-type **documents** re-pointed through a fresh restore + overwrite-in-place post-fresh-restore — `test_remap_integration::test_edge_type_endpoints_follow_the_restore_and_stay_addressable`. Live-validated on prod-test 20260724a.
+- F-07 permission refusals on backup / restore / download for a non-admin key — `test_backup_api::test_non_admin_key_is_refused_on_backup_restore_and_download` (404 on all three, nothing partial minted).
 
-**Blocked on a fix first:**
-- R-15 prefixed `id_config` through a fresh restore — **CASE-784 fixed** (`e32d8c3f`); build the L-cell as the regression guard.
+**Fixed + live-validated (regression guard still wanted at L):**
+- R-15 prefixed `id_config` through a fresh restore — **CASE-784 fixed** (`e32d8c3f`); component regression in `test_backup_engine` (preserve_id_config). Live-validated on prod-test 20260724a. Build the L-cell as the real-stack guard in Phase 3.
 
 **Runner obligation folded in (no leftover case):**
 - Partial-damage detection (the residual of B-09 after CASE-783 shape 1+2): the layer-L counts-conservation harness (X-02) must cross-check per-entity streamed counts against the manifest's declared counts and refuse on mismatch — a partial archive that reads as fewer entities with no error is the trap typed refusals cannot catch.
@@ -104,13 +104,16 @@ them first, they change how several cells are interpreted.
 
 A targeted backup → fresh-restore probe against prod-test converted the two
 suspected cells into verdicts:
-- **R-15 → CONFIRMED BUG (CASE-784).** Fresh-restore of a prefixed-`id_config`
-  namespace beside its live original 500s: the target inherits the source's
-  prefix and re-mints the same sequence, colliding on the global `entry_id`
-  index. Also leaks the source prefix into the copy's ids.
-- **R-13 → WORKS.** Edge-type documents re-point their source_ref/target_ref
-  through a fresh restore, and versioned:false overwrite-in-place still holds
-  post-restore. Coverage gap only, not a bug.
+- **R-15 → FIXED (CASE-784, `e32d8c3f`).** Was: fresh-restore of a prefixed-
+  `id_config` namespace beside its live original 500s (target inherited the
+  source prefix, re-minted a colliding sequence on the global `entry_id`
+  index, leaked the prefix). Now: target defaults to UUID7. Re-probed on
+  prod-test 20260724a — completes, UUID7 target, no collision, no leak.
+- **R-13 → WORKS + COVERED.** Edge-type documents re-point their
+  source_ref/target_ref through a fresh restore, and versioned:false
+  overwrite-in-place holds post-restore. Re-probed on 20260724a WITHOUT
+  `--drop-source` (R-15 fix unblocks the beside-original path). Component
+  guard: `test_remap_integration::test_edge_type_endpoints_follow_the_restore_and_stay_addressable`.
 
 Plus two confirmed by code-reading:
 - **B-08 backup dry-run → CASE-782** (not implemented; restore's works).

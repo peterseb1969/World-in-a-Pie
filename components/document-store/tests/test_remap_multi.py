@@ -100,6 +100,44 @@ async def test_n_to_one_key_collision_refuses():
 
 
 @pytest.mark.asyncio
+async def test_n_to_one_terminology_collision_refuses():
+    """R-07 (CASE-773 matrix): the template collision above is one half of the
+    N:1 guard; a same-valued TERMINOLOGY is the other. Two 'MATRIX_STATUS'
+    terminologies collapsing from two sources into one target share the Registry
+    key {ns, value, label}, so the upsert would silently MERGE them — and their
+    terms would then re-parent under a single terminology id. The plan must
+    refuse. The refusal is provisioner-independent (_check_target_collisions
+    runs BEFORE any provisioning), so the dry run refuses the SAME cell — the
+    gap the mapping flagged: no test had a dry run genuinely refuse a colliding
+    cell (only the false-refusal it must avoid). The Phase-1 fixture builds the
+    same-valued MATRIX_STATUS pair in NS-A/NS-B precisely for this."""
+    def _colliding_sources():
+        return [
+            RemapSource("ns-a", "one", {"terminologies": [
+                {"terminology_id": "L-A", "value": "MATRIX_STATUS",
+                 "label": "Matrix Status"}]}),
+            RemapSource("ns-b", "one", {"terminologies": [
+                {"terminology_id": "L-B", "value": "MATRIX_STATUS",
+                 "label": "Matrix Status"}]}),
+        ]
+
+    # Apply path (real provisioner) refuses, naming both sources and the merge.
+    with pytest.raises(RemapCollisionError) as exc:
+        await plan_multi(_colliding_sources(), IDRemapper(), _provision_factory())
+    assert "ns-a" in str(exc.value) and "ns-b" in str(exc.value)
+    assert "merge" in str(exc.value)
+
+    # Dry run refuses the SAME cell — the check precedes provisioning, so the
+    # placeholder-minting dry-run provisioner reaches the same verdict.
+    with pytest.raises(RemapCollisionError):
+        await plan_multi(
+            _colliding_sources(),
+            IDRemapper(),
+            DirectRestoreEngine._dry_run_provisioner(),
+        )
+
+
+@pytest.mark.asyncio
 async def test_n_to_one_disjoint_content_lands_in_one_target():
     factory = _provision_factory()
     plans = await plan_multi(

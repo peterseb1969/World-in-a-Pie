@@ -809,6 +809,41 @@ class TestMergeIntoADifferentNamespace:
         await _clear_other(mongo)
 
     @pytest.mark.asyncio
+    async def test_an_explicit_target_redirect_is_recorded_on_the_job(self, mongo):
+        # R-10 (CASE-773 matrix): a merge can be aimed at a target namespace
+        # that differs from the archive's own — the redirect is the explicit
+        # target argument's doing, not the manifest's. And the job record must
+        # SAY SO: like the remap result (which carries source/target), a
+        # redirected merge records the source namespace it pulled from, so the
+        # redirect stays legible after the fact. The mapping flagged both halves
+        # as gaps — the explicit-option path and the job-record assertion, the
+        # latter existing only for remap before this.
+        await _clear_other(mongo)
+        await _seed_namespace(mongo)
+
+        engine = DirectRestoreEngine(mongo, None, lambda _e: None)
+        reader = _archive_from_other({"terminologies": [
+            {"terminology_id": "T1", "namespace": OTHER_NAMESPACE,
+             "value": "GENDER"},
+        ]})
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=reader,
+        ):
+            # Explicit target NAMESPACE != the archive's manifest OTHER_NAMESPACE.
+            await engine.run_merge(MagicMock(), NAMESPACE, add_missing=True)
+
+        # The data landed in the explicit target...
+        rows = await _rows(mongo, "terminologies")
+        assert [r["namespace"] for r in rows] == [NAMESPACE]
+
+        # ...and the job record records where it came from.
+        assert engine.result["mode"] == "merge"
+        recorded = engine.result["namespaces"][NAMESPACE]
+        assert recorded["source_namespace"] == OTHER_NAMESPACE
+        await _clear_other(mongo)
+
+    @pytest.mark.asyncio
     async def test_composite_keys_are_re_scoped_and_rehashed(self, mongo):
         # The key embeds the namespace and its hash is what the uniqueness
         # gate is built on. Moved without rehashing, the entry would claim a
