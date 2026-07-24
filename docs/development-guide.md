@@ -78,12 +78,16 @@ pip install faker requests
 python scripts/seed_comprehensive.py --profile standard
 ```
 
-| Profile | Documents | Use case |
-|---------|-----------|----------|
-| `minimal` | 50 | Quick smoke test |
-| `standard` | 500 | Normal development |
-| `full` | 2000 | Integration testing |
-| `performance` | 100k | Load testing, bulk import tuning |
+| Profile | Documents (entity + relationship) | Use case |
+|---------|-----------------------------------|----------|
+| `minimal` | ~75 (60 + 15) | Quick smoke test |
+| `standard` | ~650 (525 + 125) | Normal development |
+| `full` | ~2,700 (2,230 + 480) | Integration testing |
+| `performance` | ~67k (57,400 + 9,500) | Load testing, bulk import tuning |
+
+Counts come from `DOCUMENT_PROFILES` and the relationship profiles in
+`components/seed_data/documents.py` — relationship documents are seeded in a
+second pass, after the entity documents they reference land.
 
 ---
 
