@@ -482,3 +482,61 @@ class TestRemapAgainstARealRegistry:
             RegistryEntry.entry_id == document["document_id"]
         )
         assert entry is not None and entry.status == "active"
+
+    @pytest.mark.asyncio
+    async def test_value_form_synonyms_survive_the_fresh_restore(self, live_registry):
+        # CASE-792: a fresh restore re-mints each entity with its PRIMARY
+        # composite key only. The value-form lookup synonym ({ns, type, value})
+        # the create services auto-register lives in the archive's
+        # registry_entries; without carrying it over a restored terminology
+        # resolves only by canonical id, never by value (the reported bug). The
+        # fix (_restore_synonyms) rewrites archived synonyms onto the re-minted
+        # entities. Here the source terminology's archived registry entry carries
+        # its value-form synonym; after remap, value-form lookup on the TARGET
+        # must resolve to the re-minted id.
+        await _run_remap(live_registry, {
+            "terminologies": [
+                {"terminology_id": "OLD-LOV", "namespace": SOURCE,
+                 "value": "GENDER", "label": "Gender"},
+            ],
+            "registry_entries": [
+                {"entry_id": "OLD-LOV", "namespace": SOURCE,
+                 "entity_type": "terminologies",
+                 "primary_composite_key": {"ns": SOURCE, "value": "GENDER",
+                                           "label": "Gender"},
+                 "synonyms": [{
+                     "namespace": SOURCE,
+                     "entity_type": "terminologies",
+                     "composite_key": {"ns": SOURCE, "type": "terminology",
+                                       "value": "GENDER"},
+                 }]},
+            ],
+        })
+
+        (row,) = await _rows(live_registry, "terminologies")
+        new_id = row["terminology_id"]
+
+        # The re-minted entry carries the rewritten value-form synonym...
+        entry = await RegistryEntry.find_one(RegistryEntry.entry_id == new_id)
+        assert entry is not None
+        syn_keys = [s.composite_key for s in entry.synonyms]
+        assert {"ns": TARGET, "type": "terminology", "value": "GENDER"} in syn_keys
+
+        # ...and value-form lookup on the TARGET resolves to it — the exact
+        # resolution that failed on a fresh-restored copy before the fix.
+        transport = ASGITransport(app=registry_app)
+        async with httpx.AsyncClient(transport=transport) as client:
+            resp = await client.post(
+                "http://registry/api/registry/entries/lookup/by-key",
+                json=[{
+                    "namespace": TARGET,
+                    "entity_type": "terminologies",
+                    "composite_key": {"ns": TARGET, "type": "terminology",
+                                      "value": "GENDER"},
+                    "search_synonyms": True,
+                }],
+                headers={"X-API-Key": os.environ["MASTER_API_KEY"]},
+            )
+        result = resp.json()["results"][0]
+        assert result["status"] == "found"
+        assert result["entry_id"] == new_id
