@@ -160,7 +160,9 @@ class TerminologyService:
     @staticmethod
     async def create_terminology(
         request: CreateTerminologyRequest,
-        namespace: str
+        namespace: str,
+        *,
+        actor: str | None = None,
     ) -> TerminologyResponse:
         """
         Create a new terminology.
@@ -188,8 +190,10 @@ class TerminologyService:
                 changed=TerminologyService._terminology_config_diff(existing, request),
             )
 
-        # Get authenticated identity (not client-provided)
-        actor = get_identity_string()
+        # Authenticated identity by default. An explicit `actor` is honored only
+        # for internal/system callers (e.g. the startup bootstrap) — the API
+        # route never forwards a client-provided value, so it cannot be forged.
+        actor = actor or get_identity_string()
 
         # Register with Registry to get ID (or use pre-assigned ID for restore)
         client = get_registry_client()
@@ -1112,7 +1116,7 @@ class TerminologyService:
     async def create_terms_bulk(
         terminology_id: str,
         terms: list[CreateTermRequest],
-        created_by: str | None = None,  # Deprecated: uses authenticated identity
+        created_by: str | None = None,  # Actor override for internal/system callers; else the authenticated identity
         skip_duplicates: bool = True,
         update_existing: bool = False,
         batch_size: int = 1000,
@@ -1153,8 +1157,9 @@ class TerminologyService:
 
         namespace = terminology.namespace
 
-        # Get authenticated identity (not client-provided)
-        actor = get_identity_string()
+        # Authenticated identity by default; an explicit `created_by` is honored
+        # for internal/system callers (e.g. the startup bootstrap).
+        actor = created_by or get_identity_string()
         now = datetime.now(UTC)
 
         # Initialize results array
