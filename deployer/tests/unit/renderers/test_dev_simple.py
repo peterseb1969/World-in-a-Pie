@@ -615,17 +615,21 @@ class TestTargetValidation:
                 repo_root=REPO_ROOT,
             )
 
-    def test_rejects_tilt_mode(
-        self, tmp_path: Path, real_discovery: Discovery
-    ) -> None:
-        d = _dev_deployment()
-        d.spec.platform = PlatformSpec(dev=DevPlatform(mode="tilt"))
-        s = _secrets(tmp_path, d, real_discovery)
-        with pytest.raises(ValueError, match="simple"):
-            render_dev_simple(
-                d, real_discovery.components, real_discovery.apps, s,
-                repo_root=REPO_ROOT,
-            )
+    def test_rejects_unknown_dev_mode_at_the_spec_layer(self) -> None:
+        """A Tilt dev loop was planned and never built, so "tilt" is no longer a
+        dev mode: the spec refuses it outright rather than letting an
+        unrenderable value sit in a deployment until the renderer trips over it.
+        `simple` is the only mode."""
+        with pytest.raises(ValueError):
+            DevPlatform(mode="tilt")
+
+        assert DevPlatform().mode == "simple"
+
+        # The renderer keeps a defensive `dev_plat is None or mode != "simple"`
+        # check, but neither branch is reachable through a valid spec: a bad mode
+        # fails the Literal above, and a missing platform.dev fails the
+        # DeploymentSpec validator ("target='dev' requires platform.dev"). It
+        # stays as belt-and-braces, not as a behaviour worth pinning here.
 
 
 # ────────────────────────────────────────────────────────────────────

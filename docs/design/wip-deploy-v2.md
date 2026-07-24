@@ -174,10 +174,9 @@ class K8sPlatform(BaseModel):
     tls_secret_name: str = "wip-tls"
 
 class DevPlatform(BaseModel):
-    # NOTE: `tilt` is reserved and NOT implemented — there is no dev_tilt
-    # renderer; only `simple` (dev_simple.py) renders. The field still defaults
-    # to "tilt", so a spec that does not override it is rejected by the renderer.
-    mode: Literal["tilt", "simple"] = "tilt"
+    # A Tilt-based dev loop was planned and never built; the option has been
+    # removed. `simple` (dev_simple.py) is the only dev renderer.
+    mode: Literal["simple"] = "simple"
     source_mount: bool = True
 
 class SecretsSpec(BaseModel):

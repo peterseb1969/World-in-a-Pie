@@ -17,9 +17,7 @@ file set as the compose renderer but with three dev-friendly changes:
      hot-reload on source change.
 
 Node/Go apps don't benefit from (2) and (3) — they need rebuilds. MVP
-treats them the same: they get build contexts but no hot reload. Tilt
-mode reserved for future incremental-build orchestration; not
-implemented today.
+treats them the same: they get build contexts but no hot reload.
 
 Caddy, Dex, and the .env are rendered identically to compose — same
 auth flow, same internal TLS. Production fidelity by default; if a

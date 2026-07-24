@@ -310,7 +310,9 @@ class K8sPlatform(WIPModel):
 
 
 class DevPlatform(WIPModel):
-    mode: Literal["tilt", "simple"] = "tilt"
+    # Only "simple" exists. A Tilt-based dev loop was planned and never built;
+    # the option is removed rather than left as a default that no renderer honours.
+    mode: Literal["simple"] = "simple"
     source_mount: bool = True
     # CLI-provided map of app_name → local build-context path for
     # hot-reload dev. Apps not in this dict, AND not in

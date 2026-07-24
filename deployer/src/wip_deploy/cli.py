@@ -305,7 +305,7 @@ def _tls_secret_opt() -> typer.models.OptionInfo:
 def _dev_mode_opt() -> typer.models.OptionInfo:
     return typer.Option(
         "--dev-mode",
-        help="Dev mode: simple (compose + source mounts + --reload) | tilt (reserved, not implemented).",
+        help="Dev mode: simple (compose + source mounts + --reload). The only mode.",
     )
 
 
@@ -4450,8 +4450,7 @@ def _render_tree(
         if dev_plat is None or dev_plat.mode != "simple":
             typer.echo(
                 f"error: dev target requires mode='simple'; got "
-                f"{dev_plat.mode if dev_plat else None!r} "
-                f"(tilt mode is a follow-up)",
+                f"{dev_plat.mode if dev_plat else None!r}",
                 err=True,
             )
             raise typer.Exit(2)
