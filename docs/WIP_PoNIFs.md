@@ -34,9 +34,17 @@ The challenge is not to remove PoNIFs. It is to:
 
 **What goes wrong:** Users deactivate a term and expect all documents using it to fail. They don't — they keep working. Users expect deactivated templates to be invisible. They're not — they still resolve when documents reference them. The mental model of "inactive = deleted" is wrong; the correct model is "inactive = retired."
 
-**Sensible default:** The current behaviour is the correct default — with one important nuance that needs verification: when a term is deactivated, can new documents still use that term value? If yes, "retired" is incomplete — it should mean "existing documents keep resolving, but new documents cannot use this value." If deactivated terms are still accepted in new documents, that's a gap between the mental model and the implementation.
+**Sensible default:** The current behaviour is the correct default, and the "invisible to new data" half is enforced: term validation matches only `status: "active"` terms, so a deactivated or deprecated term is rejected in a new document while existing documents keep resolving it. (Verified in def-store's `validate_value` — the term lookup filters on active status.)
 
-Documentation should be explicit: *"Inactive means retired, not deleted. Retired entities are invisible to new data but always visible to existing data."* And the implementation should enforce the "invisible to new data" part.
+Documentation should be explicit: *"Inactive means retired, not deleted. Retired entities are invisible to new data but always visible to existing data."*
+
+**Default, not absolute.** "Nothing ever dies" is the platform **default** (namespace `deletion_mode: "retain"`), not a physical law. Three guarded deviations exist:
+
+- A namespace explicitly flipped to `deletion_mode: "full"` (the `wip` namespace refuses it; `retain` → `full` requires `confirm_enable_deletion=true`) accepts `hard_delete=true` on delete operations across the stores — the record is **permanently removed**, and existing references to it will **not** resolve.
+- Independent of `deletion_mode`: terms in **mutable terminologies** and **binary files** are hard-deletable.
+- Privileged and internal: a trusted-service rollback primitive (wip-admins / wip-services only) can hard-delete a just-reserved, uncommitted entry, bypassing the `deletion_mode` gate — crash-recovery cleanup, not an agent-facing verb.
+
+So in a `full`-mode namespace, do not assume an old reference still resolves — it may be gone for real.
 
 ### 2. Template Versioning — Multiple Active Versions
 
@@ -62,7 +70,7 @@ For `updateTemplate()`, the default should be to keep the previous version activ
 
 **v2 status.** The template-identity redesign (see `docs/design/template-identity-unification.md`, superseding the Day 29 fireside's direction) decided AGAINST per-version template IDs: `template_id` stays the stable canonical handle, mirroring how documents already work — versions are coordinates on an entity, not entities. What changed instead: the template's identity `(namespace, value)` is registered with the Registry as a real composite key, and template create is an upsert (same name → new version, identical → unchanged). The corollary above holds unchanged; no rename pass is coming.
 
-### 3. Document Identity — The Registry Decides
+### 3. Document Identity — The Hash Decides
 
 **The feature:** Documents don't need an explicit ID to be updated. Instead, templates define identity fields. When a document is submitted, WIP computes an identity hash from those fields. If a document with the same hash exists, it's a new version (update). If not, it's a new document (create). The same endpoint handles both — it's an upsert, not a create-or-update decision.
 
@@ -70,13 +78,13 @@ For `updateTemplate()`, the default should be to keep the previous version activ
 
 **Why it's non-intuitive:** 
 - Developers expect to control the ID. They expect `POST` to create and `PUT` to update. WIP's `POST` does both, and the identity fields — not the URL, not a client-provided ID — determine which.
-- If a template has zero identity fields, every submission creates a new document. There is no update path. This is by design (some data, like event logs, is append-only), but it surprises developers who expect every entity to be updatable.
+- If a template has zero identity fields, every submission creates a new document. There is **no update path at all**: the create/upsert path always appends, **and** PATCH-by-document_id is rejected outright with error code `append_only` (a `document_id` is a surrogate row handle, not a logical identity, and PATCH operates on logical entities). This is by design (some data, like event logs, is append-only), but it surprises developers who expect every entity to be updatable.
 - If the identity fields are wrong (too many — correcting a field creates a new document instead of a version; too few — different real-world entities collide), the consequences are silent and structural. There's no error — just wrong versioning behaviour.
 
 **What goes wrong:**
 - An AI adds a timestamp to the document data. Now every import creates new documents instead of updating existing ones — the timestamp makes every identity hash unique.
 - A developer defines all fields as identity fields. Now correcting a typo creates a new document instead of a new version.
-- A template has no identity fields. The developer tries to "update" a document and gets a duplicate instead.
+- A template has no identity fields. The developer re-POSTs to "update" a document and gets a duplicate instead; switching to PATCH does not help either — that fails with `append_only`. To change such data, create a new document; to make the template updatable, declare identity fields.
 
 **Sensible default:** `@wip/client` should warn (not error) when creating a document against a template with zero identity fields. The warning should say: *"Template X has no identity fields. Every submission will create a new document. If you intend updates, add identity fields to the template."*
 
@@ -178,6 +186,8 @@ See `docs/design/document-relationships.md` for the full design rationale, valid
 **The feature:** Setting `versioned: false` on an edge type (PoNIF #7) makes updates **overwrite the existing payload** instead of creating a new version. Documents under such an edge type stay at `version: 1` forever. The previous data is gone after a successful update.
 
 This is a deliberate exception to PoNIF #2 ("Template Versioning — Update Does NOT Replace"). It applies only to edge types today; the flag is immutable after template creation.
+
+**Invariant: `versioned: false` requires non-empty `identity_fields`.** Overwrite-in-place means "re-address the same entity and replace it" — you cannot re-address a thing that has no identity. The combination is rejected at template create **and** update (the update check matters because `versioned` is immutable while `identity_fields` is not). So `versioned` is N/A for append-only (identity-less) templates, which are always `versioned: true`.
 
 **Why it's powerful:** Some relationships have identity but not history. "Monster has spell" in a bestiary changes when the bestiary author tweaks a spell list — there's no audit interest in "what spells did this monster have last year." Versioning every edge update wastes storage and obscures the current state.
 
