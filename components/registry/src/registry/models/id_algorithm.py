@@ -1,7 +1,12 @@
 """ID algorithm configuration and validation.
 
-Defines per-namespace, per-entity-type ID generation strategies.
-Supported algorithms: uuid7, uuid4, prefixed, nanoid, pattern, any.
+Defines per-namespace, per-entity-type ID strategies.
+
+Generation algorithms (WIP mints the ID): uuid7, uuid4, prefixed, nanoid.
+Validation-only algorithms (the CALLER must supply the entry_id; WIP validates
+it against the config but will NOT generate one): pattern, any. Configuring a
+validation-only algorithm for an entity type whose IDs WIP is expected to mint
+fails at generation time with an actionable error (see IdGenerator.generate).
 """
 
 import re
@@ -18,7 +23,7 @@ class IdAlgorithmConfig(BaseModel):
 
     algorithm: str = Field(
         default="uuid7",
-        description="ID generation algorithm: uuid7, uuid4, prefixed, nanoid, pattern, any"
+        description="ID algorithm. Generation (WIP mints the ID): uuid7, uuid4, prefixed, nanoid. Validation-only (caller must supply entry_id; WIP won't generate): pattern, any."
     )
     prefix: str | None = Field(
         default=None,
@@ -143,4 +148,9 @@ class IdGenerator:
                 raise ValueError("Sequence number required for prefixed algorithm")
             return cls.generate_prefixed(config.prefix or "", seq, config.pad)
         else:
-            raise ValueError(f"Cannot generate IDs for algorithm: {algo}")
+            raise ValueError(
+                f"Algorithm '{algo}' is validation-only — WIP does not generate IDs "
+                f"for it. The caller must supply an explicit entry_id, or the "
+                f"namespace must configure a generation algorithm for this entity "
+                f"type (uuid7, uuid4, prefixed, nanoid)."
+            )
