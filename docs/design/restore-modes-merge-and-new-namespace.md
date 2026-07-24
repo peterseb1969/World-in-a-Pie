@@ -26,7 +26,8 @@ stream.
 `terms.jsonl`, `term_relations.jsonl`, `templates.jsonl`, `documents.jsonl`,
 `files.jsonl`, `registry_entries.jsonl`), plus flat `blobs/<file_id>`
 (namespace-agnostic, globally-unique ids). `ArchiveReader`
-(`WIP-Toolkit/src/wip_toolkit/archive.py`) streams entities row-by-row —
+(`libs/wip-archive/src/wip_archive/archive.py` — moved out of WIP-Toolkit into the
+shared `wip-archive` lib by CASE-744) streams entities row-by-row —
 whole-member decoding is banned; it took peak RSS from 386 MB to 31 MB on a
 90 MB member. An archive may carry several namespaces; the manifest lists
 each with its `namespace_config` and per-type counts.
