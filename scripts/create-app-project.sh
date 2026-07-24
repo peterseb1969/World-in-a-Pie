@@ -301,10 +301,6 @@ KBEOF
             fi
         fi
     fi
-    if [ ! -e "$APP_DIR/yac-discussions" ]; then
-        echo "   NOTE: no yac-discussions/ staging surface. Symlink the shared case"
-        echo "         store (transition) — the write-gateway (CASE-464) will make it optional."
-    fi
 }
 
 # --- Resolve app metadata (CASE-418) ---
