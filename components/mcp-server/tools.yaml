@@ -47,7 +47,11 @@ tools:
     param_name: "term_relations"
     param_type: list
     notes: |
-      Relation types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
+      Relation types (seeded defaults, not a fixed set — apps can add their own to
+      _ONTOLOGY_RELATIONSHIP_TYPES, and OBO Graph import auto-creates any type it
+      references): is_a, has_subtype, part_of, has_part, maps_to, mapped_from,
+      related_to, finding_site, causative_agent, regulates, positively_regulates,
+      negatively_regulates.
       Use source_term_id (subject) and target_term_id (object).
       Example: "Lung cancer" --is_a--> "Cancer"
 

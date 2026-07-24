@@ -122,10 +122,10 @@ The unique "fingerprint" of a document, computed from its [identity fields](#ide
 The template-defined fields that form the [composite key](#composite-key). Specified in the template's `identity_fields` array. Must be mandatory fields.
 
 ### Identity Hash
-A SHA-256 hash computed from the [identity fields](#identity-fields). Used to detect if a document is new or an update to an existing entity. Algorithm:
-1. Sort field names alphanumerically
-2. Concatenate as `field1=value1|field2=value2|...`
-3. Hash with SHA-256
+A SHA-256 hash computed from the [identity fields](#identity-fields). Used to detect if a document is new or an update to an existing entity. An internal dedup key — never a request/response format. Algorithm:
+1. Extract identity values into a dict keyed by field name
+2. Serialize as canonical JSON (`sort_keys=True`, no whitespace, `default=str`)
+3. Hash the UTF-8 bytes with SHA-256
 
 ### Ingest Gateway
 Async bulk document ingestion service (port 8006). Accepts document payloads via NATS JetStream for background processing by Document Store. Included in the `full` preset.

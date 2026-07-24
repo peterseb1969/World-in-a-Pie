@@ -161,6 +161,30 @@ SYSTEM_TERMINOLOGIES: list[dict[str, Any]] = [
                 "metadata": {"transitive": False},
                 "sort_order": 9
             },
+            {
+                "value": "regulates",
+                "label": "Regulates",
+                "description": "GO/RO regulatory relation (RO_0002211)",
+                "aliases": [],
+                "metadata": {"transitive": False},
+                "sort_order": 10
+            },
+            {
+                "value": "positively_regulates",
+                "label": "Positively regulates",
+                "description": "GO/RO positive regulatory relation (RO_0002213)",
+                "aliases": [],
+                "metadata": {"transitive": False},
+                "sort_order": 11
+            },
+            {
+                "value": "negatively_regulates",
+                "label": "Negatively regulates",
+                "description": "GO/RO negative regulatory relation (RO_0002212)",
+                "aliases": [],
+                "metadata": {"transitive": False},
+                "sort_order": 12
+            },
         ]
     }
 ]

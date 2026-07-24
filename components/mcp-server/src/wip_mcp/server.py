@@ -312,9 +312,11 @@ Terms can be connected via typed relations to model hierarchies and
 associations. This is powerful for taxonomies, classification trees, org charts,
 part-of-whole relations, and any domain with inherent structure.
 
-Available relation types: is_a, part_of, has_part, regulates,
-positively_regulates, negatively_regulates. Custom types can be added via the
-_ONTOLOGY_RELATIONSHIP_TYPES terminology.
+Seeded relation types (defaults, NOT a fixed set): is_a, has_subtype, part_of,
+has_part, maps_to, mapped_from, related_to, finding_site, causative_agent,
+regulates, positively_regulates, negatively_regulates. These are a seeded
+baseline — apps can add their own types to the _ONTOLOGY_RELATIONSHIP_TYPES
+terminology, and OBO Graph import auto-creates any type it references.
 
 Key tools:
 - create_term_relations — connect terms (e.g., "Cat is_a Animal")
@@ -351,8 +353,12 @@ namespace's allow-list, a retried write may still be rejected for up to 5
 seconds — wait and retry, no service restart needed.
 
 ## Pagination
-Default page_size: 50, max: 100. List responses include a `pages` field
-(computed as ceil(total / page_size)).
+Default page_size: 50 on most list endpoints (some differ: file lists use
+10-20, table view uses 100). The maximum varies by endpoint — up to 1000 on
+the main content and definition lists (documents, templates, terms,
+terminologies, ontology), 500 on document query, and 100 on file and registry
+endpoints. Check the specific endpoint for its ceiling. List responses include
+a `pages` field (computed as ceil(total / page_size)).
 """
 
 
@@ -494,7 +500,8 @@ This enables cross-system integration without mapping tables.
 
 ## Ontology Relations
 Terms can be connected via typed relations:
-- Types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates
+- Types (seeded defaults, not a fixed set): is_a, has_subtype, part_of, has_part, maps_to, mapped_from, related_to, finding_site, causative_agent, regulates, positively_regulates, negatively_regulates
+- Extensible: apps can add their own relation types to _ONTOLOGY_RELATIONSHIP_TYPES; OBO Graph import auto-creates any type it references
 - Fields: source_term_id, target_term_id, relation_type
 - Supports traversal: ancestors, descendants, parents, children
 - Supports OBO Graph JSON import for bulk relation loading
@@ -1925,7 +1932,10 @@ async def create_term_relations(
                 the respective endpoint's value form — per-item because
                 an edge's two endpoints may live in different
                 terminologies.
-            relation_type: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
+            relation_type: seeded defaults (not a fixed set — apps can add more,
+                OBO import auto-creates any type it references): is_a, has_subtype,
+                part_of, has_part, maps_to, mapped_from, related_to, finding_site,
+                causative_agent, regulates, positively_regulates, negatively_regulates.
         namespace: Namespace to create in. Omit to use server default.
 
     Example:
@@ -1966,7 +1976,7 @@ async def list_term_relations(
         namespace: Namespace to query in. Omit to use server default.
         terminology: Terminology scoping a value-form term_id (see term_id).
         page: Page number.
-        page_size: Results per page (max 100).
+        page_size: Results per page (max 1000).
     """
     try:
         data = await get_client().list_term_relations(

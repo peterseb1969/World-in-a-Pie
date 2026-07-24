@@ -183,7 +183,7 @@ Document-Store                              Registry
 
 | Hash | Computed by | Algorithm | Stored on | Purpose |
 |------|------------|-----------|-----------|---------|
-| Identity hash | Document-Store | `sha256("field=value\|field=value")` | Document record (`identity_hash`) | Domain concept: "what real-world entity is this?" |
+| Identity hash | Document-Store | `sha256(canonical_json(identity_values))` | Document record (`identity_hash`) | Domain concept: "what real-world entity is this?" |
 | Composite key hash | Registry | `sha256(json({"namespace":..., "identity_hash":..., "template_id":...}))` | Registry entry (`primary_composite_key_hash`) | Infrastructure concept: "have I seen this registration before?" |
 
 The identity hash is an **input** to the composite key — one of the values in the dictionary. The Registry doesn't know or care that it's a hash; it treats it as an opaque string.
@@ -192,13 +192,23 @@ The identity hash is an **input** to the composite key — one of the values in 
 
 ```python
 def compute_identity_hash(data, identity_fields):
-    sorted_fields = sorted(identity_fields)
-    parts = [f"{field}={data.get(field, '')}" for field in sorted_fields]
-    normalized = "|".join(parts)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    # Extract identity values into a dict keyed by field name (dot-notation
+    # paths supported). Raises if any identity field is missing or null —
+    # identity fields are mandatory, so a complete document always resolves.
+    identity_values = {field: extract(data, field) for field in identity_fields}
+    # Canonical JSON is the dedup contract: sorted keys, no whitespace,
+    # ASCII-escaped, str() fallback for non-JSON types (datetime, UUID).
+    canonical = json.dumps(
+        identity_values,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 ```
 
-Both field names and values are included — `email=alice@example.com` hashes differently from `user_email=alice@example.com`.
+This is an **internal computation** — the digest is a dedup key stored on the document, never a request/response format. Both field names and values are included, because they are the JSON object's keys and values: `{"email": "alice@example.com"}` hashes differently from `{"user_email": "alice@example.com"}`.
 
 ### Example
 
@@ -207,7 +217,7 @@ Template PERSON:
   identity_fields: ["email"]
 
 Document 1: { "email": "alice@example.com", "name": "Alice" }
-  → identity_hash: sha256("email=alice@example.com") = "a1b2c3..."
+  → identity_hash: sha256('{"email":"alice@example.com"}') = "a1b2c3..."
   → composite key sent to Registry: {"namespace": "wip", "identity_hash": "a1b2c3...", "template_id": "019eee01-..."}
   → Registry: NEW → document_id: "019-uuid-001", version: 1
 
