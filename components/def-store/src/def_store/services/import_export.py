@@ -287,7 +287,9 @@ class ImportExportService:
             format: Data format (json, csv)
             options: Import options
                 - skip_duplicates: Skip terms that already exist
-                - update_existing: Update existing terms
+                - update_existing: Extend-only — existing terminology/terms are
+                  left unchanged (reported "exists"/"skipped"), not modified.
+                  In-place update is a future --force feature (CASE-797).
                 - created_by: User performing import
             namespace: Destination namespace, resolved by the API layer
                 (query param / JSON body / single-namespace-key derivation)
@@ -338,14 +340,13 @@ class ImportExportService:
         })
 
         if existing_terminology:
-            if not update_existing:
-                terminology_id = existing_terminology.terminology_id
-                terminology_status = "exists"
-            else:
-                # Update existing terminology
-                # TODO: Implement update logic
-                terminology_id = existing_terminology.terminology_id
-                terminology_status = "updated"
+            # An existing terminology is not modified by import — extend-only by
+            # WIP contract (CASE-797). update_existing extends the TERM set below;
+            # the terminology's own fields are left unchanged, so report it
+            # honestly as existing rather than a no-op "updated". In-place
+            # modification of an existing terminology is a future --force feature.
+            terminology_id = existing_terminology.terminology_id
+            terminology_status = "exists"
         else:
             # Create new terminology
             metadata = terminology_data.get("metadata", {})

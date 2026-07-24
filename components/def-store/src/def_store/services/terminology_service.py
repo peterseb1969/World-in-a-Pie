@@ -856,12 +856,17 @@ class TerminologyService:
             existing = existing_by_id.get(term_id) or existing_by_value.get(term_req.value)
             if existing:
                 if skip_duplicates or update_existing:
+                    # Existing terms are left untouched — import is extend-only by
+                    # WIP contract (CASE-797). Neither skip_duplicates nor
+                    # update_existing mutates an existing term (real in-place
+                    # update is a future --force feature), so report it honestly
+                    # as skipped rather than a no-op "updated".
                     results[global_idx] = BulkResultItem(
                         index=global_idx,
-                        status="skipped" if skip_duplicates else "updated",
+                        status="skipped",
                         id=existing.term_id,
                         value=term_req.value,
-                        error="Already exists" if skip_duplicates else None,
+                        error="Already exists",
                     )
                 else:
                     results[global_idx] = BulkResultItem(
@@ -1137,7 +1142,9 @@ class TerminologyService:
             terms: Terms to create
             created_by: Deprecated - uses authenticated identity
             skip_duplicates: If True, skip terms whose value already exists
-            update_existing: If True, placeholder for future update logic
+            update_existing: Extend-only — existing terms are left unchanged and
+                reported as "skipped" (in-place update is a future --force
+                feature; CASE-797). Accepting an existing term non-fatally.
             batch_size: Number of terms to process per MongoDB batch (default 1000)
             registry_batch_size: Number of terms per registry HTTP call (default 100)
 
