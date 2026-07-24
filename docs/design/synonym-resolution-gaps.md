@@ -98,7 +98,7 @@ The design calls for auto-synonym registration at entity creation time. Current 
 - template-store: registers auto-synonyms for templates
 - document-store: registers auto-synonyms for documents
 
-These registrations are best-effort (non-blocking, fire-and-forget). If the Registry is unavailable at creation time, the auto-synonym silently doesn't get created. The `backfill-synonyms` toolkit command exists as a safety net.
+These registrations are **synchronous and transactional**: a failure rolls the creation back and re-raises rather than leaving an entity without its auto-synonym. (This paragraph previously described a best-effort, fire-and-forget model; that is no longer the behaviour.) The `backfill-synonyms` toolkit command remains as a safety net for entities created before that change.
 
 ### Implicit namespace derivation (2026-04-04)
 

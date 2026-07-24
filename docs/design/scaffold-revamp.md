@@ -1,6 +1,6 @@
 # Agent Scaffold Revamp — Design
 
-**Status:** Analysis complete; target architecture proposed; reviewed by FRanC (CASE-610) and amended per the agreed resolutions. No implementation yet.
+**Status:** Analysis complete; target architecture proposed; reviewed by FRanC (CASE-610) and amended per the agreed resolutions. **Implemented** — the engine (`scaffold/src/wip_scaffold/engine.py`), the surface/policy matrix and dry-run all shipped, and the setup scripts delegate to `python -m wip_scaffold`.
 **Last updated:** 2026-07-05
 **Author:** Peter + BE-YAC (BE-YAC-20260704-112016)
 **See also:**

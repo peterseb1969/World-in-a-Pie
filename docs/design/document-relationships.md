@@ -146,9 +146,11 @@ N-hop graph traversal from this document.
 
 Response: tree structure rooted at the document, with edges = relationship documents, nodes = documents reached.
 
-Implementation: MongoDB `$graphLookup`. `direction=outgoing` walks `source_ref → _id → target_ref`. `direction=incoming` walks the reverse. `direction=both` runs two `$graphLookup`s and merges on document `_id` to deduplicate cycles.
+Implementation: a Python breadth-first walk over per-hop `find()` queries (not MongoDB `$graphLookup`). `direction=outgoing` walks `source_ref → target_ref`, `direction=incoming` the reverse, and `direction=both` expands on both sides; visited documents are skipped so cycles terminate.
 
 **Depth cap:** 10. MongoDB has no hard limit but performance degrades with depth × average degree. 10 is generous enough for real lineage; anything deeper is an analytical query that belongs in Postgres.
+
+**Node cap:** the walk also stops after 1000 nodes (`max_nodes`, default 1000) and sets a `truncated` flag on the response. A caller must check `truncated` before treating the result as the complete tree — a large graph returns a partial one.
 
 ### MCP tools (new)
 

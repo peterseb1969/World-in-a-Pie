@@ -126,7 +126,7 @@ The contract is small. The failure signatures when you skip a step are specific 
 
 **Symptom signature:** SPA loads. F12 → Network shows 404s on `/api/...` URLs that don't include the BASE_PATH. The Express server's own access log shows no traffic.
 
-**Origin:** every retrofit ever. `--preset query` scaffold today emits bare paths; this is the single biggest source of integration friction. The fix is `${import.meta.env.BASE_URL}<path>`.
+**Origin:** every retrofit ever — this was the single biggest source of integration friction. **Now fixed in the scaffold:** `--preset query` emits `${import.meta.env.BASE_URL}<path>` (App.tsx, SettingsPage.tsx, AskBar.tsx, lib/app-config.ts). The note stands as the rationale for hand-written apps.
 
 ### Skip 7: `/api/me` is OIDC-only
 
@@ -177,7 +177,7 @@ You don't need to test these. They're stable. Just use them.
 
 With `BASE_PATH` defaulting to `/` and `import.meta.env.BASE_URL` defaulting to `/`:
 
-- Vite's dev server proxy keys become `'' + '/api'`, `'' + '/wip'`, `'' + '/server-api'` — same as a non-deployable scaffold today.
+- Vite's dev server proxy keys become `${PREFIX}/api` and `${PREFIX}/wip` (the scaffold emits exactly these two; there is no `/server-api` proxy key).
 - Express router mounts at `/` — routes resolve to identical paths.
 - All client fetches resolve to the same URLs.
 - Session cookie path is `/` — same as today.
@@ -219,10 +219,10 @@ What `--preset query` ships today vs. what this paper recommends:
 | `src/lib/wipBulk.ts` | `fetch('/wip' + path)` | `fetch(\`${import.meta.env.BASE_URL}wip\` + path)` |
 | Inline client fetches | Bare paths | Prefixed with `${import.meta.env.BASE_URL}` |
 | `/api/me` | OIDC session only | Gateway-header sniff → OIDC → anonymous |
-| `Dockerfile.dev` | Not in scaffold | Provided as starter (canonical pattern) |
-| `Dockerfile` (production) | Not in scaffold | Two-stage; `VITE_BASE_PATH` as ARG |
-| `.dockerignore` | Not in scaffold | Provided; narrow `*.md` exclusion called out |
-| `apps/<name>/wip-app.yaml` | Not in scaffold | Provided alongside source-repo files; declares both ports + required env |
+| `Dockerfile.dev` | **In scaffold** | Provided as starter (canonical pattern) |
+| `Dockerfile` (production) | **In scaffold** | Two-stage; `VITE_BASE_PATH` as ARG |
+| `.dockerignore` | **In scaffold** | Provided; narrow `*.md` exclusion called out |
+| `apps/<name>/wip-app.yaml` | **In scaffold** | Provided alongside source-repo files; declares both ports + required env |
 
 These are mechanical scaffold edits. The right move is filing a case (BE-YAC owns the scaffold today) to fold each into `--preset query` so the next APP-YAC doesn't relearn them.
 

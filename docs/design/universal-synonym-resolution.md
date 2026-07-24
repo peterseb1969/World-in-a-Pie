@@ -241,7 +241,8 @@ async def resolve_entity_id(
 def _build_composite_key(raw_id: str, entity_type: str, namespace: str) -> dict:
     """Build a composite key from a synonym string and context.
 
-    Term references use colon notation: "TERMINOLOGY:TERM_VALUE"
+    Term references use the fully qualified form "NS:TERMINOLOGY:VALUE"
+    (the 2-part "TERMINOLOGY:VALUE" shorthand is rejected — see D6)
     All other entity types use the plain value.
     """
     if entity_type == "term" and ":" in raw_id:
@@ -522,4 +523,4 @@ namespace, rather than `not_found`.
 - **Automatic synonym cleanup.** Synonyms persist until explicitly removed. Automated lifecycle management is a future enhancement.
 - **GraphQL or alternative API surface.** This design applies to the existing REST API.
 - **Version-pinned template synonyms.** Auto-synonyms resolve to the entity (latest version). Version-specific synonyms can be registered manually if needed.
-- **Context-sensitive term resolution.** Term synonyms always require `TERMINOLOGY:TERM` colon notation. No implicit terminology inference from field definitions or other context.
+- **Context-sensitive term resolution.** Term identifiers take the canonical UUID, the fully qualified `NS:TERMINOLOGY:VALUE` form, or the field form (a `terminology` parameter scoping an opaque value). The 2-part `TERMINOLOGY:VALUE` shorthand is rejected with 422 (see D6). No implicit terminology inference from field definitions or other context.
