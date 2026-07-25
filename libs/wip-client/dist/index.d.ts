@@ -1216,12 +1216,26 @@ interface ValidateDocumentsRequest {
 interface BulkValidationResponse {
     results: DocumentValidationResponse[];
 }
+/**
+ * One row of a document's version history.
+ *
+ * `created_at` is the ENTITY's creation time — when version 1 was written — so
+ * it is identical on every row and does NOT tell you when this particular
+ * version was persisted. `updated_at` does, which is what makes the history a
+ * usable audit trail. Code that sorts or displays version history by
+ * `created_at` will not order anything; read `updated_at` instead.
+ *
+ * `updated_at` / `updated_by` are absent on documents written before the
+ * platform distinguished the two stamps, hence optional.
+ */
 interface DocumentVersionSummary {
     document_id: string;
     version: number;
     status: DocumentStatus;
     created_at: string;
     created_by: string | null;
+    updated_at?: string | null;
+    updated_by?: string | null;
 }
 interface DocumentVersionResponse {
     identity_hash: string;
