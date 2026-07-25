@@ -5,7 +5,49 @@ from contextlib import asynccontextmanager
 from typing import Any, cast
 
 from aiobotocore.session import get_session
+from botocore.config import Config
 from botocore.exceptions import ClientError
+
+# Storage was the only outbound dependency in this service with no timeout of
+# its own: botocore defaults to 60s connect AND 60s read, with retry_mode
+# resolving to `legacy` and max_attempts unset, so a MinIO that accepts
+# connections but stops answering stalls a caller for minutes. Every other
+# client here (registry, def-store, template-store) passes an explicit
+# timeout; these two configs bring storage in line.
+#
+# read_timeout is per socket read, NOT per request — botocore's own wording is
+# "the time till a timeout exception is thrown when attempting to read from a
+# connection". A streaming 850 MB archive upload is therefore never at risk
+# from this value while bytes keep moving; only a genuinely stalled socket
+# trips it. That is what lets one config cover every data operation.
+_DATA_CONFIG = Config(
+    connect_timeout=5,
+    read_timeout=60,
+    retries={"max_attempts": 3, "mode": "standard"},
+)
+
+# The health path gets a tighter budget than the data path: it exists to answer
+# a caller that is already timing it, so waiting out a data-sized timeout only
+# converts "storage is down" into "the caller is down too". max_attempts=1 in
+# standard mode means one attempt total, no retries — a probe retries by being
+# a probe.
+#
+# connect_timeout is 1, not the 2 that looks natural for a "5s budget", because
+# the wall time is NOT the configured timeout. Measured against a blackholed
+# endpoint (packets dropped, so a connect hangs to its limit), the client makes
+# two connection attempts per botocore attempt and adds ~0.9s of fixed setup:
+#
+#     connect_timeout=1 -> 2.83s     connect_timeout=2 -> 4.58s
+#     connect_timeout=3 -> 6.42s     i.e. wall ~= 2 * connect_timeout + 0.9
+#
+# So 2 would land at 4.6s against a 5s probe budget — inside it, but with no
+# usable margin. 1 lands at ~2.8s. A healthy MinIO answers in 6-41ms, so a 1s
+# connect ceiling is ~25x the observed p99 and will not cause false negatives.
+_HEALTH_CONFIG = Config(
+    connect_timeout=1,
+    read_timeout=2,
+    retries={"max_attempts": 1, "mode": "standard"},
+)
 
 
 class FileStorageClient:
@@ -67,14 +109,19 @@ class FileStorageClient:
         self._session = get_session()
 
     @asynccontextmanager
-    async def _get_client(self):
-        """Get an async S3 client."""
+    async def _get_client(self, config: Config | None = None):
+        """Get an async S3 client.
+
+        Defaults to the data-operation timeouts; callers whose latency budget
+        is smaller than a data transfer's (the health check) pass their own.
+        """
         async with self._session.create_client(
             "s3",
             endpoint_url=self.endpoint_url,
             aws_access_key_id=self.access_key,
             aws_secret_access_key=self.secret_key,
             region_name=self.region,
+            config=config or _DATA_CONFIG,
         ) as client:
             yield client
 
@@ -396,7 +443,7 @@ class FileStorageClient:
     async def health_check(self) -> bool:
         """Check if the storage service is healthy."""
         try:
-            async with self._get_client() as client:
+            async with self._get_client(_HEALTH_CONFIG) as client:
                 # Try to list buckets as a health check
                 await client.list_buckets()
                 return True
