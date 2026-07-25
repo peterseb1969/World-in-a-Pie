@@ -264,14 +264,19 @@ async def test_substring_mode_forces_ilike_even_with_tsv_columns():
 @pytest.mark.asyncio
 async def test_template_filter_restricts_table_lookup():
     conn = _RecordingConn()
-    conn.tables = ["doc_lesson"]  # whatever the lookup returns
-    conn.columns["doc_lesson"] = [
+    # Post-split shape: physical tables carry __vN, and a second template is
+    # present so the filter has something to exclude.
+    cols = [
         ("document_id", "text"),
         ("status", "character varying"),
         ("body", "text"),
         ("body_search", "text"),
         ("body_tsv", "tsvector"),
     ]
+    conn.tables = ["doc_lesson__v1", "doc_lesson__v2", "doc_session__v1"]
+    conn.columns["doc_lesson__v1"] = cols
+    conn.columns["doc_lesson__v2"] = cols
+    conn.columns["doc_session__v1"] = cols
     conn.rows_per_query = [
         [{"doc_id": "DOC-1", "status": "active", "updated_at": None,
           "score": 0.3, "snippet": "x"}]
@@ -283,11 +288,20 @@ async def test_template_filter_restricts_table_lookup():
         if "information_schema.tables" in s
     ]
     assert table_lookups
-    # The discovery query should include the doc_lesson literal as a
-    # parameter (template lower-cased + 'doc_' prefix).
-    sql, params = table_lookups[0]
-    assert "table_name = $1" in sql
-    assert params == ("doc_lesson",)
+    # CASE-810: the filter is no longer an exact SQL name match. That form
+    # could only ever match a bare name, so post-split — when the physical
+    # tables are doc_lesson__v1, doc_lesson__v2, … and the bare name is a
+    # view — it matched nothing and the search returned zero hits silently.
+    # The guarantee under test is the behaviour, not the SQL: only the
+    # requested template's tables are queried.
+    queried = {
+        p[1] for s, p in conn.executed_sql
+        if "information_schema.columns" in s
+    }
+    assert queried == {"doc_lesson__v1", "doc_lesson__v2"}, (
+        "every version table of the requested template must be searched, "
+        "and no other template's"
+    )
 
 
 # =========================================================================

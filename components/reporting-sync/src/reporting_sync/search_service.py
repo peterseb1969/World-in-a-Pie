@@ -7,6 +7,7 @@ Provides unified search across all WIP services and reverse lookups.
 import asyncio
 import logging
 import math
+import re
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
@@ -292,6 +293,22 @@ class ReferencedByResponse(BaseModel):
 # enumerate fully. Anything above this cap returns `total = MAX` with
 # pagination over the first MAX hits — refine the query for more.
 MAX_RESULTS_PER_TYPE = 1000
+
+# Physical reporting tables are per template VERSION (doc_<value>__v<N>); the
+# bare name is an entity view over them. Search must read the physical tables —
+# the tsvector columns FTS matches on exist only there, not on the view — but a
+# caller asks about a logical type, so neither the filter nor the reported type
+# may carry the version. Without this, `template=CASE_RECORD` built the exact
+# name `doc_case_record`, matched no BASE TABLE post-split, and returned zero
+# hits, while results reported themselves as `CASE_RECORD__V1` — a filter value
+# that changes on every template version event.
+_VERSION_SUFFIX_RE = re.compile(r"__v\d+$")
+
+
+def entity_base(table_name: str) -> str:
+    """Logical entity name for a reporting table: doc_case_record__v2 -> case_record."""
+    base = table_name[4:] if table_name.startswith("doc_") else table_name
+    return _VERSION_SUFFIX_RE.sub("", base)
 
 
 def _paginate(
@@ -642,11 +659,13 @@ class SearchService:
                 if namespace:
                     disc_params.append(namespace)
                     filters.append(f"table_schema = ${len(disc_params)}")
-                if template:
-                    disc_params.append(f"doc_{template.lower()}")
-                    filters.append(f"table_name = ${len(disc_params)}")
-                else:
-                    filters.append("table_name LIKE 'doc_%'")
+                # The template filter is applied after the fetch, by comparing
+                # the logical entity name. An exact SQL name match cannot work
+                # post-split (the physical tables carry __vN), and a LIKE
+                # pattern would be wrong too: template values contain '_',
+                # which LIKE treats as a single-character wildcard, so
+                # 'doc_case_record__v%' also matches doc_caseXrecord__v1.
+                filters.append("table_name LIKE 'doc_%'")
 
                 tables = await conn.fetch(
                     "SELECT table_schema, table_name FROM information_schema.tables "
@@ -654,6 +673,13 @@ class SearchService:
                     "ORDER BY table_schema, table_name",
                     *disc_params,
                 )
+
+                if template:
+                    want = entity_base(template.lower())
+                    tables = [
+                        r for r in tables
+                        if entity_base(r["table_name"]) == want
+                    ]
 
                 if not tables:
                     return []
@@ -693,7 +719,11 @@ class SearchService:
                     if mode == "fts" and not tsv_cols:
                         continue  # skip — no tsvector columns to query
 
-                    template_value = tname[4:].upper()
+                    # The logical type, never the physical table: a hit matched
+                    # in doc_case_record__v2 is a CASE_RECORD. `description`
+                    # below still names the table it matched in, so the
+                    # provenance is not lost.
+                    template_value = entity_base(tname).upper()
 
                     try:
                         if use_fts:
