@@ -967,15 +967,37 @@ def cell_r14_blobs(
     return c
 
 
-def cell_r16_reporting_parity(client: WipClient, tgt_ns: str) -> Cell:
-    """R-16: the reporting layer is correct after a fresh restore.
+def cell_r16_reporting_parity(
+    client: WipClient,
+    tgt_ns: str,
+    *,
+    fts_ns: str,
+    fts_query: str,
+    fts_template: str,
+) -> Cell:
+    """R-16: the reporting layer is correct after a fresh restore — E13 + PL-REP.
 
     Reporting is `None` or stubbed in every merge and remap unit suite, so
     whether PostgreSQL reflects a restored namespace was simply unknown. A
     restore that leaves reporting empty or stale is invisible to the document
     API and breaks every SQL consumer downstream.
+
+    Two halves, because parity and FTS fail independently. Parity compares row
+    counts and table shape; it says nothing about whether the tsvector columns
+    that full-text search actually matches on were built. CASE-810 is the proof
+    that the difference matters: a type-filtered search returned zero hits on
+    every post-split install while parity was perfectly happy, because search
+    resolved `doc_<template>` as a BASE TABLE when post-split that name is a
+    VIEW and the physical tables are `doc_<value>__v<N>`.
+
+    The FTS half therefore searches for a document it knows was restored and
+    demands a hit, and separately demands `unmatched_template is None`. That
+    second assertion is the one that would have caught CASE-810 on its own:
+    an empty result set cannot distinguish "this type has nothing" from "this
+    filter matched no table", which is exactly why 810 survived unnoticed on
+    two live instances until CASE-811 added the signal.
     """
-    c = Cell("R-16", "reporting/FTS parity after a fresh restore (PL-REP)")
+    c = Cell("R-16", "reporting parity + FTS after a fresh restore (E13/PL-REP)")
 
     # Sync is event-driven and lands within seconds; poll rather than sleep a
     # fixed guess, and report the wait so a slow target is visible not silent.
@@ -1018,6 +1040,62 @@ def cell_r16_reporting_parity(client: WipClient, tgt_ns: str) -> Cell:
             f"{parity.get('count_mismatches')} mismatch(es)")
     c.check("PL-REP", bool(parity.get("ok")),
             f"overall parity ok after {waited:.0f}s (ok={parity.get('ok')})")
+
+    # --- E13: the FTS half -------------------------------------------------
+    # Searched against the restored copy of NS-A, because that is where the
+    # fixture's `full_text_indexed` field lives (MATRIX_SPECIMEN.description).
+    # Sync is event-driven, so retry rather than assume it has landed.
+    resp: dict = {}
+    docs: dict = {}
+    for _ in range(20):
+        try:
+            resp = client.post(
+                "/api/reporting-sync/search",
+                json_body={
+                    "query": fts_query,
+                    "types": ["document"],
+                    "namespace": fts_ns,
+                    "template": fts_template,
+                },
+            )
+        except ApiError as exc:
+            return c.skip(
+                f"reporting-sync search unreachable ({exc.status}) — preset "
+                "without reporting-sync, or the target is mid-redeploy"
+            )
+        docs = (resp.get("results") or {}).get("document") or {}
+        if docs.get("total"):
+            break
+        time.sleep(2.0)
+
+    # The CASE-810 guard, and the reason it is a separate assertion: a zero-hit
+    # result is ambiguous on its own. This says the template filter resolved to
+    # a real reporting table, so a zero above would mean "nothing matched"
+    # rather than "the query never ran".
+    c.check("PL-REP", resp.get("unmatched_template") is None,
+            f"the template filter {fts_template!r} matched a reporting table "
+            f"(unmatched_template={resp.get('unmatched_template')!r})")
+
+    c.check("PL-REP", (docs.get("total") or 0) > 0,
+            f"full-text search finds the restored document for {fts_query!r} "
+            f"in {fts_ns} ({docs.get('total')} hit(s)) — tsvector columns were "
+            "built on the restored per-version tables, which parity alone "
+            "does not check")
+
+    # A hit belonging to the SOURCE would mean the namespace filter leaked and
+    # search answered from the original rather than the copy — invisible to the
+    # count planes, which only ever look at one namespace at a time. Matched on
+    # document id rather than a namespace field: SearchResult carries no
+    # namespace, and asserting on a field that does not exist yields None and
+    # a vacuous check.
+    restored_ids = {
+        d["document_id"] for d in _list_docs(client, fts_ns, fts_template)
+    }
+    hit_ids = {i.get("id") for i in (docs.get("items") or [])}
+    c.check("PL-LEAK", bool(hit_ids) and hit_ids <= restored_ids,
+            f"every FTS hit is a document of the restored namespace "
+            f"({len(hit_ids)} hit id(s) against {len(restored_ids)} restored) — "
+            f"a hit outside this set would be the source answering")
     return c
 
 
@@ -1588,8 +1666,14 @@ def main(argv: list[str] | None = None) -> int:
                 print("[slice4] R-14 blobs through restore + skip_files ...")
                 cells.append(_wrap("R-14", cell_r14_blobs, client,
                                    src_ns=ns_a, tgt_ns=ns_g, skip_tgt_ns=ns_h))
-                print("[slice4] R-16 reporting parity after restore ...")
-                cells.append(_wrap("R-16", cell_r16_reporting_parity, client, tgt))
+                print("[slice4] R-16 reporting parity + FTS after restore ...")
+                cells.append(_wrap("R-16", cell_r16_reporting_parity, client, tgt,
+                                   # NS-A holds the fixture's full_text_indexed
+                                   # field (MATRIX_SPECIMEN.description), so the
+                                   # FTS half searches ITS restored copy (ns_g,
+                                   # written by R-14 just above).
+                                   fts_ns=ns_g, fts_query="richly indexed",
+                                   fts_template="MATRIX_SPECIMEN"))
                 print("[slice4] R-11 restore from a retained job ...")
                 cells.append(_wrap("R-11", cell_r11_restore_from_retained_job,
                                    client, src_ns=ns_a))
