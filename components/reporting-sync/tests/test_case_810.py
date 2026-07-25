@@ -18,7 +18,7 @@ from typing import ClassVar
 
 import pytest
 
-from reporting_sync.search_service import SearchService, entity_base
+from reporting_sync.search_service import SearchRequest, SearchService, entity_base
 
 from .test_search_endpoint import _mock_pool_with_conn, _RecordingConn
 
@@ -128,3 +128,72 @@ class TestTemplateFilterDrivesTheRealSearch:
         assert results[0].label == "LESSON document"
         # Provenance is preserved, just not in the type field.
         assert results[0].description == "Matched in doc_lesson__v2"
+
+
+class TestUnmatchedTemplateSignal:
+    """CASE-811 — a wrong type name must not look like an empty corpus.
+
+    The signal is deliberately a field on the 200, not a 404: reporting knows
+    tables, not templates, so it cannot honestly assert that a template does
+    not exist (sync_enabled=false, or nothing synced yet, both mean "no table"
+    for a perfectly real template). A 404 would also fail the whole
+    multi-type search over one bucket's filter.
+    """
+
+    _COLS: ClassVar[list[tuple[str, str]]] = [
+        ("document_id", "text"),
+        ("status", "character varying"),
+        ("body", "text"),
+        ("body_search", "text"),
+        ("body_tsv", "tsvector"),
+    ]
+
+    def _svc(self, tables: list[str], rows: list[dict] | None = None):
+        conn = _RecordingConn()
+        conn.tables = tables
+        for t in tables:
+            conn.columns[t] = self._COLS
+        conn.rows_per_query = [list(rows or [])] * (len(tables) + 2)
+        return SearchService(_mock_pool_with_conn(conn))
+
+    async def _search(self, svc, **kw):
+        return await svc.search(SearchRequest(query="q", types=["document"], **kw))
+
+    @pytest.mark.asyncio
+    async def test_unknown_template_is_reported(self):
+        svc = self._svc(["doc_lesson__v1"])
+        resp = await self._search(svc, template="NOT_A_TYPE")
+        assert resp.results["document"].total == 0
+        assert resp.unmatched_template == "NOT_A_TYPE"
+
+    @pytest.mark.asyncio
+    async def test_known_template_with_no_hits_is_NOT_reported(self):
+        # The distinction the whole case is about: this really is an empty
+        # result for a real type, and must not be flagged.
+        svc = self._svc(["doc_lesson__v1"])
+        resp = await self._search(svc, template="LESSON")
+        assert resp.results["document"].total == 0
+        assert resp.unmatched_template is None
+
+    @pytest.mark.asyncio
+    async def test_versioned_table_counts_as_a_match(self):
+        svc = self._svc(["doc_lesson__v2"])
+        resp = await self._search(svc, template="LESSON")
+        assert resp.unmatched_template is None
+
+    @pytest.mark.asyncio
+    async def test_no_template_filter_means_no_signal(self):
+        svc = self._svc(["doc_lesson__v1"])
+        resp = await self._search(svc)
+        assert resp.unmatched_template is None
+
+    @pytest.mark.asyncio
+    async def test_hits_present_means_no_signal(self):
+        svc = self._svc(
+            ["doc_lesson__v1"],
+            rows=[{"doc_id": "DOC-1", "status": "active", "updated_at": None,
+                   "score": 0.5, "snippet": "x"}],
+        )
+        resp = await self._search(svc, template="LESSON")
+        assert resp.results["document"].total >= 1
+        assert resp.unmatched_template is None

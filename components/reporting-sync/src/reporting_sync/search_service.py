@@ -100,6 +100,18 @@ class SearchResponse(BaseModel):
         0,
         description="Total hits across all types (sum of per-type totals).",
     )
+    unmatched_template: str | None = Field(
+        default=None,
+        description=(
+            "Echo of the requested `template` when it matched no reporting "
+            "table, so a caller can tell 'this type has nothing' apart from "
+            "'this type is not a thing here' — an empty result set alone says "
+            "both. NOT an assertion that the template does not exist: "
+            "reporting knows tables, not templates, and a template with "
+            "sync_enabled=false or nothing yet synced legitimately has no "
+            "table. Null whenever the filter matched, or none was given."
+        ),
+    )
 
 
 class SearchRequest(StrictModel):
@@ -423,12 +435,55 @@ class SearchService:
                 pages=pages,
             )
 
+        # Only asked on the path that is actually ambiguous: a template filter
+        # was given and the document bucket came back empty. Everywhere else
+        # the result set already answers the caller's question.
+        unmatched_template: str | None = None
+        doc_results = results.get("document")
+        if (
+            request.template
+            and doc_results is not None
+            and doc_results.total == 0
+            and not await self.template_matches_a_table(request.template, namespace)
+        ):
+            unmatched_template = request.template
+
         return SearchResponse(
             query=query,
             mode=request.mode,
             results=results,
             total=cross_total,
+            unmatched_template=unmatched_template,
         )
+
+    async def template_matches_a_table(
+        self, template: str, namespace: str | None = None,
+    ) -> bool:
+        """Whether `template` names any reporting table, versioned or not.
+
+        Uses the same logical-name comparison as the search filter itself
+        (`entity_base`), so the two cannot disagree about what "matches" means.
+
+        Returns True when PostgreSQL is unavailable: without the reporting
+        layer we cannot tell a bad filter from a good one, and claiming
+        "unmatched" on no evidence would be the same overreach this signal
+        exists to prevent.
+        """
+        if not self.postgres_pool:
+            return True
+        want = entity_base(template.lower())
+        filters = ["table_name LIKE 'doc_%'"]
+        params: list[Any] = []
+        if namespace:
+            params.append(namespace)
+            filters.append(f"table_schema = ${len(params)}")
+        async with self.postgres_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT table_name FROM information_schema.tables "
+                f"WHERE {' AND '.join(filters)}",
+                *params,
+            )
+        return any(entity_base(r["table_name"]) == want for r in rows)
 
     async def _search_terminologies(
         self, query: str, namespace: str | None, status: str | None,
