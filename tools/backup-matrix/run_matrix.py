@@ -267,6 +267,7 @@ def _restore(
     dry_run: bool = False,
     on_clash: str = "skip",
     add_missing: bool = False,
+    skip_files: bool = False,
 ) -> dict:
     """Generalized restore over the three modes.
 
@@ -281,6 +282,8 @@ def _restore(
         data["dry_run"] = "true"
     if target_ns:
         data["target_namespace"] = target_ns
+    if skip_files:
+        data["skip_files"] = "true"
     if mode == "merge":
         data["on_clash"] = on_clash
         if add_missing:
@@ -884,6 +887,194 @@ def _start_instance_wide_backup(client: WipClient, anchor_ns: str) -> dict:
     return done
 
 
+def cell_r14_blobs(
+    client: WipClient, src_ns: str, tgt_ns: str, skip_tgt_ns: str,
+) -> Cell:
+    """R-14: E9 blobs survive a fresh restore, and skip_files drops them loudly.
+
+    Files were the one entity class the matrix carried through backup counts
+    but never through a restore: the merge suite uploads blobs for *inserted*
+    files only, and the CLI round-trip excludes files entirely because it has
+    no MinIO. So the bytes themselves — as opposed to the file *record* — had
+    never made the trip.
+
+    The byte-level compare is the point. A file row that restores with the
+    right id and a missing or truncated blob passes every count assertion in
+    the matrix; only reading the payload back distinguishes a restored file
+    from a restored reference to nothing.
+    """
+    c = Cell("R-14", "blobs through a fresh restore; skip_files drops them loudly")
+
+    src_files = client.get(
+        "/api/document-store/files",
+        params={"namespace": src_ns, "page_size": 100},
+    ).get("items", [])
+    if not c.check("PL-FILE", bool(src_files),
+                   f"the fixture put file(s) in {src_ns} to carry ({len(src_files)}) "
+                   "— file storage disabled on the target would make this vacuous"):
+        return c
+
+    src_blobs: dict[str, bytes] = {}
+    for f in src_files:
+        src_blobs[f["file_id"]] = client.get_bytes(
+            f"/api/document-store/files/{f['file_id']}/content"
+        )
+    c.check("PL-FILE", all(src_blobs.values()),
+            f"every source blob has bytes to compare ({len(src_blobs)})")
+
+    archive = _backup(client, src_ns)
+    parsed = _parse_archive(archive)
+    c.check("PL-DATA", parsed.blob_count == len(src_files),
+            f"the archive carries a blob per file "
+            f"({parsed.blob_count} blobs / {len(src_files)} files)")
+
+    job = _restore(client, archive, url_ns=tgt_ns, mode="fresh", target_ns=tgt_ns)
+    if not c.check("PL-JOB", job.get("status") == "complete",
+                   f"fresh restore with files completed (status={job.get('status')})"):
+        return c
+
+    tgt_files = client.get(
+        "/api/document-store/files",
+        params={"namespace": tgt_ns, "page_size": 100},
+    ).get("items", [])
+    c.check("PL-DATA", len(tgt_files) == len(src_files),
+            f"file records conserved ({len(tgt_files)}/{len(src_files)})")
+
+    # Ids are re-minted by a fresh restore, so match on content, not id.
+    src_bytes = sorted(src_blobs.values())
+    tgt_bytes = sorted(
+        client.get_bytes(f"/api/document-store/files/{f['file_id']}/content")
+        for f in tgt_files
+    )
+    c.check("PL-FILE", tgt_bytes == src_bytes,
+            "every restored blob is byte-identical to its source "
+            f"({len(tgt_bytes)} compared)")
+    c.check("PL-REG", all(f["file_id"] not in src_blobs for f in tgt_files),
+            "restored files carry NEW ids (fresh restore re-mints identity)")
+
+    # skip_files: the records still land, the bytes deliberately do not.
+    skip_job = _restore(client, archive, url_ns=skip_tgt_ns, mode="fresh",
+                        target_ns=skip_tgt_ns, skip_files=True)
+    if c.check("PL-JOB", skip_job.get("status") == "complete",
+               f"skip_files restore completed (status={skip_job.get('status')})"):
+        skipped_files = client.get(
+            "/api/document-store/files",
+            params={"namespace": skip_tgt_ns, "page_size": 100},
+        ).get("items", [])
+        c.check("PL-FILE", len(skipped_files) == 0,
+                f"skip_files left no file records ({len(skipped_files)}) — "
+                "loudly absent, not silently empty-bodied")
+    return c
+
+
+def cell_r16_reporting_parity(client: WipClient, tgt_ns: str) -> Cell:
+    """R-16: the reporting layer is correct after a fresh restore.
+
+    Reporting is `None` or stubbed in every merge and remap unit suite, so
+    whether PostgreSQL reflects a restored namespace was simply unknown. A
+    restore that leaves reporting empty or stale is invisible to the document
+    API and breaks every SQL consumer downstream.
+    """
+    c = Cell("R-16", "reporting/FTS parity after a fresh restore (PL-REP)")
+
+    # Sync is event-driven and lands within seconds; poll rather than sleep a
+    # fixed guess, and report the wait so a slow target is visible not silent.
+    parity: dict = {}
+    waited = 0.0
+    for _ in range(30):
+        try:
+            parity = client.get(
+                "/api/reporting-sync/parity",
+                params={"namespace": tgt_ns, "include_counts": "true"},
+            )
+        except ApiError as exc:
+            # Reporting-sync ships in the `standard`/`full` presets, not
+            # `core`, and a rolling redeploy takes it out of the ingress for a
+            # while. Either way the cell's precondition is absent, which is a
+            # SKIP — reported in the table with its reason, never silently
+            # dropped, and never counted as a pass it did not earn.
+            return c.skip(
+                f"reporting-sync unreachable ({exc.status}) — preset without "
+                "reporting-sync, or the target is mid-redeploy"
+            )
+        if parity.get("ok"):
+            break
+        time.sleep(2.0)
+        waited += 2.0
+
+    c.check("PL-REP", bool(parity),
+            f"parity endpoint answered for {tgt_ns} after {waited:.0f}s")
+    c.check("PL-REP", bool(parity.get("schema_present")),
+            f"the restored namespace has a PostgreSQL schema "
+            f"({parity.get('schema_name')!r})")
+    c.check("PL-REP", (parity.get("table_count") or 0) > 0,
+            f"reporting built tables for the restored templates "
+            f"(table_count={parity.get('table_count')})")
+    c.check("PL-REP", parity.get("structural_issues") == 0,
+            f"no structural issues (missing/mis-shaped tables): "
+            f"{parity.get('structural_issues')}")
+    c.check("PL-REP", parity.get("count_mismatches") == 0,
+            f"row counts match Mongo for every synced template: "
+            f"{parity.get('count_mismatches')} mismatch(es)")
+    c.check("PL-REP", bool(parity.get("ok")),
+            f"overall parity ok after {waited:.0f}s (ok={parity.get('ok')})")
+    return c
+
+
+def cell_r11_restore_from_retained_job(client: WipClient, src_ns: str) -> Cell:
+    """R-11: restore from a retained job's archive, without re-uploading.
+
+    `POST /backup/jobs/{id}/restore` exists so an operator can re-run a
+    restore from bytes the server already holds. The route promises the new
+    job gets its OWN archive copy so deleting either never pulls the archive
+    out from under the other — that independence is the half worth asserting,
+    because a shared handle fails only later, when someone cleans up.
+
+    Merge mode, not restore: `RestoreFromJobRequest` is strict and carries no
+    `target_namespace`, so each archived namespace goes back to itself — and
+    an id-preserving restore requires an EMPTY target, which the source
+    namespace is not. `on_clash=skip` therefore exercises the retained-archive
+    path without mutating the namespace the rest of the run still depends on.
+    """
+    c = Cell("R-11", "restore from a retained job; job independence (R-JOB)")
+
+    snap, _ = _backup_archive(client, src_ns)
+    src_job_id = snap["job_id"]
+    c.check("PL-JOB", bool(src_job_id), f"source backup retained as {src_job_id}")
+
+    try:
+        new = client.post(
+            f"/api/document-store/backup/jobs/{src_job_id}/restore",
+            json_body={"mode": "merge", "on_clash": "skip"},
+        )
+    except ApiError as exc:
+        c.check("PL-JOB", False,
+                f"restore-from-job refused: {exc.status} {exc.body[:160]}")
+        return c
+
+    done = _poll_job(client, new["job_id"])
+    if not c.check("PL-JOB", done.get("status") == "complete",
+                   f"restore-from-job completed (status={done.get('status')} "
+                   f"error={done.get('error')})"):
+        return c
+    c.check("PL-JOB", new["job_id"] != src_job_id,
+            "the restore minted its own job rather than reusing the backup's")
+
+    # Independence: dropping the SOURCE job must not disturb the restore's
+    # own archive copy — the route's stated guarantee.
+    client.delete(f"/api/document-store/backup/jobs/{src_job_id}")
+    # This cell is the one that deletes a job on purpose, so it also owns
+    # retracting it from the end-of-run sweep. X-04 re-reads every job in
+    # JOBS and would 404 on this one — a failure that would say nothing about
+    # field ownership and everything about this cell's side effect.
+    JOBS[:] = [j for j in JOBS if j.snapshot.get("job_id") != src_job_id]
+    after = client.get(f"/api/document-store/backup/jobs/{new['job_id']}")
+    c.check("PL-JOB", after.get("status") == "complete",
+            "the restore job survives deletion of the source backup job "
+            f"(status={after.get('status')})")
+    return c
+
+
 def cell_x04_job_plane(client: WipClient) -> Cell:
     """X-04: sweep every job this run drove against a schema of field ownership.
 
@@ -1317,6 +1508,8 @@ def main(argv: list[str] | None = None) -> int:
     ns_a, ns_b, tgt = f"{tag}-00a", f"{tag}-00b", f"{tag}-00c"
     ns_e = f"{tag}-00e"  # dry-run-parity target (X-01)
     ns_f = f"{tag}-00f"  # second-hop target (X-06)
+    ns_g = f"{tag}-00g"  # blob-restore target (R-14)
+    ns_h = f"{tag}-00h"  # skip_files target (R-14)
     cells: list[Cell] = []
     t0 = time.monotonic()
 
@@ -1387,6 +1580,20 @@ def main(argv: list[str] | None = None) -> int:
                 cells.append(_wrap("X-06", cell_x06_backup_of_a_restore, client, builder,
                                    first_ns=tgt, second_ns=ns_f))
 
+                # Slice 4 — the two entity classes the matrix carried through
+                # backup counts but never through a restore, plus the
+                # retained-job door. R-14 and R-11 use NS-A (which holds the
+                # E9 file); R-16 checks the reporting layer of the target the
+                # fresh-restore spine already populated.
+                print("[slice4] R-14 blobs through restore + skip_files ...")
+                cells.append(_wrap("R-14", cell_r14_blobs, client,
+                                   src_ns=ns_a, tgt_ns=ns_g, skip_tgt_ns=ns_h))
+                print("[slice4] R-16 reporting parity after restore ...")
+                cells.append(_wrap("R-16", cell_r16_reporting_parity, client, tgt))
+                print("[slice4] R-11 restore from a retained job ...")
+                cells.append(_wrap("R-11", cell_r11_restore_from_retained_job,
+                                   client, src_ns=ns_a))
+
                 # Slice 2 — restore-mode variety. These reuse archive_b and NS-B.
                 # X-01 first (reads NS-B while it is still intact); then R-01
                 # empties + id-restores NS-B, X-05 re-restores it (refused), and
@@ -1422,7 +1629,7 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             if not args.keep:
                 print("\n[teardown] deleting runner namespaces ...")
-                teardown(client, [tgt, ns_e, ns_f, ns_a, ns_b])
+                teardown(client, [tgt, ns_e, ns_f, ns_g, ns_h, ns_a, ns_b])
             else:
                 print(f"\n[keep] namespaces preserved: {ns_a}, {ns_b}, {tgt}, {ns_e}, {ns_f}")
 
