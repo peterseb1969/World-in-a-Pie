@@ -571,6 +571,17 @@ def _render_component(
     if volumes:
         pod_spec["volumes"] = volumes
 
+    # Lower ndots so the FQDNs in the rendered env are tried as written instead
+    # of being walked through the three cluster search domains first — see
+    # K8sPlatform.pod_dns_ndots for why the kubelet default of 5 quadruples the
+    # query count for every inter-service call.
+    k8s_plat = deployment.spec.platform.k8s
+    ndots = k8s_plat.pod_dns_ndots if k8s_plat else 1
+    if ndots is not None:
+        pod_spec["dnsConfig"] = {
+            "options": [{"name": "ndots", "value": str(ndots)}],
+        }
+
     # Dex needs fsGroup for sqlite
     if name == "dex":
         pod_spec["securityContext"] = {"fsGroup": 1001}
