@@ -46,6 +46,7 @@ from .fastapi_helpers import (
     resolve_or_404,
     resolve_term_by_fields_or_404,
 )
+from .health_cache import DEFAULT_TTL_SECONDS, HealthCache
 from .identity import (
     clear_current_identity,
     get_actor_info,
@@ -92,6 +93,8 @@ from .startup import init_beanie_with_retry, retry_async
 __version__ = "0.4.0"
 
 __all__ = [
+    # Health-probe cache
+    "DEFAULT_TTL_SECONDS",
     "APIKeyProvider",
     "APIKeyRecord",
     # Config
@@ -102,6 +105,7 @@ __all__ = [
     "AuthProvider",
     "AuthResult",
     "EntityNotFoundError",
+    "HealthCache",
     # Key sync
     "KeySyncService",
     "NamespaceFilter",

@@ -19,6 +19,7 @@ from wip_auth import (
     RejectUnknownQueryParamsMiddleware,
     build_metadata,
     check_production_security,
+    HealthCache,
     init_beanie_with_retry,
     retry_async,
     setup_auth,
@@ -255,40 +256,67 @@ async def root():
     }
 
 
+# Dependency probes are cached for the container-lifecycle probe path, which
+# is hit every 10s (readiness) and 30s (liveness) but only ever has its HTTP
+# status code read. The api-prefixed route below asks for a fresh value, so a
+# human reading the body never sees a stale dependency.
+_health_cache: HealthCache[dict[str, str]] = HealthCache()
+
+
+async def _mongo_status() -> str:
+    try:
+        await app.state.mongodb_client.admin.command('ping')
+        return "connected"
+    except Exception as e:
+        import logging
+        logging.getLogger("def_store.health").error("Health check failed: %s", e)
+        return "error"
+
+
+async def _probe_dependencies() -> dict[str, str]:
+    """Derive the dependency half of the health response.
+
+    Concurrent, not sequential: these checks are independent, and run one
+    after another their timeouts ADD — two independent 5s DNS stalls once
+    produced a single 10.272s response, against a 5s probe budget.
+    """
+    mongo, registry_ok = await asyncio.gather(
+        _mongo_status(),
+        get_registry_client().health_check(),
+    )
+    return {
+        "database": mongo,
+        "registry": "connected" if registry_ok else "disconnected",
+    }
+
+
 # Health check endpoint
 @app.get("/health", tags=["Health"])
-async def health_check():
+async def health_check(fresh: bool = False):
     """
     Health check endpoint.
 
     Verifies MongoDB and Registry connectivity.
     """
-    try:
-        # Ping MongoDB
-        await app.state.mongodb_client.admin.command('ping')
-        mongo_status = "connected"
-    except Exception as e:
-        import logging
-        logging.getLogger("def_store.health").error("Health check failed: %s", e)
-        mongo_status = "error"
+    deps = await _health_cache.get(_probe_dependencies, force=fresh)
 
-    # Check Registry
-    registry_client = get_registry_client()
-    registry_status = "connected" if await registry_client.health_check() else "disconnected"
-
-    status = "healthy" if mongo_status == "connected" else "unhealthy"
+    status = "healthy" if deps["database"] == "connected" else "unhealthy"
 
     return {
         "status": status,
-        "database": mongo_status,
-        "registry": registry_status,
+        **deps,
     }
+
+
+async def health_check_fresh():
+    """Uncached health for callers that read the body (CASE-808)."""
+    return await health_check(fresh=True)
 
 
 # Also expose /health under the api-prefix so external callers through
 # Caddy can reach it. Root /health stays for direct container probes.
 app.add_api_route(
-    "/api/def-store/health", health_check, methods=["GET"], tags=["Health"]
+    "/api/def-store/health", health_check_fresh, methods=["GET"], tags=["Health"]
 )
 
 
