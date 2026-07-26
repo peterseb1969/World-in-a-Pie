@@ -635,11 +635,25 @@ headers are already on the wire. The runner now validates every download
 against the job's `archive_size` and the zip magic and retries loudly
 (`_download_archive`), so a run survives the flake without absorbing it.
 
-**CONFIRMED BUG surfaced by the first L run — fresh restore drops value-form lookup synonyms.** A fresh restore reproduces every entity but its restored registry entries carry **0 synonyms where the source had 9** (`registry_synonyms 9 → 0`). Root-caused on prod-test 20260724a:
-- Each source terminology/term/document carries one auto-synonym — the value-form key `{ns, type, value}` — distinct from the primary key `{ns, value, label}`. def-store/document-store auto-register it on original creation so the entity resolves by value alone (without its label). Templates never had one.
-- The fresh-restore (remap) path re-provisions each entity via the registry provision/activate flow, which writes only the PRIMARY composite key; the secondary value-form synonym is never regenerated. The **merge**/id-preserving path preserves synonyms (`_rewrite_registry_entry`); only **fresh** restore drops them.
-- **Functional impact (proven):** a value-form registry lookup (`/lookup/by-key` on `{ns,type,value}`) resolves `MATRIX_PRIORITY` on the source (found) and **fails on the restored copy** (not_found). A fresh-restored terminology can no longer be referenced by value — only by canonical id or the full label-bearing primary key. Violates Vision's "any valid synonym must behave identically to the canonical ID."
-- **Gated in the runner** — `run_matrix.py` R-05 asserts value-form resolution survives (PL-REG), so the run now correctly reports this as a failure until the platform drops the synonym-regeneration gap. Needs a case + fix (regenerate the value-form synonyms on the remap-provision path, matching original registration).
+**Bug surfaced by the first L run, FIXED as CASE-792 — fresh restore dropped
+value-form lookup synonyms.** As found (prod-test 20260724a): a fresh restore
+reproduced every entity but its restored registry entries carried **0
+synonyms where the source had 9** (`registry_synonyms 9 → 0`). Each source
+terminology/term/document carries one auto-synonym — the value-form key
+`{ns, type, value}` — distinct from the primary key `{ns, value, label}`;
+the remap path's provision/activate flow wrote only the PRIMARY composite
+key, so a fresh-restored entity resolved only by canonical id, never by
+value (the merge/id-preserving path preserved synonyms all along, via
+`_rewrite_registry_entry`). Proven impact at the time: `/lookup/by-key` on
+`{ns,type,value}` found `MATRIX_PRIORITY` on the source and not on the copy
+— against Vision's "any valid synonym must behave identically to the
+canonical ID." **Fixed (CASE-792):** the engine now carries the archive's
+synonyms onto the re-minted entities after activation (`_restore_synonyms`
+in `backup_engine.py` — value-form auto-synonyms and custom synonyms alike).
+The runner keeps the regression gated: R-05, R-01, R-03 and X-06 all assert
+value-form resolution on restored copies (PL-REG), green on every board
+since — including cross-instance, where the synonyms must be rebuilt on an
+install that never saw the originals.
 
 ## Confirmed bugs/gaps from the probe (`probe_backup_restore.py`, prod-test)
 
