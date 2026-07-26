@@ -162,12 +162,23 @@ def _build_resolve_payload(
     """Build a single item for the /resolve request payload.
 
     UUID-shaped IDs are sent as ``entry_id`` for direct verification.
-    Everything else is sent as ``composite_key`` for synonym resolution.
+    Non-term, non-UUID identifiers are sent with BOTH fields — the endpoint
+    tries ``entry_id`` first, then the composite key — because canonical ids
+    are NOT always UUID-shaped: a namespace's id_config can mint prefixed
+    ids (e.g. ``LOV-000042``), and routing those to composite-key-only
+    resolution 404s the canonical id itself. For a qualified identifier
+    (``NS:VALUE``) the entry_id candidate is the value half: an entry_id
+    never carries a namespace qualifier, and canonical-id verification is
+    namespace-free (matching the UUID door's semantics). Terms keep their
+    strict forms — composite key only for non-UUID term identifiers.
     """
     payload: dict[str, Any] = {}
     if _looks_like_uuid(raw_id):
         payload["entry_id"] = raw_id
     else:
+        if entity_type != "term":
+            _, value = split_qualified_value(raw_id)
+            payload["entry_id"] = value
         payload["composite_key"] = _build_composite_key(raw_id, entity_type, namespace)
     if include_statuses:
         payload["include_statuses"] = include_statuses
@@ -274,7 +285,27 @@ async def resolve_entity_id(
             return cached
 
     payload = _build_resolve_payload(raw_id, entity_type, namespace, include_statuses)
-    canonical_id = await _post_resolve(payload, raw_id, entity_type, namespace)
+    try:
+        canonical_id = await _post_resolve(payload, raw_id, entity_type, namespace)
+    except EntityNotFoundError:
+        if entity_type == "term" or _looks_like_uuid(raw_id):
+            raise
+        # Miss-path fallback to /entries/lookup/by-id — the WRITE door's
+        # transport (registry_client.resolve_identifier): its search_values
+        # match covers value-form references whose synonym key shapes
+        # /resolve cannot hash-match (a document's value synonym is the bare
+        # identity-values dict, so no {ns, type, value} key ever finds it).
+        # Without this, the exact string stored in a reference field
+        # validates on write and 404s on read. Terms are excluded (their
+        # strict forms resolve via composite keys only), UUIDs are excluded
+        # (entry_id verification already failed — the entity is missing).
+        ns_prefix, value = split_qualified_value(raw_id)
+        canonical_id_or_none = await _post_lookup_by_id(
+            value, ns_prefix or namespace, entity_type,
+        )
+        if canonical_id_or_none is None:
+            raise
+        canonical_id = canonical_id_or_none
     _set_cached(cache_key, canonical_id)
     return canonical_id
 
@@ -328,6 +359,64 @@ async def _post_resolve(
     # infrastructure failures; suggesting a qualified form there would send
     # the reader after the wrong problem.
     raise EntityNotFoundError(identifier, entity_type, namespace)
+
+
+# Registry entity_type values are plural; the resolve layer speaks singular.
+_ENTITY_TYPE_PLURAL = {
+    "terminology": "terminologies",
+    "term": "terms",
+    "template": "templates",
+    "document": "documents",
+}
+
+
+async def _post_lookup_by_id(
+    value: str,
+    namespace: str,
+    entity_type: str,
+) -> str | None:
+    """POST one item to Registry /entries/lookup/by-id; entry_id or None.
+
+    The endpoint matches entry_id exactly, then falls back to search_values
+    (where identity-values synonyms are flattened) — both filtered by
+    namespace and plural entity_type when given. Deliberately returns None
+    on any failure instead of raising: this is a miss-path fallback, and
+    the caller re-raises the original EntityNotFoundError so the error the
+    caller sees names the identifier as it was given.
+    """
+    registry_url = _get_registry_url()
+    api_key = _get_api_key()
+    item = {
+        "entry_id": value,
+        "namespace": namespace,
+        "entity_type": _ENTITY_TYPE_PLURAL.get(entity_type, f"{entity_type}s"),
+    }
+    try:
+        client_kwargs: dict[str, Any] = {"timeout": 10.0}
+        if _resolve_transport is not None:
+            client_kwargs["transport"] = _resolve_transport
+            client_kwargs["base_url"] = registry_url
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            response = await client.post(
+                f"{registry_url}/api/registry/entries/lookup/by-id",
+                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+                json=[item],
+            )
+    except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
+        logger.debug("Registry unreachable for by-id fallback: %s", e)
+        return None
+
+    if response.status_code != 200:
+        logger.warning(
+            "Registry by-id fallback failed for %s (%s): %s",
+            value, entity_type, response.status_code,
+        )
+        return None
+
+    results = response.json().get("results", [])
+    if results and results[0].get("status") == "found":
+        return cast(str, results[0].get("entry_id"))
+    return None
 
 
 async def resolve_term_by_fields(

@@ -129,6 +129,36 @@ async def resolve_or_404(
     if namespace is None:
         namespace = _derive_namespace_from_identity()
 
+    if namespace is None and ":" in raw_id and not _looks_like_uuid(raw_id):
+        # A qualified identifier carries its own namespace context — the
+        # prefix names the namespace to resolve in (for terms only the
+        # 3-part ns:terminology:value form reaches here; the 2-part form was
+        # rejected above). "No namespace context" is false for these, so
+        # resolve instead of passing the raw string through to a lookup that
+        # cannot know the qualified form. A MISS returns the raw id — the
+        # same outcome the pass-through produced — so this only ADDS
+        # resolution; the explicit-namespace path below keeps 404-on-miss.
+        from .resolve import split_qualified_value
+
+        ns_prefix, _ = split_qualified_value(raw_id)
+        try:
+            return await resolve_entity_id(raw_id, entity_type, cast(str, ns_prefix))
+        except EntityNotFoundError:
+            if strict:
+                # Filter context with real (identifier-carried) namespace
+                # context and a genuine miss: same contract as the
+                # explicit-namespace path — fail loud, never let the
+                # unresolved value silently match nothing.
+                label = param_name or entity_type
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"Could not resolve {label} '{raw_id}' in namespace "
+                        f"'{ns_prefix}'"
+                    ),
+                ) from None
+            return raw_id
+
     if namespace is None:
         # Still no namespace — cannot resolve.
         if not _looks_like_uuid(raw_id):
