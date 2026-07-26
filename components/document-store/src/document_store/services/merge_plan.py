@@ -393,6 +393,7 @@ class MergePlanner:
 
         for start in range(0, len(keys), KEY_BATCH_SIZE):
             batch = keys[start:start + KEY_BATCH_SIZE]
+            query: dict[str, Any]
             if len(fields) == 1:
                 query = {"namespace": namespace, fields[0]: {"$in": [k[0] for k in batch]}}
             else:

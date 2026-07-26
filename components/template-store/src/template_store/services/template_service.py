@@ -1633,10 +1633,10 @@ class TemplateService:
             resolved_id = await resolve_entity_id(
                 template_id, "template", namespace or "wip"
             )
-        template = await Template.find(
+        by_id = await Template.find(
             {"template_id": resolved_id, "status": "active"}
         ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
-        template = template[0] if template else None
+        template = by_id[0] if by_id else None
         if not template:
             by_value = await Template.find(
                 {"value": template_id, "status": "active"}
@@ -2638,16 +2638,23 @@ class TemplateService:
             | {(t.value, t.version) for t in activation_set}
         )
 
-        async def _pinned_version_exists(ref: str, version: int) -> bool:
+        async def _pinned_version_exists(ref: str, version: int | None) -> bool:
             """A pinned (ref, version) is satisfiable iff it is in the activation
             set at that version, or a stored template has that (template_id,
-            version). ref may be a canonical id or a value."""
+            version). ref may be a canonical id or a value. A None version can
+            never match — the mandatory ref/version pairing is enforced before
+            this validation runs, so None only reaches here if that enforcement
+            regressed, and it fails the same way an unknown version does."""
+            if version is None:
+                return False
             if (ref, version) in set_pinned:
                 return True
             if await Template.find_one({"template_id": ref, "version": version}):
                 return True
             resolved = await TemplateService._find_template_by_ref(ref, namespace)
-            return bool(resolved) and await Template.find_one(
+            if resolved is None:
+                return False
+            return await Template.find_one(
                 {"template_id": resolved.template_id, "version": version}
             ) is not None
 

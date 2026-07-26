@@ -234,6 +234,7 @@ _pip_check_tripwire() {
     local out
     if ! out="$(pip check 2>&1)"; then
         echo "  WARNING: shared venv has conflicting requirements after installing $name's deps:" >&2
+        # shellcheck disable=SC2001  # per-line indent of multiline output — parameter expansion can't do this readably
         echo "$out" | sed 's/^/           /' >&2
         echo "           Another component's suite may now fail on import." >&2
     fi

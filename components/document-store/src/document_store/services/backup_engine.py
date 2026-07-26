@@ -1849,27 +1849,6 @@ class DirectRestoreEngine:
             for doc_id, rows in doc_groups.items()
         }
 
-    @staticmethod
-    def _record_matches(
-        entity_type: str, plan: EntityPlan, remapper: IDRemapper
-    ) -> None:
-        """Feed a type's matches into the remapper for the types that follow.
-
-        Term relations and registry entries get no map: nothing references
-        them by ID, so a match there is simply a skip.
-        """
-        add = {
-            "terminologies": remapper.add_terminology_mapping,
-            "terms": remapper.add_term_mapping,
-            "templates": remapper.add_template_mapping,
-            "documents": remapper.add_document_mapping,
-            "files": remapper.add_file_mapping,
-        }.get(entity_type)
-        if add is None:
-            return
-        for match in plan.matches:
-            add(match.old_id, match.new_id)
-
     def _emit_definitions_plan(
         self, namespace: str, definitions: DefinitionsPlan, *, dry_run: bool
     ) -> None:

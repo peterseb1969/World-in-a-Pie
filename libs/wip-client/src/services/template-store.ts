@@ -7,7 +7,6 @@ import type {
   UpdateTemplateRequest,
   ValidateTemplateRequest,
   ValidateTemplateResponse,
-  TemplateUpdateResponse,
   ActivateTemplateResponse,
   CascadeResponse,
 } from '../types/template.js'
