@@ -535,6 +535,38 @@ in the wrong terminology. Prefer the field form when addressing terms by
 value. Other entity types keep their `NS:VALUE` qualified form — this
 carve-out is term-specific.
 
+### Bare Values Never Cross a Namespace
+
+For terminologies, templates and documents, the identifier alone decides
+which namespace is searched, independently of what `allowed_external_refs`
+permits:
+
+```
+KB_TOPIC        → the CALLER'S OWN namespace, always — never a permitted one
+kb:KB_TOPIC     → namespace `kb`, explicitly; the only value form that crosses
+0190b000-…      → canonical UUID; needs no namespace, crosses freely
+```
+
+`allowed_external_refs` decides *whether* a namespace may be referenced. The
+identifier decides *which* namespace is meant. Both must agree, and a bare
+value never falls back to a permitted namespace — so a template in `library`
+declaring `array_terminology_ref: "KB_TOPIC"` fails even when `library`
+permits `kb` and `kb` defines `KB_TOPIC`. Write `"kb:KB_TOPIC"`.
+
+The strictness is deliberate: with two permitted namespaces both defining a
+value, a bare value would be ambiguous. The explicit prefix removes the
+ambiguity instead of guessing.
+
+Note this bites at **template creation**, not document creation: resolving an
+identifier to a canonical id happens when the template is written, and an
+unresolvable reference fails that write outright. Existence-and-active
+validation of the referent is the separate, later step that runs at document
+creation.
+
+**Seeds should not hardcode the prefix.** A namespace name is
+deployment-configurable, so a literal `kb:` is as unportable as a literal
+UUID. Substitute it from the app's own configuration at bootstrap.
+
 ### Best-Effort Semantics
 
 Resolution is **best-effort** at the API boundary. If the Registry is unreachable, the synonym is not found, or no namespace context can be determined (multi-namespace key with `namespace` omitted), the raw value passes through unchanged. Namespace context comes from the `namespace` parameter, or implicitly from single-namespace API keys. This means:

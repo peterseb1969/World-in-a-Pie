@@ -280,7 +280,33 @@ Cross-namespace term references work without grants on the referenced namespace.
 Shared vocabularies (in "wip") are the common language — you need a grant to
 list or modify a namespace's data, but not to reference its terms.
 
-Reference validation runs at document creation, not template creation.
+**Being permitted is not the same as being addressable.** allowed_external_refs
+decides WHETHER a namespace may be referenced; the identifier decides WHICH
+namespace is meant, and it is resolved independently:
+
+- a **bare value** always resolves in the caller's OWN namespace, whatever
+  allowed_external_refs permits — it never falls back to a permitted namespace;
+- **`NS:VALUE`** names the namespace explicitly and is the only value form that
+  crosses one;
+- a **canonical UUID** needs no namespace and crosses freely.
+
+So a template in `library` declaring `array_terminology_ref: "KB_TOPIC"` fails
+even when `library` permits `kb` and `kb` defines `KB_TOPIC` — the reference is
+allowed, but the identifier says "my own namespace". Write `"kb:KB_TOPIC"`.
+Bare is deliberate: with two permitted namespaces both defining a value, a bare
+value would be ambiguous, and the explicit prefix removes the ambiguity rather
+than guessing. (Terms are the exception — see "Term Addressing Is Strict"; they
+take `ns:terminology:value`, three parts, not two.)
+
+For a seed that must run on instances whose namespace names differ, substitute
+the prefix from your own config at bootstrap rather than hardcoding it — the
+namespace name is deployment-configurable, so a literal prefix is as unportable
+as a literal UUID.
+
+Reference validation — that the referent EXISTS and is active — runs at document
+creation, not template creation. Identifier RESOLUTION is a separate step and
+does run at template creation: an unresolvable reference fails the create
+outright, which is why the rule above bites there first.
 
 Relationship (edge) documents are the exception: allowed_external_refs
 governs plain reference fields only. An edge document's source_ref and

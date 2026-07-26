@@ -197,12 +197,44 @@ def clear_resolution_cache() -> None:
 
 
 class EntityNotFoundError(Exception):
-    """Raised when synonym resolution finds no matching entity."""
+    """Raised when synonym resolution finds no matching entity.
 
-    def __init__(self, identifier: str, entity_type: str):
+    When the namespace is supplied, a bare (unqualified) identifier gets the
+    reason it failed appended: bare values resolve in the caller's own
+    namespace only and never fall back to allowed_external_refs, so the entity
+    can exist, be legitimately referenceable, and still not be found under this
+    name. Without that sentence the message describes a missing entity when the
+    real problem is an under-specified identifier — a distinction that has cost
+    more than one reader a day.
+    """
+
+    def __init__(self, identifier: str, entity_type: str, namespace: str | None = None):
         self.identifier = identifier
         self.entity_type = entity_type
-        super().__init__(f"No {entity_type} found for identifier: {identifier}")
+        self.namespace = namespace
+        msg = f"No {entity_type} found for identifier: {identifier}"
+        if namespace:
+            msg += f" (searched namespace '{namespace}')"
+            if self._qualifying_would_help(identifier, entity_type):
+                msg += (
+                    f". A bare value resolves in '{namespace}' only and does not "
+                    f"fall back to allowed_external_refs; to reference another "
+                    f"namespace qualify it, e.g. 'other-ns:{identifier}'"
+                )
+        super().__init__(msg)
+
+    @staticmethod
+    def _qualifying_would_help(identifier: str, entity_type: str) -> bool:
+        """Only hint where a qualified form is both available and absent.
+
+        Terms are excluded: their cross-namespace form is the 3-part
+        ns:terminology:value, so this 2-part advice would be wrong for them.
+        Already-qualified identifiers and canonical UUIDs are excluded because
+        neither is under-specified — for those the entity really is missing.
+        """
+        if entity_type == "term" or ":" in identifier:
+            return False
+        return not _UUID_PATTERN.match(identifier)
 
 
 async def resolve_entity_id(
@@ -242,12 +274,17 @@ async def resolve_entity_id(
             return cached
 
     payload = _build_resolve_payload(raw_id, entity_type, namespace, include_statuses)
-    canonical_id = await _post_resolve(payload, raw_id, entity_type)
+    canonical_id = await _post_resolve(payload, raw_id, entity_type, namespace)
     _set_cached(cache_key, canonical_id)
     return canonical_id
 
 
-async def _post_resolve(payload: dict[str, Any], identifier: str, entity_type: str) -> str:
+async def _post_resolve(
+    payload: dict[str, Any],
+    identifier: str,
+    entity_type: str,
+    namespace: str | None = None,
+) -> str:
     """POST one item to Registry /resolve and return the canonical id.
 
     Shared HTTP + error mapping for every resolution entry point — one
@@ -285,7 +322,12 @@ async def _post_resolve(payload: dict[str, Any], identifier: str, entity_type: s
     if results and results[0].get("status") == "found":
         return cast(str, results[0]["entry_id"])
 
-    raise EntityNotFoundError(identifier, entity_type)
+    # Genuine "Registry looked and found nothing" — the only case where an
+    # under-specified identifier is a plausible cause, so the only one that
+    # gets the namespace hint. The transport and non-200 raises above are
+    # infrastructure failures; suggesting a qualified form there would send
+    # the reader after the wrong problem.
+    raise EntityNotFoundError(identifier, entity_type, namespace)
 
 
 async def resolve_term_by_fields(
@@ -329,7 +371,7 @@ async def resolve_term_by_fields(
         }
     }
     canonical_id = await _post_resolve(
-        payload, f"{terminology}/{value}", "term"
+        payload, f"{terminology}/{value}", "term", namespace
     )
     _set_cached(cache_key, canonical_id)
     return canonical_id
@@ -417,6 +459,8 @@ async def resolve_entity_ids(
             _set_cached(cache_key, canonical_id)
             result[raw_id] = canonical_id
         else:
-            raise EntityNotFoundError(raw_id, entity_type)
+            # Same reasoning as the single-resolve path: a per-item miss is a
+            # real lookup failure, so it carries the namespace hint.
+            raise EntityNotFoundError(raw_id, entity_type, namespace)
 
     return result
