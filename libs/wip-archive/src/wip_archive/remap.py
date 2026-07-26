@@ -226,16 +226,18 @@ class IDRemapper:
         the id maps, the denormalized namespace through the namespace map,
         and a lookup_value that was a canonical id follows its entity — an
         old id kept anywhere is a pointer into the original namespace
-        (CASE-743: 'fresh means fresh'). A human-readable lookup_value stays:
-        it is namespace-agnostic text that resolves in the new context.
+        (CASE-743: 'fresh means fresh'). A BARE human-readable lookup_value
+        stays: it is namespace-agnostic text that resolves in the new
+        context. A QUALIFIED one ('<ns>:<value>') is not namespace-agnostic —
+        it names a namespace explicitly, so it follows the namespace and id
+        maps like any other reference string.
         """
         result = dict(ref)
         lookup = result.get("lookup_value")
         if isinstance(lookup, str):
-            for m in (self.document_map, self.template_map, self.term_map):
-                if lookup in m:
-                    result["lookup_value"] = m[lookup]
-                    break
+            result["lookup_value"] = self._remap_reference_string(
+                lookup, (self.document_map, self.template_map, self.term_map)
+            )
         resolved = result.get("resolved")
         if resolved:
             resolved = dict(resolved)
@@ -272,16 +274,15 @@ class IDRemapper:
         array of objects — and every position must follow the same id maps as
         a top-level scalar. A string absent from every map passes through
         unchanged, which keeps the pass-through rule for targets outside the
-        archive: they were never re-minted, so no map knows them.
+        archive: they were never re-minted, so no map knows them. Qualified
+        strings ('<ns>:<value>') whose namespace half is being remapped are
+        rewritten as a whole — see _remap_reference_string.
         """
-        all_maps = [self.file_map, self.document_map, self.template_map, self.term_map]
+        all_maps = (self.file_map, self.document_map, self.template_map, self.term_map)
 
         def walk(value: Any) -> Any:
             if isinstance(value, str):
-                for m in all_maps:
-                    if value in m:
-                        return m[value]
-                return value
+                return self._remap_reference_string(value, all_maps)
             if isinstance(value, list):
                 return [walk(item) for item in value]
             if isinstance(value, dict):
@@ -289,3 +290,48 @@ class IDRemapper:
             return value
 
         return {key: walk(value) for key, value in data.items()}
+
+    def _remap_reference_string(
+        self,
+        value: str,
+        id_maps: tuple[dict[str, str], ...],
+    ) -> str:
+        """Rewrite one reference string through the id and namespace maps.
+
+        Two forms, matching how the platform stores reference values:
+
+        - BARE ('<id-or-value>'): exact lookup in the id maps; unmapped
+          strings pass through (targets outside the archive were never
+          re-minted, so no map knows them).
+        - QUALIFIED ('<ns>:<rest>', split on the FIRST colon — the same
+          purely syntactic split as wip_auth.split_qualified_value): if the
+          namespace half names a source namespace this restore re-mints, the
+          whole string is rewritten — namespace half through namespace_map,
+          rest through the id maps, falling back to the rest unchanged (a
+          fresh restore re-mints ids, not values, so value-form rests and the
+          'terminology:value' tail of a 3-part term ref are portable as-is).
+          The result keeps the qualified SHAPE: the ref may live in a
+          different target than it points into, and a bare value resolves
+          own-namespace only, so collapsing it would change resolution.
+          A namespace half OUTSIDE the map passes the whole string through —
+          that entity was not re-minted, so the string still describes it.
+
+        A free-text string that happens to begin '<source-ns>:' is rewritten
+        too; that is deliberate — the leak-sweep contract defines any
+        source-namespace string in a restored row as a leak, the same
+        acceptance class as the exact-match rewrite of a text field that
+        equals an old id.
+        """
+        for m in id_maps:
+            if value in m:
+                return m[value]
+        if ":" in value:
+            ns_prefix, rest = value.split(":", 1)
+            new_ns = self.namespace_map.get(ns_prefix)
+            if new_ns is not None:
+                for m in id_maps:
+                    if rest in m:
+                        rest = m[rest]
+                        break
+                return f"{new_ns}:{rest}"
+        return value

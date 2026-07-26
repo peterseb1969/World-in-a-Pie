@@ -163,11 +163,19 @@ restored rows. Beyond ids, this covers reference snapshots: the
 denormalized `resolved.namespace` follows the source→target map (a
 namespace outside the archive passes through — that entity was not
 re-minted, so its snapshot still describes it), and a `lookup_value` that
-is a canonical id follows its entity through the id maps. Human-readable
-lookup values stay: namespace-agnostic text that resolves in the new
-context. The regression test sweeps the serialized restored row for any
-old id or source-namespace string, so a future snapshot field that leaks
-provenance fails the suite by construction.
+is a canonical id follows its entity through the id maps. BARE
+human-readable lookup values stay: namespace-agnostic text that resolves
+in the new context. QUALIFIED reference strings (`<ns>:<id-or-value>`,
+split on the first colon — the platform's stored cross-namespace form) are
+NOT namespace-agnostic and are rewritten as a whole, in data values and
+lookup_values alike: the namespace half through the source→target map, the
+rest through the id maps (falling back to the rest unchanged — ids are
+re-minted, values are not), keeping the qualified shape because a bare
+value resolves own-namespace only. A qualified string whose namespace is
+outside the archive passes through whole. The regression test sweeps the
+serialized restored row for any old id or source-namespace string —
+including the qualified `ns:` prefix forms — so a future snapshot field
+that leaks provenance fails the suite by construction.
 
 **Identity hashes.** A document's identity hash is namespace-free and
 value-based, so it survives re-minting — unless an identity field itself

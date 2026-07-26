@@ -170,16 +170,27 @@ async def test_reference_snapshots_carry_no_trace_of_the_source():
     doc_b = _doc("OLD-DOC-B", "OLD-TPL-B", "SHARED_SCHEMA", {"name": "target"})
     # The reference lives in BOTH halves of the document: the data payload
     # (here as an array-of-references value — the shape CASE-746 caught
-    # leaking) and the references[] snapshot. The serialized-row sweep below
-    # must see old ids in neither.
+    # leaking — plus a QUALIFIED '<ns>:<id>' scalar, the form the platform
+    # actually stores for a cross-namespace ref; the live R-06 matrix cell
+    # caught the bare-only fixture missing it, CASE-814) and the
+    # references[] snapshot. The serialized-row sweep below must see old ids
+    # in neither.
     doc_a = _doc(
         "OLD-DOC-A", "OLD-TPL-B", "SHARED_SCHEMA",
-        {"name": "src", "links": ["OLD-DOC-B"]},
+        {"name": "src", "links": ["OLD-DOC-B"], "primary": "ns-b:OLD-DOC-B"},
     )
     doc_a["references"] = [{
         "field_path": "links",
         "reference_type": "document",
         "lookup_value": "OLD-DOC-B",
+        "resolved": {
+            "document_id": "OLD-DOC-B", "template_id": "OLD-TPL-B",
+            "identity_hash": "h", "namespace": "ns-b", "version": 1,
+        },
+    }, {
+        "field_path": "primary",
+        "reference_type": "document",
+        "lookup_value": "ns-b:OLD-DOC-B",
         "resolved": {
             "document_id": "OLD-DOC-B", "template_id": "OLD-TPL-B",
             "identity_hash": "h", "namespace": "ns-b", "version": 1,
@@ -206,10 +217,18 @@ async def test_reference_snapshots_carry_no_trace_of_the_source():
     assert ref["resolved"]["document_id"] == new_doc_b
     assert ref["lookup_value"] == new_doc_b
     assert row["data"]["links"] == [new_doc_b]
+    # The qualified form is rewritten in BOTH halves and keeps its qualified
+    # shape — a bare value resolves own-namespace only, so collapsing it
+    # would change resolution semantics.
+    assert row["data"]["primary"] == f"copy-b:{new_doc_b}"
+    assert row["references"][1]["lookup_value"] == f"copy-b:{new_doc_b}"
 
-    # Sweep: nothing anywhere in the row mentions an old id or source ns.
+    # Sweep: nothing anywhere in the row mentions an old id or source ns —
+    # including the qualified prefix forms ('ns-b:…'), which the quoted
+    # tokens ('"ns-b"') cannot match.
     blob = json.dumps(row)
-    for old in ("OLD-DOC-A", "OLD-DOC-B", "OLD-TPL-B", '"ns-a"', '"ns-b"'):
+    for old in ("OLD-DOC-A", "OLD-DOC-B", "OLD-TPL-B",
+                '"ns-a"', '"ns-b"', "ns-a:", "ns-b:"):
         assert old not in blob, f"{old} leaked into {blob[:200]}"
 
 

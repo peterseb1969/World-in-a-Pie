@@ -369,3 +369,83 @@ class TestRemapTermRelation:
              "relation_type": "old-b"}
         )
         assert result["relation_type"] == "new-b"
+
+
+class TestQualifiedReferenceStrings:
+    """The platform stores cross-namespace refs as '<ns>:<id-or-value>'
+    (split on the first colon). A fresh restore that re-mints a namespace
+    must rewrite BOTH halves of such a string; an exact-match walk sees a
+    string no id map knows and would leave the copy pointing verbatim at the
+    original namespace (the R-06 matrix cell's failure shape).
+    """
+
+    def setup_method(self):
+        self.remapper = IDRemapper(namespace_map={"ns-a": "copy-a", "ns-b": "copy-b"})
+        self.remapper.add_document_mapping("ns-b-D000001", "019def00-0000-7000-8000-0000000000aa")
+        self.remapper.add_term_mapping("old-term", "new-term")
+
+    def test_qualified_data_ref_rewrites_both_halves(self):
+        doc = {"document_id": "X", "data": {"primary": "ns-b:ns-b-D000001"}}
+        result = self.remapper.remap_document(doc)
+        assert result["data"]["primary"] == "copy-b:019def00-0000-7000-8000-0000000000aa"
+
+    def test_qualified_ref_in_array_rewrites(self):
+        doc = {"document_id": "X", "data": {"links": ["ns-b:ns-b-D000001", "unrelated"]}}
+        result = self.remapper.remap_document(doc)
+        assert result["data"]["links"] == [
+            "copy-b:019def00-0000-7000-8000-0000000000aa", "unrelated",
+        ]
+
+    def test_qualified_value_form_keeps_its_value_half(self):
+        # A fresh restore re-mints ids, not values: an unmapped rest is a
+        # portable value and only the namespace half moves.
+        doc = {"document_id": "X", "data": {"ref": "ns-a:SPEC-1"}}
+        result = self.remapper.remap_document(doc)
+        assert result["data"]["ref"] == "copy-a:SPEC-1"
+
+    def test_three_part_term_form_moves_namespace_only(self):
+        doc = {"document_id": "X", "data": {"unit": "ns-a:MATRIX_COLOR:RED"}}
+        result = self.remapper.remap_document(doc)
+        assert result["data"]["unit"] == "copy-a:MATRIX_COLOR:RED"
+
+    def test_namespace_outside_the_archive_passes_through_whole(self):
+        # 'wip' is not being re-minted; the string still describes its entity.
+        doc = {"document_id": "X", "data": {"unit": "wip:TIME_UNIT:seconds"}}
+        result = self.remapper.remap_document(doc)
+        assert result["data"]["unit"] == "wip:TIME_UNIT:seconds"
+
+    def test_qualified_lookup_value_follows_the_maps(self):
+        doc = {
+            "document_id": "X",
+            "data": {},
+            "references": [{
+                "field_path": "primary",
+                "lookup_value": "ns-b:ns-b-D000001",
+                "resolved": {"document_id": "ns-b-D000001", "namespace": "ns-b"},
+            }],
+        }
+        result = self.remapper.remap_document(doc)
+        ref = result["references"][0]
+        assert ref["lookup_value"] == "copy-b:019def00-0000-7000-8000-0000000000aa"
+        assert ref["resolved"]["document_id"] == "019def00-0000-7000-8000-0000000000aa"
+        assert ref["resolved"]["namespace"] == "copy-b"
+
+    def test_bare_lookup_value_behaviour_is_unchanged(self):
+        doc = {
+            "document_id": "X",
+            "data": {},
+            "references": [
+                {"field_path": "a", "lookup_value": "old-term"},
+                {"field_path": "b", "lookup_value": "Some Human Name"},
+            ],
+        }
+        result = self.remapper.remap_document(doc)
+        assert result["references"][0]["lookup_value"] == "new-term"
+        assert result["references"][1]["lookup_value"] == "Some Human Name"
+
+    def test_empty_namespace_map_leaves_qualified_strings_alone(self):
+        remapper = IDRemapper()
+        remapper.add_document_mapping("ns-b-D000001", "new-id")
+        doc = {"document_id": "X", "data": {"ref": "ns-b:ns-b-D000001"}}
+        result = remapper.remap_document(doc)
+        assert result["data"]["ref"] == "ns-b:ns-b-D000001"
