@@ -144,7 +144,12 @@ async def get_namespace_template_stamp(
     rather than re-fetching every template. `count` catches creates/deletes;
     `max(updated_at)` catches updates and status flips (deactivate/reactivate).
     """
-    require_current_identity()
+    identity = require_current_identity()
+    # The stamp reveals namespace existence, template count, and last-change
+    # time — namespaced data, so it is grant-gated like any other read (no
+    # grant → 404, existence not leaked). The document-store cache polls it
+    # with a service key, which passes every namespace check.
+    await check_namespace_permission(identity, namespace, "read")
     stamp = await TemplateService.get_namespace_template_stamp(namespace)
     return {"namespace": namespace, "stamp": stamp}
 

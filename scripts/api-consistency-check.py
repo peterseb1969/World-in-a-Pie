@@ -60,6 +60,18 @@ EXEMPT_FUNCTIONS = {
         "during namespace bootstrap. Bulk shape can be added when demand "
         "emerges. (CASE-335 Angle B)"
     ),
+    "migrate_documents": (
+        "The request body is an operation descriptor (template, target "
+        "version, dry_run) and the operation is already bulk over the "
+        "template's documents with per-document results. A List[...] "
+        "envelope would be bulk-of-operations nobody has asked for."
+    ),
+    "add_edge_type_endpoints": (
+        "Single-entity amendment: additively widens ONE edge type's "
+        "source/target allow-lists, and the payload already is two lists. "
+        "The documented happy path is the MCP tool of the same name; a "
+        "multi-template envelope can be added when demand emerges."
+    ),
 }
 
 
