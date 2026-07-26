@@ -17,6 +17,7 @@ which talks only to the KB **gateway** (never the document-store backend).
 - `/wip-case comment <n>` — add a comment (any state; no transition)
 - `/wip-case close <n>` — close without implementing (won't-fix / not-an-issue / deferred)
 - `/wip-case implement <n>` — apply the proposed patch, then close as implemented
+- `/wip-case reopen <n>` — bring a closed/implemented case back to open (regression / disproven close)
 
 ## Prerequisites
 
@@ -53,7 +54,11 @@ synonym, scoped `CASE-<n>#<seq>` for responses, and persists edges. Status-trans
 gateway is pure persistence.
 
 Legal transitions: `open → {responded, closed, implemented}`,
-`responded → {closed, implemented}`; `closed` / `implemented` are terminal.
+`responded → {closed, implemented}`, and the reopen path
+`closed → open` / `implemented → open` — so "terminal" means "resting
+state", not "sealed forever": a case whose fix regressed, or that was
+closed on a premise later disproven, comes back as the SAME case with its
+thread intact instead of a duplicate filing.
 
 ---
 
@@ -74,6 +79,7 @@ Legal transitions: `open → {responded, closed, implemented}`,
    severity: <blocks-me | annoying | fyi>
    component: <wip-client | document-store | registry | scaffold | mcp-server | wip-react | wip-proxy | wip-auth | reporting-sync | other>
    app: <your app name, or "backend">
+   topics: [<pick 1–4 from KB_TOPIC>]
    target_yac: <FRanC | BE-YAC | any>
    ---
 
@@ -90,6 +96,21 @@ Legal transitions: `open → {responded, closed, implemented}`,
    ## Peter's Take
    <verbatim, only if Peter gave a comment with /wip-case file; else omit.>
    ```
+
+   **On `topics`** — the subject-matter tags the KB's Topic facet navigates by,
+   drawn from the `KB_TOPIC` vocabulary (browse it as the Topic facet in KB
+   search; the hierarchy rolls up, so tagging a leaf also surfaces the case
+   under its parent). Pick 1–4 that describe what the case is *about*, which is
+   not the same as which component it was filed against: a case about identity
+   hashing filed on `document-store` wants `identity-hashing`, and that is
+   exactly the tag no facet can infer for you.
+
+   Omitting the line is safe. The gateway fills a baseline from `component` and
+   `app` on write, so a case is never invisible to topic navigation. It resolves
+   those through the vocabulary's own term aliases, so it only ever produces
+   tags naming the component and app you already gave it — anything about the
+   *subject* has to come from you. Whatever you write wins outright; the
+   fallback runs only when the field is absent or empty.
 
 3. **File it** (the gateway mints `case_number` + the `CASE-<n>` synonym; link any
    related cases as REFERENCES edges):
@@ -206,6 +227,118 @@ proposed fix, tell Peter to `/wip-case respond` first and stop.
    ```
 
 Terminal. Tell Peter what was applied and that the case is implemented.
+
+---
+
+## `/wip-case reopen <n>`
+
+Bring a `closed` or `implemented` case back to `open` — for a fix that
+regressed, or a close whose premise was later disproven. Reopen the SAME
+case rather than filing a duplicate: the thread's history is the context
+the next responder needs. Always say WHY in a comment — a bare status flip
+strands the next reader.
+
+```bash
+kbc kb-write.py CASE_RESPONSE reopen.md --edge RESPONDS_TO:CASE_RECORD:<n>
+#   reopen.md frontmatter: case_number: <n> / response_kind: comment / author: <id> / doc_status: published
+#   body: why this is coming back (what regressed / which premise fell)
+kbc kb-write.py CASE_RECORD --patch status=open --match case_number=<n>
+```
+
+Only from `closed` or `implemented` (an `open`/`responded` case has nothing
+to reopen). The case then walks the normal machine again.
+
+---
+
+## Discovering what you can write — the doc-type manifest
+
+Before writing an unfamiliar type, ask the instance what it accepts. The manifest is
+generated from the templates themselves, so it can never drift from what the gateway
+will take:
+
+```bash
+kbc kb-write.py --list                      # every writable type, across all namespaces
+kbc kb-write.py --list --namespace library  # scope to one namespace
+kbc kb-write.py --list --format json
+```
+
+Each row gives the type, its **home namespace**, its write mode (`mint` = the gateway
+allocates a number + synonym; `natural` = upsert by identity fields), the synonym
+prefix, and the identity fields. Unscoped it spans the corpus **and** the library —
+that is how `LIBRARY_DOC` (namespace `library`) is discoverable at all (CASE-701).
+
+---
+
+## Fetching a doc by its handle
+
+Mint types carry a human handle — `CASE-<n>`, `FIRESIDE-<n>`, `LESSON-<n>`,
+`DECISION-<n>`, `PAPER-<n>` — and the read verbs accept the number directly:
+
+```bash
+kbc case-fetch.py case 692           # cases by number
+kbc case-fetch.py fireside 21        # a fireside by number …
+kbc case-fetch.py fireside FIRESIDE-21   # … or by its full synonym, or a document_id
+kbc case-fetch.py edges FIRESIDE-21  # every edge touching it
+```
+
+`case-fetch.py fireside list` shows the `#` column so you can find the number in the
+first place. For types without a bespoke verb, filter on the number field instead:
+`read LESSON --filter lesson_number=12` (CASE-703).
+
+---
+
+## Full-text search — find by content (CASE-707)
+
+Every verb above filters on values you already know. This is the "which docs mention
+X" surface, across the **whole corpus** — `kb` and `library` are searched as one and
+merged. Backed by `GET /search`, which fronts the platform's reporting-sync FTS
+(Postgres tsvector, ranked, with snippets).
+
+```bash
+kbc case-fetch.py search "reporting-sync"
+kbc case-fetch.py search "flag dispatch" --type CASE_RECORD
+kbc case-fetch.py search "restore" --mode substring --limit 50
+#   --type   restrict to one doc type (CASE_RECORD, FIRESIDE, LESSON, DOCUMENT, …)
+#   --mode   auto (default) | fts | substring — auto falls back to substring when
+#            FTS finds nothing
+#   --limit  max hits (default 25, cap 100); output flags when it truncated
+#   --format table|json
+```
+
+Results carry type, relevance score, title, a snippet, and the document_id — follow up
+with `case <n>` / `fireside <n>` / `read <TYPE>` to pull the full doc. Exit 1 when
+nothing matched.
+
+**Use this instead of dropping to reporting SQL.** Raw SQL bypasses the gateway (and
+targets whichever instance your env points at); this stays on the same gateway as every
+other verb.
+
+---
+
+## Reading any KB type — generic typed read (CASE-683)
+
+Read/write parity: every doc type `kb-write.py` can write is readable through one
+generic verb, symmetric to the single `POST /write/:type` write surface. Backed by
+`GET /read/:type`. Use this for the writable types that have no bespoke read verb
+(`YAC_MEMORY`, `LESSON`, `DESIGN_DECISION`, `GIT_STATS_SNAPSHOT`,
+`BOOTSTRAP_RECORD`, `DOCUMENT`, …); the dedicated verbs above (`case`, `list`,
+`fireside`, `library`, `journey`) are richer where they exist.
+
+```bash
+kbc case-fetch.py read <TYPE> [--filter KEY=VALUE …]
+#   TYPE        — the doc type value, e.g. YAC_MEMORY, LESSON, DESIGN_DECISION, DOCUMENT
+#   --filter    — repeatable; each KEY=VALUE is an eq-match on data.KEY, so a type's
+#                 identity fields filter for free
+#   --namespace — override the type's home namespace (default: its home)
+#   --page / --page-size — paginate (default page 1, 50 rows/page, cap 100)
+#   --format table|json  — default table
+
+kbc case-fetch.py read LESSON --filter owner=FRanC
+kbc case-fetch.py read GIT_STATS_SNAPSHOT --filter repo=WIP-KB --filter snapshot_date=2026-07-18
+kbc case-fetch.py read YAC_MEMORY --format json
+```
+
+Exit 1 if the type is unknown or has no read route; exit 2 on transport failure.
 
 ---
 

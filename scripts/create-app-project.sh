@@ -982,7 +982,7 @@ if ! $REFRESH_MODE; then
 fi
 echo ""
 echo "Verify MCP connection:"
-echo "  In Claude Code, run /mcp — you should see 94 tools and 5 resources."
+echo "  In Claude Code, run /mcp — you should see 101 tools and 5 resources."
 if $REFRESH_MODE; then
     echo ""
     echo "Note: .mcp.json has been regenerated with paths for this machine."
