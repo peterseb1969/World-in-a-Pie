@@ -72,8 +72,8 @@ rather than folding it into the accepted-refusal set.
 | R-03 P-SRV1 × R-ID-X cross-instance DR | **GAP (L)** | Needs `--dr-install`; §6 confirms empty. |
 | R-04 P-CLI × R-ID — the CASE-756 seam | **COVERED (C) → L** | `test_round_trip::test_golden_round_trip` IS this seam (CLI export → engine restore, resolution fidelity without caches, CASE-665/756). L version = Phase 3. |
 | R-05 P-SRV1 × R-FR1 beside live original; LEAK on copy; original untouched | **BUILT (L, slice 1)** — row corrected; §7 had it built while this table still read PARTIAL | Copy lands active in TARGET: `test_remap_integration::{test_ids_come_from_the_registry_and_are_active, test_documents_land_under_new_ids...}`. LEAK sweep: `test_remap_multi::test_reference_snapshots_carry_no_trace_of_the_source`. **"Original untouched" is never asserted** (source is a mocked reader). L cell + original-untouched diff. |
-| R-06 P-SRVN × R-FRN cross-source refs both ways + template pin | **PARTIAL → L-GAP** | Cross-source template pin + one ref direction: `test_remap_multi::test_cross_source_template_pin_follows_the_new_id`. **Both directions** and real-stack = L. |
-| R-07 P-SRVN × R-FRC collapse; same-valued **terminology** refused naming both sources; dry-run refuses the SAME cell | **PARTIAL → GAP** | Disjoint lands + N:1 refusal naming both sources: `test_remap_multi::{test_n_to_one_disjoint_content_lands_in_one_target, test_n_to_one_key_collision_refuses}` — but the collision is on **templates**, not terminologies, and `test_dry_run_placeholders_unique_across_sources` asserts the *opposite* (avoiding a false refusal). **DONE (C):** `test_remap_multi::test_n_to_one_terminology_collision_refuses` — two same-valued `MATRIX_STATUS` terminologies into one target refuse (apply path AND dry-run, since `_check_target_collisions` runs before provisioning). L real-stack cell remains for Phase 3. |
+| R-06 P-SRVN × R-FRN cross-source refs both ways + template pin | **BUILT (L, slice 5) — RED: real platform defect (CASE-814)** | Cross-source template pin + one ref direction: `test_remap_multi::test_cross_source_template_pin_follows_the_new_id`. L cell built and red on prod-test 20260726a: qualified data refs (`<ns>:<id>`) pass through `IDRemapper._remap_data_ids` unrewritten (exact-match maps key on bare ids), so the copy's refs point verbatim at the ORIGINAL namespace while the `resolved` snapshots are rewritten — the two halves of a stored reference disagree. The C sweep passes because its fixture stores refs in bare form only. Cell stays red until CASE-814 is fixed. |
+| R-07 P-SRVN × R-FRC collapse; same-valued **terminology** refused naming both sources; dry-run refuses the SAME cell | **PARTIAL → GAP** | Disjoint lands + N:1 refusal naming both sources: `test_remap_multi::{test_n_to_one_disjoint_content_lands_in_one_target, test_n_to_one_key_collision_refuses}` — but the collision is on **templates**, not terminologies, and `test_dry_run_placeholders_unique_across_sources` asserts the *opposite* (avoiding a false refusal). **DONE (C):** `test_remap_multi::test_n_to_one_terminology_collision_refuses` — two same-valued `MATRIX_STATUS` terminologies into one target refuse (apply path AND dry-run, since `_check_target_collisions` runs before provisioning). **L cell BUILT (slice 5) and RED — the C claim does NOT generalize (CASE-815):** the check compares the full Registry key `{ns, value, label}`, and the C fixture's labels are identical while the live fixture's differ ("Matrix Status (NS-A)" vs "(NS-B)"), so live neither the dry run nor the apply refuses — the dry run previews `complete` and the apply dies mid-write on def-store's `(namespace, value)` unique index, leaving a half-restored target. Cell stays red until CASE-815 is fixed. |
 | R-08 P-SRV1 × R-MRG into drift; add_missing off/on; extend_terminologies | **COVERED (C) → L BUILT** | C: `test_merge_restore::TestDefinitionsPrecondition::*`, `test_merge_definitions::TestOptInStrategies::*`. L: `run_matrix.py` R-08 (slice 2) — hard-delete a document, `mode=merge`; the drifted-away document is re-inserted (on_clash=skip). add_missing/extend_terminologies variants still C-only. |
 | R-09 R-MRG on_clash triple (skip / overwrite / newer) | **COVERED (C)** ← §6 was stale | `test_merge_restore::TestDocumentClashPolicy::*` (skip, overwrite, overwrite-in-place on versioned:false, adopts target id) and the whole `TestNewerPolicy` class (newer taken / older left / tie / naive-utc / unparseable-warns / missing / report-counts). **§6 lists R-09 `newer` as known-empty — it is in fact fully covered.** |
 | R-10 R-MRG-T redirect (CASE-748), job record says so | **PARTIAL** | `test_merge_restore::TestMergeIntoADifferentNamespace::*` covers data landing in the target + rescoped/rehashed keys + id-collision refusals — **DONE (C):** `test_merge_restore::test_an_explicit_target_redirect_is_recorded_on_the_job` drives an explicit `target_namespace` differing from the archive manifest and asserts the job result records the redirect. Closing it added one production line — the merge result now records `source_namespace` per target (parity with remap). L cell remains for Phase 3. |
@@ -111,7 +111,7 @@ rather than folding it into the accepted-refusal set.
 ## Gaps to build in Phase 3
 
 **Component-layer (C) gaps — BUILT (BE-YAC-20260724-112448, Tier A):**
-- R-07 dry-run genuinely *refuses* an N:1 same-valued **terminology** collision (the fixture's `MATRIX_STATUS` pair) — `test_remap_multi::test_n_to_one_terminology_collision_refuses` (apply + dry-run both refuse; the check precedes provisioning).
+- R-07 dry-run genuinely *refuses* an N:1 same-valued **terminology** collision (the fixture's `MATRIX_STATUS` pair) — `test_remap_multi::test_n_to_one_terminology_collision_refuses` (apply + dry-run both refuse; the check precedes provisioning). *Caveat added by the slice-5 L run: this holds only when the labels also match — the check keys on the full `{ns, value, label}` key, so the live differently-labeled pair sails through and crashes the apply mid-write (CASE-815).*
 - R-10 merge with an explicit `target_namespace=` redirect + job-record assertion — `test_merge_restore::test_an_explicit_target_redirect_is_recorded_on_the_job`. Needed a one-line production add: the merge result now records `source_namespace` per target (parity with remap), so a redirect is legible on the job.
 - R-12 identity-less docs **un-PATCHable after restore** — `test_remap_integration::test_an_identity_less_document_stays_append_only_after_restore` (restore preserves empty identity_fields + empty identity_hash; the append_only guard keys purely on those, and the rejection itself is pinned by `test_documents_patch::test_patch_no_identity_template_rejected_append_only`).
 - R-13 edge-type **documents** re-pointed through a fresh restore + overwrite-in-place post-fresh-restore — `test_remap_integration::test_edge_type_endpoints_follow_the_restore_and_stay_addressable`. Live-validated on prod-test 20260724a.
@@ -164,8 +164,24 @@ never through a restore, plus the retained-job door:
 - **R-11 (BUILT):** restore from a retained job with no re-upload, plus the
   archive-copy independence the route promises.
 
+Slice 5 **BUILT; 20 cells, R-06 and R-07 deliberately RED on prod-test
+20260726a** — the first slice whose reds are attributed platform defects, not
+cell bugs (each was settled by reading the decisive evidence, not the cell's
+own output):
+- **R-06 (BUILT, RED — CASE-814):** multi-source fresh restore, cross-source
+  refs both ways. The copy's stored ref strings still name the ORIGINAL
+  namespace and ids verbatim (`110821-00b:110821-00b-D000001`) — decided by
+  reading the restored rows, not the cell's resolution counters.
+- **R-07 (BUILT, RED — CASE-815):** N:1 collapse refusal. Job records settle
+  attribution: the dry run wrote nothing but previewed `complete`; the apply
+  was no refusal — it restored source A fully, then died on B's terminology
+  bulk-insert (Mongo E11000 on `(namespace, value)`), leaving a half-restored
+  target.
+- Ordering constraint the slice added: R-06/R-07 read both pristine sources,
+  so they run before R-02, which drops them.
+
 **L cells still to build (later slices):**
-- Restore cells: R-03 (`--dr-install`), R-04, R-06 (both directions), R-07.
+- Restore cells: R-03 (`--dr-install`), R-04.
 - Failure injection: F-05 (crash mid-restore + re-run converges), F-06 (reporting-sync stopped + force backfill).
 - Sweep generalizations: X-01 over every R-* mode (currently fresh only), X-05's R-MRG all-unchanged re-run variant.
 - Cell zero (§4 of CASE-773): the CASE-766 inactive-version archive shape — the Phase-1 fixture builds it by construction (SPEC docs pinned to the deactivated v3).

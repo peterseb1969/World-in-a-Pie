@@ -269,6 +269,7 @@ def _restore(
     add_missing: bool = False,
     skip_files: bool = False,
     expect_writes: list[str] | None = None,
+    namespace_map: dict[str, str] | None = None,
 ) -> dict:
     """Generalized restore over the three modes.
 
@@ -285,6 +286,11 @@ def _restore(
         data["target_namespace"] = target_ns
     if skip_files:
         data["skip_files"] = "true"
+    if namespace_map:
+        # Fresh only, and mandatory for a multi-namespace archive: there is no
+        # implicit default, because an unmapped namespace restored to its old
+        # name would collide with the live original.
+        data["namespace_map"] = json.dumps(namespace_map)
     if mode == "merge":
         data["on_clash"] = on_clash
         if add_missing:
@@ -1272,6 +1278,121 @@ def cell_r02_multi_ns_cross_refs(
     return c
 
 
+def cell_r06_cross_source_refs(
+    client: WipClient, archive_ab: bytes, ns_a: str, ns_b: str,
+    tgt_a: str, tgt_b: str,
+) -> Cell:
+    """R-06: a multi-source FRESH restore rewrites cross-source refs both ways.
+
+    R-02's sibling on the other restore mode. Where an id-preserving restore
+    keeps every id — so a cross-namespace reference survives by simply not
+    changing — a fresh restore re-mints every identity, which means each
+    reference has to be actively rewritten to the copy's new id. Getting that
+    wrong in the direction nobody tests leaves the copy silently pointing at
+    the ORIGINAL, which is the worst outcome available: the restore looks
+    complete, resolves fine, and quietly couples two namespaces that were
+    supposed to be independent.
+
+    So the assertions are about where the refs point, not merely that they do:
+    every target id must be one of the COPY's ids, and none may be one of the
+    source's.
+    """
+    c = Cell("R-06", "multi-source fresh restore; cross-source refs rewritten both ways")
+
+    src_specs = _list_docs(client, ns_a, "MATRIX_SPECIMEN")
+    src_sample_ids = {d["document_id"] for d in _list_docs(client, ns_b, "MATRIX_SAMPLE")}
+    if not c.check("PL-DATA", bool(src_specs) and bool(src_sample_ids),
+                   f"sources hold the cross-source pair to carry "
+                   f"({len(src_specs)} specimen(s) -> {len(src_sample_ids)} sample(s))"):
+        return c
+
+    job = _restore(client, archive_ab, url_ns=tgt_a, mode="fresh",
+                   namespace_map={ns_a: tgt_a, ns_b: tgt_b},
+                   expect_writes=[tgt_a, tgt_b])
+    if not c.check("PL-JOB", job.get("status") == "complete",
+                   f"multi-source fresh restore completed "
+                   f"(status={job.get('status')} error={job.get('error')})"):
+        return c
+    c.check("PL-JOB", sorted(job.get("namespaces") or []) == sorted([tgt_a, tgt_b]),
+            f"the job names both TARGETS, not the sources "
+            f"(got {sorted(job.get('namespaces') or [])})")
+
+    copy_sample_ids = {d["document_id"] for d in _list_docs(client, tgt_b, "MATRIX_SAMPLE")}
+    copy_specs = _list_docs(client, tgt_a, "MATRIX_SPECIMEN")
+    c.check("PL-DATA", len(copy_specs) == len(src_specs),
+            f"specimens conserved into {tgt_a} ({len(copy_specs)}/{len(src_specs)})")
+    c.check("PL-REG", copy_sample_ids and not (copy_sample_ids & src_sample_ids),
+            f"the copy's samples got NEW ids ({len(copy_sample_ids)}, "
+            f"{len(copy_sample_ids & src_sample_ids)} shared with the source)")
+
+    # Where do the copy's refs point? Resolve each and demand it lands in the
+    # copied NS-B, never the original.
+    to_copy = to_source = unresolved = 0
+    for d in copy_specs:
+        data = d.get("data") or {}
+        refs = list(data.get("linked_samples") or [])
+        if data.get("primary_sample"):
+            refs.append(data["primary_sample"])
+        for ref in refs:
+            lookup = ref.split(":", 1)[1] if ":" in ref else ref
+            try:
+                doc = client.get(f"/api/document-store/documents/{lookup}")
+            except ApiError:
+                unresolved += 1
+                continue
+            ns = doc.get("namespace")
+            to_copy += ns == tgt_b
+            to_source += ns == ns_b
+
+    c.check("PL-REG", unresolved == 0,
+            f"every rewritten cross-source ref resolves ({unresolved} did not)")
+    c.check("PL-LEAK", to_source == 0,
+            f"no ref in the copy still points at the ORIGINAL {ns_b} "
+            f"({to_source} did) — the failure that looks like success")
+    c.check("PL-DATA", to_copy > 0,
+            f"refs were rewritten onto the copied namespace {tgt_b} "
+            f"({to_copy} ref(s))")
+    return c
+
+
+def cell_r07_collapse_refused(
+    client: WipClient, archive_ab: bytes, ns_a: str, ns_b: str, tgt: str,
+) -> Cell:
+    """R-07: N:1 collapse — a same-valued terminology in both sources refuses.
+
+    Several sources may share one target, and the fixture puts a terminology
+    of the same VALUE in both namespaces. Collapsing them would mint two
+    Registry entries claiming one composite key, so the plan must refuse
+    rather than write half of it.
+
+    Asserted on the DRY RUN as well as the apply, because a preview that
+    permits what the apply refuses is worse than no preview: it is the run an
+    operator trusts before doing the real thing.
+    """
+    c = Cell("R-07", "N:1 collapse refused on a same-valued terminology (apply + dry-run)")
+
+    dry = _restore(client, archive_ab, url_ns=tgt, mode="fresh", dry_run=True,
+                   namespace_map={ns_a: tgt, ns_b: tgt},
+                   expect_writes=[tgt])
+    dry_refused = dry.get("status") in ("refused", "failed")
+    c.check("PL-JOB", dry_refused,
+            f"the DRY RUN refuses the collapse rather than previewing a write "
+            f"the apply would reject (status={dry.get('status')})")
+
+    applied = _restore(client, archive_ab, url_ns=tgt, mode="fresh",
+                       namespace_map={ns_a: tgt, ns_b: tgt},
+                       expect_writes=[tgt])
+    c.check("PL-JOB", applied.get("status") in ("refused", "failed"),
+            f"the apply refuses the collapse (status={applied.get('status')})")
+
+    # A refusal that already wrote half the data is not a refusal.
+    for template in ("MATRIX_SPECIMEN", "MATRIX_SAMPLE"):
+        landed = _list_docs(client, tgt, template)
+        c.check("PL-DATA", not landed,
+                f"nothing partial landed in {tgt} for {template} ({len(landed)})")
+    return c
+
+
 def cell_x04_job_plane(client: WipClient) -> Cell:
     """X-04: sweep every job this run drove against a schema of field ownership.
 
@@ -1705,6 +1826,9 @@ def main(argv: list[str] | None = None) -> int:
     ns_a, ns_b, tgt = f"{tag}-00a", f"{tag}-00b", f"{tag}-00c"
     ns_e = f"{tag}-00e"  # dry-run-parity target (X-01)
     ns_f = f"{tag}-00f"  # second-hop target (X-06)
+    ns_j = f"{tag}-00j"  # multi-source fresh target A (R-06)
+    ns_k = f"{tag}-00k"  # multi-source fresh target B (R-06)
+    ns_l = f"{tag}-00l"  # N:1 collapse target (R-07)
     ns_g = f"{tag}-00g"  # blob-restore target (R-14)
     ns_h = f"{tag}-00h"  # skip_files target (R-14)
     cells: list[Cell] = []
@@ -1815,6 +1939,15 @@ def main(argv: list[str] | None = None) -> int:
                 print("[slice2] R-08 merge into drift ...")
                 cells.append(_wrap("R-08", cell_r08_merge_drift, client, archive_b, ns_b))
 
+                # R-06/R-07 read both sources and write elsewhere, so they run
+                # before R-02 — which destroys the sources they need.
+                print("[slice5] R-06 multi-source fresh restore, cross-source refs ...")
+                cells.append(_wrap("R-06", cell_r06_cross_source_refs, client,
+                                   arch_ab_bytes, ns_a, ns_b, ns_j, ns_k))
+                print("[slice5] R-07 N:1 collapse refusal ...")
+                cells.append(_wrap("R-07", cell_r07_collapse_refused, client,
+                                   arch_ab_bytes, ns_a, ns_b, ns_l))
+
                 # R-02 runs LAST of the data cells because it drops BOTH source
                 # namespaces and restores them from the multi-namespace archive
                 # B-02 took while they were still pristine. Anything depending
@@ -1843,7 +1976,7 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             if not args.keep:
                 print("\n[teardown] deleting runner namespaces ...")
-                teardown(client, [tgt, ns_e, ns_f, ns_g, ns_h, ns_a, ns_b])
+                teardown(client, [tgt, ns_e, ns_f, ns_g, ns_h, ns_j, ns_k, ns_l, ns_a, ns_b])
             else:
                 print(f"\n[keep] namespaces preserved: {ns_a}, {ns_b}, {tgt}, {ns_e}, {ns_f}")
 
