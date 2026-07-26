@@ -68,7 +68,7 @@ rather than folding it into the accepted-refusal set.
 | Cell | Status | Evidence / gap |
 |---|---|---|
 | R-01 P-SRV1 × R-ID into empty ns, full fidelity | **COVERED (C) → L BUILT** | `test_round_trip::test_golden_round_trip` (C). L: `run_matrix.py` R-01 (slice 2) — drop NS-B, `mode=restore` back; asserts every document id preserved verbatim, conserved counts match the pre-drop namespace, value-form resolution intact. |
-| R-02 P-SRVN × R-ID both ns, cross-ns refs (E8) intact | **GAP (L)** | No multi-namespace real restore with cross-ns refs. |
+| R-02 P-SRVN × R-ID both ns, cross-ns refs (E8) intact | **BUILT (L)** | `run_matrix.py` R-02 (slice 5) — the runner's first MULTI-namespace id-preserving restore, the shape a real DR takes. Drops BOTH namespaces and restores them from the archive B-02 took while they were pristine; asserts the job names both write targets, ids come back verbatim on both sides, NS-A's `primary_sample`/`linked_samples` refs into NS-B survive unchanged, and — the distinctive half — each ref still **resolves** to a document in the restored NS-B. Counts cannot see this: a dangling reference is a well-formed string in a document whose class totals all reconcile. Note refs are stored in QUALIFIED VALUE form (`<ns>:<value>`), not as the target's UUID, so resolution is a real lookup on the value (split on the first colon), not set-membership against document_ids. Runs last of the data cells because it destroys both sources. |
 | R-03 P-SRV1 × R-ID-X cross-instance DR | **GAP (L)** | Needs `--dr-install`; §6 confirms empty. |
 | R-04 P-CLI × R-ID — the CASE-756 seam | **COVERED (C) → L** | `test_round_trip::test_golden_round_trip` IS this seam (CLI export → engine restore, resolution fidelity without caches, CASE-665/756). L version = Phase 3. |
 | R-05 P-SRV1 × R-FR1 beside live original; LEAK on copy; original untouched | **BUILT (L, slice 1)** — row corrected; §7 had it built while this table still read PARTIAL | Copy lands active in TARGET: `test_remap_integration::{test_ids_come_from_the_registry_and_are_active, test_documents_land_under_new_ids...}`. LEAK sweep: `test_remap_multi::test_reference_snapshots_carry_no_trace_of_the_source`. **"Original untouched" is never asserted** (source is a mocked reader). L cell + original-untouched diff. |
@@ -165,7 +165,7 @@ never through a restore, plus the retained-job door:
   archive-copy independence the route promises.
 
 **L cells still to build (later slices):**
-- Restore cells: R-02, R-03 (`--dr-install`), R-04, R-06 (both directions), R-07.
+- Restore cells: R-03 (`--dr-install`), R-04, R-06 (both directions), R-07.
 - Failure injection: F-05 (crash mid-restore + re-run converges), F-06 (reporting-sync stopped + force backfill).
 - Sweep generalizations: X-01 over every R-* mode (currently fresh only), X-05's R-MRG all-unchanged re-run variant.
 - Cell zero (§4 of CASE-773): the CASE-766 inactive-version archive shape — the Phase-1 fixture builds it by construction (SPEC docs pinned to the deactivated v3).

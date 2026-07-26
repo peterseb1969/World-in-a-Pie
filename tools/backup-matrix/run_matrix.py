@@ -268,6 +268,7 @@ def _restore(
     on_clash: str = "skip",
     add_missing: bool = False,
     skip_files: bool = False,
+    expect_writes: list[str] | None = None,
 ) -> dict:
     """Generalized restore over the three modes.
 
@@ -310,7 +311,15 @@ def _restore(
     # green verdict about the wrong namespace); restore/merge write each
     # archived namespace to itself, which for the runner's single-namespace
     # archives is the anchor.
-    writes_to = [target_ns] if (mode == "fresh" and target_ns) else [url_ns]
+    # …and a MULTI-namespace archive restored id-preservingly writes every
+    # namespace it carries, which the anchor alone cannot express — R-02 is the
+    # first cell to do that, so the caller declares it rather than this helper
+    # guessing from a shape it can no longer infer.
+    writes_to = (
+        list(expect_writes) if expect_writes
+        else [target_ns] if (mode == "fresh" and target_ns)
+        else [url_ns]
+    )
     JOBS.append(JobRun(
         label=f"{mode}{' dry-run' if dry_run else ''} -> {','.join(writes_to)}",
         kind="restore",
@@ -1153,6 +1162,116 @@ def cell_r11_restore_from_retained_job(client: WipClient, src_ns: str) -> Cell:
     return c
 
 
+def cell_r02_multi_ns_cross_refs(
+    client: WipClient, archive_ab: bytes, ns_a: str, ns_b: str,
+) -> Cell:
+    """R-02: both namespaces restored together, cross-namespace refs intact.
+
+    An id-preserving restore of a MULTI-namespace archive, which is the shape
+    a real disaster recovery takes and the one no cell covered: R-01 restores
+    a single namespace, and every other restore cell works on one at a time.
+
+    What only this cell can show is that NS-A's references into NS-B still
+    resolve afterwards. The fixture points `primary_sample` (scalar) and
+    `linked_samples` (array) at NS-B documents, under a template-level
+    `target_templates` pin, with NS-A configured `strict` and NS-B on its
+    allow-list — so a restore that got the ordering or the id handling wrong
+    leaves a document whose references name things that no longer exist.
+
+    Counts cannot see this. A dangling reference is a perfectly well-formed
+    string in a document whose class totals all reconcile; only resolving the
+    referenced id against the other restored namespace distinguishes a live
+    cross-namespace link from a plausible-looking corpse.
+    """
+    c = Cell("R-02", "multi-namespace id-preserving restore; cross-ns refs (E8) intact")
+
+    # Evidence has to be gathered BEFORE the drop: after it there is nothing
+    # to compare against, and the archive is the only remaining copy.
+    specs_before = _list_docs(client, ns_a, "MATRIX_SPECIMEN")
+    refs_before: dict[str, dict] = {}
+    for d in specs_before:
+        data = d.get("data") or {}
+        linked = data.get("linked_samples") or []
+        primary = data.get("primary_sample")
+        if linked or primary:
+            refs_before[d["document_id"]] = {
+                "primary": primary,
+                "linked": sorted(linked if isinstance(linked, list) else []),
+            }
+    if not c.check("PL-DATA", bool(refs_before),
+                   f"NS-A holds specimen(s) with cross-namespace refs to carry "
+                   f"({len(refs_before)})"):
+        return c
+
+    ids_b_before = {d["document_id"] for d in _list_docs(client, ns_b, "MATRIX_SAMPLE")}
+    c.check("PL-DATA", bool(ids_b_before),
+            f"NS-B holds the referenced sample documents ({len(ids_b_before)})")
+
+    for ns in (ns_a, ns_b):
+        _drop_ns(client, ns)
+
+    job = _restore(client, archive_ab, url_ns=ns_a, mode="restore",
+                   expect_writes=[ns_a, ns_b])
+    if not c.check("PL-JOB", job.get("status") == "complete",
+                   f"multi-namespace id-preserving restore completed "
+                   f"(status={job.get('status')} error={job.get('error')})"):
+        return c
+    c.check("PL-JOB", sorted(job.get("namespaces") or []) == sorted([ns_a, ns_b]),
+            f"the job names BOTH restored namespaces "
+            f"(got {sorted(job.get('namespaces') or [])})")
+
+    # Id-preserving: the same document ids must come back, on both sides.
+    ids_b_after = {d["document_id"] for d in _list_docs(client, ns_b, "MATRIX_SAMPLE")}
+    c.check("PL-REG", ids_b_after == ids_b_before,
+            f"NS-B document ids preserved verbatim "
+            f"({len(ids_b_after & ids_b_before)}/{len(ids_b_before)} matched)")
+
+    specs_after = {d["document_id"]: d for d in _list_docs(client, ns_a, "MATRIX_SPECIMEN")}
+    c.check("PL-REG", set(specs_after) >= set(refs_before),
+            f"NS-A specimen ids preserved verbatim "
+            f"({len(set(specs_after) & set(refs_before))}/{len(refs_before)})")
+
+    # The cell's distinctive claim, in two independent halves.
+    #
+    # Cross-namespace references are stored in their QUALIFIED VALUE form —
+    # '<ns>:<prefixed-id>', e.g. '…-00b:…-00b-D000001' — not as the referenced
+    # document's UUID. So "does it resolve" cannot be set-membership against
+    # document_ids; it has to be an actual resolution, which is the stronger
+    # check anyway: it exercises the platform's rule that any valid synonym
+    # behaves identically to the canonical id, across a namespace boundary,
+    # after both namespaces were dropped and restored.
+    unchanged = 0
+    dangling: list[str] = []
+    for doc_id, before in refs_before.items():
+        after = (specs_after.get(doc_id) or {}).get("data") or {}
+        linked_after = sorted(after.get("linked_samples") or [])
+        primary_after = after.get("primary_sample")
+        unchanged += bool(
+            linked_after == before["linked"] and primary_after == before["primary"]
+        )
+        targets = set(linked_after) | ({primary_after} if primary_after else set())
+        for ref in targets:
+            # Stored qualified ('<ns>:<value>'); the document GET route wants
+            # the value, so split on the FIRST colon per the platform's
+            # qualified-name convention and keep any colons inside the value.
+            lookup = ref.split(":", 1)[1] if ":" in ref else ref
+            try:
+                doc = client.get(f"/api/document-store/documents/{lookup}")
+            except ApiError:
+                dangling.append(ref)
+                continue
+            if doc.get("namespace") != ns_b:
+                dangling.append(ref)
+
+    c.check("PL-DATA", unchanged == len(refs_before),
+            f"every cross-namespace ref survived the restore unchanged "
+            f"({unchanged}/{len(refs_before)} specimen(s))")
+    c.check("PL-REG", not dangling,
+            f"every cross-namespace ref still RESOLVES to a document in the "
+            f"restored {ns_b} ({len(dangling)} dangling: {dangling[:3]})")
+    return c
+
+
 def cell_x04_job_plane(client: WipClient) -> Cell:
     """X-04: sweep every job this run drove against a schema of field ownership.
 
@@ -1611,7 +1730,10 @@ def main(argv: list[str] | None = None) -> int:
                                "single-namespace real-archive counts (P-SRV1)", arch_a, expected))
 
             print("[B-02] backing up NS-A + NS-B (multi namespace) ...")
-            arch_ab = _parse_archive(_backup(client, ns_a, also=[ns_b]))
+            # Bytes kept as well as the parse: R-02 restores from this very
+            # archive at the end of the run, after both namespaces are dropped.
+            arch_ab_bytes = _backup(client, ns_a, also=[ns_b])
+            arch_ab = _parse_archive(arch_ab_bytes)
             cells.append(_wrap("B-02", cell_backup_counts, "B-02",
                                "multi-namespace real-archive counts (P-SRVN)", arch_ab, expected))
 
@@ -1692,6 +1814,14 @@ def main(argv: list[str] | None = None) -> int:
                 cells.append(_wrap("X-05", cell_x05_double_restore, client, builder, ns_b, archive_b))
                 print("[slice2] R-08 merge into drift ...")
                 cells.append(_wrap("R-08", cell_r08_merge_drift, client, archive_b, ns_b))
+
+                # R-02 runs LAST of the data cells because it drops BOTH source
+                # namespaces and restores them from the multi-namespace archive
+                # B-02 took while they were still pristine. Anything depending
+                # on NS-A or NS-B has to have run by now.
+                print("[slice5] R-02 multi-namespace restore, cross-ns refs ...")
+                cells.append(_wrap("R-02", cell_r02_multi_ns_cross_refs,
+                                   client, arch_ab_bytes, ns_a, ns_b))
 
                 # B-03 is the one cell that reaches beyond the run's own
                 # namespaces, so it is opt-in — and reported either way.
