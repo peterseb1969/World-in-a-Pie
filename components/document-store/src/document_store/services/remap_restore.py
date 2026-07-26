@@ -441,18 +441,35 @@ async def plan_multi(
     return plans
 
 
+# Per-type projection of a staged Registry key down to the fields the target
+# STORE is actually unique on. The staged key's job is Registry registration,
+# so its shape must keep matching each service's registration shape — but the
+# collision check must compare at store-uniqueness granularity, which for
+# terminologies is (ns, value): def-store's ns_value_unique_idx, with label
+# being mutable display metadata. Comparing the full {ns, value, label} key
+# lets a same-valued, differently-labeled pair through the plan-time refusal,
+# and the apply then dies mid-write on the Mongo unique index with a
+# half-restored target. Types absent here are unique on their full key.
+_UNIQUENESS_FIELDS: dict[str, tuple[str, ...]] = {
+    "terminologies": ("ns", "value"),
+}
+
+
 def _check_target_collisions(
     entity_type: str,
     staged: list[tuple[RemapSource, dict[str, list[dict[str, Any]]], list[dict[str, Any]]]],
 ) -> None:
-    """Refuse duplicate non-empty Registry keys within one target namespace."""
+    """Refuse duplicate non-empty uniqueness keys within one target namespace."""
     import json as _json
 
+    unique_fields = _UNIQUENESS_FIELDS.get(entity_type)
     claimed: dict[tuple[str, str], list[str]] = {}
     for s, _groups, keys in staged:
         for key in keys:
             if not key:
                 continue  # identity-less document — no dedup key to collide on
+            if unique_fields is not None:
+                key = {f: key.get(f) for f in unique_fields}
             canon = _json.dumps(key, sort_keys=True, default=str)
             claimed.setdefault((s.target, canon), []).append(s.source)
 

@@ -138,6 +138,43 @@ async def test_n_to_one_terminology_collision_refuses():
 
 
 @pytest.mark.asyncio
+async def test_n_to_one_terminology_collision_refuses_across_labels():
+    """CASE-815 (from live matrix cell R-07): the refusal must key on the
+    store's uniqueness — (ns, value) for terminologies — not the full
+    Registry key {ns, value, label}. Label is mutable display metadata; a
+    same-valued pair with DIFFERENT labels still collides on def-store's
+    ns_value_unique_idx at write time, so comparing full keys let this shape
+    sail through planning and crash the apply mid-write with a half-restored
+    target (source A fully written, source B's insert dead on E11000). The
+    sibling test above passes with identical labels; this one pins the shape
+    the live fixture actually has."""
+    def _sources():
+        return [
+            RemapSource("ns-a", "one", {"terminologies": [
+                {"terminology_id": "L-A", "value": "MATRIX_STATUS",
+                 "label": "Matrix Status (NS-A)"}]}),
+            RemapSource("ns-b", "one", {"terminologies": [
+                {"terminology_id": "L-B", "value": "MATRIX_STATUS",
+                 "label": "Matrix Status (NS-B)"}]}),
+        ]
+
+    with pytest.raises(RemapCollisionError) as exc:
+        await plan_multi(_sources(), IDRemapper(), _provision_factory())
+    assert "ns-a" in str(exc.value) and "ns-b" in str(exc.value)
+    # The reported key is the projected uniqueness key — what actually
+    # collided — so the label must not appear in it.
+    assert "MATRIX_STATUS" in str(exc.value)
+    assert "Matrix Status (NS-A)" not in str(exc.value)
+
+    with pytest.raises(RemapCollisionError):
+        await plan_multi(
+            _sources(),
+            IDRemapper(),
+            DirectRestoreEngine._dry_run_provisioner(),
+        )
+
+
+@pytest.mark.asyncio
 async def test_n_to_one_disjoint_content_lands_in_one_target():
     factory = _provision_factory()
     plans = await plan_multi(
