@@ -2,27 +2,70 @@
 
 Per the design doc §6: *"Implementation starts with a mapping pass: mark each
 matrix cell already covered by a named existing test, and build ONLY the gaps."*
-This is that pass. Each §5 cell is marked **COVERED** / **PARTIAL** / **GAP**
-with the named evidence, established by reading every existing backup/restore
-suite (doc-store `test_backup_*` / `test_merge_*` / `test_remap_*` /
-`test_case_689_restore_phases`, `reporting-sync` restore tests, `wip-archive`
-`test_archive`/`test_remap`, toolkit `test_exporter` + `test_round_trip` +
-`test_convert_archive`).
+This is that pass. Each §5 cell is marked **COVERED** / **PARTIAL** / **GAP** /
+**BUILT** with the named evidence, established by reading every existing
+backup/restore suite (doc-store `test_backup_*` / `test_merge_*` /
+`test_remap_*` / `test_case_689_restore_phases`, `reporting-sync` restore
+tests, `wip-archive` `test_archive`/`test_remap`, toolkit `test_exporter` +
+`test_round_trip` + `test_convert_archive`).
 
 Layer key (§5): **U** unit (mocked) · **C** component (in-process app + real
-Mongo/Registry) · **L** live stack (the §7 runner — none exist yet as a scripted
-suite).
+Mongo/Registry) · **L** live stack (the §7 runner).
+
+Format note: each section opens with a compact cell/status table; the evidence
+lives in the per-cell prose blocks below it (long prose inside table cells
+breaks most Markdown renderers, and this doc is meant to be read).
 
 Three design-doc reconciliations surfaced; they are listed at the end — read
 them first, they change how several cells are interpreted.
 
 ## 5.1 Producer cells
 
-| Cell | Status | Evidence / gap |
-|---|---|---|
-| B-01 P-SRV1 counts == EXPECTED_COUNTS, all classes incl registry_entries | **BUILT (L, slice 1)** — row corrected; §7 had it built while this table still read PARTIAL | Structure asserted (`test_backup_engine::TestModuleStructure::*`, `test_backup_entity_order_covers_registry_entries`, `TestPreCount::test_returns_count_per_entity_type`) but **ArchiveWriter is mocked in every engine test** — no real archive is counted against a real seed. The real-count assertion is a Phase-3 L cell against the Phase-1 fixture's EXPECTED_COUNTS. |
-| B-02 P-SRVN multi-ns subtrees/counts | **BUILT (L, slice 1)** — row corrected; §7 had it built while this table still read PARTIAL | `test_backup_engine::TestRunBackupMultiNamespace::test_two_namespaces_manifest` asserts per-ns subtrees + `namespace_prefixes()`, but counts are all-zero (empty mock). Real per-ns counts = L. `wip-archive::TestMultiNamespaceArchive` covers the archive layout. |
-| B-03 P-SRVALL all_namespaces incl wip; partial-grant refused | **BUILT (L, gated) — live-validated** | `run_matrix.py` B-03 (slice 3), behind `--allow-instance-wide`. Validated end-to-end on prod-test 20260725a (14/14 cells green, B-03 88/88). **Permission half:** `b03_partial_grant_refused()` mints a key with admin on one namespace only, waits for it to go live (see the key-sync gotcha below), attempts an `all_namespaces` backup and gets **404** — refused, and 404 rather than 403 per the don't-leak-existence convention. Key revoked in a `finally`. **Instance-wide half:** the archive spans every namespace — `wip` present, 12 namespaces in the manifest, both runner namespaces present, and the job's `namespaces` matching the archive's. The archive job is deleted afterwards so nothing instance-sized is retained. Without the flag the cell reports **SKIPPED**, never silently absent. **Reads only the manifest** — see CASE-803 below. |
+| Cell | Status |
+|---|---|
+| B-01 | **BUILT (L, slice 1)** |
+| B-02 | **BUILT (L, slice 1)** |
+| B-03 | **BUILT (L, gated) — live-validated, both halves** |
+| B-04 | **PARTIAL** |
+| B-05 | **COVERED (CLI) / see R1** |
+| B-06 | **GAP / see R1** |
+| B-07 | **MOSTLY COVERED / see R1** |
+| B-08 | **DROPPED (Peter's ruling, CASE-782)** |
+| B-09 | **DONE (CASE-783 shape 1+2)** |
+| B-10 | **COVERED (U)** |
+
+**B-01 — P-SRV1 counts == EXPECTED_COUNTS, all classes incl
+registry_entries.** BUILT (L, slice 1); row corrected — §7 had it built while
+this table still read PARTIAL. Structure asserted
+(`test_backup_engine::TestModuleStructure::*`,
+`test_backup_entity_order_covers_registry_entries`,
+`TestPreCount::test_returns_count_per_entity_type`) but **ArchiveWriter is
+mocked in every engine test** — no real archive is counted against a real
+seed. The real-count assertion is the L cell against the Phase-1 fixture's
+EXPECTED_COUNTS.
+
+**B-02 — P-SRVN multi-ns subtrees/counts.** BUILT (L, slice 1); row corrected
+as B-01.
+`test_backup_engine::TestRunBackupMultiNamespace::test_two_namespaces_manifest`
+asserts per-ns subtrees + `namespace_prefixes()`, but counts are all-zero
+(empty mock). Real per-ns counts = L. `wip-archive::TestMultiNamespaceArchive`
+covers the archive layout.
+
+**B-03 — P-SRVALL all_namespaces incl wip; partial-grant refused.** BUILT
+(L, gated), `run_matrix.py` B-03 (slice 3), behind `--allow-instance-wide`.
+Validated end-to-end on prod-test 20260725a (14/14 cells green, B-03 88/88);
+latest green run dev-test 20260726b (4/4, slice-8 board) — the near-empty
+second install is the natural place to run it, with no tenant data in scope
+and no instance-sized archive. **Permission half:** `b03_partial_grant_refused()`
+mints a key with admin on one namespace only, waits for it to go live (see
+the key-sync gotcha below), attempts an `all_namespaces` backup and gets
+**404** — refused, and 404 rather than 403 per the don't-leak-existence
+convention. Key revoked in a `finally`. **Instance-wide half:** the archive
+spans every namespace — `wip` present, 12 namespaces in the manifest, both
+runner namespaces present, and the job's `namespaces` matching the archive's.
+The archive job is deleted afterwards so nothing instance-sized is retained.
+Without the flag the cell reports **SKIPPED**, never silently absent. **Reads
+only the manifest** — see CASE-803 below.
 
 **B-03 reads only the archive's manifest (CASE-803).** The first version
 downloaded the whole instance-wide archive — 853 MB on prod-test, 826 s of the
@@ -55,58 +98,406 @@ check never ran. The first version of this cell read that 401 as its answer.
 `b03_partial_grant_refused` now waits for the key to be recognised before
 asserting, and treats a 401 as an explicit failure ("the check did not run")
 rather than folding it into the accepted-refusal set.
-| B-04 P-CLI parity vs B-01 (diff class counts) | **PARTIAL** | `test_round_trip::test_golden_round_trip` does CLI export + **archive-count parity vs seed** (CASE-666). The *cross-producer diff* (CLI archive vs server archive, same seed) is not done → small L/C gap. |
-| B-05 include_inactive off/on (E12 absent/present) | **COVERED (CLI) / see R1** | CLI: `test_exporter` exercises the export path; `test_round_trip` exports with `include_inactive`. **Server backup rejects `include_inactive`** (see Reconciliation R1) — so this cell is CLI-producer only. |
-| B-06 latest_only (E6 1 version vs all) | **GAP / see R1** | `wip-archive::test_include_all_versions_manifest_field` covers the manifest flag. **Server backup rejects `latest_only`** (R1). CLI all-versions behaviour otherwise unexercised end-to-end → L. |
-| B-07 skip_documents / template_prefixes / CLI skip_synonyms / skip_closure — each drops its class loudly | **MOSTLY COVERED / see R1** | skip_documents: `test_backup_engine::TestPreCount::test_skip_documents_zeros_doc_count_without_querying` + `test_skip_documents_omits_documents_phase`; CLI skip_synonyms/skip_closure/skip_documents/dry_run: `test_exporter::{test_skip_synonyms_no_registry_lookup, test_skip_closure_not_called, test_closure_called_by_default, test_skip_documents_no_docs_fetched, test_dry_run_still_fetches_entities}`. **`template_prefixes` is rejected on server backup** (R1) → not a supported drop. |
-| ~~B-08 backup dry_run~~ | **DROPPED (Peter's ruling, CASE-782)** | Backup has no dry-run and won't get one: the server backup is a full copy (CASE-768), so predicted counts are just the namespace-stats read, honest size prediction needs reading the payload, and the write is non-destructive. Cell retired from the matrix; the design-doc §2 D1 + §5.1 edit is the sibling's `b782a13c` (pending push). CLI dry-run remains real: `test_exporter::test_dry_run_still_fetches_entities`. |
-| B-09 P-BAD malformed family (no manifest / v2.0 unconverted / unknown entity / truncated zip → typed refusals) | **DONE (CASE-783 shape 1+2)** | wip-archive now raises typed `ArchiveError` subclasses (`NotAnArchiveError` / `MissingManifestError` / `ManifestParseError`), and the restore route 400s synchronously at upload — no doomed job (`test_archive::TestMalformedArchive`, `test_backup_api::test_restore_refuses_*`). v2.0-names-convert already worked (route version gate). Unknown/missing entity file is by-design (writer omits empty members). **Residual → runner:** the honest partial-damage check (some members lost after a valid write) is a manifest-count vs streamed-count cross-check — folded into the layer-L runner below (X-02), not a leftover on 783. |
-| B-10 P-CONV convert v2.0→v3, already-v3 refused | **COVERED (U)** | `test_convert_archive::{test_convert_v2_to_v3, test_convert_rejects_already_v3}`. |
+
+**B-04 — P-CLI parity vs B-01 (diff class counts).** PARTIAL.
+`test_round_trip::test_golden_round_trip` does CLI export + **archive-count
+parity vs seed** (CASE-666). The *cross-producer diff* (CLI archive vs server
+archive, same seed) is not done → small L/C gap.
+
+**B-05 — include_inactive off/on (E12 absent/present).** COVERED (CLI) / see
+R1. CLI: `test_exporter` exercises the export path; `test_round_trip` exports
+with `include_inactive`. **Server backup rejects `include_inactive`** (see
+Reconciliation R1) — so this cell is CLI-producer only.
+
+**B-06 — latest_only (E6 1 version vs all).** GAP / see R1.
+`wip-archive::test_include_all_versions_manifest_field` covers the manifest
+flag. **Server backup rejects `latest_only`** (R1). CLI all-versions behaviour
+otherwise unexercised end-to-end → L.
+
+**B-07 — skip_documents / template_prefixes / CLI skip_synonyms /
+skip_closure — each drops its class loudly.** MOSTLY COVERED / see R1.
+skip_documents:
+`test_backup_engine::TestPreCount::test_skip_documents_zeros_doc_count_without_querying`
++ `test_skip_documents_omits_documents_phase`; CLI
+skip_synonyms/skip_closure/skip_documents/dry_run:
+`test_exporter::{test_skip_synonyms_no_registry_lookup,
+test_skip_closure_not_called, test_closure_called_by_default,
+test_skip_documents_no_docs_fetched, test_dry_run_still_fetches_entities}`.
+**`template_prefixes` is rejected on server backup** (R1) → not a supported
+drop.
+
+**B-08 — backup dry_run.** DROPPED (Peter's ruling, CASE-782). Backup has no
+dry-run and won't get one: the server backup is a full copy (CASE-768), so
+predicted counts are just the namespace-stats read, honest size prediction
+needs reading the payload, and the write is non-destructive. Cell retired from
+the matrix; the design-doc §2 D1 + §5.1 edit is the sibling's `b782a13c`. CLI
+dry-run remains real: `test_exporter::test_dry_run_still_fetches_entities`.
+
+**B-09 — P-BAD malformed family (no manifest / v2.0 unconverted / unknown
+entity / truncated zip → typed refusals).** DONE (CASE-783 shape 1+2).
+wip-archive now raises typed `ArchiveError` subclasses (`NotAnArchiveError` /
+`MissingManifestError` / `ManifestParseError`), and the restore route 400s
+synchronously at upload — no doomed job (`test_archive::TestMalformedArchive`,
+`test_backup_api::test_restore_refuses_*`). v2.0-names-convert already worked
+(route version gate). Unknown/missing entity file is by-design (writer omits
+empty members). **Residual → runner:** the honest partial-damage check (some
+members lost after a valid write) is a manifest-count vs streamed-count
+cross-check — folded into the layer-L runner (X-02), not a leftover on 783.
+
+**B-10 — P-CONV convert v2.0→v3, already-v3 refused.** COVERED (U).
+`test_convert_archive::{test_convert_v2_to_v3, test_convert_rejects_already_v3}`.
 
 ## 5.2 Restore-mode cells (dry-run/apply pairs)
 
-| Cell | Status | Evidence / gap |
-|---|---|---|
-| R-01 P-SRV1 × R-ID into empty ns, full fidelity | **COVERED (C) → L BUILT** | `test_round_trip::test_golden_round_trip` (C). L: `run_matrix.py` R-01 (slice 2) — drop NS-B, `mode=restore` back; asserts every document id preserved verbatim, conserved counts match the pre-drop namespace, value-form resolution intact. |
-| R-02 P-SRVN × R-ID both ns, cross-ns refs (E8) intact | **BUILT (L)** | `run_matrix.py` R-02 (slice 5) — the runner's first MULTI-namespace id-preserving restore, the shape a real DR takes. Drops BOTH namespaces and restores them from the archive B-02 took while they were pristine; asserts the job names both write targets, ids come back verbatim on both sides, NS-A's `primary_sample`/`linked_samples` refs into NS-B survive unchanged, and — the distinctive half — each ref still **resolves** to a document in the restored NS-B. Counts cannot see this: a dangling reference is a well-formed string in a document whose class totals all reconcile. Note refs are stored in QUALIFIED VALUE form (`<ns>:<value>`), not as the target's UUID, so resolution is a real lookup on the value (split on the first colon), not set-membership against document_ids. Runs last of the data cells because it destroys both sources. |
-| R-03 P-SRV1 × R-ID-X cross-instance DR | **BUILT (L, slice 7, gated `--dr-install`) — GREEN, 14/14 prod-test → dev-test** | The archive is the only thing that crosses: every other restore cell round-trips within the instance that took the backup, where the original registry entries, synonyms and blobs still exist even after a namespace drop. R-03 id-preserving-restores the run's multi-namespace archive onto a SECOND install (`--dr-install <name>`) and asserts identity rebuilt there from the archive alone — ids verbatim, conserved counts, the exact stored qualified ref string dereferencing on the target (the CASE-816 read door), value-form resolution (entries + synonyms re-inserted), blobs byte-identical under the same file ids. Boundary stated in the cell: shared-`wip` vocabulary provisioning on a DR target is operator runbook, not the archive's job — the stored term value survives verbatim, its resolution has no contract to assert. DR-side namespaces torn down with the run's own. |
-| R-04 P-CLI × R-ID — the CASE-756 seam | **BUILT (L, slice 6) — GREEN, 11/11 on prod-test 20260726b** | `test_round_trip::test_golden_round_trip` IS this seam at C (CLI export → engine restore, resolution fidelity without caches, CASE-665/756). L: the real `wip-toolkit export` binary over the network (`--include-inactive --include-files --skip-closure`), fed to the live engine's id-preserving restore door — ids verbatim, conserved counts, deactivated template version stays inactive, value-form resolution, blobs byte-identical (the half the C harness cannot cover: no MinIO). Building it caught a real toolkit defect: `check_health` probed the bare root `/health`, so in proxy mode every service hit the same unroutable ingress path and 404ed, aborting every export against a k8s install — fixed to probe `/api/<svc>/health`, which both connection modes serve. |
-| R-05 P-SRV1 × R-FR1 beside live original; LEAK on copy; original untouched | **BUILT (L, slice 1)** — row corrected; §7 had it built while this table still read PARTIAL | Copy lands active in TARGET: `test_remap_integration::{test_ids_come_from_the_registry_and_are_active, test_documents_land_under_new_ids...}`. LEAK sweep: `test_remap_multi::test_reference_snapshots_carry_no_trace_of_the_source`. **"Original untouched" is never asserted** (source is a mocked reader). L cell + original-untouched diff. |
-| R-06 P-SRVN × R-FRN cross-source refs both ways + template pin | **BUILT (L, slice 5) — GREEN, 8/8 on prod-test 20260726b** | Cross-source template pin + one ref direction: `test_remap_multi::test_cross_source_template_pin_follows_the_new_id`. The cell shipped red on 20260726a: qualified data refs (`<ns>:<id>`) passed through `IDRemapper._remap_data_ids` unrewritten (exact-match maps key on bare ids), so the copy's refs pointed verbatim at the ORIGINAL namespace while the `resolved` snapshots were rewritten. Fixed — the remapper now rewrites the qualified form through the namespace and id maps, and the C sweep fixture gained the qualified shape it was missing (CASE-814, `e1065a94`). Live-verified green on the 20260726b roll. |
-| R-07 P-SRVN × R-FRC collapse; same-valued **terminology** refused naming both sources; dry-run refuses the SAME cell | **PARTIAL → GAP** | Disjoint lands + N:1 refusal naming both sources: `test_remap_multi::{test_n_to_one_disjoint_content_lands_in_one_target, test_n_to_one_key_collision_refuses}` — but the collision is on **templates**, not terminologies, and `test_dry_run_placeholders_unique_across_sources` asserts the *opposite* (avoiding a false refusal). **DONE (C):** `test_remap_multi::test_n_to_one_terminology_collision_refuses` — two same-valued `MATRIX_STATUS` terminologies into one target refuse (apply path AND dry-run, since `_check_target_collisions` runs before provisioning). **L cell BUILT (slice 5) and RED — the C claim does NOT generalize (CASE-815):** the check compares the full Registry key `{ns, value, label}`, and the C fixture's labels are identical while the live fixture's differ ("Matrix Status (NS-A)" vs "(NS-B)"), so live neither the dry run nor the apply refuses — the dry run previews `complete` and the apply dies mid-write on def-store's `(namespace, value)` unique index, leaving a half-restored target. **CASE-815 fixed** (`2b21a71f` — collision check now projects to store uniqueness; `test_n_to_one_terminology_collision_refuses_across_labels` pins the differently-labeled shape). **Live-verified GREEN, 4/4 on prod-test 20260726b** — dry run and apply both refuse, nothing partial lands. |
-| R-08 P-SRV1 × R-MRG into drift; add_missing off/on; extend_terminologies | **COVERED (C) → L BUILT** | C: `test_merge_restore::TestDefinitionsPrecondition::*`, `test_merge_definitions::TestOptInStrategies::*`. L: `run_matrix.py` R-08 (slice 2) — hard-delete a document, `mode=merge`; the drifted-away document is re-inserted (on_clash=skip). add_missing/extend_terminologies variants still C-only. |
-| R-09 R-MRG on_clash triple (skip / overwrite / newer) | **COVERED (C)** ← §6 was stale | `test_merge_restore::TestDocumentClashPolicy::*` (skip, overwrite, overwrite-in-place on versioned:false, adopts target id) and the whole `TestNewerPolicy` class (newer taken / older left / tie / naive-utc / unparseable-warns / missing / report-counts). **§6 lists R-09 `newer` as known-empty — it is in fact fully covered.** |
-| R-10 R-MRG-T redirect (CASE-748), job record says so | **PARTIAL** | `test_merge_restore::TestMergeIntoADifferentNamespace::*` covers data landing in the target + rescoped/rehashed keys + id-collision refusals — **DONE (C):** `test_merge_restore::test_an_explicit_target_redirect_is_recorded_on_the_job` drives an explicit `target_namespace` differing from the archive manifest and asserts the job result records the redirect. Closing it added one production line — the merge result now records `source_namespace` per target (parity with remap). L cell remains for Phase 3. |
-| R-11 R-JOB restore from a retained job, no re-upload; job independence | **BUILT (L)** | `run_matrix.py` R-11 (slice 4) — backs up NS-A, then `POST /backup/jobs/{id}/restore` with **no re-upload**. Merge mode, not restore: `RestoreFromJobRequest` is strict and carries no `target_namespace`, so each archived namespace returns to itself, and an id-preserving restore would need an empty target NS-A is not. Asserts the restore minted its OWN job, and that deleting the SOURCE backup job leaves the restore job intact — the route's stated archive-copy independence, which a shared handle would only break later, at cleanup. The cell deletes a job on purpose and therefore retracts it from X-04's end-of-run sweep itself. |
-| R-12 E7 identity-less through R-ID/R-FR1/R-MRG, un-PATCHable, N:1 empty-key exemption | **PARTIAL → GAP** | Identity-less through remap: `test_remap_restore::{test_an_identity_less_document_gets_an_empty_key, test_distinct_documents_still_get_distinct_ids}` + `test_remap_integration::test_documents_land_under_new_ids...`; through merge-plan: `test_merge_plan::test_identity_less_documents_match_by_document_id_only`. **"still un-PATCHable after restore" DONE (C):** `test_remap_integration::test_an_identity_less_document_stays_append_only_after_restore` — restore preserves empty identity_fields + empty identity_hash (the exact conditions the append_only guard keys on); the rejection is pinned by `test_documents_patch::test_patch_no_identity_template_rejected_append_only`. Full R-ID/R-MRG end-to-end at L = Phase 3. |
-| R-13 E4/E5 edge types through R-FR1; endpoints re-pointed; versioned:false overwrite post-restore | **COVERED (C) → L** | Component: `test_remap_integration::test_edge_type_endpoints_follow_the_restore_and_stay_addressable` — a real edge type (usage=relationship, versioned=false, identity_fields=[source_ref,target_ref]) fresh-restored: BOTH endpoints re-pointed to the restored docs' NEW ids, identity_hash recomputed over the pair, and the Registry claim carries it so a later write dedups (the re-addressability overwrite-in-place depends on). Live-validated on prod-test 20260724a via `probe_backup_restore.py` with NO `--drop-source`: version=1, count=1, no fork. L real-stack cell = Phase 3. |
-| R-14 E9 blobs through R-ID/R-FR1 with include_files; skip_files loud | **BUILT (L)** | `run_matrix.py` R-14 (slice 4) — the archive carries a blob per file, a fresh restore conserves the file records, and **every restored blob is byte-identical to its source**, compared through `/files/{id}/content` (the raw-bytes route; `/download` returns a pre-signed URL and would compare per-request JSON that can never match). Ids are re-minted, so the compare is on content. `skip_files=true` into a second target leaves no file records — loudly absent. The byte compare is the point: a file row restored with the right id and a missing or truncated blob passes every count assertion in the matrix. |
-| R-15 E11 prefixed id_config through R-FR1; re-minted follow TARGET config; next mint no collision | **FIXED (CASE-784) → L guard** | CASE-784 fixed (`e32d8c3f`, `preserve_id_config`): a fresh restore's target defaults to UUID7 instead of cloning the source prefix. Component regression: `test_backup_engine` (preserve_id_config). Live-validated on prod-test 20260724a — fresh-restore-beside-original completes, target id_config is UUID7 (prefix:null), no `entry_id` collision, no prefix leak. Build the L-cell as the real-stack guard in Phase 3. |
-| R-16 E13 FTS + PL-REP full pass after R-FR1 | **BUILT (L, both halves)** | **PL-REP half:** `run_matrix.py` R-16 polls `GET /api/reporting-sync/parity` for the fresh-restored target and asserts the real `NamespaceParityResult` contract: `schema_present`, `table_count > 0`, `structural_issues == 0`, `count_mismatches == 0`, `ok`. Reporting is `None`/stubbed in every merge and remap unit suite, so whether PostgreSQL reflects a restored namespace was previously unknown. Reporting-sync unreachable (a `core`-preset target, or one mid-redeploy) reports **SKIPPED** with its reason rather than passing or failing on a precondition the invocation did not supply. **E13/FTS half (slice 5):** searches the restored copy of NS-A (`ns_g`, where the fixture's `full_text_indexed` field lives) for a known restored document and demands a hit — parity compares counts and table shape and says nothing about whether the tsvector columns FTS matches on were built. Separately demands `unmatched_template is None`: that assertion alone would have caught **CASE-810**, where a type-filtered search returned zero hits on every post-split install because it resolved `doc_<template>` as a BASE TABLE when post-split that name is a VIEW. A zero-hit result cannot distinguish "this type has nothing" from "this filter matched no table" — which is why 810 survived on two live instances until CASE-811 added the signal. Leak plane: every hit id must be a document of the restored namespace (matched on id, because `SearchResult` carries no namespace field and asserting one yields a vacuous None). |
+| Cell | Status |
+|---|---|
+| R-01 | **COVERED (C) → BUILT (L)** |
+| R-02 | **BUILT (L, slice 5)** |
+| R-03 | **BUILT (L, slice 7, gated `--dr-install`) — GREEN** |
+| R-04 | **BUILT (L, slice 6) — GREEN** |
+| R-05 | **BUILT (L, slice 1)** |
+| R-06 | **BUILT (L, slice 5) — GREEN after CASE-814** |
+| R-07 | **BUILT (L, slice 5) — GREEN after CASE-815** |
+| R-08 | **COVERED (C) → BUILT (L)** |
+| R-09 | **COVERED (C)** |
+| R-10 | **PARTIAL (C done, L later)** |
+| R-11 | **BUILT (L, slice 4)** |
+| R-12 | **PARTIAL (C done, L later)** |
+| R-13 | **COVERED (C) → L later** |
+| R-14 | **BUILT (L, slice 4)** |
+| R-15 | **FIXED (CASE-784) → L guard later** |
+| R-16 | **BUILT (L, both halves)** |
+
+**R-01 — P-SRV1 × R-ID into empty ns, full fidelity.**
+`test_round_trip::test_golden_round_trip` (C). L: `run_matrix.py` R-01
+(slice 2) — drop NS-B, `mode=restore` back; asserts every document id
+preserved verbatim, conserved counts match the pre-drop namespace, value-form
+resolution intact. Slice 8 added the id-preserving dry-run parity step: the
+dry run completes against the just-emptied namespace and writes nothing,
+before the apply.
+
+**R-02 — P-SRVN × R-ID both ns, cross-ns refs (E8) intact.** BUILT (L,
+slice 5) — the runner's first MULTI-namespace id-preserving restore, the shape
+a real DR takes. Drops BOTH namespaces and restores them from the archive B-02
+took while they were pristine; asserts the job names both write targets, ids
+come back verbatim on both sides, NS-A's `primary_sample`/`linked_samples`
+refs into NS-B survive unchanged, and — the distinctive half — each ref still
+**resolves** to a document in the restored NS-B. Counts cannot see this: a
+dangling reference is a well-formed string in a document whose class totals
+all reconcile. Note refs are stored in QUALIFIED VALUE form (`<ns>:<value>`),
+not as the target's UUID, so resolution is a real lookup on the value (split
+on the first colon), not set-membership against document_ids. Runs last of the
+data cells because it destroys both sources.
+
+**R-03 — P-SRV1 × R-ID-X cross-instance DR.** BUILT (L, slice 7, gated
+`--dr-install`) — GREEN, 14/14 prod-test → dev-test. The archive is the only
+thing that crosses: every other restore cell round-trips within the instance
+that took the backup, where the original registry entries, synonyms and blobs
+still exist even after a namespace drop. R-03 id-preserving-restores the run's
+multi-namespace archive onto a SECOND install (`--dr-install <name>`) and
+asserts identity rebuilt there from the archive alone — ids verbatim,
+conserved counts, the exact stored qualified ref string dereferencing on the
+target (the CASE-816 read door), value-form resolution (entries + synonyms
+re-inserted), blobs byte-identical under the same file ids. Boundary stated in
+the cell: shared-`wip` vocabulary provisioning on a DR target is operator
+runbook, not the archive's job — the stored term value survives verbatim, its
+resolution has no contract to assert. DR-side namespaces torn down with the
+run's own.
+
+**R-04 — P-CLI × R-ID, the CASE-756 seam.** BUILT (L, slice 6) — GREEN,
+11/11 on prod-test 20260726b. `test_round_trip::test_golden_round_trip` IS
+this seam at C (CLI export → engine restore, resolution fidelity without
+caches, CASE-665/756). L: the real `wip-toolkit export` binary over the
+network (`--include-inactive --include-files --skip-closure`), fed to the live
+engine's id-preserving restore door — ids verbatim, conserved counts,
+deactivated template version stays inactive, value-form resolution, blobs
+byte-identical (the half the C harness cannot cover: no MinIO). Building it
+caught a real toolkit defect: `check_health` probed the bare root `/health`,
+so in proxy mode every service hit the same unroutable ingress path and 404ed,
+aborting every export against a k8s install — fixed to probe
+`/api/<svc>/health`, which both connection modes serve.
+
+**R-05 — P-SRV1 × R-FR1 beside live original; LEAK on copy; original
+untouched.** BUILT (L, slice 1); row corrected — §7 had it built while this
+table still read PARTIAL. Copy lands active in TARGET:
+`test_remap_integration::{test_ids_come_from_the_registry_and_are_active,
+test_documents_land_under_new_ids...}`. LEAK sweep:
+`test_remap_multi::test_reference_snapshots_carry_no_trace_of_the_source`.
+"Original untouched" is asserted at L (the C source is a mocked reader).
+
+**R-06 — P-SRVN × R-FRN cross-source refs both ways + template pin.** BUILT
+(L, slice 5) — GREEN, 8/8 on prod-test 20260726b. Cross-source template pin +
+one ref direction: `test_remap_multi::test_cross_source_template_pin_follows_the_new_id`.
+The cell shipped red on 20260726a: qualified data refs (`<ns>:<id>`) passed
+through `IDRemapper._remap_data_ids` unrewritten (exact-match maps key on bare
+ids), so the copy's refs pointed verbatim at the ORIGINAL namespace while the
+`resolved` snapshots were rewritten. Fixed — the remapper now rewrites the
+qualified form through the namespace and id maps, and the C sweep fixture
+gained the qualified shape it was missing (CASE-814, `e1065a94`).
+Live-verified green on the 20260726b roll.
+
+**R-07 — P-SRVN × R-FRC collapse; same-valued terminology refused naming both
+sources; dry-run refuses the SAME cell.** Disjoint lands + N:1 refusal naming
+both sources: `test_remap_multi::{test_n_to_one_disjoint_content_lands_in_one_target,
+test_n_to_one_key_collision_refuses}` — but the collision is on **templates**,
+not terminologies, and `test_dry_run_placeholders_unique_across_sources`
+asserts the *opposite* (avoiding a false refusal). DONE (C):
+`test_remap_multi::test_n_to_one_terminology_collision_refuses` — two
+same-valued `MATRIX_STATUS` terminologies into one target refuse (apply path
+AND dry-run, since `_check_target_collisions` runs before provisioning). The
+L cell (slice 5) shipped RED — the C claim did NOT generalize (CASE-815): the
+check compared the full Registry key `{ns, value, label}`, and the C fixture's
+labels are identical while the live fixture's differ ("Matrix Status (NS-A)"
+vs "(NS-B)"), so live neither the dry run nor the apply refused — the dry run
+previewed `complete` and the apply died mid-write on def-store's
+`(namespace, value)` unique index, leaving a half-restored target. CASE-815
+fixed (`2b21a71f` — collision check now projects to store uniqueness;
+`test_n_to_one_terminology_collision_refuses_across_labels` pins the
+differently-labeled shape). Live-verified GREEN, 4/4 on prod-test 20260726b —
+dry run and apply both refuse, nothing partial lands.
+
+**R-08 — P-SRV1 × R-MRG into drift; add_missing off/on;
+extend_terminologies.** C: `test_merge_restore::TestDefinitionsPrecondition::*`,
+`test_merge_definitions::TestOptInStrategies::*`. L: `run_matrix.py` R-08
+(slice 2) — hard-delete a document, `mode=merge`; the drifted-away document is
+re-inserted (on_clash=skip). Slice 8 added the merge dry-run parity step (the
+dry run's plan names ≥1 document insert — it SEES the drift — and writes
+nothing) and the all-unchanged re-run (X-05's merge variant, see X-05).
+add_missing/extend_terminologies variants remain C-only.
+
+**R-09 — R-MRG on_clash triple (skip / overwrite / newer).** COVERED (C) —
+§6 was stale. `test_merge_restore::TestDocumentClashPolicy::*` (skip,
+overwrite, overwrite-in-place on versioned:false, adopts target id) and the
+whole `TestNewerPolicy` class (newer taken / older left / tie / naive-utc /
+unparseable-warns / missing / report-counts). §6 lists R-09 `newer` as
+known-empty — it is in fact fully covered.
+
+**R-10 — R-MRG-T redirect (CASE-748), job record says so.** PARTIAL.
+`test_merge_restore::TestMergeIntoADifferentNamespace::*` covers data landing
+in the target + rescoped/rehashed keys + id-collision refusals. DONE (C):
+`test_merge_restore::test_an_explicit_target_redirect_is_recorded_on_the_job`
+drives an explicit `target_namespace` differing from the archive manifest and
+asserts the job result records the redirect. Closing it added one production
+line — the merge result now records `source_namespace` per target (parity with
+remap). L cell remains open.
+
+**R-11 — R-JOB restore from a retained job, no re-upload; job
+independence.** BUILT (L, slice 4) — backs up NS-A, then
+`POST /backup/jobs/{id}/restore` with **no re-upload**. Merge mode, not
+restore: `RestoreFromJobRequest` is strict and carries no `target_namespace`,
+so each archived namespace returns to itself, and an id-preserving restore
+would need an empty target NS-A is not. Asserts the restore minted its OWN
+job, and that deleting the SOURCE backup job leaves the restore job intact —
+the route's stated archive-copy independence, which a shared handle would only
+break later, at cleanup. The cell deletes a job on purpose and therefore
+retracts it from X-04's end-of-run sweep itself.
+
+**R-12 — E7 identity-less through R-ID/R-FR1/R-MRG, un-PATCHable, N:1
+empty-key exemption.** PARTIAL. Identity-less through remap:
+`test_remap_restore::{test_an_identity_less_document_gets_an_empty_key,
+test_distinct_documents_still_get_distinct_ids}` +
+`test_remap_integration::test_documents_land_under_new_ids...`; through
+merge-plan: `test_merge_plan::test_identity_less_documents_match_by_document_id_only`.
+"Still un-PATCHable after restore" DONE (C):
+`test_remap_integration::test_an_identity_less_document_stays_append_only_after_restore`
+— restore preserves empty identity_fields + empty identity_hash (the exact
+conditions the append_only guard keys on); the rejection is pinned by
+`test_documents_patch::test_patch_no_identity_template_rejected_append_only`.
+Full R-ID/R-MRG end-to-end at L remains open.
+
+**R-13 — E4/E5 edge types through R-FR1; endpoints re-pointed;
+versioned:false overwrite post-restore.** COVERED (C). Component:
+`test_remap_integration::test_edge_type_endpoints_follow_the_restore_and_stay_addressable`
+— a real edge type (usage=relationship, versioned=false,
+identity_fields=[source_ref,target_ref]) fresh-restored: BOTH endpoints
+re-pointed to the restored docs' NEW ids, identity_hash recomputed over the
+pair, and the Registry claim carries it so a later write dedups (the
+re-addressability overwrite-in-place depends on). Live-validated on prod-test
+20260724a via `probe_backup_restore.py` with NO `--drop-source`: version=1,
+count=1, no fork.
+
+**R-14 — E9 blobs through R-ID/R-FR1 with include_files; skip_files loud.**
+BUILT (L, slice 4) — the archive carries a blob per file, a fresh restore
+conserves the file records, and **every restored blob is byte-identical to its
+source**, compared through `/files/{id}/content` (the raw-bytes route;
+`/download` returns a pre-signed URL and would compare per-request JSON that
+can never match). Ids are re-minted, so the compare is on content.
+`skip_files=true` into a second target leaves no file records — loudly absent.
+The byte compare is the point: a file row restored with the right id and a
+missing or truncated blob passes every count assertion in the matrix.
+
+**R-15 — E11 prefixed id_config through R-FR1; re-minted follow TARGET
+config; next mint no collision.** FIXED (CASE-784, `e32d8c3f`,
+`preserve_id_config`): a fresh restore's target defaults to UUID7 instead of
+cloning the source prefix. Component regression: `test_backup_engine`
+(preserve_id_config). Live-validated on prod-test 20260724a — fresh-restore-
+beside-original completes, target id_config is UUID7 (prefix:null), no
+`entry_id` collision, no prefix leak. The dedicated L guard cell remains open.
+
+**R-16 — E13 FTS + PL-REP full pass after R-FR1.** BUILT (L, both halves).
+**PL-REP half:** `run_matrix.py` R-16 polls `GET /api/reporting-sync/parity`
+for the fresh-restored target and asserts the real `NamespaceParityResult`
+contract: `schema_present`, `table_count > 0`, `structural_issues == 0`,
+`count_mismatches == 0`, `ok`. Reporting is `None`/stubbed in every merge and
+remap unit suite, so whether PostgreSQL reflects a restored namespace was
+previously unknown. Reporting-sync unreachable (a `core`-preset target, or one
+mid-redeploy) reports **SKIPPED** with its reason rather than passing or
+failing on a precondition the invocation did not supply. **E13/FTS half
+(slice 5):** searches the restored copy of NS-A (`ns_g`, where the fixture's
+`full_text_indexed` field lives) for a known restored document and demands a
+hit — parity compares counts and table shape and says nothing about whether
+the tsvector columns FTS matches on were built. Separately demands
+`unmatched_template is None`: that assertion alone would have caught
+**CASE-810**, where a type-filtered search returned zero hits on every
+post-split install because it resolved `doc_<template>` as a BASE TABLE when
+post-split that name is a VIEW. A zero-hit result cannot distinguish "this
+type has nothing" from "this filter matched no table" — which is why 810
+survived on two live instances until CASE-811 added the signal. Leak plane:
+every hit id must be a document of the restored namespace (matched on id,
+because `SearchResult` carries no namespace field and asserting one yields a
+vacuous None).
 
 ## 5.3 Refusals & failure injection
 
-| Cell | Status | Evidence / gap |
-|---|---|---|
-| F-01 R-ID into non-empty target refused, nothing created | **COVERED (C)** | `test_backup_engine::TestRunRestoreBasicFlow::test_restore_refuses_non_empty_namespace`, `test_merge_restore::TestRemapRestore::test_a_non_empty_target_is_refused`, round-trip phase 7. |
-| F-02 R-ID target_namespace ≠ archive ns → "cannot re-namespace" | **COVERED (C)** | `test_backup_engine::TestRestoreRedirectGuard::*`, `test_merge_restore::test_a_plain_restore_still_refuses_to_re_namespace`, round-trip phase 7. |
-| F-03 R-FRN map errors (unmapped / stranger / empty / multi-no-map) | **COVERED (U)** | `test_remap_multi::TestResolveRemapMapping::*` — all four, each names its problem. |
-| F-04 stale reporting schema refused w/o drop_stale_reporting, proceeds with it | **COVERED (U)** | `test_case_689_restore_phases::TestPrecondition::{test_stale_schema_refuses_without_flag, test_stale_schema_drops_with_flag, test_failed_drop_refuses}`; merge rejects the flag: `test_backup_api::test_merge_rejects_drop_stale_reporting`. |
-| F-05 kill engine mid-fresh-restore; reserved don't resolve; re-run converges | **BUILT (L, slice 6, gated `--allow-perturb`) — GREEN, 9/9 on prod-test 20260726b** | C asserts only the end state (`test_remap_integration::test_ids_come_from_the_registry_and_are_active`). L force-kills (`--grace-period=0`) the document-store pod mid-restore of the two-source archive, retrying when the run outraces kubectl (a fresh restore of this fixture beats a graceful drain AND a phase-waited kill — three earlier cell shapes lost that race). Asserts the interrupted job never claims success, visibility per the engine's own phase contract (reserved-invisible before `phase_activate`, whole-set-visible after, mixed only inside the flip), a blind re-run refuses the dirty targets, and the documented recovery (drop targets, re-run) converges to full conserved counts with active ids. |
-| F-06 restore with reporting-sync stopped completes with warnings; PL-REP backfills after force | **BUILT (L, slice 6, gated `--allow-perturb`) — GREEN, 9/9 on prod-test 20260726b** | Unreachable-reporting-warns at C: `test_case_689_restore_phases::TestPrecondition::test_unreachable_reporting_warns_and_disables`. L runs the full arc: scale reporting-sync to zero, restore completes WITH a reporting warning, scale back up, assert the parity gap is VISIBLE (restore writes Mongo directly — no events exist to catch up from), then `POST /sync/batch?force=true` (CASE-738) converges parity and FTS finds the restored document. Scale-up is in a `finally` so the cell cannot leave the install degraded. |
-| F-07 permission: non-admin key refused per ns on backup / restore / download, nothing partial | **COVERED (C)** | `test_backup_api::test_non_admin_key_is_refused_on_backup_restore_and_download` — a non-admin key (scoped to `scoped-test-ns`, `none` on `wip`) gets 404 on all three doors; the two write doors mint no job (auth precedes job creation / archive read). |
-| F-08 continue_on_error tombstone → loud 400 | **COVERED (C)** | `test_backup_api::test_restore_rejects_toolkit_era_params[continue_on_error]`. |
+| Cell | Status |
+|---|---|
+| F-01 | **COVERED (C)** |
+| F-02 | **COVERED (C)** |
+| F-03 | **COVERED (U)** |
+| F-04 | **COVERED (U)** |
+| F-05 | **BUILT (L, slice 6, gated `--allow-perturb`) — GREEN** |
+| F-06 | **BUILT (L, slice 6, gated `--allow-perturb`) — GREEN** |
+| F-07 | **COVERED (C)** |
+| F-08 | **COVERED (C)** |
+
+**F-01 — R-ID into non-empty target refused, nothing created.** COVERED (C).
+`test_backup_engine::TestRunRestoreBasicFlow::test_restore_refuses_non_empty_namespace`,
+`test_merge_restore::TestRemapRestore::test_a_non_empty_target_is_refused`,
+round-trip phase 7.
+
+**F-02 — R-ID target_namespace ≠ archive ns → "cannot re-namespace".**
+COVERED (C). `test_backup_engine::TestRestoreRedirectGuard::*`,
+`test_merge_restore::test_a_plain_restore_still_refuses_to_re_namespace`,
+round-trip phase 7.
+
+**F-03 — R-FRN map errors (unmapped / stranger / empty / multi-no-map).**
+COVERED (U). `test_remap_multi::TestResolveRemapMapping::*` — all four, each
+names its problem.
+
+**F-04 — stale reporting schema refused w/o drop_stale_reporting, proceeds
+with it.** COVERED (U).
+`test_case_689_restore_phases::TestPrecondition::{test_stale_schema_refuses_without_flag,
+test_stale_schema_drops_with_flag, test_failed_drop_refuses}`; merge rejects
+the flag: `test_backup_api::test_merge_rejects_drop_stale_reporting`.
+
+**F-05 — kill engine mid-fresh-restore; reserved don't resolve; re-run
+converges.** BUILT (L, slice 6, gated `--allow-perturb`) — GREEN, 9/9 on
+prod-test 20260726b. C asserts only the end state
+(`test_remap_integration::test_ids_come_from_the_registry_and_are_active`).
+L force-kills (`--grace-period=0`) the document-store pod mid-restore of the
+two-source archive, retrying when the run outraces kubectl (a fresh restore of
+this fixture beats a graceful drain AND a phase-waited kill — three earlier
+cell shapes lost that race). Asserts the interrupted job never claims success,
+visibility per the engine's own phase contract (reserved-invisible before
+`phase_activate`, whole-set-visible after, mixed only inside the flip), a
+blind re-run refuses the dirty targets, and the documented recovery (drop
+targets, re-run) converges to full conserved counts with active ids.
+
+**F-06 — restore with reporting-sync stopped completes with warnings; PL-REP
+backfills after force.** BUILT (L, slice 6, gated `--allow-perturb`) — GREEN,
+9/9 on prod-test 20260726b. Unreachable-reporting-warns at C:
+`test_case_689_restore_phases::TestPrecondition::test_unreachable_reporting_warns_and_disables`.
+L runs the full arc: scale reporting-sync to zero, restore completes WITH a
+reporting warning, scale back up, assert the parity gap is VISIBLE (restore
+writes Mongo directly — no events exist to catch up from), then
+`POST /sync/batch?force=true` (CASE-738) converges parity and FTS finds the
+restored document. Scale-up is in a `finally` so the cell cannot leave the
+install degraded; scale calls have checked return codes with retries
+(`_scale_deployment`, slice 8) so a transient kubectl failure neither fakes a
+finding nor strands the target scaled down.
+
+**F-07 — permission: non-admin key refused per ns on backup / restore /
+download, nothing partial.** COVERED (C).
+`test_backup_api::test_non_admin_key_is_refused_on_backup_restore_and_download`
+— a non-admin key (scoped to `scoped-test-ns`, `none` on `wip`) gets 404 on
+all three doors; the two write doors mint no job (auth precedes job creation /
+archive read).
+
+**F-08 — continue_on_error tombstone → loud 400.** COVERED (C).
+`test_backup_api::test_restore_rejects_toolkit_era_params[continue_on_error]`.
 
 ## 5.4 Cross-cutting invariant sweeps (harnesses)
 
-| Cell | Status | Evidence / gap |
-|---|---|---|
-| X-01 dry-run parity harness — one parametrized runner over every R-* pair | **BUILT (L, all three modes)** | Fresh: `run_matrix.py` X-01 (slice 2) — a fresh `dry_run` writes nothing, the apply then produces the source's conserved counts. Id-preserving and merge (slice 8): each mode's parity claim lives in the cell that already owns the right target state — R-01 dry-runs against the just-emptied namespace (complete, zero writes) before its apply; R-08 dry-runs against the drifted target (the plan names ≥1 document insert — it SEES the drift — and writes nothing) before its apply. Per-mode C parity: `test_merge_restore::TestMergeDryRun::*`, remap `test_a_dry_run_provisions_nothing_and_writes_nothing`, `test_backup_engine` id-preserving dry-run. |
-| X-02 counts conservation harness — one table reused by every cell | **BUILT (L, slice 1)** — row corrected; §7 had it built while this table still read PARTIAL | Seed side done: Phase-1 `FixtureBuilder.count()` → EXPECTED_COUNTS. CLI seed→archive→restore parity: `test_round_trip` (CASE-666). The reusable seed→archive→restore→API harness is Phase 3 (consumes the Phase-1 baseline). |
-| X-03 leak sweep harness — serialized rows × forbidden tokens, every fresh cell | **BUILT (L) / C one-off** | C: `test_remap_multi::test_reference_snapshots_carry_no_trace_of_the_source`. L: `run_matrix.py` `leak_sweep()` (slice 3) — every restore-written surface (documents, templates, terminologies, terms, registry-entry detail incl. synonyms/`search_values`/`source_info`) crossed with every source identifier (namespace name, document/template/terminology/term/registry-entry ids). Reused: R-05 asserts the document slice, X-06 runs it on the second hop. The target's namespace *description* is excluded by design — a fresh restore writes source provenance there deliberately. |
-| X-04 job-plane sweep after any L run | **BUILT (L)** | Job-plane asserted richly at component layer (`test_backup_service::TestFieldScopedJobWrites::*`, `TestValidationResultSurvives`, `TestPlanSurvivesOnTheJob`). L: `run_matrix.py` X-04 (slice 3) — every job the run drove is **re-read** after the race window and asserted against a field-ownership schema: `namespaces` == real write targets (the CASE-745 pin: a fresh restore names its target, not its source), `options` echoed, `archive_size` set, `result` populated exactly where that kind's terminal event carries details (fresh/merge/any dry run — a backup and an id-preserving restore correctly have none), `validation_job_ids` surviving, and each validation scoped to a written namespace, completed, carrying its `namespace_integrity` findings (PL-AUTO). The re-read is the point: the back-link and archive-lifecycle writers land *after* the job reports terminal, which is where CASE-747/749/750 lived. |
-| X-05 double-restore idempotence | **BUILT (L, both variants)** | Id-preserving: `run_matrix.py` X-05 (slice 2) — a second restore into the now-populated namespace is REFUSED, nothing duplicated (idempotent by refusal). Merge (slice 8, hosted in R-08 which owns the merged target): the re-run COMPLETES with zero inserts planned in any entity type — the per-type summaries still count the incoming entities as unchanged/clash, which is the loud-reporting contract, so the assertion keys on `insert == 0` — and nothing duplicated (idempotent by no-op). The two modes' opposite idempotence shapes are each pinned. |
-| X-06 backup-of-a-restore, transitive fidelity | **BUILT (L)** | `run_matrix.py` X-06 (slice 3) — back up the fresh copy in `-00c`, fresh-restore THAT into `-00f`: the second-hop archive is internally consistent (declared == streamed), the second hop conserves the first copy's counts, the `sample_code` identity values survive both hops, value-form resolution still works, and the leak sweep finds no trace of the first copy in the second. Hop one compares against a fixture the runner built, so a self-consistently mangled row survives it; hop two makes such a row either reproduce exactly or diverge visibly. |
+| Cell | Status |
+|---|---|
+| X-01 | **BUILT (L, all three modes)** |
+| X-02 | **BUILT (L, slice 1)** |
+| X-03 | **BUILT (L, slice 3)** |
+| X-04 | **BUILT (L, slice 3)** |
+| X-05 | **BUILT (L, both variants)** |
+| X-06 | **BUILT (L, slice 3)** |
+
+**X-01 — dry-run parity harness over every R-* pair.** BUILT (L, all three
+modes). Fresh: `run_matrix.py` X-01 (slice 2) — a fresh `dry_run` writes
+nothing, the apply then produces the source's conserved counts. Id-preserving
+and merge (slice 8): each mode's parity claim lives in the cell that already
+owns the right target state — R-01 dry-runs against the just-emptied namespace
+(complete, zero writes) before its apply; R-08 dry-runs against the drifted
+target (the plan names ≥1 document insert — it SEES the drift — and writes
+nothing) before its apply. Per-mode C parity:
+`test_merge_restore::TestMergeDryRun::*`, remap
+`test_a_dry_run_provisions_nothing_and_writes_nothing`, `test_backup_engine`
+id-preserving dry-run.
+
+**X-02 — counts conservation harness, one table reused by every cell.**
+BUILT (L, slice 1); row corrected — §7 had it built while this table still
+read PARTIAL. Seed side: Phase-1 `FixtureBuilder.count()` → EXPECTED_COUNTS.
+CLI seed→archive→restore parity: `test_round_trip` (CASE-666).
+
+**X-03 — leak sweep harness, serialized rows × forbidden tokens, every fresh
+cell.** BUILT (L, slice 3); C one-off:
+`test_remap_multi::test_reference_snapshots_carry_no_trace_of_the_source`.
+L: `run_matrix.py` `leak_sweep()` — every restore-written surface (documents,
+templates, terminologies, terms, registry-entry detail incl.
+synonyms/`search_values`/`source_info`) crossed with every source identifier
+(namespace name, document/template/terminology/term/registry-entry ids).
+Reused: R-05 asserts the document slice, X-06 runs it on the second hop. The
+target's namespace *description* is excluded by design — a fresh restore
+writes source provenance there deliberately.
+
+**X-04 — job-plane sweep after any L run.** BUILT (L, slice 3). Job-plane
+asserted richly at component layer
+(`test_backup_service::TestFieldScopedJobWrites::*`,
+`TestValidationResultSurvives`, `TestPlanSurvivesOnTheJob`). L: every job the
+run drove is **re-read** after the race window and asserted against a
+field-ownership schema: `namespaces` == real write targets (the CASE-745 pin:
+a fresh restore names its target, not its source), `options` echoed,
+`archive_size` set, `result` populated exactly where that kind's terminal
+event carries details (fresh/merge/any dry run — a backup and an
+id-preserving restore correctly have none), `validation_job_ids` surviving,
+and each validation scoped to a written namespace, completed, carrying its
+`namespace_integrity` findings (PL-AUTO). The re-read is the point: the
+back-link and archive-lifecycle writers land *after* the job reports terminal,
+which is where CASE-747/749/750 lived.
+
+**X-05 — double-restore idempotence.** BUILT (L, both variants).
+Id-preserving: `run_matrix.py` X-05 (slice 2) — a second restore into the
+now-populated namespace is REFUSED, nothing duplicated (idempotent by
+refusal). Merge (slice 8, hosted in R-08 which owns the merged target): the
+re-run COMPLETES with zero inserts planned in any entity type — the per-type
+summaries still count the incoming entities as unchanged/clash, which is the
+loud-reporting contract, so the assertion keys on `insert == 0` — and nothing
+duplicated (idempotent by no-op). The two modes' opposite idempotence shapes
+are each pinned.
+
+**X-06 — backup-of-a-restore, transitive fidelity.** BUILT (L, slice 3) —
+back up the fresh copy in `-00c`, fresh-restore THAT into `-00f`: the
+second-hop archive is internally consistent (declared == streamed), the
+second hop conserves the first copy's counts, the `sample_code` identity
+values survive both hops, value-form resolution still works, and the leak
+sweep finds no trace of the first copy in the second. Hop one compares against
+a fixture the runner built, so a self-consistently mangled row survives it;
+hop two makes such a row either reproduce exactly or diverge visibly.
 
 ## Gaps to build in Phase 3
 
@@ -118,7 +509,7 @@ rather than folding it into the accepted-refusal set.
 - F-07 permission refusals on backup / restore / download for a non-admin key — `test_backup_api::test_non_admin_key_is_refused_on_backup_restore_and_download` (404 on all three, nothing partial minted).
 
 **Fixed + live-validated (regression guard still wanted at L):**
-- R-15 prefixed `id_config` through a fresh restore — **CASE-784 fixed** (`e32d8c3f`); component regression in `test_backup_engine` (preserve_id_config). Live-validated on prod-test 20260724a. Build the L-cell as the real-stack guard in Phase 3.
+- R-15 prefixed `id_config` through a fresh restore — **CASE-784 fixed** (`e32d8c3f`); component regression in `test_backup_engine` (preserve_id_config). Live-validated on prod-test 20260724a.
 
 **Runner obligation folded in (no leftover case):**
 - Partial-damage detection (the residual of B-09 after CASE-783 shape 1+2): the layer-L counts-conservation harness (X-02) must cross-check per-entity streamed counts against the manifest's declared counts and refuse on mismatch — a partial archive that reads as fewer entities with no error is the trap typed refusals cannot catch.
@@ -218,11 +609,16 @@ one spurious red: a transient scale failure previously read as a finding,
 and an unchecked scale-up in the `finally` could have left the target
 degraded.
 
-**L cells still to build: none.** The CASE-773 work list is complete. The
-routine pre-release invocation (CASE-820) is the non-perturbing form; the
-`--allow-perturb` / `--allow-instance-wide` / `--dr-install` gates stay
-opt-in for deliberate drills.
-- Cell zero (§4 of CASE-773): the CASE-766 inactive-version archive shape — the Phase-1 fixture builds it by construction (SPEC docs pinned to the deactivated v3).
+**L cells still to build: none.** The CASE-773 work list is complete
+(CASE-773 closed `implemented`, 2026-07-26). The routine pre-release
+invocation is the non-perturbing form (CASE-820); the `--allow-perturb` /
+`--allow-instance-wide` / `--dr-install` gates stay opt-in for deliberate
+drills. Close-out items — the cell-zero ruling (the CASE-766
+inactive-version archive shape, which the Phase-1 fixture builds by
+construction: SPEC docs pinned to the deactivated v3), the CASE-768(b)
+archive-diff hook, the fixture walkthrough, and per-cell runner selection —
+are tracked in CASE-822, together with Peter's descope rulings
+(real-namespace smoke layer; CASE-658 CSV-import fold-in).
 
 **Bug surfaced by the slice-3 runs — CASE-800, archive download truncation.**
 A `GET /backup/jobs/{id}/download` issued seconds after its backup completed
