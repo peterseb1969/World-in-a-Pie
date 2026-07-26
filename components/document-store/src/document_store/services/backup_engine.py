@@ -399,6 +399,26 @@ class DirectBackupEngine:
 # ---------------------------------------------------------------------------
 
 
+def _rehydrate_timestamps(row: dict[str, Any]) -> None:
+    """Convert top-level ``*_at`` ISO strings back to datetime, in place.
+
+    Archive rows are JSON, so timestamp fields that were BSON dates when
+    exported come back as ISO strings. Platform timestamp fields all follow
+    the ``*_at`` naming convention and live at the row's top level; nested
+    payloads (``data``, ``metadata``) are caller content stored as
+    submitted, and are deliberately left untouched. A string that does not
+    parse is left as-is — a restore must not fail over one odd value that
+    was already a string in the archive.
+    """
+    for key, value in row.items():
+        if not key.endswith("_at") or not isinstance(value, str):
+            continue
+        try:
+            row[key] = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+
+
 class DirectRestoreEngine:
     """Restore a namespace from an archive via direct MongoDB bulk inserts.
 
@@ -2855,9 +2875,21 @@ class DirectRestoreEngine:
         batch: list[dict[str, Any]],
         entity_type: str,
     ) -> None:
-        """Bulk insert a batch, handling partial failures."""
+        """Bulk insert a batch, handling partial failures.
+
+        Rows arrive as parsed archive JSON, where every timestamp is an ISO
+        string; the service models declare these fields as datetime and
+        store BSON dates. Inserting the strings raw splits the corpus into
+        two BSON types, and Mongo's type-bracketed comparisons then make
+        timestamp filters silently skip whichever cohort mismatches the
+        filter value's type. Re-hydrate top-level timestamp keys to
+        datetime before insert so restored rows carry the same type the
+        services write.
+        """
         from pymongo.errors import BulkWriteError
 
+        for row in batch:
+            _rehydrate_timestamps(row)
         try:
             await collection.insert_many(batch, ordered=False)
         except BulkWriteError as exc:

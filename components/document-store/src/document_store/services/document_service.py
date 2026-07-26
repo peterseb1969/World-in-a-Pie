@@ -2078,6 +2078,64 @@ class DocumentService:
             query=request
         )
 
+    # Document-level timestamp fields whose filter values are parsed and
+    # compared type-independently. The corpus stores these in two BSON types
+    # (service writes store dates; restore inserts archive JSON rows, which
+    # carry them as ISO strings), and Mongo comparisons are type-bracketed —
+    # a raw value of either type silently skips rows stored as the other.
+    _TIMESTAMP_QUERY_FIELDS = ("created_at", "updated_at")
+    _TIMESTAMP_QUERY_OPS: ClassVar[dict[str, str]] = {
+        "eq": "$eq", "ne": "$ne", "gt": "$gt", "gte": "$gte",
+        "lt": "$lt", "lte": "$lte", "in": "$in", "nin": "$in",
+    }
+
+    @classmethod
+    def _parse_timestamp_filter_value(cls, field: str, value: Any) -> datetime:
+        """Parse one timestamp filter value, failing loud on anything else."""
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        raise ValueError(
+            f"Filter value for '{field}' must be an ISO-8601 timestamp "
+            f"string, got: {value!r}"
+        )
+
+    @classmethod
+    def _timestamp_condition(
+        cls, field: str, operator: str, value: Any
+    ) -> dict[str, Any]:
+        """Build a storage-type-independent condition on a timestamp field.
+
+        Compares through $convert(to: date) so date-stored and string-stored
+        rows are measured on the same axis — neither cohort can silently
+        drop out of a window while mixed storage exists, and once storage is
+        normalized the conversion is a no-op. Rows whose value is missing or
+        unparseable convert to null and never match any timestamp filter
+        (the guard below), rather than sorting below every date and leaking
+        into $lt windows.
+        """
+        if operator in ("in", "nin"):
+            if not isinstance(value, list):
+                raise ValueError(
+                    f"Filter value for '{field}' with operator '{operator}' "
+                    f"must be a list of ISO-8601 timestamp strings."
+                )
+            parsed: Any = [
+                cls._parse_timestamp_filter_value(field, v) for v in value
+            ]
+        else:
+            parsed = cls._parse_timestamp_filter_value(field, value)
+
+        converted = {"$convert": {"input": f"${field}", "to": "date", "onError": None}}
+        comparison: dict[str, Any] = {
+            cls._TIMESTAMP_QUERY_OPS[operator]: [converted, parsed]
+        }
+        if operator == "nin":
+            comparison = {"$not": [comparison]}
+        return {"$expr": {"$and": [{"$ne": [converted, None]}, comparison]}}
+
     def _build_query(self, request: DocumentQueryRequest) -> dict[str, Any]:
         """Build MongoDB query from request."""
         query: dict[str, Any] = {}
@@ -2093,6 +2151,18 @@ class DocumentService:
             field = filter_item.field
             operator = filter_item.operator
             value = filter_item.value
+
+            if (
+                field in self._TIMESTAMP_QUERY_FIELDS
+                and operator in self._TIMESTAMP_QUERY_OPS
+            ):
+                # $and accumulation: two range filters on the same field
+                # (gte + lt window) must both apply, not last-write-win on
+                # the query dict key.
+                query.setdefault("$and", []).append(
+                    self._timestamp_condition(field, operator, value)
+                )
+                continue
 
             if operator == "eq":
                 query[field] = value

@@ -37,12 +37,35 @@ def test_supported_operator_eq_builds_query():
 
 
 def test_supported_operator_gte_builds_mongo_gte():
+    # A data.* field keeps the verbatim mechanism: values are stored as
+    # submitted and compared as submitted.
+    req = DocumentQueryRequest(
+        filters=[QueryFilter(field="data.age", operator="gte", value=30)],
+        status=None,
+    )
+    q = _svc()._build_query(req)
+    assert q["data.age"] == {"$gte": 30}
+
+
+def test_timestamp_field_gte_builds_type_independent_condition():
+    """created_at/updated_at filters do NOT compare verbatim.
+
+    The corpus stores these fields in two BSON types (service writes are
+    dates, restored rows were ISO strings), and Mongo comparisons are
+    type-bracketed — a raw string value silently skips date-stored rows.
+    Timestamp filters therefore build an $expr over $convert(to: date), so
+    both storage types are measured on one axis. This test replaces an
+    earlier one that asserted the verbatim {"$gte": "<string>"} shape —
+    i.e. pinned the broken mechanism itself.
+    """
     req = DocumentQueryRequest(
         filters=[QueryFilter(field="updated_at", operator="gte", value="2026-06-12")],
         status=None,
     )
     q = _svc()._build_query(req)
-    assert q["updated_at"] == {"$gte": "2026-06-12"}
+    assert "updated_at" not in q, "timestamp filter must not compare verbatim"
+    (condition,) = q["$and"]
+    assert "$expr" in condition
 
 
 def test_unsupported_operator_raises_valueerror():
