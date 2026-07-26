@@ -231,6 +231,14 @@ behind or blocked (check `get_sync_status`, re-run the batch sync);
 `bookkeeping_tables_ok: false` → old-shape database — wipe per the ritual,
 or apply the namespace-column ALTER by hand.
 
+Note that the definitions tables (`terminologies`, `templates`, `terms`,
+`term_relations`) are batch-synced additively — upsert only, no deletes — so
+a row orphaned by a missed hard-delete event survives every batch re-run.
+The remediation is a schema-level rebuild, not hand-psql: reporting-sync's
+`DELETE /namespace/{prefix}` (atomic `DROP SCHEMA CASCADE`) followed by
+`POST /sync/batch` for the namespace, whose definitions companion rebuilds
+all four tables alongside the document tables.
+
 ---
 
 ## Sharp edge: runtime API keys DO NOT survive the ritual
