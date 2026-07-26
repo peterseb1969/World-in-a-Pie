@@ -416,6 +416,16 @@ async def start_restore(
             "before restoring. Without this flag such a restore refuses."
         ),
     ),
+    allow_missing_identity: bool = Form(
+        False,
+        description=(
+            "Restore only — proceed even when the archive carries entity "
+            "rows but no registry identity rows (e.g. a CLI export made "
+            "with --skip-synonyms). Without this flag such a restore "
+            "refuses, because the restored namespace would fail every "
+            "id-based read while looking healthy on list surfaces."
+        ),
+    ),
     identity: UserIdentity = Depends(require_api_key),
 ) -> BackupJobSnapshot:
     """Upload an archive and restore it into ``namespace``.
@@ -480,6 +490,16 @@ async def start_restore(
         extend_terminologies=extend_terminologies,
         drop_stale_reporting=drop_stale_reporting,
     )
+    if allow_missing_identity and mode != "restore":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "allow_missing_identity applies only to mode='restore' — "
+                "merge reconciles identity against the live target and "
+                "fresh mints new identities, so neither reads the archive's "
+                "registry rows the way an id-preserving restore does."
+            ),
+        )
     # Parameter of the retired toolkit import path. The direct restore engine
     # has no per-item error tolerance; silently ignoring a request for it
     # would misrepresent what the restore did, so a request that sets it is
@@ -579,6 +599,7 @@ async def start_restore(
         "continue_on_error": continue_on_error,
         "dry_run": dry_run,
         "drop_stale_reporting": drop_stale_reporting,
+        "allow_missing_identity": allow_missing_identity,
     }
 
     # A fresh restore WRITES to the resolved targets, not to the archive's

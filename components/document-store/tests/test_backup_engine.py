@@ -789,6 +789,8 @@ class TestRunRestoreBasicFlow:
         # ArchiveReader is used as a context manager
         mock_reader = MagicMock()
         mock_reader.read_manifest = MagicMock(return_value=manifest)
+        mock_reader.read_manifest_raw = MagicMock(return_value={})
+        mock_reader.entity_count = MagicMock(return_value=0)
         mock_reader.read_entities = MagicMock(side_effect=lambda et, namespace=None: {
             "terminologies": [{"terminology_id": "T1"}, {"terminology_id": "T2"}],
             "terms": [],
@@ -839,6 +841,8 @@ class TestRunRestoreBasicFlow:
         )
         mock_reader = MagicMock()
         mock_reader.read_manifest = MagicMock(return_value=manifest)
+        mock_reader.read_manifest_raw = MagicMock(return_value={})
+        mock_reader.entity_count = MagicMock(return_value=0)
         mock_reader.__enter__ = MagicMock(return_value=mock_reader)
         mock_reader.__exit__ = MagicMock(return_value=None)
 
@@ -865,6 +869,8 @@ class TestRestoreRedirectGuard:
         )
         mock_reader = MagicMock()
         mock_reader.read_manifest = MagicMock(return_value=manifest)
+        mock_reader.read_manifest_raw = MagicMock(return_value={})
+        mock_reader.entity_count = MagicMock(return_value=0)
         mock_reader.list_namespaces = MagicMock(return_value=[namespace])
         mock_reader.__enter__ = MagicMock(return_value=mock_reader)
         mock_reader.__exit__ = MagicMock(return_value=None)
@@ -922,13 +928,16 @@ class TestRunRestoreDryRun:
         )
         mock_reader = MagicMock()
         mock_reader.read_manifest = MagicMock(return_value=manifest)
+        mock_reader.read_manifest_raw = MagicMock(return_value={})
         mock_reader.list_namespaces = MagicMock(return_value=["kb"])
         mock_reader.list_blobs = MagicMock(return_value=[])
         # The manifest above has no per-namespace entries, so the dry-run
         # report falls back to counting archive lines — stub that count.
+        # registry_entries must be non-zero: the identity precondition
+        # (entities without identity rows refuse) runs in dry-run too.
         mock_reader.entity_count = MagicMock(
             side_effect=lambda et, namespace="": {
-                "terminologies": 2, "documents": 3,
+                "terminologies": 2, "documents": 3, "registry_entries": 2,
             }.get(et, 0)
         )
         mock_reader.__enter__ = MagicMock(return_value=mock_reader)
@@ -1240,3 +1249,116 @@ class TestFinalizeDoesNotBlockTheEventLoop:
             f"the event loop was starved while the archive was written: "
             f"{len(during)} heartbeat tick(s) in {ended - started:.2f}s"
         )
+
+
+class TestRestoreIdentityPrecondition:
+    """An archive with entity rows but no registry identity rows restores
+    into a namespace where nothing resolves by id — every list surface looks
+    healthy while point reads fail, and post-restore integrity validation
+    cannot see it (it checks MongoDB against itself; identity lives in the
+    Registry). The engine refuses up front unless explicitly overridden."""
+
+    def _reader(self, *, registry_rows: int, raw_manifest: dict | None = None):
+        manifest = Manifest(
+            format_version="3.0",
+            namespace="kb",
+            namespace_config=NamespaceConfig(prefix="kb", isolation_mode="open"),
+            counts=EntityCounts(terminologies=2),
+        )
+        mock_reader = MagicMock()
+        mock_reader.read_manifest = MagicMock(return_value=manifest)
+        mock_reader.read_manifest_raw = MagicMock(
+            return_value=raw_manifest or {}
+        )
+        mock_reader.entity_count = MagicMock(
+            side_effect=lambda et, namespace=None: {
+                "terminologies": 2,
+                "registry_entries": registry_rows,
+            }.get(et, 0)
+        )
+        mock_reader.read_entities = MagicMock(side_effect=lambda et, namespace=None: {
+            "terminologies": [{"terminology_id": "T1"}, {"terminology_id": "T2"}],
+        }.get(et, []))
+        mock_reader.__enter__ = MagicMock(return_value=mock_reader)
+        mock_reader.__exit__ = MagicMock(return_value=None)
+        return mock_reader
+
+    def _httpx_ok(self):
+        ok_resp = MagicMock(status_code=200, text="ok")
+        mock_httpx = MagicMock()
+        mock_httpx.put = AsyncMock(return_value=ok_resp)
+        mock_httpx.__aenter__ = AsyncMock(return_value=mock_httpx)
+        mock_httpx.__aexit__ = AsyncMock(return_value=None)
+        return mock_httpx
+
+    @pytest.mark.asyncio
+    async def test_refuses_entities_without_identity_rows(self, tmp_path):
+        mongo, _ = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        events: list[ProgressEvent] = []
+        engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=self._reader(registry_rows=0),
+        ), pytest.raises(RestoreEngineError, match="no registry identity rows"):
+            await engine.run_restore(tmp_path / "kb.zip", "kb")
+
+    @pytest.mark.asyncio
+    async def test_override_completes_with_warning(self, tmp_path):
+        mongo, _ = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        events: list[ProgressEvent] = []
+        engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=self._reader(registry_rows=0),
+        ), patch("httpx.AsyncClient", return_value=self._httpx_ok()):
+            await engine.run_restore(
+                tmp_path / "kb.zip", "kb", allow_missing_identity=True
+            )
+
+        warnings = [e.message for e in events if e.phase == "warning"]
+        assert any("NO registry identity rows" in w for w in warnings)
+        assert events[-1].phase == "complete"
+
+    @pytest.mark.asyncio
+    async def test_identity_rows_present_passes_silently(self, tmp_path):
+        mongo, _ = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        events: list[ProgressEvent] = []
+        engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=self._reader(registry_rows=2),
+        ), patch("httpx.AsyncClient", return_value=self._httpx_ok()):
+            await engine.run_restore(tmp_path / "kb.zip", "kb")
+
+        assert not [e for e in events if e.phase == "warning"]
+        assert events[-1].phase == "complete"
+
+    @pytest.mark.asyncio
+    async def test_derived_manifest_marker_surfaces_warning(self, tmp_path):
+        """A derived_from key is unknown to the Manifest model (extras are
+        ignored), so the engine reads the raw manifest to surface it."""
+        mongo, _ = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        events: list[ProgressEvent] = []
+        engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+
+        raw = {"derived_from": {"transforms": ["filter-templates"]}}
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=self._reader(registry_rows=2, raw_manifest=raw),
+        ), patch("httpx.AsyncClient", return_value=self._httpx_ok()):
+            await engine.run_restore(tmp_path / "kb.zip", "kb")
+
+        warnings = [e.message for e in events if e.phase == "warning"]
+        assert any("DERIVED" in w for w in warnings)
+        assert events[-1].phase == "complete"

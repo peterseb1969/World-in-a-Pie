@@ -470,6 +470,7 @@ class DirectRestoreEngine:
         batch_size: int = 500,
         drop_stale_reporting: bool = False,
         dry_run: bool = False,
+        allow_missing_identity: bool = False,
     ) -> None:
         """Run the full restore pipeline over every namespace in the archive.
 
@@ -504,6 +505,56 @@ class DirectRestoreEngine:
                 await self._check_reporting_precondition(
                     tgt, drop_stale_reporting, dry_run=dry_run
                 )
+
+            # An archive stamped as a derived artifact (produced by an archive
+            # transform, not a full backup) is deliberately incomplete. The
+            # Manifest model ignores unknown keys, so read the raw dict.
+            derived_from = reader.read_manifest_raw().get("derived_from")
+            if derived_from is not None:
+                self._emit(
+                    "warning",
+                    "Archive declares itself DERIVED from a full backup "
+                    f"(derived_from={derived_from!r}) — its contents are "
+                    "deliberately incomplete; verify the restored namespace "
+                    "covers what you expect.",
+                )
+
+            # Identity precondition: an archive that carries entities but no
+            # registry rows restores into a namespace where nothing resolves
+            # by id — every list/query surface looks healthy while point
+            # reads fail, and post-restore integrity validation cannot see it
+            # (it checks MongoDB against itself; identity lives in the
+            # Registry). Refuse up front instead of minting that namespace.
+            entity_types_with_identity = (
+                "terminologies", "terms", "term_relations",
+                "templates", "documents", "files",
+            )
+            for src, _tgt in targets:
+                entity_rows = sum(
+                    reader.entity_count(et, namespace=src)
+                    for et in entity_types_with_identity
+                )
+                registry_rows = reader.entity_count(
+                    "registry_entries", namespace=src
+                )
+                if entity_rows > 0 and registry_rows == 0:
+                    if allow_missing_identity:
+                        self._emit(
+                            "warning",
+                            f"[{src}] archive carries {entity_rows} entity "
+                            "row(s) but NO registry identity rows "
+                            "(allow_missing_identity=true) — id-based reads "
+                            "in the restored namespace will fail to resolve.",
+                        )
+                    else:
+                        raise RestoreEngineError(
+                            f"Archive namespace '{src}' carries "
+                            f"{entity_rows} entity row(s) but no registry "
+                            "identity rows — was it exported with "
+                            "--skip-synonyms? Restoring it would produce a "
+                            "namespace where nothing resolves by id. Pass "
+                            "allow_missing_identity=true to restore anyway."
+                        )
 
             entry_by_prefix = {e.prefix: e for e in manifest.namespaces}
             restore_order = [

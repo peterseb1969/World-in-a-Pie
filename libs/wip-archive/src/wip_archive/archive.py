@@ -244,8 +244,13 @@ class ArchiveReader:
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    def read_manifest(self) -> Manifest:
-        """Read and parse the manifest.
+    def read_manifest_raw(self) -> dict:
+        """The manifest as the raw JSON object, keys preserved.
+
+        The Manifest model ignores unknown keys, so forward-declared fields
+        written by newer producers (e.g. a ``derived_from`` marker stamped by
+        an archive transform) are invisible through :meth:`read_manifest`.
+        Consumers that must see such keys read the raw dict instead.
 
         Raises MissingManifestError when manifest.json is absent and
         ManifestParseError when it is not valid JSON, so a malformed archive
@@ -262,7 +267,15 @@ class ArchiveReader:
             raise ManifestParseError(
                 f"archive manifest.json is not valid JSON: {exc}"
             ) from exc
-        return Manifest(**data)
+        if not isinstance(data, dict):
+            raise ManifestParseError(
+                "archive manifest.json must be a JSON object"
+            )
+        return data
+
+    def read_manifest(self) -> Manifest:
+        """Read and parse the manifest (typed; unknown keys are ignored)."""
+        return Manifest(**self.read_manifest_raw())
 
     def list_namespaces(self) -> list[str]:
         """The namespaces present in this v3 archive, sorted.

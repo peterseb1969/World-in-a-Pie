@@ -448,6 +448,26 @@ def make_validation_runner(
                     f"issues out of {result.summary.documents_checked} checked"
                 ),
             ))
+            # A validation spawned by a restore reports on THAT restore's
+            # outcome, but it runs as its own job after the restore already
+            # completed — a caller who polled the restore job to completion
+            # and read warnings=[] never learns the restored data is broken
+            # (dangling references restore silently). Mirror the finding onto
+            # the triggering restore job so its durable record carries the
+            # pointer. Atomic push, same idiom as the progress consumer:
+            # nothing else on the parent record is touched.
+            triggered_by = opts.get("triggered_by")
+            if triggered_by:
+                parent = await BackupJob.find_one(
+                    BackupJob.job_id == triggered_by
+                )
+                if parent is not None:
+                    await parent.update(Push({BackupJob.warnings: (
+                        f"post-restore validation found integrity "
+                        f"{result.status} in '{namespace}' "
+                        f"({result.summary.documents_with_issues} document(s) "
+                        f"with issues) — see validation job {job_id}"
+                    )}))
 
         # The integrity result rides the terminal event, the same fix the
         # dry-run path already received: writing it in a separate second
@@ -509,7 +529,14 @@ async def trigger_validation_for(restore_job: BackupJob) -> list[str]:
             )
             await job.insert()
             await start_async_job(
-                job_id, make_validation_runner(job_id, namespace)
+                job_id,
+                # triggered_by reaches the runner so a non-healthy result can
+                # be mirrored onto the restore job's warnings — the job
+                # record's options alone are invisible to the runner.
+                make_validation_runner(
+                    job_id, namespace,
+                    {"triggered_by": restore_job.job_id},
+                ),
             )
             started.append(job_id)
         except Exception:
@@ -589,6 +616,7 @@ def make_direct_restore_runner(
             batch_size=opts.get("batch_size", 500),
             drop_stale_reporting=opts.get("drop_stale_reporting", False),
             dry_run=opts.get("dry_run", False),
+            allow_missing_identity=opts.get("allow_missing_identity", False),
         )
 
     return runner

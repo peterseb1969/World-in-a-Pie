@@ -863,3 +863,94 @@ class TestFieldScopedJobWrites:
             "never BackupJob.save() — see the lost-update class this "
             "module's docstrings describe"
         )
+
+
+class TestValidationMirrorsToParentRestore:
+    """A validation spawned by a restore runs as its own job AFTER the
+    restore completed — a caller who polled the restore to completion and
+    read warnings=[] never learns the restored data is broken. A non-healthy
+    result must land on the triggering restore job's warnings too."""
+
+    def _stub_integrity(self, *, status: str = "healthy", issues=None):
+        from document_store.services.integrity_service import (
+            IntegrityCheckResult,
+            IntegrityIssue,
+            IntegritySummary,
+        )
+        issues = issues or []
+        return IntegrityCheckResult(
+            status=status,
+            summary=IntegritySummary(
+                total_documents=2,
+                documents_checked=2,
+                documents_with_issues=len(issues),
+            ),
+            issues=[IntegrityIssue(**i) for i in issues],
+        )
+
+    def _issue(self):
+        return {
+            "type": "orphaned_document_ref",
+            "severity": "error",
+            "document_id": "d-1",
+            "template_id": "t-1",
+            "version": 1,
+            "reference": "d-gone",
+            "message": "referenced document missing",
+        }
+
+    async def _run_validation(self, fresh_job, parent, status, issues):
+        async def fake_check(namespace, progress=None, **_kw):
+            return self._stub_integrity(status=status, issues=issues)
+
+        runner = backup_service.make_validation_runner(
+            fresh_job.job_id, "probe-ns",
+            {"triggered_by": parent.job_id},
+        )
+        with patch(
+            "document_store.services.integrity_service.check_all_documents",
+            new=AsyncMock(side_effect=fake_check),
+        ):
+            task = await backup_service.start_async_job(fresh_job.job_id, runner)
+            await asyncio.wait_for(task, timeout=10.0)
+
+    async def test_unhealthy_validation_lands_on_parent(self, fresh_job: BackupJob):
+        parent = BackupJob(
+            job_id=f"rst-{uuid.uuid4().hex[:8]}",
+            kind=BackupJobKind.RESTORE,
+            namespace="probe-ns",
+            created_by="test-admin",
+        )
+        await parent.insert()
+
+        await self._run_validation(
+            fresh_job, parent, "error", [self._issue()]
+        )
+
+        updated_parent = await BackupJob.find_one(
+            BackupJob.job_id == parent.job_id
+        )
+        assert updated_parent is not None
+        assert any(
+            "post-restore validation" in w and fresh_job.job_id in w
+            for w in updated_parent.warnings
+        ), f"parent restore job must carry the pointer: {updated_parent.warnings}"
+
+    async def test_healthy_validation_leaves_parent_untouched(
+        self, fresh_job: BackupJob
+    ):
+        parent = BackupJob(
+            job_id=f"rst-{uuid.uuid4().hex[:8]}",
+            kind=BackupJobKind.RESTORE,
+            namespace="probe-ns",
+            created_by="test-admin",
+        )
+        await parent.insert()
+
+        await self._run_validation(fresh_job, parent, "healthy", [])
+
+        updated_parent = await BackupJob.find_one(
+            BackupJob.job_id == parent.job_id
+        )
+        assert updated_parent is not None
+        assert updated_parent.warnings == []
