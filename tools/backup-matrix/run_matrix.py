@@ -669,6 +669,16 @@ def cell_r01_id_preserving(
     before_ids = sorted(d["document_id"] for d in _all_docs_serialized(client, ns))
     before = builder._count_namespace(ns)
     _drop_ns(client, ns)
+    # Dry-run parity, id-preserving half (X-01 owns the fresh half; each
+    # mode's parity claim lives in the cell that already holds the right
+    # target state — here, the just-emptied namespace): the dry run passes
+    # every precondition and reports the plan, and writes NOTHING.
+    dry = _restore(client, archive, url_ns=ns, mode="restore", dry_run=True)
+    c.check("PL-JOB", dry.get("status") == "complete",
+            f"id-preserving dry-run completed against the emptied namespace "
+            f"(status={dry.get('status')})")
+    c.check("PL-DATA", len(_all_docs_serialized(client, ns)) == 0,
+            "the dry-run wrote nothing — the namespace is still empty")
     job = _restore(client, archive, url_ns=ns, mode="restore")
     if not c.check("PL-JOB", job.get("status") == "complete",
                    f"id-preserving restore completed "
@@ -706,8 +716,15 @@ def cell_x05_double_restore(client: WipClient, builder: Any, ns: str, archive: b
 def cell_r08_merge_drift(client: WipClient, archive: bytes, ns: str) -> Cell:
     """R-08: merge folds an archive into a drifted namespace — a document
     hard-deleted from the target is re-inserted by the merge, the rest left as
-    the on_clash policy dictates."""
-    c = Cell("R-08", "merge into a drifted namespace")
+    the on_clash policy dictates.
+
+    Also hosts the merge halves of two sweep claims, because this cell owns
+    the target states they need: dry-run parity against the DRIFTED state
+    (X-01's merge half — the dry run's plan names what would arrive, and
+    writes nothing), and the all-unchanged RE-RUN after the apply (X-05's
+    merge variant — merge is idempotent by no-op, where the id-preserving
+    mode is idempotent by refusal)."""
+    c = Cell("R-08", "merge into drift: dry-run parity, apply, idempotent re-run")
     samples = _list_docs(client, ns, "MATRIX_SAMPLE")
     if not c.check("PL-DATA", len(samples) >= 1, "target has samples to drift"):
         return c
@@ -715,6 +732,22 @@ def cell_r08_merge_drift(client: WipClient, archive: bytes, ns: str) -> Cell:
     drifted = _list_docs(client, ns, "MATRIX_SAMPLE")
     c.check("PL-DATA", len(drifted) == len(samples) - 1,
             f"drift created — one sample removed ({len(samples)} -> {len(drifted)})")
+
+    dry = _restore(client, archive, url_ns=ns, mode="merge", on_clash="skip",
+                   dry_run=True)
+    c.check("PL-JOB", dry.get("status") == "complete",
+            f"merge dry-run completed against the drifted target "
+            f"(status={dry.get('status')})")
+    dry_entities = (((dry.get("result") or {}).get("namespaces") or {})
+                    .get(ns) or {}).get("entities") or {}
+    c.check("PL-DATA",
+            (dry_entities.get("documents") or {}).get("insert", 0) >= 1,
+            f"the dry-run's plan SEES the drift — at least one document "
+            f"would be inserted "
+            f"(documents plan: {dry_entities.get('documents')})")
+    c.check("PL-DATA", len(_list_docs(client, ns, "MATRIX_SAMPLE")) == len(drifted),
+            "the dry-run wrote nothing — the target is still drifted")
+
     job = _restore(client, archive, url_ns=ns, mode="merge", on_clash="skip")
     if not c.check("PL-JOB", job.get("status") == "complete",
                    f"merge completed (status={job.get('status')}, err={job.get('error')})"):
@@ -723,6 +756,25 @@ def cell_r08_merge_drift(client: WipClient, archive: bytes, ns: str) -> Cell:
     c.check("PL-DATA", len(merged) == len(samples),
             f"the drifted-away document was re-inserted by the merge "
             f"({len(drifted)} -> {len(merged)})")
+
+    # Idempotent re-run: same archive, same target, nothing left to bring.
+    # The per-type summaries still COUNT the incoming entities (as
+    # `unchanged`/`clash` — that is the loud-reporting contract), so the
+    # idempotence claim is precisely: no type plans a single INSERT.
+    again = _restore(client, archive, url_ns=ns, mode="merge", on_clash="skip")
+    if not c.check("PL-JOB", again.get("status") == "complete",
+                   f"the re-run merge completes rather than refusing "
+                   f"(status={again.get('status')})"):
+        return c
+    again_entities = (((again.get("result") or {}).get("namespaces") or {})
+                      .get(ns) or {}).get("entities") or {}
+    inserts = {t: p.get("insert", 0) for t, p in again_entities.items()
+               if p.get("insert", 0)}
+    c.check("PL-DATA", not inserts,
+            f"the re-run inserts NOTHING — every incoming entity already "
+            f"present (non-zero insert plans: {inserts or 'none'})")
+    c.check("PL-DATA", len(_list_docs(client, ns, "MATRIX_SAMPLE")) == len(samples),
+            "nothing duplicated by the re-run")
     return c
 
 
@@ -1681,6 +1733,26 @@ def _kubectl(k8s_ns: str, *args: str, timeout: float = 60.0) -> subprocess.Compl
     )
 
 
+def _scale_deployment(k8s_ns: str, deployment: str, replicas: int) -> bool:
+    """Scale with a checked return code and retries.
+
+    A single unchecked `kubectl scale` is how F-06 once failed spuriously: a
+    transient API-server error left the pod running, the pods-gone wait
+    burned its full timeout, and the cell reported a finding that was really
+    one flaky kubectl call. Worse on the way back UP — an unchecked failed
+    scale-up would leave the target install degraded after the cell ends.
+    """
+    for _ in range(3):
+        proc = _kubectl(k8s_ns, "scale", "deployment", deployment,
+                        f"--replicas={replicas}")
+        if proc.returncode == 0:
+            return True
+        time.sleep(2.0)
+    print(f"    [perturb] kubectl scale {deployment} --replicas={replicas} "
+          f"kept failing: {proc.stderr.strip()[:200]}")
+    return False
+
+
 def _pods_for(k8s_ns: str, svc_label: str) -> list[str]:
     proc = _kubectl(
         k8s_ns, "get", "pods",
@@ -1730,7 +1802,10 @@ def cell_f06_reporting_down(
                    f"kubectl reaches deployment wip-reporting-sync in {k8s_ns}"):
         return c
 
-    _kubectl(k8s_ns, "scale", "deployment", "wip-reporting-sync", "--replicas=0")
+    if not c.check("PL-JOB",
+                   _scale_deployment(k8s_ns, "wip-reporting-sync", 0),
+                   "kubectl scale to zero accepted"):
+        return c
     try:
         if not c.check("PL-JOB",
                        _wait_until("reporting-sync pods gone",
@@ -1752,7 +1827,7 @@ def cell_f06_reporting_down(
     finally:
         # The install must get its reporting plane back even if an assert
         # above returned early — a cell must not leave the target degraded.
-        _kubectl(k8s_ns, "scale", "deployment", "wip-reporting-sync", "--replicas=1")
+        _scale_deployment(k8s_ns, "wip-reporting-sync", 1)
 
     if not c.check("PL-REP",
                    _wait_until("reporting-sync back",
