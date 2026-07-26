@@ -89,6 +89,24 @@ def run_export(
                  "latest_only": latest_only, "dry_run": dry_run},
     ))
 
+    # Version-history contract: document-store marks every superseded version
+    # row status=inactive, and this collector streams status=active unless
+    # include_inactive is set — so without it the export structurally cannot
+    # carry prior versions, whatever latest_only says. Say so loudly instead
+    # of letting the archive silently lose history (CASE-823).
+    if not include_inactive and not skip_documents:
+        history_warning = (
+            "Export will carry the latest ACTIVE version of each document only "
+            "— prior versions are status=inactive in document-store. Pass "
+            "--include-inactive for full version history (this also includes "
+            "deactivated and archived entities)."
+        )
+        console.print(f"  [yellow]Warning:[/yellow] {history_warning}")
+        _emit(progress_callback, ProgressEvent(
+            phase="warning_version_history_skipped",
+            message=history_warning,
+        ))
+
     # Fetch namespace config
     console.print(f"\n[bold]Exporting namespace: {namespace}[/bold]")
     ns_config_data = collector.fetch_namespace_config(namespace)
@@ -388,7 +406,11 @@ def run_export(
         namespace_config=ns_config,
         include_inactive=include_inactive,
         include_files=include_files,
-        include_all_versions=not latest_only,
+        # True only when the archive can actually carry every version:
+        # without include_inactive the active-only stream drops superseded
+        # (status=inactive) version rows regardless of latest_only, so
+        # stamping "all versions" would misdescribe the contents (CASE-823).
+        include_all_versions=(not latest_only) and include_inactive,
         closure=closure_info,
         counts=counts,
     )

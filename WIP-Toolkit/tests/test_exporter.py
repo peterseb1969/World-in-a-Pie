@@ -681,3 +681,44 @@ class TestRunExportNonInteractive:
 
         mock_confirm.assert_not_called()
         assert stats.namespace == "wip"
+
+
+# ===========================================================================
+# Manifest honesty (CASE-823)
+# ===========================================================================
+class TestManifestVersionHonesty:
+    """include_all_versions must describe the archive, not the flag.
+
+    Without include_inactive the active-only stream drops superseded
+    (status=inactive) version rows, so only include_inactive=True with
+    latest_only=False can truthfully claim all versions."""
+
+    @pytest.mark.parametrize(
+        ("latest_only", "include_inactive", "expected"),
+        [
+            (False, False, False),  # default export: latest active only
+            (True, False, False),
+            (False, True, True),    # the only all-versions combination
+            (True, True, False),
+        ],
+    )
+    @patch(f"{EXPORTER}.ArchiveWriter")
+    @patch(f"{EXPORTER}.compute_closure")
+    @patch(f"{EXPORTER}.EntityCollector")
+    def test_include_all_versions_truth_table(
+        self, MockCollector, mock_closure, MockWriter, mock_client,
+        mock_collector, mock_writer, latest_only, include_inactive, expected,
+    ):
+        MockCollector.return_value = mock_collector
+        MockWriter.return_value = mock_writer
+        mock_closure.return_value = ([], [], [], [])
+
+        from wip_toolkit.export.exporter import run_export
+        run_export(
+            mock_client, "wip", "/tmp/export.zip",
+            latest_only=latest_only, include_inactive=include_inactive,
+            non_interactive=True,
+        )
+
+        manifest = mock_writer.write.call_args[0][0]
+        assert manifest.include_all_versions is expected

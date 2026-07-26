@@ -56,11 +56,17 @@ def main(ctx: click.Context, host: str, proxy: bool, port: int | None, api_key: 
 @click.argument("namespace")
 @click.argument("output_path")
 @click.option("--include-files", is_flag=True, help="Include binary file content")
-@click.option("--include-inactive", is_flag=True, help="Include inactive/deprecated entities")
+@click.option("--include-inactive", is_flag=True,
+              help="Include inactive/deprecated entities. Required for full document "
+                   "version history: prior versions are status=inactive in document-store, "
+                   "so without this flag the export carries latest active versions only.")
 @click.option("--skip-documents", is_flag=True, help="Export only terminologies + templates")
 @click.option("--skip-closure", is_flag=True, help="Skip referential integrity closure")
 @click.option("--skip-synonyms", is_flag=True, help="Skip Registry synonym export")
-@click.option("--latest-only", is_flag=True, help="Export only latest document versions")
+@click.option("--latest-only", is_flag=True,
+              help="Export only latest document versions. Note: without "
+                   "--include-inactive the export is latest-only already; this flag "
+                   "mainly re-narrows an --include-inactive export.")
 @click.option("--filter-templates", default=None,
               help="Only export templates matching this prefix (e.g., 'DND_'). "
                    "Documents are filtered to matching templates. Comma-separated for multiple prefixes.")
@@ -83,6 +89,10 @@ def export(
 
     NAMESPACE is the WIP namespace to export (e.g., "wip").
     OUTPUT_PATH is the destination file path for the archive.
+
+    Default contract: the archive carries the latest ACTIVE version of each
+    document. Full version history requires --include-inactive (superseded
+    versions are status=inactive in document-store).
     """
     config = ctx.obj["config"]
     with WIPClient(config) as client:
