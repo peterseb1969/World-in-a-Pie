@@ -1545,6 +1545,125 @@ def cell_r04_cli_export_engine_restore(
     return c
 
 
+def cell_r03_cross_instance_dr(
+    client: WipClient, dr_client: WipClient, builder: Any, dr_counter: Any,
+    archive_ab: bytes, ns_a: str, ns_b: str,
+) -> Cell:
+    """R-03: cross-instance disaster recovery — the archive is the only thing
+    that crosses.
+
+    Every other restore cell round-trips within the instance that took the
+    backup, where the original registry entries, synonyms, caches and blobs
+    still exist even after a namespace drop. Only a SECOND install proves the
+    archive is self-sufficient: the id-preserving restore must rebuild
+    identity (entries + synonyms re-inserted verbatim), data, refs and blobs
+    on an instance that has never seen any of it.
+
+    Boundary stated, not hidden: the fixture's E8 term ref into the shared
+    `wip` namespace names a term that exists on the SOURCE install only —
+    shared-vocabulary provisioning on a DR target is the operator's runbook,
+    not the archive's job (the archive carries the namespaces it was told
+    to). The cell asserts the stored value survives verbatim; resolving it
+    on the target has no contract to assert.
+    """
+    c = Cell("R-03", "cross-instance DR — id-preserving restore onto a second install")
+
+    listing = dr_client.get("/api/registry/namespaces", params={"page_size": 500})
+    dr_namespaces = {
+        n.get("prefix")
+        for n in (listing if isinstance(listing, list) else listing.get("items", []))
+    }
+    for ns in (ns_a, ns_b):
+        if not c.check("PL-JOB", ns not in dr_namespaces,
+                       f"DR target does not already hold {ns} (fresh instance "
+                       "precondition — an id-preserving restore needs empty targets)"):
+            return c
+
+    src_ids = {
+        ns: sorted(d["document_id"] for d in _all_docs_serialized(client, ns))
+        for ns in (ns_a, ns_b)
+    }
+
+    job = _restore(dr_client, archive_ab, url_ns=ns_a, mode="restore",
+                   expect_writes=[ns_a, ns_b])
+    # The DR job lives on the OTHER instance; X-04 sweeps JOBS with the
+    # primary client and would 404 on it, saying nothing about field
+    # ownership — retract it (the R-11 precedent for cell-owned side
+    # effects on the sweep's input).
+    JOBS[:] = [j for j in JOBS if j.snapshot.get("job_id") != job.get("job_id")]
+    if not c.check("PL-JOB", job.get("status") == "complete",
+                   f"id-preserving restore completed on the DR instance "
+                   f"(status={job.get('status')}, err={job.get('error')})"):
+        return c
+
+    for ns in (ns_a, ns_b):
+        dr_ids = sorted(d["document_id"] for d in _all_docs_serialized(dr_client, ns))
+        c.check("PL-DATA", dr_ids == src_ids[ns],
+                f"every {ns} document id preserved verbatim across instances "
+                f"({len(src_ids[ns])} docs)")
+        src_counts = builder._count_namespace(ns)
+        dr_counts = dr_counter._count_namespace(ns)
+        diffs = {k: (src_counts.get(k), dr_counts.get(k)) for k in CONSERVED_KEYS
+                 if src_counts.get(k) != dr_counts.get(k)}
+        c.check("PL-DATA", not diffs,
+                f"all conserved counts match the source instance for {ns} "
+                f"(diffs={diffs})")
+
+    # Cross-namespace refs: the copy's stored qualified strings must
+    # dereference ON THE DR INSTANCE — GET the exact stored string, the
+    # read door the platform documents for the qualified form.
+    specs = _list_docs(dr_client, ns_a, "MATRIX_SPECIMEN")
+    spec1 = next((d for d in specs
+                  if (d.get("data") or {}).get("specimen_code") == "SPEC-1"), None)
+    if c.check("PL-DATA", spec1 is not None,
+               "SPEC-1 present on the DR instance"):
+        ref = (spec1.get("data") or {}).get("primary_sample") or ""
+        c.check("PL-DATA", ref.startswith(f"{ns_b}:"),
+                f"the cross-namespace ref survives in qualified form ({ref!r})")
+        try:
+            target_doc = dr_client.get(f"/api/document-store/documents/{ref}")
+            resolves = target_doc.get("namespace") == ns_b
+        except ApiError:
+            resolves = False
+        c.check("PL-REG", resolves,
+                f"the exact stored ref string dereferences on the DR instance "
+                f"({ref!r} -> {ns_b})")
+        wip_ref = (spec1.get("data") or {}).get("time_unit")
+        c.check("PL-DATA", bool(wip_ref),
+                f"the shared-vocabulary term value survives verbatim "
+                f"({wip_ref!r}) — resolving it needs the wip vocabulary "
+                "provisioned on the DR target (operator runbook, not archive)")
+
+    c.check("PL-REG",
+            _value_form_resolves(dr_client, ns_a, "terminologies", "terminology",
+                                 "MATRIX_COLOR"),
+            "value-form resolution works on the DR instance — the archive's "
+            "registry entries AND synonyms were rebuilt there")
+
+    src_files = client.get(
+        "/api/document-store/files",
+        params={"namespace": ns_a, "page_size": 100},
+    ).get("items", [])
+    if c.check("PL-FILE", bool(src_files),
+               f"the source namespace still carries its blob(s) ({len(src_files)})"):
+        match = True
+        for f in src_files:
+            fid = f["file_id"]
+            src_bytes = client.get_bytes(f"/api/document-store/files/{fid}/content")
+            try:
+                dr_bytes = dr_client.get_bytes(f"/api/document-store/files/{fid}/content")
+            except ApiError:
+                match = False
+                break
+            if dr_bytes != src_bytes:
+                match = False
+                break
+        c.check("PL-FILE", match,
+                f"every blob is byte-identical on the DR instance, under the "
+                f"same file id ({len(src_files)} blob(s))")
+    return c
+
+
 # --------------------------------------------------------------------------- #
 # Perturbation cells (F-*) — opt-in via --allow-perturb
 #
@@ -1643,15 +1762,31 @@ def cell_f06_reporting_down(
                    "reporting-sync answers again after scale-up"):
         return c
 
-    parity = client.get("/api/reporting-sync/parity",
-                        params={"namespace": tgt, "include_counts": "true"})
-    c.check("PL-REP", not parity.get("ok"),
+    # The first requests after the scale-up land in the window where the
+    # ingress endpoints have just repopulated — a keep-alive connection can
+    # be reset mid-flight there, which is a transport blip, not a finding.
+    # Retry those two calls rather than let one reset fail the cell.
+    parity: dict = {}
+    for _ in range(5):
+        try:
+            parity = client.get("/api/reporting-sync/parity",
+                                params={"namespace": tgt, "include_counts": "true"})
+            break
+        except (ApiError, httpx.HTTPError):
+            time.sleep(2.0)
+    c.check("PL-REP", bool(parity) and not parity.get("ok"),
             f"the gap is VISIBLE before the force — parity not ok for the "
             f"restored namespace (ok={parity.get('ok')}, "
             f"schema_present={parity.get('schema_present')})")
 
-    jobs = client.post("/api/reporting-sync/sync/batch",
-                       params={"namespace": tgt, "force": "true"})
+    jobs: list | None = None
+    for _ in range(5):
+        try:
+            jobs = client.post("/api/reporting-sync/sync/batch",
+                               params={"namespace": tgt, "force": "true"})
+            break
+        except (ApiError, httpx.HTTPError):
+            time.sleep(2.0)
     c.check("PL-REP", bool(jobs),
             f"force batch-sync accepted for {tgt} ({len(jobs or [])} job(s))")
 
@@ -1661,7 +1796,7 @@ def cell_f06_reporting_down(
         try:
             final = client.get("/api/reporting-sync/parity",
                                params={"namespace": tgt, "include_counts": "true"})
-        except ApiError:
+        except (ApiError, httpx.HTTPError):
             return False
         return bool(final.get("ok"))
     c.check("PL-REP", _wait_until("parity ok after force", _parity_ok, timeout_s=120, interval_s=2.0),
@@ -1678,7 +1813,7 @@ def cell_f06_reporting_down(
                                           "types": ["document"],
                                           "namespace": tgt,
                                           "template": "MATRIX_SPECIMEN"})
-        except ApiError:
+        except (ApiError, httpx.HTTPError):
             return False
         hit_total = ((resp.get("results") or {}).get("document") or {}).get("total") or 0
         return hit_total > 0
@@ -2285,6 +2420,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cleanup-only", action="store_true",
                    help="sweep leftover ??????-00* namespaces and exit")
     p.add_argument(
+        "--dr-install",
+        help=(
+            "wip-deploy install name of a SECOND instance for the R-03 "
+            "cross-instance DR cell. The cell id-preserving-restores the "
+            "run's multi-namespace archive onto it and asserts identity, "
+            "refs and blobs rebuilt there; its namespaces are torn down "
+            "with the run's own (honors --keep). Without this flag R-03 "
+            "is reported as SKIP."
+        ),
+    )
+    p.add_argument(
         "--allow-perturb", action="store_true",
         help=(
             "run the F-05/F-06 perturbation cells, which change the TARGET "
@@ -2324,6 +2470,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.cleanup_only:
         with WipClient(target, timeout=60.0) as client:
             return cleanup_only(client)
+
+    dr_client: WipClient | None = None
+    if args.dr_install:
+        try:
+            dr_target = resolve_target(
+                install=args.dr_install, base_url=None, key_file=None,
+                verify_tls=not args.no_verify_tls,
+            )
+        except TargetError as exc:
+            print(f"--dr-install target error: {exc}", file=sys.stderr)
+            return 2
+        print(f"DR target: --dr-install {args.dr_install} ({dr_target.base_url})")
+        dr_client = WipClient(dr_target, timeout=120.0)
 
     tag = time.strftime("%H%M%S")
     ns_a, ns_b, tgt = f"{tag}-00a", f"{tag}-00b", f"{tag}-00c"
@@ -2473,6 +2632,24 @@ def main(argv: list[str] | None = None) -> int:
                 cells.append(_wrap("R-04", cell_r04_cli_export_engine_restore,
                                    client, builder, target, ns_a))
 
+                # R-03 needs a second instance — the whole point of the cell
+                # is that the archive, not the source instance, carries the
+                # recovery. Opt-in via --dr-install.
+                if dr_client is not None:
+                    print("[slice7] R-03 cross-instance DR ...")
+                    dr_counter = FixtureBuilder(
+                        dr_client, ns_a=ns_a, ns_b=ns_b,
+                        ontology_file=args.ontology,
+                    )
+                    cells.append(_wrap("R-03", cell_r03_cross_instance_dr,
+                                       client, dr_client, builder, dr_counter,
+                                       arch_ab_bytes, ns_a, ns_b))
+                else:
+                    cells.append(Cell("R-03", "cross-instance DR — id-preserving "
+                                      "restore onto a second install")
+                                 .skip("needs --dr-install <name>: the cell "
+                                       "restores onto a second instance"))
+
                 # F-06/F-05 perturb the install itself, so they are opt-in
                 # (like B-03) and run LAST of the data cells: F-06 takes the
                 # reporting plane down and F-05 kills the API pod — nothing
@@ -2528,6 +2705,9 @@ def main(argv: list[str] | None = None) -> int:
                 print("\n[teardown] deleting runner namespaces ...")
                 teardown(client, [tgt, ns_e, ns_f, ns_g, ns_h, ns_j, ns_k, ns_l,
                                   ns_m, ns_n, ns_o, ns_a, ns_b])
+                if dr_client is not None:
+                    print("[teardown] deleting DR-instance namespaces ...")
+                    teardown(dr_client, [ns_a, ns_b])
             else:
                 print(f"\n[keep] namespaces preserved: {ns_a}, {ns_b}, {tgt}, {ns_e}, {ns_f}")
 
