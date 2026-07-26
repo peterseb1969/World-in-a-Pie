@@ -131,9 +131,8 @@ class TestResolveNamespaceFilter:
             "wip_auth.permissions.check_namespace_permission",
             new_callable=AsyncMock,
             side_effect=HTTPException(404, "Namespace not found"),
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                await resolve_namespace_filter(identity, "secret-ns")
+        ), pytest.raises(HTTPException) as exc_info:
+            await resolve_namespace_filter(identity, "secret-ns")
 
         assert exc_info.value.status_code == 404
 

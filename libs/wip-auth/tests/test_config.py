@@ -1,9 +1,10 @@
 """Tests for auth configuration."""
 
 import os
+
 import pytest
 
-from wip_auth import AuthConfig, get_auth_config, set_auth_config, reset_auth_config
+from wip_auth import AuthConfig, get_auth_config, reset_auth_config, set_auth_config
 
 
 @pytest.fixture(autouse=True)

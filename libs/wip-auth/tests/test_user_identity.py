@@ -1,9 +1,7 @@
 """Tests for UserIdentity model methods."""
 
-import pytest
 
 from wip_auth import UserIdentity
-
 
 # ===========================================================================
 # identity_string property

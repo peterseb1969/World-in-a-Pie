@@ -1,7 +1,5 @@
 """Tests for the KeySyncService and replace_runtime_keys."""
 
-import asyncio
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

@@ -15,7 +15,6 @@ from wip_auth.document_identity import (
     normalize_value,
 )
 
-
 # Published in docs/data-models.md, Identity Hash Algorithm section.
 # The pair (input, expected) is the doc's worked example.
 DOC_WORKED_INPUT = {"first_name": "Alice", "email": "alice@example.com"}
