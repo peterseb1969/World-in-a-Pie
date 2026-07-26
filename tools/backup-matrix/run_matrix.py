@@ -38,13 +38,16 @@ import io
 import json
 import re
 import struct
+import subprocess
 import sys
+import tempfile
 import time
 import zipfile
 import zlib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fixtures import FixtureBuilder
@@ -257,6 +260,51 @@ def _backup(client: WipClient, anchor_ns: str, *, also: list[str] | None = None)
     return _backup_archive(client, anchor_ns, also=also)[1]
 
 
+def _start_restore(
+    client: WipClient,
+    archive: bytes,
+    *,
+    url_ns: str,
+    mode: str,
+    target_ns: str | None = None,
+    dry_run: bool = False,
+    on_clash: str = "skip",
+    add_missing: bool = False,
+    skip_files: bool = False,
+    namespace_map: dict[str, str] | None = None,
+) -> dict:
+    """POST the restore and return immediately — {job_id: …} or a refusal.
+
+    The no-wait half of ``_restore``, split out so a cell can interrupt a
+    run mid-flight (F-05). A synchronous refusal mints no job, so there is
+    nothing for the job-plane sweep to read — deliberately not recorded.
+    """
+    data: dict[str, str] = {"mode": mode}
+    if dry_run:
+        data["dry_run"] = "true"
+    if target_ns:
+        data["target_namespace"] = target_ns
+    if skip_files:
+        data["skip_files"] = "true"
+    if namespace_map:
+        # Fresh only, and mandatory for a multi-namespace archive: there is no
+        # implicit default, because an unmapped namespace restored to its old
+        # name would collide with the live original.
+        data["namespace_map"] = json.dumps(namespace_map)
+    if mode == "merge":
+        data["on_clash"] = on_clash
+        if add_missing:
+            data["add_missing"] = "true"
+    try:
+        return client.post(
+            f"/api/document-store/backup/namespaces/{url_ns}/restore",
+            files={"archive": (f"{url_ns}.zip", archive, "application/zip")},
+            data=data,
+        )
+    except ApiError as exc:
+        return {"status": "refused", "http_status": exc.status, "error": exc.body[:300]}
+
+
 def _restore(
     client: WipClient,
     archive: bytes,
@@ -279,32 +327,13 @@ def _restore(
     crash). ``url_ns`` is the auth anchor in the path; ``restore``/``merge``
     write each archived namespace to itself unless ``target_ns`` redirects.
     """
-    data: dict[str, str] = {"mode": mode}
-    if dry_run:
-        data["dry_run"] = "true"
-    if target_ns:
-        data["target_namespace"] = target_ns
-    if skip_files:
-        data["skip_files"] = "true"
-    if namespace_map:
-        # Fresh only, and mandatory for a multi-namespace archive: there is no
-        # implicit default, because an unmapped namespace restored to its old
-        # name would collide with the live original.
-        data["namespace_map"] = json.dumps(namespace_map)
-    if mode == "merge":
-        data["on_clash"] = on_clash
-        if add_missing:
-            data["add_missing"] = "true"
-    try:
-        snap = client.post(
-            f"/api/document-store/backup/namespaces/{url_ns}/restore",
-            files={"archive": (f"{url_ns}.zip", archive, "application/zip")},
-            data=data,
-        )
-    except ApiError as exc:
-        # A synchronous refusal mints no job, so there is nothing for the
-        # job-plane sweep to read — deliberately not recorded.
-        return {"status": "refused", "http_status": exc.status, "error": exc.body[:300]}
+    snap = _start_restore(
+        client, archive, url_ns=url_ns, mode=mode, target_ns=target_ns,
+        dry_run=dry_run, on_clash=on_clash, add_missing=add_missing,
+        skip_files=skip_files, namespace_map=namespace_map,
+    )
+    if "job_id" not in snap:
+        return snap
     done = _poll_job(client, snap["job_id"])
     if done.get("status") != "complete":
         # A job that failed is a cell failure, reported by the cell that drove
@@ -1393,6 +1422,447 @@ def cell_r07_collapse_refused(
     return c
 
 
+def cell_r04_cli_export_engine_restore(
+    client: WipClient, builder: Any, target: Any, ns: str,
+) -> Cell:
+    """R-04: the CLI-export → engine-restore seam, on the live stack.
+
+    The C layer guards this seam with a golden fixture
+    (WIP-Toolkit test_round_trip::test_golden_round_trip — CLI archive read
+    by the engine, resolution fidelity without the original session's
+    caches). This cell runs the REAL wip-toolkit binary over the network
+    against the live install, then feeds its archive to the live engine's
+    id-preserving restore door. What only L can see: the CLI's HTTP
+    collection against real services (pagination, auth, blob download from
+    MinIO) and the engine reading an archive a different writer process
+    produced.
+
+    Export shape: --include-inactive (the CASE-666 shape — the fixture's
+    deactivated MATRIX_SPECIMEN v3 and the docs pinned to it must make the
+    trip), --include-files (the blob half the C round-trip cannot cover —
+    its harness has no MinIO), --skip-closure (the archive stays
+    namespace-self-contained; cross-namespace refs resolve against the
+    intact live NS-B and wip, exactly as they would in a same-instance DR).
+    """
+    c = Cell("R-04", "CLI export fed to the engine's id-preserving restore")
+
+    cli = Path(sys.executable).parent / "wip-toolkit"
+    if not c.check("PL-JOB", cli.is_file(),
+                   f"the wip-toolkit CLI is installed in this venv ({cli})"):
+        return c
+
+    # Pre-state: everything fidelity is asserted against after the trip.
+    before_ids = sorted(d["document_id"] for d in _all_docs_serialized(client, ns))
+    before = builder._count_namespace(ns)
+    tpl_versions_before = {
+        v["version"]: v["status"]
+        for v in client.get(
+            "/api/template-store/templates/by-value/MATRIX_SPECIMEN/versions",
+            params={"namespace": ns},
+        ).get("items", [])
+    }
+    c.check("PL-DATA", "inactive" in tpl_versions_before.values(),
+            f"precondition: a deactivated template version exists to carry "
+            f"(versions={tpl_versions_before})")
+    src_files = client.get(
+        "/api/document-store/files",
+        params={"namespace": ns, "page_size": 100},
+    ).get("items", [])
+    if not c.check("PL-FILE", bool(src_files),
+                   f"precondition: the namespace still carries its blob(s) "
+                   f"({len(src_files)})"):
+        return c
+    blobs_before = {
+        f["file_id"]: client.get_bytes(
+            f"/api/document-store/files/{f['file_id']}/content")
+        for f in src_files
+    }
+
+    # The real CLI, over the network. --proxy + the install's public host.
+    parsed_url = urlparse(target.base_url)
+    with tempfile.TemporaryDirectory(prefix="r04-cli-export-") as tmp:
+        zip_path = Path(tmp) / f"{ns}.zip"
+        cmd = [
+            str(cli),
+            "--host", parsed_url.hostname,
+            "--proxy", "--port", str(parsed_url.port or 443),
+            "--api-key", target.api_key,
+            "--no-verify-ssl",
+            "export", ns, str(zip_path),
+            "--include-inactive", "--include-files", "--skip-closure",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if not c.check("PL-JOB", proc.returncode == 0 and zip_path.is_file(),
+                       f"CLI export exits 0 and writes the archive "
+                       f"(rc={proc.returncode}, tail={proc.stderr[-300:] if proc.returncode else 'ok'})"):
+            return c
+        archive = zip_path.read_bytes()
+    parsed = _parse_archive(archive)
+    c.check("PL-DATA", parsed.blob_count == len(src_files),
+            f"the CLI archive carries a blob per file "
+            f"({parsed.blob_count}/{len(src_files)})")
+
+    # Catastrophic loss, then the engine reads what the CLI wrote.
+    _drop_ns(client, ns)
+    job = _restore(client, archive, url_ns=ns, mode="restore")
+    if not c.check("PL-JOB", job.get("status") == "complete",
+                   f"engine id-preserving restore of the CLI archive completed "
+                   f"(status={job.get('status')}, err={job.get('error')})"):
+        return c
+
+    after_ids = sorted(d["document_id"] for d in _all_docs_serialized(client, ns))
+    c.check("PL-DATA", after_ids == before_ids,
+            f"every document id preserved verbatim through the cross-writer "
+            f"trip ({len(before_ids)} docs)")
+    after = builder._count_namespace(ns)
+    diffs = {k: (before.get(k), after.get(k)) for k in CONSERVED_KEYS
+             if before.get(k) != after.get(k)}
+    c.check("PL-DATA", not diffs,
+            f"all conserved counts match the pre-drop namespace (diffs={diffs})")
+    tpl_versions_after = {
+        v["version"]: v["status"]
+        for v in client.get(
+            "/api/template-store/templates/by-value/MATRIX_SPECIMEN/versions",
+            params={"namespace": ns},
+        ).get("items", [])
+    }
+    c.check("PL-DATA", tpl_versions_after == tpl_versions_before,
+            f"template version statuses preserved — the deactivated version "
+            f"stays inactive (before={tpl_versions_before}, "
+            f"after={tpl_versions_after})")
+    c.check("PL-REG",
+            _value_form_resolves(client, ns, "terminologies", "terminology",
+                                 "MATRIX_COLOR"),
+            "restored terminology resolves by value-form — the CLI-exported "
+            "registry entries were re-claimed, not re-minted")
+    blob_match = all(
+        client.get_bytes(f"/api/document-store/files/{fid}/content") == blob
+        for fid, blob in blobs_before.items()
+    )
+    c.check("PL-FILE", blob_match,
+            f"every blob byte-identical after the CLI-export half of the trip "
+            f"({len(blobs_before)} blob(s))")
+    return c
+
+
+# --------------------------------------------------------------------------- #
+# Perturbation cells (F-*) — opt-in via --allow-perturb
+#
+# These cells change the TARGET INSTALL's runtime state (scaling a service
+# to zero, killing a pod), not just the runner's own namespaces. Like B-03
+# they are gated: anything else using the install sees the disruption. They
+# require a k8s install and a working kubectl context for its cluster.
+# --------------------------------------------------------------------------- #
+
+
+def _kubectl(k8s_ns: str, *args: str, timeout: float = 60.0) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["kubectl", "-n", k8s_ns, *args],
+        capture_output=True, text=True, timeout=timeout,
+    )
+
+
+def _pods_for(k8s_ns: str, svc_label: str) -> list[str]:
+    proc = _kubectl(
+        k8s_ns, "get", "pods",
+        "-l", f"app.kubernetes.io/name={svc_label}",
+        "-o", "jsonpath={range .items[*]}{.metadata.name}:{.status.phase} {end}",
+    )
+    return [p for p in proc.stdout.split() if p]
+
+
+def _wait_until(what: str, pred, *, timeout_s: float, interval_s: float = 1.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        time.sleep(interval_s)
+    print(f"    [perturb] timed out waiting for {what} ({timeout_s:.0f}s)")
+    return False
+
+
+def _api_answers(client: WipClient, path: str, params: dict | None = None) -> bool:
+    try:
+        client.get(path, params=params or {})
+        return True
+    except (ApiError, httpx.HTTPError):
+        return False
+
+
+def cell_f06_reporting_down(
+    client: WipClient, archive: bytes, tgt: str, k8s_ns: str,
+) -> Cell:
+    """F-06: a restore with reporting-sync STOPPED completes with warnings,
+    and the reporting layer backfills after an explicit force.
+
+    The engine's reporting phase is a precondition-checked optional: when
+    reporting-sync is unreachable it must disable that phase and say so
+    loudly, never fail the restore — the data plane's DR cannot be hostage
+    to the analytics plane. But the restore writes Mongo directly, so no
+    NATS events exist for reporting-sync to catch up from when it returns:
+    the gap is real, visible in parity, and closed only by the explicit
+    force batch-sync (drop-and-rebuild, namespace-scoped). The C layer pins
+    the warn-and-disable half; only L can run the full arc — real scale-down,
+    real restore, real recovery.
+    """
+    c = Cell("F-06", "restore with reporting-sync stopped; parity backfills after force")
+
+    if not c.check("PL-JOB", _kubectl(k8s_ns, "get", "deployment", "wip-reporting-sync").returncode == 0,
+                   f"kubectl reaches deployment wip-reporting-sync in {k8s_ns}"):
+        return c
+
+    _kubectl(k8s_ns, "scale", "deployment", "wip-reporting-sync", "--replicas=0")
+    try:
+        if not c.check("PL-JOB",
+                       _wait_until("reporting-sync pods gone",
+                                   lambda: not _pods_for(k8s_ns, "reporting-sync"),
+                                   timeout_s=60),
+                       "reporting-sync scaled to zero (pods gone)"):
+            return c
+
+        job = _restore(client, archive, url_ns=tgt, mode="fresh", target_ns=tgt)
+        if not c.check("PL-JOB", job.get("status") == "complete",
+                       f"restore completes although reporting-sync is down "
+                       f"(status={job.get('status')}, err={job.get('error')})"):
+            return c
+        warnings = [w for w in (job.get("warnings") or []) if "reporting" in str(w).lower()]
+        c.check("PL-JOB", bool(warnings),
+                f"the job says loudly that reporting was skipped "
+                f"({len(job.get('warnings') or [])} warning(s), "
+                f"reporting-related: {len(warnings)})")
+    finally:
+        # The install must get its reporting plane back even if an assert
+        # above returned early — a cell must not leave the target degraded.
+        _kubectl(k8s_ns, "scale", "deployment", "wip-reporting-sync", "--replicas=1")
+
+    if not c.check("PL-REP",
+                   _wait_until("reporting-sync back",
+                               lambda: _api_answers(client, "/api/reporting-sync/parity",
+                                                    {"namespace": tgt}),
+                               timeout_s=180, interval_s=2.0),
+                   "reporting-sync answers again after scale-up"):
+        return c
+
+    parity = client.get("/api/reporting-sync/parity",
+                        params={"namespace": tgt, "include_counts": "true"})
+    c.check("PL-REP", not parity.get("ok"),
+            f"the gap is VISIBLE before the force — parity not ok for the "
+            f"restored namespace (ok={parity.get('ok')}, "
+            f"schema_present={parity.get('schema_present')})")
+
+    jobs = client.post("/api/reporting-sync/sync/batch",
+                       params={"namespace": tgt, "force": "true"})
+    c.check("PL-REP", bool(jobs),
+            f"force batch-sync accepted for {tgt} ({len(jobs or [])} job(s))")
+
+    final: dict = {}
+    def _parity_ok() -> bool:
+        nonlocal final
+        try:
+            final = client.get("/api/reporting-sync/parity",
+                               params={"namespace": tgt, "include_counts": "true"})
+        except ApiError:
+            return False
+        return bool(final.get("ok"))
+    c.check("PL-REP", _wait_until("parity ok after force", _parity_ok, timeout_s=120, interval_s=2.0),
+            f"parity converges after the force backfill "
+            f"(ok={final.get('ok')}, tables={final.get('table_count')}, "
+            f"mismatches={final.get('count_mismatches')})")
+
+    hit_total = 0
+    def _fts_hits() -> bool:
+        nonlocal hit_total
+        try:
+            resp = client.post("/api/reporting-sync/search",
+                               json_body={"query": "richly indexed",
+                                          "types": ["document"],
+                                          "namespace": tgt,
+                                          "template": "MATRIX_SPECIMEN"})
+        except ApiError:
+            return False
+        hit_total = ((resp.get("results") or {}).get("document") or {}).get("total") or 0
+        return hit_total > 0
+    c.check("PL-REP", _wait_until("FTS hit after force", _fts_hits, timeout_s=60, interval_s=2.0),
+            f"full-text search finds the restored document after the "
+            f"backfill ({hit_total} hit(s))")
+    return c
+
+
+def cell_f05_crash_mid_restore(
+    client: WipClient, builder: Any, archive: bytes, src_a: str, src_b: str,
+    tgt_a: str, tgt_b: str, k8s_ns: str,
+) -> Cell:
+    """F-05: kill the engine mid-fresh-restore; reserved ids stay invisible;
+    the documented recovery converges.
+
+    The C layer asserts the END state of a completed run ('activated at the
+    end of the run: reserved entries do not resolve, so a namespace left
+    reserved would be invisible' — test_remap_integration). The crash half
+    of that promise had never been exercised by an actually-interrupted
+    run: this cell deletes the document-store pod while the restore is
+    mid-flight, then checks the wreckage tells no lies — the job never
+    claims success, whatever landed does NOT resolve through the Registry
+    (reserved, not activated), a blind re-run refuses the dirty target, and
+    the documented recovery (drop the target, re-run) converges to the full
+    corpus.
+    """
+    c = Cell("F-05", "engine killed mid-fresh-restore; reserved invisible; re-run converges")
+
+    if not c.check("PL-JOB", _kubectl(k8s_ns, "get", "deployment", "wip-document-store").returncode == 0,
+                   f"kubectl reaches deployment wip-document-store in {k8s_ns}"):
+        return c
+
+    # Interrupting a live run is a race against physics: this fixture's
+    # fresh restore completes in ~2-4s, and a kubectl round-trip to the
+    # cluster costs ~0.5-1.5s on its own — three earlier shapes of this cell
+    # ("wait for mid-flight, then kill", graceful delete, bigger archive)
+    # all lost that race and "interrupted" runs that were already done. So:
+    # SIGKILL (--grace-period=0 --force; a graceful drain lets the run
+    # finish inside the grace window), fired the moment the POST is
+    # accepted, from a non-blocking Popen against a pre-resolved pod name —
+    # and the whole sequence RETRIES when the run still outran the kill,
+    # failing honestly only when three attempts in a row could not land an
+    # interrupt.
+    ns_map = {src_a: tgt_a, src_b: tgt_b}
+    job_id, after, attempts = "", {}, 0
+    while attempts < 3:
+        attempts += 1
+        for tgt in (tgt_a, tgt_b):
+            with contextlib.suppress(ApiError):
+                _drop_ns(client, tgt)
+        old_pods = {p.split(":", 1)[0] for p in _pods_for(k8s_ns, "document-store")}
+        if not old_pods:
+            break
+        pod_name = next(iter(old_pods))
+        start = _start_restore(client, archive, url_ns=tgt_a, mode="fresh",
+                               namespace_map=ns_map)
+        if "job_id" not in start:
+            break
+        job_id = start["job_id"]
+        killer = subprocess.Popen(
+            ["kubectl", "-n", k8s_ns, "delete", "pod", pod_name,
+             "--grace-period=0", "--force", "--wait=false"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        killer.wait(timeout=30)
+
+        # Wait for a REPLACEMENT pod, not merely an answering API: a
+        # draining pod keeps serving, so an is-it-back probe can pass
+        # against the very pod that is about to die and strand every later
+        # call on a 503 (this cell's first run stranded X-04 exactly so).
+        def _replacement_running(old_pods: set[str] = old_pods) -> bool:
+            pods = _pods_for(k8s_ns, "document-store")
+            return any(
+                p.split(":", 1)[0] not in old_pods and p.endswith(":Running")
+                for p in pods
+            )
+        if not _wait_until("replacement pod Running", _replacement_running,
+                           timeout_s=180, interval_s=2.0):
+            break
+        if not _wait_until(
+                "document-store API back",
+                lambda job_id=job_id: _api_answers(
+                    client, f"/api/document-store/backup/jobs/{job_id}"),
+                timeout_s=120, interval_s=2.0):
+            break
+        after = client.get(f"/api/document-store/backup/jobs/{job_id}")
+        if after.get("status") != "complete":
+            break
+        # The run outran the kill — scrub this attempt's completed job and
+        # try again. (Not registered in JOBS, so nothing to retract.)
+        with contextlib.suppress(ApiError):
+            client.delete(f"/api/document-store/backup/jobs/{job_id}")
+        job_id = ""
+
+    if not c.check("PL-JOB", bool(job_id) and bool(after),
+                   f"an interruptible run was achieved (attempt {attempts})"):
+        return c
+    c.check("PL-JOB", after.get("status") != "complete",
+            f"the interrupted job never claims success "
+            f"(status={after.get('status')}, phase={after.get('phase')}@"
+            f"{after.get('percent')}%, attempt {attempts})")
+
+    landed = (_all_docs_serialized(client, tgt_a)
+              + _all_docs_serialized(client, tgt_b))
+    if landed:
+        lookups = client.post(
+            "/api/registry/entries/lookup/by-id",
+            json_body=[{"entry_id": d["document_id"]} for d in landed[:5]],
+        )
+        results = lookups.get("results", [])
+        resolved = sum(1 for r in results if r.get("status") == "found")
+        # The visibility contract is phase-dependent, per the engine's own
+        # ordering ("entries are provisioned as *reserved* ... a single
+        # activation at the end makes the whole set visible at once"): a
+        # kill BEFORE phase_activate must leave every landed id invisible;
+        # a kill AFTER it (synonyms/provenance still pending) must leave
+        # the whole set visible; a kill INSIDE the per-target flip is
+        # legitimately mixed and only reported.
+        killed_phase = str(after.get("phase") or "")
+        post_activate = ("phase_activate", "phase_synonyms", "phase_namespace")
+        if killed_phase == "phase_activate":
+            c.check("PL-REG", True,
+                    f"killed inside the activation flip — mixed visibility "
+                    f"is legitimate ({resolved}/{len(results)} resolved)")
+        elif killed_phase in post_activate:
+            c.check("PL-REG", resolved == len(results),
+                    f"killed after activation ({killed_phase}) — the set is "
+                    f"visible AS A WHOLE ({resolved}/{len(results)} resolved)")
+        else:
+            c.check("PL-REG", resolved == 0,
+                    f"killed before activation ({killed_phase}) — reserved "
+                    f"ids stay invisible ({len(results) - resolved}/"
+                    f"{len(results)} not_found)")
+        blind = _restore(client, archive, url_ns=tgt_a, mode="fresh",
+                         namespace_map=ns_map)
+        c.check("PL-JOB", blind.get("status") in ("refused", "failed"),
+                f"a blind re-run refuses the half-written targets "
+                f"(status={blind.get('status')})")
+    else:
+        c.check("PL-REG", True,
+                f"no documents landed before the kill "
+                f"({after.get('phase')}@{after.get('percent')}%) — "
+                "reserved-visibility and dirty-target checks vacuous this run")
+
+    # The documented recovery: drop the targets, run the same restore again.
+    _drop_ns(client, tgt_a)
+    _drop_ns(client, tgt_b)
+    rerun = _restore(client, archive, url_ns=tgt_a, mode="fresh",
+                     namespace_map=ns_map, expect_writes=[tgt_a, tgt_b])
+    if not c.check("PL-JOB", rerun.get("status") == "complete",
+                   f"the re-run after dropping the targets converges "
+                   f"(status={rerun.get('status')}, err={rerun.get('error')})"):
+        return c
+    for src_ns, tgt in ((src_a, tgt_a), (src_b, tgt_b)):
+        src = builder._count_namespace(src_ns)
+        got = builder._count_namespace(tgt)
+        diffs = {k: (src.get(k), got.get(k)) for k in CONSERVED_KEYS
+                 if src.get(k) != got.get(k)}
+        c.check("PL-DATA", not diffs,
+                f"the converged copy of {src_ns} carries the full corpus "
+                f"(diffs={diffs})")
+    docs_now = _all_docs_serialized(client, tgt_a)
+    resolved = 0
+    if docs_now:
+        lookups = client.post(
+            "/api/registry/entries/lookup/by-id",
+            json_body=[{"entry_id": d["document_id"]} for d in docs_now[:5]],
+        )
+        resolved = sum(1 for r in lookups.get("results", [])
+                       if r.get("status") == "found")
+        c.check("PL-REG", resolved == len(lookups.get("results", [])),
+                f"the re-run's ids are ACTIVE — all {resolved} sampled ids "
+                "resolve through the Registry")
+
+    # The crashed job is permanent wreckage by design; the sweep asserts the
+    # bookkeeping of jobs that WORKED, so this cell owns removing it from
+    # both the install and the sweep (the R-11 precedent).
+    with contextlib.suppress(ApiError):
+        client.delete(f"/api/document-store/backup/jobs/{job_id}")
+    JOBS[:] = [j for j in JOBS if j.snapshot.get("job_id") != job_id]
+    return c
+
+
 def cell_x04_job_plane(client: WipClient) -> Cell:
     """X-04: sweep every job this run drove against a schema of field ownership.
 
@@ -1743,6 +2213,27 @@ def print_report(
 _RUN_NS_RE = re.compile(r"^\d{6}-00[a-z]$")
 
 
+def _k8s_namespace_for_install(install: str | None) -> str | None:
+    """The k8s namespace a wip-deploy install renders into, or None.
+
+    Read from the persisted deployer-state (``spec.platform.k8s.namespace``)
+    — the same file resolve_target reads the hostname from. None when the
+    runner was pointed via --base-url, the state file is unreadable, or the
+    install is not a k8s target; the perturbation cells SKIP in every one of
+    those cases rather than guessing at a cluster.
+    """
+    if not install:
+        return None
+    state_path = Path.home() / ".wip-deploy" / install / "deployment.deployer-state"
+    try:
+        state = json.loads(state_path.read_text())
+    except (OSError, ValueError):
+        return None
+    k8s = (((state.get("deployment") or {}).get("spec") or {})
+           .get("platform") or {}).get("k8s") or {}
+    return k8s.get("namespace") or None
+
+
 def cleanup_only(client: WipClient) -> int:
     """Sweep ??????-00* namespaces left by earlier crashed/kept runs."""
     resp = client.get("/api/registry/namespaces", params={"page_size": 500})
@@ -1794,6 +2285,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cleanup-only", action="store_true",
                    help="sweep leftover ??????-00* namespaces and exit")
     p.add_argument(
+        "--allow-perturb", action="store_true",
+        help=(
+            "run the F-05/F-06 perturbation cells, which change the TARGET "
+            "INSTALL's runtime state (scale reporting-sync to zero, delete "
+            "the document-store pod). Requires --install pointing at a k8s "
+            "install, a kubectl context for its cluster, and an install "
+            "nobody else is using — anything else running against it sees "
+            "the disruption. Without this flag the cells are reported as "
+            "SKIP."
+        ),
+    )
+    p.add_argument(
         "--allow-instance-wide", action="store_true",
         help=(
             "enable B-03, the only cell that reaches outside the runner's own "
@@ -1831,6 +2334,9 @@ def main(argv: list[str] | None = None) -> int:
     ns_l = f"{tag}-00l"  # N:1 collapse target (R-07)
     ns_g = f"{tag}-00g"  # blob-restore target (R-14)
     ns_h = f"{tag}-00h"  # skip_files target (R-14)
+    ns_m = f"{tag}-00m"  # reporting-down restore target (F-06)
+    ns_n = f"{tag}-00n"  # crash-mid-restore target A (F-05)
+    ns_o = f"{tag}-00o"  # crash-mid-restore target B (F-05)
     cells: list[Cell] = []
     t0 = time.monotonic()
 
@@ -1849,7 +2355,11 @@ def main(argv: list[str] | None = None) -> int:
             src_count_b_before = expected[ns_b]
 
             print("[B-01] backing up NS-A (single namespace) ...")
-            arch_a = _parse_archive(_backup(client, ns_a))
+            # Bytes kept: the F-05/F-06 perturbation cells restore this
+            # pristine single-namespace archive into fresh targets late in
+            # the run, after NS-A itself has been dropped and re-restored.
+            arch_a_bytes = _backup(client, ns_a)
+            arch_a = _parse_archive(arch_a_bytes)
             cells.append(_wrap("B-01", cell_backup_counts, "B-01",
                                "single-namespace real-archive counts (P-SRV1)", arch_a, expected))
 
@@ -1956,6 +2466,46 @@ def main(argv: list[str] | None = None) -> int:
                 cells.append(_wrap("R-02", cell_r02_multi_ns_cross_refs,
                                    client, arch_ab_bytes, ns_a, ns_b))
 
+                # R-04 runs after R-02: it needs NS-A populated (R-02 just
+                # restored it id-preserved), and it drops + restores NS-A
+                # itself, so nothing reading the original sources may follow.
+                print("[slice6] R-04 CLI export -> engine restore ...")
+                cells.append(_wrap("R-04", cell_r04_cli_export_engine_restore,
+                                   client, builder, target, ns_a))
+
+                # F-06/F-05 perturb the install itself, so they are opt-in
+                # (like B-03) and run LAST of the data cells: F-06 takes the
+                # reporting plane down and F-05 kills the API pod — nothing
+                # that expects a healthy install may follow. F-05 after
+                # F-06: most disruptive last.
+                perturb_ns = _k8s_namespace_for_install(args.install)
+                if not args.allow_perturb:
+                    perturb_skip = (
+                        "needs --allow-perturb: the cell changes the target "
+                        "install's runtime state (scale/kill), which anything "
+                        "else using the install sees"
+                    )
+                elif perturb_ns is None:
+                    perturb_skip = (
+                        "needs a k8s --install (kubectl-reachable) — the "
+                        "deployer-state names no k8s namespace for this target"
+                    )
+                else:
+                    perturb_skip = None
+                if perturb_skip:
+                    cells.append(Cell("F-06", "restore with reporting-sync stopped; "
+                                      "parity backfills after force").skip(perturb_skip))
+                    cells.append(Cell("F-05", "engine killed mid-fresh-restore; "
+                                      "reserved invisible; re-run converges").skip(perturb_skip))
+                else:
+                    print("[slice6] F-06 restore with reporting-sync stopped ...")
+                    cells.append(_wrap("F-06", cell_f06_reporting_down,
+                                       client, arch_a_bytes, ns_m, perturb_ns))
+                    print("[slice6] F-05 kill engine mid-restore ...")
+                    cells.append(_wrap("F-05", cell_f05_crash_mid_restore,
+                                       client, builder, arch_ab_bytes,
+                                       ns_a, ns_b, ns_n, ns_o, perturb_ns))
+
                 # B-03 is the one cell that reaches beyond the run's own
                 # namespaces, so it is opt-in — and reported either way.
                 if args.allow_instance_wide:
@@ -1976,7 +2526,8 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             if not args.keep:
                 print("\n[teardown] deleting runner namespaces ...")
-                teardown(client, [tgt, ns_e, ns_f, ns_g, ns_h, ns_j, ns_k, ns_l, ns_a, ns_b])
+                teardown(client, [tgt, ns_e, ns_f, ns_g, ns_h, ns_j, ns_k, ns_l,
+                                  ns_m, ns_n, ns_o, ns_a, ns_b])
             else:
                 print(f"\n[keep] namespaces preserved: {ns_a}, {ns_b}, {tgt}, {ns_e}, {ns_f}")
 
