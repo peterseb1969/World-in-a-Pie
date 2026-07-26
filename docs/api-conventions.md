@@ -470,14 +470,14 @@ if r["status"] == "error" and "already exists" in r.get("error", ""):
 
 ## Pagination
 
-Most list (GET) endpoints share this pagination shape, but **defaults and maximums are not uniform** — they vary per endpoint:
+List endpoints share a uniform pagination shape:
 
 | Parameter | Default | Maximum | Description |
 |-----------|---------|---------|-------------|
 | `page` | 1 | — | Page number (1-based) |
-| `page_size` | 50 (varies) | per-endpoint | Items per page — see note |
+| `page_size` | 50 | 1000 | Items per page |
 
-`page_size` default is 50 on most lists (file lists use 10–20, table view uses 100). The maximum is **1000** on the main content and definition lists (documents, templates, terms, terminologies, ontology), **500** on `POST /documents/query`, and **100** on file and registry endpoints. Check the specific endpoint's OpenAPI for its ceiling.
+Two deliberate deviations: `GET /documents/{id}/relationships` caps `page_size` at **500** (with `include=peers` each row fans out into a peer-document projection, so a page is not a flat single-collection scan), and the table view defaults to **100** rows per page (cheap flat projections on a spreadsheet-like surface).
 
 All list responses include:
 

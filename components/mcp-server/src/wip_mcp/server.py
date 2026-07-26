@@ -381,12 +381,12 @@ namespace's allow-list, a retried write may still be rejected for up to 5
 seconds — wait and retry, no service restart needed.
 
 ## Pagination
-Default page_size: 50 on most list endpoints (some differ: file lists use
-10-20, table view uses 100). The maximum varies by endpoint — up to 1000 on
-the main content and definition lists (documents, templates, terms,
-terminologies, ontology), 500 on document query, and 100 on file and registry
-endpoints. Check the specific endpoint for its ceiling. List responses include
-a `pages` field (computed as ceil(total / page_size)).
+Uniform across list endpoints: default page_size 50, maximum 1000. Two
+deliberate deviations: the document relationships endpoint caps at 500
+(with include=peers each row fans out into a peer projection), and table
+view defaults to 100 rows (cheap flat projections on a spreadsheet-like
+surface). List responses include a `pages` field (computed as
+ceil(total / page_size)).
 """
 
 

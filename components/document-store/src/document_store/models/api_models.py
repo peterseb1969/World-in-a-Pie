@@ -372,10 +372,10 @@ class DocumentQueryRequest(StrictModel):
         description="Page number"
     )
     page_size: int = Field(
-        default=20,
+        default=50,
         ge=1,
-        le=100,
-        description="Items per page"
+        le=1000,
+        description="Items per page (max 1000)"
     )
     sort_by: str = Field(
         default="created_at",

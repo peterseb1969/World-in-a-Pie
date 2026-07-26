@@ -208,7 +208,7 @@ async def create_api_key(
 )
 async def list_api_keys(
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Items per page (max 100)"),
+    page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     _admin: str = Depends(require_admin_key),
 ) -> APIKeyListResponse:
     """List all API keys (config + runtime) with pagination.

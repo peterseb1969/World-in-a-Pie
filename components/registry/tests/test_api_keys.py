@@ -134,10 +134,12 @@ class TestListAPIKeys:
         assert d2["items"][0]["name"] != d1["items"][0]["name"]
 
     @pytest.mark.asyncio
-    async def test_list_page_size_max_is_100(self, client: AsyncClient, auth_headers: dict):
-        """page_size > 100 is rejected per platform convention."""
-        response = await client.get(f"{BASE}?page_size=101", headers=auth_headers)
+    async def test_list_page_size_max_is_1000(self, client: AsyncClient, auth_headers: dict):
+        """page_size > 1000 is rejected; 1000 is the platform-wide ceiling."""
+        response = await client.get(f"{BASE}?page_size=1001", headers=auth_headers)
         assert response.status_code == 422
+        response = await client.get(f"{BASE}?page_size=1000", headers=auth_headers)
+        assert response.status_code == 200
 
 
 class TestGetAPIKey:

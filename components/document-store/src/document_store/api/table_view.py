@@ -267,6 +267,9 @@ async def get_table_view(
         description="Filter by document status"
     ),
     page: int = Query(1, ge=1, description="Page number"),
+    # Default 100 (not the platform-wide 50) is deliberate: table view serves a
+    # spreadsheet-like surface of cheap flat row projections, and the MCP
+    # get_table_view tool mirrors the same default.
     page_size: int = Query(100, ge=1, le=1000, description="Rows per page"),
     max_cross_product: int = Query(
         1000,

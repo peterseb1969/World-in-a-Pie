@@ -112,7 +112,7 @@ async def browse_entries(
     status: str | None = Query(None, description="Filter by status (active, reserved, inactive)"),
     q: str | None = Query(None, description="Search across entry IDs and composite key values"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Page size"),
+    page_size: int = Query(50, ge=1, le=1000, description="Page size (max 1000)"),
     identity: UserIdentity = Depends(require_api_key)
 ) -> BrowseEntriesResponse:
     """Browse registry entries with pagination and optional filters."""
@@ -186,7 +186,7 @@ async def unified_search(
     entity_type: str | None = Query(None, description="Filter by entity type"),
     status: str | None = Query(None, description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Page size"),
+    page_size: int = Query(50, ge=1, le=1000, description="Page size (max 1000)"),
     identity: UserIdentity = Depends(require_api_key)
 ) -> UnifiedSearchResponse:
     """

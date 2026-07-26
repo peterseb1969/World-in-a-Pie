@@ -541,6 +541,9 @@ async def get_document_relationships(
     namespace: str | None = Query(None, description="Namespace; default = the document's namespace"),
     active_only: bool = Query(True, description="Exclude inactive/archived relationship docs"),
     page: int = Query(1, ge=1),
+    # Deliberately below the platform-wide 1000 ceiling: with include=peers each
+    # row fans out into a peer-document header projection, so a page is not a
+    # flat single-collection scan like the other list endpoints.
     page_size: int = Query(50, ge=1, le=500),
     include: str | None = Query(
         None,
