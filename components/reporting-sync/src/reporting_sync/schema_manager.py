@@ -513,12 +513,10 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
         """
         schema = self.schema_for(namespace)
         async with self.pool.acquire() as conn:
-            try:
+            # A concurrent caller can create it between the existence check
+            # and the create — the desired state holds either way.
+            with contextlib.suppress(asyncpg.UniqueViolationError):
                 await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
-            except asyncpg.UniqueViolationError:
-                # A concurrent caller created it between the existence check
-                # and the create — the desired state holds either way.
-                pass
         return schema
 
     async def drop_namespace_schema(self, namespace: str) -> int:

@@ -1,7 +1,7 @@
 """Audit log models for tracking changes to terminologies and terms."""
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from beanie import Document
 from pydantic import Field
@@ -69,7 +69,7 @@ class TermAuditLog(Document):
 
     class Settings:
         name = "term_audit_log"
-        indexes = [
+        indexes: ClassVar[list[IndexModel]] = [
             # Time-based queries within namespace
             IndexModel([("namespace", 1), ("term_id", 1), ("changed_at", DESCENDING)], name="ns_term_time_idx"),
             IndexModel([("namespace", 1), ("terminology_id", 1), ("changed_at", DESCENDING)], name="ns_terminology_time_idx"),

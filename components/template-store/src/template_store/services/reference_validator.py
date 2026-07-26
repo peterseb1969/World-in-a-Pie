@@ -116,36 +116,41 @@ class ReferenceValidator:
         violations = []
 
         # Check extends reference
-        if extends_template_namespace and extends_template_namespace != template_namespace:
-            if not self._is_allowed_reference(extends_template_namespace, ns_data, is_strict):
-                violations.append({
-                    "type": "extends",
-                    "namespace": extends_template_namespace,
-                    "message": f"Parent template namespace '{extends_template_namespace}' is not accessible from '{template_namespace}' namespace",
-                })
+        if (
+            extends_template_namespace
+            and extends_template_namespace != template_namespace
+            and not self._is_allowed_reference(extends_template_namespace, ns_data, is_strict)
+        ):
+            violations.append({
+                "type": "extends",
+                "namespace": extends_template_namespace,
+                "message": f"Parent template namespace '{extends_template_namespace}' is not accessible from '{template_namespace}' namespace",
+            })
 
         # Check terminology references
         if terminology_namespaces:
             for term_ns in terminology_namespaces:
-                if term_ns != template_namespace:
-                    if not self._is_allowed_reference(term_ns, ns_data, is_strict):
-                        violations.append({
-                            "type": "terminology",
-                            "namespace": term_ns,
-                            "message": f"Terminology namespace '{term_ns}' is not accessible from '{template_namespace}' namespace",
-                        })
+                if term_ns != template_namespace and not self._is_allowed_reference(
+                    term_ns, ns_data, is_strict
+                ):
+                    violations.append({
+                        "type": "terminology",
+                        "namespace": term_ns,
+                        "message": f"Terminology namespace '{term_ns}' is not accessible from '{template_namespace}' namespace",
+                    })
 
         # Check template references (template_ref / array_template_ref /
         # target_templates)
         if template_ref_namespaces:
             for tpl_ns in set(template_ref_namespaces):
-                if tpl_ns != template_namespace:
-                    if not self._is_allowed_reference(tpl_ns, ns_data, is_strict):
-                        violations.append({
-                            "type": "template",
-                            "namespace": tpl_ns,
-                            "message": f"Template namespace '{tpl_ns}' is not accessible from '{template_namespace}' namespace",
-                        })
+                if tpl_ns != template_namespace and not self._is_allowed_reference(
+                    tpl_ns, ns_data, is_strict
+                ):
+                    violations.append({
+                        "type": "template",
+                        "namespace": tpl_ns,
+                        "message": f"Template namespace '{tpl_ns}' is not accessible from '{template_namespace}' namespace",
+                    })
 
         if violations:
             raise ReferenceValidationError(

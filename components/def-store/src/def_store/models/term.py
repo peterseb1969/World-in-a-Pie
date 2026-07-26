@@ -1,7 +1,7 @@
 """Term model for the Def-Store service."""
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from beanie import Document
 from pydantic import BaseModel, Field
@@ -133,7 +133,7 @@ class Term(Document):
 
     class Settings:
         name = "terms"
-        indexes = [
+        indexes: ClassVar[list[IndexModel]] = [
             # Unique ID within namespace
             IndexModel([("namespace", 1), ("term_id", 1)], unique=True, name="ns_term_id_unique_idx"),
             # Unique value within terminology within namespace

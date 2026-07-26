@@ -11,7 +11,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
-from wip_auth import UserIdentity, get_current_identity
+from wip_auth import UserIdentity
 
 from ..models.api_models import (
     ExportResponse,
@@ -63,14 +63,13 @@ async def list_namespaces(
     identity: UserIdentity = Depends(require_api_key)
 ) -> list[NamespaceResponse]:
     """List namespaces the caller can access."""
-    query: dict[str, Any]
-    if include_archived:
-        # The $ne guards against legacy soft-deleted records (a retired
-        # write path — deletion is physical removal today), not a current
-        # lifecycle state. See the status field on the Namespace model.
-        query = {"status": {"$ne": "deleted"}}
-    else:
-        query = {"status": "active"}
+    # For include_archived, the $ne guards against legacy soft-deleted
+    # records (a retired write path — deletion is physical removal today),
+    # not a current lifecycle state. See the status field on the Namespace
+    # model.
+    query: dict[str, Any] = (
+        {"status": {"$ne": "deleted"}} if include_archived else {"status": "active"}
+    )
 
     namespaces = await Namespace.find(query).to_list()
 
@@ -239,15 +238,18 @@ async def upsert_namespace(
                 status_code=400,
                 detail="Cannot enable deletion on the default 'wip' namespace",
             )
-        if ns is not None and ns.deletion_mode == "retain":
-            if not update_data.get("confirm_enable_deletion"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Set confirm_enable_deletion=true in the body to flip "
-                        "deletion_mode from 'retain' to 'full'"
-                    ),
-                )
+        if (
+            ns is not None
+            and ns.deletion_mode == "retain"
+            and not update_data.get("confirm_enable_deletion")
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Set confirm_enable_deletion=true in the body to flip "
+                    "deletion_mode from 'retain' to 'full'"
+                ),
+            )
 
     if ns is None:
         # Create path — use provided fields, defaults for the rest.
@@ -399,7 +401,7 @@ async def export_namespace(
             stats=stats,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Export failed: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Export failed: {e!s}") from e
 
 
 @router.get(
@@ -446,7 +448,10 @@ async def import_namespace(
     if mode not in ("create", "merge", "replace"):
         raise HTTPException(status_code=400, detail="Invalid mode. Must be one of: create, merge, replace")
 
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    # delete=False is the point: the handle is closed right after the copy,
+    # the PATH then outlives it for ImportService to read, and the finally
+    # below unlinks it — a with-block would add nothing but nesting.
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")  # noqa: SIM115
     try:
         shutil.copyfileobj(file.file, temp_file)
         temp_file.close()
@@ -484,8 +489,8 @@ async def import_namespace(
         )
 
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Import failed: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {e!s}") from e
     finally:
         os.unlink(temp_file.name)

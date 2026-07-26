@@ -8,7 +8,7 @@ Events are published after successful ontology operations (term-relation create/
 import json
 import logging
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ _jetstream = None
 _nats_enabled = False
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     """Def-store event types."""
     TERMINOLOGY_CREATED = "terminology.created"
     TERMINOLOGY_UPDATED = "terminology.updated"

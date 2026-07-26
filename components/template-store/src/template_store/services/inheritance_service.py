@@ -1,10 +1,11 @@
 """Service for resolving template inheritance."""
 
 
+from beanie.odm.enums import SortDirection
+
 from ..models.field import FieldDefinition
 from ..models.rule import ValidationRule
 from ..models.template import Template
-from beanie.odm.enums import SortDirection
 
 MAX_INHERITANCE_DEPTH = 10
 

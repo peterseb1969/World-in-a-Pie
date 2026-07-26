@@ -1,7 +1,7 @@
 """Registry entry model for the Registry service."""
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from beanie import Document
 from pydantic import BaseModel, Field
@@ -139,7 +139,7 @@ class RegistryEntry(Document):
 
     class Settings:
         name = "registry_entries"
-        indexes = [
+        indexes: ClassVar[list[IndexModel]] = [
             # Primary lookup by entry_id (globally unique)
             IndexModel(
                 [("entry_id", 1)],
