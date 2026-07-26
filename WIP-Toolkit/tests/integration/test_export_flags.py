@@ -120,12 +120,13 @@ def test_restore_refuses_archive_without_identity_rows(
 
     stack.wipe()
 
+    from wip_toolkit.client import WIPClientError
+
     from document_store.models.backup_job import BackupJob
     from document_store.services.backup_engine import (
         DirectRestoreEngine,
         RestoreEngineError,
     )
-    from wip_toolkit.client import WIPClientError
 
     def _engine_restore(*, allow_missing_identity: bool = False) -> list:
         events: list = []

@@ -20,11 +20,7 @@ from typing import Any
 
 import click
 from rich.console import Console
-
-from .._progress import ProgressCallback
-from .._progress import emit as _emit
 from wip_archive.archive import ENTITY_FILES, NAMESPACES_DIR, ArchiveWriter
-from ..client import WIPClient
 from wip_archive.models import (
     ClosureInfo,
     EntityCounts,
@@ -34,6 +30,10 @@ from wip_archive.models import (
     NamespaceEntry,
     ProgressEvent,
 )
+
+from .._progress import ProgressCallback
+from .._progress import emit as _emit
+from ..client import WIPClient
 from .closure import compute_closure
 from .collector import EntityCollector
 
