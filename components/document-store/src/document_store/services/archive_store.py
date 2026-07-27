@@ -123,6 +123,15 @@ class ArchiveStore:
 
     async def stream_archive(self, job: BackupJob) -> AsyncIterator[bytes]:
         """Chunked archive content for the download endpoint."""
+        if job.archive_path is None:
+            # Only a job that finished its backup carries an archive path;
+            # callers reach here through download endpoints that already
+            # require a completed job, so a None here is a broken invariant,
+            # not a user error.
+            raise FileNotFoundError(
+                f"Backup job {job.job_id} has no archive_path — "
+                "the backup never finalized an archive."
+            )
         if job.archive_backend == BACKEND_MINIO:
             async for chunk in self._storage().download_stream(
                 job.archive_path, chunk_size=1024 * 1024
@@ -196,6 +205,13 @@ class ArchiveStore:
         engine to read; local mode gets a hardlink (same bytes, independent
         directory entry) with a plain copy as fallback.
         """
+        if src_job.archive_path is None:
+            # Restores materialize from a COMPLETED backup job; a missing
+            # archive path means the source job never finalized.
+            raise FileNotFoundError(
+                f"Backup job {src_job.job_id} has no archive_path — "
+                "cannot materialize an archive that was never finalized."
+            )
         dest = scratch_path_for(new_job_id)
         if src_job.archive_backend == BACKEND_MINIO:
             await self._ensure_bucket()

@@ -204,6 +204,7 @@ class ValidationService:
 
         # Stage 2: Template resolution (skipped for an inline candidate)
         start = time.perf_counter()
+        template: dict[str, Any] | None
         if template_override is not None:
             template = template_override
         else:

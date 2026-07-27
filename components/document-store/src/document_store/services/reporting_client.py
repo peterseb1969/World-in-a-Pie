@@ -16,7 +16,7 @@ only fail on POSITIVE verification failures.
 
 import logging
 import os
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -28,8 +28,10 @@ class ReportingSyncClient:
 
     def __init__(self) -> None:
         self._base = os.getenv("REPORTING_SYNC_URL", "http://wip-reporting-sync:8005")
-        self._api_key = os.getenv("REGISTRY_API_KEY") or os.getenv(
-            "WIP_AUTH_LEGACY_API_KEY", ""
+        self._api_key: str = (
+            os.getenv("REGISTRY_API_KEY")
+            or os.getenv("WIP_AUTH_LEGACY_API_KEY")
+            or ""
         )
 
     def _headers(self) -> dict[str, str]:
@@ -50,7 +52,7 @@ class ReportingSyncClient:
                     headers=self._headers(),
                 )
                 if resp.status_code == 200:
-                    return resp.json()
+                    return cast(dict[str, Any], resp.json())
                 logger.warning(
                     "reporting parity for %s returned HTTP %s",
                     namespace, resp.status_code,

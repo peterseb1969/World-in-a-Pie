@@ -161,7 +161,7 @@ def _flatten_document(
     columns: list[TableColumn],
     array_fields: list[str],
     max_cross_product: int = 1000
-) -> tuple[list[dict[str, Any]], str]:
+) -> tuple[list[dict[str, Any]], Literal["flattened", "json", "none"]]:
     """
     Flatten a document into one or more rows.
 
@@ -331,7 +331,7 @@ async def get_table_view(
     documents = await Document.find(query_filter).skip(skip).limit(page_size).to_list()
 
     all_rows = []
-    array_handling = "none"
+    array_handling: Literal["flattened", "json", "none"] = "none"
 
     for doc in documents:
         rows, handling = _flatten_document(doc, columns, array_fields, max_cross_product)

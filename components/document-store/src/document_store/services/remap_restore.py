@@ -146,10 +146,13 @@ def composite_key_for(
             "label": entity.get("label"),
         }
     if entity_type == "terms":
-        old_parent = entity.get("terminology_id")
+        old_parent: str | None = entity.get("terminology_id")
         return {
             "ns": namespace,
-            "terminology_id": id_map["terminologies"].get(old_parent, old_parent),
+            "terminology_id": (
+                id_map["terminologies"].get(old_parent, old_parent)
+                if old_parent is not None else None
+            ),
             "value": entity.get("value"),
         }
     if entity_type == "templates":
@@ -159,10 +162,13 @@ def composite_key_for(
     if entity_type == "documents":
         if not entity.get("identity_hash"):
             return {}
-        old_template = entity.get("template_id")
+        old_template: str | None = entity.get("template_id")
         return {
             "ns": namespace,
-            "template_id": id_map["templates"].get(old_template, old_template),
+            "template_id": (
+                id_map["templates"].get(old_template, old_template)
+                if old_template is not None else None
+            ),
             "identity_hash": entity["identity_hash"],
         }
     raise ValueError(f"No composite key shape for entity type '{entity_type}'")
@@ -328,6 +334,7 @@ class RemapRestore:
         new_id: str,
     ) -> dict[str, Any]:
         """Give one entity its new identity and repoint its references."""
+        row: dict[str, Any]
         if entity_type == "templates":
             row = self._remapper.remap_template(entity)
         elif entity_type == "documents":

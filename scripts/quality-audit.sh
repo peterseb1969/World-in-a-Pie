@@ -161,14 +161,12 @@ fi
 
 # Check npm tools (optional — skip steps if not available)
 HAS_ESLINT=false
-HAS_VUE_TSC=false
 HAS_TS_PRUNE=false
 HAS_VITEST=false
 
-for _ed in ui/wip-console libs/wip-client libs/wip-react; do
+for _ed in libs/wip-client libs/wip-react; do
     if [ -f "$ROOT_DIR/$_ed/node_modules/.bin/eslint" ]; then HAS_ESLINT=true; break; fi
 done
-if [ -f "$ROOT_DIR/ui/wip-console/node_modules/.bin/vue-tsc" ]; then HAS_VUE_TSC=true; fi
 if command -v npx &>/dev/null && [ -d "$ROOT_DIR/libs/wip-client/node_modules" ]; then HAS_TS_PRUNE=true; fi
 if [ -f "$ROOT_DIR/libs/wip-client/node_modules/.bin/vitest" ]; then HAS_VITEST=true; fi
 
@@ -320,23 +318,15 @@ json.dump(results, open('$RAW_DIR/mypy.json', 'w'), indent=2)
 
 ok "mypy: $MYPY_TOTAL errors ($(step_time $STEP_START))"
 
-# ─── Step 7: vue-tsc (Vue/TS type checking) ──────────────────────────
-if $HAS_VUE_TSC; then
-    info "Step 7: vue-tsc..."
-    STEP_START=$(date +%s)
-
-    cd "$ROOT_DIR/ui/wip-console"
-    npx vue-tsc --noEmit > "$RAW_DIR/vue-tsc.txt" 2>&1 || true
-    cd "$ROOT_DIR"
-
-    VUE_TSC_COUNT=$(grep -c '^.*error TS' "$RAW_DIR/vue-tsc.txt" 2>/dev/null || true)
-    VUE_TSC_COUNT=${VUE_TSC_COUNT:-0}
-    ok "vue-tsc: $VUE_TSC_COUNT errors ($(step_time $STEP_START))"
-else
-    warn "Step 7: vue-tsc — skipped (not installed)"
-    echo "" > "$RAW_DIR/vue-tsc.txt"
-    VUE_TSC_COUNT="skipped"
-fi
+# ─── Step 7: vue-tsc — retired ───────────────────────────────────────
+# The Vue console left this repo with wip-deploy v2 ("drop legacy
+# wip-console", 8646a9d2); ui/wip-console does not exist here, so the old
+# step could only ever report "skipped (not installed)" — which read as a
+# missing tool rather than a missing target. The React console is covered
+# by ESLint/ts checks in its own repo.
+info "Step 7: vue-tsc — retired (no Vue UI in this repo)"
+echo "" > "$RAW_DIR/vue-tsc.txt"
+VUE_TSC_COUNT="n/a"
 
 # ─── Step 8: ESLint ──────────────────────────────────────────────────
 if $HAS_ESLINT; then

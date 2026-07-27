@@ -775,9 +775,9 @@ class DirectRestoreEngine:
                 # target has none yet, and these are the definitions the
                 # documents were written against.
                 identity_fields = {
-                    template.get("value"): list(template.get("identity_fields") or [])
+                    value: list(template.get("identity_fields") or [])
                     for template in entities_by_type.get("templates", [])
-                    if template.get("value")
+                    if isinstance(value := template.get("value"), str) and value
                 }
                 remap_sources.append(RemapSource(
                     source=src, target=target,
@@ -1457,11 +1457,11 @@ class DirectRestoreEngine:
                 for entity_type in MERGE_ENTITY_ORDER:
                     if entity_type in DEFINITION_TYPES:
                         continue
-                    entities = archive_entities.get(entity_type)
-                    if entities is None:
+                    raw_entities = archive_entities.get(entity_type)
+                    if raw_entities is None:
                         continue
                     entities, changed = self._rewrite_entities(
-                        entity_type, entities, remapper
+                        entity_type, raw_entities, remapper
                     )
                     rewritten += changed
                     archive_entities[entity_type] = entities
@@ -2254,7 +2254,7 @@ class DirectRestoreEngine:
             row = dict(latest)
             row["document_id"] = target_head.get("document_id")
 
-            if versioned.get(clash.entity.get("template_id"), True) is False:
+            if versioned.get(clash.entity.get("template_id") or "", True) is False:
                 row["version"] = target_head.get("version", 1)
                 await collection.replace_one(
                     {
@@ -2416,7 +2416,7 @@ class DirectRestoreEngine:
                 "Archive manifest claims v3 but the zip has no namespaces/ "
                 "tree — malformed archive, nothing to restore"
             )
-        namespaces = manifest.namespace_prefixes() or reader.list_namespaces()
+        namespaces: list[str] = manifest.namespace_prefixes() or reader.list_namespaces()
         if not namespaces:
             raise RestoreEngineError("Archive contains no namespaces to restore")
         return namespaces
