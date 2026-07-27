@@ -18,7 +18,10 @@
 > The AI agents building WIP keep their own working memory in **WIP-KB** — a knowledge-base app built *on top of* WIP (cross-agent cases, session history, design decisions, lessons). So WIP is developed *through* an app that runs on WIP: the platform's agentic memory both proves the model and is essential to the work.
 
 > ### ▶ Try it in ~5 minutes
-> **[Single-host quickstart → podman + public GHCR images](docs/deploy/podman/README.md)** — one command brings up the backend **and** the React Console UI on your machine. (There's also a [hot-reload dev guide](docs/deploy/dev/README.md) and a [Kubernetes guide](docs/deploy/k8s/README.md).)
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/develop/install.sh | bash
+> ```
+> …installs the `wip-deploy` CLI from the latest release (no git needed) and prints the one command that brings up the backend from public GHCR images. Details and the React Console UI: **[single-host quickstart](docs/deploy/podman/README.md)**. (There's also a [hot-reload dev guide](docs/deploy/dev/README.md) and a [Kubernetes guide](docs/deploy/k8s/README.md).)
 
 ---
 

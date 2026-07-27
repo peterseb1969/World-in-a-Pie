@@ -44,7 +44,23 @@ The images are **public** — no GHCR login or GitHub token is required to pull 
 
 ## 1. Get the deployer CLI
 
-The `wip-deploy` CLI lives in this repo, on the **`develop`** branch — check it out before installing the package.
+**Fastest — the one-line installer** (no git needed). It fetches the latest
+release tarball to `~/wip`, installs the `wip-deploy` CLI into a private
+venv there, and puts a `wip-deploy` wrapper on your PATH
+(`~/.local/bin`) that works from any directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/develop/install.sh | bash
+```
+
+Pin a version or change the location with environment variables:
+`WIP_VERSION=v2.1.0 WIP_HOME=/opt/wip bash -c "$(curl -fsSL …/install.sh)"`.
+The installer ends by printing the exact `wip-deploy install` command whose
+`--tag` matches the release it fetched — you can skip step 2 below and use
+that. It never starts containers itself.
+
+**Or manually from a git checkout** (what the installer automates; use this
+for unreleased work on `develop`):
 
 ```bash
 git clone https://github.com/peterseb1969/World-in-a-Pie.git
