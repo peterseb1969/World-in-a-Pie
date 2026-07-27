@@ -247,6 +247,8 @@ Composite keys serve three purposes:
 
 3. **Efficient search**: The composite key is hashed (SHA-256) into a single value. This enables fast lookups even when composite keys have different structures (e.g., a terminology keyed on `{code, name}` vs. a term keyed on `{terminology_id, code, value}`). The hash provides a uniform index regardless of key shape.
 
+The Registry registers **identities, never states**: versions of documents and templates are coordinates on an entity, not Registry citizens (see `docs/uniqueness-and-identity.md` for the full ontology and vocabulary).
+
 ---
 
 ## Term Aliases vs Registry Synonyms
@@ -278,11 +280,14 @@ During validation, the response tells you **how** the input was matched:
 
 ```json
 {
-  "input_value": "Mr.",
   "valid": true,
-  "term_id": "019abc12-def3-7abc-8def-123456789abc",
+  "terminology_id": "019def01-...",
+  "terminology_value": "GENDER",
+  "value": "Mr.",
+  "matched_term": { "term_id": "019abc12-def3-7abc-8def-123456789abc", "value": "Male", "label": "Male" },
   "matched_via": "alias",
-  "normalized_value": "Male"
+  "suggestion": null,
+  "error": null
 }
 ```
 

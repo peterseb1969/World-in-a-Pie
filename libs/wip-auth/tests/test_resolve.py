@@ -180,16 +180,26 @@ class TestResolveEntityId:
         result = await resolve_entity_id("GENDER", "terminology", "wip")
         assert result == "550e8400-e29b-41d4-a716-446655440000"
 
-        # Verify the request sent composite_key (not entry_id)
+        # The request carries the composite key for synonym resolution AND
+        # the raw string as an entry_id candidate — canonical ids are not
+        # always UUID-shaped (prefixed id_config formats), and the endpoint
+        # tries entry_id first (CASE-816).
         import json
         request = httpx_mock.get_requests()[0]
         payload = json.loads(request.content)
         assert payload[0]["composite_key"] == {"ns": "wip", "type": "terminology", "value": "GENDER"}
-        assert "entry_id" not in payload[0]
+        assert payload[0]["entry_id"] == "GENDER"
 
     @pytest.mark.asyncio
     async def test_non_uuid_canonical_id_resolves(self, httpx_mock):
-        """Non-UUID canonical IDs (e.g., LOV-000001) go through Registry."""
+        """Non-UUID canonical IDs (e.g., LOV-000001) go through Registry.
+
+        The payload assertion is the substance: this test long claimed
+        prefixed canonicals resolve while its mock returned found for any
+        payload — masking that the request carried only a composite key no
+        canonical id can match (CASE-816). The entry_id field is what makes
+        the claim real.
+        """
         httpx_mock.add_response(
             url="http://localhost:8001/api/registry/entries/resolve",
             json={
@@ -201,10 +211,24 @@ class TestResolveEntityId:
         result = await resolve_entity_id("LOV-000001", "template", "wip")
         assert result == "LOV-000001"
 
+        import json
+        payload = json.loads(httpx_mock.get_requests()[0].content)
+        assert payload[0]["entry_id"] == "LOV-000001"
+        assert payload[0]["composite_key"]["value"] == "LOV-000001"
+
     @pytest.mark.asyncio
     async def test_unknown_synonym_raises(self, httpx_mock):
+        """A non-term miss consults the by-id fallback (the write door's
+        transport, CASE-816) before giving up — both endpoints answer
+        not_found here, so the original error surfaces."""
         httpx_mock.add_response(
             url="http://localhost:8001/api/registry/entries/resolve",
+            json={
+                "results": [{"status": "not_found"}]
+            },
+        )
+        httpx_mock.add_response(
+            url="http://localhost:8001/api/registry/entries/lookup/by-id",
             json={
                 "results": [{"status": "not_found"}]
             },

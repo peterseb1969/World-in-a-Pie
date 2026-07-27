@@ -6,6 +6,8 @@ from typing import Any, cast
 
 import httpx
 
+from wip_auth.resolve import EntityNotFoundError, _looks_like_uuid, resolve_entity_id
+
 
 class TerminologyCache:
     """
@@ -129,9 +131,33 @@ class DefStoreClient:
         self._validations_total = 0
         self._validations_local = 0
 
+    async def _resolve_terminology_ref(
+        self, terminology_ref: str, namespace: str | None
+    ) -> str | None:
+        """Resolve a terminology ref to its canonical UUID.
+
+        Canonical UUIDs pass through without a Registry round-trip. Value
+        forms resolve through Registry with the validating document's
+        namespace as context — bare value = own namespace, 'ns:VALUE' =
+        cross-namespace, the platform's deterministic resolution contract.
+        A value form with no namespace context, or one Registry cannot
+        resolve, returns None; callers report that as
+        terminology-not-found. Never falls back to an unscoped by-value
+        lookup: with the same value live in several namespaces there is
+        no correct arbitrary pick.
+        """
+        if _looks_like_uuid(terminology_ref):
+            return terminology_ref
+        if not namespace:
+            return None
+        try:
+            return await resolve_entity_id(terminology_ref, "terminology", namespace)
+        except EntityNotFoundError:
+            return None
+
     async def _fetch_terminology_with_terms(
         self,
-        terminology_ref: str
+        terminology_id: str
     ) -> dict[str, Any] | None:
         """
         Fetch a terminology with ALL its terms from Def-Store.
@@ -140,24 +166,21 @@ class DefStoreClient:
         then paginates through all terms using the same client.
 
         Args:
-            terminology_ref: Terminology ID or value
+            terminology_id: Canonical terminology UUID (value forms are
+                resolved by _resolve_terminology_ref before this point)
 
         Returns:
             Terminology data with terms and _lookup index, or None if not found
         """
-        url = f"{self.base_url}/api/def-store/terminologies/{terminology_ref}"
+        url = f"{self.base_url}/api/def-store/terminologies/{terminology_id}"
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 headers = self._get_headers()
 
-                # Fetch terminology (try ID, fall back to value)
                 response = await client.get(url, headers=headers)
                 if response.status_code == 404:
-                    value_url = f"{self.base_url}/api/def-store/terminologies/by-value/{terminology_ref}"
-                    response = await client.get(value_url, headers=headers)
-                    if response.status_code == 404:
-                        return None
+                    return None
 
                 if response.status_code != 200:
                     raise DefStoreError(
@@ -228,25 +251,22 @@ class DefStoreClient:
         return lookup
 
     async def _get_terminology_cached(
-        self, terminology_ref: str, force_refresh: bool = False
+        self, terminology_id: str, force_refresh: bool = False
     ) -> dict[str, Any] | None:
-        """Get a terminology, using cache if available."""
+        """Get a terminology by canonical UUID, using cache if available.
+
+        Cache keys are canonical terminology UUIDs only. Value-form keys
+        would let a cache hit cross namespaces: two namespaces sharing a
+        terminology value must never serve each other's cached terms.
+        """
         if not force_refresh:
-            cached = self._terminology_cache.get(terminology_ref)
+            cached = self._terminology_cache.get(terminology_id)
             if cached is not None:
                 return cached
 
-        # Fetch and cache
-        terminology = await self._fetch_terminology_with_terms(terminology_ref)
+        terminology = await self._fetch_terminology_with_terms(terminology_id)
         if terminology:
-            self._terminology_cache.set(terminology_ref, terminology)
-            # Also cache by the other ref (value or id) for convenience
-            term_id = terminology.get("terminology_id")
-            value = terminology.get("value")
-            if term_id and term_id != terminology_ref:
-                self._terminology_cache.set(term_id, terminology)
-            if value and value != terminology_ref:
-                self._terminology_cache.set(value, terminology)
+            self._terminology_cache.set(terminology_id, terminology)
 
         return terminology
 
@@ -325,7 +345,8 @@ class DefStoreClient:
     async def validate_value(
         self,
         terminology_ref: str,
-        value: str
+        value: str,
+        namespace: str | None = None
     ) -> dict[str, Any]:
         """
         Validate a value against a terminology.
@@ -333,16 +354,27 @@ class DefStoreClient:
         Uses cached terminology for fast local validation.
 
         Args:
-            terminology_ref: Terminology ID or code
+            terminology_ref: Terminology ID or value form (bare value =
+                own namespace, 'ns:VALUE' = cross-namespace)
             value: Value to validate
+            namespace: The validating document's namespace — resolution
+                context for value-form refs. Without it a value-form ref
+                cannot resolve and validation reports not-found.
 
         Returns:
             Validation result with valid, matched_term, matched_via
         """
         self._validations_total += 1
 
+        canonical_id = await self._resolve_terminology_ref(terminology_ref, namespace)
+        if canonical_id is None:
+            return {
+                "valid": False,
+                "error": f"Terminology '{terminology_ref}' not found",
+            }
+
         # Get terminology (from cache or fetch)
-        terminology = await self._get_terminology_cached(terminology_ref)
+        terminology = await self._get_terminology_cached(canonical_id)
 
         if terminology is None:
             return {
@@ -360,7 +392,7 @@ class DefStoreClient:
             # and try once more. At worst this is one extra HTTP call per
             # terminology per validation batch with a genuinely new term.
             terminology = await self._get_terminology_cached(
-                terminology_ref, force_refresh=True
+                canonical_id, force_refresh=True
             )
             if terminology is not None:
                 result = self._validate_term_locally(terminology, value)
@@ -369,7 +401,8 @@ class DefStoreClient:
 
     async def validate_values_bulk(
         self,
-        items: list[dict[str, str]]
+        items: list[dict[str, str]],
+        namespace: str | None = None
     ) -> list[dict[str, Any]]:
         """
         Validate multiple values against terminologies.
@@ -379,6 +412,8 @@ class DefStoreClient:
 
         Args:
             items: List of dicts with terminology_ref and value
+            namespace: The validating document's namespace — resolution
+                context for value-form refs (see validate_value)
 
         Returns:
             List of validation results (in same order as input)
@@ -389,16 +424,21 @@ class DefStoreClient:
         # Collect unique terminology refs
         terminology_refs = set(item["terminology_ref"] for item in items)
 
-        # Ensure all terminologies are cached
+        # Ensure all terminologies are cached (resolution results are
+        # cached in wip_auth's resolve layer, so the per-item resolve in
+        # validate_value below is a cache hit)
         for ref in terminology_refs:
-            await self._get_terminology_cached(ref)
+            canonical_id = await self._resolve_terminology_ref(ref, namespace)
+            if canonical_id:
+                await self._get_terminology_cached(canonical_id)
 
         # Validate all items locally
         results = []
         for item in items:
             result = await self.validate_value(
                 item["terminology_ref"],
-                item["value"]
+                item["value"],
+                namespace
             )
             results.append(result)
 
@@ -409,7 +449,9 @@ class DefStoreClient:
         Get a term by ID.
 
         Args:
-            term_id: Term ID (UUID or value code, e.g., '019abc42-...' or 'GENDER:Male')
+            term_id: Term ID — canonical UUID or fully qualified
+                'ns:terminology:value' (the 2-part 'GENDER:Male' shorthand
+                is rejected by def-store)
 
         Returns:
             Term data if found, None otherwise

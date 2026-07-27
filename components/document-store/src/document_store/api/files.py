@@ -161,7 +161,7 @@ async def list_files(
     tags: str | None = Query(None, description="Comma-separated tags (all must match)"),
     uploaded_by: str | None = Query(None, description="Filter by uploader"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     identity: UserIdentity = Depends(require_api_key)
 ):
     """List files with pagination."""
@@ -389,7 +389,7 @@ async def get_file_documents(
     file_id: str,
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(10, ge=1, le=100, description="Items per page"),
+    page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     identity: UserIdentity = Depends(require_api_key)
 ):
     """List documents that reference this file."""

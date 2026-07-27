@@ -46,20 +46,24 @@ async def create_templates(
     on_conflict: str = Query(
         default="error",
         description=(
-            "How to handle a value collision with an existing template in the same "
-            "namespace. 'error' (default): treat as error (existing behavior). "
-            "'validate': identical schema returns 'unchanged'; compatible (added "
-            "optional fields only) bumps to version N+1; incompatible returns an "
-            "error item with error_code='incompatible_schema' and a structured diff."
+            "Deprecated — retained for API compatibility, no longer selects "
+            "behavior (though a value other than 'error'/'validate' is still "
+            "rejected with HTTP 400). Template create is an upsert: a new (namespace, value) "
+            "creates version 1; an existing one returns 'unchanged' for an "
+            "identical schema or bumps to version N+1 for any difference, "
+            "with a structured diff in the item's details. Identity-bearing "
+            "or immutable differences (identity_fields, usage, versioned, "
+            "edge endpoint lists) are rejected per item instead of versioned."
         ),
     ),
 ):
     """
-    Create one or more templates.
+    Create one or more templates (upsert semantics).
 
-    Each template is registered with the Registry service to get a unique ID.
-    Namespace is specified per item (required — no default).
-    For single items, uses direct creation. For multiple items, uses batch path.
+    The template's identity is (namespace, value): creating an existing
+    value is a version event, not an error — identical schemas return
+    'unchanged', any difference creates the next version and reports the
+    diff. Namespace is specified per item (required — no default).
     """
     if on_conflict not in ("error", "validate"):
         raise HTTPException(
@@ -72,33 +76,13 @@ async def create_templates(
     for ns in namespaces:
         await check_namespace_permission(identity, ns, "write")
 
-    if on_conflict == "validate":
-        # Per-item dispatch with conflict policy.
-        try:
-            results = await TemplateService.create_templates_with_conflict_policy(
-                items=items,
-                on_conflict=on_conflict,
-            )
-        except RegistryError as e:
-            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
-    elif len(items) == 1:
-        # Single-item fast path (preserves existing behavior).
-        try:
-            result = await TemplateService.create_template(items[0], namespace=items[0].namespace)
-            results = [BulkResultItem(index=0, status="created", id=result.template_id, value=items[0].value, version=result.version)]
-        except ValueError as e:
-            results = [BulkResultItem(index=0, status="error", value=items[0].value, error=str(e))]
-        except RegistryError as e:
-            results = [BulkResultItem(index=0, status="error", value=items[0].value, error=f"Registry error: {e!s}")]
-    else:
-        # Multi-item bulk path (preserves existing behavior — one Registry batch call).
-        try:
-            results = await TemplateService.create_templates_bulk(
-                templates=items,
-                namespace=items[0].namespace,
-            )
-        except RegistryError as e:
-            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
+    try:
+        results = await TemplateService.create_templates_with_conflict_policy(
+            items=items,
+            on_conflict=on_conflict,
+        )
+    except RegistryError as e:
+        raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
 
     succeeded = sum(1 for r in results if r.status != "error")
     failed = sum(1 for r in results if r.status == "error")
@@ -160,7 +144,12 @@ async def get_namespace_template_stamp(
     rather than re-fetching every template. `count` catches creates/deletes;
     `max(updated_at)` catches updates and status flips (deactivate/reactivate).
     """
-    require_current_identity()
+    identity = require_current_identity()
+    # The stamp reveals namespace existence, template count, and last-change
+    # time — namespaced data, so it is grant-gated like any other read (no
+    # grant → 404, existence not leaked). The document-store cache polls it
+    # with a service key, which passes every namespace check.
+    await check_namespace_permission(identity, namespace, "read")
     stamp = await TemplateService.get_namespace_template_stamp(namespace)
     return {"namespace": namespace, "stamp": stamp}
 
@@ -383,10 +372,21 @@ async def update_templates(
             if not result:
                 results.append(BulkResultItem(index=i, status="error", id=item.template_id, error="Template not found"))
             else:
+                # A version event carries its consequences on this path too,
+                # not only on create-as-upsert: same schema diff, same live
+                # documents, same migration question. Advisory — None here
+                # means the description failed, never the update.
+                details = None
+                if result.is_new_version:
+                    details = await TemplateService.version_event_details(
+                        result.template_id, result.version,
+                        result.previous_version, item.renames,
+                    )
                 results.append(BulkResultItem(
                     index=i, status="updated", id=result.template_id,
                     value=result.value, version=result.version,
                     is_new_version=result.is_new_version,
+                    details=details,
                 ))
         except ValueError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.template_id, error=str(e)))
@@ -454,6 +454,40 @@ async def delete_templates(
     results = []
     for i, item in enumerate(items):
         try:
+            # A soft-delete REQUIRES an explicit version. The old default
+            # (version-less = deactivate the LATEST) was a foot-gun: right
+            # after a version event the overwhelmingly common intent is
+            # "retire the PREVIOUS version", and the default silently did
+            # the opposite — once retiring a doc-bearing version and making
+            # its namespace's archives unrestorable at the reporting gate.
+            # A UI that loses the selected version in transit now gets this
+            # loud error instead of retiring the wrong version. Hard-delete
+            # without a version keeps its distinct, deliberate meaning:
+            # remove ALL versions (namespace-teardown flows).
+            if not item.hard_delete and item.version is None:
+                version_rows = await Template.find(
+                    {"template_id": item.id}
+                ).sort("version").to_list()
+                # An unknown template falls through to the normal not-found
+                # path — "version is required" would be nonsense there.
+                if version_rows:
+                    listing = ", ".join(
+                        f"v{t.version} ({getattr(t.status, 'value', t.status)})"
+                        for t in version_rows
+                    )
+                    results.append(BulkResultItem(
+                        index=i, status="error", id=item.id,
+                        error=(
+                            "version is required to deactivate a template: a "
+                            "version-less deactivate targeted the LATEST version, "
+                            "which silently retires the wrong one right after a "
+                            f"version event. This template's versions: {listing}. "
+                            "Pass the version to retire. (hard_delete=true without "
+                            "a version still means: remove all versions.)"
+                        ),
+                    ))
+                    continue
+
             # Check dependencies
             deps = await DependencyService.check_template_dependencies(item.id)
 

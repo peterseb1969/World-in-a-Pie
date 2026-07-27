@@ -456,7 +456,7 @@ async def test_get_template_by_value_with_namespace():
 
 @pytest.mark.asyncio
 async def test_start_backup_sends_full_body():
-    """start_backup posts to the namespace backup endpoint with all options."""
+    """start_backup posts only the options the direct engine consumes."""
     expected = {"job_id": "bkp-abc", "status": "pending"}
     mock_http = _mock_http(_mock_response(expected))
 
@@ -465,9 +465,6 @@ async def test_start_backup_sends_full_body():
         result = await client.start_backup(
             namespace="wip",
             include_files=True,
-            include_inactive=True,
-            template_prefixes=["TPL-"],
-            dry_run=False,
         )
 
     assert result == expected
@@ -476,27 +473,29 @@ async def test_start_backup_sends_full_body():
     assert "/api/document-store/backup/namespaces/wip/backup" in url
     body = mock_http.post.call_args.kwargs["json"]
     assert body["include_files"] is True
-    assert body["include_inactive"] is True
-    assert body["template_prefixes"] == ["TPL-"]
-    assert body["dry_run"] is False
+    assert "include_inactive" not in body
 
 
 @pytest.mark.asyncio
-async def test_start_backup_omits_template_prefixes_when_none():
-    """start_backup leaves template_prefixes out of the body when not provided."""
+async def test_start_backup_omits_toolkit_era_fields():
+    """start_backup never sends the retired toolkit-export fields — the
+    endpoint 400s on them, so the client must not emit them at all."""
     mock_http = _mock_http(_mock_response({"job_id": "bkp-1"}))
     client = _make_client()
     with patch.object(client, "_get_client", return_value=mock_http):
         await client.start_backup(namespace="wip")
 
     body = mock_http.post.call_args.kwargs["json"]
-    assert "template_prefixes" not in body
+    for dead in ("template_prefixes", "skip_closure", "skip_synonyms",
+                 "latest_only", "dry_run"):
+        assert dead not in body
     assert body["include_files"] is False  # default
 
 
 @pytest.mark.asyncio
 async def test_start_restore_uploads_archive_multipart(tmp_path):
-    """start_restore streams a local archive as multipart form fields."""
+    """start_restore streams a local archive as multipart form fields and
+    sends only live params (restore-to-self; no toolkit-era fields)."""
     archive = tmp_path / "ns.zip"
     archive.write_bytes(b"PK\x03\x04 fake zip")
     mock_http = _mock_http(_mock_response({"job_id": "rst-1", "status": "pending"}))
@@ -506,10 +505,8 @@ async def test_start_restore_uploads_archive_multipart(tmp_path):
         await client.start_restore(
             namespace="wip",
             archive_path=str(archive),
-            mode="fresh",
-            target_namespace="wip-restored",
-            register_synonyms=True,
             batch_size=100,
+            dry_run=True,
         )
 
     url = mock_http.post.call_args.args[0]
@@ -517,12 +514,107 @@ async def test_start_restore_uploads_archive_multipart(tmp_path):
     files = mock_http.post.call_args.kwargs["files"]
     assert files["archive"][0] == "ns.zip"
     data = mock_http.post.call_args.kwargs["data"]
-    assert data["mode"] == "fresh"
-    assert data["target_namespace"] == "wip-restored"
-    assert data["register_synonyms"] == "true"
+    assert data["mode"] == "restore"
     assert data["batch_size"] == "100"
+    assert data["dry_run"] == "true"
+    for dead in ("target_namespace", "register_synonyms", "continue_on_error"):
+        assert dead not in data
     headers = mock_http.post.call_args.kwargs["headers"]
     assert headers == {"X-API-Key": "test_key"}
+
+
+@pytest.mark.asyncio
+async def test_start_restore_merge_sends_the_clash_policies(tmp_path):
+    """A merge's policies are its whole contract — they must reach the wire."""
+    archive = tmp_path / "ns.zip"
+    archive.write_bytes(b"PK\x03\x04 fake zip")
+    mock_http = _mock_http(_mock_response({"job_id": "rst-2", "status": "pending"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.start_restore(
+            namespace="wip",
+            archive_path=str(archive),
+            mode="merge",
+            on_clash="overwrite",
+            add_missing=True,
+        )
+
+    data = mock_http.post.call_args.kwargs["data"]
+    assert data["mode"] == "merge"
+    assert data["on_clash"] == "overwrite"
+    assert data["add_missing"] == "true"
+    assert data["extend_terminologies"] == "false"
+
+
+@pytest.mark.asyncio
+async def test_start_restore_omits_clash_policies_outside_merge(tmp_path):
+    """The endpoint rejects a merge policy on a plain restore rather than
+    ignoring it, so the client must not send defaults it did not ask for."""
+    archive = tmp_path / "ns.zip"
+    archive.write_bytes(b"PK\x03\x04 fake zip")
+    mock_http = _mock_http(_mock_response({"job_id": "rst-3", "status": "pending"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.start_restore(namespace="wip", archive_path=str(archive))
+
+    data = mock_http.post.call_args.kwargs["data"]
+    assert "on_clash" not in data and "add_missing" not in data
+
+
+@pytest.mark.asyncio
+async def test_start_restore_fresh_sends_the_target(tmp_path):
+    """A fresh restore mints new identities, so it must say where they go."""
+    archive = tmp_path / "ns.zip"
+    archive.write_bytes(b"PK\x03\x04 fake zip")
+    mock_http = _mock_http(_mock_response({"job_id": "rst-4", "status": "pending"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.start_restore(
+            namespace="wip",
+            archive_path=str(archive),
+            mode="fresh",
+            target_namespace="kb-copy",
+        )
+
+    data = mock_http.post.call_args.kwargs["data"]
+    assert data["mode"] == "fresh"
+    assert data["target_namespace"] == "kb-copy"
+
+
+@pytest.mark.asyncio
+async def test_start_restore_omits_an_unset_target(tmp_path):
+    """The endpoint derives the target from the manifest for the id-preserving
+    modes; sending an empty value would override it."""
+    archive = tmp_path / "ns.zip"
+    archive.write_bytes(b"PK\x03\x04 fake zip")
+    mock_http = _mock_http(_mock_response({"job_id": "rst-5", "status": "pending"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.start_restore(namespace="wip", archive_path=str(archive))
+
+    assert "target_namespace" not in mock_http.post.call_args.kwargs["data"]
+
+
+@pytest.mark.asyncio
+async def test_start_validation_posts_to_the_namespace(tmp_path):
+    """Validation is the post-restore check; it must reach document-store's
+    validate endpoint with its options as query params."""
+    mock_http = _mock_http(_mock_response({"job_id": "val-1", "kind": "validate"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.start_validation("kb", check_identity=False, limit=25)
+
+    url = mock_http.post.call_args.args[0]
+    assert "/api/document-store/backup/namespaces/kb/validate" in url
+    params = mock_http.post.call_args.kwargs["params"]
+    assert params["check_identity"] == "false"
+    assert params["check_term_refs"] == "true"
+    assert params["limit"] == 25
 
 
 @pytest.mark.asyncio
@@ -813,3 +905,31 @@ async def test_unwrap_bulk_returns_summary():
     assert result["succeeded"] == 1
     assert result["failed"] == 0
     assert len(result["results"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_validate_template_candidate_posts_to_validate_candidate():
+    """validate_template_candidate posts the inline candidate + sample spec
+    to the candidate endpoint; sample_template maps to sample_template_id
+    and documents is omitted when unused."""
+    envelope = {"total": 2, "valid_count": 1, "invalid_count": 1, "results": []}
+    mock_http = _mock_http(_mock_response(envelope))
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        result = await client.validate_template_candidate(
+            template_definition={"value": "PERSON", "fields": [], "renames": {"a": "b"}},
+            namespace="wip",
+            sample_template="PERSON",
+            sample_limit=50,
+        )
+
+    assert result["total"] == 2
+    call = mock_http.post.call_args
+    assert "/api/document-store/validation/validate-candidate" in call.args[0]
+    assert call.kwargs["json"] == {
+        "template_definition": {"value": "PERSON", "fields": [], "renames": {"a": "b"}},
+        "namespace": "wip",
+        "sample_limit": 50,
+        "sample_template_id": "PERSON",
+    }
+    assert "documents" not in call.kwargs["json"]

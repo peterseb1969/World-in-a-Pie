@@ -5,6 +5,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from .api_models import StrictModel
+
 
 class ReplayStatus(StrEnum):
     """Replay session status."""
@@ -16,7 +18,7 @@ class ReplayStatus(StrEnum):
     FAILED = "failed"
 
 
-class ReplayFilter(BaseModel):
+class ReplayFilter(StrictModel):
     """Filter for replay — which documents to replay."""
     template_id: str | None = None
     template_value: str | None = None
@@ -24,7 +26,7 @@ class ReplayFilter(BaseModel):
     status: str = "active"
 
 
-class ReplayRequest(BaseModel):
+class ReplayRequest(StrictModel):
     """Request to start a replay session."""
     filter: ReplayFilter = Field(default_factory=ReplayFilter)
     throttle_ms: int = Field(default=10, ge=0, le=5000, description="Delay between events in milliseconds")

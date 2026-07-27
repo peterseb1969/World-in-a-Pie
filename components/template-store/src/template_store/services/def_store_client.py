@@ -84,7 +84,7 @@ class DefStoreClient:
 
                 return cast(dict[str, Any] | None, response.json())
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {e!s}")
+            raise DefStoreError(f"Request failed: {e!s}") from e
 
     async def terminology_exists(
         self,
@@ -148,7 +148,7 @@ class DefStoreClient:
 
                 return cast(dict[str, Any], response.json())
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {e!s}")
+            raise DefStoreError(f"Request failed: {e!s}") from e
 
     async def validate_values_bulk(
         self,
@@ -187,7 +187,7 @@ class DefStoreClient:
                 data = response.json()
                 return cast(list[dict[str, Any]], data.get("results", []))
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {e!s}")
+            raise DefStoreError(f"Request failed: {e!s}") from e
 
     async def health_check(self) -> bool:
         """Check if the Def-Store service is healthy."""

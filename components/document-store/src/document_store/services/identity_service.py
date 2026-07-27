@@ -9,6 +9,7 @@ divergence is structurally impossible.
 
 from typing import Any
 
+from wip_auth.document_identity import _get_nested_value as _module_get_nested_value
 from wip_auth.document_identity import (
     compute_hash,
     compute_identity_hash,
@@ -16,7 +17,6 @@ from wip_auth.document_identity import (
     extract_identity_values,
     normalize_value,
 )
-from wip_auth.document_identity import _get_nested_value as _module_get_nested_value
 
 
 class IdentityService:

@@ -27,6 +27,8 @@ from ..models.api_models import (
     DocumentVersionResponse,
     PatchDocumentItem,
     RelationshipListResponse,
+    TemplateFacetsResponse,
+    TemplateImpactStatsResponse,
     TraverseResponse,
 )
 from ..models.document import DocumentStatus
@@ -132,7 +134,7 @@ Merge semantics:
 
 Constraints:
 - Identity fields cannot be changed (use POST to create a new document)
-- Namespace cannot be changed (PATCH only modifies `data`)
+- Namespace cannot be changed (PATCH modifies `data`, and `metadata.custom` via `metadata_patch`)
 - Archived documents are rejected; unarchive first
 - Optional per-item `if_match` provides optimistic concurrency control
 
@@ -186,7 +188,9 @@ Each document's existing data is re-validated against the TARGET version
 (which must be active; the source may be inactive/frozen). On apply a new
 document version is created — or the single version is overwritten in place
 for `versioned: false` templates — pinned to `to_version`, keeping the same
-`document_id` and `identity_hash`. No data transformation happens here.
+`document_id` and `identity_hash`. No data transformation happens here, except
+field renames declared on the target template version, which mechanically re-key
+each document's data to the new field names.
 
 Identity-preserving only: the two template versions must declare the same
 `identity_fields`, otherwise the re-pin would change the identity hash — that
@@ -253,6 +257,96 @@ async def migrate_documents(
         )
     await asyncio.sleep(get_throttle_delay())
     return response
+
+
+@router.get(
+    "/impact-stats",
+    response_model=TemplateImpactStatsResponse,
+    summary="Live-document counts for template version-change impact analysis",
+    description="""
+Advisory, read-only counts consumed by the template create-as-upsert: how many
+active documents each version of the template carries, and — for each name in
+`fields` — how many active documents hold a non-empty value there. A dropped
+field whose non-empty count is zero is safely migratable; a non-zero count
+means data would be stranded.
+""",
+)
+async def get_template_impact_stats(
+    template_id: str = Query(..., description="Template ID, value, or synonym"),
+    fields: str | None = Query(
+        None, description="Comma-separated field names to count non-empty occurrences for"
+    ),
+    namespace: str | None = Query(
+        None,
+        description="Namespace. Omittable only for single-namespace API keys.",
+    ),
+    identity: UserIdentity = Depends(require_api_key),
+):
+    """Per-version and per-field live-document counts for one template."""
+    nsf = await resolve_namespace_filter(identity, namespace, "read")
+    if namespace:
+        ns = namespace
+    elif nsf.namespaces and len(nsf.namespaces) == 1:
+        ns = nsf.namespaces[0]
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="namespace is required (omittable only for single-namespace keys)",
+        )
+
+    resolved_id = await resolve_or_404(
+        template_id, "template", ns, param_name="template_id", strict=True,
+    )
+    field_list = [f.strip() for f in fields.split(",") if f.strip()] if fields else []
+
+    service = get_document_service()
+    stats = await service.get_template_impact_stats(
+        template_id=resolved_id, namespace=ns, fields=field_list,
+    )
+    return TemplateImpactStatsResponse(**stats)
+
+
+@router.get(
+    "/template-facets",
+    response_model=TemplateFacetsResponse,
+    summary="Which templates are this namespace's documents instances of?",
+    description="""
+Grouped from the namespace's documents, not from template ownership: a
+document's namespace is independent of its template's namespace, so listing
+the templates a namespace owns cannot answer this — a namespace whose
+documents sit on shared or foreign templates would look empty. Counts are
+distinct logical documents (version rows collapse before counting).
+`status=all` disables the default active-only filter. Each facet carries the
+template's own namespace, which may differ from the queried one.
+""",
+)
+async def get_template_facets(
+    namespace: str | None = Query(
+        None,
+        description="Namespace. Omittable only for single-namespace API keys.",
+    ),
+    status: str = Query(
+        "active",
+        pattern="^(active|inactive|archived|all)$",
+        description="Count documents in this status ('all' disables the filter)",
+    ),
+    identity: UserIdentity = Depends(require_api_key),
+):
+    """Distinct templates referenced by one namespace's documents."""
+    nsf = await resolve_namespace_filter(identity, namespace, "read")
+    if namespace:
+        ns = namespace
+    elif nsf.namespaces and len(nsf.namespaces) == 1:
+        ns = nsf.namespaces[0]
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="namespace is required (omittable only for single-namespace keys)",
+        )
+
+    service = get_document_service()
+    result = await service.get_template_facets(namespace=ns, status=status)
+    return TemplateFacetsResponse(**result)
 
 
 @router.get(
@@ -447,6 +541,9 @@ async def get_document_relationships(
     namespace: str | None = Query(None, description="Namespace; default = the document's namespace"),
     active_only: bool = Query(True, description="Exclude inactive/archived relationship docs"),
     page: int = Query(1, ge=1),
+    # Deliberately below the platform-wide 1000 ceiling: with include=peers each
+    # row fans out into a peer-document header projection, so a page is not a
+    # flat single-collection scan like the other list endpoints.
     page_size: int = Query(50, ge=1, le=500),
     include: str | None = Query(
         None,

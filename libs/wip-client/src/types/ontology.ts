@@ -21,8 +21,20 @@ export interface TermRelation {
 export type TermRelationListResponse = PaginatedResponse<TermRelation>
 
 export interface CreateTermRelationRequest {
+  /**
+   * Canonical UUID, fully qualified 'ns:terminology:value', or — with
+   * source_terminology set — the opaque raw term value (never
+   * colon-parsed). The ambiguous 2-part 'TERMINOLOGY:VALUE' shorthand
+   * is rejected by the platform (422).
+   */
   source_term_id: string
   target_term_id: string
+  /**
+   * Terminology scoping a value-form source_term_id. Per-item because a
+   * relation's two endpoints may live in different terminologies.
+   */
+  source_terminology?: string
+  target_terminology?: string
   relation_type: string
   metadata?: Record<string, unknown>
   created_by?: string
@@ -31,6 +43,8 @@ export interface CreateTermRelationRequest {
 export interface DeleteTermRelationRequest {
   source_term_id: string
   target_term_id: string
+  source_terminology?: string
+  target_terminology?: string
   relation_type: string
   hard_delete?: boolean
 }

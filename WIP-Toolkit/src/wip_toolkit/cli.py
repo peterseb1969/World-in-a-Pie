@@ -9,14 +9,12 @@ from importlib.metadata import version
 import click
 from rich.console import Console
 from rich.table import Table
+from wip_archive.archive import ENTITY_FILES, ArchiveReader
 
-from .archive import ENTITY_FILES, ArchiveReader
 from .backfill import backfill_synonyms
 from .client import WIPClient
 from .config import WIPConfig
 from .export.exporter import run_export
-from .import_.importer import run_import
-from .import_.restore import RestorePreflightError
 from .seed import run_seed
 from .status import StatusThresholds, collect_status
 
@@ -58,11 +56,17 @@ def main(ctx: click.Context, host: str, proxy: bool, port: int | None, api_key: 
 @click.argument("namespace")
 @click.argument("output_path")
 @click.option("--include-files", is_flag=True, help="Include binary file content")
-@click.option("--include-inactive", is_flag=True, help="Include inactive/deprecated entities")
+@click.option("--include-inactive", is_flag=True,
+              help="Include inactive/deprecated entities. Required for full document "
+                   "version history: prior versions are status=inactive in document-store, "
+                   "so without this flag the export carries latest active versions only.")
 @click.option("--skip-documents", is_flag=True, help="Export only terminologies + templates")
 @click.option("--skip-closure", is_flag=True, help="Skip referential integrity closure")
 @click.option("--skip-synonyms", is_flag=True, help="Skip Registry synonym export")
-@click.option("--latest-only", is_flag=True, help="Export only latest document versions")
+@click.option("--latest-only", is_flag=True,
+              help="Export only latest document versions. Note: without "
+                   "--include-inactive the export is latest-only already; this flag "
+                   "mainly re-narrows an --include-inactive export.")
 @click.option("--filter-templates", default=None,
               help="Only export templates matching this prefix (e.g., 'DND_'). "
                    "Documents are filtered to matching templates. Comma-separated for multiple prefixes.")
@@ -85,6 +89,10 @@ def export(
 
     NAMESPACE is the WIP namespace to export (e.g., "wip").
     OUTPUT_PATH is the destination file path for the archive.
+
+    Default contract: the archive carries the latest ACTIVE version of each
+    document. Full version history requires --include-inactive (superseded
+    versions are status=inactive in document-store).
     """
     config = ctx.obj["config"]
     with WIPClient(config) as client:
@@ -125,56 +133,6 @@ def export(
         console.print(f"\n[bold green]Export completed[/bold green] in {stats.duration_seconds}s")
 
 
-@main.command(name="import")
-@click.argument("archive_path")
-@click.option("--mode", type=click.Choice(["fresh", "restore"]), default="fresh",
-              help="Import mode (default: fresh)")
-@click.option("--target-namespace", default=None, help="Override target namespace")
-@click.option("--register-synonyms", is_flag=True, help="Register old→new ID synonyms (fresh mode)")
-@click.option("--skip-documents", is_flag=True, help="Skip document import")
-@click.option("--skip-files", is_flag=True, help="Skip file upload")
-@click.option("--batch-size", default=50, type=int, help="Document batch size (default: 50)")
-@click.option("--dry-run", is_flag=True, help="Preview without making changes")
-@click.option("--continue-on-error", is_flag=True, help="Don't stop on individual failures")
-@click.pass_context
-def import_cmd(
-    ctx: click.Context,
-    archive_path: str,
-    mode: str,
-    target_namespace: str | None,
-    register_synonyms: bool,
-    skip_documents: bool,
-    skip_files: bool,
-    batch_size: int,
-    dry_run: bool,
-    continue_on_error: bool,
-) -> None:
-    """Import an archive into a WIP instance.
-
-    ARCHIVE_PATH is the path to the ZIP archive to import.
-    """
-    config = ctx.obj["config"]
-    with WIPClient(config) as client:
-        try:
-            stats = run_import(
-                client, archive_path,
-                mode=mode,
-                target_namespace=target_namespace,
-                register_synonyms=register_synonyms,
-                skip_documents=skip_documents,
-                skip_files=skip_files,
-                batch_size=batch_size,
-                continue_on_error=continue_on_error,
-                dry_run=dry_run,
-            )
-        except RestorePreflightError as e:
-            console.print(f"[red bold]Refused:[/red bold] {e}")
-            sys.exit(1)
-
-        if stats.errors:
-            sys.exit(1)
-
-
 @main.command()
 @click.argument("archive_path")
 @click.option("--show-ids", is_flag=True, help="List all entity IDs")
@@ -202,7 +160,6 @@ def inspect(archive_path: str, show_ids: bool, show_references: bool) -> None:
             # the scalar for legacy-shaped manifests, so this row is correct
             # for both shapes.
             table.add_row("Namespaces", ", ".join(manifest.namespace_prefixes()))
-            table.add_row("Include inactive", str(manifest.include_inactive))
             table.add_row("Include files", str(manifest.include_files))
             console.print(table)
 

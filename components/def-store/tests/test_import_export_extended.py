@@ -430,8 +430,10 @@ class TestImportEdgeCases:
             update_existing="true",
         )
 
-        # gamma should be created, alpha and beta should be skipped or updated
-        assert result2["terminology"]["status"] in ("exists", "updated")
+        # gamma should be created; alpha and beta are extend-only (skipped).
+        # The terminology is not modified, so status is 'exists' (never a no-op
+        # 'updated') — CASE-797.
+        assert result2["terminology"]["status"] == "exists"
         total_processed = (
             result2["terms_result"]["succeeded"]
             + result2["terms_result"]["skipped"]
@@ -447,6 +449,52 @@ class TestImportEdgeCases:
         assert terms_resp.status_code == 200
         values = {t["value"] for t in terms_resp.json()["items"]}
         assert values == {"alpha", "beta", "gamma"}
+
+    @pytest.mark.asyncio
+    async def test_import_update_existing_is_extend_only(self, client: AsyncClient, auth_headers: dict):
+        """CASE-797: update_existing is extend-only — it adds new terms but does
+        NOT modify the existing terminology or existing terms, and reports
+        'exists'/'skipped', never a no-op 'updated'."""
+        import_data = {
+            "terminology": {"value": "EXTEND_ONLY", "label": "Original Label", "namespace": "wip"},
+            "terms": [{"value": "t1", "label": "Term One"}],
+        }
+        await import_terminology(client, auth_headers, import_data)
+
+        # Re-import with a changed terminology label, a changed existing-term
+        # label, and one new term, with update_existing=true.
+        import_data["terminology"]["label"] = "Changed Label"
+        import_data["terms"] = [
+            {"value": "t1", "label": "Term One CHANGED"},  # existing — must NOT change
+            {"value": "t2", "label": "Term Two"},          # new — must be added
+        ]
+        # skip_duplicates=false + update_existing=true is the combination that hit
+        # the term-level "updated" mislabel; exercise both fixes at once.
+        result = await import_terminology(
+            client, auth_headers, import_data,
+            update_existing="true", skip_duplicates="false",
+        )
+
+        # Honest status: 'exists', never 'updated'; and the returned label is the
+        # unchanged original (extend-only).
+        assert result["terminology"]["status"] == "exists", result["terminology"]
+        assert result["terminology"]["label"] == "Original Label"
+        term_id_ = result["terminology"]["terminology_id"]
+
+        # Per-term: existing t1 skipped, new t2 created — none 'updated'.
+        statuses = {r["value"]: r["status"] for r in result["terms_result"]["results"]}
+        assert statuses.get("t1") == "skipped", statuses
+        assert statuses.get("t2") == "created", statuses
+        assert "updated" not in set(statuses.values())
+
+        # Extend-only proven against stored state: t1's label is unchanged.
+        terms_resp = await client.get(
+            f"{API}/terminologies/{term_id_}/terms", headers=auth_headers,
+        )
+        assert terms_resp.status_code == 200
+        by_value = {t["value"]: t for t in terms_resp.json()["items"]}
+        assert set(by_value) == {"t1", "t2"}
+        assert by_value["t1"]["label"] == "Term One", "existing term must not be modified"
 
     @pytest.mark.asyncio
     async def test_import_empty_terminology_no_terms(self, client: AsyncClient, auth_headers: dict):

@@ -41,7 +41,12 @@ from .dependencies import (
     require_namespace_read,
     require_namespace_write,
 )
-from .fastapi_helpers import resolve_bulk_ids, resolve_or_404
+from .fastapi_helpers import (
+    resolve_bulk_ids,
+    resolve_or_404,
+    resolve_term_by_fields_or_404,
+)
+from .health_cache import DEFAULT_TTL_SECONDS, HealthCache
 from .identity import (
     clear_current_identity,
     get_actor_info,
@@ -55,6 +60,7 @@ from .identity import (
 from .key_sync import KeySyncService
 from .middleware import AuthMiddleware, create_auth_middleware
 from .models import APIKeyRecord, AuthResult, UserIdentity
+from .openapi import declare_api_key_security
 from .permissions import (
     NamespaceFilter,
     check_namespace_permission,
@@ -81,17 +87,16 @@ from .resolve import (
     resolve_entity_ids,
     split_qualified_value,
 )
-from .openapi import declare_api_key_security
 from .security import check_production_security
 from .startup import init_beanie_with_retry, retry_async
 
 __version__ = "0.4.0"
 
 __all__ = [
+    # Health-probe cache
+    "DEFAULT_TTL_SECONDS",
     "APIKeyProvider",
-    "declare_api_key_security",
     "APIKeyRecord",
-    "build_metadata",
     # Config
     "AuthConfig",
     # Middleware
@@ -100,13 +105,17 @@ __all__ = [
     "AuthProvider",
     "AuthResult",
     "EntityNotFoundError",
+    "HealthCache",
+    # Key sync
+    "KeySyncService",
+    "NamespaceFilter",
     "NoAuthProvider",
     "OIDCProvider",
     "RejectUnknownQueryParamsMiddleware",
     "TrustedHeaderProvider",
-    "NamespaceFilter",
     # Models
     "UserIdentity",
+    "build_metadata",
     # Permissions
     "check_namespace_permission",
     # Security
@@ -116,6 +125,7 @@ __all__ = [
     "clear_resolution_cache",
     "create_auth_middleware",
     "create_providers_from_config",
+    "declare_api_key_security",
     "get_actor_info",
     "get_auth_config",
     # Identity context
@@ -123,10 +133,13 @@ __all__ = [
     "get_identity_owner",
     "get_identity_string",
     "hash_api_key",
+    # Startup retry helpers
+    "init_beanie_with_retry",
     "optional_identity",
     "permission_sufficient",
     "require_admin",
     "require_api_key",
+    "require_current_identity",
     "require_groups",
     # Dependencies
     "require_identity",
@@ -136,27 +149,23 @@ __all__ = [
     "reset_auth_config",
     "reset_current_identity",
     "resolve_accessible_namespaces",
-    "resolve_namespace_filter",
-    "require_current_identity",
     # Synonym resolution
     "resolve_bulk_ids",
     "resolve_entity_id",
     "resolve_entity_ids",
+    "resolve_namespace_filter",
     "resolve_or_404",
     "resolve_permission",
-    "split_qualified_value",
+    "resolve_term_by_fields_or_404",
+    "retry_async",
     "set_auth_config",
     "set_current_identity",
     # Setup
     "setup_auth",
     "setup_key_sync",
-    # Key sync
-    "KeySyncService",
     # Rate limiting
     "setup_rate_limiting",
-    # Startup retry helpers
-    "init_beanie_with_retry",
-    "retry_async",
+    "split_qualified_value",
 ]
 
 
@@ -350,7 +359,7 @@ async def setup_key_sync(
     if api_key_provider is None:
         return None
 
-    config_key_names = {k.name for k in api_key_provider._keys}
+    config_key_names = {k.name for k in api_key_provider.iter_keys()}
 
     sync_service = KeySyncService(
         registry_url=registry_url,

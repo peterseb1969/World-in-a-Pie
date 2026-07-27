@@ -1135,7 +1135,14 @@ def compute_identity_hash(
     3. SHA-256 hash the UTF-8 bytes of the canonical string.
     4. Return hex digest.
     """
-    identity_values = {f: data.get(f) for f in identity_fields}
+    # Every identity field must be present and non-null (they are mandatory);
+    # a missing or null value raises rather than hashing an empty slot.
+    identity_values = {}
+    for f in identity_fields:
+        v = data.get(f)
+        if v is None:
+            raise ValueError(f"Identity field '{f}' is missing or null")
+        identity_values[f] = v
 
     canonical = json.dumps(
         identity_values,
@@ -1205,16 +1212,85 @@ class ValidationResult(BaseModel):
 
 ### Error Codes
 
+These are the per-field validation codes carried in `ValidationResult.errors[].code`
+(all lowercase). They are distinct from the operation-level `error_code` a create or
+PATCH returns for the write as a whole (e.g. `validation_failed`, `append_only`,
+`concurrency_conflict`, `reference_violation` — see the PATCH error codes in
+`api-conventions.md`); the codes below pinpoint *which field* failed and why.
+
+**Structure & template**
+
 | Code | Description |
 |------|-------------|
-| `INVALID_JSON` | Document is not valid JSON |
-| `MISSING_TEMPLATE_ID` | No template_id specified |
-| `TEMPLATE_NOT_FOUND` | Template does not exist |
-| `TEMPLATE_INACTIVE` | Template is deactivated |
-| `REQUIRED_FIELD_MISSING` | Mandatory field not provided |
-| `INVALID_TYPE` | Field value has wrong type |
-| `INVALID_TERM_REFERENCE` | Term value not found in terminology |
-| `INVALID_PATTERN` | Value doesn't match pattern |
-| `OUT_OF_RANGE` | Numeric value outside range |
-| `RULE_VIOLATION` | Cross-field rule violated |
-| `IDENTITY_FIELD_MISSING` | Identity field not provided |
+| `invalid_structure` | Document data is not an object ("must be a dictionary") |
+| `template_not_found` | The document's template does not exist |
+| `template_inactive` | The template version is deactivated |
+| `template_error` | The template could not be fetched/resolved |
+| `unknown_field` | A field is not declared in the template schema |
+
+**Presence**
+
+| Code | Description |
+|------|-------------|
+| `required` | A mandatory field is missing |
+| `null_value` | A field is present but null where a value is required |
+| `identity_error` | An identity field is missing or null |
+
+**Type & value constraints**
+
+| Code | Description |
+|------|-------------|
+| `invalid_type` | Field value has the wrong type |
+| `min_length` | String is shorter than `min_length` |
+| `max_length` | String is longer than `max_length` |
+| `pattern` | String does not match the field's regex `pattern` |
+| `invalid_enum` | Value is not one of the field's allowed `enum` values |
+| `minimum` | Numeric value is below `minimum` |
+| `maximum` | Numeric value is above `maximum` |
+
+**Semantic types**
+
+| Code | Description |
+|------|-------------|
+| `invalid_email` | Value is not a valid email address |
+| `invalid_url` | Value is not a valid URL |
+| `invalid_latitude` | Value is not a valid latitude |
+| `invalid_longitude` | Value is not a valid longitude |
+| `invalid_percentage` | Value is not a valid percentage |
+| `invalid_duration` | Value is not a valid duration |
+| `invalid_duration_unit` | The duration unit is not recognized |
+| `invalid_geo_point` | Value is not a valid geo_point |
+
+**Terms**
+
+| Code | Description |
+|------|-------------|
+| `invalid_term` | Value is not valid for the field's terminology |
+| `invalid_term_reference` | Term value not found in the allowed terminologies |
+| `invalid_terminology_reference` | The referenced terminology was not found |
+
+**References**
+
+| Code | Description |
+|------|-------------|
+| `invalid_reference_type` | The field's `reference_type` is invalid |
+| `invalid_reference_value` | The reference value could not be resolved |
+| `invalid_reference_template` | Referenced document's template is not in the allowed `target_templates` |
+| `invalid_template_reference` | The referenced template was not found |
+| `reference_not_found` | The referenced document does not exist |
+
+**Files**
+
+| Code | Description |
+|------|-------------|
+| `invalid_file` | File reference failed validation (type/size/etc.) |
+| `file_validation_error` | The file field could not be validated |
+
+**Cross-field rules**
+
+| Code | Description |
+|------|-------------|
+| `conditional_required` | A `CONDITIONAL_REQUIRED` rule was violated |
+| `conditional_value` | A `CONDITIONAL_VALUE` rule was violated |
+| `dependency` | A `DEPENDENCY` rule was violated |
+| `mutual_exclusion` | A `MUTUAL_EXCLUSION` rule was violated |

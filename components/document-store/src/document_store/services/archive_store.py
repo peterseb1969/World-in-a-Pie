@@ -33,6 +33,7 @@ the scratch path as the meeting point.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -112,10 +113,25 @@ class ArchiveStore:
                 return await self._storage().exists(job.archive_path)
             except FileStorageError:
                 return False
-        return Path(job.archive_path).is_file()
+        if Path(job.archive_path).is_file():
+            return True
+        # A caller's copy of the job can predate finalize_backup moving the
+        # archive into the bucket, in which case the scratch path it names is
+        # gone but the archive is not. Answering False there reports a
+        # perfectly good archive as un-retained.
+        return await self._moved_to_bucket(job) is not None
 
     async def stream_archive(self, job: BackupJob) -> AsyncIterator[bytes]:
         """Chunked archive content for the download endpoint."""
+        if job.archive_path is None:
+            # Only a job that finished its backup carries an archive path;
+            # callers reach here through download endpoints that already
+            # require a completed job, so a None here is a broken invariant,
+            # not a user error.
+            raise FileNotFoundError(
+                f"Backup job {job.job_id} has no archive_path — "
+                "the backup never finalized an archive."
+            )
         if job.archive_backend == BACKEND_MINIO:
             async for chunk in self._storage().download_stream(
                 job.archive_path, chunk_size=1024 * 1024
@@ -124,15 +140,60 @@ class ArchiveStore:
             return
         # Local file: read in an executor so a slow disk never blocks the
         # event loop mid-download.
-        import asyncio
         loop = asyncio.get_running_loop()
-        path = Path(job.archive_path)
-        with path.open("rb") as fh:
+        try:
+            # Opened outside a `with` on purpose: the open must be able to
+            # fail HERE, before anything is yielded, so the fallback below can
+            # still change course. Closed in the finally that guards the read
+            # loop.
+            fh = Path(job.archive_path).open("rb")  # noqa: SIM115
+        except FileNotFoundError:
+            # The archive moved out from under this request. finalize_backup
+            # uploads the scratch copy, flips archive_backend/archive_path on
+            # the record, and only then unlinks the scratch file — so a
+            # download holding a job loaded before the flip names a path that
+            # stops existing mid-request, while the record already points at
+            # the object. The bytes are never lost: the unlink runs only after
+            # a successful upload.
+            #
+            # Recovering here, BEFORE the first yield, is the whole point.
+            # The download route sends Content-Length from the job, so an
+            # exception raised once streaming has begun truncates a response
+            # whose length was already promised — the client sees 200 plus a
+            # short body rather than an error (CASE-800: 200 +
+            # Content-Length: 5786 + zero bytes).
+            key = await self._moved_to_bucket(job)
+            if key is None:
+                raise
+            async for chunk in self._storage().download_stream(
+                key, chunk_size=1024 * 1024
+            ):
+                yield chunk
+            return
+        try:
             while True:
                 chunk = await loop.run_in_executor(None, fh.read, 1024 * 1024)
                 if not chunk:
                     return
                 yield chunk
+        finally:
+            fh.close()
+
+    async def _moved_to_bucket(self, job: BackupJob) -> str | None:
+        """The object key this job's archive now lives under, or None.
+
+        Re-reads the record rather than deriving the key, so a scratch file
+        that vanished for any OTHER reason (the TTL sweep on a local-only
+        install) still reports honestly as gone. Deterministic, not a second
+        race: finalize_backup flips the record BEFORE unlinking, so any job
+        whose scratch file has disappeared under it already reads as MinIO.
+        """
+        if self.backend != BACKEND_MINIO:
+            return None
+        fresh = await BackupJob.find_one(BackupJob.job_id == job.job_id)
+        if fresh is None or fresh.archive_backend != BACKEND_MINIO:
+            return None
+        return fresh.archive_path or None
 
     async def materialize_for_restore(self, src_job: BackupJob, new_job_id: str) -> Path:
         """Give a new restore job its OWN archive copy, staged locally.
@@ -144,6 +205,13 @@ class ArchiveStore:
         engine to read; local mode gets a hardlink (same bytes, independent
         directory entry) with a plain copy as fallback.
         """
+        if src_job.archive_path is None:
+            # Restores materialize from a COMPLETED backup job; a missing
+            # archive path means the source job never finalized.
+            raise FileNotFoundError(
+                f"Backup job {src_job.job_id} has no archive_path — "
+                "cannot materialize an archive that was never finalized."
+            )
         dest = scratch_path_for(new_job_id)
         if src_job.archive_backend == BACKEND_MINIO:
             await self._ensure_bucket()
@@ -190,9 +258,15 @@ class ArchiveStore:
                 job.job_id,
             )
             return
-        job.archive_backend = BACKEND_MINIO
-        job.archive_path = key
-        await job.save()
+        # Atomic field update, never a full-document save: this runs after a
+        # slow bucket upload, and other writers (the validation back-link)
+        # land on the job during that await. A save() here replays the whole
+        # pre-upload copy and silently erases their fields — observed live as
+        # validation_job_ids flipping back to [] ~50ms after being written.
+        await job.set({
+            BackupJob.archive_backend: BACKEND_MINIO,
+            BackupJob.archive_path: key,
+        })
         with contextlib.suppress(OSError):
             scratch.unlink()
 
@@ -223,9 +297,14 @@ class ArchiveStore:
                 await self._ensure_bucket()
                 if not await self._storage().exists(key):
                     await self._storage().upload_file(key, str(scratch))
-                job.archive_backend = BACKEND_MINIO
-                job.archive_path = key
-                await job.save()
+                # Atomic field update — see finalize_backup. This exact site
+                # was the CASE-747 clobber: it held a copy across the upload
+                # await while trigger_validation_for wrote the back-link,
+                # then save() replaced the document from the stale copy.
+                await job.set({
+                    BackupJob.archive_backend: BACKEND_MINIO,
+                    BackupJob.archive_path: key,
+                })
             except FileStorageError:
                 logger.exception(
                     "Restore-input upload to bucket failed for %s — input retained locally",
@@ -313,9 +392,13 @@ def archive_lifecycle_hook(job_id: str):
 
     Wired into ``start_async_job(on_event=...)`` so it runs on the consumer
     task AFTER the terminal event has been persisted — sequential with the
-    job saves, so there is no read-modify-write race against the progress
-    pipeline. Only the ``phase`` attribute of the event is touched, keeping
-    this module free of toolkit types.
+    progress pipeline, but CONCURRENT with the detached follow-up tasks the
+    terminal event schedules (batch sync, validation): those interleave into
+    this hook's awaits and write their own fields on the same job document.
+    The hook must therefore only ever write the fields it owns, via atomic
+    updates — a full-document save from its held copy erases the concurrent
+    writers' work. Only the ``phase`` attribute of the event is touched,
+    keeping this module free of toolkit types.
     """
 
     async def hook(event) -> None:

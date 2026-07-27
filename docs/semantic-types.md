@@ -147,7 +147,7 @@ Time duration with value and unit. Supports negative values for relative offsets
 
 **Unit Validation:**
 - Units are validated against the `_TIME_UNITS` system terminology
-- Aliases are supported: "7 mins", "5 d", "2 hr" all work
+- Aliases are supported: "7 min", "5 d", "2 hr" all work (note the alias is "min"/"m"/"minute", not "mins")
 - Valid units: seconds, minutes, hours, days, weeks
 
 **PostgreSQL Columns:**

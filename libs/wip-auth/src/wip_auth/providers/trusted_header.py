@@ -43,9 +43,10 @@ class TrustedHeaderProvider:
     def _validate_api_key(self, api_key: str) -> bool:
         """Check if the API key matches any registered key."""
         for record in self._keys:
-            if verify_api_key(api_key, record.key_hash, self.hash_salt):
-                if not record.is_expired():
-                    return True
+            if verify_api_key(
+                api_key, record.key_hash, self.hash_salt
+            ) and not record.is_expired():
+                return True
         return False
 
     async def authenticate(self, request: Request) -> UserIdentity | None:

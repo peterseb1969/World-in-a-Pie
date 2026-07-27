@@ -16,7 +16,7 @@ only fail on POSITIVE verification failures.
 
 import logging
 import os
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -28,8 +28,10 @@ class ReportingSyncClient:
 
     def __init__(self) -> None:
         self._base = os.getenv("REPORTING_SYNC_URL", "http://wip-reporting-sync:8005")
-        self._api_key = os.getenv("REGISTRY_API_KEY") or os.getenv(
-            "WIP_AUTH_LEGACY_API_KEY", ""
+        self._api_key: str = (
+            os.getenv("REGISTRY_API_KEY")
+            or os.getenv("WIP_AUTH_LEGACY_API_KEY")
+            or ""
         )
 
     def _headers(self) -> dict[str, str]:
@@ -50,7 +52,7 @@ class ReportingSyncClient:
                     headers=self._headers(),
                 )
                 if resp.status_code == 200:
-                    return resp.json()
+                    return cast(dict[str, Any], resp.json())
                 logger.warning(
                     "reporting parity for %s returned HTTP %s",
                     namespace, resp.status_code,
@@ -61,12 +63,17 @@ class ReportingSyncClient:
             return None
 
     async def trigger_batch_sync(self, namespace: str) -> bool:
-        """Kick a full namespace batch sync. True when accepted."""
+        """Kick a full namespace batch sync. True when accepted.
+
+        The namespace travels as a query parameter — reporting-sync's
+        route reads it from the query string; a JSON body is silently
+        ignored by FastAPI and the sync degrades to whole-instance.
+        """
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
                     f"{self._base}/api/reporting-sync/sync/batch",
-                    json={"namespace": namespace},
+                    params={"namespace": namespace},
                     headers=self._headers(),
                 )
                 return resp.status_code < 300

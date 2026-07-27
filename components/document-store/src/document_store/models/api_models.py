@@ -305,13 +305,21 @@ class TraverseResponse(BaseModel):
 # ============================================================================
 
 class DocumentVersionSummary(BaseModel):
-    """Summary of a document version."""
+    """Summary of a document version.
+
+    ``created_at`` is the ENTITY's creation time and is therefore identical on
+    every row — it does not tell you when this particular version was written.
+    ``updated_at`` does: it is the moment this version row was persisted, which
+    is what makes the history a usable audit trail.
+    """
 
     document_id: str
     version: int
     status: DocumentStatus
     created_at: datetime
     created_by: str | None
+    updated_at: datetime | None = None
+    updated_by: str | None = None
 
 
 class DocumentVersionResponse(BaseModel):
@@ -364,10 +372,10 @@ class DocumentQueryRequest(StrictModel):
         description="Page number"
     )
     page_size: int = Field(
-        default=20,
+        default=50,
         ge=1,
-        le=100,
-        description="Items per page"
+        le=1000,
+        description="Items per page (max 1000)"
     )
     sort_by: str = Field(
         default="created_at",
@@ -460,9 +468,10 @@ class DocumentMigrateRequest(StrictModel):
     templates). The migration is **identity-preserving only**: the two template
     versions must declare the same ``identity_fields``. If they differ the identity
     hash would change — that is a *fork* (create new documents), not a migrate, and
-    the operation is rejected. No data transformation happens here; any per-document
-    data prep (e.g. PATCH-null a removed field) is the app's job, done while the
-    source version is still writable.
+    the operation is rejected. The only data transformation applied is field renames
+    declared on the target template version (mechanical re-keying to the new field
+    names); any other per-document data prep (e.g. PATCH-null a removed field) is the
+    app's job, done while the source version is still writable.
     """
 
     template_id: str = Field(
@@ -502,6 +511,66 @@ class DocumentMigrateResponse(BulkResponse):
     template_id: str
     from_version: int
     to_version: int
+
+
+class TemplateImpactStatsResponse(BaseModel):
+    """Live-document counts for template version-change impact analysis.
+
+    Advisory read-only data: how many active documents each template version
+    carries, and — for each requested field — how many active documents hold
+    a non-empty value there. Consumed by the template create-as-upsert to
+    report the consequences of a version event; a field with zero non-empty
+    documents is safely droppable via migration.
+    """
+
+    template_id: str
+    namespace: str
+    total_live_docs: int
+    docs_per_version: dict[str, int] = Field(
+        description="Active-document count per template_version (keys are stringified version numbers)"
+    )
+    field_nonempty_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description="Per requested field: active documents with a non-empty data.<field> (exists, not null, not empty string)"
+    )
+
+
+class TemplateFacet(BaseModel):
+    """One template referenced by a namespace's documents, with its live count."""
+
+    template_id: str
+    template_value: str | None = Field(
+        default=None,
+        description="Denormalized template value carried on the counted documents"
+    )
+    template_namespace: str | None = Field(
+        default=None,
+        description=(
+            "The template's OWN namespace — may differ from the queried "
+            "namespace (shared / cross-namespace templates). None when the "
+            "template could not be fetched."
+        )
+    )
+    document_count: int = Field(
+        description=(
+            "Distinct logical documents (version rows collapse on document_id "
+            "before counting) of this template in the queried namespace"
+        )
+    )
+
+
+class TemplateFacetsResponse(BaseModel):
+    """Answer to: which templates are namespace X's documents instances of?
+
+    A document's namespace is independent of its template's namespace, so
+    listing the templates a namespace OWNS cannot answer this — a namespace
+    whose documents sit on shared or foreign templates would look empty.
+    These facets are grouped from the documents themselves, so every
+    reachable template appears, labeled with its true namespace.
+    """
+
+    namespace: str
+    facets: list[TemplateFacet]
 
 
 # ============================================================================
@@ -626,6 +695,64 @@ class BulkValidationResponse(BaseModel):
         default_factory=list,
         description="One ValidationResponse per input item, in the same order"
     )
+
+
+class CandidateValidationRequest(StrictModel):
+    """Validate documents against an INLINE candidate template definition.
+
+    The what-if dry-run for schema evolution: nothing is created, cached, or
+    registered — the candidate exists only for this call. Provide EITHER
+    explicit ``documents`` payloads OR ``sample_template_id`` to validate the
+    most recently updated active documents of an existing template.
+    """
+
+    namespace: str = Field(
+        ...,
+        min_length=1,
+        description="Namespace context for term/reference resolution"
+    )
+    template_definition: dict = Field(
+        ...,
+        description=(
+            "The candidate template definition (same shape as a create "
+            "request: fields, identity_fields, rules, ...). Reference values "
+            "should be canonical IDs or resolvable synonyms."
+        )
+    )
+    documents: list[dict] | None = Field(
+        default=None,
+        description="Explicit data payloads to validate (mutually exclusive with sample_template_id)"
+    )
+    sample_template_id: str | None = Field(
+        default=None,
+        description="Existing template whose most recently updated active documents are sampled"
+    )
+    sample_limit: int = Field(
+        default=100,
+        ge=1,
+        le=500,
+        description="Sample size when sample_template_id is used"
+    )
+
+
+class CandidateValidationItem(BaseModel):
+    """One document's result against the candidate definition."""
+
+    index: int
+    document_id: str | None = Field(
+        default=None,
+        description="Set for sampled documents; None for explicit payloads"
+    )
+    validation: ValidationResponse
+
+
+class CandidateValidationResponse(BaseModel):
+    """Aggregate + per-document results of a candidate dry-run."""
+
+    total: int
+    valid_count: int
+    invalid_count: int
+    results: list[CandidateValidationItem] = Field(default_factory=list)
 
 
 # ============================================================================

@@ -22,8 +22,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .engine import Context, Policy, Surface
-from .render import render, tier_filter
-
+from .render import render
 
 # --- shared producers --------------------------------------------------------
 
@@ -210,10 +209,6 @@ def query_scaffold_surfaces(app_name: str, app_slug: str, dev_namespace: str) ->
         src_root = ctx.wip_root / "scripts/scaffold-query"
         if not src_root.is_dir():
             raise FileNotFoundError(f"scaffold template directory not found: {src_root}")
-        subs = {
-            "SCAFFOLD_APP_SLUG": app_slug,
-            "SCAFFOLD_APP_NAME": app_name,
-        }
         out: dict[str, bytes] = {}
         for sub_dir in ("server", "src"):
             for f in sorted((src_root / sub_dir).rglob("*")):
@@ -329,17 +324,61 @@ def client_lib_surface(lib: str, tarball_path: str) -> Surface:
     )
 
 
+def _wheel_produce(wheel_path: str):
+    """Copy a built wheel into the app's libs/, refusing silent re-pointing.
+
+    Versioned wheels are immutable the same way the npm tarballs are: pip
+    treats an already-installed version as satisfied, so shipping changed
+    bytes under an unchanged filename means consumers keep running the OLD
+    code with no error anywhere — the drift is invisible until someone
+    hits a bug the new bytes already fixed. If the app holds a same-name
+    wheel with different content, the version was not bumped: fatal, never
+    papered over. (The wheels are reproducible builds — hatchling pins
+    member timestamps — so an unchanged tree produces identical bytes and
+    never trips this.)
+    """
+
+    def produce(ctx: Context) -> dict[str, bytes]:
+        src = Path(wheel_path)
+        data = src.read_bytes()
+        dest = ctx.target_root / "libs" / src.name
+        if dest.is_file() and dest.read_bytes() != data:
+            raise RuntimeError(
+                f"{src.name} already exists in the app with different content. "
+                f"The wheel's content changed without a version bump (versioned "
+                f"wheels are immutable — pip will not reinstall a version it "
+                f"already has, so same-name-new-bytes ships code nobody runs). "
+                f"Bump the version in the project's pyproject.toml, rebuild, "
+                f"then re-run this script."
+            )
+        return {f"libs/{src.name}": data}
+
+    return produce
+
+
 def toolkit_surface(wheel_path: str) -> Surface:
     """Vendored wip-toolkit wheel copy. Building the wheel is an action the
     wrapper owns; this only ships an existing artifact."""
     return Surface(
         name="toolkit-wheel",
         policy=Policy.REGENERATE,
-        rationale="ship the built wheel into the app's libs/, wiping stale versions so pip install libs/*.whl resolves to one file; the build itself is a wrapper action",
+        rationale="ship the built wheel into the app's libs/, wiping stale versions so pip install libs/*.whl resolves to one file; same-name-different-content is fatal (pip never reinstalls an unchanged version); the build itself is a wrapper action",
         wipe_glob="libs/wip_toolkit-*.whl",
-        produce=lambda ctx: {
-            f"libs/{Path(wheel_path).name}": Path(wheel_path).read_bytes()
-        },
+        produce=_wheel_produce(wheel_path),
+    )
+
+
+def archive_wheel_surface(wheel_path: str) -> Surface:
+    """Vendored wip-archive wheel copy — the toolkit wheel's dependency
+    (archive format + remap library). Ships alongside the toolkit wheel so
+    `pip install libs/*.whl` resolves the toolkit's `wip-archive` requirement
+    offline; same wrapper-builds / engine-ships split as toolkit_surface."""
+    return Surface(
+        name="archive-wheel",
+        policy=Policy.REGENERATE,
+        rationale="the toolkit wheel declares wip-archive as a dependency that is not on PyPI; shipping its wheel beside the toolkit's keeps app installs offline and version-matched; same-name-different-content is fatal",
+        wipe_glob="libs/wip_archive-*.whl",
+        produce=_wheel_produce(wheel_path),
     )
 
 

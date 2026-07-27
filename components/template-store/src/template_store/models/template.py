@@ -57,6 +57,16 @@ class ReportingConfig(BaseModel):
         le=100,
         description="Maximum array elements to include when flattening"
     )
+    cross_version_view: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Opt-in cross-version entity view over the per-version reporting "
+            "tables: {'versions': 'all' | [ints], 'columns': {target: "
+            "{'from': source} | {}}}. The identity core is always included; "
+            "declared column mappings extend it. Consumed by reporting-sync "
+            "(which validates the shape); stored pass-through here."
+        )
+    )
 
 
 class TemplateMetadata(BaseModel):
@@ -135,7 +145,7 @@ class Template(Document):
     )
     extends_version: int | None = Field(
         default=None,
-        description="Pinned parent version (None = always use latest active parent version)"
+        description="Pinned parent version. Required (non-null) whenever the template declares 'extends' — a null there is rejected; the parent is validated against this exact pinned version, never 'latest'. Null only when there is no parent."
     )
 
     # Identity fields for document upsert
@@ -158,6 +168,22 @@ class Template(Document):
             "Fields to include in peer/header projections. "
             "Bare names → data.<name>; metadata.custom.<name> paths "
             "allowed. Empty → projection falls back to identity_fields."
+        )
+    )
+
+    # Declared renames for THIS version relative to the previous one:
+    # {new_field: old_field}. A rename declaration means "mechanically the
+    # same data under a new key" — it makes the rename losslessly
+    # auto-migratable (migrate re-keys before target validation) and
+    # matview-mappable, where an undeclared rename is indistinguishable
+    # from drop+add. Identity fields can never be renamed (identity is
+    # immutable across versions). None/empty on version 1 by definition.
+    renames: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Field renames relative to the previous version, as "
+            "{new_field: old_field}. Enables lossless migration of renamed "
+            "fields; identity fields cannot appear."
         )
     )
 

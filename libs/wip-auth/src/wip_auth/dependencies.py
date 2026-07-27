@@ -79,10 +79,11 @@ def require_groups(
                 headers={"WWW-Authenticate": "Bearer, ApiKey"},
             )
 
-        if require_all:
-            has_access = identity.has_all_groups(groups)
-        else:
-            has_access = identity.has_any_group(groups)
+        has_access = (
+            identity.has_all_groups(groups)
+            if require_all
+            else identity.has_any_group(groups)
+        )
 
         if not has_access:
             raise HTTPException(

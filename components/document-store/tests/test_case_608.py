@@ -75,7 +75,7 @@ async def test_hash_form_takes_precedence_over_qualified_parse():
 @pytest.mark.asyncio
 async def test_unresolved_qualified_value_is_reference_not_found():
     """A qualified value the Registry doesn't know stays a hard error."""
-    svc, spy = _service_with_registry_spy()
+    svc, _spy = _service_with_registry_spy()
     result = await _resolve(svc, "otherns:NOPE")
     assert result.valid is False
     assert result.errors[0]["code"] == "reference_not_found"

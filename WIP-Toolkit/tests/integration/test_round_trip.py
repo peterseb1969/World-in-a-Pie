@@ -19,11 +19,11 @@ versioned=false), multi-version documents, and relationship documents.
 from __future__ import annotations
 
 import pytest
-from wip_toolkit.archive import ArchiveReader
+from pathlib import Path
+
+from wip_archive.archive import ArchiveReader
 from wip_toolkit.client import WIPClientError
 from wip_toolkit.export.exporter import run_export
-from wip_toolkit.import_.importer import run_import
-from wip_toolkit.import_.restore import RestorePreflightError
 
 NS = "toolkit-it"
 
@@ -177,6 +177,11 @@ EXPECTED_ARCHIVE_COUNTS = {
     "templates": 3,
     # Smaug v1+v2, Lich King, 2 spells, 2 relationship docs
     "documents": 7,
+    # One identity row per registered ENTITY (Smaug's two versions share
+    # one): 1 terminology + 3 terms + 3 templates + 6 document entities.
+    # These rows are what make the archive restorable by the server
+    # engine — it re-inserts them verbatim and re-claims their keys.
+    "registry_entries": 13,
 }
 
 
@@ -204,13 +209,41 @@ def test_golden_round_trip(stack, wip_client, tmp_path):
     # Phase 4 — catastrophic loss
     stack.wipe()
 
-    # Phase 5 — restore (preserving IDs) into the emptied instance
-    import_stats = run_import(wip_client, str(archive), mode="restore")
-    assert not import_stats.errors, import_stats.errors
-    assert import_stats.created.terminologies == 1
-    assert import_stats.created.terms == 3
-    assert import_stats.created.templates == 3
-    assert import_stats.created.documents == 7
+    # Phase 5 — restore (preserving IDs) into the emptied instance, through
+    # the server-side restore ENGINE — the platform's one import write-path
+    # (the client-side importer was deleted with its CLI command). The
+    # engine reads the CLI-exported archive via the shared wip-archive
+    # format contract, which is exactly the seam this round-trip guards.
+    def _engine_restore(target_namespace: str = "") -> None:
+        from document_store.models.backup_job import BackupJob
+        from document_store.services.backup_engine import DirectRestoreEngine
+
+        async def _run() -> None:
+            mongo = BackupJob.get_motor_collection().database.client
+            engine = DirectRestoreEngine(mongo, None, lambda _event: None)
+            await engine.run_restore(
+                Path(str(archive)), target_namespace=target_namespace,
+            )
+
+        stack.portal.call(_run)
+
+    _engine_restore()
+
+    # The restored corpus matches what was seeded — counted through the
+    # public APIs, the same surfaces phase 6 asserts fidelity against.
+    assert wip_client.get(
+        "def-store", "/terminologies", params={"namespace": NS},
+    )["total"] == 1
+    assert wip_client.get(
+        "def-store", f"/terminologies/{ids['terminology']}/terms",
+        params={"namespace": NS},
+    )["total"] == 3
+    assert wip_client.get(
+        "template-store", "/templates", params={"namespace": NS},
+    )["total"] == 3
+    assert wip_client.get(
+        "document-store", "/documents", params={"namespace": NS},
+    )["total"] == 7
 
     # Phase 6 — fidelity
     # Edge type: original ID, active, class flags intact (CASE-659/660)
@@ -292,16 +325,16 @@ def test_golden_round_trip(stack, wip_client, tmp_path):
     assert overwritten["version"] == 1
     assert overwritten["data"]["proficiency"] == "novice"
 
-    # Phase 7 — CASE-668: an ID-preserving restore into a SECOND namespace
-    # while the restored entities still own the archived IDs must be
-    # refused up front, before creating anything (the live incident
+    # Phase 7 — CASE-668 class: an ID-preserving restore into a SECOND
+    # namespace while the restored entities still own the archived IDs must
+    # be refused up front, before creating anything (the live incident
     # half-proceeded: target namespace created, then a per-entity
-    # clean-target failure cascade).
-    with pytest.raises(RestorePreflightError, match="--mode fresh"):
-        run_import(
-            wip_client, str(archive), mode="restore",
-            target_namespace="toolkit-it-2",
-        )
+    # clean-target failure cascade). The engine refuses at preflight —
+    # re-namespacing is remap mode's job.
+    from document_store.services.backup_engine import RestoreEngineError
+
+    with pytest.raises(RestoreEngineError, match="re-namespace"):
+        _engine_restore("toolkit-it-2")
     # The refusal must come BEFORE anything is created — the target
     # namespace must not exist afterward.
     with pytest.raises(WIPClientError) as refused:

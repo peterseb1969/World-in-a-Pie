@@ -22,13 +22,16 @@ import asyncio
 import contextlib
 import logging
 import os
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
 import httpx as _httpx
-from wip_toolkit.models import ProgressEvent
+from beanie.odm.operators.update.array import Push
+from wip_archive.exceptions import ArchiveError
+from wip_archive.models import ProgressEvent
 
 from ..models.backup_job import BackupJob, BackupJobKind, BackupJobStatus
 
@@ -59,9 +62,12 @@ async def _trigger_reporting_batch_sync(namespace: str) -> None:
     api_key = cast(str, os.getenv("REGISTRY_API_KEY") or os.getenv("WIP_AUTH_LEGACY_API_KEY", ""))
     try:
         async with _httpx.AsyncClient(timeout=10) as client:
+            # Query parameter, not JSON body — the route reads the query
+            # string; a body is silently ignored and the sync degrades to
+            # whole-instance.
             resp = await client.post(
                 f"{url}/api/reporting-sync/sync/batch",
-                json={"namespace": namespace},
+                params={"namespace": namespace},
                 headers={"X-API-Key": api_key},
             )
             logger.info(
@@ -93,65 +99,107 @@ _job_queues: dict[str, asyncio.Queue[ProgressEvent | _Sentinel]] = {}
 _job_tasks: dict[str, asyncio.Task[None]] = {}
 
 
-def _percent_for_status(status: BackupJobStatus, event: ProgressEvent) -> float | None:
-    """Pick the percent to persist.
-
-    Preserve the last-known percent on error events (which carry None) so the
-    UI doesn't snap back to 0% on failure.
-    """
-    if event.phase == "error":
-        return None
-    return cast(float | None, event.percent)
-
-
 async def _persist_event(job_id: str, event: ProgressEvent) -> None:
-    """Apply a ProgressEvent to the BackupJob MongoDB record."""
+    """Apply a ProgressEvent to the BackupJob MongoDB record.
+
+    Every write here is field-scoped (atomic $set / $push), never a
+    full-document save. This pipeline runs concurrently with detached
+    writers on the same record — the validation back-link, the archive
+    lifecycle hook, any future follow-up — and a full save from a copy
+    loaded before their write silently erases it. That lost-update class
+    bit twice (the result null-out, the back-link clobber) before the
+    remaining sites here were converted; each writer now touches exactly
+    the fields it owns, so interleaving cannot destroy another's write.
+    """
     job = await BackupJob.find_one(BackupJob.job_id == job_id)
     if job is None:
         logger.warning("BackupJob %s disappeared while streaming progress", job_id)
         return
 
-    # Transition from PENDING to RUNNING on the first 'start' event.
-    if event.phase == "start" and job.status == BackupJobStatus.PENDING:
-        job.status = BackupJobStatus.RUNNING
-        job.started_at = datetime.now(UTC)
-
     # Warnings accumulate on the job record instead of overwriting the
     # rolling phase/message — a completed job with warnings succeeded; the
     # warnings say what to double-check (e.g. reporting parity incomplete).
+    # An atomic push: two warnings landing concurrently both survive, and
+    # nothing else on the record is touched.
     if event.phase == "warning":
-        job.warnings.append(event.message)
-        await job.save()
+        await job.update(Push({BackupJob.warnings: event.message}))
         return
 
-    job.phase = event.phase
-    job.message = event.message
+    fields: dict[Any, Any] = {
+        BackupJob.phase: event.phase,
+        BackupJob.message: event.message,
+    }
+
+    # Transition from PENDING to RUNNING on the first 'start' event. The
+    # read-then-set is safe single-writer: the per-job queue serializes
+    # this pipeline's events in-process.
+    if event.phase == "start" and job.status == BackupJobStatus.PENDING:
+        fields[BackupJob.status] = BackupJobStatus.RUNNING
+        fields[BackupJob.started_at] = datetime.now(UTC)
+
+    # Percent is preserved on error events (which carry None) so the UI
+    # doesn't snap back to 0% on failure — simply not written here.
     if event.percent is not None:
-        job.percent = event.percent
+        fields[BackupJob.percent] = event.percent
 
     if event.phase == "complete":
-        job.status = BackupJobStatus.COMPLETE
-        job.percent = 100.0
-        job.completed_at = datetime.now(UTC)
+        fields[BackupJob.status] = BackupJobStatus.COMPLETE
+        fields[BackupJob.percent] = 100.0
+        fields[BackupJob.completed_at] = datetime.now(UTC)
+        # A structured outcome rides on the terminal event rather than being
+        # written separately afterwards. Saving it in a second pass raced this
+        # one: the consumer had already loaded the record, so its save put the
+        # result back to null. Observed exactly that on a live dry run.
+        if event.details:
+            fields[BackupJob.result] = dict(event.details)
         # Populate archive_size from disk if the archive file exists.
         # This is the first opportunity after the backup engine has finalized
         # the ZIP; the API layer set archive_path at job creation but
         # cannot know the size until the worker writes the file.
         if job.archive_path:
             with contextlib.suppress(OSError):
-                job.archive_size = Path(job.archive_path).stat().st_size
+                fields[BackupJob.archive_size] = Path(job.archive_path).stat().st_size
         # After a successful restore, trigger a batch sync so reporting-sync
         # picks up the restored documents in PostgreSQL. The restore engine
         # writes directly to MongoDB and bypasses the NATS event path that
         # reporting-sync normally subscribes to.
-        if job.kind == BackupJobKind.RESTORE and job.namespace:
-            _track(asyncio.ensure_future(_trigger_reporting_batch_sync(job.namespace)))
+        #
+        # A dry run gets neither this nor the validation below. It wrote
+        # nothing, so there is nothing to sync and nothing to verify — and a
+        # preview that spawns follow-up jobs against a namespace it did not
+        # create is not a preview. Observed doing exactly that: a dry run into
+        # a non-existent namespace produced a validation job reporting
+        # "healthy, 0 documents".
+        if (
+            job.kind == BackupJobKind.RESTORE
+            and job.namespace
+            and not job.options.get("dry_run")
+        ):
+            # Persist the terminal state BEFORE scheduling the follow-ups —
+            # they read the record and must see it terminal. (The write
+            # being field-scoped already protects the validation back-link
+            # from being clobbered; the ordering keeps the follow-ups from
+            # observing a job that still looks RUNNING.)
+            await job.set(fields)
+            # One sync per namespace the restore WROTE — a multi-target fresh
+            # restore (namespace_map with several targets) needs each target
+            # synced; job.namespace alone would cover only the first.
+            for target in dict.fromkeys(job.namespaces or [job.namespace]):
+                _track(asyncio.ensure_future(_trigger_reporting_batch_sync(target)))
+            # And verify what was written. A restore validates nothing while
+            # writing, so this is the only thing that would notice a dangling
+            # reference or an identity hash that no longer matches its data.
+            # It runs as its own job and the restore does not wait for it —
+            # the data is committed either way, and blocking a fast restore on
+            # verification would defeat the point.
+            _track(asyncio.ensure_future(trigger_validation_for(job)))
+            return
     elif event.phase == "error":
-        job.status = BackupJobStatus.FAILED
-        job.error = event.message
-        job.completed_at = datetime.now(UTC)
+        fields[BackupJob.status] = BackupJobStatus.FAILED
+        fields[BackupJob.error] = event.message
+        fields[BackupJob.completed_at] = datetime.now(UTC)
 
-    await job.save()
+    await job.set(fields)
 
 
 async def _mark_failed(job_id: str, error: str) -> None:
@@ -159,11 +207,12 @@ async def _mark_failed(job_id: str, error: str) -> None:
     job = await BackupJob.find_one(BackupJob.job_id == job_id)
     if job is None:
         return
-    job.status = BackupJobStatus.FAILED
-    job.error = error
-    job.phase = "error"
-    job.completed_at = datetime.now(UTC)
-    await job.save()
+    await job.set({
+        BackupJob.status: BackupJobStatus.FAILED,
+        BackupJob.error: error,
+        BackupJob.phase: "error",
+        BackupJob.completed_at: datetime.now(UTC),
+    })
 
 
 async def start_async_job(
@@ -271,18 +320,26 @@ async def wait_for_job(job_id: str, timeout: float | None = None) -> None:
 
 
 def read_archive_manifest(archive_path: str | Path) -> Any | None:
-    """Read an archive's manifest, or None if it is unreadable.
+    """Read an archive's manifest.
+
+    A malformed archive raises a typed ``ArchiveError`` (not-a-zip, no
+    manifest, unparseable manifest) so the restore route can refuse it with a
+    400 at upload time instead of minting a job that fails later. Only a
+    genuinely UNEXPECTED read error falls through to None (logged) — the caller
+    treats an absent manifest as "proceed with the request's target".
 
     Lives here (not in the API layer) so ``api/backup.py`` keeps its
     no-toolkit-imports guardrail intact — the manifest read used to be a
     function-local toolkit import inside the restore endpoint, which the
     guardrail's own verification grep would have flagged.
     """
-    from wip_toolkit.archive import ArchiveReader
+    from wip_archive.archive import ArchiveReader
 
     try:
         with ArchiveReader(Path(archive_path)) as reader:
             return reader.read_manifest()
+    except ArchiveError:
+        raise  # typed malformed-archive error → the route turns it into a 400
     except Exception as exc:
         logger.warning("Could not read manifest from archive %s: %s", archive_path, exc)
         return None
@@ -324,7 +381,6 @@ def make_direct_backup_runner(
             ns_list,
             Path(archive_path),
             include_files=opts.get("include_files", False),
-            include_inactive=opts.get("include_inactive", False),
             skip_documents=opts.get("skip_documents", False),
             latest_only=opts.get("latest_only", False),
             tmp_dir=Path(backup_dir),
@@ -333,11 +389,187 @@ def make_direct_backup_runner(
     return runner
 
 
+# Issues stored on the job record. A namespace with a systematic problem
+# produces one issue per document; the full set belongs in a re-run with the
+# endpoint, not in a job record other endpoints page through.
+VALIDATION_ISSUE_SAMPLE = 50
+
+
+def make_validation_runner(
+    job_id: str,
+    namespace: str,
+    options: dict[str, Any] | None = None,
+) -> AsyncRunner:
+    """Build an :data:`AsyncRunner` that verifies one namespace's integrity.
+
+    Restore writes without validating — deliberately, for speed — so this is
+    where a restored namespace gets checked: every reference resolves, and
+    every identity hash still matches its own document's data.
+
+    The outcome lands on the job record rather than being returned, because
+    the caller is an HTTP client that already left with a job id.
+    """
+    opts = dict(options or {})
+
+    async def runner(progress_callback: Callable[[ProgressEvent], None]) -> Any:
+        from .integrity_service import check_all_documents
+
+        progress_callback(ProgressEvent(
+            phase="start",
+            message=f"Validating namespace '{namespace}'",
+            percent=0,
+        ))
+
+        def on_progress(checked: int, total: int) -> None:
+            progress_callback(ProgressEvent(
+                phase="phase_validate",
+                message=f"[{namespace}] checked {checked}/{total} document(s)",
+                percent=min(round(checked / total * 95, 1), 95.0) if total else 95.0,
+                current=checked,
+                total=total,
+            ))
+
+        result = await check_all_documents(
+            namespace=namespace,
+            check_term_refs=opts.get("check_term_refs", True),
+            check_identity=opts.get("check_identity", True),
+            limit=opts.get("limit", 0),
+            progress=on_progress,
+        )
+
+        # A namespace with problems is a completed job with findings, not a
+        # failed one: the check ran, and its answer is the deliverable.
+        if result.status != "healthy":
+            progress_callback(ProgressEvent(
+                phase="warning",
+                message=(
+                    f"[{namespace}] integrity {result.status}: "
+                    f"{result.summary.documents_with_issues} document(s) with "
+                    f"issues out of {result.summary.documents_checked} checked"
+                ),
+            ))
+            # A validation spawned by a restore reports on THAT restore's
+            # outcome, but it runs as its own job after the restore already
+            # completed — a caller who polled the restore job to completion
+            # and read warnings=[] never learns the restored data is broken
+            # (dangling references restore silently). Mirror the finding onto
+            # the triggering restore job so its durable record carries the
+            # pointer. Atomic push, same idiom as the progress consumer:
+            # nothing else on the parent record is touched.
+            triggered_by = opts.get("triggered_by")
+            if triggered_by:
+                parent = await BackupJob.find_one(
+                    BackupJob.job_id == triggered_by
+                )
+                if parent is not None:
+                    await parent.update(Push({BackupJob.warnings: (
+                        f"post-restore validation found integrity "
+                        f"{result.status} in '{namespace}' "
+                        f"({result.summary.documents_with_issues} document(s) "
+                        f"with issues) — see validation job {job_id}"
+                    )}))
+
+        # The integrity result rides the terminal event, the same fix the
+        # dry-run path already received: writing it in a separate second
+        # pass raced the consumer's per-event load-modify-save — the save
+        # landed inside an in-flight progress event's persist window and
+        # that event's full save put the result back to null. Small jobs
+        # lost it almost always (their tail events were still draining);
+        # long jobs survived (queue empty by save time). result_kind
+        # discriminates this payload from the restore dry-run plan that
+        # shares the job.result field.
+        progress_callback(ProgressEvent(
+            phase="complete",
+            message=(
+                f"[{namespace}] validation complete — {result.status}, "
+                f"{result.summary.documents_checked} document(s) checked"
+            ),
+            percent=100,
+            details={
+                "result_kind": "namespace_integrity",
+                "status": result.status,
+                "summary": result.summary.model_dump(),
+                "issues": [
+                    issue.model_dump()
+                    for issue in result.issues[:VALIDATION_ISSUE_SAMPLE]
+                ],
+                "issues_truncated": max(
+                    0, len(result.issues) - VALIDATION_ISSUE_SAMPLE
+                ),
+            },
+        ))
+
+    return runner
+
+
+async def trigger_validation_for(restore_job: BackupJob) -> list[str]:
+    """Start a validation job per namespace a restore wrote, and link them.
+
+    One job per namespace rather than one for the archive: a multi-namespace
+    restore's namespaces are verified independently, and a single combined
+    result would not say which of them is unhealthy.
+
+    Best-effort. A restore that succeeded must not be reported as failed
+    because its follow-up check could not be started.
+    """
+    namespaces = restore_job.namespaces or (
+        [restore_job.namespace] if restore_job.namespace else []
+    )
+    started: list[str] = []
+    for namespace in namespaces:
+        job_id = f"val-{uuid.uuid4().hex[:16]}"
+        try:
+            job = BackupJob(
+                job_id=job_id,
+                kind=BackupJobKind.VALIDATE,
+                namespace=namespace,
+                namespaces=[namespace],
+                options={"triggered_by": restore_job.job_id},
+                created_by=restore_job.created_by,
+            )
+            await job.insert()
+            await start_async_job(
+                job_id,
+                # triggered_by reaches the runner so a non-healthy result can
+                # be mirrored onto the restore job's warnings — the job
+                # record's options alone are invisible to the runner.
+                make_validation_runner(
+                    job_id, namespace,
+                    {"triggered_by": restore_job.job_id},
+                ),
+            )
+            started.append(job_id)
+        except Exception:
+            logger.warning(
+                "Could not start validation for namespace %s after restore %s",
+                namespace, restore_job.job_id, exc_info=True,
+            )
+
+    if started:
+        # Atomic field update: this task runs detached from the progress
+        # pipeline, concurrent with the archive lifecycle hook — a full save
+        # from either side erases the other's fields.
+        fresh = await BackupJob.find_one(BackupJob.job_id == restore_job.job_id)
+        if fresh is not None:
+            await fresh.set({BackupJob.validation_job_ids: started})
+    return started
+
+
 def make_direct_restore_runner(
     archive_path: str | Path,
     options: dict[str, Any] | None = None,
+    job_id: str | None = None,
 ) -> AsyncRunner:
-    """Build an :data:`AsyncRunner` that restores from ``archive_path`` via direct Mongo writes."""
+    """Build an :data:`AsyncRunner` that writes ``archive_path`` into MongoDB.
+
+    ``options['mode']`` picks the engine entry point: ``restore`` inserts an
+    archive into an empty namespace preserving every id, ``merge`` reconciles
+    it against a namespace that already holds data, and ``fresh`` re-mints
+    every identity so a namespace can be restored beside the one it came from.
+    They differ in preconditions and in what they do on a collision, so each
+    takes its own parameter set — an option reaching the wrong mode is
+    rejected at the API surface rather than dropped here.
+    """
     opts = dict(options or {})
 
     async def runner(progress_callback: Callable[[ProgressEvent], None]) -> Any:
@@ -351,6 +583,31 @@ def make_direct_restore_runner(
             mongo_client, storage, progress_callback,
             reporting_client=ReportingSyncClient(),
         )
+
+        if opts.get("mode") == "fresh":
+            await engine.run_remap(
+                Path(archive_path),
+                target_namespace=opts.get("target_namespace", ""),
+                namespace_map=opts.get("namespace_map"),
+                skip_documents=opts.get("skip_documents", False),
+                skip_files=opts.get("skip_files", False),
+                batch_size=opts.get("batch_size", 500),
+                dry_run=opts.get("dry_run", False),
+            )
+            return
+        if opts.get("mode") == "merge":
+            await engine.run_merge(
+                Path(archive_path),
+                target_namespace=opts.get("target_namespace", ""),
+                on_clash=opts.get("on_clash", "skip"),
+                add_missing=opts.get("add_missing", False),
+                extend_terminologies=opts.get("extend_terminologies", False),
+                skip_documents=opts.get("skip_documents", False),
+                skip_files=opts.get("skip_files", False),
+                batch_size=opts.get("batch_size", 500),
+                dry_run=opts.get("dry_run", False),
+            )
+            return
         await engine.run_restore(
             Path(archive_path),
             target_namespace=opts.get("target_namespace", ""),
@@ -358,6 +615,8 @@ def make_direct_restore_runner(
             skip_files=opts.get("skip_files", False),
             batch_size=opts.get("batch_size", 500),
             drop_stale_reporting=opts.get("drop_stale_reporting", False),
+            dry_run=opts.get("dry_run", False),
+            allow_missing_identity=opts.get("allow_missing_identity", False),
         )
 
     return runner

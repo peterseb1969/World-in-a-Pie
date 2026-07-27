@@ -100,7 +100,7 @@ The helper script generates `.mcp.json` automatically with correct paths and API
 
 **API key:** Use the same key that's in WIP's `.env` file (`API_KEY=...`). For dev mode that's `dev_master_key_for_testing`. For production deployments, copy the actual key from `.env`. The helper script reads `.env` automatically and embeds the correct key.
 
-**Verify after first launch:** The Claude should see WIP tools (94 tools, 5 resources) when it runs `/mcp`. If the tools aren't available, restart Claude Code — it spawns MCP servers on startup.
+**Verify after first launch:** The Claude should see WIP tools (101 tools, 5 resources) when it runs `/mcp`. If the tools aren't available, restart Claude Code — it spawns MCP servers on startup.
 
 ### 4. Copying Files from the WIP Repo
 

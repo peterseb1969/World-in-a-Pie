@@ -29,6 +29,27 @@ if _registry_src not in sys.path:
 # Use existing env vars if set, otherwise defaults for local testing
 os.environ.setdefault("MONGO_URI", "mongodb://localhost:27017/")
 os.environ.setdefault("DATABASE_NAME", "wip_document_store_test")
+
+# Per-worker database isolation: under pytest-xdist every worker is its own
+# process running a full session against the shared test-mongo, so all five
+# database names this suite touches get the worker id as a suffix — without
+# it, workers wipe each other's fixtures mid-flight (the same corruption
+# class the machine-wide wip-test.sh lock exists for, one level down).
+# ORDER MATTERS: backup_engine reads its four names into module-level
+# constants at import, so this block must run before any document_store
+# import. The suffixed databases are dropped at session end (per worker).
+_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
+_DB_ENV_DEFAULTS = {
+    "REGISTRY_DATABASE_NAME": "wip_registry",
+    "DEF_STORE_DATABASE_NAME": "wip_def_store",
+    "TEMPLATE_STORE_DATABASE_NAME": "wip_template_store",
+    "DOCUMENT_STORE_DATABASE_NAME": "wip_document_store",
+}
+for _var, _default in _DB_ENV_DEFAULTS.items():
+    os.environ.setdefault(_var, _default)
+if _XDIST_WORKER:
+    for _var in ("DATABASE_NAME", *_DB_ENV_DEFAULTS):
+        os.environ[_var] = f"{os.environ[_var]}_{_XDIST_WORKER}"
 os.environ.setdefault("API_KEY", "test_api_key")
 os.environ.setdefault("REGISTRY_URL", "http://registry")
 os.environ.setdefault("REGISTRY_API_KEY", "test_api_key")
@@ -67,6 +88,7 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
 from document_store.main import app  # noqa: E402
 from document_store.models.backup_job import BackupJob  # noqa: E402
 from document_store.models.document import Document  # noqa: E402
+from document_store.models.file import File  # noqa: E402
 from document_store.services.def_store_client import DefStoreClient  # noqa: E402
 from document_store.services.registry_client import RegistryClient  # noqa: E402
 from document_store.services.template_store_client import TemplateStoreClient  # noqa: E402
@@ -400,52 +422,50 @@ async def _register_templates_in_registry(registry_transport):
     headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
     mapping: dict[str, str] = {}
 
+    # Batched, not per-template (CASE-770): the register and synonyms/add
+    # endpoints are both bulk (list bodies), so all templates register in
+    # ONE round-trip and all their synonyms in ONE more — 2 in-process
+    # calls instead of 2 per template. This fixture runs once per test
+    # (function scope, motor is loop-bound), so per-test setup was the
+    # suite's dominant cost; collapsing ~2N round-trips to 2 removes the
+    # bulk of it without weakening isolation (same entries, same synonyms).
     async with AsyncClient(transport=registry_transport, base_url="http://registry") as client:
-        for tdef in _TEMPLATE_DEFS:
-            # Register entry
-            resp = await client.post(
-                "/api/registry/entries/register",
-                headers=headers,
-                json=[{
+        resp = await client.post(
+            "/api/registry/entries/register",
+            headers=headers,
+            json=[
+                {
                     "namespace": "wip",
                     "entity_type": "templates",
                     "composite_key": {"value": tdef["value"], "label": tdef["label"]},
-                }],
-            )
-            assert resp.status_code == 200, f"Register template failed: {resp.text}"
-            entry_id = resp.json()["results"][0]["registry_id"]
-            mapping[tdef["legacy_key"]] = entry_id
+                }
+                for tdef in _TEMPLATE_DEFS
+            ],
+        )
+        assert resp.status_code == 200, f"Register templates failed: {resp.text}"
+        results = resp.json()["results"]
+        assert len(results) == len(_TEMPLATE_DEFS), (
+            f"register returned {len(results)} results for {len(_TEMPLATE_DEFS)} templates"
+        )
 
-            # Register synonyms so resolution works:
-            # 1. Value-based: {"ns": "wip", "type": "template", "value": "PERSON"}
-            # 2. Legacy key: {"ns": "wip", "type": "template", "value": "0190c000-0000-7000-0000-000000000001"}
-            synonyms = [
-                {
+        synonyms = []
+        for tdef, result in zip(_TEMPLATE_DEFS, results, strict=True):
+            entry_id = result["registry_id"]
+            mapping[tdef["legacy_key"]] = entry_id
+            # Value-based + legacy-key synonyms so both resolve to the ID.
+            for syn_value in (tdef["value"], tdef["legacy_key"]):
+                synonyms.append({
                     "target_id": entry_id,
                     "synonym_namespace": "wip",
                     "synonym_entity_type": "templates",
                     "synonym_composite_key": {
-                        "ns": "wip",
-                        "type": "template",
-                        "value": tdef["value"],
+                        "ns": "wip", "type": "template", "value": syn_value,
                     },
-                },
-                {
-                    "target_id": entry_id,
-                    "synonym_namespace": "wip",
-                    "synonym_entity_type": "templates",
-                    "synonym_composite_key": {
-                        "ns": "wip",
-                        "type": "template",
-                        "value": tdef["legacy_key"],
-                    },
-                },
-            ]
-            await client.post(
-                "/api/registry/synonyms/add",
-                headers=headers,
-                json=synonyms,
-            )
+                })
+
+        await client.post(
+            "/api/registry/synonyms/add", headers=headers, json=synonyms,
+        )
 
     return mapping
 
@@ -573,7 +593,7 @@ def create_mock_def_store_client():
             return {"terminology_id": f"TERM-{terminology_value}", "status": "active"}
         return None
 
-    async def mock_validate_value(terminology_ref, value):
+    async def mock_validate_value(terminology_ref, value, namespace=None):
         # Strip prefix for lookup
         code = terminology_ref
         for prefix in ("TERM-",):
@@ -584,7 +604,7 @@ def create_mock_def_store_client():
             return {"valid": True, "matched_term": {"term_id": "0190b000-0000-7000-0000-000000000001", "value": value}}
         return {"valid": False, "suggestion": None}
 
-    async def mock_validate_values_bulk(items):
+    async def mock_validate_values_bulk(items, namespace=None):
         results = []
         for item in items:
             terminology_ref = item["terminology_ref"]
@@ -612,6 +632,34 @@ def create_mock_def_store_client():
     return mock_client
 
 
+# The one loop-bound beanie initialization per worker process. Under the
+# session-scoped test loop the motor client stays valid for the whole
+# session, so init_beanie runs ONCE over the union of every model any
+# fixture needs — the per-test re-init existed only because function-scoped
+# loops kept invalidating the loop-bound motor client. A single union init
+# also removes the double-init database-binding drift the old per-call init
+# warned about ("Namespace not found" when beanie rebinds Registry models).
+_ALL_TEST_MODELS = [
+    # Registry models
+    Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal,
+    CompositeKeyClaim,  # register_keys claims composite keys here
+    # Document-Store models — union of every fixture's needs
+    Document, BackupJob, File,
+]
+_beanie_initialized = False
+
+
+async def _ensure_beanie(mongo_client) -> None:
+    global _beanie_initialized
+    if _beanie_initialized:
+        return
+    await init_beanie(
+        database=mongo_client[os.environ["DATABASE_NAME"]],
+        document_models=_ALL_TEST_MODELS,
+    )
+    _beanie_initialized = True
+
+
 async def setup_registry_and_app(mongo_client, document_models=None):
     """Common setup: init real Registry, register templates, configure auth.
 
@@ -622,21 +670,7 @@ async def setup_registry_and_app(mongo_client, document_models=None):
     if document_models is None:
         document_models = [Document, BackupJob]
 
-    test_db = mongo_client[os.environ["DATABASE_NAME"]]
-
-    # Single init_beanie for all models — avoids database binding drift
-    # that causes "Namespace not found" errors in CI when beanie rebinds
-    # Registry models to the wrong database after a second init_beanie call.
-    await init_beanie(
-        database=test_db,
-        document_models=[
-            # Registry models
-            Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal,
-            CompositeKeyClaim,  # CASE-427: register_keys now claims keys here
-            # Document-Store models
-            *document_models,
-        ],
-    )
+    await _ensure_beanie(mongo_client)
 
     # Clean all collections
     await RegistryEntry.delete_all()
@@ -651,8 +685,9 @@ async def setup_registry_and_app(mongo_client, document_models=None):
     registry_app.state.mongodb_client = mongo_client
     AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])
 
-    # Create test namespaces
-    for prefix in ("wip", "test-ns"):
+    # Create test namespaces. 'other-ns' exists so the cross-namespace
+    # relationship-rejection tests actually run instead of skipping (CASE-788).
+    for prefix in ("wip", "test-ns", "other-ns"):
         await Namespace(prefix=prefix, description=f"Test namespace: {prefix}").insert()
 
     # Mount Registry in-process
@@ -719,12 +754,29 @@ async def _ensure_mongo_reachable(mongo_client: AsyncIOMotorClient, uri: str) ->
         ) from None
 
 
-@pytest_asyncio.fixture(scope="function")
-async def client() -> AsyncGenerator[AsyncClient, None]:
-    """Create test client with real Registry mounted in-process."""
+@pytest_asyncio.fixture(scope="session")
+async def session_mongo_client() -> AsyncGenerator[AsyncIOMotorClient, None]:
+    """One motor client for the whole session (per xdist worker).
+
+    Valid only because the test loop is session-scoped (pytest.ini): motor
+    clients are event-loop-bound, and the per-test client rebuild this
+    replaces existed to survive function-scoped loops. Teardown drops this
+    worker's databases so suffixed per-worker DBs don't accumulate on the
+    shared test-mongo.
+    """
     mongo_uri = os.environ["MONGO_URI"]
     mongo_client = AsyncIOMotorClient(mongo_uri, serverSelectionTimeoutMS=5000)
     await _ensure_mongo_reachable(mongo_client, mongo_uri)
+    yield mongo_client
+    for var in ("DATABASE_NAME", *_DB_ENV_DEFAULTS):
+        await mongo_client.drop_database(os.environ[var])
+    mongo_client.close()
+
+
+@pytest_asyncio.fixture(scope="function")
+async def client(session_mongo_client) -> AsyncGenerator[AsyncClient, None]:
+    """Create test client with real Registry mounted in-process."""
+    mongo_client = session_mongo_client
     real_registry, _transport = await setup_registry_and_app(mongo_client)
 
     # Mock Template-Store and Def-Store clients (separate services)

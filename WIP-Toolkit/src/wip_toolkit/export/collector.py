@@ -6,7 +6,7 @@ from typing import Any, BinaryIO, Iterator
 
 from rich.console import Console
 
-from ..client import WIPClient
+from ..client import WIPClient, WIPClientError
 
 console = Console(stderr=True)
 
@@ -338,6 +338,42 @@ class EntityCollector:
         return all_versions
 
     # --- Registry bulk lookup ---
+
+    def export_registry_entries(self, entity_ids: list[str]) -> list[dict[str, Any]]:
+        """Bulk-fetch FULL raw registry rows for the given entity ids.
+
+        Uses the Registry's admin-gated export surface: unlike the lookup
+        projection below, the rows carry composite-key hash, complete
+        synonyms, search_values, source_info, timestamps, and status — the
+        shape the archive's registry_entries file needs so a server-side
+        restore can re-insert identity byte-faithfully.
+
+        Per-item not_found is skipped silently (an entity without a registry
+        entry has no identity row to archive); forbidden ids raise — an
+        export that silently drops identity rows would restore into an
+        unresolvable namespace, which is the exact failure this surface
+        exists to prevent.
+        """
+        rows: list[dict[str, Any]] = []
+        batch_size = 500
+        forbidden: list[str] = []
+        for i in range(0, len(entity_ids), batch_size):
+            batch = entity_ids[i:i + batch_size]
+            resp = self.client.post(
+                "registry", "/entries/export", json={"entry_ids": batch},
+            )
+            for item in resp.get("results", []):
+                if item.get("status") == "found" and item.get("entry"):
+                    rows.append(item["entry"])
+                elif item.get("status") == "forbidden":
+                    forbidden.append(item.get("entry_id", "?"))
+        if forbidden:
+            raise WIPClientError(
+                f"Registry export refused {len(forbidden)} entr(y/ies) — the "
+                "export key needs admin on every namespace the archive spans "
+                f"(first refused: {forbidden[0]})"
+            )
+        return rows
 
     def fetch_registry_entries(self, entity_ids: list[str]) -> dict[str, dict[str, Any]]:
         """Bulk-fetch Registry entries by ID, returning {entry_id: registry_data}.

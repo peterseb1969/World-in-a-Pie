@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createServer, type Server } from 'node:http'
 import express, { Router } from 'express'
 import { wipProxy, prefixPattern, WIP_API_PREFIXES } from './index.js'
@@ -11,6 +11,10 @@ import { wipProxy, prefixPattern, WIP_API_PREFIXES } from './index.js'
  * one major can throw at mount time on the other, which is exactly how a
  * proxy that only ever ran on a bundled express 4 shipped an express-5 crash
  * behind a `^5.0.0` peer claim.
+ *
+ * The upstream is a real `node:http` server (the proxy speaks node:http, not
+ * fetch — there is no global to stub, and a live upstream is what lets the
+ * streaming suite assert flow, not just routing).
  */
 
 const EXPECTED_MAJOR = process.env.WIP_PROXY_TEST_EXPRESS_MAJOR
@@ -51,33 +55,28 @@ describe('prefixPattern', () => {
 
 describe('wipProxy mount + routing', () => {
   let server: Server
+  let upstream: Server
   let base: string
   const upstreamCalls: Array<{ url: string; method: string }> = []
-  // The proxy handler calls the global fetch at request time, so the global
-  // gets stubbed — the tests' own client requests must go through the real
-  // one or they'd hit the stub instead of the HTTP server under test.
-  const realFetch = globalThis.fetch
-  const request = (path: string, init?: RequestInit) => realFetch(`${base}${path}`, init)
+
+  const request = (path: string, init?: RequestInit) => fetch(`${base}${path}`, init)
 
   beforeEach(async () => {
     upstreamCalls.length = 0
-    // The suite under test is route registration and matching, not proxying —
-    // stub the upstream fetch and record what the handler asked for.
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string | URL, init?: RequestInit) => {
-        upstreamCalls.push({ url: String(url), method: init?.method ?? 'GET' })
-        return new Response(JSON.stringify({ ok: true }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        })
-      }),
-    )
+    // A real upstream server records what the proxy asked for.
+    upstream = createServer((req, res) => {
+      upstreamCalls.push({ url: req.url ?? '', method: req.method ?? '' })
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify({ ok: true }))
+    })
+    await new Promise<void>((resolve) => upstream.listen(0, resolve))
+    const upstreamAddress = upstream.address()
+    if (upstreamAddress === null || typeof upstreamAddress === 'string') throw new Error('no upstream port')
 
     const app = express()
     app.use(
       '/wip',
-      wipProxy({ baseUrl: 'https://wip.test', apiKey: 'k' }),
+      wipProxy({ baseUrl: `http://127.0.0.1:${upstreamAddress.port}`, apiKey: 'k' }),
     )
     server = createServer(app)
     await new Promise<void>((resolve) => server.listen(0, resolve))
@@ -87,8 +86,8 @@ describe('wipProxy mount + routing', () => {
   })
 
   afterEach(async () => {
-    vi.unstubAllGlobals()
     await new Promise((resolve) => server.close(resolve))
+    await new Promise((resolve) => upstream.close(resolve))
   })
 
   it('mounts without throwing on this express major', () => {
@@ -101,17 +100,14 @@ describe('wipProxy mount + routing', () => {
     const res = await request(`/wip/api/def-store/terminologies?page=2&namespace=x%20y`)
     expect(res.status).toBe(200)
     expect(upstreamCalls).toEqual([
-      {
-        url: 'https://wip.test/api/def-store/terminologies?page=2&namespace=x%20y',
-        method: 'GET',
-      },
+      { url: '/api/def-store/terminologies?page=2&namespace=x%20y', method: 'GET' },
     ])
   })
 
   it('proxies the bare prefix (single registration covers it)', async () => {
     const res = await request(`/wip/api/registry`)
     expect(res.status).toBe(200)
-    expect(upstreamCalls).toEqual([{ url: 'https://wip.test/api/registry', method: 'GET' }])
+    expect(upstreamCalls).toEqual([{ url: '/api/registry', method: 'GET' }])
   })
 
   it('proxies every declared service prefix', async () => {
@@ -120,7 +116,7 @@ describe('wipProxy mount + routing', () => {
       expect(res.status, prefix).toBe(200)
     }
     expect(upstreamCalls.map((c) => c.url)).toEqual(
-      WIP_API_PREFIXES.map((p) => `https://wip.test${p}/ping`),
+      WIP_API_PREFIXES.map((p) => `${p}/ping`),
     )
   })
 
@@ -132,7 +128,7 @@ describe('wipProxy mount + routing', () => {
     })
     expect(res.status).toBe(200)
     expect(upstreamCalls).toEqual([
-      { url: 'https://wip.test/api/document-store/documents', method: 'POST' },
+      { url: '/api/document-store/documents', method: 'POST' },
     ])
   })
 
@@ -144,8 +140,9 @@ describe('wipProxy mount + routing', () => {
 
   it('leaves the file-content route reachable (named param registers on both majors)', async () => {
     const res = await request(`/wip/files/F-1/content`)
-    // The file handler does its own upstream round-trips against the stub;
-    // the assertion here is only that the route matched (no 404).
+    // The file handler does its own upstream round-trip against the real
+    // upstream; the assertion here is only that the route matched (no 404
+    // from the proxy app — the upstream returns 200).
     expect(res.status).not.toBe(404)
   })
 })

@@ -571,6 +571,17 @@ def _render_component(
     if volumes:
         pod_spec["volumes"] = volumes
 
+    # Lower ndots so the FQDNs in the rendered env are tried as written instead
+    # of being walked through the three cluster search domains first — see
+    # K8sPlatform.pod_dns_ndots for why the kubelet default of 5 quadruples the
+    # query count for every inter-service call.
+    k8s_plat = deployment.spec.platform.k8s
+    ndots = k8s_plat.pod_dns_ndots if k8s_plat else 1
+    if ndots is not None:
+        pod_spec["dnsConfig"] = {
+            "options": [{"name": "ndots", "value": str(ndots)}],
+        }
+
     # Dex needs fsGroup for sqlite
     if name == "dex":
         pod_spec["securityContext"] = {"fsGroup": 1001}
@@ -613,12 +624,18 @@ def _container_spec(
         "image": _image_ref(owner, deployment),
     }
 
-    # WIP-built images (build_context is set) iterate fast — same-tag re-pushes
-    # are routine and the k8s default `IfNotPresent` causes silent stale-digest
-    # rollouts. `Always` does an HTTP HEAD per pod start; cost is negligible
-    # against a LAN registry. External images (mongo, postgres, dex, etc.)
-    # have build_context=None and stay on the k8s default.
-    if owner.spec.image.build_context is not None:
+    # WIP-owned images (short name → served from the deployment registry;
+    # backend services AND apps built in their own repos alike) get same-tag
+    # re-pushes routinely, and the k8s default `IfNotPresent` causes silent
+    # stale-digest rollouts — an app rolled to a reused tag keeps the cached
+    # image. `Always` does an HTTP HEAD per pod start; cost is negligible
+    # against a LAN registry. Fully-qualified external images (mongo, dex,
+    # caddy — name contains `/`) carry upstream version pins and stay on the
+    # k8s default. Using build_context here would miss apps (built in their
+    # own repos, build_context=None) despite them being WIP images.
+    # `spec.images.pull_policy: always` escalates to Always for every image.
+    wip_owned = "/" not in owner.spec.image.name
+    if deployment.spec.images.pull_policy == "always" or wip_owned:
         container["imagePullPolicy"] = "Always"
 
     if owner.spec.ports:

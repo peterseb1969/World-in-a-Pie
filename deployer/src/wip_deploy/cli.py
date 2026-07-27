@@ -38,7 +38,7 @@ from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
-from wip_deploy.spec.deployment import AppRef
+from wip_deploy.spec.deployment import AppRef, SpecAPIKey
 from wip_deploy.spec.validators import validate_all
 
 app = typer.Typer(
@@ -142,9 +142,59 @@ def _api_key_opt() -> typer.models.OptionInfo:
     )
 
 
-def _parse_api_key_options(values: list[str] | None) -> list[dict]:
-    """Parse each --api-key JSON value; loud error on malformed input."""
+def _api_keys_file_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--api-keys-file",
+        help=(
+            "Path to a YAML or JSON file declaring spec API keys as a list "
+            "under a top-level `keys:` (or a bare list) — each entry "
+            "{name, namespaces, grants, owner?, groups?}. A human-friendly "
+            "alternative to repeating --api-key JSON; the file entries and "
+            "any --api-key values merge. Reviewable, diffable deployer input "
+            "rather than shell history."
+        ),
+    )
+
+
+def _parse_api_key_options(
+    values: list[str] | None, file_path: str | None = None
+) -> list[dict]:
+    """Merge --api-keys-file (if any) with each --api-key JSON value into a
+    list of key dicts. Loud, clean error on malformed input or on a key that
+    fails SpecAPIKey validation (e.g. grants outside the read scope)."""
     parsed: list[dict] = []
+
+    if file_path:
+        try:
+            text = Path(file_path).read_text()
+        except OSError as exc:
+            typer.echo(f"error: --api-keys-file unreadable: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        try:
+            doc = yaml.safe_load(text)  # YAML is a JSON superset
+        except yaml.YAMLError as exc:
+            typer.echo(
+                f"error: --api-keys-file is not valid YAML/JSON: {exc}", err=True
+            )
+            raise typer.Exit(1) from exc
+        keys = doc.get("keys") if isinstance(doc, dict) else doc
+        if not isinstance(keys, list):
+            typer.echo(
+                "error: --api-keys-file must have a top-level `keys:` list "
+                "(or be a bare list of key mappings)",
+                err=True,
+            )
+            raise typer.Exit(1)
+        for entry in keys:
+            if not isinstance(entry, dict):
+                typer.echo(
+                    f"error: --api-keys-file entry must be a mapping, got: "
+                    f"{entry!r}",
+                    err=True,
+                )
+                raise typer.Exit(1)
+            parsed.append(entry)
+
     for raw in values or []:
         try:
             obj = json.loads(raw)
@@ -158,6 +208,18 @@ def _parse_api_key_options(values: list[str] | None) -> list[dict]:
             )
             raise typer.Exit(1)
         parsed.append(obj)
+
+    # Validate each up front so grants-outside-namespaces (and other spec
+    # rules) surface as a one-line error here, not a pydantic traceback deep
+    # in build. Construction is discarded; the dicts flow on unchanged.
+    for entry in parsed:
+        try:
+            SpecAPIKey(**entry)
+        except Exception as exc:
+            name = entry.get("name", "?") if isinstance(entry, dict) else "?"
+            typer.echo(f"error: invalid api key {name!r}: {exc}", err=True)
+            raise typer.Exit(1) from exc
+
     return parsed
 
 
@@ -243,7 +305,7 @@ def _tls_secret_opt() -> typer.models.OptionInfo:
 def _dev_mode_opt() -> typer.models.OptionInfo:
     return typer.Option(
         "--dev-mode",
-        help="Dev mode: simple (compose + source mounts + --reload) | tilt (reserved, not implemented).",
+        help="Dev mode: simple (compose + source mounts + --reload). The only mode.",
     )
 
 
@@ -539,6 +601,7 @@ def validate(
     target: Annotated[str, _target_opt()] = "compose",
     variant: Annotated[str, _variant_opt()] = "dev",
     api_key: Annotated[list[str] | None, _api_key_opt()] = None,
+    api_keys_file: Annotated[str | None, _api_keys_file_opt()] = None,
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -585,7 +648,7 @@ def validate(
         preset=preset,
         target=target,
         variant=variant,
-        api_keys=_parse_api_key_options(api_key),
+        api_keys=_parse_api_key_options(api_key, api_keys_file),
         hostname=hostname,
         tls=tls,
         https_port=https_port,
@@ -662,6 +725,7 @@ def show_spec(
     target: Annotated[str, _target_opt()] = "compose",
     variant: Annotated[str, _variant_opt()] = "dev",
     api_key: Annotated[list[str] | None, _api_key_opt()] = None,
+    api_keys_file: Annotated[str | None, _api_keys_file_opt()] = None,
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -710,7 +774,7 @@ def show_spec(
         preset=preset,
         target=target,
         variant=variant,
-        api_keys=_parse_api_key_options(api_key),
+        api_keys=_parse_api_key_options(api_key, api_keys_file),
         hostname=hostname,
         tls=tls,
         https_port=https_port,
@@ -760,6 +824,7 @@ def render(
     target: Annotated[str, _target_opt()] = "compose",
     variant: Annotated[str, _variant_opt()] = "dev",
     api_key: Annotated[list[str] | None, _api_key_opt()] = None,
+    api_keys_file: Annotated[str | None, _api_keys_file_opt()] = None,
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -812,7 +877,7 @@ def render(
         preset=preset,
         target=target,
         variant=variant,
-        api_keys=_parse_api_key_options(api_key),
+        api_keys=_parse_api_key_options(api_key, api_keys_file),
         hostname=hostname,
         tls=tls,
         https_port=https_port,
@@ -881,6 +946,7 @@ def install(
     target: Annotated[str, _target_opt()] = "compose",
     variant: Annotated[str, _variant_opt()] = "dev",
     api_key: Annotated[list[str] | None, _api_key_opt()] = None,
+    api_keys_file: Annotated[str | None, _api_keys_file_opt()] = None,
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
@@ -989,7 +1055,7 @@ def install(
         preset=preset,
         target=target,
         variant=variant,
-        api_keys=_parse_api_key_options(api_key),
+        api_keys=_parse_api_key_options(api_key, api_keys_file),
         hostname=hostname,
         tls=tls,
         https_port=https_port,
@@ -1556,11 +1622,13 @@ def restart(
     Compose/dev only. Reads the rendered docker-compose.yaml under
     the install directory and runs `compose restart <svc>...` — does
     not rebuild the image or recreate the container, just bounces
-    the process. Picks up env-var changes that don't propagate
-    through bind-mounted source.
+    the process. Use it to re-import bind-mounted source edits.
 
-    For Dockerfile or package.json/requirements.txt edits use
-    `wip-deploy rebuild` instead — restart alone won't pick up
+    A restart does NOT pick up env or secret changes: the container
+    keeps the environment it was created with. After editing the
+    install's .env or secrets, use `wip-deploy redeploy` (recreates
+    the containers). For Dockerfile or package.json/requirements.txt
+    edits use `wip-deploy rebuild` — restart alone won't pick up
     a new image.
 
     Examples:
@@ -2576,6 +2644,125 @@ def redeploy(
     )
 
 
+@app.command("rotate-key")
+def rotate_key(
+    key_name: Annotated[
+        str,
+        typer.Argument(
+            help="Name of the spec-declared config API key to rotate "
+            "(one of auth.api_keys)."
+        ),
+    ],
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Rotate a spec-declared config-file API key — mint a fresh plaintext and re-apply.
+
+    Removes the key's secret (`<name>-api-key`) from the install's secret
+    backend, then re-renders and re-applies the saved spec — regenerating a
+    fresh plaintext, rewriting api-keys.json, and reloading services. Prints
+    the new plaintext ONCE.
+
+    No grace window: the old plaintext stops working the moment the apply
+    completes. Consumers that read the key from a mounted `*_API_KEY_FILE`
+    pick up the new value automatically (listed on success); external holders
+    (scripts, other machines, humans) must be re-handed it.
+
+    Only config-declared keys (auth.api_keys) rotate in place. Runtime keys
+    (console / POST /api-keys) have a server-generated, once-returned
+    plaintext — rotate those by revoke + create.
+
+    Zero-downtime rotation when external consumers can't switch atomically:
+    declare a second key, apply, migrate consumers, then remove the first and
+    apply.
+    """
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+
+    keys = deployment.spec.auth.api_keys
+    match = next((k for k in keys if k.name == key_name), None)
+    if match is None:
+        declared = ", ".join(sorted(k.name for k in keys)) or "(none)"
+        typer.echo(
+            f"error: {key_name!r} is not a spec-declared api key on this "
+            f"install. Declared config keys: {declared}. Runtime keys "
+            "(console / POST /api-keys) can't be rotated in place — revoke "
+            "and create a new one instead.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    secrets_spec = deployment.spec.secrets
+    if secrets_spec.backend != "file" or secrets_spec.location is None:
+        typer.echo(
+            "error: rotate-key requires the file secret backend with a "
+            "location set.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    secret_name = match.secret_name
+    secrets_location = Path(secrets_spec.location)
+    # Remove the current secret so the re-apply's ensure_secrets regenerates
+    # a fresh plaintext (get_or_generate: absent → generate).
+    FileSecretBackend(secrets_location).remove(secret_name)
+
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Rotated api key {key_name!r} on {resolved_name}",
+        repo_root=repo_root,
+    )
+
+    # Read the regenerated plaintext straight off disk (the apply used its own
+    # backend instance; this reads the persisted value).
+    secret_path = secrets_location / secret_name
+    new_plaintext = secret_path.read_text().rstrip("\n")
+
+    typer.echo("")
+    typer.echo(
+        typer.style(
+            f"New plaintext for {key_name!r} (shown once):", bold=True
+        )
+    )
+    typer.echo(f"  {new_plaintext}")
+    typer.echo(f"  secret file: {secret_path}")
+
+    # Consumers that mount this secret update automatically on the apply;
+    # everyone else holds a now-dead key.
+    auto = sorted(
+        {
+            owner.metadata.name
+            for owner in (*components, *apps_list)
+            for ev in (*owner.spec.env.required, *owner.spec.env.optional)
+            if ev.source.from_secret == secret_name
+        }
+    )
+    typer.echo("")
+    if auto:
+        typer.echo(
+            "Picks up the new value automatically (mounts the secret): "
+            + ", ".join(auto)
+        )
+    typer.echo(
+        typer.style(
+            "External holders of the OLD key (scripts, other machines, "
+            "humans) will now get 401 — re-hand them the new value above.",
+            fg=typer.colors.YELLOW,
+        )
+    )
+
+
 @app.command("add-module")
 def add_module(
     module_name: Annotated[
@@ -3505,14 +3692,46 @@ DEV LOOP — hot-reload an app from a local checkout
     wip-deploy install --tag 20260610a --image-tag registry=20260611-fix
 
 CHANGING AN EXISTING INSTALL
-  Pick up an env-var change, no rebuild:
+  Re-import a source edit in dev mode (process bounce only):
     wip-deploy restart def-store
+
+  Apply an env or secret change (recreate — a restart does NOT re-read env):
+    wip-deploy redeploy
+
+  Re-render from the saved spec after a deployer upgrade (only changed
+  services are recreated; name services to scope it):
+    wip-deploy redeploy registry def-store
 
   Pull a new image and recreate the container:
     wip-deploy rebuild registry
 
   See current state of running services:
     wip-deploy status
+
+SECURITY — before exposing an install
+  Run the read-only pre-exposure checklist (secret permissions, API-key
+  strength, TLS-vs-hostname sanity, published ports, hardening headers):
+    wip-deploy verify --security --name wip-prod
+
+DURABLE API KEYS — survive MongoDB wipe-restore (console-minted keys do not)
+  Declare a key with write grants on the deployment:
+    wip-deploy install --api-key '{"name": "web-yac", "namespaces": ["kb"], "grants": {"kb": "write"}}'
+
+  Same, from a reviewable YAML/JSON file (merges with --api-key):
+    wip-deploy install --api-keys-file keys.yaml
+
+  Rotate a declared key (prints the fresh plaintext once, no grace window):
+    wip-deploy rotate-key web-yac --name wip-prod
+
+APPS ON A RUNNING INSTALL
+  Enable an app (from apps/<name>/wip-app.yaml):
+    wip-deploy add-app clintrial
+
+  Enable with hot-reload from a local checkout (dev target):
+    wip-deploy add-app react-console --source $HOME/Dev/WIP-ReactConsole
+
+  Remove it again:
+    wip-deploy remove-app clintrial
 
 INSPECTION (no-op verbs — useful for debugging)
   See what a preset resolves to without applying:
@@ -3565,6 +3784,11 @@ TARGETS
 
 For verb-specific options:
   wip-deploy COMMAND --help
+
+More verbs, each with its own --help and examples:
+  up · app-deploy · register-app · unregister-app · validate-manifest
+  check-app-deployability · add-module · remove-module · export-ca
+  import-bundle
 """
 
 
@@ -4226,8 +4450,7 @@ def _render_tree(
         if dev_plat is None or dev_plat.mode != "simple":
             typer.echo(
                 f"error: dev target requires mode='simple'; got "
-                f"{dev_plat.mode if dev_plat else None!r} "
-                f"(tilt mode is a follow-up)",
+                f"{dev_plat.mode if dev_plat else None!r}",
                 err=True,
             )
             raise typer.Exit(2)

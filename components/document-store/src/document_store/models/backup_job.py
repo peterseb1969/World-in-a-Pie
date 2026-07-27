@@ -19,12 +19,19 @@ from beanie import Document as BeanieDocument
 from pydantic import BaseModel, Field
 from pymongo import DESCENDING, IndexModel
 
+from .api_models import StrictModel
+
 
 class BackupJobKind(StrEnum):
-    """Whether this job is exporting (backup) or importing (restore)."""
+    """What long-running operation this job is running."""
 
     BACKUP = "backup"
     RESTORE = "restore"
+    # Verifies a namespace's referential and identity integrity. Shares this
+    # record because it shares the machinery — progress events, SSE, persisted
+    # status, the warnings list — and a restore links to the validation it
+    # triggered, so the two belong in one place.
+    VALIDATE = "validate"
 
 
 class BackupJobStatus(StrEnum):
@@ -140,6 +147,23 @@ class BackupJob(BeanieDocument):
         description="The request body / options that initiated the job"
     )
 
+    # A validation job's findings: status, summary counts, and a capped
+    # sample of issues. Capped deliberately — a namespace with a systematic
+    # problem produces one issue per document, and the job record is not the
+    # right place to hold a quarter of a million of them.
+    result: dict[str, Any] | None = Field(
+        default=None,
+        description="Structured outcome for jobs that produce one (validation)"
+    )
+
+    # Validation jobs a completed restore kicked off, one per restored
+    # namespace. The restore does not wait for them: its own data is committed
+    # either way, and blocking on verification would make a fast restore slow.
+    validation_job_ids: list[str] = Field(
+        default_factory=list,
+        description="Validation jobs triggered by this restore"
+    )
+
     # Non-fatal findings surfaced during the job (e.g. reporting count-parity
     # incomplete after its bounded wait). A completed job with warnings
     # succeeded — the warnings say what to double-check.
@@ -172,7 +196,7 @@ class BackupProgressMessage(BaseModel):
     """SSE wire envelope for backup/restore progress events.
 
     **Guardrail 2 (CASE-23 Phase 3)** — this type is the public contract for
-    the SSE endpoint. It is deliberately **not** ``wip_toolkit.models.ProgressEvent``:
+    the SSE endpoint. It is deliberately **not** ``wip_archive.models.ProgressEvent``:
     the toolkit's event type is an implementation detail that must not leak
     to clients, so a future v1.1 rewrite that replaces the toolkit can still
     emit the same wire format without breaking clients or the @wip/client
@@ -215,7 +239,7 @@ class BackupProgressMessage(BaseModel):
     )
 
 
-class BackupRequest(BaseModel):
+class BackupRequest(StrictModel):
     """Request body for POST /backup/namespaces/{namespace}/backup.
 
     Most fields map to keyword arguments of the underlying backup engine; the
@@ -242,26 +266,44 @@ class BackupRequest(BaseModel):
         False, description="Include file blobs in the archive"
     )
     include_inactive: bool = Field(
-        False, description="Include inactive (soft-deleted) entities"
+        False,
+        description="Retired parameter — rejected with 400 if set. Backups "
+                    "always include every entity in every status: live data "
+                    "references inactive and archived entities (documents pin "
+                    "inactive template versions), so an archive missing them "
+                    "would be a restore trap. The flag never excluded "
+                    "anything — its filter matched a status no persisted "
+                    "entity carries.",
     )
     skip_documents: bool = Field(
         False, description="Skip the documents phase entirely"
     )
     skip_closure: bool = Field(
-        False, description="Skip the closure-table (term-relations) phase"
+        False,
+        description="Retired toolkit-export parameter — rejected with 400 if "
+                    "set. The direct engine always includes term relations.",
     )
     skip_synonyms: bool = Field(
-        False, description="Skip the synonyms phase"
+        False,
+        description="Retired toolkit-export parameter — rejected with 400 if "
+                    "set. Synonyms travel inside registry entries.",
     )
     latest_only: bool = Field(
-        False, description="Export only the latest version of each entity"
+        False,
+        description="Retired toolkit-export parameter — rejected with 400 if "
+                    "set. The direct engine exports every version; when this "
+                    "flag was silently ignored it also mis-stamped the "
+                    "manifest as latest-only.",
     )
     template_prefixes: list[str] | None = Field(
         default=None,
-        description="Optional list of template_id prefixes to filter documents",
+        description="Retired toolkit-export parameter — rejected with 400 if "
+                    "set. The direct engine has no template filter.",
     )
     dry_run: bool = Field(
-        False, description="Walk the export without writing the archive"
+        False,
+        description="Retired toolkit-export parameter — rejected with 400 if "
+                    "set. (Restore, by contrast, supports a real dry run.)",
     )
 
 
@@ -272,7 +314,7 @@ class BackupRequest(BaseModel):
 # one meaningful bound (batch_size 1..500) lives on the Form declaration.
 
 
-class RestoreFromJobRequest(BaseModel):
+class RestoreFromJobRequest(StrictModel):
     """Request body for POST /backup/jobs/{job_id}/restore.
 
     Unlike the upload restore (multipart form), this endpoint takes JSON —
@@ -280,6 +322,36 @@ class RestoreFromJobRequest(BaseModel):
     This model IS wired to the route, so its bounds are enforced.
     """
 
+    mode: str = Field(
+        "restore",
+        description=(
+            "'restore' requires an empty target and inserts everything; "
+            "'merge' takes the archive as a delta against an existing, "
+            "possibly non-empty namespace."
+        ),
+    )
+    on_clash: str = Field(
+        "skip",
+        description=(
+            "Merge only — what to do when the target already holds a "
+            "document's identity. 'skip' keeps the target's; 'overwrite' "
+            "appends the archive's latest version on top of it; 'newer' does "
+            "so only when the archive's copy was updated more recently."
+        ),
+    )
+    add_missing: bool = Field(
+        False,
+        description=(
+            "Merge only — insert terminologies and templates the target does "
+            "not have, instead of refusing."
+        ),
+    )
+    extend_terminologies: bool = Field(
+        False,
+        description=(
+            "Merge only — add terms the target's terminology is missing."
+        ),
+    )
     skip_documents: bool = Field(
         False, description="Skip the documents phase entirely"
     )
@@ -287,7 +359,14 @@ class RestoreFromJobRequest(BaseModel):
         False, description="Skip restoring file blobs"
     )
     batch_size: int = Field(
-        50, ge=1, le=500, description="Document write batch size"
+        500, ge=1, le=500, description="Document write batch size"
+    )
+    dry_run: bool = Field(
+        False,
+        description=(
+            "Run the preconditions and report what would happen without "
+            "writing anything."
+        ),
     )
 
 
@@ -310,6 +389,8 @@ class BackupJobSnapshot(BaseModel):
     archive_backend: str = "local"
     options: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+    result: dict[str, Any] | None = None
+    validation_job_ids: list[str] = Field(default_factory=list)
     created_by: str
 
     @classmethod
@@ -332,5 +413,7 @@ class BackupJobSnapshot(BaseModel):
             archive_backend=job.archive_backend,
             options=job.options,
             warnings=job.warnings,
+            result=job.result,
+            validation_job_ids=job.validation_job_ids,
             created_by=job.created_by,
         )

@@ -440,6 +440,27 @@ describe('Service classes via createWipClient', () => {
       expect(url).toContain('template_id=0190c000-0000-7000-0000-000000000001')
     })
 
+    it('getTemplateFacets sends GET with namespace and status params', async () => {
+      mockJsonResponse({
+        namespace: 'lab',
+        facets: [{
+          template_id: '0190c000-0000-7000-0000-000000000001',
+          template_value: 'SHARED_ASSET',
+          template_namespace: 'other-ns',
+          document_count: 2,
+        }],
+      })
+
+      const result = await client.documents.getTemplateFacets({ namespace: 'lab', status: 'all' })
+
+      expect(result.facets[0].template_namespace).toBe('other-ns')
+      expect(result.facets[0].document_count).toBe(2)
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/documents/template-facets')
+      expect(url).toContain('namespace=lab')
+      expect(url).toContain('status=all')
+    })
+
     it('getDocument fetches by ID', async () => {
       mockJsonResponse({ document_id: 'D-001', data: { name: 'Test' }, version: 1 })
 
@@ -987,10 +1008,10 @@ describe('Service classes via createWipClient', () => {
         'aa-restored',
         archive,
         {
-          mode: 'fresh',
-          target_namespace: 'aa-restored',
+          mode: 'restore',
           batch_size: 100,
-          register_synonyms: true,
+          dry_run: true,
+          drop_stale_reporting: true,
         },
         'aa-backup.zip',
       )
@@ -1002,14 +1023,64 @@ describe('Service classes via createWipClient', () => {
       expect(options.method).toBe('POST')
       expect(options.body).toBeInstanceOf(FormData)
       const fd = options.body as FormData
-      expect(fd.get('mode')).toBe('fresh')
-      expect(fd.get('target_namespace')).toBe('aa-restored')
+      expect(fd.get('mode')).toBe('restore')
       expect(fd.get('batch_size')).toBe('100')
-      expect(fd.get('register_synonyms')).toBe('true')
+      expect(fd.get('dry_run')).toBe('true')
+      expect(fd.get('drop_stale_reporting')).toBe('true')
+      // Retired toolkit-era params must never be sent — the endpoint 400s them.
+      expect(fd.get('target_namespace')).toBeNull()
+      expect(fd.get('register_synonyms')).toBeNull()
+      expect(fd.get('continue_on_error')).toBeNull()
       // Archive part is present and named.
       const archivePart = fd.get('archive')
       expect(archivePart).toBeInstanceOf(Blob)
       expect((archivePart as File).name).toBe('aa-backup.zip')
+    })
+
+    it('startRestore sends the merge clash policies', async () => {
+      mockJsonResponse(backupSnapshot({ kind: 'restore', namespace: 'aa' }))
+
+      const archive = new Blob([new Uint8Array([0x50, 0x4b])], { type: 'application/zip' })
+      await client.documents.startRestore('aa', archive, {
+        mode: 'merge',
+        on_clash: 'overwrite',
+        add_missing: true,
+      })
+
+      const [, options] = fetchMock.mock.calls[0]
+      const fd = options.body as FormData
+      expect(fd.get('mode')).toBe('merge')
+      expect(fd.get('on_clash')).toBe('overwrite')
+      expect(fd.get('add_missing')).toBe('true')
+    })
+
+    it('startRestore sends the definitions opt-ins', async () => {
+      mockJsonResponse(backupSnapshot({ kind: 'restore', namespace: 'aa' }))
+
+      const archive = new Blob([new Uint8Array([0x50, 0x4b])], { type: 'application/zip' })
+      await client.documents.startRestore('aa', archive, {
+        mode: 'merge',
+        extend_terminologies: true,
+      })
+
+      const [, options] = fetchMock.mock.calls[0]
+      const fd = options.body as FormData
+      expect(fd.get('extend_terminologies')).toBe('true')
+    })
+
+    it('startRestore sends the target for a fresh restore', async () => {
+      mockJsonResponse(backupSnapshot({ kind: 'restore', namespace: 'kb-copy' }))
+
+      const archive = new Blob([new Uint8Array([0x50, 0x4b])], { type: 'application/zip' })
+      await client.documents.startRestore('kb', archive, {
+        mode: 'fresh',
+        target_namespace: 'kb-copy',
+      })
+
+      const [, options] = fetchMock.mock.calls[0]
+      const fd = options.body as FormData
+      expect(fd.get('mode')).toBe('fresh')
+      expect(fd.get('target_namespace')).toBe('kb-copy')
     })
 
     it('startRestore omits unset option fields', async () => {
@@ -1024,6 +1095,22 @@ describe('Service classes via createWipClient', () => {
       expect(fd.get('target_namespace')).toBeNull()
       expect(fd.get('batch_size')).toBeNull()
       expect(fd.get('archive')).toBeInstanceOf(Blob)
+    })
+
+    it('validateNamespace posts with its options as query params', async () => {
+      mockJsonResponse(backupSnapshot({ kind: 'validate', namespace: 'kb' }))
+
+      const result = await client.documents.validateNamespace('kb', {
+        check_identity: false,
+        limit: 25,
+      })
+
+      expect(result.kind).toBe('validate')
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/backup/namespaces/kb/validate')
+      expect(url).toContain('check_identity=false')
+      expect(url).toContain('limit=25')
+      expect(options.method).toBe('POST')
     })
 
     it('getBackupJob fetches by job_id', async () => {

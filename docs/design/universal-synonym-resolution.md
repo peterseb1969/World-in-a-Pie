@@ -92,11 +92,11 @@ Import into "clintrials":
 
 **Rationale:** In practice, every API call targets a specific entity type. Requiring a prefix like `tpl:ADDRESS` adds syntax that developers and AI agents would need to learn. Endpoint-inferred resolution is zero-ceremony.
 
-### D6: Colon notation for term references (not context-sensitive)
+### D6: Term references are strict — fields or fully qualified, never the 2-part shorthand
 
-**Decision:** When referencing a term by synonym in an API parameter, always use `"TERMINOLOGY:TERM"` colon notation (e.g., `"STATUS:approved"`). Context-sensitive resolution (inferring the terminology from field definitions) is explicitly rejected.
+**Decision:** A term's identity is the tuple (namespace, terminology, value), and API parameters that accept a term identifier take exactly three forms: the canonical UUID, the fully qualified `"NS:TERMINOLOGY:VALUE"` string (split on the first two colons, so the value keeps any colons it contains), or the field form — a `terminology` parameter scoping the raw value, which travels opaque and is never colon-parsed. The 2-part `"TERMINOLOGY:VALUE"` shorthand is rejected with 422 on every term endpoint, reads and writes alike. Context-sensitive resolution (inferring the terminology from field definitions) remains rejected.
 
-**Rationale:** Context-sensitive APIs create ambiguity and are hard to debug. If a term synonym works in one context but fails in another (because the terminology can't be inferred), the developer gets inconsistent behaviour that's difficult to diagnose. Colon notation is unambiguous, self-documenting, and works in every context.
+**Rationale:** The 2-part shorthand is a lossy serialization of the identity tuple: no parser can distinguish its structural colon from a colon inside the value (OBO ids like `GO:0000278`), so a 2-part string can silently resolve through a decoy terminology — returning the wrong answer on a read, mutating or deleting the wrong entity on a write, with no runtime guard able to detect it. Identity lives in fields; delimiter conventions belong to format parsers at import boundaries. The term-specific carve-out exists because terms are the entity type whose values routinely carry colons; other entity types keep the `NS:VALUE` qualified form.
 
 **Important distinction:** This applies to **API parameters that accept entity IDs** (e.g., `term_id` in URL/query params). It does **not** apply to **document field data values**. When a document stores `"approved"` as a term field value, that's the term's value string — not a Registry synonym reference. Term validation in Document-Store already resolves term values within the field's `terminology_ref` context. This existing behaviour is unchanged.
 
@@ -159,8 +159,10 @@ When using a synonym in an API call, the developer provides a string that the re
 | Entity | API string | Composite key built by resolver |
 |--------|-----------|-------------------------------|
 | Terminology | `"STATUS"` | `{ns: <current>, type: "terminology", value: "STATUS"}` |
-| Term | `"STATUS:approved"` | `{ns: <current>, type: "term", terminology: "STATUS", value: "approved"}` |
+| Term | `"wip:STATUS:approved"` (3-part) or `terminology="STATUS"` + value `"approved"` (field form) | `{ns: "wip", type: "term", terminology: "STATUS", value: "approved"}` |
 | Template | `"PATIENT"` | `{ns: <current>, type: "template", value: "PATIENT"}` |
+
+Terms have no 2-part string form — `"STATUS:approved"` is rejected (see D6).
 
 Documents and files are not typically referenced by synonym string in API calls — they use canonical IDs or are found by search. Their synonyms exist for migration portability.
 
@@ -239,7 +241,8 @@ async def resolve_entity_id(
 def _build_composite_key(raw_id: str, entity_type: str, namespace: str) -> dict:
     """Build a composite key from a synonym string and context.
 
-    Term references use colon notation: "TERMINOLOGY:TERM_VALUE"
+    Term references use the fully qualified form "NS:TERMINOLOGY:VALUE"
+    (the 2-part "TERMINOLOGY:VALUE" shorthand is rejected — see D6)
     All other entity types use the plain value.
     """
     if entity_type == "term" and ":" in raw_id:
@@ -279,9 +282,10 @@ async def resolve_entity_ids(
 ### Registry API additions
 
 ```
-POST /api/registry/resolve
+POST /api/registry/entries/resolve
   Body: [{"composite_key": {"ns": "wip", "type": "template", "value": "ADDRESS"}}, ...]
-  Response: [{"composite_key": {...}, "entry_id": "TPL-01abc...", "status": "found"}, ...]
+  Response: {"results": [{"index": 0, "composite_key": {...}, "entry_id": "TPL-01abc...", "status": "found"}, ...],
+             "total": N, "found": N, "not_found": 0, "errors": 0}
 ```
 
 This is a read-only batch endpoint optimised for resolution. It does not create entries.
@@ -415,11 +419,14 @@ doc = await mcp.create_document(
 )
 ```
 
-### Term references with colon notation
+### Term references — field form or fully qualified
 
 ```python
-# Explicit, unambiguous term reference
-term = await mcp.get_term("STATUS:approved")
+# Field form (preferred): the value is opaque, colons and all
+term = await mcp.get_term("approved", terminology="STATUS")
+
+# Fully qualified 3-part string
+term = await mcp.get_term("wip:STATUS:approved")
 
 # Terminology reference
 terminology = await mcp.get_terminology("STATUS")
@@ -516,4 +523,4 @@ namespace, rather than `not_found`.
 - **Automatic synonym cleanup.** Synonyms persist until explicitly removed. Automated lifecycle management is a future enhancement.
 - **GraphQL or alternative API surface.** This design applies to the existing REST API.
 - **Version-pinned template synonyms.** Auto-synonyms resolve to the entity (latest version). Version-specific synonyms can be registered manually if needed.
-- **Context-sensitive term resolution.** Term synonyms always require `TERMINOLOGY:TERM` colon notation. No implicit terminology inference from field definitions or other context.
+- **Context-sensitive term resolution.** Term identifiers take the canonical UUID, the fully qualified `NS:TERMINOLOGY:VALUE` form, or the field form (a `terminology` parameter scoping an opaque value). The 2-part `TERMINOLOGY:VALUE` shorthand is rejected with 422 (see D6). No implicit terminology inference from field definitions or other context.

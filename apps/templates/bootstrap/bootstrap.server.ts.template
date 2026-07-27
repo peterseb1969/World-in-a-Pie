@@ -25,15 +25,28 @@
  *
  * SEED FILE CONVENTION (read before adapting):
  *   server/seed/terminologies/<VALUE>.json
- *     { value, label, description, mutable?, terms[], ontology?: { relationships[] } }
+ *     { value, label, description, mutable?, extensible?, case_sensitive?,
+ *       allow_multiple?, terms[], ontology?: { relationships[] } }
+ *     All four behavioural flags are forwarded to the platform verbatim
+ *     (including explicit false) — a seed flag the builder does not forward
+ *     is a lie to the seed author.
  *   server/seed/templates/<NN>_<VALUE>.json    (numeric prefix orders dependencies)
  *     { value, label, description, identity_fields[], fields[], reporting? }
  *   The runBootstrap loop reads these at runtime — no schema in code.
  *
+ *   If you RENAME any template value (e.g. adopting the namespace-prefixed
+ *   bootstrap value), grep the WHOLE seed dir for the old literal — sibling
+ *   seeds may reference it in target_templates / source_templates
+ *   allow-lists (flag records, edge types), and a fresh bootstrap fails at
+ *   their creation until they match. Inspection misses this; verify with a
+ *   real bootstrap into a throwaway namespace, then delete it.
+ *
  * REQUIRED before this works in your app:
- *   - A `BOOTSTRAP_RECORD` template in server/seed/templates/. See the
- *     comment block on writeBootstrapRecord() below for the canonical
- *     shape — do not deviate without escalation.
+ *   - A bootstrap-record template in server/seed/templates/ whose value is
+ *     `<NS_PREFIX>_BOOTSTRAP_RECORD` (must match BOOTSTRAP_RECORD_VALUE
+ *     below — namespace-prefixed so app-to-app merges never collide on a
+ *     shared value). See the comment block on writeBootstrapRecord() below
+ *     for the canonical FIELD shape — do not deviate without escalation.
  *   - The app's other terminologies + templates in seed/.
  *   - process.env.APP_VERSION and process.env.GIT_COMMIT_SHA set at
  *     build/deploy time. (The Dockerfile.dev / CI baseline templates
@@ -57,6 +70,17 @@ const SEED_DIR = join(__dirname, '..', 'seed')
 
 // TODO: set this to your app's namespace prefix.
 const NAMESPACE = 'TODO_APP_NAMESPACE'
+
+// The bootstrap template's VALUE is namespace-prefixed (e.g. namespace 'kb'
+// -> 'KB_BOOTSTRAP_RECORD'), derived from NAMESPACE — never a shared literal.
+// Every app minting the same value from its own seed copy meant any merge of
+// two app-derived archives collided on that one template (same value,
+// drifted shapes). Prefixed, the values differ, so merges carry each side's
+// provenance intact — and a transplanted record's name announces its origin:
+// KB_BOOTSTRAP_RECORD sitting in a merged namespace is self-labeled foreign
+// history, not a record masquerading as the target's own bootstrap.
+// Your seed file in server/seed/templates/ MUST declare this same value.
+const BOOTSTRAP_RECORD_VALUE = `${NAMESPACE.toUpperCase().replace(/-/g, '_')}_BOOTSTRAP_RECORD`
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyObj = Record<string, any>
@@ -168,12 +192,21 @@ export async function runBootstrap(
     }
 
     progress('terminologies', `Creating ${terminologies.length} terminologies...`)
+    // Forward EVERY behavioural flag the seed declares, preserving explicit
+    // false. A builder that whitelists a subset makes the seed file look
+    // authoritative while the platform silently never sees the rest — that
+    // shipped once (extensible dropped from every seed, masked for
+    // mutable:true seeds because def-store derives extensible from mutable).
+    // Truthy spreads are the same disease: they eat a declared false.
     const termBulk = terminologies.map((t) => ({
       value: t.value,
       label: t.label,
       description: t.description || '',
       namespace: NAMESPACE,
-      ...(t.mutable ? { mutable: true } : {}),
+      ...(t.mutable !== undefined ? { mutable: t.mutable } : {}),
+      ...(t.extensible !== undefined ? { extensible: t.extensible } : {}),
+      ...(t.case_sensitive !== undefined ? { case_sensitive: t.case_sensitive } : {}),
+      ...(t.allow_multiple !== undefined ? { allow_multiple: t.allow_multiple } : {}),
     }))
     const termResult = (await wipPost('/api/def-store/terminologies', termBulk)) as {
       results: Array<{ status: string; id: string; error?: string }>
@@ -292,7 +325,7 @@ export async function runBootstrap(
     //
     // Per the universal pattern (see CLAUDE.md "Namespace Bootstrap on
     // Launch"): one doc captures who/when/what/which-version. The
-    // BOOTSTRAP_RECORD template MUST exist in seed/templates/ — without
+    // The <NS_PREFIX>_BOOTSTRAP_RECORD template MUST exist in seed/templates/ — without
     // it this step fails with a "template not found" error.
     progress('audit', 'Writing BOOTSTRAP_RECORD audit doc...')
     await writeBootstrapRecord({
@@ -315,7 +348,10 @@ export async function runBootstrap(
 }
 
 /**
- * Write the BOOTSTRAP_RECORD audit doc.
+ * Write the bootstrap-record audit doc.
+ *
+ * The template VALUE is namespace-prefixed (BOOTSTRAP_RECORD_VALUE above);
+ * the FIELD shape below is canonical across all apps regardless of value.
  *
  * Canonical fields (do not deviate without escalation):
  *   - bootstrap_id: unique ID for this bootstrap run (timestamp-based)
@@ -326,9 +362,9 @@ export async function runBootstrap(
  *   - edge_types_created: list of edge-type (usage='relationship') values created
  *   - terminologies_created: list of terminology values created
  *
- * The BOOTSTRAP_RECORD template (entity, identity_fields=['bootstrap_id'])
- * lives in server/seed/templates/. See template-store conventions for
- * field-definition syntax.
+ * The bootstrap-record template (entity, identity_fields=['bootstrap_id'],
+ * value = BOOTSTRAP_RECORD_VALUE) lives in server/seed/templates/. See
+ * template-store conventions for field-definition syntax.
  */
 async function writeBootstrapRecord(meta: {
   startedAt: string
@@ -346,7 +382,7 @@ async function writeBootstrapRecord(meta: {
   // validates against the version we just created — not whatever
   // "latest" resolves to via the 5s cache.
   const tmpl = (await wipGet(
-    `/api/template-store/templates/by-value/BOOTSTRAP_RECORD?namespace=${NAMESPACE}`,
+    `/api/template-store/templates/by-value/${BOOTSTRAP_RECORD_VALUE}?namespace=${NAMESPACE}`,
   )) as { template_id: string; version: number }
 
   const bootstrapId = `bootstrap-${meta.startedAt.replace(/[:.]/g, '-')}`

@@ -3,7 +3,6 @@
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
-from starlette.testclient import TestClient
 
 from wip_auth import (
     APIKeyProvider,
@@ -87,8 +86,9 @@ class TestHashApiKey:
     def test_legacy_sha256_fallback(self):
         """Should verify legacy SHA-256 hashes."""
         import hashlib
+
         from wip_auth.providers.api_key import verify_api_key
-        legacy_hash = hashlib.sha256("wip_auth_salt:test_key".encode()).hexdigest()
+        legacy_hash = hashlib.sha256(b"wip_auth_salt:test_key").hexdigest()
         assert verify_api_key("test_key", legacy_hash) is True
         assert verify_api_key("wrong_key", legacy_hash) is False
 

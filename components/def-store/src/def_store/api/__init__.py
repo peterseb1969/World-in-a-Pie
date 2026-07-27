@@ -7,6 +7,7 @@ from .import_export import router as import_export_router
 from .ontology import router as ontology_router
 from .terminologies import router as terminologies_router
 from .terms import router as terms_router
+
 # Aggregate all API routers
 api_router = APIRouter(prefix="/api/def-store")
 api_router.include_router(terminologies_router)

@@ -55,6 +55,26 @@ class EntityExistsError(ValueError):
         self.changed = changed
 
 
+class AmbiguousTerminologyValueError(ValueError):
+    """An unscoped value lookup matched terminologies in several namespaces.
+
+    A terminology value is unique only within its namespace. When no
+    namespace is supplied and the value exists in more than one, there is
+    no correct pick among the matches — returning whichever document the
+    storage engine yields first silently hands the caller another
+    namespace's data. The lookup fails loud instead, carrying the
+    candidate namespaces so callers can tell the user how to disambiguate.
+    """
+
+    def __init__(self, value: str, namespaces: list[str]) -> None:
+        self.value = value
+        self.namespaces = namespaces
+        super().__init__(
+            f"Terminology value '{value}' exists in multiple namespaces "
+            f"{namespaces} — pass namespace to disambiguate"
+        )
+
+
 def conflict_result(
     index: int,
     exc: EntityExistsError,
@@ -140,7 +160,9 @@ class TerminologyService:
     @staticmethod
     async def create_terminology(
         request: CreateTerminologyRequest,
-        namespace: str
+        namespace: str,
+        *,
+        actor: str | None = None,
     ) -> TerminologyResponse:
         """
         Create a new terminology.
@@ -168,8 +190,10 @@ class TerminologyService:
                 changed=TerminologyService._terminology_config_diff(existing, request),
             )
 
-        # Get authenticated identity (not client-provided)
-        actor = get_identity_string()
+        # Authenticated identity by default. An explicit `actor` is honored only
+        # for internal/system callers (e.g. the startup bootstrap) — the API
+        # route never forwards a client-provided value, so it cannot be forged.
+        actor = actor or get_identity_string()
 
         # Register with Registry to get ID (or use pre-assigned ID for restore)
         client = get_registry_client()
@@ -266,6 +290,10 @@ class TerminologyService:
 
         Returns:
             Terminology if found, None otherwise
+
+        Raises:
+            AmbiguousTerminologyValueError: unscoped value lookup with the
+                value present in more than one namespace.
         """
         if terminology_id:
             # ID lookups can be global (for cross-namespace refs in open mode)
@@ -274,16 +302,32 @@ class TerminologyService:
                 query["namespace"] = namespace
             terminology = await Terminology.find_one(query)
         elif value:
-            query = {"value": value}
-            if namespace is not None:
-                query["namespace"] = namespace
-            terminology = await Terminology.find_one(query)
+            terminology = await TerminologyService.find_by_value(value, namespace)
         else:
             return None
 
         if terminology:
             return TerminologyService._to_terminology_response(terminology)
         return None
+
+    @staticmethod
+    async def find_by_value(value: str, namespace: str | None) -> Terminology | None:
+        """Find a terminology document by its value code.
+
+        With a namespace: exact scoped match. Without one, the lookup is
+        only safe while the value is globally unique — the same value live
+        in several namespaces has no correct arbitrary pick, so that case
+        raises AmbiguousTerminologyValueError instead of returning
+        whichever document the storage engine yields first.
+        """
+        if namespace is not None:
+            return await Terminology.find_one({"value": value, "namespace": namespace})
+        matches = await Terminology.find({"value": value}).to_list()
+        if len(matches) > 1:
+            raise AmbiguousTerminologyValueError(
+                value, sorted({m.namespace for m in matches})
+            )
+        return matches[0] if matches else None
 
     @staticmethod
     async def list_terminologies(
@@ -812,12 +856,17 @@ class TerminologyService:
             existing = existing_by_id.get(term_id) or existing_by_value.get(term_req.value)
             if existing:
                 if skip_duplicates or update_existing:
+                    # Existing terms are left untouched — import is extend-only by
+                    # WIP contract (CASE-797). Neither skip_duplicates nor
+                    # update_existing mutates an existing term (real in-place
+                    # update is a future --force feature), so report it honestly
+                    # as skipped rather than a no-op "updated".
                     results[global_idx] = BulkResultItem(
                         index=global_idx,
-                        status="skipped" if skip_duplicates else "updated",
+                        status="skipped",
                         id=existing.term_id,
                         value=term_req.value,
-                        error="Already exists" if skip_duplicates else None,
+                        error="Already exists",
                     )
                 else:
                     results[global_idx] = BulkResultItem(
@@ -1072,7 +1121,7 @@ class TerminologyService:
     async def create_terms_bulk(
         terminology_id: str,
         terms: list[CreateTermRequest],
-        created_by: str | None = None,  # Deprecated: uses authenticated identity
+        created_by: str | None = None,  # Actor override for internal/system callers; else the authenticated identity
         skip_duplicates: bool = True,
         update_existing: bool = False,
         batch_size: int = 1000,
@@ -1093,7 +1142,9 @@ class TerminologyService:
             terms: Terms to create
             created_by: Deprecated - uses authenticated identity
             skip_duplicates: If True, skip terms whose value already exists
-            update_existing: If True, placeholder for future update logic
+            update_existing: Extend-only — existing terms are left unchanged and
+                reported as "skipped" (in-place update is a future --force
+                feature; CASE-797). Accepting an existing term non-fatally.
             batch_size: Number of terms to process per MongoDB batch (default 1000)
             registry_batch_size: Number of terms per registry HTTP call (default 100)
 
@@ -1113,8 +1164,9 @@ class TerminologyService:
 
         namespace = terminology.namespace
 
-        # Get authenticated identity (not client-provided)
-        actor = get_identity_string()
+        # Authenticated identity by default; an explicit `created_by` is honored
+        # for internal/system callers (e.g. the startup bootstrap).
+        actor = created_by or get_identity_string()
         now = datetime.now(UTC)
 
         # Initialize results array
@@ -1517,11 +1569,12 @@ class TerminologyService:
             Tuple of (is_valid, matched_term, matched_via, suggestion)
             matched_via is 'value' or 'alias' if matched
         """
-        # Find terminology
+        # Find terminology — an unscoped value that exists in several
+        # namespaces raises rather than validating against an arbitrary one
         if terminology_id:
             terminology = await Terminology.find_one({"terminology_id": terminology_id})
         elif terminology_value:
-            terminology = await Terminology.find_one({"value": terminology_value})
+            terminology = await TerminologyService.find_by_value(terminology_value, None)
         else:
             return (False, None, None, None)
 

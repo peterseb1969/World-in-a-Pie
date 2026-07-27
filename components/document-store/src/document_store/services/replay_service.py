@@ -19,6 +19,55 @@ class ReplayService:
         self._tasks: dict[str, asyncio.Task] = {}
         self._pause_flags: dict[str, asyncio.Event] = {}  # cleared = paused
 
+    @staticmethod
+    def _latest_docs_pipeline(
+        replay_filter: Any,
+        *,
+        count_only: bool = False,
+        skip: int | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Aggregation selecting the LATEST version row per document_id.
+
+        "Latest" is computed, never persisted: a document is version rows
+        sharing a document_id, and no row carries a latest flag — the read
+        path derives it by comparing versions. Filtering on a persisted
+        flag therefore matches nothing (this service did exactly that for
+        its whole life, so replay never found a single document). The
+        pipeline mirrors the read path instead: match the filter, then per
+        document_id keep the highest-version matching row — the same
+        semantics the exporter's client-side dedup applies.
+
+        One helper for BOTH the precondition count and the publish scan —
+        two hand-rolled copies of this query is how they drift apart.
+        """
+        match: dict[str, Any] = {
+            "status": replay_filter.status,
+            "namespace": replay_filter.namespace,
+        }
+        if replay_filter.template_id:
+            match["template_id"] = replay_filter.template_id
+        if replay_filter.template_value:
+            match["template_value"] = replay_filter.template_value
+
+        pipeline: list[dict[str, Any]] = [
+            {"$match": match},
+            {"$sort": {"document_id": 1, "version": -1}},
+            {"$group": {"_id": "$document_id", "doc": {"$first": "$$ROOT"}}},
+        ]
+        if count_only:
+            pipeline.append({"$count": "total"})
+            return pipeline
+        pipeline.append({"$replaceRoot": {"newRoot": "$doc"}})
+        # Deterministic order so skip/limit pagination never repeats or
+        # drops a document across batches.
+        pipeline.append({"$sort": {"document_id": 1}})
+        if skip:
+            pipeline.append({"$skip": skip})
+        if limit is not None:
+            pipeline.append({"$limit": limit})
+        return pipeline
+
     async def start_replay(
         self,
         filter_config: dict,
@@ -38,20 +87,26 @@ class ReplayService:
         stream_name = f"WIP_REPLAY_{session_id.upper()}"
         subject_prefix = f"wip.replay.{session_id}"
 
-        # Count documents matching filter
+        # Count matching documents — distinct document_ids whose latest
+        # matching version would be published, via the shared pipeline.
         from ..models.document import Document
-        query: dict[str, Any] = {"status": replay_filter.status, "namespace": replay_filter.namespace}
-        if replay_filter.template_id:
-            query["template_id"] = replay_filter.template_id
-        if replay_filter.template_value:
-            query["template_value"] = replay_filter.template_value
-
-        # Only count latest versions
-        query["is_latest"] = True
-        total_count = await Document.find(query).count()
+        count_rows = await Document.aggregate(
+            self._latest_docs_pipeline(replay_filter, count_only=True)
+        ).to_list()
+        total_count = count_rows[0]["total"] if count_rows else 0
 
         if total_count == 0:
-            raise ValueError("No documents match the replay filter")
+            # Name the filter that ran: a bare "no documents match" reads as
+            # data loss to a caller who can see the documents (a filer once
+            # diagnosed a healthy 3,792-doc namespace as replay-blind from
+            # this message alone).
+            applied = (
+                f"namespace={replay_filter.namespace!r}, "
+                f"status={replay_filter.status!r}"
+                + (f", template_id={replay_filter.template_id!r}" if replay_filter.template_id else "")
+                + (f", template_value={replay_filter.template_value!r}" if replay_filter.template_value else "")
+            )
+            raise ValueError(f"No documents match the replay filter ({applied})")
 
         # Create NATS stream for replay
         from nats.js.api import RetentionPolicy, StorageType, StreamConfig
@@ -169,16 +224,6 @@ class ReplayService:
         session.started_at = datetime.now(UTC)
 
         try:
-            query = {
-                "status": session.filter.status,
-                "namespace": session.filter.namespace,
-                "is_latest": True,
-            }
-            if session.filter.template_id:
-                query["template_id"] = session.filter.template_id
-            if session.filter.template_value:
-                query["template_value"] = session.filter.template_value
-
             page = 1
             sequence = 0
             batch_size = session.batch_size
@@ -187,19 +232,24 @@ class ReplayService:
                 # Check pause flag
                 await self._pause_flags[session_id].wait()
 
-                # Fetch a batch
+                # Fetch a batch of latest-version rows via the same shared
+                # pipeline the precondition count ran — raw dicts, since an
+                # aggregation does not return Document instances.
                 skip = (page - 1) * batch_size
-                docs = await Document.find(query).skip(skip).limit(batch_size).to_list()
+                docs = await Document.aggregate(
+                    self._latest_docs_pipeline(
+                        session.filter, skip=skip, limit=batch_size
+                    )
+                ).to_list()
 
                 if not docs:
                     break
 
-                for doc in docs:
+                for doc_dict in docs:
                     # Check pause flag before each event
                     await self._pause_flags[session_id].wait()
 
                     sequence += 1
-                    doc_dict = doc.dict(by_alias=True)
                     # Convert ObjectId and datetime to strings
                     doc_dict.pop("_id", None)
                     doc_dict.pop("id", None)

@@ -1,6 +1,6 @@
 """Data models for WIP authentication."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -62,7 +62,13 @@ class APIKeyRecord(BaseModel):
     """
 
     name: str = Field(..., description="Human-readable name for the key")
-    key_hash: str = Field(..., description="SHA-256 hash of the API key")
+    key_hash: str = Field(
+        ...,
+        description=(
+            "Bcrypt hash of the API key (legacy SHA-256 hashes are accepted "
+            "for verification only, with a deprecation warning)"
+        ),
+    )
     owner: str = Field(default="system", description="Owner of this key (user or service)")
     groups: list[str] = Field(default_factory=list, description="Groups/roles for this key")
     description: str | None = Field(default=None, description="Description of what this key is for")
@@ -93,10 +99,20 @@ class APIKeyRecord(BaseModel):
     )
 
     def is_expired(self) -> bool:
-        """Check if the key has expired."""
+        """Check if the key has expired.
+
+        Compares against a UTC-aware now, matching the rest of the system
+        (registry models and the provider's last_used_at all use
+        datetime.now(UTC)). A naive expires_at is assumed to be UTC rather
+        than compared against a naive local now — otherwise the answer would
+        be off by the host's UTC offset.
+        """
         if self.expires_at is None:
             return False
-        return datetime.now(self.expires_at.tzinfo) > self.expires_at
+        expires_at = self.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        return datetime.now(UTC) > expires_at
 
 
 class AuthResult(BaseModel):

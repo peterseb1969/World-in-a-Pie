@@ -4,7 +4,7 @@ Data models for the Reporting Sync service.
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -79,6 +79,25 @@ class TemplateEvent(BaseModel):
     template: dict[str, Any] = Field(..., description="Full template definition")
 
 
+class CrossVersionView(BaseModel):
+    """Opt-in cross-version entity view config (template-level).
+
+    Controls the bare-name view built over the per-version tables. The
+    identity-core column set (typed intersection of the selected versions'
+    tables) is always included; ``columns`` adds mappings beyond it —
+    declared renames land here. Anything unmapped and not provably
+    identical across the selected versions is absent from the view: the
+    backend never silently merges columns it cannot prove compatible.
+
+    ``columns`` maps a target column name to an optional ``{"from": <old>}``
+    source; an empty mapping means "this column exists under its own name
+    in the versions that have it, NULL elsewhere".
+    """
+
+    versions: Literal["all"] | list[int] = "all"
+    columns: dict[str, dict[str, str] | None] = Field(default_factory=dict)
+
+
 class ReportingConfig(BaseModel):
     """Reporting configuration for a template."""
 
@@ -88,6 +107,7 @@ class ReportingConfig(BaseModel):
     include_metadata: bool = True
     flatten_arrays: bool = True
     max_array_elements: int = 10
+    cross_version_view: CrossVersionView | None = None
 
 
 class FieldType(StrEnum):
@@ -200,10 +220,18 @@ class BatchSyncStatus(StrEnum):
 
 
 class BatchSyncJob(BaseModel):
-    """Batch sync job status."""
+    """Batch sync job status.
+
+    `namespace` is the job's document scope: None = documents from every
+    namespace; set = only that namespace's documents. `template_id` is the
+    resolved canonical id — two namespaces can share a template value, so
+    the value alone does not identify what a job is syncing.
+    """
 
     job_id: str
     template_value: str
+    template_id: str | None = None
+    namespace: str | None = None
     status: BatchSyncStatus
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -212,6 +240,26 @@ class BatchSyncJob(BaseModel):
     documents_failed: int = 0
     current_page: int = 0
     error_message: str | None = None
+    # Per-phase wall-time accumulators (milliseconds) + row count. Permanent
+    # instrumentation rather than one-off profiling: this path's regressions
+    # were invisible until an operator timed a 13-minute sync by hand, and a
+    # job that reports where its time went makes the next one a read of the
+    # job record. rows_written counts physical row upserts — with
+    # flatten_arrays a document is a row MULTIPLE, so documents_synced alone
+    # misattributes throughput.
+    fetch_ms: int = 0
+    upsert_ms: int = 0
+    sibling_ms: int = 0
+    rows_written: int = 0
+    # True once a duplicate trigger was answered with this job instead of a
+    # second concurrent writer. The trigger response reads it to say honestly
+    # whether it started a job or joined one — in particular, a force trigger
+    # that lands on an active job must report that force was NOT applied.
+    deduplicated: bool = False
+    # Relations removed by a force rebuild before this job's sync ran
+    # (schema-qualified). A destructive step must be auditable from the job
+    # record, not only from service logs.
+    dropped_relations: list[str] = []
 
 
 class BatchSyncResponse(BaseModel):
@@ -219,6 +267,7 @@ class BatchSyncResponse(BaseModel):
 
     job_id: str
     template_value: str
+    namespace: str | None = None
     status: BatchSyncStatus
     message: str
 
@@ -323,7 +372,7 @@ class Alert(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
-class AlertThresholds(BaseModel):
+class AlertThresholds(StrictModel):
     """Configurable alert thresholds."""
 
     # Queue lag alert
@@ -339,7 +388,7 @@ class AlertThresholds(BaseModel):
     stall_critical_seconds: int = Field(default=600, description="Seconds for stall critical")
 
 
-class AlertConfig(BaseModel):
+class AlertConfig(StrictModel):
     """Alert configuration."""
 
     enabled: bool = True

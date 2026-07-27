@@ -210,10 +210,6 @@ KBEOF
     if cp "$WIP_ROOT/docs/slash-commands/backend/wip-case.md" "$WIP_ROOT/.claude/commands/" 2>/dev/null; then
         echo "   Dropped: /wip-case stub"
     fi
-    if [ ! -e "$WIP_ROOT/yac-discussions" ]; then
-        echo "   NOTE: no yac-discussions/ staging surface. Symlink the shared case"
-        echo "         store (transition) — the write-gateway (CASE-464) will make it optional."
-    fi
 }
 
 if $REFRESH_MODE; then

@@ -55,8 +55,8 @@ def test_indexed_field_emits_gin_index():
     fields = [TemplateField(name="body", type=FieldType.STRING, full_text_indexed=True)]
     ddl = _sm().generate_create_table_ddl("testns", "lesson", 1, fields)
     assert (
-        'CREATE INDEX IF NOT EXISTS "doc_lesson_body_tsv_idx" '
-        'ON "testns"."doc_lesson" USING GIN ("body_tsv")'
+        'CREATE INDEX IF NOT EXISTS "doc_lesson__v1_body_tsv_idx" '
+        'ON "testns"."doc_lesson__v1" USING GIN ("body_tsv")'
     ) in ddl
 
 
@@ -76,7 +76,7 @@ def test_indexed_field_with_system_column_name_gets_data_prefix():
     ddl = _sm().generate_create_table_ddl("testns", "note", 1, fields)
     assert '"data_status_search" TEXT' in ddl
     assert '"data_status_tsv" tsvector' in ddl
-    assert '"doc_note_data_status_tsv_idx"' in ddl
+    assert '"doc_note__v1_data_status_tsv_idx"' in ddl
 
 
 def test_mixed_indexed_and_non_indexed_fields():
@@ -89,7 +89,7 @@ def test_mixed_indexed_and_non_indexed_fields():
     # body gets the full set; tags/score do not.
     assert '"body_search" TEXT' in ddl
     assert '"body_tsv" tsvector' in ddl
-    assert '"doc_article_body_tsv_idx"' in ddl
+    assert '"doc_article__v1_body_tsv_idx"' in ddl
     assert '"tags" TEXT' in ddl
     assert '"tags_search"' not in ddl
     assert '"score" NUMERIC' in ddl
@@ -106,7 +106,7 @@ def test_indexed_relationship_template_still_gets_fts_columns():
         "testns", "rel_note", 1, fields, usage="relationship"
     )
     assert '"notes_tsv" tsvector' in ddl
-    assert '"doc_rel_note_notes_tsv_idx"' in ddl
+    assert '"doc_rel_note__v1_notes_tsv_idx"' in ddl
     # Phase 7 columns still present.
     assert '"source_ref_id" TEXT' in ddl
     assert '"target_ref_id" TEXT' in ddl
@@ -171,7 +171,7 @@ async def test_alter_table_adds_search_tsv_and_index_when_missing(mock_pool_with
     assert any('ADD COLUMN "body_search"' in s for s in executed)
     assert any('ADD COLUMN "body_tsv"' in s and "GENERATED ALWAYS AS" in s for s in executed)
     assert any(
-        'CREATE INDEX IF NOT EXISTS "doc_lesson_body_tsv_idx"' in s and "GIN" in s
+        'CREATE INDEX IF NOT EXISTS "doc_lesson__v2_body_tsv_idx"' in s and "GIN" in s
         for s in executed
     )
     # And the migration list includes them.
@@ -198,7 +198,7 @@ async def test_alter_table_skips_existing_fts_columns(mock_pool_with_columns):
     assert not any('ADD COLUMN "body_tsv"' in s for s in executed)
     # …but the index is still ensured (idempotent).
     assert any(
-        'CREATE INDEX IF NOT EXISTS "doc_lesson_body_tsv_idx"' in s
+        'CREATE INDEX IF NOT EXISTS "doc_lesson__v2_body_tsv_idx"' in s
         for s in executed
     )
 

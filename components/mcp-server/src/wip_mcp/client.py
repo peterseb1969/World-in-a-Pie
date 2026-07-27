@@ -4,6 +4,7 @@ Wraps httpx to provide a unified interface to all WIP services.
 Handles the bulk response envelope so callers get clean results.
 """
 
+import json
 import os
 from typing import Any, cast
 
@@ -529,10 +530,11 @@ class WipClient:
             page_size=page_size,
         )
 
-    async def get_terminology(self, terminology_id: str) -> dict:
+    async def get_terminology(self, terminology_id: str, namespace: str | None = None) -> dict:
         return await self._get(
             self.def_store_url,
             f"/api/def-store/terminologies/{terminology_id}",
+            namespace=namespace,
         )
 
     async def get_terminology_by_value(self, value: str, namespace: str | None = None) -> dict:
@@ -607,6 +609,7 @@ class WipClient:
         search: str | None = None,
         page: int = 1,
         page_size: int = 50,
+        namespace: str | None = None,
     ) -> dict:
         return await self._get(
             self.def_store_url,
@@ -614,12 +617,17 @@ class WipClient:
             search=search,
             page=page,
             page_size=page_size,
+            namespace=namespace,
         )
 
-    async def get_term(self, term_id: str, namespace: str | None = None) -> dict:
+    async def get_term(
+        self, term_id: str, namespace: str | None = None,
+        terminology: str | None = None,
+    ) -> dict:
         return await self._get(
             self.def_store_url, f"/api/def-store/terms/{term_id}",
             namespace=namespace,
+            terminology=terminology,
         )
 
     async def create_terms(
@@ -648,27 +656,35 @@ class WipClient:
         )
         return self._unwrap_bulk(resp)
 
-    async def update_term(self, term_id: str, updates: dict, namespace: str | None = None) -> dict:
+    async def update_term(
+        self, term_id: str, updates: dict, namespace: str | None = None,
+        terminology: str | None = None,
+    ) -> dict:
         item = {"term_id": term_id, **updates}
         resp = await self._put(
             self.def_store_url, "/api/def-store/terms", json=[item],
             namespace=namespace or self.default_namespace,
+            terminology=terminology,
         )
         return self._unwrap_single(resp)
 
-    async def delete_term(self, term_id: str, hard_delete: bool = False, namespace: str | None = None) -> dict:
+    async def delete_term(
+        self, term_id: str, hard_delete: bool = False, namespace: str | None = None,
+        terminology: str | None = None,
+    ) -> dict:
         item: dict[str, Any] = {"id": term_id}
         if hard_delete:
             item["hard_delete"] = True
         resp = await self._delete(
             self.def_store_url, "/api/def-store/terms", json=[item],
             namespace=namespace or self.default_namespace,
+            terminology=terminology,
         )
         return self._unwrap_single(resp)
 
     async def deprecate_term(
         self, term_id: str, reason: str, replaced_by_term_id: str | None = None,
-        namespace: str | None = None,
+        namespace: str | None = None, terminology: str | None = None,
     ) -> dict:
         item: dict[str, Any] = {"term_id": term_id, "reason": reason}
         if replaced_by_term_id:
@@ -676,6 +692,7 @@ class WipClient:
         resp = await self._post(
             self.def_store_url, "/api/def-store/terms/deprecate", json=[item],
             namespace=namespace or self.default_namespace,
+            terminology=terminology,
         )
         return self._unwrap_single(resp)
 
@@ -699,7 +716,7 @@ class WipClient:
 
     async def get_term_children(
         self, term_id: str, relation_type: str | None = None,
-        namespace: str | None = None,
+        namespace: str | None = None, terminology: str | None = None,
     ) -> list[dict]:
         # Ontology endpoints return a bare JSON array; _get is typed dict, so
         # cast to the real shape.
@@ -708,22 +725,25 @@ class WipClient:
             f"/api/def-store/ontology/terms/{term_id}/children",
             relation_type=relation_type,
             namespace=namespace,
+            terminology=terminology,
         ))
 
     async def get_term_parents(
         self, term_id: str, relation_type: str | None = None,
-        namespace: str | None = None,
+        namespace: str | None = None, terminology: str | None = None,
     ) -> list[dict]:
         return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/parents",
             relation_type=relation_type,
             namespace=namespace,
+            terminology=terminology,
         ))
 
     async def get_term_ancestors(
         self, term_id: str, relation_type: str | None = None,
         max_depth: int = 10, namespace: str | None = None,
+        terminology: str | None = None,
     ) -> list[dict]:
         return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
@@ -731,11 +751,13 @@ class WipClient:
             relation_type=relation_type,
             max_depth=max_depth,
             namespace=namespace,
+            terminology=terminology,
         ))
 
     async def get_term_descendants(
         self, term_id: str, relation_type: str | None = None,
         max_depth: int = 10, namespace: str | None = None,
+        terminology: str | None = None,
     ) -> list[dict]:
         return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
@@ -743,6 +765,7 @@ class WipClient:
             relation_type=relation_type,
             max_depth=max_depth,
             namespace=namespace,
+            terminology=terminology,
         ))
 
     async def create_term_relations(
@@ -777,6 +800,7 @@ class WipClient:
         direction: str = "outgoing",
         relation_type: str | None = None,
         namespace: str | None = None,
+        terminology: str | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> dict:
@@ -787,6 +811,7 @@ class WipClient:
             direction=direction,
             relation_type=relation_type,
             namespace=namespace,
+            terminology=terminology,
             page=page,
             page_size=page_size,
         )
@@ -1009,6 +1034,16 @@ class WipClient:
             latest_only=latest_only,
             page=page,
             page_size=page_size,
+        )
+
+    async def get_template_facets(
+        self, namespace: str | None = None, status: str = "active"
+    ) -> dict:
+        return await self._get(
+            self.document_store_url,
+            "/api/document-store/documents/template-facets",
+            namespace=namespace,
+            status=status,
         )
 
     async def get_document(
@@ -1360,6 +1395,37 @@ class WipClient:
             json=body,
         )
 
+    async def validate_template_candidate(
+        self,
+        template_definition: dict,
+        namespace: str | None = None,
+        documents: list[dict] | None = None,
+        sample_template: str | None = None,
+        sample_limit: int = 100,
+    ) -> dict:
+        """Validate documents against an INLINE candidate template definition.
+
+        Nothing is created, cached, or registered — the candidate exists only
+        for this call. Exactly one of ``documents`` (explicit payloads) or
+        ``sample_template`` (validate the most recently updated active docs of
+        an existing template) must be provided.
+        """
+        namespace = self._ns(namespace)
+        body: dict[str, Any] = {
+            "template_definition": template_definition,
+            "namespace": namespace,
+            "sample_limit": sample_limit,
+        }
+        if documents is not None:
+            body["documents"] = documents
+        if sample_template is not None:
+            body["sample_template_id"] = sample_template
+        return await self._post(
+            self.document_store_url,
+            "/api/document-store/validation/validate-candidate",
+            json=body,
+        )
+
     # ========================================================
     # Document-Store: Import
     # ========================================================
@@ -1466,27 +1532,20 @@ class WipClient:
         self,
         namespace: str | None = None,
         include_files: bool = False,
-        include_inactive: bool = False,
         skip_documents: bool = False,
-        skip_closure: bool = False,
-        skip_synonyms: bool = False,
-        latest_only: bool = False,
-        template_prefixes: list[str] | None = None,
-        dry_run: bool = False,
     ) -> dict:
-        """Kick off a namespace backup. Returns the initial BackupJobSnapshot (HTTP 202)."""
+        """Kick off a namespace backup. Returns the initial BackupJobSnapshot (HTTP 202).
+
+        Only the options the direct backup engine consumes are sent — the
+        endpoint rejects retired toolkit-era fields (skip_closure,
+        skip_synonyms, latest_only, template_prefixes, dry_run,
+        include_inactive) with 400.
+        """
         namespace = self._ns(namespace)
         body: dict[str, Any] = {
             "include_files": include_files,
-            "include_inactive": include_inactive,
             "skip_documents": skip_documents,
-            "skip_closure": skip_closure,
-            "skip_synonyms": skip_synonyms,
-            "latest_only": latest_only,
-            "dry_run": dry_run,
         }
-        if template_prefixes is not None:
-            body["template_prefixes"] = template_prefixes
         return await self._post(
             self.document_store_url,
             f"/api/document-store/backup/namespaces/{namespace}/backup",
@@ -1499,15 +1558,29 @@ class WipClient:
         archive_path: str,
         mode: str = "restore",
         target_namespace: str | None = None,
-        register_synonyms: bool = False,
+        namespace_map: dict[str, str] | None = None,
+        on_clash: str = "skip",
+        add_missing: bool = False,
+        extend_terminologies: bool = False,
         skip_documents: bool = False,
         skip_files: bool = False,
-        batch_size: int = 50,
-        continue_on_error: bool = False,
+        batch_size: int = 500,
         dry_run: bool = False,
         drop_stale_reporting: bool = False,
     ) -> dict:
-        """Upload a local archive file and start a restore job. Streams from disk."""
+        """Upload a local archive file and start a restore job. Streams from disk.
+
+        Both modes are ID-preserving and write each namespace in the archive
+        back to ITSELF — the endpoint determines the targets from the archive
+        manifest. ``restore`` requires an empty target; ``merge`` reconciles
+        into a namespace that already holds data. Retired toolkit-era params
+        are not sent: register_synonyms was removed from the API (fresh
+        means fresh — no old-to-new id back-ties), and continue_on_error is
+        a tombstone the endpoint rejects with 400 when set.
+
+        The clash policies are only sent for a merge: the endpoint rejects a
+        non-default policy on a plain restore rather than ignoring it.
+        """
         from pathlib import Path as _Path
         path = _Path(archive_path)
         if not path.is_file():
@@ -1516,16 +1589,24 @@ class WipClient:
         client = await self._get_client()
         data: dict[str, str] = {
             "mode": mode,
-            "register_synonyms": str(register_synonyms).lower(),
+            "target_namespace": target_namespace or "",
             "skip_documents": str(skip_documents).lower(),
             "skip_files": str(skip_files).lower(),
             "batch_size": str(batch_size),
-            "continue_on_error": str(continue_on_error).lower(),
             "dry_run": str(dry_run).lower(),
             "drop_stale_reporting": str(drop_stale_reporting).lower(),
         }
-        if target_namespace is not None:
-            data["target_namespace"] = target_namespace
+        if not target_namespace:
+            # The endpoint derives the target from the archive manifest for
+            # restore and merge; sending an empty value would override it.
+            data.pop("target_namespace")
+        if namespace_map:
+            # Multipart form field — the route parses the JSON object.
+            data["namespace_map"] = json.dumps(namespace_map)
+        if mode == "merge":
+            data["on_clash"] = on_clash
+            data["add_missing"] = str(add_missing).lower()
+            data["extend_terminologies"] = str(extend_terminologies).lower()
 
         with path.open("rb") as fh:
             files = {"archive": (path.name, fh, "application/zip")}
@@ -1538,6 +1619,22 @@ class WipClient:
         _raise_for_status_with_body(resp)
         parsed: dict[str, Any] = resp.json()
         return parsed
+
+    async def start_validation(
+        self,
+        namespace: str,
+        check_term_refs: bool = True,
+        check_identity: bool = True,
+        limit: int = 0,
+    ) -> dict:
+        """Start a namespace integrity check. Returns the initial job snapshot."""
+        return await self._post(
+            self.document_store_url,
+            f"/api/document-store/backup/namespaces/{namespace}/validate",
+            check_term_refs=str(check_term_refs).lower(),
+            check_identity=str(check_identity).lower(),
+            limit=limit,
+        )
 
     async def get_backup_job(self, job_id: str) -> dict:
         return await self._get(

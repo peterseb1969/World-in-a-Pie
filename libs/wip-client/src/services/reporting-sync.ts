@@ -10,6 +10,7 @@ import type {
   EntityReferencesResponse,
   IntegrityCheckResult,
   ReferencedByResponse,
+  ReportEntity,
   ReportQueryParams,
   ReportQueryResult,
   ReportTable,
@@ -70,10 +71,25 @@ export class ReportingSyncService extends BaseService {
    * Returns one BatchSyncResponse per template; jobs run async on
    * the server. Poll `listBatchJobs()` or `getBatchJob(job_id)` for
    * progress.
+   *
+   * `namespace` scopes every job to that namespace's documents (the
+   * template list stays instance-wide — documents may be based on
+   * templates owned by other namespaces). A template whose sync is
+   * already active returns its existing job instead of stacking a
+   * duplicate; the trigger is idempotent and acknowledges promptly.
+   *
+   * `force` drops each in-scope template's existing reporting relations
+   * (version tables, entity views, any legacy pre-split table) before
+   * its sync — rebuild from source, the recovery path for mis-shaped
+   * DDL that upserts cannot heal. Requires `namespace` (400 without
+   * it). Mid-rebuild, SQL readers see relation-does-not-exist for the
+   * affected templates. An already-active sync is NOT force-rebuilt —
+   * its per-item message says so; cancel the job and re-trigger.
    */
   async triggerBatchSyncAll(options?: {
     force?: boolean
     page_size?: number
+    namespace?: string
   }): Promise<BatchSyncResponse[]> {
     return this.post('/sync/batch', undefined, { ...options })
   }
@@ -81,10 +97,21 @@ export class ReportingSyncService extends BaseService {
   /**
    * Trigger a batch sync for a single template (by value).
    * Job runs async; poll `getBatchJob(job_id)` for progress.
+   *
+   * `namespace` disambiguates the template lookup (a value is unique
+   * only within a namespace) AND scopes the sync to that namespace's
+   * documents. If an overlapping sync is already active, the existing
+   * job is returned instead of a duplicate.
+   *
+   * `force` drops the template's existing reporting relations in the
+   * target namespace before syncing — rebuild from source. Requires
+   * `namespace` (400 without it). If an overlapping sync is active,
+   * force is NOT applied (the response message says so); cancel the
+   * job and re-trigger.
    */
   async triggerBatchSync(
     templateValue: string,
-    options?: { force?: boolean; page_size?: number },
+    options?: { force?: boolean; page_size?: number; namespace?: string },
   ): Promise<BatchSyncResponse> {
     return this.post(`/sync/batch/${templateValue}`, undefined, { ...options })
   }
@@ -198,14 +225,39 @@ export class ReportingSyncService extends BaseService {
 
   // ── Table Introspection ──
 
-  /** List all PostgreSQL reporting tables */
-  async listTables(tableName?: string): Promise<{ tables: ReportTable[] }> {
-    return this.get('/tables', tableName ? { table_name: tableName } : undefined)
+  /**
+   * List reporting relations, grouped entity-first. Without `tableName`,
+   * the response carries `entities` (one entry per template with its
+   * version tables and views — the shape UIs should render) alongside the
+   * flat `tables` list. With `tableName`, returns that single relation
+   * with full column detail (works for views and version tables alike),
+   * and `entities` is omitted.
+   */
+  async listTables(
+    tableName?: string,
+    namespace?: string,
+  ): Promise<{ tables: ReportTable[]; entities?: ReportEntity[] }> {
+    const params: Record<string, string> = {}
+    if (tableName) params.table_name = tableName
+    if (namespace) params.namespace = namespace
+    return this.get('/tables', Object.keys(params).length ? params : undefined)
   }
 
-  /** Get PostgreSQL schema for a template's reporting table */
-  async getTableSchema(templateValue: string): Promise<ReportTableSchema> {
-    return this.get(`/schema/${templateValue}`)
+  /**
+   * Get PostgreSQL columns for a template's reporting relation.
+   * `namespace` is required by the endpoint (the relation lives in that
+   * namespace's schema). Without `version`: the bare-name entity view
+   * (the default query surface). With `version`: that version's physical
+   * table shape.
+   */
+  async getTableSchema(
+    templateValue: string,
+    namespace: string,
+    version?: number,
+  ): Promise<ReportTableSchema> {
+    const params: Record<string, string> = { namespace }
+    if (version !== undefined) params.version = String(version)
+    return this.get(`/schema/${templateValue}`, params)
   }
 
   // ── Integrity ──

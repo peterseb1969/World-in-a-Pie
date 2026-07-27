@@ -111,13 +111,12 @@ async def test_cached_404_negative_expires_too():
         "reference_type": "document",
         "resolved": {"document_id": "x", "namespace": "otherns"},
     }
-    with patch("httpx.AsyncClient", factory):
-        with pytest.raises(ReferenceValidationError):
-            await v.validate_document_references(
-                document_namespace="appns",
-                template_namespace="appns",
-                document_references=[doc_ref],
-            )
+    with patch("httpx.AsyncClient", factory), pytest.raises(ReferenceValidationError):
+        await v.validate_document_references(
+            document_namespace="appns",
+            template_namespace="appns",
+            document_references=[doc_ref],
+        )
 
 
 def test_ttl_matches_platform_convention():

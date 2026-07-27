@@ -386,12 +386,19 @@ class DocumentService:
         if not validation_result.valid:
             return None, self._format_validation_errors(validation_result.errors)
 
-        # Validate cross-namespace references (isolation mode check)
+        # Validate cross-namespace references (isolation mode check). The
+        # template's REAL namespace arms the template-isolation branch — a
+        # document may be based on a shared or foreign template, and that use
+        # follows the same isolation rules as term references (own + wip +
+        # allowed_external_refs under open; own + list under strict). Passing
+        # the document's namespace here made the branch constant-false for its
+        # whole life. Falls back to the document's namespace (= skip the
+        # template branch) when the template dict carries no namespace.
         try:
             validator = get_reference_validator()
             await validator.validate_document_references(
                 document_namespace=namespace,
-                template_namespace=namespace,
+                template_namespace=validation_result.template_namespace or namespace,
                 term_references=validation_result.term_references,
                 file_references=validation_result.file_references,
                 document_references=validation_result.references,
@@ -780,8 +787,19 @@ class DocumentService:
         actor: str,
         now: datetime,
         max_retries: int = 3,
+        entity_created_at: datetime | None = None,
     ) -> "Document":
         """Insert a document, retrying on duplicate key errors.
+
+        ``entity_created_at`` carries the entity's original creation time onto a
+        successor version. Each version is its own row, so writing ``now`` into
+        ``created_at`` made a document appear to be created again on every edit —
+        the field drifted forward and became indistinguishable from
+        ``updated_at``. Callers writing version N+1 pass the existing document's
+        ``created_at``; callers writing version 1 leave it None and get ``now``.
+        (``versioned: false`` templates never came here for updates — they mutate
+        the original row in place — so they always had the correct semantics;
+        this makes versioned templates agree with them.)
 
         When two concurrent requests (or duplicate identity hashes in a batch)
         race to create the same version, the loser gets a DuplicateKeyError.
@@ -806,7 +824,7 @@ class DocumentService:
                 references=references,
                 file_references=file_references,
                 status=DocumentStatus.ACTIVE,
-                created_at=now,
+                created_at=entity_created_at or now,
                 created_by=actor,
                 updated_at=now,
                 updated_by=actor,
@@ -958,6 +976,9 @@ class DocumentService:
             metadata=metadata,
             actor=actor,
             now=now,
+            # Successor version: keep the entity's original creation time
+            # rather than stamping this write as a new creation (CASE-802).
+            entity_created_at=existing.created_at,
         )
         new_version = document.version  # May have been incremented by retry
 
@@ -1800,7 +1821,9 @@ class DocumentService:
                     version=v.version,
                     status=v.status,
                     created_at=v.created_at,
-                    created_by=v.created_by
+                    created_by=v.created_by,
+                    updated_at=v.updated_at,
+                    updated_by=v.updated_by,
                 )
                 for v in versions
             ]
@@ -2055,6 +2078,64 @@ class DocumentService:
             query=request
         )
 
+    # Document-level timestamp fields whose filter values are parsed and
+    # compared type-independently. The corpus stores these in two BSON types
+    # (service writes store dates; restore inserts archive JSON rows, which
+    # carry them as ISO strings), and Mongo comparisons are type-bracketed —
+    # a raw value of either type silently skips rows stored as the other.
+    _TIMESTAMP_QUERY_FIELDS = ("created_at", "updated_at")
+    _TIMESTAMP_QUERY_OPS: ClassVar[dict[str, str]] = {
+        "eq": "$eq", "ne": "$ne", "gt": "$gt", "gte": "$gte",
+        "lt": "$lt", "lte": "$lte", "in": "$in", "nin": "$in",
+    }
+
+    @classmethod
+    def _parse_timestamp_filter_value(cls, field: str, value: Any) -> datetime:
+        """Parse one timestamp filter value, failing loud on anything else."""
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        raise ValueError(
+            f"Filter value for '{field}' must be an ISO-8601 timestamp "
+            f"string, got: {value!r}"
+        )
+
+    @classmethod
+    def _timestamp_condition(
+        cls, field: str, operator: str, value: Any
+    ) -> dict[str, Any]:
+        """Build a storage-type-independent condition on a timestamp field.
+
+        Compares through $convert(to: date) so date-stored and string-stored
+        rows are measured on the same axis — neither cohort can silently
+        drop out of a window while mixed storage exists, and once storage is
+        normalized the conversion is a no-op. Rows whose value is missing or
+        unparseable convert to null and never match any timestamp filter
+        (the guard below), rather than sorting below every date and leaking
+        into $lt windows.
+        """
+        if operator in ("in", "nin"):
+            if not isinstance(value, list):
+                raise ValueError(
+                    f"Filter value for '{field}' with operator '{operator}' "
+                    f"must be a list of ISO-8601 timestamp strings."
+                )
+            parsed: Any = [
+                cls._parse_timestamp_filter_value(field, v) for v in value
+            ]
+        else:
+            parsed = cls._parse_timestamp_filter_value(field, value)
+
+        converted = {"$convert": {"input": f"${field}", "to": "date", "onError": None}}
+        comparison: dict[str, Any] = {
+            cls._TIMESTAMP_QUERY_OPS[operator]: [converted, parsed]
+        }
+        if operator == "nin":
+            comparison = {"$not": [comparison]}
+        return {"$expr": {"$and": [{"$ne": [converted, None]}, comparison]}}
+
     def _build_query(self, request: DocumentQueryRequest) -> dict[str, Any]:
         """Build MongoDB query from request."""
         query: dict[str, Any] = {}
@@ -2070,6 +2151,18 @@ class DocumentService:
             field = filter_item.field
             operator = filter_item.operator
             value = filter_item.value
+
+            if (
+                field in self._TIMESTAMP_QUERY_FIELDS
+                and operator in self._TIMESTAMP_QUERY_OPS
+            ):
+                # $and accumulation: two range filters on the same field
+                # (gte + lt window) must both apply, not last-write-win on
+                # the query dict key.
+                query.setdefault("$and", []).append(
+                    self._timestamp_condition(field, operator, value)
+                )
+                continue
 
             if operator == "eq":
                 query[field] = value
@@ -2410,6 +2503,9 @@ class DocumentService:
             metadata=metadata,
             actor=actor,
             now=now,
+            # An update carries the entity's creation time forward; a brand-new
+            # document (existing is None) gets `now` (CASE-802).
+            entity_created_at=existing.created_at if existing is not None else None,
         )
         new_version = document.version
         is_new = new_version == 1
@@ -2514,6 +2610,37 @@ class DocumentService:
         if val_stage_totals:
             for stage, total_ms in sorted(val_stage_totals.items()):
                 timing[f"1v_{stage}"] = round(total_ms, 1)
+
+        # Stage 1b: relationship-document constraints (CASE-788). The single-item
+        # create path (create_document) enforces the cross-namespace and
+        # archived-endpoint rules for usage=relationship templates; the bulk path
+        # must apply the identical check or the guardrail holds on one path only.
+        # validation_service.validate already populated each reference's resolved
+        # {namespace, status}, so this reuses _validate_relationship_constraints.
+        template_client = get_template_store_client()
+        rel_checked: list = []
+        for entry in validation_results:
+            idx, req, vr = entry
+            tmpl = await template_client.get_template_resolved(req.template_id)
+            if tmpl and tmpl.get("usage") == "relationship":
+                rel_error = await self._validate_relationship_constraints(
+                    tmpl, vr, namespace,
+                )
+                if rel_error:
+                    failed += 1
+                    results.append(BulkResultItem(
+                        index=idx, status="error", error=rel_error,
+                    ))
+                    continue
+                # Relationship indexes are created lazily on first write. Doing it
+                # only on the single-item path left a namespace that ingests edges
+                # exclusively in bulk without the data.source_ref / data.target_ref
+                # indexes the /relationships and /traverse queries depend on
+                # (CASE-795 F21). Idempotent and per-template-cached, so the cost
+                # is one call per distinct template in the batch.
+                await self._ensure_relationship_indexes(req.template_id, namespace)
+            rel_checked.append(entry)
+        validation_results = rel_checked
 
         if not validation_results:
             return self._finalize_bulk_response(results, len(items), timing, total_start)
@@ -2692,6 +2819,66 @@ class DocumentService:
         """Validate document without saving."""
         result = await self.validation_service.validate(template_id, data, namespace=namespace)
         return self._result_to_validation_response(result)
+
+    async def validate_candidate(
+        self,
+        template_definition: dict[str, Any],
+        namespace: str,
+        documents: list[dict[str, Any]] | None = None,
+        sample_template_id: str | None = None,
+        sample_limit: int = 100,
+    ) -> list[tuple[str | None, ValidationResponse]]:
+        """Validate documents against an INLINE candidate template definition.
+
+        The what-if half of schema evolution: "would my documents validate
+        against this draft version?" — answered without creating anything.
+        The candidate is never persisted, never cached, never registered; it
+        exists only for the duration of this call (deliberately NOT a
+        throwaway draft version, which would be an entity with lifecycle and
+        would pollute the version catalog per what-if question).
+
+        Two input modes: explicit ``documents`` payloads, or a sample of the
+        most recently updated active documents of ``sample_template_id``.
+        Returns (document_id, ValidationResponse) pairs in input order
+        (document_id is None for explicit payloads).
+        """
+        payloads: list[tuple[str | None, dict[str, Any]]]
+        if documents is not None:
+            payloads = [(None, d) for d in documents]
+        else:
+            docs = await Document.find({
+                "namespace": namespace,
+                "template_id": sample_template_id,
+                "status": DocumentStatus.ACTIVE.value,
+            }).sort(
+                [("updated_at", SortDirection.DESCENDING)]
+            ).limit(sample_limit).to_list()
+            payloads = [(d.document_id, d.data) for d in docs]
+
+        # Declared renames on the candidate re-key each document's data
+        # exactly as an applied migration would (matching old key moves to
+        # the new name) — without this, the sanctioned rename flow
+        # false-fails the what-if loop with unknown_field on the old name
+        # plus a missing-mandatory on the new one. Same semantics as the
+        # migrate path: only re-key when the old key is present and the
+        # new one is not.
+        renames = dict(template_definition.get("renames") or {})
+
+        out: list[tuple[str | None, ValidationResponse]] = []
+        for doc_id, data in payloads:
+            if renames:
+                data = dict(data)
+                for new_key, old_key in renames.items():
+                    if old_key in data and new_key not in data:
+                        data[new_key] = data.pop(old_key)
+            result = await self.validation_service.validate(
+                "candidate",
+                data,
+                namespace=namespace,
+                template_override=template_definition,
+            )
+            out.append((doc_id, self._result_to_validation_response(result)))
+        return out
 
     async def validate_documents_bulk(
         self,
@@ -2930,6 +3117,14 @@ class DocumentService:
                 "not a migrate."
             )
 
+        # Declared renames on the target version: the one sanctioned data
+        # transformation in a migrate. A rename declaration ("new_field
+        # renames old_field") means mechanically-same data under a new key —
+        # without it a rename is indistinguishable from drop+add and every
+        # renamed doc would fail target validation with unknown_field.
+        # Anything beyond key-mapping stays app territory.
+        renames = dict(target.get("renames") or {})
+
         # ---- Per-document fan-out (cohort = active docs pinned to from_version) ----
         cohort = await Document.find({
             "namespace": namespace,
@@ -2944,6 +3139,7 @@ class DocumentService:
                 results.append(
                     await self._migrate_one(
                         index, doc, template_id, to_version, namespace, dry_run,
+                        renames=renames,
                     )
                 )
             except Exception as exc:
@@ -2964,6 +3160,112 @@ class DocumentService:
             from_version=from_version, to_version=to_version,
         ), None, None
 
+    async def get_template_impact_stats(
+        self,
+        template_id: str,
+        namespace: str,
+        fields: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Live-document counts for template version-change impact analysis.
+
+        Returns per-template_version active-document counts plus, for each
+        requested field name, the count of active documents carrying a
+        non-empty value at ``data.<field>`` (across all versions). "Non-empty"
+        means the key exists and is neither null nor the empty string — an
+        empty array or object counts as non-empty, which errs toward NOT
+        offering an automatic migration (the safe direction).
+
+        Read-only and advisory: consumed by template-store's create-as-upsert
+        to attach consequence data to a version event.
+        """
+        match = {
+            "namespace": namespace,
+            "template_id": template_id,
+            "status": DocumentStatus.ACTIVE.value,
+        }
+        rows = await Document.aggregate([
+            {"$match": match},
+            {"$group": {"_id": "$template_version", "count": {"$sum": 1}}},
+        ]).to_list()
+        docs_per_version = {str(r["_id"]): r["count"] for r in rows}
+
+        field_nonempty_counts: dict[str, int] = {}
+        # Bounded fan-out: one indexed count per field, capped so a
+        # pathological field list cannot turn advisory stats into a scan storm.
+        for field in (fields or [])[:50]:
+            field_nonempty_counts[field] = await Document.find({
+                **match,
+                f"data.{field}": {"$exists": True, "$nin": [None, ""]},
+            }).count()
+
+        return {
+            "template_id": template_id,
+            "namespace": namespace,
+            "total_live_docs": sum(docs_per_version.values()),
+            "docs_per_version": docs_per_version,
+            "field_nonempty_counts": field_nonempty_counts,
+        }
+
+    async def get_template_facets(
+        self,
+        namespace: str,
+        status: str = "active",
+    ) -> dict[str, Any]:
+        """Distinct templates one namespace's documents are instances of.
+
+        Grouped from the documents, NOT from template ownership: a document's
+        namespace is independent of its template's namespace, so an
+        owner-based template listing misses shared and foreign templates the
+        namespace's documents actually use.
+
+        Counts are logical documents — version rows collapse on document_id
+        before counting, so a heavily-versioned document still counts once.
+        The `$match` runs inside the (namespace, template_id, status) index;
+        the intermediate group is bounded by the namespace's live documents.
+
+        Each facet carries the template's own namespace so consumers can
+        label cross-namespace templates honestly. That lookup is one
+        template-cache fetch per DISTINCT template; a fetch failure degrades
+        that facet's template_namespace to None instead of failing the call.
+        """
+        match: dict[str, Any] = {"namespace": namespace}
+        if status != "all":
+            match["status"] = status
+        rows = await Document.aggregate([
+            {"$match": match},
+            {"$group": {
+                "_id": {"template_id": "$template_id", "document_id": "$document_id"},
+                "template_value": {"$first": "$template_value"},
+            }},
+            {"$group": {
+                "_id": "$_id.template_id",
+                "template_value": {"$first": "$template_value"},
+                "document_count": {"$sum": 1},
+            }},
+            {"$sort": {"document_count": -1, "_id": 1}},
+        ]).to_list()
+
+        template_client = get_template_store_client()
+        facets: list[dict[str, Any]] = []
+        for row in rows:
+            template_namespace = None
+            try:
+                tpl = await template_client.get_template(template_id=row["_id"])
+                if tpl:
+                    template_namespace = tpl.get("namespace")
+            except Exception:
+                logger.warning(
+                    "template-facets: get_template(%s) failed; leaving "
+                    "template_namespace unset", row["_id"],
+                )
+            facets.append({
+                "template_id": row["_id"],
+                "template_value": row.get("template_value"),
+                "template_namespace": template_namespace,
+                "document_count": row["document_count"],
+            })
+        return {"namespace": namespace, "facets": facets}
+
     async def _migrate_one(
         self,
         index: int,
@@ -2972,14 +3274,26 @@ class DocumentService:
         to_version: int,
         namespace: str,
         dry_run: bool,
+        renames: dict[str, str] | None = None,
     ) -> BulkResultItem:
         """Validate one document against the target version; apply the re-pin
         unless ``dry_run``. Validating the document's existing data against the
         target IS the readiness check — a now-removed field still present surfaces
         as ``unknown_field``; a newly-mandatory field missing surfaces as ``required``.
+
+        ``renames`` maps new_field -> old_field (the target version's declared
+        renames): matching old keys are re-keyed before validation and the
+        re-keyed data is what the applied new document version stores. Identity
+        fields can never appear in a rename declaration (template-store rejects
+        that at declare time), so the identity hash is unaffected.
         """
+        data = dict(doc.data)
+        for new_key, old_key in (renames or {}).items():
+            if old_key in data and new_key not in data:
+                data[new_key] = data.pop(old_key)
+
         vr = await self.validation_service.validate(
-            template_id, doc.data, namespace=namespace, template_version=to_version,
+            template_id, data, namespace=namespace, template_version=to_version,
         )
         if not vr.valid:
             return BulkResultItem(
@@ -3013,7 +3327,7 @@ class DocumentService:
             template_id=template_id,
             template_version=to_version,
             namespace=namespace,
-            data=doc.data,
+            data=data,
             metadata=(doc.metadata.custom if doc.metadata else None),
         )
         vr.identity_hash = doc.identity_hash
@@ -3240,12 +3554,19 @@ class DocumentService:
                     warnings=validation_result.warnings,
                 )
 
-            # 8. Cross-namespace reference validation (matches POST flow).
+            # 8. Cross-namespace reference validation (matches POST flow,
+            #    including the armed template-isolation branch: a PATCH is a
+            #    new write, so it follows the same rules — warn-only here
+            #    would leave the contract unenforced on half the surface. An
+            #    out-of-policy grandfathered document becomes un-PATCHable
+            #    until its template's namespace is allow-listed; the
+            #    remediation is one namespace-config PUT, not data surgery.
             try:
                 validator = get_reference_validator()
                 await validator.validate_document_references(
                     document_namespace=current.namespace,
-                    template_namespace=current.namespace,
+                    template_namespace=validation_result.template_namespace
+                    or current.namespace,
                     term_references=validation_result.term_references,
                     file_references=validation_result.file_references,
                     document_references=validation_result.references,
@@ -3329,6 +3650,9 @@ class DocumentService:
                     metadata=new_metadata,
                     actor=actor,
                     now=now,
+                    # PATCH writes a successor version — the entity was created
+                    # when v1 was written, not now (CASE-802).
+                    entity_created_at=current.created_at,
                 )
             except DuplicateKeyError:
                 # Lost the version race even after _insert_with_retry's internal

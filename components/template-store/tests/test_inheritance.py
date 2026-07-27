@@ -440,7 +440,7 @@ async def test_delete_template_with_children_fails(client: AsyncClient, auth_hea
         "DELETE",
         "/api/template-store/templates",
         headers=auth_headers,
-        json=[{"id": parent_id}],
+        json=[{"id": parent_id, "version": 1}],
     )
     assert response.status_code == 200
     data = response.json()

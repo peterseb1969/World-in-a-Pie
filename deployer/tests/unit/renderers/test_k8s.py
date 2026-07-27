@@ -41,6 +41,7 @@ def _k8s_deployment(
     namespace: str = "wip-test",
     modules: list[str] | None = None,
     apps: list[str] | None = None,
+    pod_dns_ndots: int | None = 1,
 ) -> Deployment:
     return Deployment(
         metadata=DeploymentMetadata(name="k8s-test"),
@@ -51,7 +52,9 @@ def _k8s_deployment(
             auth=AuthSpec(mode="oidc", gateway=True),
             network=NetworkSpec(hostname="wip-kubi.local"),
             images=ImagesSpec(registry="ghcr.io/peterseb1969", tag="v1.1.0"),
-            platform=PlatformSpec(k8s=K8sPlatform(namespace=namespace)),
+            platform=PlatformSpec(
+                k8s=K8sPlatform(namespace=namespace, pod_dns_ndots=pod_dns_ndots)
+            ),
             secrets=SecretsSpec(backend="file", location="/tmp/s"),
         ),
     )
@@ -239,6 +242,61 @@ class TestComponents:
         )
         for doc in docs:
             assert doc["metadata"]["namespace"] == "wip-stable"
+
+
+# ────────────────────────────────────────────────────────────────────
+# Pod DNS
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestPodDNS:
+    """The rendered env addresses peers by FQDN (four dots), which sits under
+    kubelet's default ndots of 5 — so without an override every inter-service
+    lookup walks all three search domains first, spending 8 DNS queries where 2
+    would do."""
+
+    def _workload(
+        self, tmp_path: Path, discovery: Discovery, path: str, **overrides: object
+    ) -> dict:  # type: ignore[type-arg]
+        d = _k8s_deployment(**overrides)  # type: ignore[arg-type]
+        s = _secrets(tmp_path, d, discovery)
+        tree = render_k8s(d, discovery.components, discovery.apps, s)
+        docs = list(yaml.safe_load_all(tree.files[Path(path)].content))
+        return next(x for x in docs if x["kind"] in ("Deployment", "StatefulSet"))
+
+    def test_ndots_defaults_to_one(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        wl = self._workload(tmp_path, real_discovery, "services/registry.yaml")
+        assert wl["spec"]["template"]["spec"]["dnsConfig"] == {
+            "options": [{"name": "ndots", "value": "1"}]
+        }
+
+    def test_ndots_applies_to_statefulsets_too(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        wl = self._workload(tmp_path, real_discovery, "infrastructure/mongodb.yaml")
+        assert wl["spec"]["template"]["spec"]["dnsConfig"]["options"] == [
+            {"name": "ndots", "value": "1"}
+        ]
+
+    def test_ndots_is_overridable(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        wl = self._workload(
+            tmp_path, real_discovery, "services/registry.yaml", pod_dns_ndots=3
+        )
+        assert wl["spec"]["template"]["spec"]["dnsConfig"]["options"] == [
+            {"name": "ndots", "value": "3"}
+        ]
+
+    def test_none_emits_no_dns_config(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        wl = self._workload(
+            tmp_path, real_discovery, "services/registry.yaml", pod_dns_ndots=None
+        )
+        assert "dnsConfig" not in wl["spec"]["template"]["spec"]
 
 
 # ────────────────────────────────────────────────────────────────────

@@ -468,11 +468,29 @@ class CreateTermRelationRequest(StrictModel):
 
     source_term_id: str = Field(
         ...,
-        description="The subject term ID"
+        description="The subject term: canonical UUID, fully qualified "
+                    "'ns:terminology:value', or — with source_terminology "
+                    "set — the OPAQUE raw term value (never colon-parsed). "
+                    "The ambiguous 2-part 'TERMINOLOGY:VALUE' shorthand is "
+                    "rejected."
     )
     target_term_id: str = Field(
         ...,
-        description="The object term ID"
+        description="The object term; same accepted forms as "
+                    "source_term_id, scoped by target_terminology."
+    )
+    source_terminology: str | None = Field(
+        default=None,
+        description="Terminology scoping a value-form source_term_id. When "
+                    "set, source_term_id is treated as the raw value — "
+                    "required for values that themselves contain ':' (OBO "
+                    "ids like GO:0000278). Per-item because a relation's "
+                    "two endpoints may live in different terminologies."
+    )
+    target_terminology: str | None = Field(
+        default=None,
+        description="Terminology scoping a value-form target_term_id (see "
+                    "source_terminology)."
     )
     relation_type: str = Field(
         ...,
@@ -491,8 +509,27 @@ class CreateTermRelationRequest(StrictModel):
 class DeleteTermRelationRequest(StrictModel):
     """Request to delete a specific term relation."""
 
-    source_term_id: str = Field(..., description="The subject term ID")
-    target_term_id: str = Field(..., description="The object term ID")
+    source_term_id: str = Field(
+        ...,
+        description="The subject term: canonical UUID, fully qualified "
+                    "'ns:terminology:value', or — with source_terminology "
+                    "set — the OPAQUE raw term value. The ambiguous 2-part "
+                    "'TERMINOLOGY:VALUE' shorthand is rejected."
+    )
+    target_term_id: str = Field(
+        ...,
+        description="The object term; same accepted forms as "
+                    "source_term_id, scoped by target_terminology."
+    )
+    source_terminology: str | None = Field(
+        default=None,
+        description="Terminology scoping a value-form source_term_id (raw "
+                    "value, never colon-parsed)."
+    )
+    target_terminology: str | None = Field(
+        default=None,
+        description="Terminology scoping a value-form target_term_id."
+    )
     relation_type: str = Field(..., description="Relation type value")
     hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
 

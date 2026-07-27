@@ -87,7 +87,7 @@ Then open `~/Development/my-new-app` in Claude Code — that's your APP-YAC. Sta
 ## Verify the MCP connection (both scenarios)
 
 1. Open the app directory in Claude Code (MCP servers spawn on startup — if you opened it before running the script, restart).
-2. Run `/mcp` — you should see the **`wip`** server with its tools (**94 tools, 5 resources**).
+2. Run `/mcp` — you should see the **`wip`** server with its tools (**101 tools, 5 resources**).
 3. If tools are missing:
    - Is a WIP instance **running**? (`.mcp.json` points `WIP_API_KEY_FILE` at a live install's `secrets/api-key`.)
    - **Wrong install in `.mcp.json`:** the generated `WIP_API_KEY_FILE` can fall back to `~/.wip-deploy/wip-local/secrets/api-key` when auto-detect misses your install — but the deploy guides install with `--name wip`, so there's no `wip-local`. Open `.mcp.json` and repoint `WIP_API_KEY_FILE` (and the `*_URL`s) at your actual install: `~/.wip-deploy/<your-name>/secrets/api-key`.

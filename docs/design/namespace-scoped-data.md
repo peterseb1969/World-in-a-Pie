@@ -26,8 +26,8 @@ Design document for adding namespace support to all WIP services, enabling names
 - All MongoDB models have a `namespace` field (short prefix, e.g., `"wip"`, `"seed"`)
 - Registry client calls pass `namespace` and `entity_type` directly
 - All list/filter APIs accept `namespace` as a query parameter
-- Create endpoints accept `namespace` in the request body (defaults to `"wip"`)
-- By-value lookups default to `namespace=None` (search all namespaces)
+- Create endpoints require `namespace` in the request body — it is a required field, not defaulted to `"wip"`; omitting it is a 422
+- By-value lookups without an explicit namespace resolve across the namespaces the caller has a grant on (not "all namespaces"); some `/raw` variants now require an explicit namespace
 - Seed script uses `--namespace seed` to isolate test data from production data
 
 **Implementation note:** This design document originally proposed using the full pool name (e.g., `"wip-terminologies"`) as the namespace field value. The actual implementation uses a short prefix (e.g., `"wip"`) and derives the pool name in the registry client. (An earlier `namespace-implementation.md` reference was archived per CASE-184; for current schema details see `docs/data-models.md`.)
@@ -38,8 +38,12 @@ Design document for adding namespace support to all WIP services, enabling names
 - Export/Import for namespaces (Phase 4)
 - Archive/Delete namespaces (Phase 5)
 - CLI commands
-- Per-namespace permissions
-- Cross-namespace reference validation
+
+**Since implemented** (this section is historical — do not read it as current state):
+- **Per-namespace permissions** — shipped; grants are evaluated in `registry/api/grants.py`
+- **Cross-namespace reference validation** — shipped; enforced by
+  `document-store/services/reference_validator.py` (isolation modes +
+  `allowed_external_refs`)
 
 ## Proposed Architecture
 

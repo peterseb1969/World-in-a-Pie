@@ -10,6 +10,7 @@ from wip_auth import (
     resolve_bulk_ids,
     resolve_namespace_filter,
     resolve_or_404,
+    resolve_term_by_fields_or_404,
 )
 
 from ..models.api_models import (
@@ -43,14 +44,27 @@ async def create_term_relations(
     """
     Create one or more typed relations between terms.
 
-    Relation types include: is_a, part_of, has_part, maps_to, related_to,
-    finding_site, causative_agent, or any custom type.
+    relation_type must be a value registered in the _ONTOLOGY_RELATIONSHIP_TYPES
+    system terminology; an unregistered type is rejected. Seeded defaults include
+    is_a, has_subtype, part_of, has_part, maps_to, mapped_from, related_to,
+    finding_site, causative_agent, regulates, positively_regulates,
+    negatively_regulates. To use a custom type, add it to that terminology first
+    (OBO Graph import auto-creates any type it references).
     """
     await check_namespace_permission(identity, namespace, "write")
 
-    # Resolve term synonyms in bulk
-    await resolve_bulk_ids(items, "source_term_id", "term", namespace)
-    await resolve_bulk_ids(items, "target_term_id", "term", namespace)
+    # Write door: an endpoint id selects what the new edge connects, so
+    # resolution must ask Registry, not the read cache. Items carrying
+    # source_terminology / target_terminology resolve their id as an
+    # opaque value through the field door.
+    await resolve_bulk_ids(
+        items, "source_term_id", "term", namespace,
+        terminology_field="source_terminology", bypass_cache=True,
+    )
+    await resolve_bulk_ids(
+        items, "target_term_id", "term", namespace,
+        terminology_field="target_terminology", bypass_cache=True,
+    )
 
     results = await OntologyService.create_term_relations(namespace, items)
     succeeded = sum(1 for r in results if r.status == "created")
@@ -74,13 +88,26 @@ async def list_term_relations(
     namespace: str | None = Query(default=None, description="Namespace (omit for all accessible)"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Page size (max 1000)"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology scoping a value-form term identifier. When "
+                    "present, the identifier is treated as the OPAQUE raw value "
+                    "(never colon-parsed) — required for values that themselves "
+                    "contain ':' (OBO ids like GO:0000278).",
+    ),
     identity: UserIdentity = Depends(require_api_key),
 ) -> TermRelationListResponse:
     """List relations for a term, with optional direction and type filtering."""
     ns_filter = await resolve_namespace_filter(identity, namespace)
 
     # Resolve term_id synonym
-    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
+    if terminology is not None:
+        # Field-form door: the identifier is the raw value, uninterpreted
+        term_id = await resolve_term_by_fields_or_404(
+            term_id, terminology, namespace, param_name="term_id"
+        )
+    else:
+        term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     items, total = await OntologyService.list_term_relations(
         term_id=term_id,
@@ -114,9 +141,17 @@ async def delete_term_relations(
     """
     await check_namespace_permission(identity, namespace, "write")
 
-    # Resolve term IDs in delete items
-    await resolve_bulk_ids(items, "source_term_id", "term", namespace)
-    await resolve_bulk_ids(items, "target_term_id", "term", namespace)
+    # Write door: the resolved pair selects which edge gets deleted —
+    # resolution must ask Registry, not the read cache. Field-scoped
+    # items resolve their id as an opaque value.
+    await resolve_bulk_ids(
+        items, "source_term_id", "term", namespace,
+        terminology_field="source_terminology", bypass_cache=True,
+    )
+    await resolve_bulk_ids(
+        items, "target_term_id", "term", namespace,
+        terminology_field="target_terminology", bypass_cache=True,
+    )
 
     results = await OntologyService.delete_term_relations(namespace, items)
     succeeded = sum(1 for r in results if r.status in ("deleted", "skipped"))
@@ -197,6 +232,13 @@ async def get_ancestors(
     relation_type: str = Query("is_a", description="Relation type to traverse"),
     namespace: str = Query(..., description="Namespace"),
     max_depth: int = Query(10, ge=1, le=50, description="Maximum traversal depth"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology scoping a value-form term identifier. When "
+                    "present, the identifier is treated as the OPAQUE raw value "
+                    "(never colon-parsed) — required for values that themselves "
+                    "contain ':' (OBO ids like GO:0000278).",
+    ),
     identity: UserIdentity = Depends(require_api_key),
 ) -> TraversalResponse:
     """
@@ -207,7 +249,13 @@ async def get_ancestors(
     """
     await check_namespace_permission(identity, namespace, "read")
 
-    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
+    if terminology is not None:
+        # Field-form door: the identifier is the raw value, uninterpreted
+        term_id = await resolve_term_by_fields_or_404(
+            term_id, terminology, namespace, param_name="term_id"
+        )
+    else:
+        term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     return await OntologyService.get_ancestors(
         term_id=term_id,
@@ -227,6 +275,13 @@ async def get_descendants(
     relation_type: str = Query("is_a", description="Relation type to traverse"),
     namespace: str = Query(..., description="Namespace"),
     max_depth: int = Query(10, ge=1, le=50, description="Maximum traversal depth"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology scoping a value-form term identifier. When "
+                    "present, the identifier is treated as the OPAQUE raw value "
+                    "(never colon-parsed) — required for values that themselves "
+                    "contain ':' (OBO ids like GO:0000278).",
+    ),
     identity: UserIdentity = Depends(require_api_key),
 ) -> TraversalResponse:
     """
@@ -236,7 +291,13 @@ async def get_descendants(
     """
     await check_namespace_permission(identity, namespace, "read")
 
-    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
+    if terminology is not None:
+        # Field-form door: the identifier is the raw value, uninterpreted
+        term_id = await resolve_term_by_fields_or_404(
+            term_id, terminology, namespace, param_name="term_id"
+        )
+    else:
+        term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     return await OntologyService.get_descendants(
         term_id=term_id,
@@ -255,6 +316,13 @@ async def get_parents(
     term_id: str,
     relation_type: str = Query("is_a", description="Relation type to follow"),
     namespace: str = Query(..., description="Namespace"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology scoping a value-form term identifier. When "
+                    "present, the identifier is treated as the OPAQUE raw value "
+                    "(never colon-parsed) — required for values that themselves "
+                    "contain ':' (OBO ids like GO:0000278).",
+    ),
     identity: UserIdentity = Depends(require_api_key),
 ) -> list[TermRelationResponse]:
     """
@@ -265,7 +333,13 @@ async def get_parents(
     """
     await check_namespace_permission(identity, namespace, "read")
 
-    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
+    if terminology is not None:
+        # Field-form door: the identifier is the raw value, uninterpreted
+        term_id = await resolve_term_by_fields_or_404(
+            term_id, terminology, namespace, param_name="term_id"
+        )
+    else:
+        term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     return await OntologyService.get_parents(term_id, namespace, relation_type=relation_type)
 
@@ -279,6 +353,13 @@ async def get_children(
     term_id: str,
     relation_type: str = Query("is_a", description="Relation type to follow"),
     namespace: str = Query(..., description="Namespace"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology scoping a value-form term identifier. When "
+                    "present, the identifier is treated as the OPAQUE raw value "
+                    "(never colon-parsed) — required for values that themselves "
+                    "contain ':' (OBO ids like GO:0000278).",
+    ),
     identity: UserIdentity = Depends(require_api_key),
 ) -> list[TermRelationResponse]:
     """
@@ -289,6 +370,12 @@ async def get_children(
     """
     await check_namespace_permission(identity, namespace, "read")
 
-    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
+    if terminology is not None:
+        # Field-form door: the identifier is the raw value, uninterpreted
+        term_id = await resolve_term_by_fields_or_404(
+            term_id, terminology, namespace, param_name="term_id"
+        )
+    else:
+        term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     return await OntologyService.get_children(term_id, namespace, relation_type=relation_type)

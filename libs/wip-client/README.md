@@ -162,14 +162,19 @@ API key auth headers are cached internally for performance (the key is static; t
 
 ## Services
 
-| Service | Property | Port | Description |
-|---------|----------|------|-------------|
-| Def-Store | `client.defStore` | 8002 | Terminologies, terms, validation, ontology, import/export |
-| Template-Store | `client.templates` | 8003 | Document schemas, versioning, draft mode, inheritance |
-| Document-Store | `client.documents` | 8004 | Documents, versions, table view, CSV export, query |
-| File-Store | `client.files` | 8004 | File upload/download (MinIO), orphan detection, integrity |
-| Registry | `client.registry` | 8001 | Namespaces, ID management, synonyms, merge |
-| Reporting-Sync | `client.reporting` | 8005 | Cross-service search, integrity checks, activity feed |
+| Service | Property | Exported class | Port | Description |
+|---------|----------|----------------|------|-------------|
+| Def-Store | `client.defStore` | `DefStoreService` | 8002 | Terminologies, terms, validation, ontology, import/export |
+| Template-Store | `client.templates` | `TemplateStoreService` | 8003 | Document schemas, versioning, draft mode, inheritance |
+| Document-Store | `client.documents` | `DocumentStoreService` | 8004 | Documents, versions, table view, CSV export, query |
+| File-Store | `client.files` | `FileStoreService` | 8004 | File upload/download (MinIO), orphan detection, integrity |
+| Registry | `client.registry` | `RegistryService` | 8001 | Namespaces, ID management, synonyms, merge |
+| Reporting-Sync | `client.reporting` | `ReportingSyncService` | 8005 | Cross-service search, integrity checks, activity feed |
+
+The service classes (plus their abstract base `BaseService`) are exported
+for typing and subclassing; in normal use you reach them through the
+client properties above rather than constructing them directly. The
+sections below document each service's methods through those properties.
 
 All services route through the `baseUrl`. The Caddy reverse proxy routes `/api/def-store/*`, `/api/template-store/*`, etc. to the correct service port. The client always sends requests to `baseUrl + /api/<service>/...` — Caddy is required to route them correctly. In browser apps behind a Vite proxy, use `baseUrl: '/wip'` (resolved to `window.location.origin + '/wip'`). Use `baseUrl: ''` for direct Caddy access. In Node.js scripts, use `baseUrl: 'https://your-host:8443'`.
 

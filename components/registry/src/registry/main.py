@@ -13,11 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import (
-    declare_api_key_security,
     APIKeyProvider,
     APIKeyRecord,
     build_metadata,
     check_production_security,
+    declare_api_key_security,
     init_beanie_with_retry,
     setup_auth,
     setup_rate_limiting,
@@ -146,7 +146,7 @@ async def lifespan(app: FastAPI):
 
     if api_key_provider:
         # Identify config-file key names (these cannot be modified via API)
-        config_key_names = {k.name for k in api_key_provider._keys}
+        config_key_names = {k.name for k in api_key_provider.iter_keys()}
 
         # Load runtime keys from MongoDB and add to provider
         runtime_docs = await StoredAPIKey.find(StoredAPIKey.enabled == True).to_list()  # noqa: E712

@@ -161,7 +161,7 @@ def _flatten_document(
     columns: list[TableColumn],
     array_fields: list[str],
     max_cross_product: int = 1000
-) -> tuple[list[dict[str, Any]], str]:
+) -> tuple[list[dict[str, Any]], Literal["flattened", "json", "none"]]:
     """
     Flatten a document into one or more rows.
 
@@ -247,8 +247,8 @@ Array fields can be flattened into multiple rows (cross-product) or kept as JSON
 **Array Handling:**
 - 0 arrays: 1 row per document
 - 1 array: Flatten into multiple rows
-- 2+ arrays, cross-product ≤1000 rows: Cross-product (flatten all)
-- 2+ arrays, cross-product >1000 rows: Keep arrays as JSON fields
+- 2+ arrays, cross-product ≤ max_cross_product rows (default 1000, tunable up to 10000): Cross-product (flatten all)
+- 2+ arrays, cross-product > max_cross_product rows: Keep arrays as JSON fields
 
 **Metadata Columns:**
 All rows include system columns prefixed with underscore:
@@ -267,6 +267,9 @@ async def get_table_view(
         description="Filter by document status"
     ),
     page: int = Query(1, ge=1, description="Page number"),
+    # Default 100 (not the platform-wide 50) is deliberate: table view serves a
+    # spreadsheet-like surface of cheap flat row projections, and the MCP
+    # get_table_view tool mirrors the same default.
     page_size: int = Query(100, ge=1, le=1000, description="Rows per page"),
     max_cross_product: int = Query(
         1000,
@@ -328,7 +331,7 @@ async def get_table_view(
     documents = await Document.find(query_filter).skip(skip).limit(page_size).to_list()
 
     all_rows = []
-    array_handling = "none"
+    array_handling: Literal["flattened", "json", "none"] = "none"
 
     for doc in documents:
         rows, handling = _flatten_document(doc, columns, array_fields, max_cross_product)

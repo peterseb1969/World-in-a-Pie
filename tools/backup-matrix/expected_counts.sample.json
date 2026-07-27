@@ -1,0 +1,33 @@
+{
+  "target": "--install default (https://localhost:8443)",
+  "namespaces": {
+    "MTXA": {
+      "terminologies": 3,
+      "terms_active": 145,
+      "term_relations": 64,
+      "templates_active_versions": 3,
+      "templates_all_versions": 4,
+      "edge_types": 0,
+      "documents_active_latest": 4,
+      "documents_archived_latest": 1,
+      "document_versions_total": 7,
+      "files": 1,
+      "registry_entries": 157,
+      "registry_synonyms": 152
+    },
+    "MTXB": {
+      "terminologies": 2,
+      "terms_active": 4,
+      "term_relations": 0,
+      "templates_active_versions": 2,
+      "templates_all_versions": 2,
+      "edge_types": 1,
+      "documents_active_latest": 3,
+      "documents_archived_latest": 0,
+      "document_versions_total": 4,
+      "files": 0,
+      "registry_entries": 11,
+      "registry_synonyms": 9
+    }
+  }
+}

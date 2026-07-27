@@ -57,6 +57,33 @@ A term value like `"Draft"` can appear in both the `DOC_STATUS` and `PRIORITY` t
 
 ---
 
+## The Registry Ontology: Identities, Never States
+
+> **The Registry registers identities — "which thing is this" — never states.
+> Versions, of documents and templates alike, are coordinates on an entity
+> (`(id, version)`), not Registry citizens.**
+
+This is the deliberate design, confirmed on a green-field review (see
+`docs/design/template-identity-unification.md` §3): a version is never
+upserted (it is the *output* of an upsert), never resolved from an alternate
+identifier, and has exactly one name. Registering versions would add a
+Registry write to every document write for zero resolution capability.
+Stable-ID-across-versions is therefore the **norm** for WIP's two versioned
+entities — documents and templates both keep one canonical ID with integer
+version coordinates, unique on `(namespace, <id>, version)`.
+
+The normative vocabulary that goes with this:
+
+| Term | Meaning |
+|------|---------|
+| **the template** / **the document** | The logical entity: canonical UUID, registered identity, carries the versions |
+| **a version** | A coordinate `(id, version)` on an entity — addressable, but not an entity: no canonical ID, no synonyms |
+| **identity** | The registered key that determines "which one is this" (`(namespace, value)` for templates; the identity-hash composite for documents) — always the key, never the entity itself |
+
+A change to an entity's identity is a **fork** (a new entity), never a new
+version — for documents that means identity-field values, for templates the
+name and the `identity_fields` declaration.
+
 ## The Registry: Single Source of Truth
 
 The Registry is a **standalone registrar**. WIP services are its primary consumer, but it can be used independently for any identity management need.
@@ -156,7 +183,7 @@ Document-Store                              Registry
 
 | Hash | Computed by | Algorithm | Stored on | Purpose |
 |------|------------|-----------|-----------|---------|
-| Identity hash | Document-Store | `sha256("field=value\|field=value")` | Document record (`identity_hash`) | Domain concept: "what real-world entity is this?" |
+| Identity hash | Document-Store | `sha256(canonical_json(identity_values))` | Document record (`identity_hash`) | Domain concept: "what real-world entity is this?" |
 | Composite key hash | Registry | `sha256(json({"namespace":..., "identity_hash":..., "template_id":...}))` | Registry entry (`primary_composite_key_hash`) | Infrastructure concept: "have I seen this registration before?" |
 
 The identity hash is an **input** to the composite key — one of the values in the dictionary. The Registry doesn't know or care that it's a hash; it treats it as an opaque string.
@@ -165,13 +192,23 @@ The identity hash is an **input** to the composite key — one of the values in 
 
 ```python
 def compute_identity_hash(data, identity_fields):
-    sorted_fields = sorted(identity_fields)
-    parts = [f"{field}={data.get(field, '')}" for field in sorted_fields]
-    normalized = "|".join(parts)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    # Extract identity values into a dict keyed by field name (dot-notation
+    # paths supported). Raises if any identity field is missing or null —
+    # identity fields are mandatory, so a complete document always resolves.
+    identity_values = {field: extract(data, field) for field in identity_fields}
+    # Canonical JSON is the dedup contract: sorted keys, no whitespace,
+    # ASCII-escaped, str() fallback for non-JSON types (datetime, UUID).
+    canonical = json.dumps(
+        identity_values,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 ```
 
-Both field names and values are included — `email=alice@example.com` hashes differently from `user_email=alice@example.com`.
+This is an **internal computation** — the digest is a dedup key stored on the document, never a request/response format. Both field names and values are included, because they are the JSON object's keys and values: `{"email": "alice@example.com"}` hashes differently from `{"user_email": "alice@example.com"}`.
 
 ### Example
 
@@ -180,7 +217,7 @@ Template PERSON:
   identity_fields: ["email"]
 
 Document 1: { "email": "alice@example.com", "name": "Alice" }
-  → identity_hash: sha256("email=alice@example.com") = "a1b2c3..."
+  → identity_hash: sha256('{"email":"alice@example.com"}') = "a1b2c3..."
   → composite key sent to Registry: {"namespace": "wip", "identity_hash": "a1b2c3...", "template_id": "019eee01-..."}
   → Registry: NEW → document_id: "019-uuid-001", version: 1
 
@@ -235,12 +272,15 @@ A query for `{"namespace": "backup", "value": "PERSON"}` returns `019-uuid-42` �
 When you know that entity X in namespace `partner` represents the same real-world thing as entity Y in namespace `wip`, you register X's composite key as a synonym of Y's entry:
 
 ```
-POST /api/registry/entries/{entry_id}/synonyms
-{
-  "namespace": "partner",
-  "entity_type": "documents",
-  "composite_key": { "partner_patient_id": "P-8812" }
-}
+POST /api/registry/synonyms/add
+[
+  {
+    "target_id": "<canonical entry_id of Y>",
+    "synonym_namespace": "partner",
+    "synonym_entity_type": "documents",
+    "synonym_composite_key": { "partner_patient_id": "P-8812" }
+  }
+]
 ```
 
 Now a lookup for `{"partner_patient_id": "P-8812"}` resolves to the canonical WIP document.
@@ -260,12 +300,15 @@ Lookups by either ID now resolve to the surviving canonical entry.
 External systems have their own IDs. Register them as synonyms:
 
 ```
-POST /api/registry/entries/{entry_id}/synonyms
-{
-  "namespace": "wip",
-  "entity_type": "documents",
-  "composite_key": { "vendor": "SAP", "vendor_id": "MAT-4291" }
-}
+POST /api/registry/synonyms/add
+[
+  {
+    "target_id": "<canonical entry_id>",
+    "synonym_namespace": "wip",
+    "synonym_entity_type": "documents",
+    "synonym_composite_key": { "vendor": "SAP", "vendor_id": "MAT-4291" }
+  }
+]
 ```
 
 When a client receives a vendor ID, it queries the Registry to resolve the canonical WIP ID. The client is responsible for this lookup — WIP doesn't automatically intercept vendor IDs in document data.
@@ -334,8 +377,10 @@ POST /api/document-store/documents
 POST /api/document-store/documents
 {"template_id": "PATIENT", "data": {...}}
 
-# Term colon notation for term references
-# Resolves "STATUS:approved" to the canonical term ID
+# Term references are strict: the fully qualified 3-part form
+# "wip:STATUS:approved" or a terminology-scoped opaque value resolve to
+# the canonical term ID; the 2-part "STATUS:approved" shorthand is
+# rejected (a value containing ':' is indistinguishable from it)
 ```
 
 For the full design, see `docs/design/universal-synonym-resolution.md`.

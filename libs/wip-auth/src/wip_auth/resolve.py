@@ -1,7 +1,12 @@
 """Universal entity ID resolution for WIP.
 
-Resolves human-readable identifiers (e.g., "STATUS", "PATIENT", "STATUS:approved")
-and verifies canonical IDs via the Registry's POST /resolve endpoint.
+Resolves human-readable identifiers (e.g., "STATUS", "PATIENT",
+"wip:STATUS:approved") and verifies canonical IDs via the Registry's
+POST /resolve endpoint. Term identifiers are strict: the fully qualified
+3-part form or the structured field form (resolve_term_by_fields) — the
+2-part "TERMINOLOGY:VALUE" shorthand is rejected at the API-door helpers
+in fastapi_helpers, because a value containing ':' is indistinguishable
+from it.
 
 **Every ID goes through Registry.** There is no format-based bypass.
 UUIDs are verified via ``entry_id`` lookup; synonyms are resolved via
@@ -157,12 +162,23 @@ def _build_resolve_payload(
     """Build a single item for the /resolve request payload.
 
     UUID-shaped IDs are sent as ``entry_id`` for direct verification.
-    Everything else is sent as ``composite_key`` for synonym resolution.
+    Non-term, non-UUID identifiers are sent with BOTH fields — the endpoint
+    tries ``entry_id`` first, then the composite key — because canonical ids
+    are NOT always UUID-shaped: a namespace's id_config can mint prefixed
+    ids (e.g. ``LOV-000042``), and routing those to composite-key-only
+    resolution 404s the canonical id itself. For a qualified identifier
+    (``NS:VALUE``) the entry_id candidate is the value half: an entry_id
+    never carries a namespace qualifier, and canonical-id verification is
+    namespace-free (matching the UUID door's semantics). Terms keep their
+    strict forms — composite key only for non-UUID term identifiers.
     """
     payload: dict[str, Any] = {}
     if _looks_like_uuid(raw_id):
         payload["entry_id"] = raw_id
     else:
+        if entity_type != "term":
+            _, value = split_qualified_value(raw_id)
+            payload["entry_id"] = value
         payload["composite_key"] = _build_composite_key(raw_id, entity_type, namespace)
     if include_statuses:
         payload["include_statuses"] = include_statuses
@@ -192,12 +208,44 @@ def clear_resolution_cache() -> None:
 
 
 class EntityNotFoundError(Exception):
-    """Raised when synonym resolution finds no matching entity."""
+    """Raised when synonym resolution finds no matching entity.
 
-    def __init__(self, identifier: str, entity_type: str):
+    When the namespace is supplied, a bare (unqualified) identifier gets the
+    reason it failed appended: bare values resolve in the caller's own
+    namespace only and never fall back to allowed_external_refs, so the entity
+    can exist, be legitimately referenceable, and still not be found under this
+    name. Without that sentence the message describes a missing entity when the
+    real problem is an under-specified identifier — a distinction that has cost
+    more than one reader a day.
+    """
+
+    def __init__(self, identifier: str, entity_type: str, namespace: str | None = None):
         self.identifier = identifier
         self.entity_type = entity_type
-        super().__init__(f"No {entity_type} found for identifier: {identifier}")
+        self.namespace = namespace
+        msg = f"No {entity_type} found for identifier: {identifier}"
+        if namespace:
+            msg += f" (searched namespace '{namespace}')"
+            if self._qualifying_would_help(identifier, entity_type):
+                msg += (
+                    f". A bare value resolves in '{namespace}' only and does not "
+                    f"fall back to allowed_external_refs; to reference another "
+                    f"namespace qualify it, e.g. 'other-ns:{identifier}'"
+                )
+        super().__init__(msg)
+
+    @staticmethod
+    def _qualifying_would_help(identifier: str, entity_type: str) -> bool:
+        """Only hint where a qualified form is both available and absent.
+
+        Terms are excluded: their cross-namespace form is the 3-part
+        ns:terminology:value, so this 2-part advice would be wrong for them.
+        Already-qualified identifiers and canonical UUIDs are excluded because
+        neither is under-specified — for those the entity really is missing.
+        """
+        if entity_type == "term" or ":" in identifier:
+            return False
+        return not _UUID_PATTERN.match(identifier)
 
 
 async def resolve_entity_id(
@@ -237,7 +285,44 @@ async def resolve_entity_id(
             return cached
 
     payload = _build_resolve_payload(raw_id, entity_type, namespace, include_statuses)
+    try:
+        canonical_id = await _post_resolve(payload, raw_id, entity_type, namespace)
+    except EntityNotFoundError:
+        if entity_type == "term" or _looks_like_uuid(raw_id):
+            raise
+        # Miss-path fallback to /entries/lookup/by-id — the WRITE door's
+        # transport (registry_client.resolve_identifier): its search_values
+        # match covers value-form references whose synonym key shapes
+        # /resolve cannot hash-match (a document's value synonym is the bare
+        # identity-values dict, so no {ns, type, value} key ever finds it).
+        # Without this, the exact string stored in a reference field
+        # validates on write and 404s on read. Terms are excluded (their
+        # strict forms resolve via composite keys only), UUIDs are excluded
+        # (entry_id verification already failed — the entity is missing).
+        ns_prefix, value = split_qualified_value(raw_id)
+        canonical_id_or_none = await _post_lookup_by_id(
+            value, ns_prefix or namespace, entity_type,
+        )
+        if canonical_id_or_none is None:
+            raise
+        canonical_id = canonical_id_or_none
+    _set_cached(cache_key, canonical_id)
+    return canonical_id
 
+
+async def _post_resolve(
+    payload: dict[str, Any],
+    identifier: str,
+    entity_type: str,
+    namespace: str | None = None,
+) -> str:
+    """POST one item to Registry /resolve and return the canonical id.
+
+    Shared HTTP + error mapping for every resolution entry point — one
+    implementation so transport injection and failure semantics cannot
+    drift between the string-form and field-form resolvers. Raises
+    EntityNotFoundError on unreachable Registry, non-200, or not-found.
+    """
     registry_url = _get_registry_url()
     api_key = _get_api_key()
 
@@ -254,23 +339,131 @@ async def resolve_entity_id(
             )
     except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
         logger.debug("Registry unreachable for resolution: %s", e)
-        raise EntityNotFoundError(raw_id, entity_type) from e
+        raise EntityNotFoundError(identifier, entity_type) from e
 
     if response.status_code != 200:
         logger.warning(
             "Registry resolve failed for %s (%s): %s",
-            raw_id, entity_type, response.status_code,
+            identifier, entity_type, response.status_code,
         )
-        raise EntityNotFoundError(raw_id, entity_type)
+        raise EntityNotFoundError(identifier, entity_type)
 
     data = response.json()
     results = data.get("results", [])
     if results and results[0].get("status") == "found":
-        canonical_id = results[0]["entry_id"]
-        _set_cached(cache_key, canonical_id)
-        return cast(str, canonical_id)
+        return cast(str, results[0]["entry_id"])
 
-    raise EntityNotFoundError(raw_id, entity_type)
+    # Genuine "Registry looked and found nothing" — the only case where an
+    # under-specified identifier is a plausible cause, so the only one that
+    # gets the namespace hint. The transport and non-200 raises above are
+    # infrastructure failures; suggesting a qualified form there would send
+    # the reader after the wrong problem.
+    raise EntityNotFoundError(identifier, entity_type, namespace)
+
+
+# Registry entity_type values are plural; the resolve layer speaks singular.
+_ENTITY_TYPE_PLURAL = {
+    "terminology": "terminologies",
+    "term": "terms",
+    "template": "templates",
+    "document": "documents",
+}
+
+
+async def _post_lookup_by_id(
+    value: str,
+    namespace: str,
+    entity_type: str,
+) -> str | None:
+    """POST one item to Registry /entries/lookup/by-id; entry_id or None.
+
+    The endpoint matches entry_id exactly, then falls back to search_values
+    (where identity-values synonyms are flattened) — both filtered by
+    namespace and plural entity_type when given. Deliberately returns None
+    on any failure instead of raising: this is a miss-path fallback, and
+    the caller re-raises the original EntityNotFoundError so the error the
+    caller sees names the identifier as it was given.
+    """
+    registry_url = _get_registry_url()
+    api_key = _get_api_key()
+    item = {
+        "entry_id": value,
+        "namespace": namespace,
+        "entity_type": _ENTITY_TYPE_PLURAL.get(entity_type, f"{entity_type}s"),
+    }
+    try:
+        client_kwargs: dict[str, Any] = {"timeout": 10.0}
+        if _resolve_transport is not None:
+            client_kwargs["transport"] = _resolve_transport
+            client_kwargs["base_url"] = registry_url
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            response = await client.post(
+                f"{registry_url}/api/registry/entries/lookup/by-id",
+                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+                json=[item],
+            )
+    except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
+        logger.debug("Registry unreachable for by-id fallback: %s", e)
+        return None
+
+    if response.status_code != 200:
+        logger.warning(
+            "Registry by-id fallback failed for %s (%s): %s",
+            value, entity_type, response.status_code,
+        )
+        return None
+
+    results = response.json().get("results", [])
+    if results and results[0].get("status") == "found":
+        return cast(str, results[0].get("entry_id"))
+    return None
+
+
+async def resolve_term_by_fields(
+    value: str,
+    terminology: str,
+    namespace: str,
+    *,
+    bypass_cache: bool = False,
+) -> str:
+    """Resolve a term to its canonical ID from structured fields.
+
+    The field-form door: the composite key is built directly from the
+    (namespace, terminology, value) tuple, so the value is an OPAQUE
+    scalar — a value containing ':' (OBO ids like 'GO:0000278') resolves
+    exactly like any other. The colon-notation string parser is never
+    involved. Identity lives in fields; delimiter conventions belong to
+    format parsers at import boundaries, not to WIP-internal addressing.
+
+    Args:
+        value: The term's raw value, uninterpreted.
+        terminology: The terminology's value or ID scoping the term.
+        namespace: Namespace holding the terminology.
+        bypass_cache: As on resolve_entity_id — write paths must not
+            answer from cache.
+
+    Raises:
+        EntityNotFoundError: no term matches the tuple.
+    """
+    cache_key = f"{namespace}:term-fields:{terminology}:{value}"
+    if not bypass_cache:
+        cached = _get_cached(cache_key)
+        if cached:
+            return cached
+
+    payload: dict[str, Any] = {
+        "composite_key": {
+            "ns": namespace,
+            "type": "term",
+            "terminology": terminology,
+            "value": value,
+        }
+    }
+    canonical_id = await _post_resolve(
+        payload, f"{terminology}/{value}", "term", namespace
+    )
+    _set_cached(cache_key, canonical_id)
+    return canonical_id
 
 
 async def resolve_entity_ids(
@@ -355,6 +548,8 @@ async def resolve_entity_ids(
             _set_cached(cache_key, canonical_id)
             result[raw_id] = canonical_id
         else:
-            raise EntityNotFoundError(raw_id, entity_type)
+            # Same reasoning as the single-resolve path: a per-item miss is a
+            # real lookup failure, so it carries the namespace hint.
+            raise EntityNotFoundError(raw_id, entity_type, namespace)
 
     return result

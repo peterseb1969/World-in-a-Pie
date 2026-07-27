@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from motor.motor_asyncio import AsyncIOMotorClient
 
 from document_store.main import app
 from document_store.models.document import Document
@@ -110,12 +109,11 @@ async def _insert_file(
 # Fixture: async HTTP client with file storage enabled + real Registry
 # ---------------------------------------------------------------------------
 @pytest_asyncio.fixture(scope="function")
-async def file_client():
+async def file_client(session_mongo_client):
     """Create an async HTTP client with file storage enabled and real Registry."""
     global _registry_transport
-    mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
     real_registry, _registry_transport = await setup_registry_and_app(
-        mongo_client, document_models=[Document, File]
+        session_mongo_client, document_models=[Document, File]
     )
 
     # Also clean File collection (setup_registry_and_app cleans Document)

@@ -264,6 +264,23 @@ the wipe-and-restore remediation ritual). Runtime keys die in exactly
 those events, and backups do not cover them. The declaration persists
 in the install's state: plain `redeploy`/`rebuild` keep it.
 
+Several keys are more comfortably declared in a file than in repeated
+`--api-key` JSON — reviewable and diffable deployer input:
+
+```bash
+wip-deploy install --api-keys-file keys.yaml
+# keys.yaml: a list under a top-level `keys:` (or a bare list) —
+# each entry {name, namespaces, grants, owner?, groups?}.
+# File entries merge with any --api-key values.
+```
+
+Rotate a declared key in place with `wip-deploy rotate-key <name>`: the
+key's secret is regenerated, the spec re-applied, and the fresh
+plaintext printed exactly once. No grace window — the old plaintext
+stops working at apply; services reading a mounted `*_API_KEY_FILE`
+pick up the new value automatically, external holders must be re-handed
+it. (Runtime keys can't rotate in place — revoke + create.)
+
 ### 4.4 Runtime API keys: CRUD endpoints
 
 ```bash
@@ -756,7 +773,7 @@ Override with `--failed-events-warning`, `--consumer-lag-warning`, `--consumer-l
 
 ## 8. MCP Server Setup (AI-assisted development)
 
-WIP ships an MCP server exposing **94 tools and 5 resources** to AI coding assistants. An AI agent can discover templates, query documents, manage terminologies, and import data through tool calls — without reading WIP source code. This section is the operator-side setup; for *what the tools do*, see `docs/mcp-server.md` and the `wip://` resources.
+WIP ships an MCP server exposing **101 tools and 5 resources** to AI coding assistants. An AI agent can discover templates, query documents, manage terminologies, and import data through tool calls — without reading WIP source code. This section is the operator-side setup; for *what the tools do*, see `docs/mcp-server.md` and the `wip://` resources.
 
 ### 8.1 Prerequisites
 

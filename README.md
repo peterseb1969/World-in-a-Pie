@@ -154,19 +154,21 @@ Host-prep specifics (Pi SSD + `fstab`, Podman-machine sizing, VM sizing) live in
 
 ## Project Status
 
-**Core platform complete and operational.** All services running with:
+**Core platform complete and operational** (current stable: **v2.1.0** — see [release notes](docs/releases/v2.1.0.md)). All services running with:
 
 - OIDC authentication (Dex) + API-key dual mode
 - Bulk-first API convention across all write endpoints
-- PostgreSQL reporting sync via NATS JetStream
+- PostgreSQL reporting sync via NATS JetStream, with per-template-version tables under stable entity views
 - Binary file storage (MinIO) with reference tracking
 - Semantic types (email, URL, geo_point, duration, …)
-- Template draft mode with cascading activation; inheritance with version pinning
+- Template draft mode with cascading activation; inheritance with version pinning; registered template identity with upsert semantics, impact analysis, and validated document migration across versions
+- Document relationships — edge-type templates with graph traversal queries
+- Backup & restore — multi-namespace archives, three restore modes (id-preserving, merge, fresh-identity), automatic post-restore integrity validation; hardened by a 24-cell test matrix run against live deployments
 - Streaming import/export with cursor pagination
 - Namespace-scoped referential integrity
 - Ontology support — OBO Graph JSON import, typed relationships, polyhierarchy, traversal queries
 
-See the [WIP Guide](docs/wip-guide.md) for the canonical operator reference and `git log` for current priorities.
+See the [WIP Guide](docs/wip-guide.md) for the canonical operator reference, [release notes](docs/releases/) for what shipped when, and `git log` for current priorities.
 
 ---
 
@@ -196,7 +198,7 @@ Import from SAP, the FDA, or a legacy database without forcing ID remapping — 
 
 ### MCP Server: AI-Native Development
 
-WIP ships a **Model Context Protocol (MCP) server** exposing the full platform to AI coding assistants — **94 tools + 5 resources** covering CRUD, terminologies, import, and non-obvious-behaviour docs, so an AI can build on WIP through tool calls without reading source. Transports: stdio, SSE, and HTTP streamable (validated on local, SSH-proxy, and Kubernetes deployments). Wire it up with `./scripts/setup-backend-agent.sh`; see [docs/mcp-server.md](docs/mcp-server.md) for transports and configuration.
+WIP ships a **Model Context Protocol (MCP) server** exposing the full platform to AI coding assistants — **101 tools + 5 resources** covering CRUD, terminologies, import, backup/restore, and non-obvious-behaviour docs, so an AI can build on WIP through tool calls without reading source. Transports: stdio, SSE, and HTTP streamable (validated on local, SSH-proxy, and Kubernetes deployments). Wire it up with `./scripts/setup-backend-agent.sh`; see [docs/mcp-server.md](docs/mcp-server.md) for transports and configuration.
 
 > [!CAUTION]
 > **Cloud AI + your data: three channels of exposure.**
@@ -254,7 +256,7 @@ Licensed under the [Apache License, Version 2.0](LICENSE).
 Contributions welcome — please open an issue to discuss proposed changes before a PR. Key conventions:
 
 - **Bulk-first API** — all write endpoints accept arrays and return `BulkResponse`
-- **Soft-delete** — data is never hard-deleted (except file-storage reclamation)
+- **Soft-delete by default** — deactivation, not deletion; hard delete exists only as a guarded per-namespace opt-in (plus file-storage reclamation and mutable-terminology terms)
 - **Namespace-scoped** — all entities are scoped to a namespace
 - See [API Conventions](docs/api-conventions.md) and [Data Models](docs/data-models.md) for details
 </content>

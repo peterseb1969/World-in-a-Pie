@@ -1,9 +1,10 @@
 """API request/response models for the Template Store service."""
 
+import re
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Canonical bulk-response models live in wip_auth.bulk_models (CASE-395).
 # Re-exported here under the template-store-facing names so existing
@@ -23,6 +24,25 @@ from .template import ReportingConfig, TemplateMetadata, TemplateUsage
 class StrictModel(BaseModel):
     """Base for API request models — rejects unknown fields."""
     model_config = ConfigDict(extra='forbid')
+
+
+# The reporting layer names each template version's physical table
+# ``<base>__v<N>`` (per-version reporting split). A template value or
+# cosmetic reporting.table_name ending in the reserved suffix would make
+# one entity's base name collide with another entity's version table
+# (``sample__v3`` vs ``sample`` v3), so the suffix is rejected at the API
+# boundary — the only collision class the naming scheme has.
+_RESERVED_TABLE_SUFFIX = re.compile(r"__v[0-9]+$")
+
+
+def _reject_reserved_suffix(value: str, what: str) -> str:
+    if _RESERVED_TABLE_SUFFIX.search(value):
+        raise ValueError(
+            f"{what} must not end in the reserved reporting suffix "
+            f"'__v<N>' (got {value!r}) — it would collide with a "
+            "per-version reporting table name"
+        )
+    return value
 
 
 # =============================================================================
@@ -62,7 +82,7 @@ class CreateTemplateRequest(StrictModel):
     )
     extends_version: int | None = Field(
         default=None,
-        description="Pinned parent version (None = always use latest active parent version)"
+        description="Pinned parent version. Required (non-null) whenever the template declares 'extends' — a null there is rejected; the parent is validated against this exact pinned version, never 'latest'. Null only when there is no parent."
     )
     identity_fields: list[str] = Field(
         default_factory=list,
@@ -76,17 +96,26 @@ class CreateTemplateRequest(StrictModel):
             "Empty → projection falls back to identity_fields."
         )
     )
+    renames: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Field renames relative to the previous version, {new_field: old_field}. "
+            "Only meaningful when this create versions an existing template (create "
+            "is an upsert); rejected on a first version. Identity fields cannot be "
+            "renamed. Declared renames migrate losslessly and map in reporting."
+        )
+    )
     usage: TemplateUsage = Field(
         default=TemplateUsage.ENTITY,
         description="Usage class: entity (default), reference, or relationship. Immutable after creation."
     )
     source_templates: list[str] = Field(
         default_factory=list,
-        description="Template values allowed as edge source (required when usage=relationship; ignored otherwise)"
+        description="Template values allowed as edge source (required when usage=relationship; rejected with an error on non-relationship templates)"
     )
     target_templates: list[str] = Field(
         default_factory=list,
-        description="Template values allowed as edge target (required when usage=relationship; ignored otherwise)"
+        description="Template values allowed as edge target (required when usage=relationship; rejected with an error on non-relationship templates)"
     )
     versioned: bool = Field(
         default=True,
@@ -121,13 +150,30 @@ class CreateTemplateRequest(StrictModel):
         description="Initial status: 'active' (default) or 'draft' (skips reference validation)"
     )
 
+    @field_validator("value")
+    @classmethod
+    def _value_reserved_suffix(cls, v: str) -> str:
+        return _reject_reserved_suffix(v, "Template value")
+
+    @model_validator(mode="after")
+    def _table_name_reserved_suffix(self) -> "CreateTemplateRequest":
+        if self.reporting and self.reporting.table_name:
+            _reject_reserved_suffix(
+                self.reporting.table_name, "reporting.table_name"
+            )
+        return self
+
 
 class UpdateTemplateRequest(StrictModel):
     """Request to update an existing template."""
 
     value: str | None = Field(
         default=None,
-        description="New value (triggers Registry synonym)"
+        description=(
+            "Must equal the current value when provided — the name is the "
+            "template's identity and is immutable; a rename is a fork "
+            "(create a new template), never a new version"
+        )
     )
     label: str | None = Field(
         default=None,
@@ -143,15 +189,27 @@ class UpdateTemplateRequest(StrictModel):
     )
     extends_version: int | None = Field(
         default=None,
-        description="Pinned parent version (None = always use latest active parent version)"
+        description="Pinned parent version. Required (non-null) whenever the template declares 'extends' — a null there is rejected; the parent is validated against this exact pinned version, never 'latest'. Null only when there is no parent."
     )
     identity_fields: list[str] | None = Field(
         default=None,
-        description="Update identity fields"
+        description=(
+            "Must equal the current identity_fields when provided — the "
+            "identity declaration is immutable across versions (document "
+            "identity must stay comparable across the whole version "
+            "catalog); changing it is a fork (create a new template)"
+        )
     )
     header_fields: list[str] | None = Field(
         default=None,
         description="Update peer-projection fields"
+    )
+    renames: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Field renames this new version declares relative to the current "
+            "one, {new_field: old_field}. Identity fields cannot be renamed."
+        )
     )
     fields: list[FieldDefinition] | None = Field(
         default=None,
@@ -173,6 +231,14 @@ class UpdateTemplateRequest(StrictModel):
         default=None,
         description="User or system updating this template"
     )
+
+    @model_validator(mode="after")
+    def _update_reserved_suffix(self) -> "UpdateTemplateRequest":
+        if self.reporting and self.reporting.table_name:
+            _reject_reserved_suffix(
+                self.reporting.table_name, "reporting.table_name"
+            )
+        return self
 
 
 class AddEndpointsRequest(StrictModel):
@@ -201,6 +267,7 @@ class TemplateResponse(BaseModel):
     extends_version: int | None = None
     identity_fields: list[str] = []
     header_fields: list[str] = []
+    renames: dict[str, str] | None = None
     usage: TemplateUsage = TemplateUsage.ENTITY
     source_templates: list[str] = []
     target_templates: list[str] = []
@@ -259,7 +326,7 @@ class DeleteItem(StrictModel):
     """Item in a bulk delete request."""
 
     id: str = Field(..., description="ID of entity to delete")
-    version: int | None = Field(default=None, description="Specific version to delete (default: latest for soft-delete, all for hard-delete)")
+    version: int | None = Field(default=None, description="Specific version to delete. Required for soft-delete — a version-less deactivate is rejected (it would ambiguously target the latest version during a version event). Hard-delete without a version removes ALL versions.")
     force: bool = Field(default=False, description="Force deletion even if documents exist")
     hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
     updated_by: str | None = Field(default=None, description="User performing deletion")

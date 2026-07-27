@@ -24,6 +24,8 @@ import type {
   DocumentTraverseResponse,
   DocumentMigrateRequest,
   DocumentMigrateResponse,
+  TemplateFacetsParams,
+  TemplateFacetsResponse,
 } from '../types/document.js'
 import type {
   BackupJobSnapshot,
@@ -31,6 +33,7 @@ import type {
   BackupRequest,
   ListBackupJobsParams,
   RestoreOptions,
+  ValidateNamespaceParams,
 } from '../types/backup.js'
 
 export class DocumentStoreService extends BaseService {
@@ -42,6 +45,21 @@ export class DocumentStoreService extends BaseService {
 
   async listDocuments(params?: DocumentQueryParams): Promise<DocumentListResponse> {
     return this.get('/documents', params)
+  }
+
+  /**
+   * Which templates are a namespace's documents instances of?
+   *
+   * Grouped from the documents themselves, not from template ownership: a
+   * document's namespace is independent of its template's namespace, so a
+   * template picker built from the namespace's OWN templates misses shared
+   * and foreign templates its documents actually use. Counts are distinct
+   * logical documents (version rows collapse before counting); each facet
+   * carries the template's own namespace so cross-namespace entries can be
+   * labeled honestly.
+   */
+  async getTemplateFacets(params?: TemplateFacetsParams): Promise<TemplateFacetsResponse> {
+    return this.get('/documents/template-facets', params)
   }
 
   /**
@@ -327,15 +345,16 @@ export class DocumentStoreService extends BaseService {
   }
 
   /**
-   * Restore a namespace from an uploaded archive. The archive is streamed
-   * to disk on the server, so multi-GB uploads do not buffer in memory.
+   * Restore from an uploaded archive. The archive is streamed to disk on
+   * the server, so multi-GB uploads do not buffer in memory.
    *
-   * **Mode gotcha (CASE-569):** omitting `mode` defers to the server default
-   * `'restore'`, which writes back into the archive's source namespace
-   * (a single-namespace archive honours `target_namespace`; a multi-namespace
-   * one restores each to itself). `'fresh'` is not yet implemented server-side
-   * — the backend 400s on it. Pass `mode: 'restore'` explicitly when the
-   * namespace outcome matters; see `RestoreOptions`.
+   * ID-preserving restore-to-self: the archive manifest determines the
+   * target namespaces (each writes to itself). `mode: 'restore'` (default)
+   * requires every target to be empty; `mode: 'merge'` reconciles the
+   * archive into a namespace that already holds data, under the
+   * definitions-compatibility check, then `on_clash` for documents. Set `dry_run: true` to get the
+   * report without writing anything. Retired toolkit-era params are no
+   * longer sent — the endpoint 400s them; see `RestoreOptions`.
    */
   async startRestore(
     namespace: string,
@@ -348,19 +367,48 @@ export class DocumentStoreService extends BaseService {
     if (options.mode !== undefined) form.append('mode', options.mode)
     if (options.target_namespace !== undefined)
       form.append('target_namespace', options.target_namespace)
-    if (options.register_synonyms !== undefined)
-      form.append('register_synonyms', String(options.register_synonyms))
+    if (options.namespace_map !== undefined)
+      form.append('namespace_map', JSON.stringify(options.namespace_map))
+    if (options.on_clash !== undefined) form.append('on_clash', options.on_clash)
+    if (options.add_missing !== undefined)
+      form.append('add_missing', String(options.add_missing))
+    if (options.extend_terminologies !== undefined)
+      form.append('extend_terminologies', String(options.extend_terminologies))
     if (options.skip_documents !== undefined)
       form.append('skip_documents', String(options.skip_documents))
     if (options.skip_files !== undefined)
       form.append('skip_files', String(options.skip_files))
     if (options.batch_size !== undefined)
       form.append('batch_size', String(options.batch_size))
-    if (options.continue_on_error !== undefined)
-      form.append('continue_on_error', String(options.continue_on_error))
     if (options.dry_run !== undefined)
       form.append('dry_run', String(options.dry_run))
+    if (options.drop_stale_reporting !== undefined)
+      form.append('drop_stale_reporting', String(options.drop_stale_reporting))
     return this.postFormData(`/backup/namespaces/${namespace}/restore`, form)
+  }
+
+  /**
+   * Verify a namespace's referential and identity integrity. Returns a job.
+   *
+   * Checks that every reference resolves — template, term, document, file —
+   * and that every document's stored identity hash still matches its own
+   * data. It is the referential twin of the reporting parity check: that one
+   * compares PostgreSQL against MongoDB, this compares MongoDB against
+   * itself.
+   *
+   * It matters most after a restore, which writes documents straight to
+   * MongoDB and validates nothing while writing. Every restore starts one of
+   * these per namespace it wrote and records the ids on its own snapshot
+   * (`validation_job_ids`); this is the same check on demand.
+   *
+   * Poll `getBackupJob` for progress and `result`. Findings do not fail the
+   * job — it completes with `result.status` of healthy, warning or error.
+   */
+  async validateNamespace(
+    namespace: string,
+    params: ValidateNamespaceParams = {},
+  ): Promise<BackupJobSnapshot> {
+    return this.post(`/backup/namespaces/${namespace}/validate`, undefined, params)
   }
 
   /** Get the latest persisted snapshot for a backup or restore job. */

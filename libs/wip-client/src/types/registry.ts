@@ -288,6 +288,12 @@ export interface APIKeyInfo {
   namespaces: string[] | null
   created_by: string
   source: 'config' | 'runtime'
+  /**
+   * Config-declared namespace grants ({namespace: read|write|admin}).
+   * Always null for runtime keys — their write authority is Registry
+   * NamespaceGrants, not shown here (CASE-693).
+   */
+  grants: Record<string, 'read' | 'write' | 'admin'> | null
 }
 
 export interface CreateAPIKeyRequest {

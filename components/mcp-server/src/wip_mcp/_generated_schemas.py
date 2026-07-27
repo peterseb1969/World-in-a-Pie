@@ -7,13 +7,88 @@ Regenerate with: python -m scripts.generate_schemas [--fetch]
 TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'properties': {'source_term_id': {'type': 'string',
                                                                            'description': 'The '
                                                                                           'subject '
+                                                                                          'term: '
+                                                                                          'canonical '
+                                                                                          'UUID, '
+                                                                                          'fully '
+                                                                                          'qualified '
+                                                                                          "'ns:terminology:value', "
+                                                                                          'or — '
+                                                                                          'with '
+                                                                                          'source_terminology '
+                                                                                          'set — '
+                                                                                          'the '
+                                                                                          'OPAQUE '
+                                                                                          'raw '
                                                                                           'term '
-                                                                                          'ID'},
+                                                                                          'value '
+                                                                                          '(never '
+                                                                                          'colon-parsed). '
+                                                                                          'The '
+                                                                                          'ambiguous '
+                                                                                          '2-part '
+                                                                                          "'TERMINOLOGY:VALUE' "
+                                                                                          'shorthand '
+                                                                                          'is '
+                                                                                          'rejected.'},
                                                         'target_term_id': {'type': 'string',
                                                                            'description': 'The '
                                                                                           'object '
-                                                                                          'term '
-                                                                                          'ID'},
+                                                                                          'term; '
+                                                                                          'same '
+                                                                                          'accepted '
+                                                                                          'forms '
+                                                                                          'as '
+                                                                                          'source_term_id, '
+                                                                                          'scoped '
+                                                                                          'by '
+                                                                                          'target_terminology.'},
+                                                        'source_terminology': {'type': 'string',
+                                                                               'description': 'Terminology '
+                                                                                              'scoping '
+                                                                                              'a '
+                                                                                              'value-form '
+                                                                                              'source_term_id. '
+                                                                                              'When '
+                                                                                              'set, '
+                                                                                              'source_term_id '
+                                                                                              'is '
+                                                                                              'treated '
+                                                                                              'as '
+                                                                                              'the '
+                                                                                              'raw '
+                                                                                              'value '
+                                                                                              '— '
+                                                                                              'required '
+                                                                                              'for '
+                                                                                              'values '
+                                                                                              'that '
+                                                                                              'themselves '
+                                                                                              'contain '
+                                                                                              "':' "
+                                                                                              '(OBO '
+                                                                                              'ids '
+                                                                                              'like '
+                                                                                              'GO:0000278). '
+                                                                                              'Per-item '
+                                                                                              'because '
+                                                                                              'a '
+                                                                                              "relation's "
+                                                                                              'two '
+                                                                                              'endpoints '
+                                                                                              'may '
+                                                                                              'live '
+                                                                                              'in '
+                                                                                              'different '
+                                                                                              'terminologies.'},
+                                                        'target_terminology': {'type': 'string',
+                                                                               'description': 'Terminology '
+                                                                                              'scoping '
+                                                                                              'a '
+                                                                                              'value-form '
+                                                                                              'target_term_id '
+                                                                                              '(see '
+                                                                                              'source_terminology).'},
                                                         'relation_type': {'type': 'string',
                                                                           'description': 'Relation '
                                                                                          'type '
@@ -430,6 +505,35 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                           'falls '
                                                                                           'back to '
                                                                                           'identity_fields.'},
+                                                         'renames': {'additionalProperties': {'type': 'string'},
+                                                                     'type': 'object',
+                                                                     'description': 'Field renames '
+                                                                                    'relative to '
+                                                                                    'the previous '
+                                                                                    'version, '
+                                                                                    '{new_field: '
+                                                                                    'old_field}. '
+                                                                                    'Only '
+                                                                                    'meaningful '
+                                                                                    'when this '
+                                                                                    'create '
+                                                                                    'versions an '
+                                                                                    'existing '
+                                                                                    'template '
+                                                                                    '(create is an '
+                                                                                    'upsert); '
+                                                                                    'rejected on a '
+                                                                                    'first '
+                                                                                    'version. '
+                                                                                    'Identity '
+                                                                                    'fields cannot '
+                                                                                    'be renamed. '
+                                                                                    'Declared '
+                                                                                    'renames '
+                                                                                    'migrate '
+                                                                                    'losslessly '
+                                                                                    'and map in '
+                                                                                    'reporting.'},
                                                          'usage': {'type': 'string',
                                                                    'enum': ['entity',
                                                                             'reference',
@@ -1128,7 +1232,49 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                                                             'include '
                                                                                                                             'when '
                                                                                                                             'flattening',
-                                                                                                             'default': 10}},
+                                                                                                             'default': 10},
+                                                                                      'cross_version_view': {'additionalProperties': True,
+                                                                                                             'type': 'object',
+                                                                                                             'description': 'Opt-in '
+                                                                                                                            'cross-version '
+                                                                                                                            'entity '
+                                                                                                                            'view '
+                                                                                                                            'over '
+                                                                                                                            'the '
+                                                                                                                            'per-version '
+                                                                                                                            'reporting '
+                                                                                                                            'tables: '
+                                                                                                                            "{'versions': "
+                                                                                                                            "'all' "
+                                                                                                                            '| '
+                                                                                                                            '[ints], '
+                                                                                                                            "'columns': "
+                                                                                                                            '{target: '
+                                                                                                                            "{'from': "
+                                                                                                                            'source} '
+                                                                                                                            '| '
+                                                                                                                            '{}}}. '
+                                                                                                                            'The '
+                                                                                                                            'identity '
+                                                                                                                            'core '
+                                                                                                                            'is '
+                                                                                                                            'always '
+                                                                                                                            'included; '
+                                                                                                                            'declared '
+                                                                                                                            'column '
+                                                                                                                            'mappings '
+                                                                                                                            'extend '
+                                                                                                                            'it. '
+                                                                                                                            'Consumed '
+                                                                                                                            'by '
+                                                                                                                            'reporting-sync '
+                                                                                                                            '(which '
+                                                                                                                            'validates '
+                                                                                                                            'the '
+                                                                                                                            'shape); '
+                                                                                                                            'stored '
+                                                                                                                            'pass-through '
+                                                                                                                            'here.'}},
                                                                        'type': 'object',
                                                                        'description': 'Configuration '
                                                                                       'for '
@@ -1583,6 +1729,7 @@ extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version (None = always use latest active parent version)
 identity_fields (array of string): Fields that form the composite identity key
 header_fields (array of string): Fields to include in peer/header projections. Bare names → data.<name>; metadata.custom.<name> paths allowed. Empty → projection falls back to identity_fields.
+renames (object): Field renames relative to the previous version, {new_field: old_field}. Only meaningful when this create versions an existing template (create is an upsert); rejected on a first version. Identity fields cannot be renamed. Declared renames migrate losslessly and map in reporting.
 usage (enum): One of: entity, reference, relationship. How a template's documents are intended to be used.
 
 - entity (default): full document lifecycle, the v1.x behaviour.
@@ -1652,6 +1799,7 @@ reporting (object): Configuration for PostgreSQL reporting sync
   include_metadata (boolean, default: true): Include created_at, created_by, etc. columns
   flatten_arrays (boolean, default: true): Flatten arrays into multiple rows (cross-product)
   max_array_elements (integer, default: 10): Maximum array elements to include when flattening
+  cross_version_view (object): Opt-in cross-version entity view over the per-version reporting tables: {'versions': 'all' | [ints], 'columns': {target: {'from': source} | {}}}. The identity core is always included; declared column mappings extend it. Consumed by reporting-sync (which validates the shape); stored pass-through here.
 created_by (string): User or system creating this template
 validate_references (boolean, default: true): Validate that terminology_ref and template_ref values exist before creating
 status (string): Initial status: 'active' (default) or 'draft' (skips reference validation)
@@ -1701,6 +1849,7 @@ extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version (None = always use latest active parent version)
 identity_fields (array of string): Fields that form the composite identity key
 header_fields (array of string): Fields to include in peer/header projections. Bare names → data.<name>; metadata.custom.<name> paths allowed. Empty → projection falls back to identity_fields.
+renames (object): Field renames relative to the previous version, {new_field: old_field}. Only meaningful when this create versions an existing template (create is an upsert); rejected on a first version. Identity fields cannot be renamed. Declared renames migrate losslessly and map in reporting.
 usage (enum): One of: entity, reference, relationship. How a template's documents are intended to be used.
 
 - entity (default): full document lifecycle, the v1.x behaviour.
@@ -1770,6 +1919,7 @@ reporting (object): Configuration for PostgreSQL reporting sync
   include_metadata (boolean, default: true): Include created_at, created_by, etc. columns
   flatten_arrays (boolean, default: true): Flatten arrays into multiple rows (cross-product)
   max_array_elements (integer, default: 10): Maximum array elements to include when flattening
+  cross_version_view (object): Opt-in cross-version entity view over the per-version reporting tables: {'versions': 'all' | [ints], 'columns': {target: {'from': source} | {}}}. The identity core is always included; declared column mappings extend it. Consumed by reporting-sync (which validates the shape); stored pass-through here.
 created_by (string): User or system creating this template
 validate_references (boolean, default: true): Validate that terminology_ref and template_ref values exist before creating
 status (string): Initial status: 'active' (default) or 'draft' (skips reference validation)
@@ -1805,13 +1955,19 @@ FieldDefinition fields:
   metadata (object): Additional field metadata""",
     'create_term_relations': """Create ontology term-relations between terms.
 
-Relation types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
+Relation types (seeded defaults, not a fixed set — apps can add their own to
+_ONTOLOGY_RELATIONSHIP_TYPES, and OBO Graph import auto-creates any type it
+references): is_a, has_subtype, part_of, has_part, maps_to, mapped_from,
+related_to, finding_site, causative_agent, regulates, positively_regulates,
+negatively_regulates.
 Use source_term_id (subject) and target_term_id (object).
 Example: "Lung cancer" --is_a--> "Cancer"
 
 Fields (from OpenAPI — these are the exact field names):
-source_term_id (string, REQUIRED): The subject term ID
-target_term_id (string, REQUIRED): The object term ID
+source_term_id (string, REQUIRED): The subject term: canonical UUID, fully qualified 'ns:terminology:value', or — with source_terminology set — the OPAQUE raw term value (never colon-parsed). The ambiguous 2-part 'TERMINOLOGY:VALUE' shorthand is rejected.
+target_term_id (string, REQUIRED): The object term; same accepted forms as source_term_id, scoped by target_terminology.
+source_terminology (string): Terminology scoping a value-form source_term_id. When set, source_term_id is treated as the raw value — required for values that themselves contain ':' (OBO ids like GO:0000278). Per-item because a relation's two endpoints may live in different terminologies.
+target_terminology (string): Terminology scoping a value-form target_term_id (see source_terminology).
 relation_type (string, REQUIRED): Relation type value (e.g., 'is_a', 'part_of')
 metadata (object): Provenance, confidence, OWL axioms
 created_by (string): User or system creating this relation""",

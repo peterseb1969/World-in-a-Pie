@@ -5,10 +5,10 @@ to a permission level on a specific namespace.
 """
 
 from datetime import UTC, datetime
-from typing import Literal
+from typing import ClassVar, Literal
 
 from beanie import Document
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from pymongo import IndexModel
 
 from wip_auth.bulk_models import BulkResponseBase, BulkResultItemBase
@@ -46,7 +46,7 @@ class NamespaceGrant(Document):
 
     class Settings:
         name = "namespace_grants"
-        indexes = [
+        indexes: ClassVar = [
             IndexModel(
                 [("namespace", 1), ("subject", 1), ("subject_type", 1)],
                 unique=True,
@@ -62,6 +62,8 @@ class NamespaceGrant(Document):
 class GrantCreate(BaseModel):
     """Request to create a namespace grant."""
 
+    model_config = ConfigDict(extra="forbid")
+
     subject: str
     subject_type: Literal["user", "api_key", "group"] = "user"
     permission: Literal["read", "write", "admin"] = "read"
@@ -70,6 +72,8 @@ class GrantCreate(BaseModel):
 
 class GrantRevoke(BaseModel):
     """Request to revoke a namespace grant."""
+
+    model_config = ConfigDict(extra="forbid")
 
     subject: str
     subject_type: Literal["user", "api_key", "group"] = "user"

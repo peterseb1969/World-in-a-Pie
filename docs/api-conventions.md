@@ -266,24 +266,38 @@ The response is always `200 OK` with the resulting `NamespaceResponse`. Calling 
 - Flipping an existing namespace from `retain` to `full` requires `confirm_enable_deletion=true` in the body. Without it, the registry returns 400.
 - Creating a new namespace with `deletion_mode='full'` is allowed directly (no transition to confirm).
 
-### Template create with conflict validation — `POST /api/template-store/templates?on_conflict=validate`
+### Template create is an upsert — `POST /api/template-store/templates`
 
-`POST /templates` accepts an `on_conflict` query parameter:
+The template's identity is its name: creating an existing `(namespace, value)`
+is a **version event**, mirroring the document upsert (same identity → new
+version). Per item:
 
-| Mode | Behavior on `(namespace, value)` collision |
-|------|---------------------------------------------|
-| `error` (default) | Returns a per-item `status: "error"`, `error: "Template with value '...' already exists ..."`. Existing behavior — backwards compatible. |
-| `validate` | Schema-aware: identical → `unchanged`; compatible → `updated` (version N+1); incompatible → `error` with structured diff. |
+| Situation | Status | Notes |
+|-----------|--------|-------|
+| New `(namespace, value)` | `created` | Version 1. |
+| Fully identical re-post | `unchanged` | Same `id`/`version` as existing — the idempotent bootstrap re-run, no query parameter needed. `details` carries the (empty) diff. |
+| Any difference (schema or label/description/metadata) | `updated` | `is_new_version: true`, `version: N+1`. `details` carries the structured diff (`added_optional`, `added_required`, `removed`, `changed_type`, `made_required`, `modified_existing`) **plus** `impact` (live-document counts per version and non-empty counts for dropped fields, from document-store; explicit `status: "unavailable"` if unreachable — never a silent zero) and `migration` (an eligibility verdict: additive/rename-only or dropped-but-empty → eligible; type changes, newly-required, or modified fields → app decision; pointer to the `migrate_documents` dry-run). |
+| Identity-bearing / immutable difference | `error` | `identity_fields` differ → `error_code: "identity_fields_immutable"` (changing identity is a **fork** — declare a new template value); `usage` / `versioned` / edge endpoint lists differ → `error_code: "immutable_property"`. |
 
-In `validate` mode the per-item result reflects the verdict:
+Versioning is loud, never blocking: read the per-item `status` and `details`.
+The `on_conflict` query parameter is **deprecated** — still accepted
+(`error` | `validate`) but no longer selects behavior; every create upserts.
 
-| Verdict | Status | Notes |
-|---------|--------|-------|
-| Identical schema | `unchanged` | Same `id` and `version` as the existing template. `details` carries the (empty) diff. |
-| Compatible (added optional fields only) | `updated` | New version created; `is_new_version: true`, `version: N+1`. `details.added_optional` lists the added field names. |
-| Incompatible | `error` | `error_code: "incompatible_schema"`. `details` contains: `removed`, `added_required`, `changed_type` (`{name, old_type, new_type}`), `made_required`, `modified_existing`, `identity_changed` (`{old, new}` or `null`). |
+Two companion capabilities for schema evolution:
 
-Compatibility is intentionally narrow: **only "added optional field" qualifies as compatible**. Any change to an existing field (label, description, validation, type, mandatory flag), removed field, added required field, or `identity_fields` change is incompatible. The structured diff lets the bootstrap script show the human a useful error.
+- **Declared renames** — a new version may declare `renames: {new_field: old_field}`
+  (validated: the old field existed in the previous version and is gone, the new
+  one is declared and new, types match, identity fields excluded). A declared
+  rename migrates losslessly — `migrate_documents` re-keys the data before
+  target validation — where an undeclared rename is indistinguishable from
+  drop+add and fails migration with `unknown_field`.
+- **Candidate dry-run** — `POST /api/document-store/validation/validate-candidate`
+  validates documents (a sample of an existing template's most recent active
+  docs, or explicit payloads) against an **inline** candidate definition:
+  "would my documents still validate against this draft?" answered with zero
+  persistence — no throwaway draft versions. Companion read:
+  `GET /api/document-store/documents/impact-stats` returns the per-version and
+  per-field live-document counts on demand.
 
 ### Terminology / term create with conflict validation (CASE-465)
 
@@ -304,8 +318,11 @@ import { WipBulkItemError } from '@wip/client'
 try {
   await client.templateStore.createTemplate(personDef, { onConflict: 'validate' })
 } catch (e) {
-  if (e instanceof WipBulkItemError && e.errorCode === 'incompatible_schema') {
-    console.error('PERSON template drift:', e.details)
+  // Pure schema drift is a loud version event (inspect the result details), NOT
+  // an error. Only identity-bearing or immutable-property differences reject:
+  if (e instanceof WipBulkItemError &&
+      (e.errorCode === 'immutable_property' || e.errorCode === 'identity_fields_immutable')) {
+    console.error('PERSON template immutable-property change:', e.details)
     process.exit(1)
   }
   throw e
@@ -453,12 +470,14 @@ if r["status"] == "error" and "already exists" in r.get("error", ""):
 
 ## Pagination
 
-All list (GET) endpoints use consistent pagination:
+List endpoints share a uniform pagination shape:
 
 | Parameter | Default | Maximum | Description |
 |-----------|---------|---------|-------------|
 | `page` | 1 | — | Page number (1-based) |
-| `page_size` | 50 | 100 | Items per page |
+| `page_size` | 50 | 1000 | Items per page |
+
+Two deliberate deviations: `GET /documents/{id}/relationships` caps `page_size` at **500** (with `include=peers` each row fans out into a peer-document projection, so a page is not a flat single-collection scan), and the table view defaults to **100** rows per page (cheap flat projections on a spreadsheet-like surface).
 
 All list responses include:
 
@@ -492,16 +511,61 @@ Resolution happens at the API boundary (in the service's route handler) using `r
 |---------|-----------------------------|
 | **Def-Store** | `terminology_id` in term endpoints |
 | **Template-Store** | `terminology_ref`, `template_ref`, `target_templates`, `target_terminologies` in template fields |
-| **Document-Store** | `template_id` in document creation |
+| **Document-Store** | `template_id` in document creation; `document_id` in PATCH, the relationships, and traverse endpoints (accepts a registered synonym) |
 
-### Term Colon Notation
+### Term Addressing Is Strict
 
-For term references, use `TERMINOLOGY:TERM_VALUE` notation:
+A term's identity is the tuple (namespace, terminology, value). Term
+endpoints accept exactly three identifier forms:
 
 ```
-STATUS:approved    → resolves to the term "approved" in terminology "STATUS"
-COUNTRY:Germany    → resolves to the term "Germany" in terminology "COUNTRY"
+0190b000-…                     → canonical UUID
+wip:STATUS:approved            → fully qualified ns:terminology:value
+                                 (split on the first two colons — the value
+                                 keeps any colons it contains)
+terminology=STATUS + approved  → field form: the identifier is the raw
+                                 value, treated as opaque, never colon-parsed
 ```
+
+The 2-part `TERMINOLOGY:VALUE` shorthand (`STATUS:approved`) is
+**rejected with 422** on every term endpoint, reads and writes alike: a
+value that itself contains `:` (OBO ids like `GO:0000278`) is
+indistinguishable from it, so the shorthand can silently resolve a term
+in the wrong terminology. Prefer the field form when addressing terms by
+value. Other entity types keep their `NS:VALUE` qualified form — this
+carve-out is term-specific.
+
+### Bare Values Never Cross a Namespace
+
+For terminologies, templates and documents, the identifier alone decides
+which namespace is searched, independently of what `allowed_external_refs`
+permits:
+
+```
+KB_TOPIC        → the CALLER'S OWN namespace, always — never a permitted one
+kb:KB_TOPIC     → namespace `kb`, explicitly; the only value form that crosses
+0190b000-…      → canonical UUID; needs no namespace, crosses freely
+```
+
+`allowed_external_refs` decides *whether* a namespace may be referenced. The
+identifier decides *which* namespace is meant. Both must agree, and a bare
+value never falls back to a permitted namespace — so a template in `library`
+declaring `array_terminology_ref: "KB_TOPIC"` fails even when `library`
+permits `kb` and `kb` defines `KB_TOPIC`. Write `"kb:KB_TOPIC"`.
+
+The strictness is deliberate: with two permitted namespaces both defining a
+value, a bare value would be ambiguous. The explicit prefix removes the
+ambiguity instead of guessing.
+
+Note this bites at **template creation**, not document creation: resolving an
+identifier to a canonical id happens when the template is written, and an
+unresolvable reference fails that write outright. Existence-and-active
+validation of the referent is the separate, later step that runs at document
+creation.
+
+**Seeds should not hardcode the prefix.** A namespace name is
+deployment-configurable, so a literal `kb:` is as unportable as a literal
+UUID. Substitute it from the app's own configuration at bootstrap.
 
 ### Best-Effort Semantics
 

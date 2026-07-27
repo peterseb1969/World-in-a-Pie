@@ -2,8 +2,7 @@
 
 Per-domain thin wrapper around the canonical client in
 libs/wip-auth/src/wip_auth/registry_client.py. Adds template-specific
-methods (register_template, register_templates_bulk, add_synonym,
-register_auto_synonym).
+methods (register_template, add_synonym, register_auto_synonym).
 
 CASE-398 consolidated the universal infrastructure into the canonical
 base.
@@ -37,15 +36,29 @@ class RegistryClient(RegistryClientBase):
     async def register_template(
         self,
         namespace: str,
+        value: str,
         created_by: str | None = None,
         entry_id: str | None = None,
-    ) -> str:
-        """Register a new template. Empty composite key — Registry always
-        generates a fresh ID (unless entry_id is provided)."""
+    ) -> tuple[str, str]:
+        """Register a template's identity with the Registry.
+
+        The composite key {ns, type, value} IS the template's identity —
+        the same key shape the auto-synonym has always carried, now
+        registered as the entry's primary key. The Registry's dedup treats
+        primary keys and synonym keys uniformly, so a value already claimed
+        by a pre-existing template (whose primary key predates this and is
+        empty) resolves to that template's entry via its auto-synonym —
+        upsert works against old data with no backfill.
+
+        Returns (template_id, status) where status is "created" for a
+        fresh identity or "already_exists" when the key resolved to an
+        existing entry. Callers branch: create v1, or version the existing
+        template (create-as-upsert), or fail a restore onto a dirty target.
+        """
         result = await self._register_entry(
             namespace=namespace,
             entity_type="templates",
-            composite_key={},
+            composite_key={"ns": namespace, "type": "template", "value": value},
             created_by=created_by,
             entry_id=entry_id,
             metadata={"type": "template"},
@@ -56,29 +69,7 @@ class RegistryClient(RegistryClientBase):
             raise RegistryError(
                 f"Registry returned status={result.status} without registry_id"
             )
-        return result.registry_id
-
-    async def register_templates_bulk(
-        self,
-        count: int,
-        namespace: str,
-        created_by: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """Register N templates (empty composite keys, fresh IDs)."""
-        items: list[dict[str, Any]] = [
-            {
-                "namespace": namespace,
-                "entity_type": "templates",
-                "composite_key": {},
-                "created_by": created_by,
-                "metadata": {"type": "template"},
-            }
-            for _ in range(count)
-        ]
-        results = await self._register_entries_bulk(items)
-        # Return as dicts for back-compat with existing callers (which expected
-        # the raw Registry response shape).
-        return [r.model_dump() for r in results]
+        return result.registry_id, result.status
 
     async def add_synonym(
         self,

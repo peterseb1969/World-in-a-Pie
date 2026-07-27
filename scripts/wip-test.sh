@@ -26,6 +26,12 @@
 #   Skip provisioning entirely (e.g. for unit-only runs):
 #     WIP_TEST_SKIP_CONTAINERS=1 ./scripts/wip-test.sh registry tests/test_unit.py
 #
+# Cross-run lock (CASE-742): the test containers are one set per machine
+# with fixed database names, so runs that touch them are serialized via
+# /tmp/wip-test-infra.lock. A concurrent run fails fast naming the holder;
+# WIP_TEST_WAIT=1 queues instead (WIP_TEST_WAIT_TIMEOUT seconds, default
+# 900). Components with no container deps are never serialized.
+#
 # Exits with pytest's exit code (or combined exit code for "all").
 #
 # Path override: if any positional pytest target is supplied (a file
@@ -85,7 +91,7 @@ _component_deps() {
         reporting-sync)
             echo "postgres nats"
             ;;
-        mcp-server|wip-auth|deployer|agent-scripts|scaffold|auth-gateway)
+        mcp-server|wip-auth|wip-archive|deployer|agent-scripts|scaffold|auth-gateway)
             echo ""
             ;;
         *)
@@ -197,7 +203,7 @@ if [[ $# -lt 1 ]]; then
     echo "" >&2
     echo "Components: registry, def-store, template-store, document-store," >&2
     echo "            reporting-sync, ingest-gateway, mcp-server" >&2
-    echo "Libraries:  wip-auth" >&2
+    echo "Libraries:  wip-auth, wip-archive" >&2
     echo "Tools:      deployer, agent-scripts, scaffold" >&2
     echo "Special:    all (run everything)" >&2
     exit 1
@@ -209,7 +215,7 @@ shift
 # --- Resolve component to directory ---
 
 PYTHON_COMPONENTS=(registry def-store template-store document-store reporting-sync ingest-gateway mcp-server auth-gateway)
-PYTHON_LIBS=(wip-auth)
+PYTHON_LIBS=(wip-auth wip-archive)
 PYTHON_TOOLS=(deployer agent-scripts scaffold)
 
 # One-time-per-component test-dep provisioning, mirroring the CI recipe
@@ -228,6 +234,7 @@ _pip_check_tripwire() {
     local out
     if ! out="$(pip check 2>&1)"; then
         echo "  WARNING: shared venv has conflicting requirements after installing $name's deps:" >&2
+        # shellcheck disable=SC2001  # per-line indent of multiline output — parameter expansion can't do this readably
         echo "$out" | sed 's/^/           /' >&2
         echo "           Another component's suite may now fail on import." >&2
     fi
@@ -255,7 +262,7 @@ _ensure_component_test_deps() {
     echo "  Provisioning $name test deps (CI recipe, one-time)..."
     if (cd "$dir" && pip install -q -r requirements.txt) \
         && (cd "$REPO_ROOT/components/registry" && pip install -q -r requirements.txt) \
-        && pip install -q pytest-asyncio httpx; then
+        && pip install -q pytest-asyncio pytest-xdist httpx; then
         touch "$marker"
     else
         echo "  WARNING: test-dep provisioning failed — imports may error below." >&2
@@ -318,14 +325,150 @@ run_python_tests() {
         esac
     done
 
+    # Intra-run parallelism, opt-in per component: document-store's
+    # conftest gives every xdist worker its own set of databases, so its
+    # suite runs -n auto by default. Other suites join this list only
+    # after getting the same per-worker isolation — without it, workers
+    # wipe each other's fixtures (the corruption class the machine lock
+    # serializes at run granularity). WIP_TEST_XDIST=0 disables; a
+    # caller-supplied -n/--numprocesses wins.
+    local xdist_args=()
+    if [[ "$name" == "document-store" && "${WIP_TEST_XDIST:-1}" != "0" ]]; then
+        local caller_n=0
+        for arg in "$@"; do
+            case "$arg" in
+                -n|-n*|--numprocesses*) caller_n=1 ;;
+            esac
+        done
+        (( caller_n )) || xdist_args=(-n auto)
+    fi
+
     echo "=== $name ==="
     ensure_test_containers "$name" || return 1
+    # The ${arr[@]+...} guard keeps an EMPTY xdist_args from tripping
+    # `set -u` on bash < 4.4 (macOS system bash is 3.2).
     if (( has_target )); then
-        (cd "$dir" && PYTHONPATH=src pytest "$@")
+        (cd "$dir" && PYTHONPATH=src pytest ${xdist_args[@]+"${xdist_args[@]}"} "$@")
     else
-        (cd "$dir" && PYTHONPATH=src pytest tests/ "$@")
+        (cd "$dir" && PYTHONPATH=src pytest tests/ ${xdist_args[@]+"${xdist_args[@]}"} "$@")
     fi
 }
+
+# --- Cross-run test-infrastructure lock (CASE-742) ---
+#
+# The test containers (test-mongo/test-postgres/test-nats) are one set per
+# MACHINE, and every conftest connects under a fixed database name — so two
+# concurrent suite runs (a second clone's agent, or a backgrounded run in
+# this one) share databases and wipe each other's fixtures mid-flight. The
+# observed symptom is mass failures with rollback / not-found signatures and
+# a failure count that changes on every run: phantom regressions in both
+# directions. Serialize instead: one run of the shared infrastructure at a
+# time, machine-wide.
+#
+# Scoped, not global: components whose _component_deps is empty (deployer,
+# scaffold, agent-scripts, mcp-server, wip-auth, auth-gateway) never touch
+# the shared containers and are not serialized. `all` locks once up front
+# (it includes mongo components; the loop runs inline in this process).
+# WIP_TEST_SKIP_CONTAINERS still locks: it skips PROVISIONING, but the
+# conftests connect to whatever is on the ports regardless.
+#
+# mkdir-based (atomic; bash-3.2- and Darwin-safe — macOS has no flock(1)),
+# with the owner recorded inside. Stale locks are broken by PID liveness,
+# not TTL: a slow `all` run must never have its lock expire out from under
+# it, while a SIGKILLed holder is detected dead and cleared. The EXIT trap
+# releases on every exit set -euo pipefail can produce.
+#
+# On contention: fail fast, printing the holder (clone, pid, component,
+# since) so the operator knows what to wait for. WIP_TEST_WAIT=1 polls
+# instead, bounded by WIP_TEST_WAIT_TIMEOUT seconds (default 900) — bounded
+# because queueing blindly on a wedged holder is the same class of mistake
+# as the corruption this lock prevents.
+
+WIP_TEST_LOCK_DIR="${WIP_TEST_LOCK_DIR:-/tmp/wip-test-infra.lock}"
+
+_lock_owner_summary() {
+    if [[ -f "$WIP_TEST_LOCK_DIR/owner" ]]; then
+        sed 's/^/         /' "$WIP_TEST_LOCK_DIR/owner"
+    else
+        echo "         (owner file missing — lock dir exists without metadata)"
+    fi
+}
+
+_lock_holder_alive() {
+    local pid
+    pid="$(sed -n 's/^pid=//p' "$WIP_TEST_LOCK_DIR/owner" 2>/dev/null)"
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+_try_acquire() {
+    if mkdir "$WIP_TEST_LOCK_DIR" 2>/dev/null; then
+        printf 'pid=%s\nclone=%s\ncomponent=%s\nsince=%s\n' \
+            "$$" "$REPO_ROOT" "$TARGET" "$(date '+%Y-%m-%d %H:%M:%S')" \
+            > "$WIP_TEST_LOCK_DIR/owner"
+        # shellcheck disable=SC2064
+        trap "rm -rf '$WIP_TEST_LOCK_DIR'" EXIT
+        return 0
+    fi
+    return 1
+}
+
+acquire_test_lock() {
+    _try_acquire && return 0
+
+    if ! _lock_holder_alive; then
+        echo "  Stale test-infra lock (holder dead) — breaking it:"
+        _lock_owner_summary
+        rm -rf "$WIP_TEST_LOCK_DIR"
+        _try_acquire && return 0
+    fi
+
+    if [[ "${WIP_TEST_WAIT:-}" == "1" ]]; then
+        local waited=0 timeout="${WIP_TEST_WAIT_TIMEOUT:-900}"
+        echo "  Test infrastructure locked — waiting (WIP_TEST_WAIT=1, up to ${timeout}s):"
+        _lock_owner_summary
+        while (( waited < timeout )); do
+            sleep 5
+            waited=$(( waited + 5 ))
+            if ! ls -d "$WIP_TEST_LOCK_DIR" >/dev/null 2>&1 || ! _lock_holder_alive; then
+                rm -rf "$WIP_TEST_LOCK_DIR" 2>/dev/null || true
+                _try_acquire && return 0
+            fi
+        done
+        echo "ERROR: still locked after ${timeout}s — giving up." >&2
+        _lock_owner_summary >&2
+        return 1
+    fi
+
+    echo "ERROR: another test run holds the shared test infrastructure:" >&2
+    _lock_owner_summary >&2
+    echo "       Concurrent runs share databases and corrupt each other" >&2
+    echo "       (CASE-742). Re-run when it finishes, or WIP_TEST_WAIT=1" >&2
+    echo "       to queue (WIP_TEST_WAIT_TIMEOUT bounds the wait)." >&2
+    return 1
+}
+
+_needs_lock() {
+    [[ "$TARGET" == "all" ]] && return 0
+    [[ -n "$(_component_deps "$TARGET")" ]]
+}
+
+if [[ "${WIP_TEST_LOCK_HELD:-}" != "1" ]] && _needs_lock; then
+    acquire_test_lock || exit 1
+    export WIP_TEST_LOCK_HELD=1
+fi
+
+# Test hook: prove lock behaviour without running a suite. Prints the
+# outcome and exits — LOCK_ACQUIRED (this run holds it), or LOCK_SKIPPED
+# (no-dep target / already held by a parent). Contention exits above with
+# the owner message before reaching this line.
+if [[ "${WIP_TEST_LOCK_PROBE:-}" == "1" ]]; then
+    if [[ -f "$WIP_TEST_LOCK_DIR/owner" ]] && grep -q "^pid=$$\$" "$WIP_TEST_LOCK_DIR/owner"; then
+        echo "LOCK_ACQUIRED"
+    else
+        echo "LOCK_SKIPPED"
+    fi
+    exit 0
+fi
 
 # --- Execute ---
 

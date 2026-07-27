@@ -129,7 +129,7 @@ async def _job(
 
 def _make_v3_archive(path, prefixes):
     """A minimal real v3 archive: just a parseable manifest."""
-    from wip_toolkit.models import Manifest, NamespaceEntry
+    from wip_archive.models import Manifest, NamespaceEntry
 
     manifest = Manifest(
         namespaces=[NamespaceEntry(prefix=p) for p in prefixes],
@@ -447,3 +447,77 @@ async def test_restore_upload_records_manifest_namespaces(
 
     assert resp.status_code == 202, resp.text
     assert resp.json()["namespaces"] == ["wip"]
+
+
+# ---------------------------------------------------------------------------
+# CASE-800 — the archive moving mid-request must not truncate the download
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveMovesDuringDownload:
+    """A download holds the job record it loaded when the request started.
+    finalize_backup can move the archive out from under it: upload, flip
+    archive_backend/archive_path, then unlink the scratch file. The caller's
+    copy still names a path that has just stopped existing.
+
+    That window is guaranteed rather than unlucky — the terminal event is
+    persisted (so pollers see COMPLETE) before the lifecycle hook runs at all,
+    so a client that downloads the moment it sees a complete job aims straight
+    at it. Failing there is especially bad because the route has already sent
+    Content-Length: the client gets 200 and a short body, not an error.
+    """
+
+    @pytest.mark.asyncio
+    async def test_stream_follows_the_archive_into_the_bucket(self, monkeypatch, tmp_path):
+        store, _fake = _minio_store(monkeypatch)
+        payload = b"PK\x03\x04" + b"archive-bytes" * 500
+
+        job = await _job(archive_path=None)
+        scratch = scratch_path_for(job.job_id)
+        scratch.parent.mkdir(parents=True, exist_ok=True)
+        scratch.write_bytes(payload)
+        await job.set({BackupJob.archive_path: str(scratch)})
+
+        # The download's copy of the record, loaded before the hook runs.
+        stale = await BackupJob.find_one(BackupJob.job_id == job.job_id)
+
+        await store.finalize_backup(job)
+        assert not scratch.exists(), "precondition: the scratch copy is gone"
+        assert stale.archive_backend == "local", "precondition: the caller's copy is stale"
+
+        chunks = [chunk async for chunk in store.stream_archive(stale)]
+        assert b"".join(chunks) == payload
+
+    @pytest.mark.asyncio
+    async def test_a_stale_job_still_reports_its_archive_as_retained(
+        self, monkeypatch, tmp_path
+    ):
+        """archive_exists gates the download with a 410; the same staleness
+        would report a perfectly good archive as un-retained."""
+        store, _fake = _minio_store(monkeypatch)
+
+        job = await _job(archive_path=None)
+        scratch = scratch_path_for(job.job_id)
+        scratch.parent.mkdir(parents=True, exist_ok=True)
+        scratch.write_bytes(b"PK\x03\x04payload")
+        await job.set({BackupJob.archive_path: str(scratch)})
+        stale = await BackupJob.find_one(BackupJob.job_id == job.job_id)
+
+        await store.finalize_backup(job)
+
+        assert await store.archive_exists(stale) is True
+
+    @pytest.mark.asyncio
+    async def test_a_genuinely_missing_local_archive_still_fails(self, monkeypatch, tmp_path):
+        """The fallback must not paper over a real loss. Without MinIO there is
+        no bucket to fall back to, and a swept scratch file is simply gone —
+        that has to keep surfacing as an error rather than an empty success."""
+        monkeypatch.setenv("WIP_FILE_STORAGE_ENABLED", "false")
+        store = ArchiveStore()
+        configure_archive_store(store)
+
+        job = await _job(archive_path=str(tmp_path / "never-existed.zip"))
+
+        assert await store.archive_exists(job) is False
+        with pytest.raises(FileNotFoundError):
+            [chunk async for chunk in store.stream_archive(job)]

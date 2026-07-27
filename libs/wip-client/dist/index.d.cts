@@ -338,8 +338,20 @@ interface TermRelation {
 }
 type TermRelationListResponse = PaginatedResponse<TermRelation>;
 interface CreateTermRelationRequest {
+    /**
+     * Canonical UUID, fully qualified 'ns:terminology:value', or — with
+     * source_terminology set — the opaque raw term value (never
+     * colon-parsed). The ambiguous 2-part 'TERMINOLOGY:VALUE' shorthand
+     * is rejected by the platform (422).
+     */
     source_term_id: string;
     target_term_id: string;
+    /**
+     * Terminology scoping a value-form source_term_id. Per-item because a
+     * relation's two endpoints may live in different terminologies.
+     */
+    source_terminology?: string;
+    target_terminology?: string;
     relation_type: string;
     metadata?: Record<string, unknown>;
     created_by?: string;
@@ -347,6 +359,8 @@ interface CreateTermRelationRequest {
 interface DeleteTermRelationRequest {
     source_term_id: string;
     target_term_id: string;
+    source_terminology?: string;
+    target_terminology?: string;
     relation_type: string;
     hard_delete?: boolean;
 }
@@ -390,7 +404,16 @@ declare class DefStoreService extends BaseService {
         search?: string;
         namespace?: string;
     }): Promise<TermListResponse>;
-    getTerm(termId: string): Promise<Term>;
+    /**
+     * Term identifiers accept a canonical UUID, the fully qualified
+     * 'ns:terminology:value' form, or — with the terminology option set —
+     * the opaque raw term value (never colon-parsed). The ambiguous
+     * 2-part 'TERMINOLOGY:VALUE' shorthand is rejected (422).
+     */
+    getTerm(termId: string, options?: {
+        namespace?: string;
+        terminology?: string;
+    }): Promise<Term>;
     createTerm(terminologyId: string, data: CreateTermRequest, options: {
         namespace: string;
     }): Promise<BulkResultItem>;
@@ -399,10 +422,29 @@ declare class DefStoreService extends BaseService {
         batch_size?: number;
         registry_batch_size?: number;
     }): Promise<BulkResponse>;
-    updateTerm(termId: string, data: UpdateTermRequest): Promise<BulkResultItem>;
-    deprecateTerm(termId: string, data: DeprecateTermRequest): Promise<BulkResultItem>;
+    /**
+     * Term write identifiers accept a canonical UUID, the fully qualified
+     * 'ns:terminology:value' form, or — with the terminology option set —
+     * the opaque raw term value (never colon-parsed). The ambiguous
+     * 2-part 'TERMINOLOGY:VALUE' shorthand is rejected (422).
+     */
+    updateTerm(termId: string, data: UpdateTermRequest, options?: {
+        namespace?: string;
+        terminology?: string;
+    }): Promise<BulkResultItem>;
+    /**
+     * The terminology option scopes term_id AND replaced_by_term_id — a
+     * replacement lives in the same vocabulary; a cross-terminology
+     * pointer must be a UUID or fully qualified.
+     */
+    deprecateTerm(termId: string, data: DeprecateTermRequest, options?: {
+        namespace?: string;
+        terminology?: string;
+    }): Promise<BulkResultItem>;
     deleteTerm(termId: string, options?: {
         hardDelete?: boolean;
+        namespace?: string;
+        terminology?: string;
     }): Promise<BulkResultItem>;
     importTerminology(data: ImportTerminologyRequest): Promise<{
         terminology: Terminology;
@@ -464,6 +506,8 @@ declare class DefStoreService extends BaseService {
         direction?: string;
         relation_type?: string;
         namespace?: string;
+        /** Scopes a value-form term_id as the opaque raw value (never colon-parsed). */
+        terminology?: string;
         page?: number;
         page_size?: number;
     }): Promise<TermRelationListResponse>;
@@ -479,20 +523,25 @@ declare class DefStoreService extends BaseService {
     getAncestors(termId: string, params?: {
         relation_type?: string;
         namespace?: string;
+        /** Scopes a value-form termId as the opaque raw value (never colon-parsed). */
+        terminology?: string;
         max_depth?: number;
     }): Promise<TraversalResponse>;
     getDescendants(termId: string, params?: {
         relation_type?: string;
         namespace?: string;
+        terminology?: string;
         max_depth?: number;
     }): Promise<TraversalResponse>;
     getParents(termId: string, params?: {
         relation_type?: string;
         namespace?: string;
+        terminology?: string;
     }): Promise<TermRelation[]>;
     getChildren(termId: string, params?: {
         relation_type?: string;
         namespace?: string;
+        terminology?: string;
     }): Promise<TermRelation[]>;
     getTerminologyAuditLog(terminologyId: string, params?: {
         action?: string;
@@ -501,6 +550,9 @@ declare class DefStoreService extends BaseService {
     }): Promise<AuditLogResponse>;
     getTermAuditLog(termId: string, params?: {
         action?: string;
+        namespace?: string;
+        /** Scopes a value-form termId as the opaque raw value (never colon-parsed). */
+        terminology?: string;
         page?: number;
         page_size?: number;
     }): Promise<AuditLogResponse>;
@@ -594,6 +646,28 @@ type SyncStrategy = 'latest_only' | 'all_versions';
  * (`versioned: false` is an option on relationship templates).
  */
 type TemplateUsage = 'entity' | 'reference' | 'relationship';
+/**
+ * Opt-in cross-version entity view over a template's per-version reporting
+ * tables — the config behind the bare `doc_<value>` name.
+ *
+ * The identity core (the typed intersection of the selected versions'
+ * tables) is always included; `columns` adds mappings beyond it. Anything
+ * unmapped and not provably identical across the selected versions is
+ * absent from the view — the backend never silently merges columns it
+ * cannot prove compatible.
+ */
+interface CrossVersionView {
+    /** Version tables the view spans. Server default is 'all'. */
+    versions: 'all' | number[];
+    /**
+     * Target column → optional source. `{ from: old }` maps a renamed column
+     * (declared renames land here). `{}` or `null` means the column keeps its
+     * own name in the versions that have it, and is NULL elsewhere.
+     */
+    columns: Record<string, {
+        from?: string;
+    } | null>;
+}
 interface ReportingConfig {
     sync_enabled: boolean;
     sync_strategy: SyncStrategy;
@@ -601,6 +675,12 @@ interface ReportingConfig {
     include_metadata: boolean;
     flatten_arrays: boolean;
     max_array_elements: number;
+    /**
+     * Opt-in cross-version view config. Stored pass-through on the template;
+     * the shape is owned and validated by reporting-sync, which builds the
+     * view. Absent / null means the bare name exposes the identity core only.
+     */
+    cross_version_view?: CrossVersionView | null;
 }
 interface TemplateMetadata {
     domain?: string;
@@ -651,6 +731,12 @@ interface Template {
      * Immutable after creation. See PoNIF #8.
      */
     versioned?: boolean;
+    /**
+     * Field renames this version declared relative to the previous one, as
+     * `{new_field: old_field}`. Persisted, so it comes back on read — a
+     * template editor renders the declaration it was created with.
+     */
+    renames?: Record<string, string> | null;
     fields: FieldDefinition[];
     rules: ValidationRule[];
     metadata: TemplateMetadata;
@@ -685,6 +771,14 @@ interface CreateTemplateRequest {
     target_templates?: string[];
     /** Defaults to true. Immutable after creation. See PoNIF #8. */
     versioned?: boolean;
+    /**
+     * Field renames relative to the previous version, `{new_field: old_field}`.
+     * Validated against the version being renamed from (the old name existed
+     * and is gone, the new one is new, types match, identity fields excluded)
+     * and rejected on a first version. A declared rename migrates losslessly
+     * and maps in reporting; an undeclared one strands the old column's data.
+     */
+    renames?: Record<string, string>;
     fields?: FieldDefinition[];
     rules?: ValidationRule[];
     metadata?: Partial<TemplateMetadata>;
@@ -702,6 +796,13 @@ interface UpdateTemplateRequest {
     identity_fields?: string[];
     /** Update peer/header-projection fields (CASE-343). */
     header_fields?: string[];
+    /**
+     * Field renames the new version declares relative to the current one,
+     * `{new_field: old_field}`. This is the path an interactive editor takes —
+     * renaming a field on an existing template — so it matters here as much as
+     * on create. Same validation as the create path.
+     */
+    renames?: Record<string, string>;
     fields?: FieldDefinition[];
     rules?: ValidationRule[];
     metadata?: Partial<TemplateMetadata>;
@@ -773,6 +874,80 @@ interface CascadeResponse {
     failed: number;
     results: CascadeResult[];
 }
+/**
+ * Live-document impact of a version event, computed advisory-side from
+ * document-store.
+ *
+ * `status: 'unavailable'` is a real answer, not an error: document-store
+ * could not be reached, so the counts are unknown. It is deliberately never
+ * a silent zero, which would read as "no documents affected".
+ */
+interface TemplateVersionImpact {
+    status: 'ok' | 'unavailable';
+    /** Present when status === 'ok'. */
+    total_live_docs?: number;
+    /** Live document count keyed by the template version they validated against. */
+    docs_per_version?: Record<string, number>;
+    /** Per-field count of live documents where the field is non-empty. */
+    field_nonempty_counts?: Record<string, number>;
+    /** Present when status === 'unavailable' — why the counts are missing. */
+    reason?: string;
+}
+/**
+ * Whether the platform can offer to move existing documents onto the new
+ * version, and how.
+ */
+interface TemplateMigrationOffer {
+    /**
+     * true = offerable; false = needs app-side data decisions (type changes,
+     * newly-required fields, removed fields carrying live data); null =
+     * removed fields present but the counts were unavailable, so run the
+     * dry-run for a per-document readiness report.
+     */
+    eligible: boolean | null;
+    reason: string;
+    /** The operation to run — the migrate dry-run/apply cycle. */
+    via: string;
+}
+/**
+ * `details` on a bulk result item that minted a new template version: the
+ * schema diff, plus the consequences of having minted it.
+ *
+ * Both write paths carry this — create-as-upsert (`POST /templates`) and
+ * update (`PUT /templates`). Older backends attached it on create only, so
+ * treat it as optional and narrow with `asVersionEventDetails`.
+ */
+interface TemplateVersionEventDetails {
+    added_optional: string[];
+    added_required: string[];
+    removed: string[];
+    changed_type: Array<{
+        name: string;
+        old_type: string;
+        new_type: string;
+    }>;
+    made_required: string[];
+    modified_existing: string[];
+    identity_changed: {
+        old: string[];
+        new: string[];
+    } | null;
+    relationship_refs_changed: unknown | null;
+    impact: TemplateVersionImpact;
+    migration: TemplateMigrationOffer;
+}
+/**
+ * Narrow a bulk result item's untyped `details` to the version-event shape.
+ *
+ * `BulkResultItem.details` is `Record<string, unknown>` because the envelope
+ * is shared by every bulk endpoint — documents, terms, templates. Rather
+ * than widening it with template-specific members, narrow here at the point
+ * of use.
+ *
+ * Returns null when the item did not mint a version, or when the backend
+ * predates the impact block on the path that was used.
+ */
+declare function asVersionEventDetails(details: Record<string, unknown> | undefined | null): TemplateVersionEventDetails | null;
 
 declare class TemplateStoreService extends BaseService {
     constructor(transport: FetchTransport);
@@ -1041,12 +1216,26 @@ interface ValidateDocumentsRequest {
 interface BulkValidationResponse {
     results: DocumentValidationResponse[];
 }
+/**
+ * One row of a document's version history.
+ *
+ * `created_at` is the ENTITY's creation time — when version 1 was written — so
+ * it is identical on every row and does NOT tell you when this particular
+ * version was persisted. `updated_at` does, which is what makes the history a
+ * usable audit trail. Code that sorts or displays version history by
+ * `created_at` will not order anything; read `updated_at` instead.
+ *
+ * `updated_at` / `updated_by` are absent on documents written before the
+ * platform distinguished the two stamps, hence optional.
+ */
 interface DocumentVersionSummary {
     document_id: string;
     version: number;
     status: DocumentStatus;
     created_at: string;
     created_by: string | null;
+    updated_at?: string | null;
+    updated_by?: string | null;
 }
 interface DocumentVersionResponse {
     identity_hash: string;
@@ -1078,6 +1267,28 @@ interface TableViewParams {
     page?: number;
     page_size?: number;
     max_cross_product?: number;
+}
+interface TemplateFacet {
+    template_id: string;
+    template_value: string | null;
+    /**
+     * The template's OWN namespace — may differ from the queried namespace
+     * (shared / cross-namespace templates). Null when the template could not
+     * be fetched.
+     */
+    template_namespace: string | null;
+    /** Distinct logical documents (version rows collapse before counting). */
+    document_count: number;
+}
+interface TemplateFacetsResponse {
+    namespace: string;
+    facets: TemplateFacet[];
+}
+interface TemplateFacetsParams {
+    /** Omittable only under a single-namespace API key. */
+    namespace?: string;
+    /** Document status to count; 'all' disables the default active-only filter. */
+    status?: DocumentStatus | 'all';
 }
 interface ImportPreviewResponse {
     headers: string[];
@@ -1271,17 +1482,41 @@ interface DocumentMigrateResponse extends BulkResponse {
  * deliberately decoupled from the internal `wip_toolkit.models.ProgressEvent`
  * so a future implementation can replace the toolkit without breaking clients.
  */
-type BackupJobKind = 'backup' | 'restore';
+type BackupJobKind = 'backup' | 'restore' | 'validate';
 type BackupJobStatus = 'pending' | 'running' | 'complete' | 'failed';
 /**
- * Restore mode. `'restore'` is the only mode the server implements today: it
- * writes back into the archive's source namespace. `'fresh'` is RESERVED —
- * the backend currently rejects it with 400 "Fresh mode is not yet
- * implemented" (document-store `api/backup.py`); the new-ID / honour-
- * `target_namespace` path it names does not exist yet. Kept in the union for
- * forward-compat, but do not send it (CASE-569).
+ * Restore mode.
+ *
+ * `'restore'` requires every target namespace to be EMPTY and inserts the
+ * archive wholesale, preserving every canonical id.
+ *
+ * `'merge'` takes the archive as a delta against a namespace that already
+ * holds data, also preserving ids. It may target a differently-named
+ * namespace, provided the archive's ids are not already registered here.
+ *
+ * `'fresh'` keeps nothing: every entity is registered anew with a
+ * Registry-minted id and every reference between them is rewritten, which is
+ * what lets a namespace be restored BESIDE the one it came from — two live
+ * copies cannot share a canonical id. Requires `target_namespace`, and that
+ * namespace must be empty.
  */
-type RestoreMode = 'restore' | 'fresh';
+type RestoreMode = 'restore' | 'merge' | 'fresh';
+/**
+ * What a merge does when the target already holds a document's identity.
+ * `'skip'` (default) keeps the target's version. `'overwrite'` appends the
+ * archive's LATEST version on top of the target's head, adopting the
+ * target's document_id — both histories survive, and the archive's is not
+ * spliced in. On a `versioned: false` template it replaces the single
+ * version in place instead, matching that template's own lifecycle.
+ *
+ * `'newer'` does what `'overwrite'` does, but only where the archive's copy
+ * has a more recent `updated_at`. A tie keeps the target — equal timestamps
+ * say nothing about which side to prefer — as does a missing or unparseable
+ * timestamp on either side, which is reported as a job warning. Across two
+ * installs this is only as reliable as the two machines' clocks: UTC removes
+ * timezone error, not skew.
+ */
+type ClashPolicy = 'skip' | 'overwrite' | 'newer';
 /**
  * Persistent snapshot of a backup or restore job. Returned by every backup
  * REST endpoint that hands back a job (start, get, list).
@@ -1300,54 +1535,147 @@ interface BackupJobSnapshot {
     completed_at: string | null;
     archive_size: number | null;
     options: Record<string, unknown>;
+    warnings?: string[];
+    /** Present on `validate` jobs once they complete. */
+    result?: NamespaceIntegrityResult | null;
+    /**
+     * Validation jobs a completed restore started, one per namespace it wrote.
+     * The restore does not wait for them — its data is committed either way.
+     */
+    validation_job_ids?: string[];
     created_by: string;
+}
+/**
+ * A single referential or identity problem found in a namespace.
+ *
+ * Distinct from the reporting layer's `IntegrityIssue`, which describes a
+ * PostgreSQL-side finding keyed on `entity_id`. This one is a MongoDB-side
+ * finding about a specific document version.
+ */
+interface NamespaceIntegrityIssue {
+    type: string;
+    severity: 'error' | 'warning' | 'info';
+    document_id: string;
+    template_id: string;
+    version: number;
+    field_path: string | null;
+    reference: string;
+    message: string;
+}
+interface NamespaceIntegritySummary {
+    total_documents: number;
+    documents_checked: number;
+    documents_with_issues: number;
+    orphaned_template_refs: number;
+    orphaned_term_refs: number;
+    inactive_template_refs: number;
+    orphaned_document_refs: number;
+    orphaned_file_refs: number;
+    identity_hash_mismatches: number;
+}
+/**
+ * The outcome of a namespace validation job.
+ *
+ * Findings do not fail the job — the check ran, and its answer is the
+ * deliverable. `issues` is a capped sample; `issues_truncated` says how many
+ * more there were, since a namespace with a systematic problem produces one
+ * issue per document.
+ */
+interface NamespaceIntegrityResult {
+    status: 'healthy' | 'warning' | 'error';
+    summary: NamespaceIntegritySummary;
+    issues: NamespaceIntegrityIssue[];
+    issues_truncated: number;
+}
+/** Query parameters for `POST /backup/namespaces/{namespace}/validate`. */
+interface ValidateNamespaceParams {
+    /** Check term references (one cached lookup per distinct term). */
+    check_term_refs?: boolean;
+    /** Recompute each document's identity hash and compare it to the stored one. */
+    check_identity?: boolean;
+    /** Stop after this many documents (0 = all). */
+    limit?: number;
 }
 /**
  * Request body for `POST /backup/namespaces/{namespace}/backup`.
  *
- * All fields map to keyword arguments of the underlying toolkit
- * `run_export` call. Defaults match the server side, so callers may pass an
- * empty object to take everything.
- *
- * **v1.0 caveat — `include_files`:** see CASE-28. Setting this to `true`
- * against any namespace with non-trivial file content currently causes the
- * archive writer to buffer all blobs in memory. Stick with the default
- * (`false`) until CASE-28 lands.
+ * Only the options the direct backup engine consumes are typed — the
+ * endpoint rejects the retired fields (`skip_closure`, `skip_synonyms`,
+ * `latest_only`, `template_prefixes`, `dry_run`, `include_inactive`) with a
+ * 400 when set. Backups always contain every entity in every status:
+ * inactive and archived entities are referenced by live data, so an archive
+ * missing them would be a restore trap. Blob bytes stream to the server's
+ * backup scratch dir, so `include_files: true` is safe at any content
+ * volume.
  */
 interface BackupRequest {
     include_files?: boolean;
-    include_inactive?: boolean;
     skip_documents?: boolean;
-    skip_closure?: boolean;
-    skip_synonyms?: boolean;
-    latest_only?: boolean;
-    template_prefixes?: string[];
-    dry_run?: boolean;
+    namespaces?: string[];
+    all_namespaces?: boolean;
 }
 /**
  * Form fields accompanying a multipart restore upload.
  *
- * **Mode gotcha (CASE-569):** omitting `mode` sends nothing on the wire, so
- * the server default applies — and that default is `'restore'`, which writes
- * back into the archive's **source** namespace. A single-namespace archive
- * may be redirected with `target_namespace`; a multi-namespace archive
- * restores each namespace to itself and rejects a target override. So a
- * caller who sets `target_namespace`, omits `mode`, and expects a
- * fresh-namespace restore lands in the archive's original namespace instead —
- * the surprising direction, with no error. `'fresh'` is NOT yet implemented
- * (the backend 400s on it); there is no mode that remaps to a new namespace
- * with new IDs today. Pass `mode: 'restore'` explicitly when the namespace
- * outcome matters.
+ * `'restore'` and `'merge'` are ID-preserving and write each namespace in
+ * the archive back to itself (a merge may target a differently-named
+ * namespace). `'fresh'` re-mints every identity: it takes
+ * `target_namespace` (single-namespace archive) or `namespace_map`
+ * (multi-namespace). `dry_run` is real, and for a merge it is exact: the
+ * plan is computed before anything is written, so the report is what a real
+ * run would do — and it still fails on what a real run would refuse. The
+ * retired toolkit-era params are gone from this type: `register_synonyms`
+ * was removed from the API entirely (fresh means fresh — no old→new id
+ * back-ties), and `continue_on_error` is a tombstone the endpoint 400s
+ * when set.
+ *
+ * The clash policies apply to `mode: 'merge'` only. Sending a non-default
+ * one with a plain restore is a 400 rather than a silent no-op: a restore
+ * requires an empty target, so nothing can clash, and quietly accepting the
+ * option would misreport what ran.
  */
 interface RestoreOptions {
     mode?: RestoreMode;
+    /**
+     * Where to write. Required for `mode: 'fresh'` on a single-namespace
+     * archive, which is placing new identities somewhere. For the other modes
+     * the archive manifest decides, except that a merge may use it to write
+     * into a differently-named namespace.
+     */
     target_namespace?: string;
-    register_synonyms?: boolean;
+    /**
+     * Fresh only — explicit `{source: target}` for EVERY namespace in a
+     * multi-namespace archive; there is no implicit default, because an
+     * unmapped namespace restored to its old name would collide with the live
+     * original. Several sources may share one target (Registry-key collisions
+     * between them refuse at plan time); a target may equal its source name
+     * only when that namespace is absent. Pass exactly one of this or
+     * `target_namespace` for `'fresh'`.
+     */
+    namespace_map?: Record<string, string>;
+    /** Merge only — resolution for a document identity the target already holds. */
+    on_clash?: ClashPolicy;
+    /**
+     * Merge only — insert terminologies and templates the target does not
+     * have. Without it a missing definition refuses the merge: changing a live
+     * namespace's definitions is an active decision, not a side effect of
+     * restoring data into it.
+     */
+    add_missing?: boolean;
+    /** Merge only — add terms the target's terminology is missing. */
+    extend_terminologies?: boolean;
     skip_documents?: boolean;
     skip_files?: boolean;
     batch_size?: number;
-    continue_on_error?: boolean;
     dry_run?: boolean;
+    /**
+     * Drop a stale reporting schema for the target namespace before
+     * restoring instead of refusing. A dry run reports the would-drop only.
+     * Rejected for a merge: its target is live, so a populated reporting
+     * schema is expected and dropping it would discard the data being merged
+     * into.
+     */
+    drop_stale_reporting?: boolean;
 }
 /**
  * Filter parameters for `GET /backup/jobs`.
@@ -1379,6 +1707,18 @@ interface BackupProgressMessage {
 declare class DocumentStoreService extends BaseService {
     constructor(transport: FetchTransport);
     listDocuments(params?: DocumentQueryParams): Promise<DocumentListResponse>;
+    /**
+     * Which templates are a namespace's documents instances of?
+     *
+     * Grouped from the documents themselves, not from template ownership: a
+     * document's namespace is independent of its template's namespace, so a
+     * template picker built from the namespace's OWN templates misses shared
+     * and foreign templates its documents actually use. Counts are distinct
+     * logical documents (version rows collapse before counting); each facet
+     * carries the template's own namespace so cross-namespace entries can be
+     * labeled honestly.
+     */
+    getTemplateFacets(params?: TemplateFacetsParams): Promise<TemplateFacetsResponse>;
     /**
      * Fetch a document by ID (or any synonym/value the Registry resolves).
      *
@@ -1501,17 +1841,36 @@ declare class DocumentStoreService extends BaseService {
      */
     startBackup(namespace: string, request?: BackupRequest): Promise<BackupJobSnapshot>;
     /**
-     * Restore a namespace from an uploaded archive. The archive is streamed
-     * to disk on the server, so multi-GB uploads do not buffer in memory.
+     * Restore from an uploaded archive. The archive is streamed to disk on
+     * the server, so multi-GB uploads do not buffer in memory.
      *
-     * **Mode gotcha (CASE-569):** omitting `mode` defers to the server default
-     * `'restore'`, which writes back into the archive's source namespace
-     * (a single-namespace archive honours `target_namespace`; a multi-namespace
-     * one restores each to itself). `'fresh'` is not yet implemented server-side
-     * — the backend 400s on it. Pass `mode: 'restore'` explicitly when the
-     * namespace outcome matters; see `RestoreOptions`.
+     * ID-preserving restore-to-self: the archive manifest determines the
+     * target namespaces (each writes to itself). `mode: 'restore'` (default)
+     * requires every target to be empty; `mode: 'merge'` reconciles the
+     * archive into a namespace that already holds data, under the
+     * definitions-compatibility check, then `on_clash` for documents. Set `dry_run: true` to get the
+     * report without writing anything. Retired toolkit-era params are no
+     * longer sent — the endpoint 400s them; see `RestoreOptions`.
      */
     startRestore(namespace: string, archive: Blob | File, options?: RestoreOptions, filename?: string): Promise<BackupJobSnapshot>;
+    /**
+     * Verify a namespace's referential and identity integrity. Returns a job.
+     *
+     * Checks that every reference resolves — template, term, document, file —
+     * and that every document's stored identity hash still matches its own
+     * data. It is the referential twin of the reporting parity check: that one
+     * compares PostgreSQL against MongoDB, this compares MongoDB against
+     * itself.
+     *
+     * It matters most after a restore, which writes documents straight to
+     * MongoDB and validates nothing while writing. Every restore starts one of
+     * these per namespace it wrote and records the ids on its own snapshot
+     * (`validation_job_ids`); this is the same check on demand.
+     *
+     * Poll `getBackupJob` for progress and `result`. Findings do not fail the
+     * job — it completes with `result.status` of healthy, warning or error.
+     */
+    validateNamespace(namespace: string, params?: ValidateNamespaceParams): Promise<BackupJobSnapshot>;
     /** Get the latest persisted snapshot for a backup or restore job. */
     getBackupJob(jobId: string): Promise<BackupJobSnapshot>;
     /** List recent backup/restore jobs, optionally filtered. */
@@ -1907,6 +2266,12 @@ interface APIKeyInfo {
     namespaces: string[] | null;
     created_by: string;
     source: 'config' | 'runtime';
+    /**
+     * Config-declared namespace grants ({namespace: read|write|admin}).
+     * Always null for runtime keys — their write authority is Registry
+     * NamespaceGrants, not shown here (CASE-693).
+     */
+    grants: Record<string, 'read' | 'write' | 'admin'> | null;
 }
 interface CreateAPIKeyRequest {
     name: string;
@@ -2067,13 +2432,57 @@ interface ReportTableColumn {
     type: string;
     nullable: boolean;
 }
+/**
+ * One reporting relation as `/tables` lists it. Post per-version split,
+ * a template ("entity") owns several relations: physical per-version
+ * tables `doc_<value>__v<N>`, the identity-core view
+ * `doc_<value>__entities`, and the bare-name view `doc_<value>` — the
+ * default query surface. Never sum an entity's sibling relations (they
+ * overlap by construction); use `ReportEntity.row_count` instead.
+ */
 interface ReportTable {
-    table_name: string;
+    namespace: string;
+    name: string;
+    /** 'view' (entity views) or 'table' (physical / legacy pre-split). */
+    kind: 'view' | 'table';
+    /** Stripped doc_* stem for document relations, null for metadata tables. */
+    template_value: string | null;
+    qualified_name: string;
+    row_count: number;
+    /** Summary mode only. */
+    column_count?: number;
+    /** Detail mode (listTables with a tableName) only. */
+    columns?: ReportTableColumn[];
+}
+interface ReportEntityVersion {
+    version: number;
+    table: string;
+    row_count: number;
+}
+/**
+ * Entity-first grouping from `/tables` — one entry per template with its
+ * version tables and views. `row_count` is the entity's document count
+ * (a document lives in exactly one version table under latest_only).
+ * `legacy_table: true` = a pre-split physical table still occupies the
+ * bare name (needs an explicit drop + batch-sync rebuild — the platform
+ * never auto-drops it).
+ */
+interface ReportEntity {
+    namespace: string;
+    entity: string;
+    default_view: string;
+    default_view_present: boolean;
+    entities_view: string;
+    legacy_table: boolean;
+    versions: ReportEntityVersion[];
     row_count: number;
 }
 interface ReportTableSchema {
+    namespace: string;
     template_value: string;
+    schema: string;
     table_name: string;
+    qualified_name: string;
     columns: ReportTableColumn[];
     row_count: number;
 }
@@ -2175,6 +2584,11 @@ interface BatchSyncRequest {
 interface BatchSyncJob {
     job_id: string;
     template_value: string;
+    /** Resolved canonical template id — a value alone is ambiguous when
+     * several namespaces share it. */
+    template_id?: string | null;
+    /** Document scope: null = all namespaces, set = only that namespace. */
+    namespace?: string | null;
     status: BatchSyncStatus;
     started_at: string | null;
     completed_at: string | null;
@@ -2187,6 +2601,8 @@ interface BatchSyncJob {
 interface BatchSyncResponse {
     job_id: string;
     template_value: string;
+    /** Document scope the job was started with (null = all namespaces). */
+    namespace?: string | null;
     status: BatchSyncStatus;
     message: string;
 }
@@ -2393,18 +2809,45 @@ declare class ReportingSyncService extends BaseService {
      * Returns one BatchSyncResponse per template; jobs run async on
      * the server. Poll `listBatchJobs()` or `getBatchJob(job_id)` for
      * progress.
+     *
+     * `namespace` scopes every job to that namespace's documents (the
+     * template list stays instance-wide — documents may be based on
+     * templates owned by other namespaces). A template whose sync is
+     * already active returns its existing job instead of stacking a
+     * duplicate; the trigger is idempotent and acknowledges promptly.
+     *
+     * `force` drops each in-scope template's existing reporting relations
+     * (version tables, entity views, any legacy pre-split table) before
+     * its sync — rebuild from source, the recovery path for mis-shaped
+     * DDL that upserts cannot heal. Requires `namespace` (400 without
+     * it). Mid-rebuild, SQL readers see relation-does-not-exist for the
+     * affected templates. An already-active sync is NOT force-rebuilt —
+     * its per-item message says so; cancel the job and re-trigger.
      */
     triggerBatchSyncAll(options?: {
         force?: boolean;
         page_size?: number;
+        namespace?: string;
     }): Promise<BatchSyncResponse[]>;
     /**
      * Trigger a batch sync for a single template (by value).
      * Job runs async; poll `getBatchJob(job_id)` for progress.
+     *
+     * `namespace` disambiguates the template lookup (a value is unique
+     * only within a namespace) AND scopes the sync to that namespace's
+     * documents. If an overlapping sync is already active, the existing
+     * job is returned instead of a duplicate.
+     *
+     * `force` drops the template's existing reporting relations in the
+     * target namespace before syncing — rebuild from source. Requires
+     * `namespace` (400 without it). If an overlapping sync is active,
+     * force is NOT applied (the response message says so); cancel the
+     * job and re-trigger.
      */
     triggerBatchSync(templateValue: string, options?: {
         force?: boolean;
         page_size?: number;
+        namespace?: string;
     }): Promise<BatchSyncResponse>;
     /**
      * Synchronous batch sync for the terminologies entity table.
@@ -2451,12 +2894,26 @@ declare class ReportingSyncService extends BaseService {
         /** Poll interval in milliseconds (default: 200) */
         interval?: number;
     }): Promise<void>;
-    /** List all PostgreSQL reporting tables */
-    listTables(tableName?: string): Promise<{
+    /**
+     * List reporting relations, grouped entity-first. Without `tableName`,
+     * the response carries `entities` (one entry per template with its
+     * version tables and views — the shape UIs should render) alongside the
+     * flat `tables` list. With `tableName`, returns that single relation
+     * with full column detail (works for views and version tables alike),
+     * and `entities` is omitted.
+     */
+    listTables(tableName?: string, namespace?: string): Promise<{
         tables: ReportTable[];
+        entities?: ReportEntity[];
     }>;
-    /** Get PostgreSQL schema for a template's reporting table */
-    getTableSchema(templateValue: string): Promise<ReportTableSchema>;
+    /**
+     * Get PostgreSQL columns for a template's reporting relation.
+     * `namespace` is required by the endpoint (the relation lives in that
+     * namespace's schema). Without `version`: the bare-name entity view
+     * (the default query surface). With `version`: that version's physical
+     * table shape.
+     */
+    getTableSchema(templateValue: string, namespace: string, version?: number): Promise<ReportTableSchema>;
     getIntegrityCheck(params?: {
         template_status?: string;
         document_status?: string;
@@ -2662,4 +3119,4 @@ interface ResolvedReference {
  */
 declare function resolveReference(client: WipClient, templateId: string, searchTerm: string, limit?: number): Promise<ResolvedReference[]>;
 
-export { type APIKeyInfo, type APIKeyListResponse, type ActivateTemplateResponse, type ActivationDetail, type ActivityItem, type ActivityResponse, type AddSynonymRequest, type Alert, type AlertConfig, type AlertSeverity, type AlertThresholds, type AlertType, type AlertsResponse, type ApiError, ApiKeyAuthProvider, type AuditLogEntry, type AuditLogResponse, type AuthProvider, type BackupJobKind, type BackupJobSnapshot, type BackupJobStatus, type BackupProgressMessage, type BackupRequest, type BatchEntitySyncResult, type BatchJobCancelResult, type BatchJobsCleared, type BatchSyncJob, type BatchSyncRequest, type BatchSyncResponse, type BatchSyncStatus, type BulkImportOptions, type BulkImportProgress, type BulkResponse, type BulkResultItem, type BulkValidateRequest, type BulkValidateResponse, type BulkValidationResponse, type CascadeResponse, type CascadeResult, type Condition, type ConditionOperator, type ConsumerInfo, type CreateAPIKeyRequest, type CreateAPIKeyResponse, type CreateDocumentRequest, type CreateGrantRequest, type CreateNamespaceRequest, type CreateTemplateRequest, type CreateTermRelationRequest, type CreateTermRequest, type CreateTerminologyRequest, type CsvExportQuery, DefStoreService, type DeleteTermRelationRequest, type DeprecateTermRequest, type Document, type DocumentCreateResponse, type DocumentListResponse, type DocumentMetadata, type DocumentMigrateRequest, type DocumentMigrateResponse, type DocumentQueryParams, type DocumentQueryRequest, type DocumentReference, type DocumentRelationshipsParams, type DocumentStatus, DocumentStoreService, type DocumentTraverseNode, type DocumentTraverseParams, type DocumentTraverseResponse, type DocumentValidationResponse, type DocumentVersionResponse, type DocumentVersionSummary, type EntityDetails, type EntityReference, type EntityReferencesResponse, type ExportResponse, type ExportTerminologyResponse, FetchTransport, type FetchTransportConfig, type FieldDefinition, type FieldType, type FieldValidation, type FileDownloadResponse, type FileEntity, type FileFieldConfig, type FileIntegrityIssue, type FileIntegrityResponse, type FileListResponse, type FileMetadata, type FileQueryParams, type FileStatus, FileStoreService, type FileUploadMetadata, type FormField, type FormInputType, type Grant, type GrantBulkResponse, type GrantBulkResult, type GrantPermission, type GrantRevokeBulkResponse, type GrantRevokeResult, type GrantSubjectType, type HealthResponse, type IdAlgorithmConfig, type ImportDocumentError, type ImportDocumentResult, type ImportDocumentsOptions, type ImportDocumentsResponse, type ImportPreviewResponse, type ImportResponse, type ImportTerminologyRequest, type IncomingReference, type IntegrityCheckResult, type IntegrityIssue, type IntegritySummary, type LatencyStats, type ListAPIKeysParams, type ListBackupJobsParams, type MergeRequest, type MetricsResponse, type Namespace, type NamespaceStats, OidcAuthProvider, type PaginatedResponse, type PatchDocumentRequest, type PeerProjection, type PerTemplateStats, type QueryFilter, type QueryFilterOperator, type Reference, type ReferenceType, type ReferencedByResponse, type RegistryBrowseParams, type RegistryByTermHit, type RegistryEntry, type RegistryEntryFull, type RegistryEntryListResponse, type RegistryLookupResponse, type RegistrySearchParams, type RegistrySearchResponse, type RegistrySearchResult, RegistryService, type RegistrySourceInfo, type RegistrySynonym, type RemoveSynonymRequest, type ReplayFilter, type ReplayRequest, type ReplaySessionResponse, type ReplayStatus, type ReportQueryParams, type ReportQueryResult, type ReportTable, type ReportTableColumn, type ReportTableSchema, type ReportingConfig, ReportingSyncService, type ResolvedReference, type RestoreMode, type RestoreOptions, type RetryConfig, type RevokeGrantRequest, type RuleType, type SearchResponse, type SearchResult, type SearchTypeResults, type SemanticType, type SyncStatus, type SyncStrategy, type TableColumn, type TableViewParams, type TableViewResponse, type Template, type TemplateListResponse, type TemplateMetadata, TemplateStoreService, type TemplateUpdateResponse, type TemplateUsage, type Term, type TermDocumentsResponse, type TermListResponse, type TermReference, type TermRelation, type TermRelationListResponse, type TermTranslation, type Terminology, type TerminologyListResponse, type TerminologyMetadata, type TraversalNode, type TraversalResponse, type UpdateAPIKeyRequest, type UpdateFileMetadataRequest, type UpdateNamespaceRequest, type UpdateTemplateRequest, type UpdateTermRequest, type UpdateTerminologyRequest, type ValidateDocumentRequest, type ValidateDocumentsRequest, type ValidateTemplateRequest, type ValidateTemplateResponse, type ValidateValueRequest, type ValidateValueResponse, type ValidationRule, type VersionStrategy, WipAuthError, WipBulkItemError, type WipClient, type WipClientConfig, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };
+export { type APIKeyInfo, type APIKeyListResponse, type ActivateTemplateResponse, type ActivationDetail, type ActivityItem, type ActivityResponse, type AddSynonymRequest, type Alert, type AlertConfig, type AlertSeverity, type AlertThresholds, type AlertType, type AlertsResponse, type ApiError, ApiKeyAuthProvider, type AuditLogEntry, type AuditLogResponse, type AuthProvider, type BackupJobKind, type BackupJobSnapshot, type BackupJobStatus, type BackupProgressMessage, type BackupRequest, type BatchEntitySyncResult, type BatchJobCancelResult, type BatchJobsCleared, type BatchSyncJob, type BatchSyncRequest, type BatchSyncResponse, type BatchSyncStatus, type BulkImportOptions, type BulkImportProgress, type BulkResponse, type BulkResultItem, type BulkValidateRequest, type BulkValidateResponse, type BulkValidationResponse, type CascadeResponse, type CascadeResult, type ClashPolicy, type Condition, type ConditionOperator, type ConsumerInfo, type CreateAPIKeyRequest, type CreateAPIKeyResponse, type CreateDocumentRequest, type CreateGrantRequest, type CreateNamespaceRequest, type CreateTemplateRequest, type CreateTermRelationRequest, type CreateTermRequest, type CreateTerminologyRequest, type CrossVersionView, type CsvExportQuery, DefStoreService, type DeleteTermRelationRequest, type DeprecateTermRequest, type Document, type DocumentCreateResponse, type DocumentListResponse, type DocumentMetadata, type DocumentMigrateRequest, type DocumentMigrateResponse, type DocumentQueryParams, type DocumentQueryRequest, type DocumentReference, type DocumentRelationshipsParams, type DocumentStatus, DocumentStoreService, type DocumentTraverseNode, type DocumentTraverseParams, type DocumentTraverseResponse, type DocumentValidationResponse, type DocumentVersionResponse, type DocumentVersionSummary, type EntityDetails, type EntityReference, type EntityReferencesResponse, type ExportResponse, type ExportTerminologyResponse, FetchTransport, type FetchTransportConfig, type FieldDefinition, type FieldType, type FieldValidation, type FileDownloadResponse, type FileEntity, type FileFieldConfig, type FileIntegrityIssue, type FileIntegrityResponse, type FileListResponse, type FileMetadata, type FileQueryParams, type FileStatus, FileStoreService, type FileUploadMetadata, type FormField, type FormInputType, type Grant, type GrantBulkResponse, type GrantBulkResult, type GrantPermission, type GrantRevokeBulkResponse, type GrantRevokeResult, type GrantSubjectType, type HealthResponse, type IdAlgorithmConfig, type ImportDocumentError, type ImportDocumentResult, type ImportDocumentsOptions, type ImportDocumentsResponse, type ImportPreviewResponse, type ImportResponse, type ImportTerminologyRequest, type IncomingReference, type IntegrityCheckResult, type IntegrityIssue, type IntegritySummary, type LatencyStats, type ListAPIKeysParams, type ListBackupJobsParams, type MergeRequest, type MetricsResponse, type Namespace, type NamespaceIntegrityIssue, type NamespaceIntegrityResult, type NamespaceIntegritySummary, type NamespaceStats, OidcAuthProvider, type PaginatedResponse, type PatchDocumentRequest, type PeerProjection, type PerTemplateStats, type QueryFilter, type QueryFilterOperator, type Reference, type ReferenceType, type ReferencedByResponse, type RegistryBrowseParams, type RegistryByTermHit, type RegistryEntry, type RegistryEntryFull, type RegistryEntryListResponse, type RegistryLookupResponse, type RegistrySearchParams, type RegistrySearchResponse, type RegistrySearchResult, RegistryService, type RegistrySourceInfo, type RegistrySynonym, type RemoveSynonymRequest, type ReplayFilter, type ReplayRequest, type ReplaySessionResponse, type ReplayStatus, type ReportEntity, type ReportEntityVersion, type ReportQueryParams, type ReportQueryResult, type ReportTable, type ReportTableColumn, type ReportTableSchema, type ReportingConfig, ReportingSyncService, type ResolvedReference, type RestoreMode, type RestoreOptions, type RetryConfig, type RevokeGrantRequest, type RuleType, type SearchResponse, type SearchResult, type SearchTypeResults, type SemanticType, type SyncStatus, type SyncStrategy, type TableColumn, type TableViewParams, type TableViewResponse, type Template, type TemplateFacet, type TemplateFacetsParams, type TemplateFacetsResponse, type TemplateListResponse, type TemplateMetadata, type TemplateMigrationOffer, TemplateStoreService, type TemplateUpdateResponse, type TemplateUsage, type TemplateVersionEventDetails, type TemplateVersionImpact, type Term, type TermDocumentsResponse, type TermListResponse, type TermReference, type TermRelation, type TermRelationListResponse, type TermTranslation, type Terminology, type TerminologyListResponse, type TerminologyMetadata, type TraversalNode, type TraversalResponse, type UpdateAPIKeyRequest, type UpdateFileMetadataRequest, type UpdateNamespaceRequest, type UpdateTemplateRequest, type UpdateTermRequest, type UpdateTerminologyRequest, type ValidateDocumentRequest, type ValidateDocumentsRequest, type ValidateNamespaceParams, type ValidateTemplateRequest, type ValidateTemplateResponse, type ValidateValueRequest, type ValidateValueResponse, type ValidationRule, type VersionStrategy, WipAuthError, WipBulkItemError, type WipClient, type WipClientConfig, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, asVersionEventDetails, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };

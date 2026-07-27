@@ -17,7 +17,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from fastapi import FastAPI
 
 
-def declare_api_key_security(app: "FastAPI") -> "FastAPI":
+def declare_api_key_security(app: FastAPI) -> FastAPI:
     """Install a cached ``app.openapi`` override that declares the
     X-API-Key requirement: ``components.securitySchemes.ApiKeyAuth``
     (type apiKey, header ``X-API-Key``) plus a global ``security``

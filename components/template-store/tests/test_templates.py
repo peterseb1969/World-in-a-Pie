@@ -91,12 +91,15 @@ async def test_create_template_without_auth(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_create_template_duplicate_code(client: AsyncClient, auth_headers: dict):
-    """Test that creating a template with duplicate code fails."""
+async def test_create_template_duplicate_code_upserts(client: AsyncClient, auth_headers: dict):
+    """Creating a template whose (namespace, value) exists is an upsert, not
+    an error: a differing schema (here: new label) becomes version 2 of the
+    same template — the name is the identity, like a document's identity
+    fields."""
     # Create first template
     await _create_one(client, auth_headers, {"namespace": "wip", "value": "UNIQUE", "label": "First Template"})
 
-    # Try to create second with same value
+    # Create second with same value but a different label → new version
     response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
@@ -104,9 +107,11 @@ async def test_create_template_duplicate_code(client: AsyncClient, auth_headers:
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["failed"] == 1
-    assert data["results"][0]["status"] == "error"
-    assert "already exists" in data["results"][0]["error"]
+    assert data["failed"] == 0
+    item = data["results"][0]
+    assert item["status"] == "updated"
+    assert item["version"] == 2
+    assert item["is_new_version"] is True
 
 
 @pytest.mark.asyncio
@@ -168,6 +173,39 @@ async def test_list_templates(client: AsyncClient, auth_headers: dict):
     data = response.json()
     assert data["total"] == 3
     assert len(data["items"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_list_latest_only_keeps_same_value_across_namespaces(
+    client: AsyncClient, auth_headers: dict
+):
+    """latest_only groups per template identity (template_id), never per bare
+    value: a value is unique only within a namespace, and grouping by value
+    collapses same-valued templates from different namespaces into one
+    arbitrary survivor. After a remap restore — which duplicates every value
+    by construction — that collapse silently dropped one namespace's
+    templates from every unfiltered latest_only list."""
+    for ns in ("wip", "test-ns"):
+        await _create_one(client, auth_headers, {
+            "namespace": ns, "value": "SHARED_LATEST", "label": f"Shared in {ns}",
+        })
+    # A second version in one namespace: latest_only must return v2 for it,
+    # not a duplicate row per version.
+    await _create_one(client, auth_headers, {
+        "namespace": "wip", "value": "SHARED_LATEST", "label": "Shared in wip v2",
+    })
+
+    response = await client.get(
+        "/api/template-store/templates?latest_only=true",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    items = [i for i in response.json()["items"] if i["value"] == "SHARED_LATEST"]
+    assert {i["namespace"] for i in items} == {"wip", "test-ns"}
+    assert len(items) == 2
+    by_ns = {i["namespace"]: i for i in items}
+    assert by_ns["wip"]["version"] == 2
+    assert by_ns["test-ns"]["version"] == 1
 
 
 @pytest.mark.asyncio
@@ -349,12 +387,12 @@ async def test_delete_template(client: AsyncClient, auth_headers: dict):
         client, auth_headers, {"namespace": "wip", "value": "DELETE", "label": "Delete Template"}
     )
 
-    # Delete it via bulk DELETE
+    # Delete it via bulk DELETE — version is required for a soft delete
     response = await client.request(
         "DELETE",
         "/api/template-store/templates",
         headers=auth_headers,
-        json=[{"id": template_id}],
+        json=[{"id": template_id, "version": 1}],
     )
     assert response.status_code == 200
     data = response.json()
@@ -368,6 +406,45 @@ async def test_delete_template(client: AsyncClient, auth_headers: dict):
     )
     assert get_response.status_code == 200
     assert get_response.json()["status"] == "inactive"
+
+
+@pytest.mark.asyncio
+async def test_soft_delete_without_version_is_rejected_with_listing(
+    client: AsyncClient, auth_headers: dict
+):
+    """A version-less soft delete is refused per-item, naming the versions.
+
+    The old default (version-less = deactivate LATEST) silently retired the
+    wrong version right after a version event — once making a namespace's
+    archives unrestorable because documents stayed pinned to the retired
+    version. The refusal must list the versions and statuses so the caller
+    can immediately pick, and hard_delete keeps its version-less
+    all-versions meaning (covered in test_hard_delete.py).
+    """
+    template_id = await _create_one_id(
+        client, auth_headers,
+        {"namespace": "wip", "value": "NOVERSION", "label": "No Version"},
+    )
+
+    response = await client.request(
+        "DELETE",
+        "/api/template-store/templates",
+        headers=auth_headers,
+        json=[{"id": template_id}],
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["failed"] == 1
+    error = data["results"][0]["error"]
+    assert "version is required" in error
+    assert "v1 (active)" in error
+
+    # Nothing was deactivated by the refused call.
+    get_response = await client.get(
+        f"/api/template-store/templates/{template_id}",
+        headers=auth_headers,
+    )
+    assert get_response.json()["status"] == "active"
 
 
 @pytest.mark.asyncio

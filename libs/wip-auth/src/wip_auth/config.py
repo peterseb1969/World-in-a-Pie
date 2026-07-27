@@ -240,14 +240,15 @@ class AuthConfig(BaseSettings):
         import logging
         logger = logging.getLogger("wip_auth")
         for key in keys:
-            if key.namespaces is None:
-                if not any(g in _PRIVILEGED_GROUPS for g in key.groups):
-                    logger.warning(
-                        "API key '%s' has no namespace scope and is not in a privileged "
-                        "group — it will have NO access. Add 'namespaces' to the key "
-                        "config or assign it to wip-admins/wip-services.",
-                        key.name,
-                    )
+            if key.namespaces is None and not any(
+                g in _PRIVILEGED_GROUPS for g in key.groups
+            ):
+                logger.warning(
+                    "API key '%s' has no namespace scope and is not in a privileged "
+                    "group — it will have NO access. Add 'namespaces' to the key "
+                    "config or assign it to wip-admins/wip-services.",
+                    key.name,
+                )
 
         return keys
 

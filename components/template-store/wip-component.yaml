@@ -29,10 +29,14 @@ spec:
       - {name: DATABASE_NAME, source: {literal: wip_template_store}}
       - {name: REGISTRY_URL, source: {from_component: registry}}
       - {name: DEF_STORE_URL, source: {from_component: def-store}}
+      # Advisory impact-analysis reads on template version events; the
+      # template-store degrades to impact "unavailable" when unreachable.
+      - {name: DOCUMENT_STORE_URL, source: {from_component: document-store}}
       - {name: MASTER_API_KEY, source: {from_secret: api-key}}
-      # Outbound credentials for calls to registry + def-store.
+      # Outbound credentials for calls to registry + def-store + document-store.
       - {name: REGISTRY_API_KEY, source: {from_secret: api-key}}
       - {name: DEF_STORE_API_KEY, source: {from_secret: api-key}}
+      - {name: DOCUMENT_STORE_API_KEY, source: {from_secret: api-key}}
       # Derived from deployment.spec.auth.mode (CASE-361). See registry
       # manifest for the full mapping rationale.
       - {name: WIP_AUTH_MODE, source: {from_spec: auth.wip_auth_mode}}

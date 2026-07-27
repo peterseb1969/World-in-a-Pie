@@ -1,12 +1,12 @@
 """Field definition models for templates."""
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class FieldType(str, Enum):
+class FieldType(StrEnum):
     """Supported field types for template fields."""
 
     STRING = "string"
@@ -22,7 +22,7 @@ class FieldType(str, Enum):
     ARRAY = "array"  # Collection of items
 
 
-class ReferenceType(str, Enum):
+class ReferenceType(StrEnum):
     """Types of entities that can be referenced."""
 
     DOCUMENT = "document"  # Reference to another document
@@ -31,14 +31,14 @@ class ReferenceType(str, Enum):
     TEMPLATE = "template"  # Reference to a template itself
 
 
-class VersionStrategy(str, Enum):
+class VersionStrategy(StrEnum):
     """How references are resolved over time."""
 
     LATEST = "latest"  # Always resolve to current active version
     PINNED = "pinned"  # Lock to specific version at creation time
 
 
-class SemanticType(str, Enum):
+class SemanticType(StrEnum):
     """
     Universal semantic types that provide meaning beyond base types.
 

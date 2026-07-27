@@ -28,6 +28,11 @@ class ValidationResult:
         self.identity_fields: list[str] = []
         self.template_version: int | None = None
         self.template_value: str | None = None
+        # The template's OWN namespace — which may differ from the document's
+        # (a document may be based on a shared or foreign template). The
+        # isolation check needs this real value; passing the document's
+        # namespace in its place makes the template branch constant-false.
+        self.template_namespace: str | None = None
         # Array format for indexing: [{"field_path": "gender", "term_id": "019abc42-..."}, ...]
         self.term_references: list[dict[str, Any]] = []
         # Array format: [{"field_path": "supervisor", "reference_type": "document", "resolved": {...}}, ...]
@@ -168,7 +173,8 @@ class ValidationService:
         data: dict[str, Any],
         namespace: str,
         template_version: int | None = None,
-        doc_ref_cache: dict | None = None
+        doc_ref_cache: dict | None = None,
+        template_override: dict[str, Any] | None = None,
     ) -> ValidationResult:
         """
         Validate document data against a template.
@@ -176,6 +182,11 @@ class ValidationService:
         Args:
             template_id: Template ID to validate against
             data: Document data to validate
+            template_override: An inline template definition used INSTEAD of
+                resolving template_id — the candidate dry-run path ("would
+                these documents validate against this draft?"). Nothing is
+                persisted or cached; every later validation stage consumes
+                the dict exactly as a resolved template would be.
 
         Returns:
             ValidationResult with errors, warnings, identity hash, and timing
@@ -191,9 +202,13 @@ class ValidationService:
             return result
         result.timing["1_structural"] = (time.perf_counter() - start) * 1000
 
-        # Stage 2: Template resolution
+        # Stage 2: Template resolution (skipped for an inline candidate)
         start = time.perf_counter()
-        template = await self._resolve_template(template_id, result, version=template_version)
+        template: dict[str, Any] | None
+        if template_override is not None:
+            template = template_override
+        else:
+            template = await self._resolve_template(template_id, result, version=template_version)
         result.timing["2_template_resolution"] = (time.perf_counter() - start) * 1000
         if template is None:
             result.timing["total"] = (time.perf_counter() - total_start) * 1000
@@ -201,6 +216,7 @@ class ValidationService:
 
         result.template_version = template.get("version", 1)
         result.template_value = template.get("value")
+        result.template_namespace = template.get("namespace")
 
         # Stage 3: Field validation
         start = time.perf_counter()
@@ -212,7 +228,7 @@ class ValidationService:
 
         # Stage 4: Term validation (batched for efficiency) - legacy term fields
         start = time.perf_counter()
-        await self._validate_terms(data, template, result)
+        await self._validate_terms(data, template, result, namespace=namespace)
         result.timing["4_term_validation"] = (time.perf_counter() - start) * 1000
         if not result.valid:
             result.timing["total"] = (time.perf_counter() - total_start) * 1000
@@ -1037,9 +1053,13 @@ class ValidationService:
         # Validate unit via Def-Store
         try:
             client = get_def_store_client()
+            # _TIME_UNITS is a system terminology living in the wip
+            # namespace — resolve it there explicitly; the validating
+            # document's own namespace would not find it
             validation_result = await client.validate_value(
                 self.TIME_UNITS_TERMINOLOGY,
-                unit_value
+                unit_value,
+                namespace="wip"
             )
 
             if not validation_result.get("valid", False):
@@ -1147,13 +1167,16 @@ class ValidationService:
         self,
         data: dict[str, Any],
         template: dict[str, Any],
-        result: ValidationResult
+        result: ValidationResult,
+        namespace: str | None = None
     ):
         """
         Stage 4: Term validation.
 
         Collects all term fields and validates them in batch via Def-Store.
         Also collects term_references (resolved term IDs) for storage.
+        The document's namespace is the resolution context for value-form
+        terminology refs.
         """
         # Collect all term values to validate
         term_validations = self._collect_term_values(data, template.get("fields", []), "")
@@ -1167,7 +1190,7 @@ class ValidationService:
             validation_results = await client.validate_values_bulk([
                 {"terminology_ref": tv["terminology_ref"], "value": tv["value"]}
                 for tv in term_validations
-            ])
+            ], namespace=namespace)
 
             # Process results and collect term references
             for i, validation_result in enumerate(validation_results):
@@ -1300,7 +1323,8 @@ class ValidationService:
                     # Resolve term reference (similar to legacy term validation)
                     if target_terminologies:
                         resolved = await self._resolve_term_reference(
-                            value, target_terminologies, result, field_path
+                            value, target_terminologies, result, field_path,
+                            namespace=namespace
                         )
                         if resolved:
                             result.references.append({
@@ -1825,15 +1849,22 @@ class ValidationService:
         value: str,
         target_terminologies: list[str],
         result: ValidationResult,
-        field_path: str
+        field_path: str,
+        namespace: str | None = None
     ) -> dict[str, Any] | None:
-        """Resolve a term reference."""
+        """Resolve a term reference.
+
+        The document's namespace is the resolution context for value-form
+        terminology refs in target_terminologies.
+        """
         client = get_def_store_client()
 
         # Try each terminology until we find a match
         for terminology_ref in target_terminologies:
             try:
-                validation_result = await client.validate_value(terminology_ref, value)
+                validation_result = await client.validate_value(
+                    terminology_ref, value, namespace
+                )
                 if validation_result.get("valid"):
                     matched_term = validation_result.get("matched_term", {})
                     return {

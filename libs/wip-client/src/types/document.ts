@@ -196,12 +196,26 @@ export interface BulkValidationResponse {
   results: DocumentValidationResponse[]
 }
 
+/**
+ * One row of a document's version history.
+ *
+ * `created_at` is the ENTITY's creation time — when version 1 was written — so
+ * it is identical on every row and does NOT tell you when this particular
+ * version was persisted. `updated_at` does, which is what makes the history a
+ * usable audit trail. Code that sorts or displays version history by
+ * `created_at` will not order anything; read `updated_at` instead.
+ *
+ * `updated_at` / `updated_by` are absent on documents written before the
+ * platform distinguished the two stamps, hence optional.
+ */
 export interface DocumentVersionSummary {
   document_id: string
   version: number
   status: DocumentStatus
   created_at: string
   created_by: string | null
+  updated_at?: string | null
+  updated_by?: string | null
 }
 
 export interface DocumentVersionResponse {
@@ -237,6 +251,33 @@ export interface TableViewParams {
   page?: number
   page_size?: number
   max_cross_product?: number
+}
+
+// ---- Template facets ----
+
+export interface TemplateFacet {
+  template_id: string
+  template_value: string | null
+  /**
+   * The template's OWN namespace — may differ from the queried namespace
+   * (shared / cross-namespace templates). Null when the template could not
+   * be fetched.
+   */
+  template_namespace: string | null
+  /** Distinct logical documents (version rows collapse before counting). */
+  document_count: number
+}
+
+export interface TemplateFacetsResponse {
+  namespace: string
+  facets: TemplateFacet[]
+}
+
+export interface TemplateFacetsParams {
+  /** Omittable only under a single-namespace API key. */
+  namespace?: string
+  /** Document status to count; 'all' disables the default active-only filter. */
+  status?: DocumentStatus | 'all'
 }
 
 // ---- Import ----

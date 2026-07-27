@@ -24,9 +24,6 @@ httpx>=0.26.0
 # Environment variables
 python-dotenv>=1.0.0
 
-# Security
-python-jose[cryptography]>=3.3.0  # JWT handling if needed later
-
 # Development dependencies (comment out for production)
 # pytest>=7.4.0
 # pytest-asyncio>=0.23.0

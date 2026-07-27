@@ -273,6 +273,39 @@ class TestCheckHealth:
         assert healthy is True
         assert msg == "healthy"
 
+    def test_probes_the_prefixed_health_route(self, config, mock_httpx_client):
+        """The probe must hit /api/<svc>/health, not the bare root /health.
+
+        The prefixed route is served in both connection modes; the bare root
+        is unroutable through a k8s ingress, where every service would probe
+        the identical https://host/health, 404, and abort every export
+        against an ingress install (found live by matrix cell R-04)."""
+        mock_httpx_client.get.return_value = _make_response(status_code=200)
+
+        client = WIPClient(config)
+        client.check_health("registry")
+        (url,), _kwargs = mock_httpx_client.get.call_args
+        assert url.endswith("/api/registry/health")
+
+    def test_proxy_mode_probes_are_per_service(self, mock_httpx_client):
+        """In proxy mode all services share one base URL, so only the prefix
+        distinguishes them — a root-level probe would test the same URL six
+        times and none of the services."""
+        proxy_config = WIPConfig(
+            host="wip.example", proxy=True, api_key="k",
+            verify_ssl=False, verbose=False,
+        )
+        mock_httpx_client.get.return_value = _make_response(status_code=200)
+
+        client = WIPClient(proxy_config)
+        client.check_health("registry")
+        client.check_health("document-store")
+        urls = [call.args[0] for call in mock_httpx_client.get.call_args_list]
+        assert urls == [
+            "https://wip.example:8443/api/registry/health",
+            "https://wip.example:8443/api/document-store/health",
+        ]
+
     def test_unhealthy_service(self, config, mock_httpx_client):
         mock_httpx_client.get.return_value = _make_response(status_code=503)
 
@@ -309,8 +342,17 @@ class TestCheckHealth:
         assert healthy is False
         assert "Something broke" in msg
 
-    def test_health_uses_root_endpoint(self, config, mock_httpx_client):
-        """Health check goes to /health on the base URL, not the API prefix."""
+    def test_health_uses_prefixed_endpoint_in_direct_mode(
+        self, config, mock_httpx_client
+    ):
+        """Direct (per-port) mode also probes /api/<svc>/health.
+
+        This test previously pinned the OPPOSITE — the bare root /health —
+        which is exactly the contract that made every proxy-mode probe hit
+        the same unroutable https://host/health on a k8s ingress. Services
+        mount their routes under the prefix themselves, so the prefixed
+        health answers on the direct port too; one probe path serves both
+        modes."""
         mock_httpx_client.get.return_value = _make_response(status_code=200)
 
         client = WIPClient(config)
@@ -318,8 +360,7 @@ class TestCheckHealth:
 
         call_args = mock_httpx_client.get.call_args
         url = call_args[0][0]
-        # Should be http://localhost:8001/health, NOT /api/registry/health
-        assert url == "http://localhost:8001/health"
+        assert url == "http://localhost:8001/api/registry/health"
 
 
 class TestCheckAllServices:

@@ -242,39 +242,59 @@ class TestHashVerification:
 
 
 class TestSortDictRecursive:
-    """Test the internal _sort_dict_recursive method."""
+    """The recursive key sort, now owned by wip_auth.composite_key.
 
-    def test_flat_dict_sorting(self):
-        """Flat dictionary keys are sorted."""
-        result = HashService._sort_dict_recursive({"c": 3, "a": 1, "b": 2})
-        assert list(result.keys()) == ["a", "b", "c"]
+    Tested through the public hash rather than the private helper: what the
+    sort must guarantee is that key ORDER never changes the digest, which is
+    the property every stored hash depends on.
+    """
 
-    def test_nested_dict_sorting(self):
-        """Nested dictionary keys are sorted recursively."""
-        result = HashService._sort_dict_recursive({
-            "z": {"b": 2, "a": 1},
-            "a": {"d": 4, "c": 3},
-        })
-        assert list(result.keys()) == ["a", "z"]
-        assert list(result["a"].keys()) == ["c", "d"]
-        assert list(result["z"].keys()) == ["a", "b"]
+    def test_flat_key_order_does_not_change_the_digest(self):
+        assert HashService.compute_composite_key_hash(
+            {"c": 3, "a": 1, "b": 2}
+        ) == HashService.compute_composite_key_hash({"a": 1, "b": 2, "c": 3})
 
-    def test_list_values_preserved(self):
-        """List values are preserved (not sorted) during recursive sorting."""
-        result = HashService._sort_dict_recursive({"tags": [3, 1, 2]})
-        assert result["tags"] == [3, 1, 2]
+    def test_nested_key_order_does_not_change_the_digest(self):
+        assert HashService.compute_composite_key_hash(
+            {"z": {"b": 2, "a": 1}, "a": {"d": 4, "c": 3}}
+        ) == HashService.compute_composite_key_hash(
+            {"a": {"c": 3, "d": 4}, "z": {"a": 1, "b": 2}}
+        )
 
-    def test_list_of_dicts_sorted_internally(self):
-        """Dictionaries within lists have their keys sorted."""
-        result = HashService._sort_dict_recursive({
-            "items": [{"b": 2, "a": 1}, {"d": 4, "c": 3}]
-        })
-        assert list(result["items"][0].keys()) == ["a", "b"]
-        assert list(result["items"][1].keys()) == ["c", "d"]
+    def test_key_order_inside_a_list_of_dicts_does_not_change_the_digest(self):
+        assert HashService.compute_composite_key_hash(
+            {"items": [{"b": 2, "a": 1}]}
+        ) == HashService.compute_composite_key_hash({"items": [{"a": 1, "b": 2}]})
 
-    def test_scalar_passthrough(self):
-        """Scalar values pass through unchanged."""
-        assert HashService._sort_dict_recursive("hello") == "hello"
-        assert HashService._sort_dict_recursive(42) == 42
-        assert HashService._sort_dict_recursive(True) is True
-        assert HashService._sort_dict_recursive(None) is None
+    def test_list_element_order_DOES_change_the_digest(self):
+        # Lists are ordered data, not a set — the sort deliberately leaves
+        # element order alone, so [3,1,2] and [1,2,3] are different keys.
+        assert HashService.compute_composite_key_hash(
+            {"tags": [3, 1, 2]}
+        ) != HashService.compute_composite_key_hash({"tags": [1, 2, 3]})
+
+    def test_scalar_values_hash(self):
+        for value in ("hello", 42, True, None):
+            assert len(HashService.compute_composite_key_hash({"v": value})) == 64
+
+
+class TestCanonicalHomeDelegation:
+    """The Registry's HashService and wip_auth must never drift apart.
+
+    A second hand-rolled "sort, dump, sha256" is how a hash that looks right
+    comes to match nothing stored — so the Registry's facade delegates rather
+    than reimplements, and this pins that.
+    """
+
+    def test_service_matches_the_canonical_implementation(self):
+        from wip_auth.composite_key import compute_composite_key_hash
+
+        for key in (
+            {},
+            {"ns": "kb", "value": "GENDER", "label": "Gender"},
+            {"ns": "kb", "terminology_id": "019f-abc", "value": "M"},
+            {"nested": {"b": [1, {"z": 0, "a": 9}]}, "a": "x"},
+        ):
+            assert HashService.compute_composite_key_hash(key) == (
+                compute_composite_key_hash(key)
+            )

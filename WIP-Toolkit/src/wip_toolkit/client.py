@@ -201,8 +201,16 @@ class WIPClient:
     def check_health(self, service: str) -> tuple[bool, str]:
         """Check if a service is healthy. Returns (healthy, message)."""
         try:
-            # Health endpoint is at the root, not under the API prefix
-            base = self.config._service_urls[service]
+            # The API-prefixed health route (/api/<svc>/health) is served in
+            # BOTH connection modes: directly by the service on its own port,
+            # and through any proxy, because services mount their routes
+            # under the prefix themselves. The bare root /health is NOT
+            # routable through a k8s ingress — in proxy mode every service
+            # would probe the same https://host/health and 404, aborting
+            # every export against an ingress install. (It is also the
+            # container-lifecycle probe path, cached; the prefixed route is
+            # the fresh diagnostic one.)
+            base = self.config.service_url(service)
             resp = self._client.get(f"{base}/health", timeout=5.0)
             if resp.status_code == 200:
                 return True, "healthy"

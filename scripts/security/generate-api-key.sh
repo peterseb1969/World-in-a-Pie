@@ -118,7 +118,7 @@ fi
 GROUPS_JSON="[]"
 if [ -n "$KEY_GROUPS" ]; then
     # Convert comma-separated to JSON array
-    GROUPS_JSON=$(echo "$KEY_GROUPS" | tr ',' '\n' | while read g; do echo "\"$g\""; done | paste -sd, - | sed 's/^/[/;s/$/]/')
+    GROUPS_JSON=$(echo "$KEY_GROUPS" | tr ',' '\n' | while read -r g; do echo "\"$g\""; done | paste -sd, - | sed 's/^/[/;s/$/]/')
 fi
 
 # Current timestamp

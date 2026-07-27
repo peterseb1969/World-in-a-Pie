@@ -6,13 +6,10 @@ once at module scope because Beanie Document.__init__ touches
 get_motor_collection() and would otherwise raise CollectionWasNotInitialized.
 """
 
-import os
 from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
-from beanie import init_beanie
-from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import ValidationError
 
 from document_store.models.backup_job import (
@@ -24,13 +21,15 @@ from document_store.models.backup_job import (
 
 
 @pytest_asyncio.fixture(scope="module", autouse=True)
-async def _init_backup_job_beanie():
-    """Initialize Beanie once for this test module so Document.__init__ works."""
-    mongo = AsyncIOMotorClient(os.environ["MONGO_URI"])
-    db = mongo[os.environ["DATABASE_NAME"] + "_backup_job_model"]
-    await init_beanie(database=db, document_models=[BackupJob])
-    yield
-    mongo.close()
+async def _init_backup_job_beanie(session_mongo_client):
+    """Bind Beanie via the shared session client so BackupJob constructs.
+
+    A private client + re-init here would re-bind the model and then die
+    with this module, stranding later tests on a closed client — the
+    session-wide union binding is the only one that may exist.
+    """
+    from tests.conftest import _ensure_beanie
+    await _ensure_beanie(session_mongo_client)
 
 
 class TestBackupJobDefaults:

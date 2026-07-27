@@ -57,11 +57,12 @@ class ImportExportService:
         Returns:
             Export data in requested format
         """
-        # Get terminology
+        # Get terminology — an unscoped value that exists in several
+        # namespaces raises rather than exporting an arbitrary one
         if terminology_id:
             terminology = await Terminology.find_one({"terminology_id": terminology_id})
         elif terminology_value:
-            terminology = await Terminology.find_one({"value": terminology_value})
+            terminology = await TerminologyService.find_by_value(terminology_value, None)
         else:
             raise ValueError("Must provide terminology_id or terminology_value")
 
@@ -286,7 +287,9 @@ class ImportExportService:
             format: Data format (json, csv)
             options: Import options
                 - skip_duplicates: Skip terms that already exist
-                - update_existing: Update existing terms
+                - update_existing: Extend-only — existing terminology/terms are
+                  left unchanged (reported "exists"/"skipped"), not modified.
+                  In-place update is a future --force feature (CASE-797).
                 - created_by: User performing import
             namespace: Destination namespace, resolved by the API layer
                 (query param / JSON body / single-namespace-key derivation)
@@ -337,14 +340,13 @@ class ImportExportService:
         })
 
         if existing_terminology:
-            if not update_existing:
-                terminology_id = existing_terminology.terminology_id
-                terminology_status = "exists"
-            else:
-                # Update existing terminology
-                # TODO: Implement update logic
-                terminology_id = existing_terminology.terminology_id
-                terminology_status = "updated"
+            # An existing terminology is not modified by import — extend-only by
+            # WIP contract (CASE-797). update_existing extends the TERM set below;
+            # the terminology's own fields are left unchanged, so report it
+            # honestly as existing rather than a no-op "updated". In-place
+            # modification of an existing terminology is a future --force feature.
+            terminology_id = existing_terminology.terminology_id
+            terminology_status = "exists"
         else:
             # Create new terminology
             metadata = terminology_data.get("metadata", {})
@@ -629,7 +631,35 @@ class ImportExportService:
 
     @staticmethod
     def _detect_prefix(graph: dict) -> str | None:
-        """Auto-detect OBO prefix from graph ID."""
+        """Auto-detect the OBO term prefix from the graph's DATA.
+
+        The prefix scopes which nodes become terms (only ids matching
+        ``.../obo/<PREFIX>_...``). It MUST come from the nodes, not the
+        filename: a subset/slim/renamed file (goslim_generic.json,
+        envoPolar.json) has a filename that is not its term prefix, and
+        deriving the filter from the filename filtered out every real node
+        and imported nothing while reporting success. Detect the majority
+        prefix among CLASS nodes instead — robust to filename, to subsets,
+        and to the OWL/OBO/JSON format trio (same graph, same nodes).
+
+        Falls back to the graph-id filename only for a graph whose nodes
+        carry no OBO-style prefix at all (a non-OBO graph), where the
+        filename is the last available hint.
+        """
+        counts: Counter = Counter()
+        for n in graph.get("nodes", []):
+            if n.get("type") != "CLASS":
+                continue
+            uri = n.get("id", "")
+            if not uri.startswith("http://purl.obolibrary.org/obo/"):
+                continue
+            fragment = uri.rsplit("/", 1)[-1]
+            if "_" in fragment:
+                counts[fragment.split("_", 1)[0]] += 1
+        if counts:
+            return counts.most_common(1)[0][0]
+
+        # No OBO-prefixed CLASS node — fall back to the filename hint.
         graph_id = graph.get("id", "")
         filename = graph_id.rsplit("/", 1)[-1]
         base = filename.split(".")[0].split("-")[0].upper()
@@ -836,6 +866,31 @@ class ImportExportService:
         nodes = parsed["nodes"]
         edges = parsed["edges"]
         meta = parsed["ontology_meta"]
+
+        # An import that matched nothing must fail loud, never return a
+        # green "terminology created / 0 terms" — a terminology shell with
+        # no terms is worse than an error (a downstream bootstrap reads it
+        # as present). Refuse BEFORE creating the terminology so no orphan
+        # shell is left behind. A genuinely empty graph carries no nodes at
+        # all; the diagnostic case is a graph WITH nodes where the prefix
+        # filter matched none of them (the CASE-775 shape).
+        graph_node_count = sum(
+            1 for n in data["graphs"][0].get("nodes", []) if n.get("type") == "CLASS"
+        )
+        if not nodes and graph_node_count:
+            observed = Counter()
+            for n in data["graphs"][0].get("nodes", []):
+                if n.get("type") != "CLASS":
+                    continue
+                frag = n.get("id", "").rsplit("/", 1)[-1]
+                if "_" in frag:
+                    observed[frag.split("_", 1)[0]] += 1
+            raise ValueError(
+                f"Import matched 0 of {graph_node_count} class nodes: the "
+                f"prefix filter '{parsed['prefix']}' selected nothing. "
+                f"Observed node prefixes: {dict(observed.most_common())}. "
+                "Pass prefix_filter explicitly, or check the graph."
+            )
 
         terminology_value = options.get("terminology_value") or parsed["prefix"]
         terminology_label = options.get("terminology_label") or meta.get("title") or terminology_value

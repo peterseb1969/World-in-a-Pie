@@ -1,6 +1,17 @@
 # Backup / Restore Redesign
 
-**Status:** Design — v1.0 scope decided (2026-04-09 fireside), implementation next
+> **⚠️ HISTORICAL DESIGN DOC — do not read this as current behaviour.**
+> The restore engine shipped and then moved past this design. The document that
+> matches the code is **`restore-modes-merge-and-new-namespace.md`**; the
+> implementation itself is
+> `components/document-store/src/document_store/services/backup_engine.py`.
+> Today's engine exposes **three** entry points — `run_restore` (identity),
+> `run_merge`, and `run_remap`/fresh (cross-namespace, which this doc calls
+> deferred) — not the four-mode draft-then-activate model described below.
+> Kept for the rationale and the fireside decisions that produced it.
+
+**Status:** Superseded — v1.0 scope decided (2026-04-09 fireside); implemented and
+since evolved (see the banner above)
 **Author:** BE-YAC-20260408-2138
 **Context:** Followup to `backup-restore-approach.md` (the reuse-vs-rewrite
 decision for CASE-23 Phase 3). That doc established the toolkit-wrapping
@@ -49,9 +60,9 @@ POST /api/document-store/backup/namespaces/{namespace}/backup
 
 - **Identity-only:** each namespace in the archive restores to **itself**, and each
   target must be **empty** (the precondition is checked across all targets before any
-  write). Cross-namespace **remap** (Registry canonical-ID re-mint) is out of scope —
-  the identity_hash itself is namespace-independent (PoNIF #3); the hard part is
-  re-namespacing Registry entries, deferred.
+  write). *(Historical: cross-namespace **remap** — Registry canonical-ID re-mint —
+  was out of scope at the time of writing. It has since **shipped**: see
+  `run_remap` in `backup_engine.py` and `restore-modes-merge-and-new-namespace.md`.)*
 - A **single-namespace** archive may still be redirected to an explicit
   `target_namespace` (the pre-existing behaviour); a multi-namespace archive rejects a
   target override.
@@ -383,10 +394,10 @@ respective collections with zero modification.
 **Procedure:**
 1. Validate target namespace is empty (or create it from manifest metadata
    if missing). Refuse otherwise.
-2. Compare `id_algorithms` in manifest with target install's expectations
-   for that namespace. Refuse on mismatch.
-3. If `schema_version` or `hash_version` differ between source and target,
-   refuse (or offer an explicit rehash pass — separate feature).
+2. *(Proposed, NOT implemented: comparing manifest `id_algorithms` against the
+   target install and refusing on mismatch. `run_restore` checks target emptiness
+   and reporting state only — there is no id-algorithm or schema/hash-version
+   refusal. The same is noted earlier in this doc.)*
 4. For each collection: bulk insert from the corresponding JSONL.
 5. Bulk insert registry_entries. The Registry's unique index on
    `(namespace, entity_type, primary_composite_key_hash)` acts as a
@@ -493,6 +504,14 @@ CLAUDE.md warns against.
 
 ### Mode matrix (revised)
 
+> **As-built (read this first).** The engine ships **three** entry points in
+> `backup_engine.py`: `run_restore` (identity restore), `run_merge` (merge into a
+> populated namespace — a mode this doc never described), and `run_remap` (the
+> cross-namespace/new-ID path, covering what the table calls `target_namespace`,
+> `fresh` and `cross-install DR`). The draft-then-activate column below did not
+> survive: `run_remap` provisions Registry entries directly. The table is the
+> original design intent, kept for rationale.
+
 | Mode | Target | IDs | Refs | Draft/activate | Blocked by CASE-32 |
 |---|---|---|---|---|---|
 | **restore** | Empty ns, same install, same algos | Preserved verbatim | Preserved verbatim | No | No |
@@ -546,8 +565,10 @@ After restore, reporting-sync needs to re-sync the restored namespace.
 Two options:
 - **Event replay**: synthesize NATS events for every restored entity and
   publish them. Reporting-sync handles them normally.
-- **Full re-sync**: use the existing reporting-sync `/replay?namespace=X`
-  endpoint, which reads Mongo and rebuilds PostgreSQL tables from scratch.
+- **Full re-sync**: use the reporting-sync batch-sync endpoint —
+  `POST /api/reporting-sync/sync/batch?namespace=X` (the `/replay` route this doc
+  originally named does not exist) — which reads Mongo and rebuilds the
+  PostgreSQL tables.
 
 Full re-sync is simpler and already exists; use it by default.
 

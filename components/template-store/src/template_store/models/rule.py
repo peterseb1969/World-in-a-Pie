@@ -1,12 +1,12 @@
 """Validation rule models for cross-field validation."""
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
-class RuleType(str, Enum):
+class RuleType(StrEnum):
     """Types of cross-field validation rules."""
 
     CONDITIONAL_REQUIRED = "conditional_required"  # Field required if condition met

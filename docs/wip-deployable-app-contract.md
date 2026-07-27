@@ -37,6 +37,7 @@ The contract has two halves — what the **source repo** must look like, and wha
 | `server/index.ts` (Express apps) | All routes mounted on an `express.Router()` under `APP_BASE_PATH`. `app.set('trust proxy', 1)` for HTTPS termination. `requireAuth()` middleware passes through when `OIDC_ISSUER` is unset (apps-only / dev mode). In `NODE_ENV=production`, serve `dist/` statically with a SPA fallback. |
 | Runtime app-config route (CASE-551) | `GET ${APP_BASE_PATH}/api/app-config` returns the deployment's client-visible config as JSON — at minimum `{"namespace": <WIP_NAMESPACE or null>}`; multi-namespace apps add their extra keys (e.g. `library_namespace`). Allowlist only: never an env dump, never secrets (the response reaches every browser); `Cache-Control: no-store`. The SPA fetches this at boot (scaffold: `src/lib/app-config.ts`) for **every** client-visible per-deployment value — never mirror such values into `VITE_*` build bakes; a bake and runtime env are two sources that drift silently (`VITE_BASE_PATH` is the one deliberate exception — consumed at bundle-emit time, loud when wrong). The scaffold emits the route inline; apps that vendor `@wip/proxy` ≥ 0.4.0 can mount its `appConfigHandler` at the same path. |
 | Client fetches | Every URL prefixed with `import.meta.env.BASE_URL` — *never* bare `/api/...` or `/wip/...`. |
+| `wipProxy` mount order (`@wip/proxy` ≥ 0.5.0) | The proxy streams both directions (O(1) memory in payload size — large archive uploads/downloads pass through flat; no bespoke streaming routes needed). Consequence: it consumes the request as a raw stream, so it must be mounted **before** any body-parsing middleware (`express.json()`, …) that would match the same paths — a parser ahead of the proxy drains the body and an empty stream is forwarded. The deprecated `bodyLimit` option is a no-op. |
 | `Dockerfile` (production) | Multi-stage. Build stage takes `VITE_BASE_PATH` as ARG and bakes it into the static bundle. Production stage runs the server via `tsx server/index.ts` (or your app's entry), exposes the app's port, healthchecks `${APP_BASE_PATH}/api/health`. **If the manifest declares an HTTP healthcheck, the runtime image MUST contain `curl` or `wget`** — the rendered probe is a shell `curl \|\| wget` chain; an image with neither (e.g. `node:*-slim`, distroless — alpine bases get busybox `wget` for free) exits 127 on every probe and reports permanently unhealthy while the app serves fine, and the install's health-wait fails pointing at the app. Fix: install `wget` in the runtime stage (~2 MB), use an alpine base, or drop `spec.healthcheck` — the container then shows plain `Up` with no health status, like the platform router. `wip-deploy check-app-deployability` pre-flights this. |
 | `.dockerignore` | Excludes `node_modules`, `dist`, `*.log`, `.git`. Be careful with `*.md` — narrow it to `/*.md` and add explicit excludes for `papers/` / `docs/`, **not** an unscoped `*.md` that catches runtime files like `server/prompts/assistant.md`. |
 | Readme | A `## Development with wip-deploy` section documenting the contract surface for human readers. Two paragraphs. Pointers at this paper. |
@@ -125,7 +126,7 @@ The contract is small. The failure signatures when you skip a step are specific 
 
 **Symptom signature:** SPA loads. F12 → Network shows 404s on `/api/...` URLs that don't include the BASE_PATH. The Express server's own access log shows no traffic.
 
-**Origin:** every retrofit ever. `--preset query` scaffold today emits bare paths; this is the single biggest source of integration friction. The fix is `${import.meta.env.BASE_URL}<path>`.
+**Origin:** every retrofit ever — this was the single biggest source of integration friction. **Now fixed in the scaffold:** `--preset query` emits `${import.meta.env.BASE_URL}<path>` (App.tsx, SettingsPage.tsx, AskBar.tsx, lib/app-config.ts). The note stands as the rationale for hand-written apps.
 
 ### Skip 7: `/api/me` is OIDC-only
 
@@ -176,7 +177,7 @@ You don't need to test these. They're stable. Just use them.
 
 With `BASE_PATH` defaulting to `/` and `import.meta.env.BASE_URL` defaulting to `/`:
 
-- Vite's dev server proxy keys become `'' + '/api'`, `'' + '/wip'`, `'' + '/server-api'` — same as a non-deployable scaffold today.
+- Vite's dev server proxy keys become `${PREFIX}/api` and `${PREFIX}/wip` (the scaffold emits exactly these two; there is no `/server-api` proxy key).
 - Express router mounts at `/` — routes resolve to identical paths.
 - All client fetches resolve to the same URLs.
 - Session cookie path is `/` — same as today.
@@ -218,10 +219,10 @@ What `--preset query` ships today vs. what this paper recommends:
 | `src/lib/wipBulk.ts` | `fetch('/wip' + path)` | `fetch(\`${import.meta.env.BASE_URL}wip\` + path)` |
 | Inline client fetches | Bare paths | Prefixed with `${import.meta.env.BASE_URL}` |
 | `/api/me` | OIDC session only | Gateway-header sniff → OIDC → anonymous |
-| `Dockerfile.dev` | Not in scaffold | Provided as starter (canonical pattern) |
-| `Dockerfile` (production) | Not in scaffold | Two-stage; `VITE_BASE_PATH` as ARG |
-| `.dockerignore` | Not in scaffold | Provided; narrow `*.md` exclusion called out |
-| `apps/<name>/wip-app.yaml` | Not in scaffold | Provided alongside source-repo files; declares both ports + required env |
+| `Dockerfile.dev` | **In scaffold** | Provided as starter (canonical pattern) |
+| `Dockerfile` (production) | **In scaffold** | Two-stage; `VITE_BASE_PATH` as ARG |
+| `.dockerignore` | **In scaffold** | Provided; narrow `*.md` exclusion called out |
+| `apps/<name>/wip-app.yaml` | **In scaffold** | Provided alongside source-repo files; declares both ports + required env |
 
 These are mechanical scaffold edits. The right move is filing a case (BE-YAC owns the scaffold today) to fold each into `--preset query` so the next APP-YAC doesn't relearn them.
 

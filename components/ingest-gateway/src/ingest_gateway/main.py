@@ -8,7 +8,7 @@ Consumes messages from WIP_INGEST stream and forwards to REST APIs.
 import asyncio
 import logging
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 import nats
@@ -141,10 +141,8 @@ async def lifespan(app: FastAPI):
 
     if state.worker_task:
         state.worker_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await state.worker_task
-        except asyncio.CancelledError:
-            pass
 
     # Close HTTP client
     if state.http_client:

@@ -1205,12 +1205,14 @@ curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 
 ## Pagination
 
-All list endpoints use the same pattern:
+Most list endpoints use this pattern, but defaults and maximums vary per endpoint:
 
 | Parameter | Default | Maximum |
 |-----------|---------|---------|
 | `page` | 1 | — |
-| `page_size` | 50 | 100 |
+| `page_size` | 50 (varies) | per-endpoint |
+
+`page_size` max is 1000 on content/definition lists (documents, templates, terms, terminologies), 500 on `POST /documents/query`, and 100 on file and registry endpoints.
 
 Response always includes:
 ```json

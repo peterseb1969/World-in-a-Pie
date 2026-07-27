@@ -1,12 +1,15 @@
 """Validation API endpoints."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from wip_auth import UserIdentity, check_namespace_permission, resolve_or_404
 
 from ..models.api_models import (
     BulkValidationRequest,
     BulkValidationResponse,
+    CandidateValidationItem,
+    CandidateValidationRequest,
+    CandidateValidationResponse,
     ValidationRequest,
     ValidationResponse,
 )
@@ -103,3 +106,68 @@ async def validate_documents_bulk(
         template_version=request.template_version,
     )
     return BulkValidationResponse(results=results)
+
+
+@router.post(
+    "/validate-candidate",
+    response_model=CandidateValidationResponse,
+    summary="Validate documents against an inline candidate template definition",
+    description="""
+The what-if dry-run for schema evolution: "would my documents still validate
+against this draft next version?" — answered before the version exists.
+
+The candidate definition is used inline: nothing is created, cached, or
+registered, and no draft version pollutes the template's version catalog.
+Provide either explicit `documents` payloads, or `sample_template_id` to run
+the candidate against the most recently updated active documents of an
+existing template (`sample_limit`, default 100, max 500).
+
+Reference values inside the candidate (terminology_ref etc.) should be
+canonical IDs or resolvable synonyms — an unresolvable reference surfaces as
+a per-document validation error, exactly as it would on a real write.
+
+Declared renames are honored: a candidate carrying `renames`
+(`{new_field: old_field}`) validates each document as-if re-keyed — the
+same semantics an applied migration uses — so a declared rename does not
+false-fail as an unknown old field plus a missing new one.
+""",
+)
+async def validate_candidate(
+    request: CandidateValidationRequest,
+    identity: UserIdentity = Depends(require_api_key),
+):
+    """Validate documents against a candidate definition without creating it."""
+    await check_namespace_permission(identity, request.namespace, "read")
+
+    if (request.documents is None) == (request.sample_template_id is None):
+        raise HTTPException(
+            status_code=422,
+            detail="Provide exactly one of 'documents' or 'sample_template_id'",
+        )
+
+    sample_id = None
+    if request.sample_template_id:
+        sample_id = await resolve_or_404(
+            request.sample_template_id, "template", request.namespace,
+            param_name="sample_template_id",
+        )
+
+    service = get_document_service()
+    pairs = await service.validate_candidate(
+        template_definition=request.template_definition,
+        namespace=request.namespace,
+        documents=request.documents,
+        sample_template_id=sample_id,
+        sample_limit=request.sample_limit,
+    )
+    items = [
+        CandidateValidationItem(index=i, document_id=doc_id, validation=v)
+        for i, (doc_id, v) in enumerate(pairs)
+    ]
+    valid_count = sum(1 for it in items if it.validation.valid)
+    return CandidateValidationResponse(
+        total=len(items),
+        valid_count=valid_count,
+        invalid_count=len(items) - valid_count,
+        results=items,
+    )

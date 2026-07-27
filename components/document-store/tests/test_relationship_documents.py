@@ -112,6 +112,107 @@ async def test_create_relationship_rejects_cross_namespace_source(
     assert "source_ref" in (result.get("error") or "")
 
 
+@pytest.mark.asyncio
+async def test_bulk_create_lays_down_relationship_indexes(
+    client: AsyncClient, auth_headers: dict,
+):
+    """CASE-795 F21: relationship indexes are created lazily on first write, but
+    that only ran on the single-item path — a namespace ingesting edges purely in
+    bulk never got the data.source_ref / data.target_ref indexes the
+    /relationships and /traverse queries depend on. A bulk-only edge write must
+    lay them down."""
+    from document_store.models.document import Document
+
+    exp_id, mol_id = await _seed_endpoints(client, auth_headers)
+    # A second, distinct target so both edges are creates rather than one edge
+    # being upserted twice (EXPERIMENT_INPUT's identity is source_ref+target_ref).
+    mol2 = await _create_doc(client, auth_headers, "MOLECULE", {
+        "molecule_id": "MOL-002", "name": "Second molecule",
+    })
+    assert mol2["status"] == "created", mol2
+    mol2_id = mol2["document_id"]
+
+    collection = Document.get_motor_collection()
+    await collection.drop_indexes()  # clear any index laid down by earlier writes
+
+    # 2+ items -> bulk_create path exclusively.
+    resp = await client.post(
+        f"{API}/documents",
+        headers=auth_headers,
+        json=[
+            {
+                "namespace": "wip",
+                "template_id": "EXPERIMENT_INPUT",
+                "data": {"source_ref": exp_id, "target_ref": mol_id, "role": "input"},
+            },
+            {
+                "namespace": "wip",
+                "template_id": "EXPERIMENT_INPUT",
+                "data": {"source_ref": exp_id, "target_ref": mol2_id, "role": "control"},
+            },
+        ],
+    )
+    assert resp.status_code == 200, resp.text
+    assert [r["status"] for r in resp.json()["results"]] == ["created", "created"]
+
+    names = {idx["name"] async for idx in collection.list_indexes()}
+    assert "rel_template_source_ref_idx" in names, names
+    assert "rel_template_target_ref_idx" in names, names
+
+
+@pytest.mark.asyncio
+async def test_bulk_create_relationship_enforces_cross_namespace_per_item(
+    client: AsyncClient, auth_headers: dict,
+):
+    """CASE-788: the bulk path (2+ items -> bulk_create) must enforce the same
+    cross-namespace relationship constraint as the single-item path. Previously
+    only create_document (len(items)==1) ran the check; a batch of 2+ edges
+    bypassed it. A batch with one valid edge and one cross-namespace edge must
+    return per-item created / error."""
+    exp_id, mol_id = await _seed_endpoints(client, auth_headers)
+
+    # A cross-namespace EXPERIMENT endpoint in 'other-ns'.
+    other_resp = await client.post(
+        f"{API}/documents",
+        headers=auth_headers,
+        json=[{
+            "namespace": "other-ns",
+            "template_id": "EXPERIMENT",
+            "data": {"experiment_id": "EXP-OTHER-BULK"},
+        }],
+    )
+    assert other_resp.status_code == 200
+    other_result = other_resp.json()["results"][0]
+    if other_result["status"] != "created":
+        pytest.skip(f"test fixture does not support namespace 'other-ns': {other_result}")
+    other_exp_id = other_result["document_id"]
+
+    # Two-item batch -> forces the bulk_create path (len(items) > 1).
+    resp = await client.post(
+        f"{API}/documents",
+        headers=auth_headers,
+        json=[
+            {  # valid edge, both endpoints in 'wip'
+                "namespace": "wip",
+                "template_id": "EXPERIMENT_INPUT",
+                "data": {"source_ref": exp_id, "target_ref": mol_id, "role": "input"},
+            },
+            {  # cross-namespace edge -> must be rejected per-item
+                "namespace": "wip",
+                "template_id": "EXPERIMENT_INPUT",
+                "data": {"source_ref": other_exp_id, "target_ref": mol_id, "role": "input"},
+            },
+        ],
+    )
+    assert resp.status_code == 200
+    results = resp.json()["results"]
+    assert len(results) == 2, results
+    assert results[0]["status"] == "created", results[0]
+    assert results[1]["status"] == "error", results[1]
+    assert "cross_namespace_relationship" in (results[1].get("error") or "")
+    assert "source_ref" in (results[1].get("error") or "")
+
+
 # =============================================================================
 # Wrong-template rejection (pre-existing reference-field check, still works)
 # =============================================================================

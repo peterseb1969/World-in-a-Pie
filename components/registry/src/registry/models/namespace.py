@@ -6,7 +6,7 @@ defines how IDs are generated for each entity type.
 """
 
 from datetime import UTC, datetime
-from typing import Any, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 
 from beanie import Document
 from pydantic import Field
@@ -89,7 +89,7 @@ class Namespace(Document):
 
     class Settings:
         name = "namespaces"
-        indexes = [
+        indexes: ClassVar[list[IndexModel]] = [
             IndexModel([("prefix", 1)], unique=True, name="prefix_unique_idx"),
             IndexModel([("status", 1)], name="status_idx"),
         ]

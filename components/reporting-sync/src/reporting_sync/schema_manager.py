@@ -7,6 +7,7 @@ Responsibilities:
 - Track migrations in _wip_schema_migrations table
 """
 
+import contextlib
 import logging
 from typing import Any, ClassVar, cast
 
@@ -84,31 +85,58 @@ class SchemaManager:
         """The PostgreSQL schema name for a WIP namespace (validated)."""
         return self._safe_ident(namespace)
 
-    def get_table_name(self, template_value: str, config: ReportingConfig | None = None) -> str:
-        """Get the bare (unqualified) table name for a template.
+    def get_table_name(
+        self,
+        template_value: str,
+        config: ReportingConfig | None = None,
+        version: int | None = None,
+    ) -> str:
+        """Get the bare (unqualified) relation name for a template.
 
-        This is the name *within* the namespace schema — ``doc_<value>`` by
-        default, or the template's optional ``ReportingConfig.table_name``
-        cosmetic override. Namespace isolation comes from the schema, not the
-        table name, so this no longer carries the namespace.
+        The base is ``doc_<value>`` (or the template's optional
+        ``ReportingConfig.table_name`` cosmetic override) *within* the
+        namespace schema — namespace isolation comes from the schema, not
+        the name.
+
+        With ``version``, this is the **physical per-version table**
+        ``<base>__v<N>`` — one table per (template, version), each shaped by
+        that version's own fields, so a NULL in a row means "submitted
+        empty", never "not in this row's schema version". Without
+        ``version`` it is the base name, which post-split is the entity
+        **view** (identity-core, or the opt-in cross-version view), not a
+        table. Template-store rejects values/overrides matching
+        ``.*__v[0-9]+$`` so the suffix cannot collide with a real name.
         """
-        if config and config.table_name:
-            return self._safe_ident(config.table_name)
-        return self._safe_ident(f"doc_{template_value.lower()}")
+        base = (
+            self._safe_ident(config.table_name)
+            if config and config.table_name
+            else self._safe_ident(f"doc_{template_value.lower()}")
+        )
+        if version is None:
+            return base
+        return f"{base}__v{int(version)}"
+
+    def entities_view_name(
+        self, template_value: str, config: ReportingConfig | None = None
+    ) -> str:
+        """The always-present identity-core view: ``<base>__entities``."""
+        return f"{self.get_table_name(template_value, config)}__entities"
 
     def qualified_name(
         self,
         namespace: str,
         template_value: str,
         config: ReportingConfig | None = None,
+        version: int | None = None,
     ) -> str:
-        """Schema-qualified, quote-safe table reference for use in SQL.
+        """Schema-qualified, quote-safe relation reference for use in SQL.
 
-        e.g. ``"clinicA"."doc_patient"``. Callers building SQL by hand should
-        use this rather than constructing the name.
+        e.g. ``"clinicA"."doc_patient__v3"`` (with ``version``) or the
+        entity view ``"clinicA"."doc_patient"`` (without). Callers building
+        SQL by hand should use this rather than constructing the name.
         """
         schema = self.schema_for(namespace)
-        table = self.get_table_name(template_value, config)
+        table = self.get_table_name(template_value, config, version)
         return f'"{schema}"."{table}"'
 
     def _generate_column_ddl(
@@ -268,8 +296,8 @@ class SchemaManager:
         via the worker's ON CONFLICT (document_id), so version-bumps of
         the same doc still work.
         """
-        table_name = self.get_table_name(template_value, config)
-        qualified = self.qualified_name(namespace, template_value, config)
+        table_name = self.get_table_name(template_value, config, template_version)
+        qualified = self.qualified_name(namespace, template_value, config, template_version)
         include_metadata = config.include_metadata if config else True
         strategy = config.sync_strategy if config else SyncStrategy.LATEST_ONLY
 
@@ -473,10 +501,22 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
         return expected
 
     async def ensure_schema(self, namespace: str) -> str:
-        """Create the namespace's PostgreSQL schema if absent. Returns its name."""
+        """Create the namespace's PostgreSQL schema if absent. Returns its name.
+
+        Concurrency-safe on purpose: ``CREATE SCHEMA IF NOT EXISTS`` is NOT —
+        two concurrent callers can both pass the exists-check and the loser
+        dies on the catalog's unique index (pg_namespace_nspname_index). A
+        restore fans out per-template batch syncs that all ensure the same
+        namespace schema at once; losing that race must mean "someone else
+        just created it", never a failed sync (it halted a live kb restore
+        at the structure gate: three templates lost, three tables missing).
+        """
         schema = self.schema_for(namespace)
         async with self.pool.acquire() as conn:
-            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+            # A concurrent caller can create it between the existence check
+            # and the create — the desired state holds either way.
+            with contextlib.suppress(asyncpg.UniqueViolationError):
+                await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
         return schema
 
     async def drop_namespace_schema(self, namespace: str) -> int:
@@ -554,7 +594,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
             namespace, template_value, template_version, fields, config,
             usage=usage, identity_fields=identity_fields,
         )
-        table_name = self.get_table_name(template_value, config)
+        table_name = self.get_table_name(template_value, config, template_version)
 
         logger.info(f'Creating table "{schema}"."{table_name}" for template {template_value}')
 
@@ -602,8 +642,8 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
         sync can land docs.
         """
         schema = self.schema_for(namespace)
-        table_name = self.get_table_name(template_value, config)
-        qualified = self.qualified_name(namespace, template_value, config)
+        table_name = self.get_table_name(template_value, config, template_version)
+        qualified = self.qualified_name(namespace, template_value, config, template_version)
 
         if not await self.table_exists(schema, table_name):
             await self.create_table(
@@ -962,7 +1002,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
             return ""
 
         schema = self.schema_for(namespace)
-        table_name = self.get_table_name(template_value, config)
+        table_name = self.get_table_name(template_value, config, template_version)
 
         usage = template.get("usage", "entity")
         identity_fields = template.get("identity_fields") or []
@@ -979,7 +1019,320 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
                 namespace, template_value, template_version, fields, config,
                 usage=usage, identity_fields=identity_fields,
             )
+            # A new version table changes the entity's union membership —
+            # rebuild the views so the bare name and __entities stay honest.
+            await self.ensure_views_for_template(namespace, template_value, config)
 
-        # Return the schema-qualified reference ("<ns>"."<table>") so callers
-        # build SQL against it directly, without re-deriving the schema.
-        return self.qualified_name(namespace, template_value, config)
+        # Return the schema-qualified reference to this VERSION's table
+        # ("<ns>"."doc_<value>__v<N>") so callers build SQL against it
+        # directly, without re-deriving the schema.
+        return self.qualified_name(namespace, template_value, config, template_version)
+
+    async def list_version_tables(
+        self, namespace: str, template_value: str,
+        config: ReportingConfig | None = None,
+    ) -> dict[int, str]:
+        """The physical per-version tables present for a template: {version: table_name}.
+
+        Discovered from information_schema, so it reflects what actually
+        exists — the view builders and parity both consume this rather than
+        re-deriving membership from template metadata.
+        """
+        schema = self.schema_for(namespace)
+        base = self.get_table_name(template_value, config)
+        # LIKE-escape the base (underscores are LIKE wildcards).
+        escaped = base.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%")
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                r"""
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = $1
+                  AND table_type = 'BASE TABLE'
+                  AND table_name LIKE $2 || '\_\_v%'
+                """,
+                schema,
+                escaped,
+            )
+        out: dict[int, str] = {}
+        prefix = f"{base}__v"
+        for row in rows:
+            name = row["table_name"]
+            suffix = name[len(prefix):]
+            if name.startswith(prefix) and suffix.isdigit():
+                out[int(suffix)] = name
+        return out
+
+    async def relation_kind(self, schema: str, name: str) -> str | None:
+        """'table' | 'view' | None for a relation in a schema."""
+        async with self.pool.acquire() as conn:
+            kind = await conn.fetchval(
+                """
+                SELECT c.relkind FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = $1 AND c.relname = $2
+                """,
+                schema,
+                name,
+            )
+        if kind is None:
+            return None
+        # asyncpg returns the "char" relkind as bytes.
+        kind_s = kind.decode() if isinstance(kind, bytes) else str(kind)
+        return {"r": "table", "v": "view"}.get(kind_s, kind_s)
+
+    async def _shared_columns(
+        self, schema: str, tables: list[str]
+    ) -> list[tuple[str, str]]:
+        """Columns present in EVERY listed table with an identical data type,
+        in the column order of the newest table. Generated tsvector columns
+        are excluded — full-text search targets the physical tables.
+
+        This intersection IS the identity core plus the provably-unchanged
+        columns: identity_fields are immutable across versions (template
+        identity design), so their columns always survive; anything typed
+        differently between versions drops out, keeping the union honest.
+        """
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT table_name, column_name, data_type, ordinal_position,
+                       is_generated
+                FROM information_schema.columns
+                WHERE table_schema = $1 AND table_name = ANY($2::text[])
+                ORDER BY table_name, ordinal_position
+                """,
+                schema,
+                tables,
+            )
+        per_table: dict[str, dict[str, str]] = {t: {} for t in tables}
+        order_source: list[str] = []
+        for row in rows:
+            if row["is_generated"] == "ALWAYS":
+                continue
+            per_table[row["table_name"]][row["column_name"]] = row["data_type"]
+        # Column order follows the last table in sorted-by-version order —
+        # callers pass tables sorted ascending, so the newest version wins.
+        if tables:
+            newest = tables[-1]
+            order_source = [
+                r["column_name"] for r in rows
+                if r["table_name"] == newest and r["is_generated"] != "ALWAYS"
+            ]
+        shared: list[tuple[str, str]] = []
+        for col in order_source:
+            dtype = per_table[tables[-1]][col]
+            if all(per_table[t].get(col) == dtype for t in tables):
+                shared.append((col, dtype))
+        return shared
+
+    async def ensure_views_for_template(
+        self,
+        namespace: str,
+        template_value: str,
+        config: ReportingConfig | None = None,
+    ) -> str | None:
+        """(Re)build the entity views over the per-version tables.
+
+        Two views, both plain (never materialized — a refresh lifecycle
+        would be a new way to serve authoritative-looking stale data):
+
+        - ``<base>__entities`` — always the identity-core view: the typed
+          intersection of all version tables' columns, UNION ALL.
+        - ``<base>`` (the bare name) — the default query surface. Identity
+          core by default; when the template opts in via
+          ``reporting.cross_version_view`` it additionally carries the
+          declared column mappings over the selected versions.
+
+        Returns a warning string (and builds nothing) when the bare name is
+        occupied by a pre-split physical TABLE — the legacy single-table
+        layout. That table shadows the entity view; remediation is an
+        explicit rebuild (drop the legacy table, then batch sync), surfaced
+        through parity as ``legacy_table`` rather than auto-dropped here.
+        """
+        schema = self.schema_for(namespace)
+        base = self.get_table_name(template_value, config)
+        version_tables = await self.list_version_tables(namespace, template_value, config)
+        if not version_tables:
+            return None
+
+        legacy_kind = await self.relation_kind(schema, base)
+        if legacy_kind == "table":
+            msg = (
+                f'"{schema}"."{base}" is a pre-split physical table shadowing '
+                f"the entity view — drop it and re-run the batch sync to "
+                f"migrate to per-version tables"
+            )
+            logger.warning(msg)
+            return msg
+
+        ordered_versions = sorted(version_tables)
+        tables = [version_tables[v] for v in ordered_versions]
+        shared = await self._shared_columns(schema, tables)
+        if not shared:
+            return None
+        col_list = ", ".join(f'"{c}"' for c, _t in shared)
+
+        selects = [
+            f'SELECT {col_list} FROM "{schema}"."{t}"' for t in tables
+        ]
+        entities_view = f"{base}__entities"
+        union_sql = "\nUNION ALL\n".join(selects)
+
+        cv = getattr(config, "cross_version_view", None) if config else None
+        bare_sql = union_sql
+        if cv:
+            selected = ordered_versions if cv.versions == "all" else [
+                v for v in ordered_versions if v in (cv.versions or [])
+            ]
+            if selected:
+                sel_tables = [version_tables[v] for v in selected]
+                shared_sel = await self._shared_columns(schema, sel_tables)
+                col_names = {c for c, _t in shared_sel}
+                mapped = {
+                    target: (spec or {}).get("from") or target
+                    for target, spec in (cv.columns or {}).items()
+                    if target not in col_names
+                }
+                # Type of each mapped target: taken from the newest selected
+                # table that has the source (or target) column.
+                async with self.pool.acquire() as conn:
+                    type_rows = await conn.fetch(
+                        """
+                        SELECT table_name, column_name, data_type
+                        FROM information_schema.columns
+                        WHERE table_schema = $1 AND table_name = ANY($2::text[])
+                        """,
+                        schema,
+                        sel_tables,
+                    )
+                col_types: dict[str, dict[str, str]] = {t: {} for t in sel_tables}
+                for row in type_rows:
+                    col_types[row["table_name"]][row["column_name"]] = row["data_type"]
+
+                mapped_types: dict[str, str] = {}
+                for target, source in mapped.items():
+                    for t in reversed(sel_tables):
+                        dtype = col_types[t].get(target) or col_types[t].get(source)
+                        if dtype:
+                            mapped_types[target] = dtype
+                            break
+
+                shared_cols_sql = ", ".join(f'"{c}"' for c, _t in shared_sel)
+                sel_selects = []
+                for t in sel_tables:
+                    extra = []
+                    for target, source in mapped.items():
+                        dtype = mapped_types.get(target)
+                        if dtype is None:
+                            continue
+                        if target in col_types[t]:
+                            extra.append(f'"{target}"')
+                        elif source in col_types[t]:
+                            extra.append(f'"{source}" AS "{target}"')
+                        else:
+                            extra.append(f'NULL::{dtype} AS "{target}"')
+                    cols = shared_cols_sql + (", " + ", ".join(extra) if extra else "")
+                    sel_selects.append(f'SELECT {cols} FROM "{schema}"."{t}"')
+                bare_sql = "\nUNION ALL\n".join(sel_selects)
+
+        async with self.pool.acquire() as conn, conn.transaction():
+            await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{entities_view}"')
+            await conn.execute(
+                f'CREATE VIEW "{schema}"."{entities_view}" AS\n{union_sql}'
+            )
+            if legacy_kind in (None, "view"):
+                await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{base}"')
+                await conn.execute(
+                    f'CREATE VIEW "{schema}"."{base}" AS\n{bare_sql}'
+                )
+        logger.info(
+            f'Rebuilt entity views for "{schema}"."{base}" over versions '
+            f"{ordered_versions}"
+        )
+        return None
+
+    async def delete_from_sibling_version_tables(
+        self,
+        namespace: str,
+        template_value: str,
+        config: ReportingConfig | None,
+        keep_version: int,
+        document_id: str,
+    ) -> int:
+        """Remove a document's rows from every version table EXCEPT keep_version.
+
+        The latest_only strategy keeps one live row per document; when an
+        update validates against a newer template version the row MOVES
+        tables (pin-to-what-validated), so the upsert into the new table
+        must be paired with a delete from the siblings or the entity views
+        would show the document twice.
+        """
+        version_tables = await self.list_version_tables(namespace, template_value, config)
+        schema = self.schema_for(namespace)
+        deleted = 0
+        async with self.pool.acquire() as conn:
+            for version, table in version_tables.items():
+                if version == keep_version:
+                    continue
+                result = await conn.execute(
+                    f'DELETE FROM "{schema}"."{table}" WHERE document_id = $1',
+                    document_id,
+                )
+                with contextlib.suppress(ValueError, IndexError):
+                    deleted += int(result.split()[-1])
+        return deleted
+
+    async def drop_relations_for_template(
+        self,
+        namespace: str,
+        template_value: str,
+        config: ReportingConfig | None = None,
+    ) -> list[str]:
+        """Drop every reporting relation for a template in ONE namespace's
+        schema: the entity views, all per-version tables, and — if present —
+        a legacy pre-split physical table occupying the bare name (the shape
+        ``ensure_views_for_template`` can only report, never fix).
+
+        This is the destructive half of a force rebuild: mis-shaped DDL
+        (e.g. a table created from a same-valued foreign template) cannot be
+        healed by upserts, only by drop-and-recreate. Namespace-scoped by
+        design — table names derive from the template VALUE, not the
+        template_id, so a cross-schema sweep could destroy tables belonging
+        to a different template that shares the value.
+
+        Views are dropped explicitly before their tables rather than via
+        CASCADE: a dependent relation this method does not know about (a
+        user-created view over a version table) makes the transaction fail
+        loudly instead of being silently cascaded away.
+
+        Returns the dropped relation names, schema-qualified. All-or-nothing
+        (single transaction).
+        """
+        schema = self.schema_for(namespace)
+        base = self.get_table_name(template_value, config)
+        entities_view = f"{base}__entities"
+        version_tables = await self.list_version_tables(namespace, template_value, config)
+        entities_kind = await self.relation_kind(schema, entities_view)
+        bare_kind = await self.relation_kind(schema, base)
+
+        dropped: list[str] = []
+        async with self.pool.acquire() as conn, conn.transaction():
+            if entities_kind == "view":
+                await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{entities_view}"')
+                dropped.append(f"{schema}.{entities_view}")
+            if bare_kind == "view":
+                await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{base}"')
+                dropped.append(f"{schema}.{base}")
+            elif bare_kind == "table":
+                await conn.execute(f'DROP TABLE IF EXISTS "{schema}"."{base}"')
+                dropped.append(f"{schema}.{base}")
+            for version in sorted(version_tables):
+                table = version_tables[version]
+                await conn.execute(f'DROP TABLE IF EXISTS "{schema}"."{table}"')
+                dropped.append(f"{schema}.{table}")
+        if dropped:
+            logger.info(
+                f'Dropped {len(dropped)} relation(s) for "{schema}"."{base}": '
+                f"{dropped}"
+            )
+        return dropped

@@ -37,10 +37,6 @@ spec:
       # the config falls back to the dev default and every outbound call
       # returns 401.
       - {name: API_KEY, source: {from_secret: api-key}}
-      # Kept for legacy/explicit documentation; reporting-sync's code
-      # doesn't read this separately today but config sanity matches
-      # the pattern used by other services.
-      - {name: TEMPLATE_STORE_API_KEY, source: {from_secret: api-key}}
       # Derived from deployment.spec.auth.mode (CASE-361). See registry
       # manifest for the full mapping rationale.
       - {name: WIP_AUTH_MODE, source: {from_spec: auth.wip_auth_mode}}

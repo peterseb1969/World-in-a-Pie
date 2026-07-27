@@ -63,14 +63,6 @@ def count_mypy(raw_dir: Path) -> tuple[int, dict]:
     return total, data
 
 
-def count_vue_tsc(raw_dir: Path) -> int:
-    text = load_text(raw_dir / "vue-tsc.txt")
-    if not text:
-        return 0
-    import re
-    return len(re.findall(r"error TS\d+", text))
-
-
 def count_eslint(raw_dir: Path) -> int:
     data = load_json(raw_dir / "eslint.json", [])
     if not isinstance(data, list):
@@ -180,7 +172,6 @@ def generate_report(raw_dir: Path, mode: str, baseline: dict | None) -> str:
     vulture_count = count_vulture(raw_dir)
     ts_prune_count = count_ts_prune(raw_dir)
     mypy_count, mypy_details = count_mypy(raw_dir)
-    vue_tsc_count = count_vue_tsc(raw_dir)
     eslint_count = count_eslint(raw_dir)
     api_data = get_api_consistency(raw_dir)
     radon_items = get_radon(raw_dir)
@@ -205,8 +196,7 @@ def generate_report(raw_dir: Path, mode: str, baseline: dict | None) -> str:
         ("mypy (Python types)", "mypy", mypy_count),
         ("Vulture (dead Python code)", "vulture", vulture_count),
         ("ShellCheck", "shellcheck", shellcheck_count),
-        ("ESLint (Vue/TS lint)", "eslint", eslint_count),
-        ("vue-tsc (Vue types)", "vue-tsc", vue_tsc_count),
+        ("ESLint (TS lint)", "eslint", eslint_count),
         ("ts-prune (unused exports)", "ts-prune", ts_prune_count),
     ]
 
@@ -275,15 +265,10 @@ def generate_report(raw_dir: Path, mode: str, baseline: dict | None) -> str:
         w("No mypy data available.")
         w("")
 
-    w(f"### Vue/TypeScript (vue-tsc) — {vue_tsc_count} errors")
+    w("### Vue/TypeScript (vue-tsc) — retired")
     w("")
-    vue_tsc_text = load_text(raw_dir / "vue-tsc.txt")
-    if vue_tsc_text and vue_tsc_count > 0:
-        for line in vue_tsc_text.splitlines()[:15]:
-            if "error TS" in line:
-                w(f"- `{line.strip()}`")
-    else:
-        w("No vue-tsc errors (or not available).")
+    w("No Vue UI lives in this repo (the legacy wip-console left with "
+      "wip-deploy v2); the React console is checked in its own repo.")
     w("")
 
     # Section 3: Linting
@@ -523,7 +508,6 @@ def main():
                 "vulture": {"count": count_vulture(raw_dir)},
                 "eslint": {"count": count_eslint(raw_dir)},
                 "shellcheck": {"count": count_shellcheck(raw_dir)},
-                "vue-tsc": {"count": count_vue_tsc(raw_dir)},
                 "ts-prune": {"count": count_ts_prune(raw_dir)},
                 # CASE-400: api-consistency + radon CC>=C now gated. The
                 # audit always measured these; the baseline schema didn't
@@ -545,7 +529,6 @@ def main():
             ("vulture", count_vulture(raw_dir)),
             ("eslint", count_eslint(raw_dir)),
             ("shellcheck", count_shellcheck(raw_dir)),
-            ("vue-tsc", count_vue_tsc(raw_dir)),
             ("ts-prune", count_ts_prune(raw_dir)),
             # CASE-400: gate the two previously-measured-but-ungated dimensions.
             ("api-consistency", count_api_consistency(raw_dir)),

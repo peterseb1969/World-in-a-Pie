@@ -161,10 +161,11 @@ class IngestHTTPClient:
                 failed_count = response_data.get("failed", 0)
                 total_count = response_data.get("total", 0)
                 if failed_count > 0:
-                    if failed_count >= total_count:
-                        status = IngestResultStatus.FAILED
-                    else:
-                        status = IngestResultStatus.PARTIAL
+                    status = (
+                        IngestResultStatus.FAILED
+                        if failed_count >= total_count
+                        else IngestResultStatus.PARTIAL
+                    )
 
             logger.debug(
                 f"Forwarded {action.value} correlation_id={correlation_id} "

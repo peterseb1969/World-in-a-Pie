@@ -25,11 +25,16 @@ correctly without exercising ZIP I/O.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import os
+import time
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pymongo.errors import BulkWriteError
-from wip_toolkit.models import EntityCounts, Manifest, NamespaceConfig, ProgressEvent
+from wip_archive.models import EntityCounts, Manifest, NamespaceConfig, ProgressEvent
 
 from document_store.services.backup_engine import (
     BACKUP_ENTITY_ORDER,
@@ -76,10 +81,14 @@ def _make_mongo_mock(*, docs_per_collection=None, counts_per_collection=None,
         if coll_name in collection_mocks:
             return collection_mocks[coll_name]
         coll = MagicMock()
-        # find() returns an async iterator over the configured docs
-        coll.find = MagicMock(
+        # find() returns a cursor mock whose .sort() yields the configured
+        # docs — mirroring the engine's find(...).sort(natural_key) chain;
+        # the sort spec lands in cursor_mock.sort.call_args for assertions
+        cursor = MagicMock()
+        cursor.sort = MagicMock(
             return_value=_AsyncIter(docs_per_collection.get(coll_name, []))
         )
+        coll.find = MagicMock(return_value=cursor)
         # count_documents is async, returns int
         coll.count_documents = AsyncMock(
             return_value=counts_per_collection.get(coll_name, 0)
@@ -142,14 +151,12 @@ class TestModuleStructure:
 class TestBuildQuery:
     """Verify the namespace + status query construction."""
 
-    def test_default_excludes_deleted(self):
+    def test_query_is_namespace_alone(self):
+        # A backup is a full copy: every entity, every status. No status
+        # filter may reappear here — an archive missing inactive or archived
+        # entities that live data references would be a restore trap.
         engine = DirectBackupEngine(MagicMock(), None, lambda _: None)
-        q = engine._build_query("kb", include_inactive=False)
-        assert q == {"namespace": "kb", "status": {"$ne": "deleted"}}
-
-    def test_include_inactive_drops_status_filter(self):
-        engine = DirectBackupEngine(MagicMock(), None, lambda _: None)
-        q = engine._build_query("kb", include_inactive=True)
+        q = engine._build_query("kb")
         assert q == {"namespace": "kb"}
 
 
@@ -204,7 +211,7 @@ class TestPreCount:
             }
         )
         engine = DirectBackupEngine(mongo, None, lambda _: None)
-        counts = await engine._pre_count("kb", include_inactive=False, skip_documents=False)
+        counts = await engine._pre_count("kb", skip_documents=False)
         assert counts["terminologies"] == 3
         assert counts["documents"] == 100
         assert counts["registry_entries"] == 150
@@ -218,7 +225,7 @@ class TestPreCount:
             counts_per_collection={"documents": 100}
         )
         engine = DirectBackupEngine(mongo, None, lambda _: None)
-        counts = await engine._pre_count("kb", include_inactive=False, skip_documents=True)
+        counts = await engine._pre_count("kb", skip_documents=True)
         # documents count returns 0; count_documents on documents collection was NOT called
         assert counts["documents"] == 0
         if "documents" in colls:
@@ -413,6 +420,41 @@ class TestRunBackupBasicFlow:
             assert "_id" not in payload
 
     @pytest.mark.asyncio
+    async def test_export_sorts_every_entity_stream_by_natural_key(self, tmp_path):
+        """Every entity stream is exported through a natural-key sort.
+
+        Unordered exports made archive bytes depend on the Mongo query plan:
+        identical corpora produced row-permuted (and up to ~32% worse
+        compressed) archives. The cursor must be built with allow_disk_use
+        (the sort may not ride an index on big namespaces) and sorted with
+        the entity's EXPORT_SORT_ORDER spec.
+        """
+        from document_store.services.backup_engine import EXPORT_SORT_ORDER
+
+        mongo, collections = _make_mongo_mock(
+            docs_per_collection={},
+            counts_per_collection={et: 0 for et in BACKUP_ENTITY_ORDER},
+            namespace_config_doc={"prefix": "kb", "description": "kb test"},
+        )
+        engine = DirectBackupEngine(mongo, None, _collect_progress([]))
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveWriter"
+        ) as mock_writer_cls:
+            mock_writer = MagicMock()
+            mock_writer.entity_count = MagicMock(return_value=0)
+            mock_writer_cls.return_value = mock_writer
+            await engine.run_backup("kb", tmp_path / "sorted.zip")
+
+        for entity_type in BACKUP_ENTITY_ORDER:
+            _, coll_name = COLLECTION_MAP[entity_type]
+            coll = collections[coll_name]
+            find_kwargs = coll.find.call_args.kwargs
+            assert find_kwargs.get("allow_disk_use") is True, entity_type
+            sort_spec = coll.find.return_value.sort.call_args.args[0]
+            assert sort_spec == EXPORT_SORT_ORDER[entity_type], entity_type
+
+    @pytest.mark.asyncio
     async def test_skip_documents_omits_documents_phase(self, tmp_path):
         mongo, _ = _make_mongo_mock(
             docs_per_collection={
@@ -548,6 +590,49 @@ class TestUpsertNamespace:
             body = mock_client.put.await_args.kwargs["json"]
             assert body["allowed_external_refs"] == []
             assert body["deletion_mode"] == "retain"
+
+    @pytest.mark.asyncio
+    async def test_fresh_restore_drops_the_source_id_config(self):
+        """A fresh restore re-mints every id, so it must NOT stamp the target
+        with the source's id_config. preserve_id_config=False keeps a prefixed
+        source scheme out of the PUT body, so the target defaults to UUID7
+        instead of re-minting the source's exact prefixed ids and colliding
+        with the live original on the global entry_id index (CASE-784). Every
+        other config field still carries over."""
+        mongo, _ = _make_mongo_mock()
+        engine = DirectRestoreEngine(
+            mongo, None, lambda _: None,
+            registry_base_url="http://registry:8001",
+            registry_api_key="test-key",
+        )
+        config = NamespaceConfig(
+            prefix="src",
+            description="prefixed source",
+            isolation_mode="open",
+            id_config={
+                "documents": {"algorithm": "prefixed", "prefix": "SRC-", "pad": 6}
+            },
+        )
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "ok"
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.put = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+
+            await engine._upsert_namespace(
+                "copy", config, preserve_id_config=False
+            )
+
+            body = mock_client.put.await_args.kwargs["json"]
+            assert "id_config" not in body  # the fix: source scheme not inherited
+            assert body["description"] == "prefixed source"  # rest still carries
+            assert body["isolation_mode"] == "open"
 
     @pytest.mark.asyncio
     async def test_body_omits_fields_absent_from_old_archives(self):
@@ -704,6 +789,8 @@ class TestRunRestoreBasicFlow:
         # ArchiveReader is used as a context manager
         mock_reader = MagicMock()
         mock_reader.read_manifest = MagicMock(return_value=manifest)
+        mock_reader.read_manifest_raw = MagicMock(return_value={})
+        mock_reader.entity_count = MagicMock(return_value=0)
         mock_reader.read_entities = MagicMock(side_effect=lambda et, namespace=None: {
             "terminologies": [{"terminology_id": "T1"}, {"terminology_id": "T2"}],
             "terms": [],
@@ -754,6 +841,8 @@ class TestRunRestoreBasicFlow:
         )
         mock_reader = MagicMock()
         mock_reader.read_manifest = MagicMock(return_value=manifest)
+        mock_reader.read_manifest_raw = MagicMock(return_value={})
+        mock_reader.entity_count = MagicMock(return_value=0)
         mock_reader.__enter__ = MagicMock(return_value=mock_reader)
         mock_reader.__exit__ = MagicMock(return_value=None)
 
@@ -762,3 +851,514 @@ class TestRunRestoreBasicFlow:
             return_value=mock_reader,
         ), pytest.raises(RestoreEngineError, match="not empty"):
             await engine.run_restore(tmp_path / "kb.zip", "kb")
+
+
+class TestRestoreRedirectGuard:
+    """An ID-preserving restore must never write under a different namespace
+    name: the archived entities and registry entries embed the source
+    namespace, so a redirected insert would empty-check one namespace and
+    write records carrying another. The engine rejects the redirect before
+    any precondition or write."""
+
+    def _reader_for(self, namespace: str):
+        manifest = Manifest(
+            format_version="3.0",
+            namespace=namespace,
+            namespace_config=NamespaceConfig(prefix=namespace),
+            counts=EntityCounts(),
+        )
+        mock_reader = MagicMock()
+        mock_reader.read_manifest = MagicMock(return_value=manifest)
+        mock_reader.read_manifest_raw = MagicMock(return_value={})
+        mock_reader.entity_count = MagicMock(return_value=0)
+        mock_reader.list_namespaces = MagicMock(return_value=[namespace])
+        mock_reader.__enter__ = MagicMock(return_value=mock_reader)
+        mock_reader.__exit__ = MagicMock(return_value=None)
+        return mock_reader
+
+    @pytest.mark.asyncio
+    async def test_differing_target_namespace_rejected(self, tmp_path):
+        mongo, _ = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        engine = DirectRestoreEngine(mongo, None, _collect_progress([]))
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=self._reader_for("prod"),
+        ), pytest.raises(RestoreEngineError, match="cannot re-namespace"):
+            await engine.run_restore(tmp_path / "prod.zip", "prod-bak")
+
+    @pytest.mark.asyncio
+    async def test_matching_target_namespace_accepted(self, tmp_path):
+        mongo, _ = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        events = []
+        engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+        reader = self._reader_for("prod")
+        reader.read_entities = MagicMock(return_value=[])
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=reader,
+        ), patch("httpx.AsyncClient") as mock_httpx_cls:
+            ok_resp = MagicMock(status_code=200, text="ok")
+            mock_httpx = MagicMock()
+            mock_httpx.put = AsyncMock(return_value=ok_resp)
+            mock_httpx.__aenter__ = AsyncMock(return_value=mock_httpx)
+            mock_httpx.__aexit__ = AsyncMock(return_value=None)
+            mock_httpx_cls.return_value = mock_httpx
+
+            await engine.run_restore(tmp_path / "prod.zip", "prod")
+
+        assert events[-1].phase == "complete"
+
+
+class TestRunRestoreDryRun:
+    """dry_run runs every precondition, reports would-restore counts, and
+    writes nothing: no namespace upsert, no inserts, no blobs."""
+
+    def _reader(self):
+        manifest = Manifest(
+            format_version="3.0",
+            namespace="kb",
+            namespace_config=NamespaceConfig(prefix="kb", isolation_mode="open"),
+            counts=EntityCounts(terminologies=2, documents=3),
+        )
+        mock_reader = MagicMock()
+        mock_reader.read_manifest = MagicMock(return_value=manifest)
+        mock_reader.read_manifest_raw = MagicMock(return_value={})
+        mock_reader.list_namespaces = MagicMock(return_value=["kb"])
+        mock_reader.list_blobs = MagicMock(return_value=[])
+        # The manifest above has no per-namespace entries, so the dry-run
+        # report falls back to counting archive lines — stub that count.
+        # registry_entries must be non-zero: the identity precondition
+        # (entities without identity rows refuse) runs in dry-run too.
+        mock_reader.entity_count = MagicMock(
+            side_effect=lambda et, namespace="": {
+                "terminologies": 2, "documents": 3, "registry_entries": 2,
+            }.get(et, 0)
+        )
+        mock_reader.__enter__ = MagicMock(return_value=mock_reader)
+        mock_reader.__exit__ = MagicMock(return_value=None)
+        return mock_reader
+
+    @pytest.mark.asyncio
+    async def test_dry_run_writes_nothing_and_reports_counts(self, tmp_path):
+        mongo, collections = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        events = []
+        engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+        reader = self._reader()
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=reader,
+        ), patch("httpx.AsyncClient") as mock_httpx_cls:
+            await engine.run_restore(tmp_path / "kb.zip", "kb", dry_run=True)
+
+        # No namespace upsert (httpx never even instantiated), no entity reads,
+        # no inserts on any collection.
+        assert not mock_httpx_cls.called
+        assert not reader.read_entities.called
+        for coll in collections.values():
+            assert not coll.insert_many.called
+
+        # Preconditions ran, the report names the manifest counts, and the
+        # job completed as a dry run.
+        phases = [e.phase for e in events]
+        assert "phase_validate" in phases
+        report = next(e for e in events if e.phase == "phase_dry_run")
+        assert "terminologies=2" in report.message
+        assert "documents=3" in report.message
+        assert events[-1].phase == "complete"
+        assert "Dry run complete" in events[-1].message
+
+    @pytest.mark.asyncio
+    async def test_dry_run_still_fails_on_non_empty_target(self, tmp_path):
+        counts = {e: 0 for e in BACKUP_ENTITY_ORDER}
+        counts["documents"] = 1
+        mongo, _ = _make_mongo_mock(counts_per_collection=counts)
+        engine = DirectRestoreEngine(mongo, None, _collect_progress([]))
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=self._reader(),
+        ), pytest.raises(RestoreEngineError, match="not empty"):
+            await engine.run_restore(tmp_path / "kb.zip", "kb", dry_run=True)
+
+    @pytest.mark.asyncio
+    async def test_dry_run_respects_skip_flags_in_report(self, tmp_path):
+        mongo, _ = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        events = []
+        engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=self._reader(),
+        ):
+            await engine.run_restore(
+                tmp_path / "kb.zip", "kb",
+                dry_run=True, skip_documents=True, skip_files=True,
+            )
+
+        report = next(e for e in events if e.phase == "phase_dry_run")
+        assert "documents=skipped" in report.message
+        assert "files=skipped" in report.message
+
+
+# ---------------------------------------------------------------------------
+# Composite-key claim rebuild
+# ---------------------------------------------------------------------------
+
+
+class TestClaimDerivation:
+    """Registry entries imply claim rows; claims are the uniqueness gate.
+
+    Derived inline as entries are written — each entry is already in hand at
+    that point, so a namespace-wide re-scan afterwards is pure waste on top of
+    the inserts that are genuinely required.
+    """
+
+    NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
+
+    def test_primary_key_and_every_synonym_are_claimed(self):
+        rows = DirectRestoreEngine._claim_rows_for([{
+            "entry_id": "E1",
+            "namespace": "kb",
+            "entity_type": "templates",
+            "primary_composite_key_hash": "hash-primary",
+            "synonyms": [{
+                "namespace": "kb",
+                "entity_type": "templates",
+                "composite_key_hash": "hash-syn",
+            }],
+        }], self.NOW)
+
+        assert [(r["composite_key_hash"], r["kind"]) for r in rows] == [
+            ("hash-primary", "primary"),
+            ("hash-syn", "synonym"),
+        ]
+        assert {r["owner_entry_id"] for r in rows} == {"E1"}
+        assert {r["state"] for r in rows} == {"confirmed"}
+
+    def test_synonym_claim_uses_the_synonyms_own_scope(self):
+        # A synonym may live in a different namespace/entity_type than the
+        # entry that owns it; the claim key must follow the synonym, or the
+        # gate protects the wrong (namespace, type) pair.
+        rows = DirectRestoreEngine._claim_rows_for([{
+            "entry_id": "E1",
+            "namespace": "kb",
+            "entity_type": "documents",
+            "primary_composite_key_hash": "hash-primary",
+            "synonyms": [{
+                "namespace": "legacy",
+                "entity_type": "terms",
+                "composite_key_hash": "hash-syn",
+            }],
+        }], self.NOW)
+
+        synonym_claim = next(r for r in rows if r["kind"] == "synonym")
+        assert synonym_claim["namespace"] == "legacy"
+        assert synonym_claim["entity_type"] == "terms"
+
+    def test_empty_hashes_are_not_claimed(self):
+        # An empty hash means "this entity opts out of dedup" (legacy template
+        # entries, identity-less documents). The claims unique index exempts
+        # it; so must this, or every such entry collides with the next.
+        rows = DirectRestoreEngine._claim_rows_for([{
+            "entry_id": "E1",
+            "namespace": "kb",
+            "entity_type": "templates",
+            "primary_composite_key_hash": "",
+            "synonyms": [{
+                "namespace": "kb",
+                "entity_type": "templates",
+                "composite_key_hash": "",
+            }],
+        }], self.NOW)
+
+        assert rows == []
+
+
+class TestClaimInsertion:
+    @staticmethod
+    def _engine(*, insert_error=None):
+        mongo, _colls = _make_mongo_mock()
+        claims = mongo[os.environ.get("REGISTRY_DATABASE_NAME", "wip_registry")]["composite_key_claims"]
+        if insert_error is not None:
+            claims.insert_many = AsyncMock(side_effect=insert_error)
+        events: list[ProgressEvent] = []
+        engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+        return engine, claims, events
+
+    @staticmethod
+    def _rows(owner="E1"):
+        return [{
+            "namespace": "kb", "entity_type": "templates",
+            "composite_key_hash": "hash-taken", "owner_entry_id": owner,
+            "kind": "primary", "state": "confirmed",
+        }]
+
+    @staticmethod
+    def _duplicate_error(owner="E1"):
+        return BulkWriteError({
+            "writeErrors": [{
+                "code": 11000,
+                "errmsg": "duplicate key",
+                "index": 0,
+                "op": {
+                    "namespace": "kb",
+                    "entity_type": "templates",
+                    "composite_key_hash": "hash-taken",
+                    "owner_entry_id": owner,
+                },
+            }],
+        })
+
+    @pytest.mark.asyncio
+    async def test_claims_are_inserted_unordered(self):
+        engine, claims, _ = self._engine()
+
+        await engine._insert_claims("kb", self._rows())
+
+        assert claims.insert_many.call_args.kwargs["ordered"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_key_held_by_another_entry_is_counted_as_theirs(self):
+        engine, claims, _ = self._engine(insert_error=self._duplicate_error())
+        claims.find_one = AsyncMock(return_value={"owner_entry_id": "SOMEONE-ELSE"})
+
+        claimed, taken_by_other = await engine._insert_claims("kb", self._rows())
+
+        assert (claimed, taken_by_other) == (0, 1)
+
+    @pytest.mark.asyncio
+    async def test_a_key_this_entry_already_holds_is_not_a_collision(self):
+        # Re-claiming what this entry already owns is the write being
+        # idempotent, not a collision — warning here would cry wolf on every
+        # merge into a namespace that already has claims.
+        engine, claims, _ = self._engine(insert_error=self._duplicate_error())
+        claims.find_one = AsyncMock(return_value={"owner_entry_id": "E1"})
+
+        claimed, taken_by_other = await engine._insert_claims("kb", self._rows())
+
+        assert (claimed, taken_by_other) == (0, 0)
+
+    @pytest.mark.asyncio
+    async def test_non_duplicate_write_error_is_fatal(self):
+        error = BulkWriteError({
+            "writeErrors": [{"code": 121, "errmsg": "document validation failed"}],
+        })
+        engine, _claims, _events = self._engine(insert_error=error)
+
+        with pytest.raises(RestoreEngineError, match="Claim rebuild failed"):
+            await engine._insert_claims("kb", self._rows())
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_claim_touches_nothing(self):
+        engine, claims, _ = self._engine()
+
+        assert await engine._insert_claims("kb", []) == (0, 0)
+        assert not claims.insert_many.called
+
+    def test_only_a_foreign_owner_warns(self):
+        engine, _claims, events = self._engine()
+
+        engine._report_claims("kb", claimed=5, taken_by_other=0)
+        assert [e for e in events if e.phase == "warning"] == []
+
+        engine._report_claims("kb", claimed=0, taken_by_other=2)
+        warning = next(e for e in events if e.phase == "warning")
+        assert "already" in warning.message and "claimed" in warning.message
+
+
+# ---------------------------------------------------------------------------
+# CASE-801 — the archive finalize must not run on the event loop
+# ---------------------------------------------------------------------------
+
+
+class TestFinalizeDoesNotBlockTheEventLoop:
+    """ArchiveWriter.write() compresses the whole archive in one synchronous
+    call whose duration scales with total bytes. Run on the event loop it
+    starves every other task in the process — including the health endpoint,
+    which is how an instance-wide backup took the service out of its ingress
+    for ~2.5 minutes while a 853 MB archive was assembled.
+
+    The guard is behavioural rather than a check that to_thread was called:
+    what matters is that other coroutines still get scheduled while the
+    archive is being written, however that ends up being arranged.
+    """
+
+    @pytest.mark.asyncio
+    async def test_other_coroutines_still_run_while_the_archive_is_written(self, tmp_path):
+        mongo, _ = _make_mongo_mock(
+            docs_per_collection={},
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER},
+            namespace_config_doc={"prefix": "empty", "description": "test"},
+        )
+        engine = DirectBackupEngine(mongo, None, lambda _: None)
+
+        # Stands in for the DEFLATE pass: synchronous, and long enough that a
+        # loop-blocking implementation cannot hide behind scheduler noise.
+        block_s = 0.4
+        write_window: list[float] = []
+
+        def blocking_write(_manifest):
+            write_window.append(time.monotonic())
+            time.sleep(block_s)
+            write_window.append(time.monotonic())
+            return tmp_path / "empty-backup.zip"
+
+        # Stands in for /health being served while the backup finalizes.
+        ticks: list[float] = []
+
+        async def heartbeat():
+            while True:
+                ticks.append(time.monotonic())
+                await asyncio.sleep(0.02)
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveWriter"
+        ) as mock_writer_cls:
+            mock_writer = MagicMock()
+            mock_writer.entity_count = MagicMock(return_value=0)
+            mock_writer.write = blocking_write
+            mock_writer_cls.return_value = mock_writer
+
+            beat = asyncio.create_task(heartbeat())
+            await asyncio.sleep(0)  # let the heartbeat reach its first await
+            try:
+                await engine.run_backup("empty", tmp_path / "empty-backup.zip")
+            finally:
+                beat.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await beat
+
+        assert len(write_window) == 2, "the stubbed writer did not run"
+        started, ended = write_window
+        during = [t for t in ticks if started <= t <= ended]
+        # With write() on the loop this is 0: nothing else can be scheduled
+        # for the whole compression. The bound is deliberately loose — the
+        # claim is "the loop kept turning", not a throughput figure.
+        assert len(during) >= 3, (
+            f"the event loop was starved while the archive was written: "
+            f"{len(during)} heartbeat tick(s) in {ended - started:.2f}s"
+        )
+
+
+class TestRestoreIdentityPrecondition:
+    """An archive with entity rows but no registry identity rows restores
+    into a namespace where nothing resolves by id — every list surface looks
+    healthy while point reads fail, and post-restore integrity validation
+    cannot see it (it checks MongoDB against itself; identity lives in the
+    Registry). The engine refuses up front unless explicitly overridden."""
+
+    def _reader(self, *, registry_rows: int, raw_manifest: dict | None = None):
+        manifest = Manifest(
+            format_version="3.0",
+            namespace="kb",
+            namespace_config=NamespaceConfig(prefix="kb", isolation_mode="open"),
+            counts=EntityCounts(terminologies=2),
+        )
+        mock_reader = MagicMock()
+        mock_reader.read_manifest = MagicMock(return_value=manifest)
+        mock_reader.read_manifest_raw = MagicMock(
+            return_value=raw_manifest or {}
+        )
+        mock_reader.entity_count = MagicMock(
+            side_effect=lambda et, namespace=None: {
+                "terminologies": 2,
+                "registry_entries": registry_rows,
+            }.get(et, 0)
+        )
+        mock_reader.read_entities = MagicMock(side_effect=lambda et, namespace=None: {
+            "terminologies": [{"terminology_id": "T1"}, {"terminology_id": "T2"}],
+        }.get(et, []))
+        mock_reader.__enter__ = MagicMock(return_value=mock_reader)
+        mock_reader.__exit__ = MagicMock(return_value=None)
+        return mock_reader
+
+    def _httpx_ok(self):
+        ok_resp = MagicMock(status_code=200, text="ok")
+        mock_httpx = MagicMock()
+        mock_httpx.put = AsyncMock(return_value=ok_resp)
+        mock_httpx.__aenter__ = AsyncMock(return_value=mock_httpx)
+        mock_httpx.__aexit__ = AsyncMock(return_value=None)
+        return mock_httpx
+
+    @pytest.mark.asyncio
+    async def test_refuses_entities_without_identity_rows(self, tmp_path):
+        mongo, _ = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        events: list[ProgressEvent] = []
+        engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=self._reader(registry_rows=0),
+        ), pytest.raises(RestoreEngineError, match="no registry identity rows"):
+            await engine.run_restore(tmp_path / "kb.zip", "kb")
+
+    @pytest.mark.asyncio
+    async def test_override_completes_with_warning(self, tmp_path):
+        mongo, _ = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        events: list[ProgressEvent] = []
+        engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=self._reader(registry_rows=0),
+        ), patch("httpx.AsyncClient", return_value=self._httpx_ok()):
+            await engine.run_restore(
+                tmp_path / "kb.zip", "kb", allow_missing_identity=True
+            )
+
+        warnings = [e.message for e in events if e.phase == "warning"]
+        assert any("NO registry identity rows" in w for w in warnings)
+        assert events[-1].phase == "complete"
+
+    @pytest.mark.asyncio
+    async def test_identity_rows_present_passes_silently(self, tmp_path):
+        mongo, _ = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        events: list[ProgressEvent] = []
+        engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=self._reader(registry_rows=2),
+        ), patch("httpx.AsyncClient", return_value=self._httpx_ok()):
+            await engine.run_restore(tmp_path / "kb.zip", "kb")
+
+        assert not [e for e in events if e.phase == "warning"]
+        assert events[-1].phase == "complete"
+
+    @pytest.mark.asyncio
+    async def test_derived_manifest_marker_surfaces_warning(self, tmp_path):
+        """A derived_from key is unknown to the Manifest model (extras are
+        ignored), so the engine reads the raw manifest to surface it."""
+        mongo, _ = _make_mongo_mock(
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER}
+        )
+        events: list[ProgressEvent] = []
+        engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+
+        raw = {"derived_from": {"transforms": ["filter-templates"]}}
+        with patch(
+            "document_store.services.backup_engine.ArchiveReader",
+            return_value=self._reader(registry_rows=2, raw_manifest=raw),
+        ), patch("httpx.AsyncClient", return_value=self._httpx_ok()):
+            await engine.run_restore(tmp_path / "kb.zip", "kb")
+
+        warnings = [e.message for e in events if e.phase == "warning"]
+        assert any("DERIVED" in w for w in warnings)
+        assert events[-1].phase == "complete"

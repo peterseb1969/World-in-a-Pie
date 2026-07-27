@@ -208,7 +208,7 @@ async def create_api_key(
 )
 async def list_api_keys(
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Items per page (max 100)"),
+    page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     _admin: str = Depends(require_admin_key),
 ) -> APIKeyListResponse:
     """List all API keys (config + runtime) with pagination.
@@ -221,7 +221,7 @@ async def list_api_keys(
     results: list[APIKeyResponse] = []
 
     # Config-file keys
-    for record in provider._keys:
+    for record in provider.iter_keys():
         if record.name in _config_key_names:
             results.append(_config_key_to_response(record))
 
@@ -291,7 +291,7 @@ async def get_api_key(
 
     # Check config keys first
     if name in _config_key_names:
-        for record in provider._keys:
+        for record in provider.iter_keys():
             if record.name == name:
                 return _config_key_to_response(record)
 

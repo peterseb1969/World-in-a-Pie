@@ -5,6 +5,7 @@ A document storage and validation service for the World In a Pie system.
 Validates documents against templates and manages document versioning.
 """
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -13,10 +14,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import (
-    declare_api_key_security,
+    HealthCache,
     RejectUnknownQueryParamsMiddleware,
     build_metadata,
     check_production_security,
+    declare_api_key_security,
     init_beanie_with_retry,
     setup_auth,
     setup_key_sync,
@@ -318,62 +320,83 @@ async def root():
     }
 
 
+# Dependency probes are cached for the container-lifecycle probe path, which
+# is hit every 10s (readiness) and 30s (liveness) but only ever has its HTTP
+# status code read. This is the widest fan-out in the platform — one
+# uncached call opens eight outbound connections, counting the chains its
+# peers run in turn. The api-prefixed route below asks for a fresh value, so
+# a human reading the body never sees a stale dependency.
+_health_cache: HealthCache[dict[str, str]] = HealthCache()
+
+
+async def _mongo_status() -> str:
+    try:
+        await app.state.mongodb_client.admin.command('ping')
+        return "connected"
+    except Exception as e:
+        import logging
+        logging.getLogger("document_store.health").error("Health check failed: %s", e)
+        return "error"
+
+
+async def _file_storage_status() -> str:
+    if not is_file_storage_enabled():
+        return "disabled"
+    return "connected" if await get_file_storage_client().health_check() else "error"
+
+
+async def _probe_dependencies() -> dict[str, str]:
+    """Derive the dependency half of the health response.
+
+    Concurrent, not sequential: these checks are independent, and run one
+    after another their timeouts ADD — two independent 5s DNS stalls once
+    produced a single 10.272s response, against a 5s probe budget.
+    """
+    mongo, registry_ok, template_ok, def_ok, nats_ok, storage = await asyncio.gather(
+        _mongo_status(),
+        get_registry_client().health_check(),
+        get_template_store_client().health_check(),
+        get_def_store_client().health_check(),
+        nats_health_check(),
+        _file_storage_status(),
+    )
+    return {
+        "database": mongo,
+        "registry": "connected" if registry_ok else "disconnected",
+        "template_store": "connected" if template_ok else "disconnected",
+        "def_store": "connected" if def_ok else "disconnected",
+        "nats": "connected" if nats_ok else "disabled",
+        "file_storage": storage,
+    }
+
+
 # Health check endpoint
 @app.get("/health", tags=["Health"])
-async def health_check():
+async def health_check(fresh: bool = False):
     """
     Health check endpoint.
 
     Verifies MongoDB, Registry, Template Store, and Def-Store connectivity.
     """
-    try:
-        # Ping MongoDB
-        await app.state.mongodb_client.admin.command('ping')
-        mongo_status = "connected"
-    except Exception as e:
-        import logging
-        logging.getLogger("document_store.health").error("Health check failed: %s", e)
-        mongo_status = "error"
+    deps = await _health_cache.get(_probe_dependencies, force=fresh)
 
-    # Check Registry
-    registry_client = get_registry_client()
-    registry_status = "connected" if await registry_client.health_check() else "disconnected"
-
-    # Check Template Store
-    template_store_client = get_template_store_client()
-    template_store_status = "connected" if await template_store_client.health_check() else "disconnected"
-
-    # Check Def-Store
-    def_store_client = get_def_store_client()
-    def_store_status = "connected" if await def_store_client.health_check() else "disconnected"
-
-    # Check NATS (optional)
-    nats_status = "connected" if await nats_health_check() else "disabled"
-
-    # Check file storage (optional)
-    if is_file_storage_enabled():
-        file_storage_client = get_file_storage_client()
-        file_storage_status = "connected" if await file_storage_client.health_check() else "error"
-    else:
-        file_storage_status = "disabled"
-
-    status = "healthy" if mongo_status == "connected" else "unhealthy"
+    status = "healthy" if deps["database"] == "connected" else "unhealthy"
 
     return {
         "status": status,
-        "database": mongo_status,
-        "registry": registry_status,
-        "template_store": template_store_status,
-        "def_store": def_store_status,
-        "nats": nats_status,
-        "file_storage": file_storage_status,
+        **deps,
     }
+
+
+async def health_check_fresh():
+    """Uncached health for callers that read the body (CASE-808)."""
+    return await health_check(fresh=True)
 
 
 # Also expose /health under the api-prefix so external callers through
 # Caddy can reach it. Root /health stays for direct container probes.
 app.add_api_route(
-    "/api/document-store/health", health_check, methods=["GET"], tags=["Health"]
+    "/api/document-store/health", health_check_fresh, methods=["GET"], tags=["Health"]
 )
 
 

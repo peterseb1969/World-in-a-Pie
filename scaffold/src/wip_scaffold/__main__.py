@@ -25,6 +25,7 @@ from .surfaces import (
     app_surfaces,
     backend_surfaces,
     bootstrap_surface,
+    archive_wheel_surface,
     client_lib_surface,
     env_surface,
     mcp_json_surface,
@@ -71,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--lib-react", default="")
     a.add_argument("--lib-proxy", default="")
     a.add_argument("--toolkit-wheel", default="")
+    a.add_argument("--archive-wheel", default="")
     a.add_argument("--write-env", action="store_true")
     _add_mcp_args(a)
 
@@ -123,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
                 surfaces.append(client_lib_surface(lib, path))
         if args.toolkit_wheel:
             surfaces.append(toolkit_surface(args.toolkit_wheel))
+        if args.archive_wheel:
+            surfaces.append(archive_wheel_surface(args.archive_wheel))
         if args.seed_bootstrap:
             surfaces.append(bootstrap_surface())
         if args.write_env:

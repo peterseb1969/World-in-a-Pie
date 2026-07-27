@@ -138,21 +138,28 @@ Safety guards on `deletion_mode`:
 - Creating a new namespace with `deletion_mode='full'` is allowed
   directly (no transition to confirm).
 
-### Template create with conflict validation: POST /templates?on_conflict=validate
-Adds a query parameter to control collision behavior on (namespace, value):
-- on_conflict='error' (default): collisions return per-item status='error',
-  preserving the existing behavior.
-- on_conflict='validate':
-  * identical schema → status='unchanged' (returns existing template_id/version)
-  * compatible schema → status='updated', is_new_version=true, version=N+1
-    (compatible = added optional field only — anything else is incompatible)
-  * incompatible schema → status='error', error_code='incompatible_schema',
-    details={added_required, removed, changed_type, made_required,
-    modified_existing, identity_changed}
+### Template create is an upsert: POST /templates
+The template's identity is its name — creating an existing (namespace, value)
+is a version event, exactly like a document upsert (same identity → new
+version). Per item:
+  * no existing value → status='created' (version 1)
+  * fully identical re-post → status='unchanged' (returns existing
+    template_id/version — the idempotent bootstrap re-run, no parameter needed)
+  * any difference (schema or label/description/metadata) → status='updated',
+    is_new_version=true, version=N+1, with the structured schema diff in
+    details={added_optional, added_required, removed, changed_type,
+    made_required, modified_existing} as the loud report — never blocking
+  * identity-bearing or immutable differences are rejected per item instead
+    of versioned: identity_fields differ → error_code=
+    'identity_fields_immutable' (changing identity is a fork — declare a new
+    template value); usage / versioned / edge endpoint lists differ →
+    error_code='immutable_property'
 
-The narrow compatibility rule is intentional: silent guardrails are worse than
-loud ones. If the bootstrap script wants to evolve the template in a way the
-platform considers incompatible, it must explicitly bump the version itself.
+The on_conflict query parameter is deprecated: it is still accepted
+('error' | 'validate') but no longer selects behavior — every create upserts.
+Versioning is loud, not silent: read the per-item status and details. To
+evolve a schema deliberately, just re-POST the full new declaration; to
+change identity or immutable properties, create a new template value.
 
 Reference comparison: terminology_ref, template_ref, target_templates,
 target_terminologies, array_terminology_ref, array_template_ref (and the
@@ -184,10 +191,14 @@ Two primary query tools:
 - query_by_template(template_value, field_filters) — the most common way to
   query documents. Filters on field values, auto-resolves template_value to ID.
 - run_report_query(sql, namespace=...) — raw SQL against the PostgreSQL reporting
-  tables. Each namespace is its own PostgreSQL schema; a table is
-  "<namespace>"."doc_<value>". Pass namespace so unqualified names like doc_patient
-  resolve in that schema, or schema-qualify for cross-namespace queries. Use for
-  cross-template JOINs, aggregations, and complex analytics.
+  layer. Each namespace is its own PostgreSQL schema. The default query surface
+  per template is the entity view "<namespace>"."doc_<value>"; physical rows
+  live in per-version tables doc_<value>__v<N> (one per template version, each
+  shaped by its version's own fields — a NULL means "submitted empty", never
+  "field not in this schema version"). Pass namespace so unqualified names like
+  doc_patient resolve in that schema, or schema-qualify for cross-namespace
+  queries. Use for cross-template JOINs, aggregations, and complex analytics;
+  list_report_tables shows each entity's versions and views.
 
 For a spreadsheet-like view: get_table_view(template_value).
 For CSV export: export_table_csv(template_value).
@@ -235,6 +246,22 @@ The same create_document tool handles both — it's an upsert.
 ### Terms
 - (namespace, terminology_id, value) — unique within terminology
 
+### Term Addressing Is Strict
+A term's identity is the tuple (namespace, terminology, value). Wherever a
+term identifier is expected, exactly three forms are accepted:
+- the canonical UUID
+- the fully qualified 'ns:terminology:value' string (split on the first
+  two colons, so the value keeps any colons it contains)
+- the field form: a `terminology` parameter scoping the raw value, which
+  is then treated as OPAQUE and never colon-parsed
+
+The 2-part 'TERMINOLOGY:VALUE' shorthand is REJECTED with 422 on every
+term endpoint, reads and writes alike: a value that itself contains ':'
+(OBO ids like GO:0000278) is indistinguishable from it, so the shorthand
+can silently select a term in the wrong terminology. Prefer the field
+form when addressing terms by value. This is a term-specific carve-out —
+other entity types keep their 'NS:VALUE' qualified form.
+
 ## Namespaces & Authorization
 
 All entities are scoped to a namespace.
@@ -253,7 +280,33 @@ Cross-namespace term references work without grants on the referenced namespace.
 Shared vocabularies (in "wip") are the common language — you need a grant to
 list or modify a namespace's data, but not to reference its terms.
 
-Reference validation runs at document creation, not template creation.
+**Being permitted is not the same as being addressable.** allowed_external_refs
+decides WHETHER a namespace may be referenced; the identifier decides WHICH
+namespace is meant, and it is resolved independently:
+
+- a **bare value** always resolves in the caller's OWN namespace, whatever
+  allowed_external_refs permits — it never falls back to a permitted namespace;
+- **`NS:VALUE`** names the namespace explicitly and is the only value form that
+  crosses one;
+- a **canonical UUID** needs no namespace and crosses freely.
+
+So a template in `library` declaring `array_terminology_ref: "KB_TOPIC"` fails
+even when `library` permits `kb` and `kb` defines `KB_TOPIC` — the reference is
+allowed, but the identifier says "my own namespace". Write `"kb:KB_TOPIC"`.
+Bare is deliberate: with two permitted namespaces both defining a value, a bare
+value would be ambiguous, and the explicit prefix removes the ambiguity rather
+than guessing. (Terms are the exception — see "Term Addressing Is Strict"; they
+take `ns:terminology:value`, three parts, not two.)
+
+For a seed that must run on instances whose namespace names differ, substitute
+the prefix from your own config at bootstrap rather than hardcoding it — the
+namespace name is deployment-configurable, so a literal prefix is as unportable
+as a literal UUID.
+
+Reference validation — that the referent EXISTS and is active — runs at document
+creation, not template creation. Identifier RESOLUTION is a separate step and
+does run at template creation: an unresolvable reference fails the create
+outright, which is why the rule above bites there first.
 
 Relationship (edge) documents are the exception: allowed_external_refs
 governs plain reference fields only. An edge document's source_ref and
@@ -285,9 +338,11 @@ Terms can be connected via typed relations to model hierarchies and
 associations. This is powerful for taxonomies, classification trees, org charts,
 part-of-whole relations, and any domain with inherent structure.
 
-Available relation types: is_a, part_of, has_part, regulates,
-positively_regulates, negatively_regulates. Custom types can be added via the
-_ONTOLOGY_RELATIONSHIP_TYPES terminology.
+Seeded relation types (defaults, NOT a fixed set): is_a, has_subtype, part_of,
+has_part, maps_to, mapped_from, related_to, finding_site, causative_agent,
+regulates, positively_regulates, negatively_regulates. These are a seeded
+baseline — apps can add their own types to the _ONTOLOGY_RELATIONSHIP_TYPES
+terminology, and OBO Graph import auto-creates any type it references.
 
 Key tools:
 - create_term_relations — connect terms (e.g., "Cat is_a Animal")
@@ -314,7 +369,9 @@ and "full" presets, not in "core"). Data syncs within seconds of document change
 
 ## Template Cache
 Template changes may take up to 5 seconds to propagate (cache TTL on "latest"
-resolution). Lookups by explicit version are cached permanently (immutable).
+resolution). The schema for an explicit (pinned) version is immutable, but its active/inactive
+status is not — a deactivate/reactivate still propagates within ~5s, so a
+pinned-version lookup's status is not cached forever.
 If a template update seems to have no effect, wait or pass the explicit version.
 
 ## Namespace-Config Cache
@@ -324,8 +381,12 @@ namespace's allow-list, a retried write may still be rejected for up to 5
 seconds — wait and retry, no service restart needed.
 
 ## Pagination
-Default page_size: 50, max: 100. List responses include a `pages` field
-(computed as ceil(total / page_size)).
+Uniform across list endpoints: default page_size 50, maximum 1000. Two
+deliberate deviations: the document relationships endpoint caps at 500
+(with include=peers each row fans out into a peer projection), and table
+view defaults to 100 rows (cheap flat projections on a spreadsheet-like
+surface). List responses include a `pages` field (computed as
+ceil(total / page_size)).
 """
 
 
@@ -343,6 +404,11 @@ A terminology is a controlled vocabulary (e.g., COUNTRY, GENDER, DIAGNOSIS_CODE)
 A term is an entry in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).
 - Fields: value (unique within terminology), label, aliases, description
 - Terms can have ontology relations (see Ontology section below)
+- Addressing: term identifiers accept a canonical UUID, the fully
+  qualified 'ns:terminology:value' form, or a terminology-scoped opaque
+  value (field form). The 2-part 'TERMINOLOGY:VALUE' shorthand is
+  rejected on all term endpoints — see the conventions resource,
+  "Term Addressing Is Strict".
 - Documents store both the original value AND the resolved term_id
 - Inactive terms are rejected in new documents (enforced by validation)
 
@@ -387,8 +453,8 @@ A reference field's reference_type determines what it points to:
 - **terminology**: references a terminology itself (rare — for meta-schemas or config)
 - **template**: references a template (e.g., for typed document-to-template links)
 
-For term references, set terminology_ref to the terminology_id it draws from.
-For document references, set template_ref to constrain which template's documents are valid.
+For term references (reference_type: term), set target_terminologies to the terminology_id(s) it may draw from.
+For document references (reference_type: document), set target_templates to constrain which templates' documents are valid.
 
 ### File Field Configuration
 - allowed_types: MIME type patterns (e.g., ["image/*", "application/pdf"])
@@ -396,8 +462,8 @@ For document references, set template_ref to constrain which template's document
 - multiple: allow multiple files; max_files sets the limit
 
 ### Array Field Configuration
-- array_item_type: string, number, integer, boolean, date, datetime, term, object, or reference
-- array_terminology_ref / array_template_ref for typed array items (term / object)
+- array_item_type: string, number, integer, boolean, date, datetime, term, object, reference, or file
+- array_terminology_ref / array_template_ref / array_file_config for typed array items (term / object / file)
 - For array_item_type "reference", the field carries its reference config in the
   field's own reference_type / target_templates / target_terminologies /
   version_strategy slots (the same slots a single reference field uses), and each
@@ -442,6 +508,17 @@ A document is an instance of a template — a filled-in form.
 - identity_fields (defined on template) control what makes a document "the same"
 - Zero identity fields = append-only (every POST creates a new document; PATCH is rejected with `append_only`)
 
+### Document timestamps
+- `created_at` is the ENTITY's creation time — when version 1 was written. It is
+  carried forward onto every later version, so it does not move when a document
+  is edited, and it is the field to sort or display "when was this created".
+- `updated_at` is when THIS version row was written. On a fresh document the two
+  are equal; after any edit `updated_at` is later.
+- Version history (`GET /documents/{id}/versions`) reports the same `created_at`
+  on every row (it is the entity's) — read `updated_at` there to see when each
+  individual version was written.
+- Both are also reporting columns, with the same meanings.
+
 ## Files
 Binary files stored in MinIO, referenced by documents.
 - Upload returns a file_id (UUID7 format)
@@ -462,7 +539,8 @@ This enables cross-system integration without mapping tables.
 
 ## Ontology Relations
 Terms can be connected via typed relations:
-- Types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates
+- Types (seeded defaults, not a fixed set): is_a, has_subtype, part_of, has_part, maps_to, mapped_from, related_to, finding_site, causative_agent, regulates, positively_regulates, negatively_regulates
+- Extensible: apps can add their own relation types to _ONTOLOGY_RELATIONSHIP_TYPES; OBO Graph import auto-creates any type it references
 - Fields: source_term_id, target_term_id, relation_type
 - Supports traversal: ancestors, descendants, parents, children
 - Supports OBO Graph JSON import for bulk relation loading
@@ -593,7 +671,10 @@ record is PERMANENTLY removed, and existing references to it will NOT
 resolve. Trap addendum: in a "full"-mode namespace, do not assume an old
 reference still resolves — it may be gone for real. Independent smaller
 deviations: mutable-terminology terms and binary files are hard-deletable
-regardless of deletion_mode.
+regardless of deletion_mode. One more, privileged and internal: a
+trusted-service rollback primitive (wip-admins/wip-services only) can
+hard-delete a just-reserved, uncommitted entry bypassing the deletion_mode
+gate — a crash-recovery cleanup, not an agent-facing verb.
 
 ## 2. Template Versioning — Update Does NOT Replace
 Updating a template creates a new version. The OLD version stays active.
@@ -607,10 +688,10 @@ Rule: After updating, deactivate the old version with deactivate_template()
 
 Corollary: Existing documents survive template updates unchanged. The
       identity_hash scopes to template_id (PoNIF #3), and template_id is
-      canonical — stable across versions. This is the exception to WIP's
-      "new version → new ID" pattern: templates carry ONE id across all
-      their versions, so existing docs remain matchable through future
-      template updates. Add a non-identity field to a template, re-mirror
+      canonical — stable across versions. Stable-ID-across-versions is
+      the NORM for WIP's versioned entities (documents and templates both
+      keep one canonical ID with integer version coordinates), so
+      existing docs remain matchable through future template updates. Add a non-identity field to a template, re-mirror
       an existing doc with the same identity values, and you get an UPDATE
       (new doc version, populated new field) rather than a CREATE — no
       data migration step needed, just a backfill pass.
@@ -629,12 +710,15 @@ Moving a cohort forward: the corollary handles ADDITIVE changes
       identity-changing move is a FORK (create new docs), not a migrate, and is
       rejected.
 
-v2 caveat: the planned v2 template-ID redesign (docs/design/v2-index.md)
-      is planning to make template_id version-specific and route logical
-      identity through (namespace, template_value). The corollary HOLDS in both v1 and v2
-      — identity stays stable across schema updates by design — but the
-      mechanism changes. Code that names template_id as the canonical
-      handle will need a rename pass when v2 lands.
+v2 status: the template-identity redesign
+      (docs/design/template-identity-unification.md) decided AGAINST
+      per-version template IDs — template_id stays the stable canonical
+      handle, mirroring documents (versions are coordinates on an entity,
+      not entities). What changed instead: the template's identity
+      (namespace, value) is registered with the Registry as a real
+      composite key, and template create is an upsert (same name → new
+      version; identical schema → unchanged). The corollary holds
+      unchanged; no rename pass is coming.
 
 ## 3. Document Identity — The Hash Decides
 Templates define identity_fields. WIP hashes them to decide: same hash = new
@@ -671,7 +755,7 @@ just receive the new field's value on next backfill.
 
 ## 4. Bulk-First — 200 OK Always
 All WIP write APIs return HTTP 200 even when individual items fail. Per-item
-status is in results[i].status (created, updated, error, skipped).
+status is in results[i].status (created, updated, unchanged, skipped, error).
 
 Trap: You check the HTTP status, see 200, and assume success. Meanwhile,
       items silently failed validation inside the response body.
@@ -1397,10 +1481,19 @@ async def list_terminologies(
 
 
 @mcp.tool()
-async def get_terminology(terminology_id: str) -> str:
-    """Get a terminology by ID or value (e.g., 'COUNTRY' or UUID)."""
+async def get_terminology(terminology_id: str, namespace: str | None = None) -> str:
+    """Get a terminology by ID or value (e.g., 'COUNTRY' or UUID).
+
+    Args:
+        terminology_id: Terminology ID (UUID) or value code.
+        namespace: Namespace for value-form lookup (required with
+            multi-namespace or privileged keys; single-namespace keys
+            derive it). An unscoped value that exists in several
+            namespaces is rejected as ambiguous, never resolved to an
+            arbitrary namespace's copy.
+    """
     try:
-        data = await get_client().get_terminology(terminology_id)
+        data = await get_client().get_terminology(terminology_id, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1578,12 +1671,18 @@ async def list_terms(
     search: str | None = None,
     page: int = 1,
     page_size: int = 50,
+    namespace: str | None = None,
 ) -> str:
     """List terms in a terminology. Use search to filter by value/label/alias.
 
     Args:
         terminology_id: Terminology ID (UUID) or value (e.g., 'COUNTRY').
         search: Optional search string to filter terms.
+        namespace: Namespace for value-form lookup (required with
+            multi-namespace or privileged keys; single-namespace keys
+            derive it). An unscoped value that exists in several
+            namespaces is rejected as ambiguous, never resolved to an
+            arbitrary namespace's copy.
     """
     try:
         data = await get_client().list_terms(
@@ -1591,6 +1690,7 @@ async def list_terms(
             search=search,
             page=page,
             page_size=page_size,
+            namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1598,16 +1698,26 @@ async def list_terms(
 
 
 @mcp.tool()
-async def get_term(term_id: str, namespace: str | None = None) -> str:
-    """Get a term by ID, value (e.g., 'STATUS:approved'), or synonym.
+async def get_term(
+    term_id: str, namespace: str | None = None, terminology: str | None = None
+) -> str:
+    """Get a term by canonical UUID, qualified value, or field form.
 
     Args:
-        term_id: Term ID, value, or synonym.
+        term_id: Canonical UUID, fully qualified 'ns:terminology:value',
+            or — with terminology set — the OPAQUE raw term value (never
+            colon-parsed). The 2-part 'TERMINOLOGY:VALUE' shorthand is
+            rejected (422): a value that itself contains ':' (OBO ids
+            like GO:0000278) cannot be distinguished from it.
         namespace: Namespace for value/synonym resolution (required with
             multi-namespace or privileged keys; single-namespace keys derive it).
+        terminology: Terminology scoping a value-form identifier — the
+            preferred way to address a term by value.
     """
     try:
-        data = await get_client().get_term(term_id, namespace=namespace)
+        data = await get_client().get_term(
+            term_id, namespace=namespace, terminology=terminology
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1672,15 +1782,22 @@ async def update_term(
     description: str | None = None,
     sort_order: int | None = None,
     namespace: str | None = None,
+    terminology: str | None = None,
 ) -> str:
     """Update a term's label, aliases, description, or sort order.
 
     Args:
-        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
+        term_id: Canonical UUID, fully qualified 'ns:terminology:value',
+            or — with terminology set — the OPAQUE raw term value (never
+            colon-parsed). The ambiguous 2-part 'TERMINOLOGY:VALUE'
+            shorthand is rejected (422) on write doors: it could silently
+            select the wrong term when the value contains ':'.
         label: New label (optional).
         aliases: New aliases list (optional). Replaces existing aliases.
         description: New description (optional).
         sort_order: New sort order (optional).
+        terminology: Terminology scoping a value-form term_id — the
+            preferred way to address a term by value.
     """
     try:
         updates: dict = {}
@@ -1694,7 +1811,9 @@ async def update_term(
             updates["sort_order"] = sort_order
         if not updates:
             return "Error: Provide at least one field to update."
-        data = await get_client().update_term(term_id, updates, namespace=namespace)
+        data = await get_client().update_term(
+            term_id, updates, namespace=namespace, terminology=terminology,
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1703,6 +1822,7 @@ async def update_term(
 @mcp.tool()
 async def delete_term(
     term_id: str, hard_delete: bool = False, namespace: str | None = None,
+    terminology: str | None = None,
 ) -> str:
     """Delete a term. Soft-delete (deactivate) by default.
     Terms in mutable terminologies are always hard-deleted.
@@ -1710,12 +1830,19 @@ async def delete_term(
     (requires namespace deletion_mode='full').
 
     Args:
-        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
+        term_id: Canonical UUID, fully qualified 'ns:terminology:value',
+            or — with terminology set — the OPAQUE raw term value (never
+            colon-parsed). The ambiguous 2-part 'TERMINOLOGY:VALUE'
+            shorthand is rejected (422) on write doors: it could silently
+            delete the wrong term when the value contains ':'.
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
+        terminology: Terminology scoping a value-form term_id — the
+            preferred way to address a term by value.
     """
     try:
         data = await get_client().delete_term(
             term_id, hard_delete=hard_delete, namespace=namespace,
+            terminology=terminology,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1728,6 +1855,7 @@ async def deprecate_term(
     reason: str,
     replaced_by_term_id: str | None = None,
     namespace: str | None = None,
+    terminology: str | None = None,
 ) -> str:
     """Deprecate a term with a reason and optional replacement pointer.
 
@@ -1736,15 +1864,23 @@ async def deprecate_term(
     has been replaced by a better term.
 
     Args:
-        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
+        term_id: Canonical UUID, fully qualified 'ns:terminology:value',
+            or — with terminology set — the OPAQUE raw term value (never
+            colon-parsed). The ambiguous 2-part 'TERMINOLOGY:VALUE'
+            shorthand is rejected (422) on write doors.
         reason: Reason for deprecation (e.g., 'Merged with COUNTRY').
-        replaced_by_term_id: Replacement term ID, value, or synonym (optional).
+        replaced_by_term_id: Replacement term (optional); same accepted
+            forms as term_id. The terminology scope applies to it too —
+            a replacement in a DIFFERENT terminology must be a UUID or
+            fully qualified.
+        terminology: Terminology scoping value-form identifiers — the
+            preferred way to address terms by value.
     """
     try:
         data = await get_client().deprecate_term(
             term_id=term_id, reason=reason,
             replaced_by_term_id=replaced_by_term_id,
-            namespace=namespace,
+            namespace=namespace, terminology=terminology,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1763,11 +1899,15 @@ async def get_term_hierarchy(
     relation_type: str | None = None,
     max_depth: int = 10,
     namespace: str | None = None,
+    terminology: str | None = None,
 ) -> str:
     """Traverse ontology relations for a term.
 
     Args:
-        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
+        term_id: Canonical UUID, fully qualified 'ns:terminology:value',
+            or — with terminology set — the OPAQUE raw term value (never
+            colon-parsed). The 2-part 'TERMINOLOGY:VALUE' shorthand is
+            rejected (422).
         direction: One of 'children', 'parents', 'ancestors', 'descendants'.
         relation_type: Relation type to follow (is_a, part_of, has_part, etc.).
             Defaults to is_a. Exactly one type is followed per call — there is
@@ -1775,16 +1915,19 @@ async def get_term_hierarchy(
         max_depth: Max traversal depth, for ancestors/descendants only.
             children/parents are direct neighbors (always depth 1).
         namespace: Namespace to query in. Omit to use server default.
+        terminology: Terminology scoping a value-form term_id (see term_id).
     """
     try:
         client = get_client()
         if direction == "children":
             data = await client.get_term_children(
                 term_id, relation_type=relation_type, namespace=namespace,
+                terminology=terminology,
             )
         elif direction == "parents":
             data = await client.get_term_parents(
                 term_id, relation_type=relation_type, namespace=namespace,
+                terminology=terminology,
             )
         elif direction == "ancestors":
             data = await client.get_term_ancestors(
@@ -1792,6 +1935,7 @@ async def get_term_hierarchy(
                 relation_type=relation_type,
                 max_depth=max_depth,
                 namespace=namespace,
+                terminology=terminology,
             )
         elif direction == "descendants":
             data = await client.get_term_descendants(
@@ -1799,6 +1943,7 @@ async def get_term_hierarchy(
                 relation_type=relation_type,
                 max_depth=max_depth,
                 namespace=namespace,
+                terminology=terminology,
             )
         else:
             return "Error: direction must be children, parents, ancestors, or descendants"
@@ -1815,17 +1960,33 @@ async def create_term_relations(
     """Create ontology relations between terms.
 
     Args:
-        relations: List of {source_term_id, target_term_id, relation_type}.
-            source_term_id: Term ID, value (e.g., 'ALZHEIMERS_DISEASE'), or synonym.
-            target_term_id: Term ID, value (e.g., 'NEUROLOGY'), or synonym.
-            relation_type: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
+        term_relations: List of {source_term_id, target_term_id,
+            relation_type} plus optional per-item source_terminology /
+            target_terminology.
+            source_term_id / target_term_id: canonical UUID, bare
+                colon-free value (e.g., 'ALZHEIMERS_DISEASE'), fully
+                qualified 'ns:terminology:value', or — with the matching
+                per-item terminology field set — the OPAQUE raw value
+                (never colon-parsed). The ambiguous 2-part
+                'TERMINOLOGY:VALUE' shorthand is rejected (422): a
+                wrong-hit here would create an edge between wrong terms.
+            source_terminology / target_terminology: terminology scoping
+                the respective endpoint's value form — per-item because
+                an edge's two endpoints may live in different
+                terminologies.
+            relation_type: seeded defaults (not a fixed set — apps can add more,
+                OBO import auto-creates any type it references): is_a, has_subtype,
+                part_of, has_part, maps_to, mapped_from, related_to, finding_site,
+                causative_agent, regulates, positively_regulates, negatively_regulates.
         namespace: Namespace to create in. Omit to use server default.
 
     Example:
         create_term_relations([{
-            "source_term_id": "ALZHEIMERS_DISEASE",
+            "source_term_id": "GO:0000228",
+            "source_terminology": "GO_SLIM",
             "relation_type": "is_a",
-            "target_term_id": "NEUROLOGY"
+            "target_term_id": "GO:0005694",
+            "target_terminology": "GO_SLIM"
         }])
     """
     try:
@@ -1841,23 +2002,29 @@ async def list_term_relations(
     direction: str = "outgoing",
     relation_type: str | None = None,
     namespace: str | None = None,
+    terminology: str | None = None,
     page: int = 1,
     page_size: int = 50,
 ) -> str:
     """List ontology relations for a specific term.
 
     Args:
-        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
+        term_id: Canonical UUID, fully qualified 'ns:terminology:value',
+            or — with terminology set — the OPAQUE raw term value (never
+            colon-parsed). The 2-part 'TERMINOLOGY:VALUE' shorthand is
+            rejected (422).
         direction: 'outgoing' (this term is source), 'incoming' (this term is target), or 'both'.
         relation_type: Filter by type (is_a, part_of, etc.). None = all types.
         namespace: Namespace to query in. Omit to use server default.
+        terminology: Terminology scoping a value-form term_id (see term_id).
         page: Page number.
-        page_size: Results per page (max 100).
+        page_size: Results per page (max 1000).
     """
     try:
         data = await get_client().list_term_relations(
             term_id=term_id, direction=direction,
             relation_type=relation_type, namespace=namespace,
+            terminology=terminology,
             page=page, page_size=page_size,
         )
         return json.dumps(data, indent=2, default=str)
@@ -1874,9 +2041,18 @@ async def delete_term_relations(
     """Delete ontology relations between terms.
 
     Args:
-        relations: List of {source_term_id, target_term_id, relation_type}.
-            source_term_id: Term ID, value (e.g., 'ALZHEIMERS_DISEASE'), or synonym.
-            target_term_id: Term ID, value (e.g., 'NEUROLOGY'), or synonym.
+        term_relations: List of {source_term_id, target_term_id,
+            relation_type} plus optional per-item source_terminology /
+            target_terminology.
+            source_term_id / target_term_id: canonical UUID, bare
+                colon-free value (e.g., 'ALZHEIMERS_DISEASE'), fully
+                qualified 'ns:terminology:value', or — with the matching
+                per-item terminology field set — the OPAQUE raw value
+                (never colon-parsed). The ambiguous 2-part
+                'TERMINOLOGY:VALUE' shorthand is rejected (422): a
+                wrong-hit here would delete the wrong edge.
+            source_terminology / target_terminology: terminology scoping
+                the respective endpoint's value form.
             relation_type: is_a, part_of, has_part, etc.
         namespace: Namespace to delete from. Omit to use server default.
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
@@ -1979,10 +2155,14 @@ async def get_template_raw(template_id: str, namespace: str | None = None) -> st
 
 @mcp.tool()
 async def create_template(template: dict, namespace: str | None = None) -> str:
-    """Create a template (document schema).
-
-    NOTE: Updating an existing template creates a new version — the old version
-    stays active. See wip://conventions for versioning behaviour and deactivation.
+    """Create a template (document schema). This is an UPSERT keyed on the
+    template's name: if (namespace, value) already exists, an identical
+    definition returns status='unchanged', and any difference creates the
+    NEXT VERSION with a structured diff in the result — check the returned
+    status; a same-name create never errors, it versions. Changing
+    identity_fields (or usage/versioned) is rejected — declare a new value
+    instead. The old version stays active alongside the new one. See
+    wip://conventions for versioning behaviour and deactivation.
 
     Args:
         template: Template definition. Required fields:
@@ -2001,6 +2181,19 @@ async def create_template(template: dict, namespace: str | None = None) -> str:
               projections. Bare names target data.<name>;
               `metadata.custom.<name>` paths also allowed. Empty →
               projection falls back to identity_fields.
+            - renames: {new_field: old_field} — when this create versions
+              an existing template, DECLARE renamed fields here. An
+              undeclared rename is indistinguishable from drop+add: the
+              old column's data is stranded instead of migrating
+              losslessly and mapping in reporting. Identity fields cannot
+              be renamed. Rejected on a first version. Test the change
+              against live documents FIRST with
+              validate_template_candidate — iterate there instead of
+              minting throwaway versions.
+            - reporting.cross_version_view: opt-in combined reporting view
+              across template versions — {"versions": "all"|[ints],
+              "columns": {target: {"from": source} | {}}}. Declared
+              renames feed the column mappings.
             - status: 'active' (default) or 'draft' (skip validation).
 
         Field definition: {
@@ -2310,12 +2503,20 @@ async def deactivate_template(
     """Delete a template version. Soft-delete (deactivate) by default.
     Set hard_delete=true to permanently remove (requires namespace deletion_mode='full').
 
+    `version` is REQUIRED for a soft-delete: the store rejects a
+    version-less deactivate (the old default targeted the LATEST version,
+    which silently retires the wrong one right after a version event — the
+    common intent there is retiring the PREVIOUS version). The rejection
+    lists the template's versions and statuses so you can pick. Only
+    hard_delete=true may omit version, meaning: remove ALL versions.
+
     Blocked if other templates extend it.
     If documents reference it, use force=true to delete anyway.
 
     Args:
         template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
-        version: Specific version (default: latest for soft-delete, all for hard-delete).
+        version: The version to retire. Required for soft-delete; omit only
+            with hard_delete=true (removes all versions).
         force: Force deletion even if documents exist.
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
     """
@@ -2497,6 +2698,38 @@ async def list_documents(
 
 
 @mcp.tool()
+async def get_template_facets(
+    namespace: str | None = None, status: str = "active"
+) -> str:
+    """Which templates are this namespace's documents instances of?
+
+    Grouped from the documents themselves, not from template ownership: a
+    document's namespace is independent of its template's namespace, so
+    list_templates(namespace=X) — the templates X owns — cannot answer this.
+    A namespace whose documents sit on shared or foreign templates would
+    look empty there; these facets reach every template the documents
+    actually use. Use this to build template pickers or namespace overviews.
+
+    Each facet carries template_id, template_value, the template's OWN
+    namespace (may differ from the queried one), and document_count —
+    distinct logical documents, version rows collapse before counting.
+
+    Args:
+        namespace: Namespace to facet. Omittable only for single-namespace
+            API keys (implicit derivation).
+        status: Count documents in this status — 'active' (default),
+            'inactive', 'archived', or 'all' to disable the filter.
+    """
+    try:
+        data = await get_client().get_template_facets(
+            namespace=namespace, status=status
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def get_document(document_id: str, version: int | None = None) -> str:
     """Get a document by ID.
 
@@ -2571,6 +2804,59 @@ async def validate_documents(
             items=items,
             namespace=namespace,
             template_version=template_version,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def validate_template_candidate(
+    template_definition: dict,
+    namespace: str | None = None,
+    documents: list[dict] | None = None,
+    sample_template: str | None = None,
+    sample_limit: int = 100,
+) -> str:
+    """Test a DRAFT template definition against real documents BEFORE creating it.
+
+    The what-if half of schema evolution: create_template is an upsert, so
+    every same-name create mints a real version (which also materializes a
+    per-version reporting table). Iterate on a schema change HERE instead —
+    the candidate is never persisted, cached, or registered; nothing exists
+    after the call. When the candidate validates cleanly, create it for real
+    with create_template and read the impact block in that response.
+
+    Declared renames are honored: a candidate carrying
+    renames {new_field: old_field} validates sampled documents as-if
+    re-keyed (the same semantics an applied migration uses), so a rename
+    does not false-fail as unknown_field + missing mandatory.
+
+    Args:
+        template_definition: The candidate definition, same shape as a
+            create_template payload (fields, identity_fields, rules,
+            renames, ...). Reference values should be canonical IDs or
+            resolvable synonyms — an unresolvable reference surfaces as a
+            per-document validation error, as on a real write.
+        namespace: Namespace context for term/reference resolution.
+        documents: Explicit data payloads to validate. Mutually exclusive
+            with sample_template — provide exactly one.
+        sample_template: Template ID, value, or synonym — validates the most
+            recently updated ACTIVE documents of that template against the
+            candidate ("would my last N docs validate against this draft?").
+        sample_limit: Sample size (default 100, max 500).
+
+    Returns {total, valid_count, invalid_count, results: [...]} — per
+    document: index, document_id (None for explicit payloads), and the full
+    validation result with errors.
+    """
+    try:
+        data = await get_client().validate_template_candidate(
+            template_definition=template_definition,
+            namespace=namespace,
+            documents=documents,
+            sample_template=sample_template,
+            sample_limit=sample_limit,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -3445,16 +3731,22 @@ async def query_by_template(
 
 @mcp.tool()
 async def list_report_tables(table_name: str | None = None) -> str:
-    """List available reporting tables in PostgreSQL (doc_* tables + terminologies/terms).
+    """List reporting relations in PostgreSQL, grouped entity-first.
 
-    Use this to discover what tables exist before running SQL queries.
+    One template ("entity") owns several relations: physical per-version
+    tables doc_<value>__v<N> (one per template version, shaped by that
+    version's own fields), the identity-core view doc_<value>__entities,
+    and the bare-name view doc_<value> — the DEFAULT query surface. Query
+    the bare name unless you need one version's exact shape; the response's
+    `entities` grouping lists every sibling version table so SQL never
+    silently misses rows that live in another version's table.
 
     Args:
-        table_name: If omitted, returns a compact summary of all tables (name,
-            row_count, column_count) — typically a few KB. If provided, returns
-            full column detail (name, type, nullable) for that specific table.
-            Call without table_name first to discover tables, then with table_name
-            to inspect columns before writing SQL.
+        table_name: If omitted, returns the entity grouping plus a compact
+            flat summary of all relations (name, kind, row_count,
+            column_count). If provided, returns full column detail (name,
+            type, nullable) for that relation — works for views and version
+            tables alike. Discover first, then inspect before writing SQL.
     """
     try:
         data = await get_client().list_report_tables(table_name=table_name)
@@ -3477,10 +3769,14 @@ async def run_report_query(
 
     Args:
         sql: SQL SELECT query. Must be read-only (no INSERT/UPDATE/DELETE/DROP).
-            Each namespace is its own PostgreSQL schema; a table is
-            "<namespace>"."doc_<value>". Term fields have two columns:
-            {field} (value) and {field}_term_id. Use list_report_tables() first
-            to discover tables (with their namespace) and columns.
+            Each namespace is its own PostgreSQL schema. The default query
+            surface per template is the entity VIEW "<namespace>"."doc_<value>"
+            (identity core + columns stable across template versions);
+            physical rows live in per-version tables doc_<value>__v<N>, one
+            per template version — query those directly only when you need a
+            version's exact shape. Term fields have two columns: {field}
+            (value) and {field}_term_id. Use list_report_tables() first to
+            discover entities, their version tables, and columns.
         params: Optional list of parameter values for $1, $2, etc. placeholders.
         max_rows: Maximum rows to return (default 1000).
         namespace: When set, the query runs with the search_path pointed at that
@@ -3720,47 +4016,28 @@ async def resume_replay(session_id: str) -> str:
 async def start_backup(
     namespace: str | None = None,
     include_files: bool = False,
-    include_inactive: bool = False,
     skip_documents: bool = False,
-    skip_closure: bool = False,
-    skip_synonyms: bool = False,
-    latest_only: bool = False,
-    template_prefixes: list[str] | None = None,
-    dry_run: bool = False,
 ) -> str:
     """Start a backup of a namespace. Returns the initial BackupJobSnapshot.
 
     Backups run in the background; poll get_backup_job to track progress until
     status is 'complete' or 'failed', then download_backup_archive to fetch
-    the .zip.
-
-    WARNING — v1.0 limitation: include_files=true is unsafe on namespaces with
-    non-trivial file content: the archive writer buffers all blob bytes in
-    RAM and will OOM the document-store container. Leave it false until a
-    streaming archive path ships.
+    the .zip. The archive always contains every entity in every status and
+    every version — inactive and archived entities included, since live data
+    references them — plus term relations and the registry entries (synonyms
+    travel inside them); blob bytes are staged to the server's backup scratch
+    dir, not RAM.
 
     Args:
         namespace: Source namespace (uses WIP_MCP_DEFAULT_NAMESPACE if unset).
-        include_files: Include file blobs in the archive (see WARNING above).
-        include_inactive: Include soft-deleted entities.
+        include_files: Include file blobs in the archive.
         skip_documents: Skip the documents phase entirely (definitions only).
-        skip_closure: Skip the closure-table (relations) phase.
-        skip_synonyms: Skip the synonyms phase.
-        latest_only: Export only the latest version of each entity.
-        template_prefixes: Optional template_id prefixes to filter documents.
-        dry_run: Walk the export without writing the archive.
     """
     try:
         data = await get_client().start_backup(
             namespace=namespace,
             include_files=include_files,
-            include_inactive=include_inactive,
             skip_documents=skip_documents,
-            skip_closure=skip_closure,
-            skip_synonyms=skip_synonyms,
-            latest_only=latest_only,
-            template_prefixes=template_prefixes,
-            dry_run=dry_run,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -3773,45 +4050,107 @@ async def start_restore(
     archive_path: str,
     mode: str = "restore",
     target_namespace: str | None = None,
-    register_synonyms: bool = False,
+    namespace_map: dict[str, str] | None = None,
+    on_clash: str = "skip",
+    add_missing: bool = False,
+    extend_terminologies: bool = False,
     skip_documents: bool = False,
     skip_files: bool = False,
-    batch_size: int = 50,
-    continue_on_error: bool = False,
+    batch_size: int = 500,
     dry_run: bool = False,
     drop_stale_reporting: bool = False,
 ) -> str:
-    """Restore a namespace from a local archive file. Returns the initial BackupJobSnapshot.
+    """Restore from a local archive file. Returns the initial BackupJobSnapshot.
+
+    Both modes are ID-preserving and write each namespace in the archive back
+    to ITSELF; writing under a different namespace name is not supported (it
+    requires re-minting IDs — a planned separate mode). Admin permission is
+    required on every namespace the archive carries.
+
+    mode='restore' (default) requires every target namespace to be EMPTY and
+    inserts the archive wholesale, preserving every id.
+
+    mode='fresh' keeps NOTHING: every terminology, term, template, document
+    and file is registered anew with a Registry-minted id, and every reference
+    between them is rewritten. That is what lets a namespace be restored
+    BESIDE the one it came from — two live copies cannot share a canonical id.
+    A single-namespace archive takes target_namespace; a multi-namespace
+    archive takes namespace_map, an explicit {source: target} covering EVERY
+    namespace it carries — there is no implicit default, because an unmapped
+    namespace restored to its old name would collide with the live original.
+    Several sources may map to one target; Registry-key collisions between
+    them (e.g. the same template value on both sides) refuse at plan time —
+    merging same-keyed content is what mode='merge' is for. Cross-namespace
+    references between archived namespaces follow their entities to the new
+    names. Every target must be empty; a target may equal its source name
+    only when that namespace is absent. Identities are provisioned as
+    reserved (which do not resolve) and activated in one step at the end, so
+    a job that dies partway leaves an invisible, reconcilable namespace
+    rather than a half-live one.
+
+    mode='merge' takes the archive as a delta against a namespace that already
+    holds data, in two passes. First it checks that both sides' DEFINITIONS —
+    terminologies, terms and templates — are compatible by content rather than
+    by ID, and refuses if they are not: documents cannot be merged under
+    definitions the two sides disagree on. That pass also learns which
+    definitions are the same thing under different IDs, so an archive from
+    another install works without any extra parameter. Changing the target's
+    definitions is opt-in: add_missing inserts terminologies and templates it
+    lacks, extend_terminologies adds missing terms. Where a definition matches
+    but its label/aliases differ, the target's win and the difference is
+    reported.
+
+    Then documents merge under on_clash — 'skip' (default) keeps the target's
+    version, 'overwrite' appends the archive's latest version on top of the
+    target's head, keeping both histories (on a versioned:false template it
+    replaces the single version in place instead), and 'newer' does what
+    'overwrite' does but ONLY where the archive's copy has a more recent
+    updated_at. A tie keeps the target, as does a missing or unparseable
+    timestamp on either side (reported as a job warning). Across two installs
+    'newer' is only as reliable as the two machines' clocks: UTC removes
+    timezone error, not skew. A merge refuses outright
+    only when one ID names two different entities across the two sides.
+
+    dry_run is exact for a merge: the plan is computed before anything is
+    written, so the report is what a real run would do, and it still fails on
+    what a real run would refuse.
 
     The restore verifies the PostgreSQL reporting layer at phase boundaries:
     a stale reporting schema fails the precondition unless
-    drop_stale_reporting=True (which drops it first); reporting tables must
-    materialize correctly after templates restore (halts before documents
-    otherwise); and row-count parity is checked at the end — a mismatch
-    completes the job WITH warnings on the job record, never a hard fail.
-    Use check_reporting_parity for the same verification any time.
+    drop_stale_reporting=True (which drops it first, and which a merge rejects
+    — its target is live); reporting tables must materialize correctly after
+    templates are written (halts before documents otherwise); and row-count
+    parity is checked at the end — a mismatch completes the job WITH warnings
+    on the job record, never a hard fail. Use check_reporting_parity for the
+    same verification any time.
 
-    The archive at archive_path is uploaded as multipart and a restore job is
-    queued. Poll get_backup_job to track progress.
-
-    GOTCHA — restore mode semantics:
-    - mode='restore' writes back to the *source* namespace embedded in the
-      archive and IGNORES target_namespace. Use this only when restoring an
-      archive into the same namespace it came from.
-    - mode='fresh' generates new IDs and honors target_namespace. Use this for
-      round-trip into a new namespace.
+    The archive at archive_path is uploaded as multipart and a job is queued.
+    Poll get_backup_job to track progress.
 
     Args:
         namespace: URL-path namespace (the auth check target).
         archive_path: Local filesystem path to the .zip archive to upload.
-        mode: 'restore' (preserve IDs) or 'fresh' (generate new IDs).
-        target_namespace: Override target namespace. Honored only in 'fresh' mode.
-        register_synonyms: Register original IDs as synonyms of new IDs (fresh mode).
-        skip_documents: Skip restoring documents (definitions only).
-        skip_files: Skip restoring file blobs.
-        batch_size: Restore batch size (1-500).
-        continue_on_error: Continue past per-item errors.
-        dry_run: Walk the import without applying changes.
+        mode: 'restore' (empty target, ids preserved), 'merge' (existing
+            namespace, ids preserved) or 'fresh' (new namespace, ids re-minted).
+        target_namespace: Where to write. For 'fresh' on a single-namespace
+            archive this is required; for the other modes the archive
+            manifest decides, and merge may use it to write into a
+            differently-named namespace.
+        namespace_map: Fresh only — {source: target} for EVERY namespace in
+            a multi-namespace archive. Mutually completing with
+            target_namespace: pass exactly one of the two for 'fresh'.
+        on_clash: Merge only — 'skip', 'overwrite' or 'newer' for clashing
+            documents.
+        add_missing: Merge only — insert terminologies and templates the
+            target does not have, instead of refusing.
+        extend_terminologies: Merge only — add terms the target's terminology
+            is missing.
+        skip_documents: Skip documents (definitions only).
+        skip_files: Skip file blobs.
+        batch_size: Bulk-insert batch size (1-500).
+        dry_run: Report what would happen without writing anything.
+        drop_stale_reporting: Drop a stale reporting schema before restoring
+            instead of refusing. A dry run reports the would-drop only.
     """
     try:
         data = await get_client().start_restore(
@@ -3819,13 +4158,70 @@ async def start_restore(
             archive_path=archive_path,
             mode=mode,
             target_namespace=target_namespace,
-            register_synonyms=register_synonyms,
+            namespace_map=namespace_map,
+            on_clash=on_clash,
+            add_missing=add_missing,
+            extend_terminologies=extend_terminologies,
             skip_documents=skip_documents,
             skip_files=skip_files,
             batch_size=batch_size,
-            continue_on_error=continue_on_error,
             dry_run=dry_run,
             drop_stale_reporting=drop_stale_reporting,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def validate_namespace(
+    namespace: str,
+    check_term_refs: bool = True,
+    check_identity: bool = True,
+    limit: int = 0,
+) -> str:
+    """Check that a namespace's data is internally consistent. Returns a job.
+
+    Verifies two things across every document in the namespace: that every
+    reference resolves — template, term, document, file — and that every
+    document's stored identity hash still matches its own data.
+
+    This is the referential twin of check_reporting_parity: that one compares
+    PostgreSQL against MongoDB, this one compares MongoDB against itself.
+
+    It matters most after a restore. A restore writes documents straight to
+    MongoDB and validates NOTHING while writing — deliberately, because
+    per-record validation would undo the bulk write path that makes restore
+    fast — so this is where a restored namespace actually gets checked. Every
+    restore starts one of these automatically per namespace it wrote and
+    records the job ids on its own record; call this for the same check on
+    demand.
+
+    Scanning a whole namespace takes time, so it runs as a job: poll
+    get_backup_job for progress and the result. Findings do not fail the job —
+    it completes, and `result.status` is healthy, warning or error, with
+    `result.issues` carrying a capped sample and `result.issues_truncated`
+    saying how many more there were.
+
+    The identity check is the one nothing else performs. A document's identity
+    hash decides whether a write becomes a new version or a new document, it
+    is written once at create time, and one that has drifted from its own
+    content stays wrong silently until the next write on that identity lands
+    in the wrong place.
+
+    Args:
+        namespace: The namespace to verify.
+        check_term_refs: Check term references (one cached lookup per distinct
+            term, so cost scales with vocabulary size, not document count).
+        check_identity: Recompute and compare identity hashes.
+        limit: Stop after this many documents (0 = all).
+    """
+    try:
+        data = await get_client().start_validation(
+            namespace=namespace,
+            check_term_refs=check_term_refs,
+            check_identity=check_identity,
+            limit=limit,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -3933,9 +4329,15 @@ async def check_reporting_parity(
 
     Interpreting results:
     - structural_issues > 0: tables missing or mis-shaped — check the
-      per-template rows for missing_columns / errors.
+      per-template rows for missing_columns / legacy_table / errors.
+    - legacy_table true on a template: a pre-split physical table still
+      occupies the entity's bare name, shadowing the per-version layout.
+      Needs explicit operator action (drop the legacy table, then re-run
+      the batch sync) — the platform never auto-drops it.
     - count_mismatches > 0: sync is behind or blocked — re-run the batch
-      sync (or check get_sync_status) and re-check.
+      sync (or check get_sync_status) and re-check. actual_rows aggregates
+      across a template's per-version tables (version_tables lists them;
+      view_present confirms the entity view).
     - bookkeeping_tables_ok false: the reporting database predates the
       namespace-keyed bookkeeping — doc-type sync cannot work until
       remediated (wipe the reporting volume or apply the named ALTER).

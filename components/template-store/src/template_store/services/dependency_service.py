@@ -6,9 +6,9 @@ Checks what depends on a template before allowing deactivation.
 
 import os
 from typing import cast
-from beanie.odm.enums import SortDirection
 
 import httpx
+from beanie.odm.enums import SortDirection
 from pydantic import BaseModel, Field
 
 from ..models.template import Template

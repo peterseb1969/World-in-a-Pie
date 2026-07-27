@@ -37,6 +37,18 @@ logger = logging.getLogger(__name__)
 
 
 class TemplateParity(BaseModel):
+    """Per-template parity row.
+
+    Post-split semantics (per-version reporting tables): ``table_present``
+    means the LATEST version's physical table exists — the table the next
+    write against latest would land in — and ``missing_columns`` is checked
+    against it. ``actual_rows`` aggregates across every version table (a
+    document lives in exactly one under latest_only, so the sum is the
+    entity count). The field names and their pass/fail meaning are stable
+    on purpose: the restore engine's structural gate and count-parity
+    phases consume them.
+    """
+
     template_value: str
     sync_enabled: bool = True
     table_present: bool = False
@@ -47,10 +59,19 @@ class TemplateParity(BaseModel):
     actual_rows: int | None = None
     counts_match: bool | None = None
     error: str | None = None
+    # Per-version split additions
+    version_tables: list[int] = Field(default_factory=list)
+    view_present: bool = False
+    legacy_table: bool = False
 
     @property
     def structural_ok(self) -> bool:
-        return self.table_present and not self.missing_columns and self.error is None
+        return (
+            self.table_present
+            and not self.missing_columns
+            and not self.legacy_table
+            and self.error is None
+        )
 
 
 class NamespaceParityResult(BaseModel):
@@ -68,8 +89,16 @@ class NamespaceParityResult(BaseModel):
 
 
 async def _fetch_namespace_templates(namespace: str) -> list[dict[str, Any]]:
-    """All active templates of a namespace, latest version each — the same
-    template-store listing the batch sync builds tables from."""
+    """All ACTIVE templates of a namespace, latest version each — the
+    structural contract: the latest-active version is the one a new write
+    lands on, so its table is what must exist.
+
+    Deliberately NOT the same listing the batch sync iterates: the batch
+    sync's instance-wide list is status-free (a fully-deactivated
+    template's documents must still sync), and its eager table-ensure is
+    active-aware to match THIS listing. A template whose every version is
+    inactive is absent here and exempt from the structural gate — its
+    documents' tables materialize lazily at sync time."""
     templates: list[dict[str, Any]] = []
     page = 1
     async with httpx.AsyncClient() as client:
@@ -179,13 +208,25 @@ async def check_namespace_parity(
         try:
             fields = SchemaManager.parse_template_fields(template.get("fields", []))
             usage = template.get("usage", "entity")
-            table_name = sm.get_table_name(template_value, config)
+            latest_version = int(template.get("version", 1))
+            table_name = sm.get_table_name(template_value, config, latest_version)
+            base_name = sm.get_table_name(template_value, config)
 
+            # The latest version's table is what the next write against
+            # latest lands in — its presence and shape are the structural
+            # gate. Older version tables are listed; their columns were
+            # shaped by their own version's fields at creation time.
             row.table_present = await sm.table_exists(schema, table_name)
             if row.table_present:
                 existing = await sm.get_existing_columns(schema, table_name)
                 expected = sm.expected_columns_for_template(fields, config, usage=usage)
                 row.missing_columns = sorted(expected - existing)
+
+            version_tables = await sm.list_version_tables(namespace, template_value, config)
+            row.version_tables = sorted(version_tables)
+            bare_kind = await sm.relation_kind(schema, base_name)
+            row.view_present = bare_kind == "view"
+            row.legacy_table = bare_kind == "table"
 
             if result.bookkeeping_tables_ok:
                 async with pool.acquire() as conn:
@@ -203,10 +244,15 @@ async def check_namespace_parity(
                     row.expected_documents = await _expected_document_total(
                         template.get("id") or template.get("template_id") or template_value
                     )
+                    # A document lives in exactly one version table under
+                    # latest_only — the entity count is the sum across them.
+                    total_rows = 0
                     async with pool.acquire() as conn:
-                        row.actual_rows = int(await conn.fetchval(
-                            f'SELECT count(*) FROM {sm.qualified_name(namespace, template_value, config)}'
-                        ) or 0)
+                        for _v, vt in version_tables.items():
+                            total_rows += int(await conn.fetchval(
+                                f'SELECT count(*) FROM "{schema}"."{vt}"'
+                            ) or 0)
+                    row.actual_rows = total_rows
                     row.counts_match = row.expected_documents == row.actual_rows
         except Exception as e:  # per-template isolation: one bad template must not hide the rest
             row.error = str(e)

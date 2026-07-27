@@ -301,10 +301,6 @@ KBEOF
             fi
         fi
     fi
-    if [ ! -e "$APP_DIR/yac-discussions" ]; then
-        echo "   NOTE: no yac-discussions/ staging surface. Symlink the shared case"
-        echo "         store (transition) — the write-gateway (CASE-464) will make it optional."
-    fi
 }
 
 # --- Resolve app metadata (CASE-418) ---
@@ -685,28 +681,31 @@ else
     echo "6. Copying wip-toolkit..."
 fi
 
-# wip-toolkit wheel
-TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1 || true)
-if [ -z "$TOOLKIT_WHEEL" ]; then
-    # Try to build it — prefer WIP's venv (has `build` installed)
-    if [ -f "$WIP_ROOT/.venv/bin/python" ]; then
-        TOOLKIT_PYTHON="$WIP_ROOT/.venv/bin/python"
-    elif command -v python3 &>/dev/null; then
-        TOOLKIT_PYTHON="$(command -v python3)"
-    elif command -v python &>/dev/null; then
-        TOOLKIT_PYTHON="$(command -v python)"
-    else
-        TOOLKIT_PYTHON=""
-    fi
-    if [ -n "$TOOLKIT_PYTHON" ]; then
-        echo "   Building wip-toolkit wheel (using $TOOLKIT_PYTHON)..."
-        if ! (cd "$WIP_ROOT/WIP-Toolkit" && "$TOOLKIT_PYTHON" -m build . --wheel -q 2>&1); then
-            echo "   Warning: wheel build failed — ensure 'build' is installed:"
-            echo "            $TOOLKIT_PYTHON -m pip install build"
-        fi
-        TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1 || true)
+# Python for wheel builds — prefer WIP's venv (has `build` installed)
+if [ -f "$WIP_ROOT/.venv/bin/python" ]; then
+    TOOLKIT_PYTHON="$WIP_ROOT/.venv/bin/python"
+elif command -v python3 &>/dev/null; then
+    TOOLKIT_PYTHON="$(command -v python3)"
+elif command -v python &>/dev/null; then
+    TOOLKIT_PYTHON="$(command -v python)"
+else
+    TOOLKIT_PYTHON=""
+fi
+
+# wip-toolkit wheel — ALWAYS rebuilt from source, never use-if-present.
+# dist/ is untracked, so picking an existing wheel ships whatever bytes the
+# clone last built under the current filename — a pre-split 0.5.0 reached
+# apps exactly this way. Wipe first so the find below can only see the
+# fresh build (and never an older leftover version).
+if [ -n "$TOOLKIT_PYTHON" ]; then
+    echo "   Building wip-toolkit wheel (using $TOOLKIT_PYTHON)..."
+    rm -f "$WIP_ROOT/WIP-Toolkit/dist/"*.whl
+    if ! (cd "$WIP_ROOT/WIP-Toolkit" && "$TOOLKIT_PYTHON" -m build . --wheel -q 2>&1); then
+        echo "   Warning: wheel build failed — ensure 'build' is installed:"
+        echo "            $TOOLKIT_PYTHON -m pip install build"
     fi
 fi
+TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1 || true)
 
 TOOLKIT_FLAG=""
 if [ -n "$TOOLKIT_WHEEL" ]; then
@@ -716,6 +715,29 @@ if [ -n "$TOOLKIT_WHEEL" ]; then
 else
     echo "   Warning: wip-toolkit wheel not found. Build it with:"
     echo "            cd $WIP_ROOT/WIP-Toolkit && $WIP_ROOT/.venv/bin/python -m build . --wheel"
+fi
+
+# wip-archive wheel — the toolkit wheel's dependency (archive format +
+# remap library, not on PyPI): both wheels must land in the app's libs/
+# or `pip install libs/*.whl` cannot resolve the toolkit's requirement.
+# Same always-rebuild rule as the toolkit wheel, for the same reason.
+if [ -n "${TOOLKIT_PYTHON:-}" ]; then
+    echo "   Building wip-archive wheel (using $TOOLKIT_PYTHON)..."
+    rm -f "$WIP_ROOT/libs/wip-archive/dist/"*.whl
+    if ! (cd "$WIP_ROOT/libs/wip-archive" && "$TOOLKIT_PYTHON" -m build . --wheel -q 2>&1); then
+        echo "   Warning: wip-archive wheel build failed — ensure 'build' is installed:"
+        echo "            $TOOLKIT_PYTHON -m pip install build"
+    fi
+fi
+ARCHIVE_WHEEL=$(find "$WIP_ROOT/libs/wip-archive/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1 || true)
+
+ARCHIVE_FLAG=""
+if [ -n "$ARCHIVE_WHEEL" ]; then
+    ARCHIVE_FLAG="--archive-wheel $ARCHIVE_WHEEL"
+elif [ -n "$TOOLKIT_WHEEL" ]; then
+    echo "   Warning: wip-archive wheel not found — the toolkit wheel's"
+    echo "            wip-archive dependency will not resolve offline. Build it with:"
+    echo "            cd $WIP_ROOT/libs/wip-archive && $WIP_ROOT/.venv/bin/python -m build . --wheel"
 fi
 
 # --- Query scaffold (--preset query only, new projects only) ---
@@ -829,7 +851,7 @@ PYTHONPATH="$WIP_ROOT/scaffold/src${PYTHONPATH:+:$PYTHONPATH}" \
     --preset "$PRESET" --role-prefix "$APP_PREFIX" \
     --mcp-python "$PYTHON_PATH" --mcp-base-url "$WIP_BASE_URL" \
     --mcp-key-file "$WIP_API_KEY_FILE" \
-    $LIB_FLAGS $TOOLKIT_FLAG $QUERY_FLAG $SEED_BOOTSTRAP_FLAG $WRITE_ENV_FLAG $ENGINE_FLAGS
+    $LIB_FLAGS $TOOLKIT_FLAG $ARCHIVE_FLAG $QUERY_FLAG $SEED_BOOTSTRAP_FLAG $WRITE_ENV_FLAG $ENGINE_FLAGS
 
 # Lockfile sync (refresh only) — an npm ACTION, so it stays wrapper-side,
 # and it must run AFTER the engine has copied the tarballs it re-hashes.
@@ -960,7 +982,7 @@ if ! $REFRESH_MODE; then
 fi
 echo ""
 echo "Verify MCP connection:"
-echo "  In Claude Code, run /mcp — you should see 94 tools and 5 resources."
+echo "  In Claude Code, run /mcp — you should see 101 tools and 5 resources."
 if $REFRESH_MODE; then
     echo ""
     echo "Note: .mcp.json has been regenerated with paths for this machine."

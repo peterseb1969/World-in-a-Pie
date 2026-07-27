@@ -112,6 +112,7 @@ check "--enable-kb rejected (non-zero + Unknown option)" "[ $? -ne 0 ] && grep -
 
 # ── Scenario F: CASE-539 lockstep (both scaffolds share the byte-identical line) ─
 echo "Scenario F — CASE-539 podman line is lockstep with the app scaffold"
+# shellcheck disable=SC2034  # both vars are read inside the eval'd check strings below
 BE_LINE="$(grep -oE "podman ps --format '\{\{\.Labels\}\}'.*sort -u \|\| true" "$SRC" || true)"
 APP_LINE="$(grep -oE "podman ps --format '\{\{\.Labels\}\}'.*sort -u \|\| true" "$WIP_ROOT/scripts/create-app-project.sh" || true)"
 check "CASE-539 fix present in backend"  "[ -n \"\$BE_LINE\" ]"

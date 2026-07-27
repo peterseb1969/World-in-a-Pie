@@ -23,6 +23,9 @@ from ..models.api_models import (
     DeleteItem,
     DeleteResponse,
     EntryDetailResponse,
+    ExportEntriesRequest,
+    ExportEntriesResponse,
+    ExportEntryItem,
     LookupBulkResponse,
     LookupByIdItem,
     LookupByKeyItem,
@@ -109,7 +112,7 @@ async def browse_entries(
     status: str | None = Query(None, description="Filter by status (active, reserved, inactive)"),
     q: str | None = Query(None, description="Search across entry IDs and composite key values"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Page size"),
+    page_size: int = Query(50, ge=1, le=1000, description="Page size (max 1000)"),
     identity: UserIdentity = Depends(require_api_key)
 ) -> BrowseEntriesResponse:
     """Browse registry entries with pagination and optional filters."""
@@ -183,7 +186,7 @@ async def unified_search(
     entity_type: str | None = Query(None, description="Filter by entity type"),
     status: str | None = Query(None, description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Page size"),
+    page_size: int = Query(50, ge=1, le=1000, description="Page size (max 1000)"),
     identity: UserIdentity = Depends(require_api_key)
 ) -> UnifiedSearchResponse:
     """
@@ -344,6 +347,9 @@ async def register_keys(
 ) -> RegisterBulkResponse:
     """
     Register one or more composite keys. This is sugar for reserve + immediate activate.
+
+    All items in a batch must share the same namespace; a mixed-namespace batch is
+    rejected up front with a whole-call 422 (not a per-item error).
 
     For each key:
     - If the key already exists, returns the existing registry ID
@@ -642,8 +648,18 @@ async def provision_ids(
             config, request.namespace, request.entity_type
         )
 
+        # Deferred-claim reservation mints the id with an EMPTY key: the final
+        # key is set and claimed at activation. Empty is required, not just
+        # convenient — the entry-level unique index on
+        # (namespace, entity_type, primary_composite_key_hash) is partial to
+        # non-empty hashes, so two reservations sharing a to-be key must both
+        # carry the empty hash to coexist until activation resolves them.
         composite_key = {}
-        if request.composite_keys and i < len(request.composite_keys):
+        if (
+            not request.defer_claim
+            and request.composite_keys
+            and i < len(request.composite_keys)
+        ):
             composite_key = request.composite_keys[i]
 
         key_hash = HashService.compute_composite_key_hash(composite_key) if composite_key else ""
@@ -661,7 +677,14 @@ async def provision_ids(
         entries.append(entry)
         ids.append(ProvisionedId(entry_id=entry_id, status="reserved"))
 
-    if entries:
+    if entries and request.defer_claim:
+        # Deferred-claim reservation: mint the ids but DON'T claim their keys.
+        # The claim is committed at activation with the final key (a fresh
+        # restore doesn't know an id-valued-identity document's final hash until
+        # every referenced id is minted). Reserved entries are not resolvable,
+        # so an unclaimed reserved key leaks nothing.
+        await RegistryEntry.insert_many(entries)
+    elif entries:
         # Claim-first (pending) for reserved entries too; a conflict on a
         # provisioned composite key fails the whole provision loudly rather
         # than reserving an entry whose key resolves elsewhere.
@@ -823,56 +846,241 @@ async def activate_entries(
     items: list[ActivateItem] = Body(...),
     identity: UserIdentity = Depends(require_api_key)
 ) -> ActivateBulkResponse:
-    """Activate reserved entries, making them resolvable."""
-    results = []
+    """Activate reserved entries, making them resolvable.
+
+    Bulk-shaped internally: one classify read plus one guarded update_many,
+    instead of a find_one + full-document save per item. A restore activates
+    hundreds of thousands of identities in one job, and two sequential round
+    trips per identity made this flip the largest single chunk of restore
+    wall time (~50% measured at 235k identities, ~775µs each). The per-item
+    status contract (activated / already_active / not_found / error) is
+    preserved — it is composed from the classify read rather than from
+    per-item lookups.
+
+    The update filter re-asserts status == "reserved", so an entry whose
+    status changes between the read and the write is simply not matched;
+    the modified-count cross-check below turns any such shortfall into
+    per-item errors instead of silently reporting it activated.
+    """
+    results: list[ActivateItemResponse | None] = [None] * len(items)
     activated_count = 0
     error_count = 0
+    entries_coll = RegistryEntry.get_motor_collection()
 
-    for i, item in enumerate(items):
-        try:
-            entry = await RegistryEntry.find_one({"entry_id": item.entry_id})
+    # A keyed item (composite_key present) is a deferred-claim reservation
+    # being finalized: set the FINAL key on the entry, claim it here (a
+    # collision fails the item loudly, never duplicating an identity), then
+    # flip to active. Keyless items keep the bulk fast path below unchanged.
+    keyed = [i for i, it in enumerate(items) if it.composite_key is not None]
+    keyless = [i for i, it in enumerate(items) if it.composite_key is None]
 
-            if not entry:
-                results.append(ActivateItemResponse(
-                    index=i, status="not_found", entry_id=item.entry_id
-                ))
-                error_count += 1
-                continue
-
-            if entry.status == "active":
-                results.append(ActivateItemResponse(
-                    index=i, status="already_active", entry_id=item.entry_id
-                ))
-                continue
-
-            if entry.status != "reserved":
-                results.append(ActivateItemResponse(
-                    index=i, status="error", entry_id=item.entry_id,
-                    error=f"Cannot activate entry with status '{entry.status}'"
-                ))
-                error_count += 1
-                continue
-
-            entry.status = "active"
-            entry.updated_at = datetime.now(UTC)
-            await entry.save()
-
-            results.append(ActivateItemResponse(
-                index=i, status="activated", entry_id=item.entry_id
-            ))
-            activated_count += 1
-
-        except Exception as e:
-            results.append(ActivateItemResponse(
-                index=i, status="error", entry_id=item.entry_id, error=str(e)
-            ))
+    for i in keyed:
+        item = items[i]
+        entry = await RegistryEntry.find_one(RegistryEntry.entry_id == item.entry_id)
+        if entry is None:
+            results[i] = ActivateItemResponse(
+                index=i, status="not_found", entry_id=item.entry_id)
             error_count += 1
+            continue
+        if entry.status == "active":
+            results[i] = ActivateItemResponse(
+                index=i, status="already_active", entry_id=item.entry_id)
+            continue
+        if entry.status != "reserved":
+            results[i] = ActivateItemResponse(
+                index=i, status="error", entry_id=item.entry_id,
+                error=f"Cannot activate entry with status '{entry.status}'")
+            error_count += 1
+            continue
+        # Set the final key, then run the two-phase claim: pending before the
+        # write, confirm after — the same protocol provision uses, just here.
+        entry.primary_composite_key = item.composite_key or {}
+        entry.primary_composite_key_hash = (
+            HashService.compute_composite_key_hash(item.composite_key)
+            if item.composite_key else ""
+        )
+        entry.rebuild_search_values()
+        conflict = await claim_entry_keys_pending(entry)
+        if conflict is not None:
+            results[i] = ActivateItemResponse(
+                index=i, status="error", entry_id=item.entry_id, error=conflict)
+            error_count += 1
+            continue
+        entry.status = "active"
+        entry.updated_at = datetime.now(UTC)
+        try:
+            await entry.save()
+        except Exception as e:
+            await release_entry_keys(entry)
+            results[i] = ActivateItemResponse(
+                index=i, status="error", entry_id=item.entry_id, error=str(e))
+            error_count += 1
+            continue
+        await confirm_entry_keys(entry)
+        results[i] = ActivateItemResponse(
+            index=i, status="activated", entry_id=item.entry_id)
+        activated_count += 1
+
+    if keyless:
+        requested_ids = [items[i].entry_id for i in keyless]
+        status_by_id: dict[str, str] = {}
+        try:
+            # Projected to id + status: activation touches hundreds of thousands
+            # of entries per restore, and pulling full documents (synonyms
+            # included) just to read status would spend the bulk win on payload.
+            async for doc in entries_coll.find(
+                {"entry_id": {"$in": requested_ids}},
+                {"entry_id": 1, "status": 1, "_id": 0},
+            ):
+                status_by_id[doc["entry_id"]] = doc["status"]
+        except Exception as e:
+            for i in keyless:
+                results[i] = ActivateItemResponse(
+                    index=i, status="error", entry_id=items[i].entry_id, error=str(e))
+                error_count += 1
+            return ActivateBulkResponse(
+                results=[r for r in results if r is not None],
+                total=len(items), activated=activated_count, errors=error_count,
+            )
+
+        # Deduplicate: a repeated entry_id must not skew the modified-count
+        # cross-check (update_many matches each document once).
+        reserved_ids = [
+            eid for eid in dict.fromkeys(requested_ids)
+            if status_by_id.get(eid) == "reserved"
+        ]
+        flipped_ids: set[str] = set(reserved_ids)
+        if reserved_ids:
+            try:
+                update_result = await entries_coll.update_many(
+                    {"entry_id": {"$in": reserved_ids}, "status": "reserved"},
+                    {"$set": {
+                        "status": "active",
+                        "updated_at": datetime.now(UTC),
+                    }},
+                )
+                if update_result.modified_count != len(reserved_ids):
+                    # A concurrent status change between classify and update: the
+                    # guard kept the write safe; re-read to find which ids missed.
+                    still_reserved: set[str] = set()
+                    async for doc in entries_coll.find(
+                        {"entry_id": {"$in": reserved_ids}, "status": "reserved"},
+                        {"entry_id": 1, "_id": 0},
+                    ):
+                        still_reserved.add(doc["entry_id"])
+                    flipped_ids -= still_reserved
+            except Exception as e:
+                for i in keyless:
+                    results[i] = ActivateItemResponse(
+                        index=i, status="error", entry_id=items[i].entry_id,
+                        error=str(e))
+                    error_count += 1
+                return ActivateBulkResponse(
+                    results=[r for r in results if r is not None],
+                    total=len(items), activated=activated_count, errors=error_count,
+                )
+
+        for i in keyless:
+            item = items[i]
+            known_status = status_by_id.get(item.entry_id)
+            if known_status is None:
+                results[i] = ActivateItemResponse(
+                    index=i, status="not_found", entry_id=item.entry_id)
+                error_count += 1
+            elif known_status == "active":
+                results[i] = ActivateItemResponse(
+                    index=i, status="already_active", entry_id=item.entry_id)
+            elif known_status != "reserved":
+                results[i] = ActivateItemResponse(
+                    index=i, status="error", entry_id=item.entry_id,
+                    error=f"Cannot activate entry with status '{known_status}'")
+                error_count += 1
+            elif item.entry_id in flipped_ids:
+                results[i] = ActivateItemResponse(
+                    index=i, status="activated", entry_id=item.entry_id)
+                activated_count += 1
+            else:
+                results[i] = ActivateItemResponse(
+                    index=i, status="error", entry_id=item.entry_id,
+                    error="Entry status changed concurrently; still reserved after update")
+                error_count += 1
 
     return ActivateBulkResponse(
-        results=results,
+        results=[r for r in results if r is not None],
         total=len(items),
         activated=activated_count,
         errors=error_count,
+    )
+
+
+@router.post(
+    "/export",
+    response_model=ExportEntriesResponse,
+    summary="Export raw registry entries by id (bulk, admin-gated)"
+)
+async def export_entries(
+    request: ExportEntriesRequest,
+    identity: UserIdentity = Depends(require_api_key)
+) -> ExportEntriesResponse:
+    """Full raw entry rows for backup/export tooling.
+
+    Unlike the browse and lookup surfaces (trimmed projections for humans
+    and resolvers), this returns the row as stored — composite-key hash,
+    complete synonyms, search_values, source_info, timestamps, status —
+    because an archive that carries anything less cannot restore identity
+    byte-faithfully. Entries are returned regardless of status (an archive
+    records the instance as it is, inactive rows included).
+
+    Admin-gated per entry namespace, matching the backup/restore surfaces
+    (archive download requires admin on every namespace it spans). Ids the
+    caller lacks admin on come back per-item `forbidden`, never a
+    whole-call 403 — bulk-first.
+    """
+    from .grants import _is_superadmin, _resolve_permission
+
+    entries_by_id: dict[str, RegistryEntry] = {}
+    found_rows = await RegistryEntry.find(
+        {"entry_id": {"$in": request.entry_ids}}
+    ).to_list()
+    for row in found_rows:
+        entries_by_id[row.entry_id] = row
+
+    superadmin = _is_superadmin(identity)
+    admin_by_namespace: dict[str, bool] = {}
+
+    async def _admin_on(namespace: str) -> bool:
+        if superadmin:
+            return True
+        if namespace not in admin_by_namespace:
+            perm = await _resolve_permission(identity, namespace)
+            admin_by_namespace[namespace] = perm == "admin"
+        return admin_by_namespace[namespace]
+
+    results: list[ExportEntryItem] = []
+    found = not_found = forbidden = 0
+    for i, entry_id in enumerate(request.entry_ids):
+        entry = entries_by_id.get(entry_id)
+        if entry is None:
+            results.append(ExportEntryItem(
+                index=i, entry_id=entry_id, status="not_found"
+            ))
+            not_found += 1
+            continue
+        if not await _admin_on(entry.namespace):
+            results.append(ExportEntryItem(
+                index=i, entry_id=entry_id, status="forbidden"
+            ))
+            forbidden += 1
+            continue
+        results.append(ExportEntryItem(
+            index=i, entry_id=entry_id, status="found",
+            entry=entry.model_dump(mode="json", exclude={"id"}),
+        ))
+        found += 1
+
+    return ExportEntriesResponse(
+        results=results, total=len(request.entry_ids),
+        found=found, not_found=not_found, forbidden=forbidden,
     )
 
 

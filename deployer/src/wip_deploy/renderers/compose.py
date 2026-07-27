@@ -331,7 +331,7 @@ def _build_block(
       - Registry-pull: pass `--registry <host>` pointing at a host with
         pre-built images; `spec.images.registry` is set and the bare
         image name is prefixed.
-      - Dev loop: use the dev renderer (Tilt, step 7) which handles
+      - Dev loop: use the dev renderer (dev_simple) which handles
         source mounts + incremental build natively.
 
     When neither is in play (no registry, no dev), we emit no build:

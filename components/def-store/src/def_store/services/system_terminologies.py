@@ -10,12 +10,12 @@ Users can add terms to system terminologies but should not delete
 the built-in terms.
 """
 
-from datetime import UTC, datetime
 from typing import Any, cast
 
+from ..models.api_models import CreateTerminologyRequest, CreateTermRequest
 from ..models.term import Term
 from ..models.terminology import Terminology, TerminologyMetadata
-from .registry_client import RegistryError, get_registry_client
+from .terminology_service import TerminologyService
 
 # System terminology definitions
 # The `_` prefix indicates a system-managed terminology
@@ -161,6 +161,30 @@ SYSTEM_TERMINOLOGIES: list[dict[str, Any]] = [
                 "metadata": {"transitive": False},
                 "sort_order": 9
             },
+            {
+                "value": "regulates",
+                "label": "Regulates",
+                "description": "GO/RO regulatory relation (RO_0002211)",
+                "aliases": [],
+                "metadata": {"transitive": False},
+                "sort_order": 10
+            },
+            {
+                "value": "positively_regulates",
+                "label": "Positively regulates",
+                "description": "GO/RO positive regulatory relation (RO_0002213)",
+                "aliases": [],
+                "metadata": {"transitive": False},
+                "sort_order": 11
+            },
+            {
+                "value": "negatively_regulates",
+                "label": "Negatively regulates",
+                "description": "GO/RO negative regulatory relation (RO_0002212)",
+                "aliases": [],
+                "metadata": {"transitive": False},
+                "sort_order": 12
+            },
         ]
     }
 ]
@@ -191,8 +215,6 @@ async def ensure_system_terminologies() -> dict[str, Any]:
             "errors": list[str]
         }
     """
-    registry = get_registry_client()
-
     summary: dict[str, Any] = {
         "terminologies_created": 0,
         "terminologies_existed": 0,
@@ -211,47 +233,35 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                 summary["terminologies_existed"] += 1
                 terminology_id = existing.terminology_id
             else:
-                # Register with Registry to get ID
-                try:
-                    terminology_id = await registry.register_terminology(
+                # Route through the normal create path so a system terminology
+                # gets the SAME Registry registration + value-form auto-synonym
+                # ({ns, type, value}) every other terminology does — the synonym
+                # that makes it resolvable by value, not just by canonical id
+                # (CASE-791). Hand-rolling register + insert here is exactly the
+                # second create path that drifted out of sync and left system
+                # terminologies unresolvable by value; one door prevents recurrence.
+                created = await TerminologyService.create_terminology(
+                    CreateTerminologyRequest(
+                        namespace="wip",
                         value=term_def["value"],
                         label=term_def["label"],
-                        namespace="wip",
-                        created_by="system:bootstrap"
-                    )
-                except RegistryError as e:
-                    error_msg = f"Failed to register terminology '{term_def['value']}' with Registry: {e}"
-                    print(f"  ERROR: {error_msg}")
-                    summary["errors"].append(error_msg)
-                    continue
-
-                # Create terminology document
-                metadata = TerminologyMetadata(**term_def.get("metadata", {}))
-
-                terminology = Terminology(
-                    terminology_id=terminology_id,
+                        description=term_def.get("description"),
+                        case_sensitive=term_def.get("case_sensitive", False),
+                        allow_multiple=term_def.get("allow_multiple", False),
+                        extensible=True,  # System terminologies can be extended
+                        metadata=TerminologyMetadata(**term_def.get("metadata", {})),
+                    ),
                     namespace="wip",
-                    value=term_def["value"],
-                    label=term_def["label"],
-                    description=term_def.get("description"),
-                    case_sensitive=term_def.get("case_sensitive", False),
-                    allow_multiple=term_def.get("allow_multiple", False),
-                    extensible=True,  # System terminologies can be extended
-                    metadata=metadata,
-                    status="active",
-                    created_at=datetime.now(UTC),
-                    created_by="system:bootstrap",
-                    updated_at=datetime.now(UTC),
-                    updated_by="system:bootstrap",
-                    term_count=0
+                    actor="system:bootstrap",
                 )
-
-                await terminology.insert()
+                terminology_id = created.terminology_id
                 print(f"  Created system terminology '{term_def['value']}' with ID {terminology_id}")
                 summary["terminologies_created"] += 1
 
-            # Process terms
-            terms_to_create = []
+            # Process terms — also through the normal bulk create, so each term
+            # gets its own value-form auto-synonym (system terms had the same
+            # CASE-791 gap). create_terms_bulk maintains the parent term_count.
+            term_requests = []
             for term_data in term_def.get("terms", []):
                 # Check if term already exists
                 existing_term = await Term.find_one({
@@ -263,57 +273,23 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                     summary["terms_existed"] += 1
                     continue
 
-                terms_to_create.append(term_data)
+                term_requests.append(CreateTermRequest(
+                    value=term_data["value"],
+                    aliases=term_data.get("aliases", []),
+                    label=term_data.get("label"),
+                    description=term_data.get("description"),
+                    sort_order=term_data.get("sort_order", 0),
+                    metadata=term_data.get("metadata", {}),
+                ))
 
-            if terms_to_create:
-                # Register all new terms with Registry in bulk
-                try:
-                    results = await registry.register_terms_bulk(
-                        terminology_id=terminology_id,
-                        terms=[{"value": t["value"]} for t in terms_to_create],
-                        namespace="wip",
-                        created_by="system:bootstrap"
-                    )
-                except RegistryError as e:
-                    error_msg = f"Failed to register terms for '{term_def['value']}' with Registry: {e}"
-                    print(f"  ERROR: {error_msg}")
-                    summary["errors"].append(error_msg)
-                    continue
-
-                # Create term documents
-                for i, term_data in enumerate(terms_to_create):
-                    term_id = results[i]["registry_id"]
-
-                    term = Term(
-                        term_id=term_id,
-                        namespace="wip",
-                        terminology_id=terminology_id,
-                        terminology_value=term_def["value"],
-                        value=term_data["value"],
-                        aliases=term_data.get("aliases", []),
-                        label=term_data.get("label", term_data["value"]),
-                        description=term_data.get("description"),
-                        sort_order=term_data.get("sort_order", 0),
-                        metadata=term_data.get("metadata", {}),
-                        status="active",
-                        created_at=datetime.now(UTC),
-                        created_by="system:bootstrap",
-                        updated_at=datetime.now(UTC),
-                        updated_by="system:bootstrap"
-                    )
-
-                    await term.insert()
-                    summary["terms_created"] += 1
-
-                print(f"  Created {len(terms_to_create)} terms for '{term_def['value']}'")
-
-                # Update term count on terminology
-                terminology_doc = await Terminology.find_one({"terminology_id": terminology_id})
-                if terminology_doc:
-                    terminology_doc.term_count = await Term.find(
-                        {"terminology_id": terminology_id, "status": "active"}
-                    ).count()
-                    await terminology_doc.save()
+            if term_requests:
+                await TerminologyService.create_terms_bulk(
+                    terminology_id=terminology_id,
+                    terms=term_requests,
+                    created_by="system:bootstrap",
+                )
+                summary["terms_created"] += len(term_requests)
+                print(f"  Created {len(term_requests)} terms for '{term_def['value']}'")
 
         except Exception as e:
             error_msg = f"Error processing system terminology '{term_def['value']}': {e}"

@@ -1,7 +1,7 @@
 """TermRelation model for ontology support in the Def-Store service."""
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from beanie import Document
 from pydantic import Field
@@ -80,7 +80,7 @@ class TermRelation(Document):
 
     class Settings:
         name = "term_relations"
-        indexes = [
+        indexes: ClassVar[list[IndexModel]] = [
             # Find all relations FROM a term
             IndexModel(
                 [("namespace", 1), ("source_term_id", 1), ("relation_type", 1)],

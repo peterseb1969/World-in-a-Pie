@@ -7,6 +7,7 @@ Provides unified search across all WIP services and reverse lookups.
 import asyncio
 import logging
 import math
+import re
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
@@ -98,6 +99,18 @@ class SearchResponse(BaseModel):
     total: int = Field(
         0,
         description="Total hits across all types (sum of per-type totals).",
+    )
+    unmatched_template: str | None = Field(
+        default=None,
+        description=(
+            "Echo of the requested `template` when it matched no reporting "
+            "table, so a caller can tell 'this type has nothing' apart from "
+            "'this type is not a thing here' — an empty result set alone says "
+            "both. NOT an assertion that the template does not exist: "
+            "reporting knows tables, not templates, and a template with "
+            "sync_enabled=false or nothing yet synced legitimately has no "
+            "table. Null whenever the filter matched, or none was given."
+        ),
     )
 
 
@@ -293,6 +306,22 @@ class ReferencedByResponse(BaseModel):
 # pagination over the first MAX hits — refine the query for more.
 MAX_RESULTS_PER_TYPE = 1000
 
+# Physical reporting tables are per template VERSION (doc_<value>__v<N>); the
+# bare name is an entity view over them. Search must read the physical tables —
+# the tsvector columns FTS matches on exist only there, not on the view — but a
+# caller asks about a logical type, so neither the filter nor the reported type
+# may carry the version. Without this, `template=CASE_RECORD` built the exact
+# name `doc_case_record`, matched no BASE TABLE post-split, and returned zero
+# hits, while results reported themselves as `CASE_RECORD__V1` — a filter value
+# that changes on every template version event.
+_VERSION_SUFFIX_RE = re.compile(r"__v\d+$")
+
+
+def entity_base(table_name: str) -> str:
+    """Logical entity name for a reporting table: doc_case_record__v2 -> case_record."""
+    base = table_name[4:] if table_name.startswith("doc_") else table_name
+    return _VERSION_SUFFIX_RE.sub("", base)
+
 
 def _paginate(
     items: list["SearchResult"], page: int, page_size: int
@@ -406,12 +435,55 @@ class SearchService:
                 pages=pages,
             )
 
+        # Only asked on the path that is actually ambiguous: a template filter
+        # was given and the document bucket came back empty. Everywhere else
+        # the result set already answers the caller's question.
+        unmatched_template: str | None = None
+        doc_results = results.get("document")
+        if (
+            request.template
+            and doc_results is not None
+            and doc_results.total == 0
+            and not await self.template_matches_a_table(request.template, namespace)
+        ):
+            unmatched_template = request.template
+
         return SearchResponse(
             query=query,
             mode=request.mode,
             results=results,
             total=cross_total,
+            unmatched_template=unmatched_template,
         )
+
+    async def template_matches_a_table(
+        self, template: str, namespace: str | None = None,
+    ) -> bool:
+        """Whether `template` names any reporting table, versioned or not.
+
+        Uses the same logical-name comparison as the search filter itself
+        (`entity_base`), so the two cannot disagree about what "matches" means.
+
+        Returns True when PostgreSQL is unavailable: without the reporting
+        layer we cannot tell a bad filter from a good one, and claiming
+        "unmatched" on no evidence would be the same overreach this signal
+        exists to prevent.
+        """
+        if not self.postgres_pool:
+            return True
+        want = entity_base(template.lower())
+        filters = ["table_name LIKE 'doc_%'"]
+        params: list[Any] = []
+        if namespace:
+            params.append(namespace)
+            filters.append(f"table_schema = ${len(params)}")
+        async with self.postgres_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT table_name FROM information_schema.tables "
+                f"WHERE {' AND '.join(filters)}",
+                *params,
+            )
+        return any(entity_base(r["table_name"]) == want for r in rows)
 
     async def _search_terminologies(
         self, query: str, namespace: str | None, status: str | None,
@@ -642,11 +714,13 @@ class SearchService:
                 if namespace:
                     disc_params.append(namespace)
                     filters.append(f"table_schema = ${len(disc_params)}")
-                if template:
-                    disc_params.append(f"doc_{template.lower()}")
-                    filters.append(f"table_name = ${len(disc_params)}")
-                else:
-                    filters.append("table_name LIKE 'doc_%'")
+                # The template filter is applied after the fetch, by comparing
+                # the logical entity name. An exact SQL name match cannot work
+                # post-split (the physical tables carry __vN), and a LIKE
+                # pattern would be wrong too: template values contain '_',
+                # which LIKE treats as a single-character wildcard, so
+                # 'doc_case_record__v%' also matches doc_caseXrecord__v1.
+                filters.append("table_name LIKE 'doc_%'")
 
                 tables = await conn.fetch(
                     "SELECT table_schema, table_name FROM information_schema.tables "
@@ -654,6 +728,13 @@ class SearchService:
                     "ORDER BY table_schema, table_name",
                     *disc_params,
                 )
+
+                if template:
+                    want = entity_base(template.lower())
+                    tables = [
+                        r for r in tables
+                        if entity_base(r["table_name"]) == want
+                    ]
 
                 if not tables:
                     return []
@@ -693,7 +774,11 @@ class SearchService:
                     if mode == "fts" and not tsv_cols:
                         continue  # skip — no tsvector columns to query
 
-                    template_value = tname[4:].upper()
+                    # The logical type, never the physical table: a hit matched
+                    # in doc_case_record__v2 is a CASE_RECORD. `description`
+                    # below still names the table it matched in, so the
+                    # provenance is not lost.
+                    template_value = entity_base(tname).upper()
 
                     try:
                         if use_fts:

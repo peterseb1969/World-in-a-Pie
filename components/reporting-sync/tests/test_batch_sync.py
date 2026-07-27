@@ -586,20 +586,18 @@ class TestBatchSyncZeroDocuments:
         service.schema_manager.ensure_table_for_template = AsyncMock(
             return_value='"wip-val"."doc_val_template"'
         )
-        service._fetch_template_by_value = AsyncMock(
-            return_value={
-                "template_id": "TPL-001",
-                "value": "VAL_TEMPLATE",
-                "namespace": "wip-val",
-                "fields": [{"name": "name", "type": "string"}],
-            }
-        )
+        template = {
+            "template_id": "TPL-001",
+            "value": "VAL_TEMPLATE",
+            "namespace": "wip-val",
+            "fields": [{"name": "name", "type": "string"}],
+        }
         service._fetch_documents = AsyncMock(return_value=([], 0))
 
         job = BatchSyncJob(
             job_id="t636", template_value="VAL_TEMPLATE", status=BatchSyncStatus.PENDING
         )
-        await service._run_batch_sync(job, force=False, page_size=100)
+        await service._run_batch_sync(job, template, force=False, page_size=100)
 
         assert job.status == BatchSyncStatus.COMPLETED
         assert job.total_documents == 0
@@ -607,6 +605,315 @@ class TestBatchSyncZeroDocuments:
         ns_arg, template_arg = service.schema_manager.ensure_table_for_template.call_args.args
         assert ns_arg == "wip-val"
         assert template_arg["value"] == "VAL_TEMPLATE"
+
+    @pytest.mark.asyncio
+    async def test_scoped_job_on_foreign_template_creates_no_table(self, service):
+        """A namespace-scoped job over a FOREIGN template with no documents
+        in scope must create NOTHING: a scoped run iterates the
+        instance-wide template list, and eagerly ensuring foreign templates
+        stamps every namespace's empty tables into the target schema
+        (ct-1000 grew 31 foreign kb/probe tables when this shipped eager)."""
+        from reporting_sync.batch_sync import BatchSyncJob, BatchSyncStatus
+
+        service.schema_manager.ensure_table_for_template = AsyncMock()
+        template = {
+            "template_id": "TPL-001",
+            "value": "VAL_TEMPLATE",
+            "namespace": "wip-val",
+            "fields": [{"name": "name", "type": "string"}],
+        }
+        service._fetch_documents = AsyncMock(return_value=([], 0))
+
+        job = BatchSyncJob(
+            job_id="tscoped", template_value="VAL_TEMPLATE",
+            namespace="ct-1000", status=BatchSyncStatus.PENDING,
+        )
+        await service._run_batch_sync(job, template, force=False, page_size=100)
+
+        assert job.status == BatchSyncStatus.COMPLETED
+        service.schema_manager.ensure_table_for_template.assert_not_awaited()
+        # The document fetch carries the scope.
+        assert service._fetch_documents.call_args.kwargs["namespace"] == "ct-1000"
+
+    @pytest.mark.asyncio
+    async def test_scoped_job_on_own_template_still_ensures_empty_table(self, service):
+        """The scope guard must NOT break the restore case: a scoped job
+        over the namespace's OWN template keeps the zero-document eager
+        ensure (a freshly restored namespace must be SQL-queryable)."""
+        from reporting_sync.batch_sync import BatchSyncJob, BatchSyncStatus
+
+        service.schema_manager.ensure_table_for_template = AsyncMock(
+            return_value='"ct-1000"."doc_val_template__v1"'
+        )
+        template = {
+            "template_id": "TPL-001",
+            "value": "VAL_TEMPLATE",
+            "namespace": "ct-1000",
+            "fields": [{"name": "name", "type": "string"}],
+        }
+        service._fetch_documents = AsyncMock(return_value=([], 0))
+
+        job = BatchSyncJob(
+            job_id="town", template_value="VAL_TEMPLATE",
+            namespace="ct-1000", status=BatchSyncStatus.PENDING,
+        )
+        await service._run_batch_sync(job, template, force=False, page_size=100)
+
+        assert job.status == BatchSyncStatus.COMPLETED
+        ns_arg, _ = service.schema_manager.ensure_table_for_template.call_args.args
+        assert ns_arg == "ct-1000"
+
+
+# =========================================================================
+# Trigger dedup + namespace scoping (CASE-734 / CASE-735)
+# =========================================================================
+
+
+TEMPLATE_A = {
+    "template_id": "TPL-A",
+    "value": "SHARED_VALUE",
+    "namespace": "ns-a",
+    "version": 1,
+    "fields": [{"name": "name", "type": "string"}],
+    "reporting": {"sync_enabled": True},
+}
+TEMPLATE_B = {
+    "template_id": "TPL-B",
+    "value": "SHARED_VALUE",
+    "namespace": "ns-b",
+    "version": 1,
+    "fields": [{"name": "name", "type": "string"}],
+    "reporting": {"sync_enabled": True},
+}
+
+
+class TestStartBatchSyncDedup:
+    """A template with an active job must not get a second concurrent
+    writer; the trigger returns the existing job instead (idempotent)."""
+
+    def _quiet(self, service):
+        """Neuter the job body so jobs stay PENDING (= active) forever."""
+        service._run_batch_sync = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_second_trigger_returns_existing_job(self, service):
+        self._quiet(service)
+        service._fetch_template_by_value = AsyncMock(return_value=TEMPLATE_A)
+
+        job1 = await service.start_batch_sync("SHARED_VALUE", namespace="ns-a")
+        job2 = await service.start_batch_sync("SHARED_VALUE", namespace="ns-a")
+
+        assert job2.job_id == job1.job_id
+        assert len(service._jobs) == 1
+
+    @pytest.mark.asyncio
+    async def test_dedup_keys_on_template_id_not_value(self, service):
+        """Two namespaces sharing a template VALUE are different templates —
+        both jobs must run."""
+        self._quiet(service)
+
+        job_a = await service.start_batch_sync(
+            "SHARED_VALUE", namespace="ns-a", template=TEMPLATE_A
+        )
+        job_b = await service.start_batch_sync(
+            "SHARED_VALUE", namespace="ns-b", template=TEMPLATE_B
+        )
+
+        assert job_a.job_id != job_b.job_id
+        assert job_a.template_id == "TPL-A"
+        assert job_b.template_id == "TPL-B"
+
+    @pytest.mark.asyncio
+    async def test_whole_instance_job_blocks_scoped_job(self, service):
+        """Scope OVERLAP dedups: an unscoped job writes every namespace's
+        tables, so a scoped job for the same template would be a second
+        concurrent writer."""
+        self._quiet(service)
+
+        job_all = await service.start_batch_sync(
+            "SHARED_VALUE", namespace=None, template=TEMPLATE_A
+        )
+        job_scoped = await service.start_batch_sync(
+            "SHARED_VALUE", namespace="ns-a", template=TEMPLATE_A
+        )
+
+        assert job_scoped.job_id == job_all.job_id
+
+    @pytest.mark.asyncio
+    async def test_disjoint_scopes_run_concurrently(self, service):
+        """Same template, two different namespace scopes — disjoint row
+        sets, both may run."""
+        self._quiet(service)
+
+        job_a = await service.start_batch_sync(
+            "SHARED_VALUE", namespace="ns-a", template=TEMPLATE_A
+        )
+        job_other = await service.start_batch_sync(
+            "SHARED_VALUE", namespace="ns-other", template=TEMPLATE_A
+        )
+
+        assert job_a.job_id != job_other.job_id
+
+    @pytest.mark.asyncio
+    async def test_finished_job_does_not_block(self, service):
+        from reporting_sync.batch_sync import BatchSyncStatus
+
+        self._quiet(service)
+        job1 = await service.start_batch_sync(
+            "SHARED_VALUE", namespace="ns-a", template=TEMPLATE_A
+        )
+        job1.status = BatchSyncStatus.COMPLETED
+
+        job2 = await service.start_batch_sync(
+            "SHARED_VALUE", namespace="ns-a", template=TEMPLATE_A
+        )
+        assert job2.job_id != job1.job_id
+
+    @pytest.mark.asyncio
+    async def test_unknown_template_is_failed_job_not_error(self, service):
+        """The async-error contract holds: an unknown template yields a
+        FAILED job from the trigger, not an exception."""
+        from reporting_sync.batch_sync import BatchSyncStatus
+
+        self._quiet(service)
+        service._fetch_template_by_value = AsyncMock(return_value=None)
+
+        job = await service.start_batch_sync("NOPE", namespace="ns-a")
+
+        assert job.status == BatchSyncStatus.FAILED
+        assert "not found" in (job.error_message or "")
+
+    @pytest.mark.asyncio
+    async def test_namespace_forwarded_to_template_lookup(self, service):
+        self._quiet(service)
+        service._fetch_template_by_value = AsyncMock(return_value=TEMPLATE_A)
+
+        await service.start_batch_sync("SHARED_VALUE", namespace="ns-a")
+
+        service._fetch_template_by_value.assert_awaited_once_with(
+            "SHARED_VALUE", "ns-a"
+        )
+
+
+class TestStartBatchSyncAll:
+    """Batch-all: prompt acknowledgement, namespace scoping, and the
+    instance-wide template list (documents may be based on foreign
+    templates — verified live, CASE-735)."""
+
+    def _prep(self, service, templates):
+        service._run_batch_sync = AsyncMock()
+        service._list_templates = AsyncMock(return_value=templates)
+        service._fetch_template_by_value = AsyncMock(
+            side_effect=AssertionError("batch-all must pass templates through")
+        )
+        service.batch_sync_terminologies = AsyncMock(return_value={"synced": 0})
+        service.batch_sync_terms = AsyncMock(return_value={"synced": 0})
+
+    @pytest.mark.asyncio
+    async def test_jobs_carry_namespace_scope(self, service):
+        self._prep(service, [TEMPLATE_A, TEMPLATE_B])
+
+        jobs = await service.start_batch_sync_all(namespace="ct-1000")
+
+        assert len(jobs) == 2
+        assert all(j.namespace == "ct-1000" for j in jobs)
+        # The value is shared; the jobs are distinct templates.
+        assert {j.template_id for j in jobs} == {"TPL-A", "TPL-B"}
+
+    @pytest.mark.asyncio
+    async def test_definitions_sync_runs_in_background_with_namespace(self, service):
+        import asyncio
+
+        self._prep(service, [])
+
+        await service.start_batch_sync_all(namespace="ct-1000")
+        # The pre-sync is a background task — drain it, then check scope.
+        await asyncio.gather(*service._background_tasks)
+
+        service.batch_sync_terminologies.assert_awaited_once()
+        assert service.batch_sync_terminologies.call_args.kwargs["namespace"] == "ct-1000"
+        service.batch_sync_terms.assert_awaited_once()
+        assert service.batch_sync_terms.call_args.kwargs["namespace"] == "ct-1000"
+
+    @pytest.mark.asyncio
+    async def test_retrigger_returns_existing_jobs(self, service):
+        self._prep(service, [TEMPLATE_A])
+
+        first = await service.start_batch_sync_all(namespace="ct-1000")
+        second = await service.start_batch_sync_all(namespace="ct-1000")
+
+        assert [j.job_id for j in second] == [j.job_id for j in first]
+        assert len(service._jobs) == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_disabled_templates_skipped(self, service):
+        disabled = {
+            **TEMPLATE_A,
+            "template_id": "TPL-OFF",
+            "value": "OFF",
+            "reporting": {"sync_enabled": False},
+        }
+        self._prep(service, [disabled, TEMPLATE_B])
+
+        jobs = await service.start_batch_sync_all()
+
+        assert [j.template_id for j in jobs] == ["TPL-B"]
+
+
+# =========================================================================
+# Namespace param forwarding on the raw fetch helpers
+# =========================================================================
+
+
+class TestFetchHelpersNamespaceParam:
+    def _client(self, response):
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=response)
+        return mock_client
+
+    @pytest.mark.asyncio
+    async def test_fetch_documents_includes_namespace(self, service):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"items": [], "total": 0}
+
+        with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_cls:
+            mock_client = self._client(resp)
+            mock_cls.return_value = mock_client
+            await service._fetch_documents("TPL-A", 1, 100, namespace="ct-1000")
+
+        params = mock_client.get.call_args.kwargs["params"]
+        assert params["namespace"] == "ct-1000"
+
+    @pytest.mark.asyncio
+    async def test_fetch_documents_omits_namespace_when_none(self, service):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"items": [], "total": 0}
+
+        with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_cls:
+            mock_client = self._client(resp)
+            mock_cls.return_value = mock_client
+            await service._fetch_documents("TPL-A", 1, 100)
+
+        params = mock_client.get.call_args.kwargs["params"]
+        assert "namespace" not in params
+
+    @pytest.mark.asyncio
+    async def test_fetch_template_by_value_forwards_namespace(self, service):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = TEMPLATE_A
+
+        with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_cls:
+            mock_client = self._client(resp)
+            mock_cls.return_value = mock_client
+            await service._fetch_template_by_value("SHARED_VALUE", "ns-a")
+
+        params = mock_client.get.call_args.kwargs["params"]
+        assert params["namespace"] == "ns-a"
 
 
 # =========================================================================

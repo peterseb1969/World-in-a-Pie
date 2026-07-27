@@ -216,7 +216,7 @@ The 8 ontology endpoints currently require `namespace: str = Query(...)`. Change
 
 ### Phase 4: Make file list endpoint namespace-optional
 
-`GET /files` currently requires namespace. Change to optional with `resolve_namespace_filter`.
+`GET /files` **now takes namespace as optional** — `namespace: str | None = Query(default=None, ...)` ("omit for all accessible"), the change this section proposed. Implemented; retained here as the rationale.
 
 The file service layer needs the same `ns_filter` pattern. Check how file queries are built.
 

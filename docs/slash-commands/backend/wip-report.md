@@ -16,9 +16,11 @@ Two distinct events look like "session ending" but have different recovery seman
 |---|---|---|---|
 | `/compact` | Yes — conversation summarized; agent identity persists | **Mode 2** (running log) | Post-compaction self reads `session-updates.md` and picks up where the pre-compacted self left off. A Session Summary is wasted effort — it'd be re-overwritten next compaction. |
 | `/clear` | No — conversation reset; agent re-reads CLAUDE.md cold | **Mode 3** (session-end) | The post-clear agent has no in-conversation memory; the Session Summary is the artifact it starts from. |
-| End-of-day / new session | No — next session is a different `<PREFIX>-YYYYMMDD-HHMM` agent | **Mode 3** (session-end) | Same reason — next agent reads cold from `session.md` + `commits.md` + `session-updates.md`. |
+| Context near full (a `/clear` is coming) | No — the next session is a fresh `<PREFIX>-YYYYMMDD-HHMMSS` agent reading cold | **Mode 3** (session-end) | Same reason. The trigger is context pressure, not the clock: a session ends when the window fills, not when the day does. `/clear` is the human's call — your job is to be ready for it (Mode 2 snapshots as context fills), never to propose it on a schedule. |
 
 Reflex check: if the agent identity persists across the event, you want the running log. If a fresh agent starts from durable artifacts, you want the wrap-up.
+
+**A session is bounded by context usage, not by the calendar.** It does not end because a day ended or because the human stopped for the night — a session ID several days old means the context lasted, which is the good outcome, not an orphan. The date in the session ID (`<PREFIX>-YYYYMMDD-HHMMSS`) is a mint timestamp, not a validity range: a session keeps its birth date for its whole life, however many days that is.
 
 ### Prerequisites
 
@@ -103,7 +105,7 @@ Use for session-meaningful work that is **neither a change, an end-state, nor a 
 
 1. **Discovery without a commit anchor.** Something you learned while reading or exploring that isn't about any specific commit you're about to make. Example: "templates/bootstrap/bootstrap.server.ts.template imports ./wip-api.js and ./lib/sse.js; neither file exists in the scaffold."
 2. **Scope-trim decision mid-session.** Why you're doing less than originally pitched, when the rationale isn't architectural enough for a fireside but matters for reading the resulting commit. Example: "Trimmed Step 2 to seed-files-only because the BootstrapGate wiring requires scaffolding that does not yet exist."
-3. **Block/unblock state and pre-compaction snapshots.** "Blocked on X waiting for Y." Pre-`/compact` "where I am now" written when context is filling — so the post-compaction same-agent self has more than just the last commit message and a stale session.md. (For `/clear` or end-of-day instead, use Mode 3 — see the "Picking a mode" table at the top.)
+3. **Block/unblock state and pre-compaction snapshots.** "Blocked on X waiting for Y." Pre-`/compact` "where I am now" written when context is filling — so the post-compaction same-agent self has more than just the last commit message and a stale session.md. (For an imminent `/clear` instead, use Mode 3 — see the "Picking a mode" table at the top.)
 
 **Do NOT use for:**
 
@@ -151,7 +153,7 @@ Before writing an entry, ask: *"Would future-me reading this in 6 hours, after a
 
 ## Mode 3 — `/wip-report session-end` (wrap-up)
 
-Closes the session: writes the operator-curated `## Session Summary`, flips the local frontmatter to `status: closed`, and mirrors the closed record to kb. Use before `/clear` or genuine end-of-day — when the next agent reads `session.md` cold. Skip before `/compact`: same agent continues, Mode 2 is the right artifact (see "Picking a mode" at the top).
+Closes the session: writes the operator-curated `## Session Summary`, flips the local frontmatter to `status: closed`, and mirrors the closed record to kb. Use before `/clear` — when the next agent reads `session.md` cold. Skip before `/compact`: same agent continues, Mode 2 is the right artifact (see "Picking a mode" at the top).
 
 Three things happen, in order:
 
@@ -159,11 +161,13 @@ Three things happen, in order:
 
 2. **Atomic local write** — in a *single* read-modify-write of `reports/<SESSION-ID>/session.md` (write a temp file, `mv` over the original — never truncate-in-place), do BOTH: (a) overwrite/insert the `## Session Summary` section in the body, and (b) set frontmatter `status: closed` and `ended_at: <now as a naive datetime, YYYY-MM-DDTHH:MM:SS, NO timezone suffix>`. Collapsing both into one atomic write means a partial failure can't leave a half-state (summary without the status flip, or vice-versa).
 
-3. **Mirror to kb (tier 3 only, warn-and-continue)** — **Tier gate:** kb mirrors run only in tier-3 repos — if `.claude/kb.json` is absent, skip this step silently and continue (tier-2 solo mode is by design; nothing to warn about). Then: `kbc kb-write.py SESSION reports/<SESSION-ID>/session.md`. The client parses `session.md` (frontmatter → SESSION fields, body → the `body` field) and the gateway upserts by `session_id`; a closed frontmatter carries `status`/`ended_at` through. (Only `session.md` is written; `commits.md`/`session-updates.md` stay local recovery files.) If kb is unreachable, log to stderr and proceed — the local write is authoritative; the mirror retries at the next mirror-emitting action or via re-running the same `kb-write.py` call.
+3. **Mirror to kb (tier 3 only, warn-and-continue)** — **Tier gate:** kb mirrors run only in tier-3 repos — if `.claude/kb.json` is absent, skip this step silently and continue (tier-2 solo mode is by design; nothing to warn about). Then: `kbc kb-write.py SESSION reports/<SESSION-ID>/session.md`. The client parses `session.md` (frontmatter → SESSION fields, body → the `body` field) and the gateway upserts by `session_id`; a closed frontmatter carries `status`/`ended_at` through. (The whole session dir goes up, not just `session.md`: a file argument pointing at `session.md` deliberately resolves to its parent directory, and every `*.md` sibling — `commits.md`, `session-updates.md`, any `report-*.md` — is bundled into the SESSION body as its own section. So the commit log and running log ARE cross-agent visible in kb; they are recovery files, not local-only ones. Bundling is also what keeps a frontmatter-only `session.md` from being rejected for an empty body.) If kb is unreachable, log to stderr and proceed — the local write is authoritative; the mirror retries at the next mirror-emitting action or via re-running the same `kb-write.py` call.
 
 4. **Mirror this YAC's memory to kb** (same **tier-3 gate** + **warn-and-continue** as step 3) — beside the SESSION mirror, capture the memory this YAC has accrued: `MEMDIR="$HOME/.claude/projects/$(pwd | sed 's#/#-#g')/memory"; [ -d "$MEMDIR" ] && kbc kb-write.py YAC_MEMORY "$MEMDIR"`. The loader writes one record per `memory/*.md`, upserting by `(owner, mem_key = filename stem)` (owner from `.claude/.session-role`), normalizes the two frontmatter shapes, and skips `MEMORY.md`. It is idempotent — unchanged files come back `skipped`, so running it every session-end is delta-only — and **self-skips if the instance has no `YAC_MEMORY` type yet**, so it is safe to land before every instance has the schema. If kb is unreachable, log to stderr and proceed: best-effort, never blocks the close. This makes the YAC's memory cross-agent-visible in kb, the same way `session.md` already is.
 
-**Idempotent on an already-closed session.** If the frontmatter already says `status: closed` (you ran `/wip-report session-end` once, or `/wip-wake` auto-closed it), do NOT append a second `## Session Summary` and do NOT re-flip the frontmatter — both are no-ops. Only the kb mirror re-fires (surfaces as `skipped` if the body is unchanged, `updated` if it was edited since).
+**Idempotent on an already-closed session — with one exception.** If the frontmatter says `status: closed` and the `## Session Summary` section **has content**, do NOT append a second one and do NOT re-flip the frontmatter — both are no-ops. If instead the body ends at a bare `## Session Summary — auto-closed by /wip-wake (<ts>)` line with nothing under it, that is a placeholder, not a summary: **replace it in place** with the real one, leave `ended_at` alone (the auto-close timestamp is the truth about when the session ended), and re-mirror. Never overwrite a summary a human or an agent actually wrote.
+
+The distinction matters because the two states look identical to a `status: closed` check but are opposites: one is a finished record, the other is the absence of one standing where it should be. Treating the placeholder as sacred is what makes empty summaries permanent. Either way the kb mirror re-fires (surfaces as `skipped` if the body is unchanged, `updated` if it was edited since).
 
 Confirm to Peter that the summary was written and the session is closed.
 

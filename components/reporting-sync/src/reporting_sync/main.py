@@ -37,9 +37,11 @@ from .models import (
     AlertsResponse,
     BatchSyncJob,
     BatchSyncResponse,
+    BatchSyncStatus,
     ConsumerInfo,
     HealthResponse,
     MetricsResponse,
+    StrictModel,
     SyncStatus,
 )
 from .parity import NamespaceParityResult, check_namespace_parity
@@ -673,13 +675,19 @@ async def test_alerts() -> dict[str, Any]:
 
 @router.get("/table-name")
 async def resolve_table_name(namespace: str, template_value: str) -> dict[str, Any]:
-    """Resolve the reporting table for a (namespace, template_value) (CASE-628).
+    """Resolve the default reporting relation for a (namespace, template_value).
 
-    Under schema-per-namespace the physical table is
-    ``"<namespace>"."doc_<value>"``. Consumers building raw ``run_report_query``
-    SQL should resolve the name here rather than construct it. ``exists``
-    reports whether the table has been materialised yet (it is created lazily on
-    first sync).
+    Post per-version split, the bare name ``doc_<value>`` is the entity
+    VIEW (identity-core, or the template's opt-in cross-version view) over
+    the physical per-version tables ``doc_<value>__v<N>``. Consumers
+    building raw ``run_report_query`` SQL should resolve here rather than
+    construct names: query the bare name unless you need one version's
+    exact shape — ``version_tables`` lists what physically exists.
+
+    ``kind`` is ``view`` (post-split), ``table`` (a legacy pre-split
+    physical table still shadowing the view — remediate via batch sync
+    rebuild), or ``absent``. ``exists`` stays: true when the bare name
+    resolves to anything queryable.
 
     (A template's optional ``reporting.table_name`` cosmetic override is not
     reflected here yet — this returns the default ``doc_<value>`` form.)
@@ -693,17 +701,8 @@ async def resolve_table_name(namespace: str, template_value: str) -> dict[str, A
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    async with state.postgres_pool.acquire() as conn:
-        exists = await conn.fetchval(
-            """
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables
-                WHERE table_schema = $1 AND table_name = $2
-            )
-            """,
-            schema,
-            table_name,
-        )
+    kind = await sm.relation_kind(schema, table_name)
+    version_tables = await sm.list_version_tables(namespace, template_value)
 
     return {
         "namespace": namespace,
@@ -711,16 +710,24 @@ async def resolve_table_name(namespace: str, template_value: str) -> dict[str, A
         "schema": schema,
         "table_name": table_name,
         "qualified_name": sm.qualified_name(namespace, template_value),
-        "exists": exists,
+        "exists": kind is not None,
+        "kind": kind or "absent",
+        "version_tables": {v: t for v, t in sorted(version_tables.items())},
+        "entities_view": sm.entities_view_name(template_value),
     }
 
 
 @router.get("/schema/{template_value}")
-async def get_schema(template_value: str, namespace: str) -> dict[str, Any]:
-    """Get the PostgreSQL schema (columns) for a template in a namespace.
+async def get_schema(
+    template_value: str, namespace: str, version: int | None = None
+) -> dict[str, Any]:
+    """Get the PostgreSQL columns for a template's reporting relation.
 
-    ``namespace`` is required (CASE-628): the table lives in that namespace's
-    schema, and the same template_value can exist in several namespaces.
+    ``namespace`` is required (CASE-628): the relation lives in that
+    namespace's schema, and the same template_value can exist in several
+    namespaces. Without ``version`` this describes the bare-name entity
+    view (the default query surface); with ``version`` it describes that
+    version's physical table ``doc_<value>__v<N>``.
     """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
@@ -728,7 +735,7 @@ async def get_schema(template_value: str, namespace: str) -> dict[str, Any]:
     sm = SchemaManager(state.postgres_pool)
     try:
         schema = sm.schema_for(namespace)
-        table_name = sm.get_table_name(template_value)
+        table_name = sm.get_table_name(template_value, version=version)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -905,34 +912,92 @@ async def trigger_template_metadata_sync(
     }
 
 
+def _batch_sync_response(job, force_requested: bool = False) -> BatchSyncResponse:
+    """Response line for one job: distinguishes started / already-running /
+    failed so a deduplicated trigger is visible to the caller. A force
+    trigger that landed on an active job must say so explicitly — silently
+    joining the existing (non-dropping) run would make force a conditional
+    no-op, which is the false model the flag had before it got semantics."""
+    if job.status == BatchSyncStatus.FAILED:
+        message = job.error_message or f"Batch sync failed for {job.template_value}"
+    elif job.deduplicated:
+        if force_requested:
+            message = (
+                f"Batch sync already active for {job.template_value} "
+                f"(job {job.job_id}) — force NOT applied; cancel the job "
+                f"and re-trigger"
+            )
+        else:
+            message = (
+                f"Batch sync already running for {job.template_value} — "
+                f"returning existing job"
+            )
+    elif force_requested:
+        message = (
+            f"Force rebuild started for {job.template_value} — existing "
+            f"reporting relations are dropped and rebuilt from source"
+        )
+    else:
+        message = f"Batch sync started for {job.template_value}"
+    return BatchSyncResponse(
+        job_id=job.job_id,
+        template_value=job.template_value,
+        namespace=job.namespace,
+        status=job.status,
+        message=message,
+    )
+
+
 @router.post("/sync/batch", response_model=list[BatchSyncResponse])
 async def trigger_batch_sync_all(
     force: bool = False,
-    page_size: int = 100,
+    page_size: int = 1000,
+    namespace: str | None = None,
 ) -> list[BatchSyncResponse]:
     """
     Trigger batch sync for all templates.
 
     This fetches all templates and syncs their documents to PostgreSQL.
     Templates with sync_enabled=false are skipped.
+
+    Args:
+        force: Drop each in-scope template's existing reporting relations
+            (version tables, entity views, any legacy pre-split table)
+            before its sync runs — rebuild from source. Requires an
+            explicit namespace. Mid-rebuild, SQL readers see
+            relation-does-not-exist for the affected templates until their
+            jobs complete. A template with an already-active sync is NOT
+            force-rebuilt (its per-item message says so) — cancel the job
+            and re-trigger.
+        page_size: Page size for document fetches
+        namespace: Scope every job to this namespace's documents (the
+            template list stays instance-wide — documents may be based on
+            templates owned by other namespaces). Omit to sync everything.
+
+    Returns promptly: jobs run in the background; a template whose sync is
+    already active gets its existing job back instead of a duplicate.
     """
     if not state.batch_sync_service:
         raise HTTPException(status_code=503, detail="Batch sync service not available")
 
+    if force and namespace is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "force=true requires an explicit namespace: the "
+                "drop-and-rebuild is namespace-scoped (reporting table "
+                "names derive from the template value, so an instance-wide "
+                "drop could destroy same-valued foreign templates' tables)"
+            ),
+        )
+
     jobs = await state.batch_sync_service.start_batch_sync_all(
         force=force,
         page_size=page_size,
+        namespace=namespace,
     )
 
-    return [
-        BatchSyncResponse(
-            job_id=job.job_id,
-            template_value=job.template_value,
-            status=job.status,
-            message=f"Batch sync started for {job.template_value}",
-        )
-        for job in jobs
-    ]
+    return [_batch_sync_response(job, force_requested=force) for job in jobs]
 
 
 @router.get("/sync/batch/jobs", response_model=list[BatchSyncJob])
@@ -961,7 +1026,8 @@ async def get_batch_job(job_id: str) -> BatchSyncJob:
 async def trigger_batch_sync(
     template_value: str,
     force: bool = False,
-    page_size: int = 100,
+    page_size: int = 1000,
+    namespace: str | None = None,
 ) -> BatchSyncResponse:
     """
     Trigger a batch sync for a specific template.
@@ -971,8 +1037,23 @@ async def trigger_batch_sync(
 
     Args:
         template_value: Template code to sync
-        force: Force re-sync even if table already has data
+        force: Drop the template's existing reporting relations in the
+            target namespace (version tables, entity views, any legacy
+            pre-split table) before syncing — rebuild from source. This is
+            the recovery path for mis-shaped DDL that upserts cannot heal.
+            Requires an explicit namespace. Mid-rebuild, SQL readers see
+            relation-does-not-exist for this template until the job
+            completes.
         page_size: Number of documents to fetch per page (10-1000)
+        namespace: Disambiguates the template lookup (a value is unique
+            only within a namespace) AND scopes the sync to that
+            namespace's documents. Omit for the value's single owner and
+            all namespaces' documents.
+
+    If a sync for this template is already active with an overlapping
+    scope, the existing job is returned instead of starting a second
+    concurrent writer — and force is NOT applied (the response message
+    says so). Cancel the job, then re-trigger.
     """
     if not state.batch_sync_service:
         raise HTTPException(status_code=503, detail="Batch sync service not available")
@@ -980,18 +1061,25 @@ async def trigger_batch_sync(
     if page_size < 10 or page_size > 1000:
         raise HTTPException(status_code=400, detail="page_size must be between 10 and 1000")
 
+    if force and namespace is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "force=true requires an explicit namespace: the "
+                "drop-and-rebuild is namespace-scoped (reporting table "
+                "names derive from the template value, so an instance-wide "
+                "drop could destroy same-valued foreign templates' tables)"
+            ),
+        )
+
     job = await state.batch_sync_service.start_batch_sync(
         template_value=template_value,
         force=force,
         page_size=page_size,
+        namespace=namespace,
     )
 
-    return BatchSyncResponse(
-        job_id=job.job_id,
-        template_value=job.template_value,
-        status=job.status,
-        message=f"Batch sync started for {template_value}",
-    )
+    return _batch_sync_response(job, force_requested=force)
 
 
 @router.delete("/sync/batch/jobs/{job_id}")
@@ -1088,9 +1176,10 @@ async def aggregated_integrity_check(
     Args:
         template_status: Filter templates by status ('active', 'deprecated', 'inactive')
         document_status: Filter documents by status ('active', 'inactive', 'archived')
-        template_limit: Maximum templates to check (default 1000)
-        document_limit: Maximum documents to check (default 1000)
+        template_limit: Maximum templates to check (default 0 = unbounded / full scan)
+        document_limit: Maximum documents to check (default 0 = unbounded / full scan)
         check_term_refs: Whether to check term references in documents (default true)
+        recent_first: Scan the most-recently-updated documents first (default false)
 
     Returns:
         Aggregated integrity check results from all services
@@ -1427,36 +1516,62 @@ async def list_tables(
     namespace: str | None = Query(default=None, description="Restrict to one namespace's schema"),
     table_name: str | None = Query(default=None, description="Return full column detail for a specific (bare) table name"),
 ):
-    """List available reporting tables across all namespace schemas (CASE-628).
+    """List reporting relations across namespace schemas — entity-first.
 
-    Each WIP namespace is its own PostgreSQL schema; this enumerates the
-    reporting tables in every namespace schema and returns, per table, its
-    owning ``namespace``, the ``template_value`` it reports (for ``doc_*``
-    tables), row count, and columns. Filter by ``namespace`` and/or bare
-    ``table_name``.
+    Each WIP namespace is its own PostgreSQL schema. Post per-version
+    split, one template ("entity") owns several relations: the physical
+    per-version tables ``doc_<value>__v<N>``, the always-present
+    identity-core view ``doc_<value>__entities``, and the bare-name view
+    ``doc_<value>`` (the default query surface). The response groups them
+    under ``entities`` so agent-written SQL never silently misses sibling
+    version tables; ``tables`` keeps the flat relation list (fixed
+    metadata tables + every doc relation) for consumers that want it.
+    Filter by ``namespace`` and/or bare ``table_name`` (any relation name;
+    detail mode returns its columns).
     """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
     allowed_prefixes = ("doc_",)
     allowed_exact = {"terminologies", "terms", "term_relations", "templates"}
+    version_re = re.compile(r"^(doc_.+)__v(\d+)$")
 
     async with state.postgres_pool.acquire() as conn:
-        # Base tables across every non-system schema (each is a namespace).
+        # Tables AND views across every non-system schema (each schema is a
+        # namespace) — the entity views are first-class discovery citizens.
         raw_tables = await conn.fetch(
             f"""
-            SELECT table_schema, table_name
+            SELECT table_schema, table_name, table_type
             FROM information_schema.tables
             WHERE table_schema NOT IN {_SYSTEM_SCHEMAS}
-              AND table_type = 'BASE TABLE'
+              AND table_type IN ('BASE TABLE', 'VIEW')
             ORDER BY table_schema, table_name
             """
         )
 
         tables = []
+        # (schema, entity_base) → grouped entry
+        entities: dict[tuple[str, str], dict] = {}
+
+        def _entity(schema: str, base: str) -> dict:
+            key = (schema, base)
+            if key not in entities:
+                entities[key] = {
+                    "namespace": schema,
+                    "entity": base[len("doc_"):],
+                    "default_view": base,
+                    "default_view_present": False,
+                    "entities_view": f"{base}__entities",
+                    "legacy_table": False,
+                    "versions": [],
+                    "row_count": 0,
+                }
+            return entities[key]
+
         for row in raw_tables:
             schema = row["table_schema"]
             tname = row["table_name"]
+            is_view = row["table_type"] == "VIEW"
             if not (tname.startswith(allowed_prefixes) or tname in allowed_exact):
                 continue
             if namespace and schema != namespace:
@@ -1481,6 +1596,7 @@ async def list_tables(
             entry: dict = {
                 "namespace": schema,
                 "name": tname,
+                "kind": "view" if is_view else "table",
                 "template_value": tname[len("doc_"):] if tname.startswith("doc_") else None,
                 "qualified_name": f'"{schema}"."{tname}"',
                 "row_count": count,
@@ -1500,17 +1616,45 @@ async def list_tables(
 
             tables.append(entry)
 
+            # Entity grouping (skip in single-relation detail mode).
+            if table_name or not tname.startswith("doc_"):
+                continue
+            m = version_re.match(tname)
+            if m and not is_view:
+                ent = _entity(schema, m.group(1))
+                ent["versions"].append(
+                    {"version": int(m.group(2)), "table": tname, "row_count": count}
+                )
+                ent["row_count"] += count or 0
+            elif tname.endswith("__entities") and is_view:
+                _entity(schema, tname[: -len("__entities")])
+            elif is_view:
+                _entity(schema, tname)["default_view_present"] = True
+            else:
+                # A bare-name BASE TABLE: the legacy pre-split layout.
+                ent = _entity(schema, tname)
+                ent["legacy_table"] = True
+                ent["row_count"] += count or 0
+
         if table_name and not tables:
             raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
-    return {"tables": tables}
+    for ent in entities.values():
+        ent["versions"].sort(key=lambda v: v["version"])
+
+    result: dict = {"tables": tables}
+    if not table_name:
+        result["entities"] = sorted(
+            entities.values(), key=lambda e: (e["namespace"], e["entity"])
+        )
+    return result
 
 
-class ReportQuery(BaseModel):
+class ReportQuery(StrictModel):
     """Request model for ad-hoc reporting queries."""
 
     sql: str
-    params: list[Any] = []
+    params: list[Any] = Field(default_factory=list)
     timeout_seconds: int = Field(default=30, ge=1, le=300)
     max_rows: int = Field(default=1000, ge=1, le=50000)
     namespace: str | None = Field(
@@ -1621,11 +1765,11 @@ def _is_allowed_table(name: str) -> bool:
     return name.startswith(_EXPORT_ALLOWED_PREFIXES) or name in _EXPORT_ALLOWED_EXACT
 
 
-class CsvExportQuery(BaseModel):
+class CsvExportQuery(StrictModel):
     """Request model for query-based CSV export."""
 
     sql: str
-    params: list[Any] = []
+    params: list[Any] = Field(default_factory=list)
     timeout_seconds: int = Field(default=120, ge=1, le=600)
     filename: str = Field(default="export.csv", pattern=r"^[\w\-. ]+\.csv$")
 

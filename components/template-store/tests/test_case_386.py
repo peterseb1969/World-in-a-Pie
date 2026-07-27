@@ -73,6 +73,12 @@ def _specs():
     async def get_template_descendants(c, h, tid, v):
         return await c.get(f"{BASE}/{tid}/descendants", headers=h)
 
+    async def get_namespace_template_stamp(c, h, tid, v):
+        # The stamp reveals namespace existence + template activity, so it is
+        # grant-gated like any other namespaced read (quality-audit
+        # permission-enforcement finding).
+        return await c.get(f"{BASE}/stamp", params={"namespace": "wip"}, headers=h)
+
     return [
         ("get_template", get_template),
         ("get_template_raw", get_template_raw),
@@ -85,6 +91,7 @@ def _specs():
         ("cascade_template", cascade_template),
         ("get_template_children", get_template_children),
         ("get_template_descendants", get_template_descendants),
+        ("get_namespace_template_stamp", get_namespace_template_stamp),
     ]
 
 

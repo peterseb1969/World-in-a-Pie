@@ -9,6 +9,7 @@ from wip_auth import (
     check_namespace_permission,
     resolve_namespace_filter,
     resolve_or_404,
+    resolve_term_by_fields_or_404,
 )
 
 from ..models.api_models import (
@@ -28,6 +29,7 @@ from ..models.api_models import (
 from ..models.terminology import Terminology
 from ..services.registry_client import RegistryError
 from ..services.terminology_service import (
+    AmbiguousTerminologyValueError,
     EntityExistsError,
     TerminologyService,
     conflict_result,
@@ -164,11 +166,11 @@ async def list_terms(
     # Get terminology info
     terminology = await Terminology.find_one({"terminology_id": terminology_id})
     if not terminology:
-        # Try by value
-        if namespace:
-            terminology = await Terminology.find_one({"namespace": namespace, "value": terminology_id})
-        else:
-            terminology = await Terminology.find_one({"value": terminology_id})
+        # Try by value — unscoped lookups fail loud on an ambiguous value
+        try:
+            terminology = await TerminologyService.find_by_value(terminology_id, namespace)
+        except AmbiguousTerminologyValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         if not terminology:
             raise HTTPException(status_code=404, detail="Terminology not found")
 
@@ -200,11 +202,25 @@ async def list_terms(
 async def get_term(
     term_id: str,
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology scoping a value-form term identifier. When "
+                    "present, the identifier is treated as the OPAQUE raw value "
+                    "(never colon-parsed) — required for values that themselves "
+                    "contain ':' (OBO ids like GO:0000278).",
+    ),
     identity: UserIdentity = Depends(require_api_key)
 ) -> TermResponse:
-    """Get a term by its ID or synonym (e.g., "STATUS:approved")."""
-    # Resolve synonym — supports colon notation for terms
-    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
+    """Get a term by canonical UUID, fully qualified 'ns:terminology:value',
+    or — with terminology= — the opaque raw value (never colon-parsed)."""
+    if terminology is not None:
+        # Field-form door: the identifier is the raw value, uninterpreted
+        term_id = await resolve_term_by_fields_or_404(
+            term_id, terminology, namespace, param_name="term_id"
+        )
+    else:
+        # Resolve synonym — supports colon notation for terms
+        term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     result = await TerminologyService.get_term(term_id=term_id)
     if not result:
@@ -223,11 +239,25 @@ async def get_term(
 async def update_terms(
     items: list[UpdateTermItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology scoping value-form term identifiers. When "
+                    "present, every non-UUID term_id in the batch is treated "
+                    "as the OPAQUE raw value (never colon-parsed) — required "
+                    "for values that themselves contain ':' (OBO ids like "
+                    "GO:0000278). The ambiguous 2-part 'TERMINOLOGY:VALUE' "
+                    "shorthand is rejected on this endpoint.",
+    ),
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """Update one or more terms."""
     from wip_auth import resolve_bulk_ids
-    await resolve_bulk_ids(items, "term_id", "term", namespace=namespace)
+    # Write door: resolution must ask Registry, not the read cache — the
+    # resolved id selects which term the mutation lands on.
+    await resolve_bulk_ids(
+        items, "term_id", "term", namespace=namespace,
+        terminology=terminology, bypass_cache=True,
+    )
 
     # CASE-384 — batched namespace lookup + permission check.
     from ..models.term import Term as _Term
@@ -267,6 +297,17 @@ async def update_terms(
 async def deprecate_terms(
     items: list[DeprecateTermItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology scoping value-form term identifiers — "
+                    "applies to term_id AND replaced_by_term_id (a "
+                    "deprecation's replacement lives in the same vocabulary; "
+                    "a cross-terminology pointer must use a UUID or the "
+                    "fully qualified 'ns:terminology:value' form). When "
+                    "present, non-UUID identifiers are treated as OPAQUE "
+                    "raw values (never colon-parsed). The ambiguous 2-part "
+                    "'TERMINOLOGY:VALUE' shorthand is rejected.",
+    ),
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """
@@ -276,8 +317,17 @@ async def deprecate_terms(
     Optionally specify a replacement term per item.
     """
     from wip_auth import resolve_bulk_ids
-    await resolve_bulk_ids(items, "term_id", "term", namespace=namespace)
-    await resolve_bulk_ids(items, "replaced_by_term_id", "term", namespace=namespace)
+    # Write door: bypass the read cache — replaced_by_term_id is persisted
+    # as a durable pointer, and a stale cached id would pin a dead
+    # reference into the term record.
+    await resolve_bulk_ids(
+        items, "term_id", "term", namespace=namespace,
+        terminology=terminology, bypass_cache=True,
+    )
+    await resolve_bulk_ids(
+        items, "replaced_by_term_id", "term", namespace=namespace,
+        terminology=terminology, bypass_cache=True,
+    )
 
     # CASE-384 — batched namespace lookup + permission check.
     from ..models.term import Term as _Term
@@ -315,11 +365,24 @@ async def deprecate_terms(
 async def delete_terms(
     items: list[DeleteItem] = Body(...),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology scoping value-form term identifiers. When "
+                    "present, every non-UUID id in the batch is treated as "
+                    "the OPAQUE raw value (never colon-parsed). The "
+                    "ambiguous 2-part 'TERMINOLOGY:VALUE' shorthand is "
+                    "rejected on this endpoint.",
+    ),
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """Soft-delete one or more terms (set status to inactive)."""
     from wip_auth import resolve_bulk_ids
-    await resolve_bulk_ids(items, "id", "term", namespace=namespace)
+    # Write door: resolution must ask Registry, not the read cache — the
+    # resolved id selects which term gets deleted.
+    await resolve_bulk_ids(
+        items, "id", "term", namespace=namespace,
+        terminology=terminology, bypass_cache=True,
+    )
 
     # CASE-384 — batched namespace lookup + permission check.
     from ..models.term import Term as _Term
@@ -383,11 +446,21 @@ async def validate_value(
             request.terminology_id, "terminology", namespace=None, param_name="terminology_id"
         )
 
-    # Get terminology for response
+    # Get terminology for response — an ambiguous unscoped value is a
+    # validation failure, reported in the response shape like not-found
     if request.terminology_id:
         terminology = await Terminology.find_one({"terminology_id": request.terminology_id})
     else:
-        terminology = await Terminology.find_one({"value": request.terminology_value})
+        try:
+            terminology = await TerminologyService.find_by_value(request.terminology_value, None)
+        except AmbiguousTerminologyValueError as e:
+            return ValidateValueResponse(
+                valid=False,
+                terminology_id="",
+                terminology_value=request.terminology_value or "",
+                value=request.value,
+                error=str(e),
+            )
 
     if not terminology:
         return ValidateValueResponse(
@@ -442,11 +515,23 @@ async def validate_values_bulk(
                 item.terminology_id, "terminology", namespace=None, param_name="terminology_id"
             )
 
-        # Get terminology
+        # Get terminology — per-item: an ambiguous unscoped value fails
+        # that item, not the request (bulk-first)
         if item.terminology_id:
             terminology = await Terminology.find_one({"terminology_id": item.terminology_id})
         elif item.terminology_value:
-            terminology = await Terminology.find_one({"value": item.terminology_value})
+            try:
+                terminology = await TerminologyService.find_by_value(item.terminology_value, None)
+            except AmbiguousTerminologyValueError as e:
+                results.append(ValidateValueResponse(
+                    valid=False,
+                    terminology_id="",
+                    terminology_value=item.terminology_value,
+                    value=item.value,
+                    error=str(e),
+                ))
+                invalid_count += 1
+                continue
         else:
             results.append(ValidateValueResponse(
                 valid=False,

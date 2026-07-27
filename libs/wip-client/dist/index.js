@@ -411,8 +411,14 @@ var DefStoreService = class extends BaseService {
   async listTerms(terminologyId, params) {
     return this.get(`/terminologies/${terminologyId}/terms`, params);
   }
-  async getTerm(termId) {
-    return this.get(`/terms/${termId}`);
+  /**
+   * Term identifiers accept a canonical UUID, the fully qualified
+   * 'ns:terminology:value' form, or — with the terminology option set —
+   * the opaque raw term value (never colon-parsed). The ambiguous
+   * 2-part 'TERMINOLOGY:VALUE' shorthand is rejected (422).
+   */
+  async getTerm(termId, options) {
+    return this.get(`/terms/${termId}`, options);
   }
   async createTerm(terminologyId, data, options) {
     const resp = await this.post(
@@ -433,17 +439,28 @@ var DefStoreService = class extends BaseService {
   async createTerms(terminologyId, terms, options) {
     return this.post(`/terminologies/${terminologyId}/terms`, terms, options);
   }
-  async updateTerm(termId, data) {
-    return this.bulkWriteOne("/terms", { ...data, term_id: termId }, "PUT");
+  /**
+   * Term write identifiers accept a canonical UUID, the fully qualified
+   * 'ns:terminology:value' form, or — with the terminology option set —
+   * the opaque raw term value (never colon-parsed). The ambiguous
+   * 2-part 'TERMINOLOGY:VALUE' shorthand is rejected (422).
+   */
+  async updateTerm(termId, data, options) {
+    return this.bulkWriteOne("/terms", { ...data, term_id: termId }, "PUT", options);
   }
-  async deprecateTerm(termId, data) {
-    return this.bulkWriteOne("/terms/deprecate", { ...data, term_id: termId });
+  /**
+   * The terminology option scopes term_id AND replaced_by_term_id — a
+   * replacement lives in the same vocabulary; a cross-terminology
+   * pointer must be a UUID or fully qualified.
+   */
+  async deprecateTerm(termId, data, options) {
+    return this.bulkWriteOne("/terms/deprecate", { ...data, term_id: termId }, "POST", options);
   }
   async deleteTerm(termId, options) {
     return this.bulkWriteOne("/terms", {
       id: termId,
       hard_delete: options?.hardDelete
-    }, "DELETE");
+    }, "DELETE", { namespace: options?.namespace, terminology: options?.terminology });
   }
   // ---- Import/Export ----
   async importTerminology(data) {
@@ -641,6 +658,20 @@ var DocumentStoreService = class extends BaseService {
   // ---- Documents ----
   async listDocuments(params) {
     return this.get("/documents", params);
+  }
+  /**
+   * Which templates are a namespace's documents instances of?
+   *
+   * Grouped from the documents themselves, not from template ownership: a
+   * document's namespace is independent of its template's namespace, so a
+   * template picker built from the namespace's OWN templates misses shared
+   * and foreign templates its documents actually use. Counts are distinct
+   * logical documents (version rows collapse before counting); each facet
+   * carries the template's own namespace so cross-namespace entries can be
+   * labeled honestly.
+   */
+  async getTemplateFacets(params) {
+    return this.get("/documents/template-facets", params);
   }
   /**
    * Fetch a document by ID (or any synonym/value the Registry resolves).
@@ -853,15 +884,16 @@ var DocumentStoreService = class extends BaseService {
     return this.post(`/backup/namespaces/${namespace}/backup`, request);
   }
   /**
-   * Restore a namespace from an uploaded archive. The archive is streamed
-   * to disk on the server, so multi-GB uploads do not buffer in memory.
+   * Restore from an uploaded archive. The archive is streamed to disk on
+   * the server, so multi-GB uploads do not buffer in memory.
    *
-   * **Mode gotcha (CASE-569):** omitting `mode` defers to the server default
-   * `'restore'`, which writes back into the archive's source namespace
-   * (a single-namespace archive honours `target_namespace`; a multi-namespace
-   * one restores each to itself). `'fresh'` is not yet implemented server-side
-   * — the backend 400s on it. Pass `mode: 'restore'` explicitly when the
-   * namespace outcome matters; see `RestoreOptions`.
+   * ID-preserving restore-to-self: the archive manifest determines the
+   * target namespaces (each writes to itself). `mode: 'restore'` (default)
+   * requires every target to be empty; `mode: 'merge'` reconciles the
+   * archive into a namespace that already holds data, under the
+   * definitions-compatibility check, then `on_clash` for documents. Set `dry_run: true` to get the
+   * report without writing anything. Retired toolkit-era params are no
+   * longer sent — the endpoint 400s them; see `RestoreOptions`.
    */
   async startRestore(namespace, archive, options = {}, filename = "archive.zip") {
     const form = new FormData();
@@ -869,19 +901,44 @@ var DocumentStoreService = class extends BaseService {
     if (options.mode !== void 0) form.append("mode", options.mode);
     if (options.target_namespace !== void 0)
       form.append("target_namespace", options.target_namespace);
-    if (options.register_synonyms !== void 0)
-      form.append("register_synonyms", String(options.register_synonyms));
+    if (options.namespace_map !== void 0)
+      form.append("namespace_map", JSON.stringify(options.namespace_map));
+    if (options.on_clash !== void 0) form.append("on_clash", options.on_clash);
+    if (options.add_missing !== void 0)
+      form.append("add_missing", String(options.add_missing));
+    if (options.extend_terminologies !== void 0)
+      form.append("extend_terminologies", String(options.extend_terminologies));
     if (options.skip_documents !== void 0)
       form.append("skip_documents", String(options.skip_documents));
     if (options.skip_files !== void 0)
       form.append("skip_files", String(options.skip_files));
     if (options.batch_size !== void 0)
       form.append("batch_size", String(options.batch_size));
-    if (options.continue_on_error !== void 0)
-      form.append("continue_on_error", String(options.continue_on_error));
     if (options.dry_run !== void 0)
       form.append("dry_run", String(options.dry_run));
+    if (options.drop_stale_reporting !== void 0)
+      form.append("drop_stale_reporting", String(options.drop_stale_reporting));
     return this.postFormData(`/backup/namespaces/${namespace}/restore`, form);
+  }
+  /**
+   * Verify a namespace's referential and identity integrity. Returns a job.
+   *
+   * Checks that every reference resolves — template, term, document, file —
+   * and that every document's stored identity hash still matches its own
+   * data. It is the referential twin of the reporting parity check: that one
+   * compares PostgreSQL against MongoDB, this compares MongoDB against
+   * itself.
+   *
+   * It matters most after a restore, which writes documents straight to
+   * MongoDB and validates nothing while writing. Every restore starts one of
+   * these per namespace it wrote and records the ids on its own snapshot
+   * (`validation_job_ids`); this is the same check on demand.
+   *
+   * Poll `getBackupJob` for progress and `result`. Findings do not fail the
+   * job — it completes with `result.status` of healthy, warning or error.
+   */
+  async validateNamespace(namespace, params = {}) {
+    return this.post(`/backup/namespaces/${namespace}/validate`, void 0, params);
   }
   /** Get the latest persisted snapshot for a backup or restore job. */
   async getBackupJob(jobId) {
@@ -1243,6 +1300,20 @@ var ReportingSyncService = class extends BaseService {
    * Returns one BatchSyncResponse per template; jobs run async on
    * the server. Poll `listBatchJobs()` or `getBatchJob(job_id)` for
    * progress.
+   *
+   * `namespace` scopes every job to that namespace's documents (the
+   * template list stays instance-wide — documents may be based on
+   * templates owned by other namespaces). A template whose sync is
+   * already active returns its existing job instead of stacking a
+   * duplicate; the trigger is idempotent and acknowledges promptly.
+   *
+   * `force` drops each in-scope template's existing reporting relations
+   * (version tables, entity views, any legacy pre-split table) before
+   * its sync — rebuild from source, the recovery path for mis-shaped
+   * DDL that upserts cannot heal. Requires `namespace` (400 without
+   * it). Mid-rebuild, SQL readers see relation-does-not-exist for the
+   * affected templates. An already-active sync is NOT force-rebuilt —
+   * its per-item message says so; cancel the job and re-trigger.
    */
   async triggerBatchSyncAll(options) {
     return this.post("/sync/batch", void 0, { ...options });
@@ -1250,6 +1321,17 @@ var ReportingSyncService = class extends BaseService {
   /**
    * Trigger a batch sync for a single template (by value).
    * Job runs async; poll `getBatchJob(job_id)` for progress.
+   *
+   * `namespace` disambiguates the template lookup (a value is unique
+   * only within a namespace) AND scopes the sync to that namespace's
+   * documents. If an overlapping sync is already active, the existing
+   * job is returned instead of a duplicate.
+   *
+   * `force` drops the template's existing reporting relations in the
+   * target namespace before syncing — rebuild from source. Requires
+   * `namespace` (400 without it). If an overlapping sync is active,
+   * force is NOT applied (the response message says so); cancel the
+   * job and re-trigger.
    */
   async triggerBatchSync(templateValue, options) {
     return this.post(`/sync/batch/${templateValue}`, void 0, { ...options });
@@ -1334,13 +1416,31 @@ var ReportingSyncService = class extends BaseService {
     throw new WipError("Sync timeout: no new events processed");
   }
   // ── Table Introspection ──
-  /** List all PostgreSQL reporting tables */
-  async listTables(tableName) {
-    return this.get("/tables", tableName ? { table_name: tableName } : void 0);
+  /**
+   * List reporting relations, grouped entity-first. Without `tableName`,
+   * the response carries `entities` (one entry per template with its
+   * version tables and views — the shape UIs should render) alongside the
+   * flat `tables` list. With `tableName`, returns that single relation
+   * with full column detail (works for views and version tables alike),
+   * and `entities` is omitted.
+   */
+  async listTables(tableName, namespace) {
+    const params = {};
+    if (tableName) params.table_name = tableName;
+    if (namespace) params.namespace = namespace;
+    return this.get("/tables", Object.keys(params).length ? params : void 0);
   }
-  /** Get PostgreSQL schema for a template's reporting table */
-  async getTableSchema(templateValue) {
-    return this.get(`/schema/${templateValue}`);
+  /**
+   * Get PostgreSQL columns for a template's reporting relation.
+   * `namespace` is required by the endpoint (the relation lives in that
+   * namespace's schema). Without `version`: the bare-name entity view
+   * (the default query surface). With `version`: that version's physical
+   * table shape.
+   */
+  async getTableSchema(templateValue, namespace, version) {
+    const params = { namespace };
+    if (version !== void 0) params.version = String(version);
+    return this.get(`/schema/${templateValue}`, params);
   }
   // ── Integrity ──
   async getIntegrityCheck(params) {
@@ -1402,6 +1502,15 @@ function createWipClient(config) {
       transport.setAuth(auth);
     }
   };
+}
+
+// src/types/template.ts
+function asVersionEventDetails(details) {
+  if (!details) return null;
+  const impact = details.impact;
+  const migration = details.migration;
+  if (!impact || !migration) return null;
+  return details;
 }
 
 // src/utils/query-string.ts
@@ -1554,6 +1663,6 @@ async function resolveReference(client, templateId, searchTerm, limit = 10) {
   }));
 }
 
-export { ApiKeyAuthProvider, DefStoreService, DocumentStoreService, FetchTransport, FileStoreService, OidcAuthProvider, RegistryService, ReportingSyncService, TemplateStoreService, WipAuthError, WipBulkItemError, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };
+export { ApiKeyAuthProvider, DefStoreService, DocumentStoreService, FetchTransport, FileStoreService, OidcAuthProvider, RegistryService, ReportingSyncService, TemplateStoreService, WipAuthError, WipBulkItemError, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, asVersionEventDetails, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build WIP release images and optionally push to a container registry.
 #
-# Builds self-contained images with wip-auth (and wip-toolkit for
+# Builds self-contained images with wip-auth (and wip-archive for
 # document-store) baked in. No volume mounts needed at runtime.
 #
 # Usage:
@@ -219,9 +219,10 @@ BUILD_ARGS=(
 log_info "Build provenance: sha=${GIT_SHA} stamp=${BUILD_STAMP} tag=${TAG}"
 
 # ── Services requiring wip-auth ─────────────────────────────────
-# document-store also needs wip-toolkit (backup engine imports it)
+# document-store also needs wip-archive (backup engine imports the
+# archive format + remap library in-process)
 AUTH_SERVICES=(registry def-store template-store document-store reporting-sync)
-TOOLKIT_SERVICES=(document-store)
+ARCHIVE_SERVICES=(document-store)
 PLAIN_SERVICES=(ingest-gateway mcp-server auth-gateway)
 
 build_python_with_libs() {
@@ -246,35 +247,35 @@ build_python_with_libs() {
     # Copy wip-auth library
     cp -r "${PROJECT_ROOT}/libs/wip-auth" "$tmpdir/wip-auth"
 
-    # Determine if this service also needs wip-toolkit
-    local needs_toolkit=false
-    for ts in "${TOOLKIT_SERVICES[@]}"; do
+    # Determine if this service also needs wip-archive
+    local needs_archive=false
+    for ts in "${ARCHIVE_SERVICES[@]}"; do
         if [[ "$svc" == "$ts" ]]; then
-            needs_toolkit=true
+            needs_archive=true
             break
         fi
     done
 
-    if $needs_toolkit; then
-        cp -r "${PROJECT_ROOT}/WIP-Toolkit" "$tmpdir/wip-toolkit"
+    if $needs_archive; then
+        cp -r "${PROJECT_ROOT}/libs/wip-archive" "$tmpdir/wip-archive"
     fi
 
     # Patch Dockerfile: insert lib installs after pip install of requirements.
     # Uses a temp file approach for macOS/BSD sed compatibility.
     local dockerfile="$tmpdir/Dockerfile"
     local patched="$tmpdir/Dockerfile.patched"
-    awk -v needs_toolkit="$needs_toolkit" '
+    awk -v needs_archive="$needs_archive" '
     /RUN pip install --no-cache-dir -r requirements-docker.txt/ {
         print
         print ""
         print "# Install wip-auth library (baked for release)"
         print "COPY wip-auth /tmp/wip-auth"
         print "RUN pip install --no-cache-dir /tmp/wip-auth && rm -rf /tmp/wip-auth"
-        if (needs_toolkit == "true") {
+        if (needs_archive == "true") {
             print ""
-            print "# Install wip-toolkit (baked for release)"
-            print "COPY wip-toolkit /tmp/wip-toolkit"
-            print "RUN pip install --no-cache-dir /tmp/wip-toolkit && rm -rf /tmp/wip-toolkit"
+            print "# Install wip-archive (baked for release)"
+            print "COPY wip-archive /tmp/wip-archive"
+            print "RUN pip install --no-cache-dir /tmp/wip-archive && rm -rf /tmp/wip-archive"
         }
         next
     }

@@ -307,10 +307,22 @@ class K8sPlatform(WIPModel):
     storage_class: str = "rook-ceph-block"
     ingress_class: str = "nginx"
     tls_secret_name: str = "wip-tls"
+    # ndots written into every pod's /etc/resolv.conf. kubelet's default is 5,
+    # which means any name with fewer than 5 dots is tried against the three
+    # search domains BEFORE being tried as written. Inter-service URLs are
+    # rendered as `wip-<name>.<ns>.svc.cluster.local` — four dots — so the
+    # default costs three NXDOMAIN round trips (x2, since glibc queries A and
+    # AAAA in parallel) before the real lookup, i.e. 8 queries where 2 suffice.
+    # At 1, a name that already carries a dot is tried as written first, and
+    # bare shortnames still resolve through the search list. Set to None to
+    # emit no dnsConfig at all and inherit whatever kubelet defaults to.
+    pod_dns_ndots: int | None = 1
 
 
 class DevPlatform(WIPModel):
-    mode: Literal["tilt", "simple"] = "tilt"
+    # Only "simple" exists. A Tilt-based dev loop was planned and never built;
+    # the option is removed rather than left as a default that no renderer honours.
+    mode: Literal["simple"] = "simple"
     source_mount: bool = True
     # CLI-provided map of app_name → local build-context path for
     # hot-reload dev. Apps not in this dict, AND not in

@@ -17,9 +17,6 @@
     "shellcheck": {
       "count": 76
     },
-    "vue-tsc": {
-      "count": 0
-    },
     "ts-prune": {
       "count": 0
     },
