@@ -107,19 +107,19 @@ def repo_fingerprint(root: Path) -> str:
     return ",".join(sorted(roots))
 
 
-def tail_path(stored: str) -> str:
+def tail_path(stored: str, origin: str) -> str:
     """A stored KB path reduced to its repo-relative form.
 
-    Records historically carry a repo-name prefix ('World-in-a-Pie/docs/…')
-    that varies by which checkout wrote them; content in this repo lives
-    under docs/. Once repo_id scopes the record set to one repository, the
-    prefix carries no information — strip it so records match disk paths
-    regardless of which clone minted them. Already-relative paths (PAPER-1
-    predates the prefix convention) pass through unchanged.
+    Strips the leading segment only when it equals the record's own
+    repo_origin label — the same derivation rule the store's path_tail
+    design uses (CASE-825 #12), so both sides reduce a path identically by
+    construction. Already-relative paths (PAPER-1 predates the prefix
+    convention) pass through unchanged, and a repo-relative path whose
+    first directory happens to match another repo's name cannot be
+    mangled, because only the record's own origin is ever stripped.
     """
-    if stored.startswith("docs/"):
-        return stored
-    return stored.split("/", 1)[1] if "/" in stored else stored
+    prefix = f"{origin}/"
+    return stored[len(prefix):] if origin and stored.startswith(prefix) else stored
 
 
 def canonical_path(root: Path, rel: str) -> str:
@@ -154,7 +154,7 @@ def _fetch_filtered(root: Path, filt: str) -> dict[str, dict]:
         for item in payload.get("items", []):
             data = item.get("data", {})
             if data.get("path"):
-                records[tail_path(data["path"])] = data
+                records[tail_path(data["path"], data.get("repo_origin") or "")] = data
         if page >= (payload.get("pages") or 1):
             break
         page += 1
