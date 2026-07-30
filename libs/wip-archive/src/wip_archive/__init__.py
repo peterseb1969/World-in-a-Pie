@@ -12,16 +12,30 @@ from .exceptions import (
     MissingManifestError,
     NotAnArchiveError,
 )
+from .model import (
+    SCHEMA_VERSION,
+    ArchiveModel,
+    EdgeTypeReport,
+    Finding,
+    Island,
+    TemplateReport,
+)
 from .models import Manifest
 from .remap import IDRemapper
 
 __all__ = [
+    "SCHEMA_VERSION",
     "ArchiveError",
+    "ArchiveModel",
     "ArchiveReader",
     "ArchiveWriter",
+    "EdgeTypeReport",
+    "Finding",
     "IDRemapper",
+    "Island",
     "Manifest",
     "ManifestParseError",
     "MissingManifestError",
     "NotAnArchiveError",
+    "TemplateReport",
 ]

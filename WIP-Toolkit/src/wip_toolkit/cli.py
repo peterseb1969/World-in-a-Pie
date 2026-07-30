@@ -9,12 +9,19 @@ from importlib.metadata import version
 import click
 from rich.console import Console
 from rich.table import Table
-from wip_archive.archive import ENTITY_FILES, ArchiveReader
+from wip_archive.archive import ArchiveReader
+from wip_archive.model import ArchiveModel
 
 from .backfill import backfill_synonyms
 from .client import WIPClient
 from .config import WIPConfig
 from .export.exporter import run_export
+from .inspect_view import (
+    json_payload,
+    render_summary,
+    render_template_dive,
+    render_terminology_dive,
+)
 from .seed import run_seed
 from .status import StatusThresholds, collect_status
 
@@ -135,115 +142,104 @@ def export(
 
 @main.command()
 @click.argument("archive_path")
+@click.argument("subjects", nargs=-1)
+@click.option(
+    "--terminology",
+    "terminologies",
+    multiple=True,
+    help="Deep-dive a terminology by value or id (repeatable)",
+)
+@click.option(
+    "--namespace",
+    "namespaces",
+    multiple=True,
+    help="Restrict the analysis to these namespaces (repeatable)",
+)
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
 @click.option("--show-ids", is_flag=True, help="List all entity IDs")
-@click.option("--show-references", is_flag=True, help="Show dependency graph")
-def inspect(archive_path: str, show_ids: bool, show_references: bool) -> None:
-    """Show archive contents without importing.
+@click.option("--show-references", is_flag=True, help="Show raw dependency graph")
+def inspect(
+    archive_path: str,
+    subjects: tuple[str, ...],
+    terminologies: tuple[str, ...],
+    namespaces: tuple[str, ...],
+    as_json: bool,
+    show_ids: bool,
+    show_references: bool,
+) -> None:
+    """Analyse an archive: structure, dependencies, health.
 
-    ARCHIVE_PATH is the path to the ZIP archive to inspect.
+    ARCHIVE_PATH is the ZIP to read; SUBJECTS are templates (by value or id)
+    to deep-dive. Reads archives only — analysing a running instance means
+    taking a backup and analysing that.
+
+    A deep dive is also the plan a future `filter` would execute: what it
+    prints as the closure of a template is what filtering to that template
+    would carry along.
     """
     try:
         with ArchiveReader(archive_path) as reader:
-            manifest = reader.read_manifest()
+            model = ArchiveModel.load(
+                reader, namespaces=list(namespaces) or None
+            )
 
-            # Summary table
-            table = Table(title="Archive Summary")
-            table.add_column("Property", style="bold")
-            table.add_column("Value")
+            selected_templates = []
+            for name in subjects:
+                template = model.resolve_template(name)
+                if template is None:
+                    console.print(f"[red]No such template in archive:[/red] {name}")
+                    sys.exit(2)
+                selected_templates.append(template.template_id)
 
-            table.add_row("Format version", manifest.format_version)
-            table.add_row("Tool version", manifest.tool_version)
-            table.add_row("Exported at", str(manifest.exported_at))
-            table.add_row("Source host", manifest.source_host)
-            # A v3 multi-namespace archive sets the legacy scalar `namespace`
-            # to "" — namespace_prefixes() reads the v3 list and falls back to
-            # the scalar for legacy-shaped manifests, so this row is correct
-            # for both shapes.
-            table.add_row("Namespaces", ", ".join(manifest.namespace_prefixes()))
-            table.add_row("Include files", str(manifest.include_files))
-            console.print(table)
+            selected_terminologies = []
+            for name in terminologies:
+                node = model.resolve_terminology(name)
+                if node is None:
+                    console.print(
+                        f"[red]No such terminology in archive:[/red] {name}"
+                    )
+                    sys.exit(2)
+                selected_terminologies.append(node.terminology_id)
 
-            # Entity counts. An omitted namespace only auto-resolves when the
-            # archive carries exactly one (reader raises on several), so a
-            # multi-namespace archive is counted per namespace. The manifest's
-            # top-level counts are the AGGREGATE across namespaces; per-
-            # namespace expectations live on NamespaceEntry.counts.
-            namespaces = reader.list_namespaces()
-            multi = len(namespaces) > 1
-
-            counts_table = Table(title="Entity Counts")
-            if multi:
-                counts_table.add_column("Namespace", style="bold")
-            counts_table.add_column("Entity Type", style="bold")
-            counts_table.add_column("Count", justify="right")
-            counts_table.add_column("Verified", justify="right", style="dim")
-
-            if multi:
-                entry_by_prefix = {e.prefix: e for e in manifest.namespaces}
-                for ns in namespaces:
-                    entry = entry_by_prefix.get(ns)
-                    for entity_type in ENTITY_FILES:
-                        manifest_count = getattr(entry.counts, entity_type, 0) if entry else 0
-                        actual_count = reader.entity_count(entity_type, namespace=ns)
-                        match = "[green]OK[/green]" if manifest_count == actual_count else f"[red]{actual_count}[/red]"
-                        counts_table.add_row(ns, entity_type.title(), str(manifest_count), match)
-                counts_table.add_row(
-                    "", "Total", str(manifest.counts.total), "", style="bold",
+            if as_json:
+                click.echo(
+                    _json.dumps(
+                        json_payload(
+                            model,
+                            templates=selected_templates,
+                            terminologies=selected_terminologies,
+                        ),
+                        indent=2,
+                        default=str,
+                    )
                 )
+                return
+
+            if selected_templates or selected_terminologies:
+                for template_id in selected_templates:
+                    render_template_dive(model, template_id, console)
+                for terminology_id in selected_terminologies:
+                    render_terminology_dive(model, terminology_id, console)
             else:
-                for entity_type in ENTITY_FILES:
-                    manifest_count = getattr(manifest.counts, entity_type, 0)
-                    actual_count = reader.entity_count(entity_type)
-                    match = "[green]OK[/green]" if manifest_count == actual_count else f"[red]{actual_count}[/red]"
-                    counts_table.add_row(entity_type.title(), str(manifest_count), match)
-                counts_table.add_row(
-                    "Total", str(manifest.counts.total), "", style="bold",
+                render_summary(model, console)
+                console.print(
+                    f"\nArchive size: {reader.compressed_size():,} bytes "
+                    f"compressed, {reader.total_size():,} bytes uncompressed"
                 )
-            console.print(counts_table)
 
-            # Closure info
-            if manifest.closure.external_terminologies or manifest.closure.external_templates:
-                closure_table = Table(title="Closure (External Dependencies)")
-                closure_table.add_column("Type", style="bold")
-                closure_table.add_column("IDs")
-                if manifest.closure.external_terminologies:
-                    closure_table.add_row(
-                        "Terminologies",
-                        ", ".join(manifest.closure.external_terminologies),
-                    )
-                if manifest.closure.external_templates:
-                    closure_table.add_row(
-                        "Templates",
-                        ", ".join(manifest.closure.external_templates),
-                    )
-                console.print(closure_table)
-
-            # Warnings
-            if manifest.closure.warnings:
-                console.print(f"\n[yellow]{len(manifest.closure.warnings)} closure warning(s):[/yellow]")
-                for w in manifest.closure.warnings:
-                    console.print(f"  {w}")
-
-            # Blobs
-            blobs = reader.list_blobs()
-            if blobs:
-                console.print(f"\nBinary files: {len(blobs)}")
-
-            # Archive size
-            console.print(f"\nArchive size: {reader.compressed_size():,} bytes compressed, "
-                           f"{reader.total_size():,} bytes uncompressed")
-
-            # Show IDs
+            # The original flags stay as shallow projections over the raw
+            # entity rows — they answer "what is literally in the file",
+            # which the analysis view deliberately abstracts away.
             if show_ids:
                 _show_entity_ids(reader)
-
-            # Show references
             if show_references:
                 _show_references(reader)
 
     except FileNotFoundError:
         console.print(f"[red]Archive not found:[/red] {archive_path}")
         sys.exit(1)
+    except SystemExit:
+        raise
     except Exception as e:
         console.print(f"[red]Error reading archive:[/red] {e}")
         sys.exit(1)

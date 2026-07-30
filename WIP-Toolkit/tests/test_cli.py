@@ -64,6 +64,11 @@ def _make_mock_archive_reader(manifest=None):
     reader.__enter__ = MagicMock(return_value=reader)
     reader.__exit__ = MagicMock(return_value=False)
     reader.read_manifest.return_value = manifest or _make_manifest()
+    # A real dict, not the default MagicMock: the model reads raw manifest
+    # keys (e.g. derived_from) and a MagicMock answers every .get() with a
+    # truthy mock, which would make the summary render a provenance chain
+    # that no archive carries.
+    reader.read_manifest_raw.return_value = {}
     reader.entity_count.return_value = 0
     reader.list_namespaces.return_value = ["wip"]
     reader.list_blobs.return_value = []
