@@ -255,7 +255,7 @@ class DirectBackupEngine:
 
             single = len(namespaces) == 1
             manifest = Manifest(
-                format_version="3.0",
+                format_version="3.1",
                 exported_at=datetime.now(UTC),
                 source_host=socket.gethostname(),
                 namespaces=ns_entries,

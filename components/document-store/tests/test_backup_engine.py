@@ -365,7 +365,10 @@ class TestRunBackupMultiNamespace:
             await engine.run_backup(["alpha", "beta"], tmp_path / "multi.zip")
 
         manifest = mock_writer.write.call_args[0][0]
-        assert manifest.format_version == "3.0"
+        # The engine writes 3.1 — canonical endpoint declarations, no stored
+        # source_ref/target_ref constraint. Restore of 3.0 archives is still
+        # exercised elsewhere in this file, which is why those fixtures stay.
+        assert manifest.format_version == "3.1"
         assert manifest.namespace_prefixes() == ["alpha", "beta"]
         assert manifest.namespace == ""  # not single → no convenience field
         # add_entity for the (empty) namespaces would carry the namespace kwarg

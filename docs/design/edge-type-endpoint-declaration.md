@@ -260,6 +260,33 @@ release, which is what this work exists to end.
 | C5 | Delete the mirror-lock comparison at `:114` | keep the rest of the shape validation (fields exist, `reference_type: document`) | **keep `_ref_lists_equivalent`** — three other call sites |
 | C6 | Remap the template-level lists | `remap.py:remap_template` | the canonical-id backfill; bulk, in-process, no service calls |
 
+### D2, revisited during implementation
+
+D2 was "enforce directly from the declaration, no projection at all", to close
+H5 — the design's specified enforcement never having been built.
+
+**C4 closed H5 already.** Enforcement now flows from the declaration: the
+constraint the generic validator reads is projected from it, cannot diverge
+from it, and is not stored anywhere. The *effect* is exactly what
+`document-relationships.md:93-94` specified. What remained of D2 was moving
+the check into document-store and deleting the projection — and the projection
+turns out to be worth keeping as **served** information: it is what tells a
+client which templates a given endpoint accepts, and `@wip/client`'s
+`template-to-form` builds reference pickers from it. Deleting it would strip
+schema information from the API to remove a duplication that C4 had already
+removed.
+
+What D2 *did* still buy was enforcing the `include_subtypes` decision below,
+which C4 alone did not: nothing stripped the flag, so a caller could set
+`include_subtypes: true` on `source_ref` and the generic validator would
+honour it, silently widening the accepted set beyond the declaration. That is
+now closed at both ends (stripped on write, forced off in the projection) with
+a test, which is the part of D2 that had teeth.
+
+**Recommendation: treat D2 as delivered by C4 + the subtype fix**, and do not
+move enforcement into document-store. Recorded rather than silently dropped:
+the remaining difference is a code-location preference, not a behavioural one.
+
 ### `include_subtypes` does not apply to edge-type endpoints
 
 **Decision: A.** An edge type's declared endpoints are exactly the templates

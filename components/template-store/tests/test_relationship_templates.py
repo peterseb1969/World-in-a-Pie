@@ -282,6 +282,39 @@ async def test_relationship_source_ref_must_be_document_type(
 
 
 @pytest.mark.asyncio
+async def test_include_subtypes_does_not_apply_to_edge_endpoints(
+    client: AsyncClient, auth_headers: dict,
+):
+    """An edge type's endpoints are exactly the templates it declares.
+
+    A caller may set include_subtypes on source_ref/target_ref — it is an
+    ordinary reference field — but for an edge endpoint it is neither stored
+    nor served. Without this, "subtypes are not admitted" would be an
+    intention rather than a rule: the generic reference validator honours the
+    flag it is given, so leaving it on the served field would silently widen
+    the accepted endpoint set beyond the declaration.
+    """
+    await _ensure_endpoint_templates(
+        client, auth_headers, "EXPERIMENT", "MOLECULE"
+    )
+    payload = _relationship_template(value="REL_SUBTYPES")
+    for field in payload["fields"]:
+        if field["name"] in ("source_ref", "target_ref"):
+            field["include_subtypes"] = True
+
+    result = await _post_template(client, auth_headers, payload)
+    assert result["status"] == "created", result
+
+    resp = await client.get(
+        f"{API}/templates/by-value/REL_SUBTYPES?namespace=wip", headers=auth_headers
+    )
+    body = resp.json()
+    for name in ("source_ref", "target_ref"):
+        field = next(f for f in body["fields"] if f["name"] == name)
+        assert not field["include_subtypes"], (name, field)
+
+
+@pytest.mark.asyncio
 async def test_endpoint_constraint_is_projected_not_supplied(
     client: AsyncClient, auth_headers: dict,
 ):

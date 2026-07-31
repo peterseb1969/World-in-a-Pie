@@ -51,7 +51,9 @@ class TestManifest:
 
     def test_default_format_version(self):
         m = Manifest()
-        assert m.format_version == "3.0"
+        # 3.1 — edge types declare endpoints once, canonically, and the
+        # source_ref/target_ref constraint is projected rather than stored.
+        assert m.format_version == "3.1"
 
     def test_default_tool_version(self):
         m = Manifest()

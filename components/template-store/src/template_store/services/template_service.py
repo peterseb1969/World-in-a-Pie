@@ -3140,8 +3140,17 @@ class TemplateService:
             "source_ref": list(t.source_templates or []),
             "target_ref": list(t.target_templates or []),
         }
+        # include_subtypes is forced off: an edge type's endpoints are exactly
+        # the templates it declares. Admitting subtypes implicitly would make
+        # the declared catalogue — what the API, Console and `inspect` report —
+        # narrower than what is actually accepted, and it would change
+        # app-visible behaviour (/relationships, /traverse) without changing
+        # the declaration. Plain reference fields keep the feature.
         return [
-            field.model_copy(update={"target_templates": by_endpoint[field.name]})
+            field.model_copy(update={
+                "target_templates": by_endpoint[field.name],
+                "include_subtypes": False,
+            })
             if field.name in by_endpoint
             else field
             for field in t.fields
@@ -3160,6 +3169,10 @@ class TemplateService:
         for field in fields or []:
             if field.name in ("source_ref", "target_ref"):
                 field.target_templates = None
+                # Not a projection but the same rule: an endpoint's subtype
+                # policy is not the caller's to set, so it is not persisted
+                # either. See _project_endpoint_constraints.
+                field.include_subtypes = None
 
     @staticmethod
     def _to_template_response(t: Template) -> TemplateResponse:

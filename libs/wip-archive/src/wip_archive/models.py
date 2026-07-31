@@ -76,7 +76,16 @@ class Manifest(BaseModel):
     left empty). A v2.0 (flat, single-namespace) archive is converted to v3 by
     ``wip_toolkit.convert_archive`` before the engines read it.
     """
-    format_version: str = "3.0"
+    # 3.1: edge types declare their endpoints once, canonically. The
+    # template-level source_templates / target_templates hold canonical
+    # template ids, and the source_ref / target_ref endpoint constraint is no
+    # longer stored — it is projected from that declaration when a template is
+    # served. A 3.0 reader restoring a 3.1 archive therefore finds no stored
+    # constraint on those fields, and an empty constraint means "unconstrained"
+    # rather than an error, so the version is what makes the difference
+    # detectable. Minor, deliberately: every gate tests startswith("3"), so a
+    # major bump would make 3.1 archives unrestorable everywhere.
+    format_version: str = "3.1"
     tool_version: str = "0.5.0"
     exported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     source_host: str = ""
