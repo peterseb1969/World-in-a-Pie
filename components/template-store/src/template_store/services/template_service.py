@@ -492,6 +492,14 @@ class TemplateService:
                 resolved_template_ids, resolved_terminology_ids = (
                     await TemplateService._normalize_field_references(request.fields, namespace)
                 )
+                # An edge type's declared endpoints resolve on the same write
+                # path as its field references, so the stored declaration is
+                # canonical rather than whatever form the caller typed.
+                request.source_templates, request.target_templates = (
+                    await TemplateService._normalize_endpoint_declarations(
+                        request.source_templates, request.target_templates, namespace
+                    )
+                )
             except EntityNotFoundError as e:
                 raise ValueError(str(e)) from e
 
@@ -1760,27 +1768,28 @@ class TemplateService:
             except EntityNotFoundError:
                 return entry
 
-        async def _value_form(canonical: str) -> str:
-            # Append new endpoints in value-form to match the seed convention and
-            # keep the list human-readable (response #4). value is stable across
-            # the template's versions.
-            row = await Template.find(
-                {"template_id": canonical}
-            ).limit(1).to_list()
-            return row[0].value if row else canonical
-
         async def _widen(
             existing: list[str] | None, additions: dict[str, str]
         ) -> list[str]:
-            out = list(existing or [])
+            # Endpoints are stored canonical, and served that way. The list is
+            # normalised on the way through, so a template whose declaration
+            # predates that rule comes out canonical after its first widen
+            # rather than staying mixed. Nothing is downgraded to value form
+            # here any more, which also retires the per-endpoint Mongo lookup
+            # that downgrade needed — form is an ingress concern, and a caller
+            # who wants names resolves ids the way it already does for the
+            # field-level target_templates.
+            out: list[str] = []
             seen: set[str] = set()
-            for entry in out:
-                seen.add(await _canonical(entry))
+            for entry in existing or []:
+                canonical = await _canonical(entry)
+                if canonical not in seen:
+                    out.append(canonical)
+                    seen.add(canonical)
             for canonical in additions.values():
-                if canonical in seen:
-                    continue
-                out.append(await _value_form(canonical))
-                seen.add(canonical)
+                if canonical not in seen:
+                    out.append(canonical)
+                    seen.add(canonical)
             return out
 
         new_source = await _widen(template.source_templates, resolved_source)
@@ -3025,6 +3034,17 @@ class TemplateService:
                         include_statuses=activation_statuses,
                     )
                 )
+                # Endpoint declarations resolve here too: a draft skipped
+                # resolution at create, so activation is where its stored
+                # declaration becomes canonical.
+                if t.usage == TemplateUsage.RELATIONSHIP:
+                    t.source_templates, t.target_templates = (
+                        await TemplateService._normalize_endpoint_declarations(
+                            t.source_templates, t.target_templates, namespace,
+                            known_templates=known_templates,
+                            include_statuses=activation_statuses,
+                        )
+                    )
                 # Also resolve extends (known_templates checked first, then Registry)
                 if t.extends and t.extends in known_templates:
                     t.extends = known_templates[t.extends]
@@ -3164,6 +3184,56 @@ class TemplateService:
         # Try by value within namespace (return latest version)
         results = await Template.find({"namespace": namespace, "value": ref}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         return results[0] if results else None
+
+    @staticmethod
+    async def _normalize_endpoint_declarations(
+        source_templates: list[str] | None,
+        target_templates: list[str] | None,
+        namespace: str,
+        known_templates: dict[str, str] | None = None,
+        include_statuses: list[str] | None = None,
+    ) -> tuple[list[str], list[str]]:
+        """Resolve an edge type's declared endpoints to canonical template ids.
+
+        The template-level ``source_templates`` / ``target_templates`` are the
+        single declaration of which templates may sit at each end of an edge.
+        They were previously stored exactly as submitted — value, id, or
+        ``ns:VALUE`` — which made the stored form arbitrary and left every site
+        that compares or rewrites the list responsible for remembering that.
+        Four shipped defects came from sites that forgot. Resolving here makes
+        the form an ingress concern and the storage canonical, so downstream
+        code compares ids to ids.
+
+        Callers may still write values — form is an ingress concern — but the
+        declaration is stored and served canonically, like every other template
+        reference in the platform.
+
+        Returns the resolved (source, target) lists, order-preserving.
+        """
+        both = list(source_templates or []) + list(target_templates or [])
+        if not both:
+            return list(source_templates or []), list(target_templates or [])
+
+        pending = {
+            ref for ref in both
+            if not (known_templates and ref in known_templates)
+        }
+        resolved: dict[str, str] = dict(known_templates or {})
+        if pending:
+            # Same write-path discipline as field normalization: bypass the
+            # resolver cache so a stale entry cannot be baked into durable
+            # state.
+            resolved.update(
+                await resolve_entity_ids(
+                    list(pending), "template", namespace,
+                    include_statuses=include_statuses,
+                    bypass_cache=True,
+                )
+            )
+        return (
+            [resolved.get(ref, ref) for ref in (source_templates or [])],
+            [resolved.get(ref, ref) for ref in (target_templates or [])],
+        )
 
     @staticmethod
     async def _normalize_field_references(

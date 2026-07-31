@@ -111,11 +111,21 @@ class CreateTemplateRequest(StrictModel):
     )
     source_templates: list[str] = Field(
         default_factory=list,
-        description="Template values allowed as edge source (required when usage=relationship; rejected with an error on non-relationship templates)"
+        description=(
+            "Templates allowed as edge source (required when usage=relationship; "
+            "rejected with an error on non-relationship templates). Accepts a "
+            "template value, a canonical template_id, or ns:VALUE; stored and "
+            "returned as canonical template_ids"
+        )
     )
     target_templates: list[str] = Field(
         default_factory=list,
-        description="Template values allowed as edge target (required when usage=relationship; rejected with an error on non-relationship templates)"
+        description=(
+            "Templates allowed as edge target (required when usage=relationship; "
+            "rejected with an error on non-relationship templates). Accepts a "
+            "template value, a canonical template_id, or ns:VALUE; stored and "
+            "returned as canonical template_ids"
+        )
     )
     versioned: bool = Field(
         default=True,

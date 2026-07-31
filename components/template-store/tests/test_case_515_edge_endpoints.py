@@ -22,6 +22,7 @@ from .test_relationship_templates import (
     _entity_template,
     _post_template,
     _relationship_template,
+    _template_id,
 )
 
 
@@ -57,17 +58,18 @@ async def test_add_target_endpoint_widens_in_place_with_field_mirror(client: Asy
     body = resp.json()
 
     # template-level list widened, in place (same version), source untouched.
-    # New endpoints store value-form to match the seed convention (CASE-515 #4).
-    assert "COMPOUND" in body["target_templates"]
+    # Endpoints are stored canonical, so the widened list names ids.
+    compound_id = await _template_id(client, auth_headers, "COMPOUND")
+    assert compound_id in body["target_templates"]
     assert len(body["target_templates"]) == 2
     assert len(body["source_templates"]) == 1
     assert body["version"] == edge["version"]  # no new version
 
     # mirror invariant: the target_ref field's target_templates widened too.
     target_ref = next(f for f in body["fields"] if f["name"] == "target_ref")
-    assert "COMPOUND" in target_ref["target_templates"]
+    assert compound_id in target_ref["target_templates"]
     source_ref = next(f for f in body["fields"] if f["name"] == "source_ref")
-    assert "COMPOUND" not in (source_ref["target_templates"] or [])
+    assert compound_id not in (source_ref["target_templates"] or [])
 
 
 @pytest.mark.asyncio
@@ -79,9 +81,10 @@ async def test_add_source_endpoint_widens_source_and_its_field(client: AsyncClie
     resp = await _widen(client, auth_headers, edge["id"], source=["ASSAY"])
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert "ASSAY" in body["source_templates"]
+    assay_id = await _template_id(client, auth_headers, "ASSAY")
+    assert assay_id in body["source_templates"]
     source_ref = next(f for f in body["fields"] if f["name"] == "source_ref")
-    assert "ASSAY" in source_ref["target_templates"]
+    assert assay_id in source_ref["target_templates"]
 
 
 @pytest.mark.asyncio
@@ -116,17 +119,23 @@ async def test_readd_value_form_endpoint_is_idempotent(client: AsyncClient, auth
     missed (it re-added a NEW endpoint, already UUID-form after the first add).
     """
     edge = await _create_edge_type(client, auth_headers, "EDGE_515_VALUEFORM")
-    # EXPERIMENT (source) and MOLECULE (target) are the ORIGINAL endpoints,
-    # stored value-form. Re-adding them must not grow the lists or append a UUID.
+    # EXPERIMENT (source) and MOLECULE (target) are the ORIGINAL endpoints.
+    # Re-adding them by VALUE must not grow the lists: the stored form is
+    # canonical, so the guard is that a value-form re-add resolves to the id
+    # already present rather than being appended as a second copy.
     resp = await _widen(
         client, auth_headers, edge["id"], source=["EXPERIMENT"], target=["MOLECULE"]
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     # The core guard: the template-level lists did NOT grow (the bug appended a
-    # second value↔UUID copy). They stay the original value-form, length 1.
-    assert body["target_templates"] == ["MOLECULE"], body["target_templates"]
-    assert body["source_templates"] == ["EXPERIMENT"], body["source_templates"]
+    # second value↔UUID copy). They stay length 1, canonical.
+    assert body["target_templates"] == [
+        await _template_id(client, auth_headers, "MOLECULE")
+    ], body["target_templates"]
+    assert body["source_templates"] == [
+        await _template_id(client, auth_headers, "EXPERIMENT")
+    ], body["source_templates"]
     assert body["version"] == edge["version"]  # true no-op, no new version
     # The mirrored field lists also did not grow (no UUID duplicate appended).
     # Form note: create stores field-level target_templates UUID-form while the

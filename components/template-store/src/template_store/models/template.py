@@ -197,18 +197,21 @@ class Template(Document):
         description="Usage class: entity (default), reference, or relationship"
     )
 
-    # Relationship templates only — list of template values allowed as
-    # the source endpoint of an edge. Empty for non-relationship templates.
+    # Relationship templates only — the single declaration of which
+    # templates may sit at each end of an edge. Stored as canonical
+    # template_ids: callers may write a value, an id or ns:VALUE, and the
+    # write path resolves through the Registry, so every site that compares
+    # or rewrites this list compares ids to ids.
     source_templates: list[str] = Field(
         default_factory=list,
-        description="Template values allowed as edge source (relationship only)"
+        description="Canonical template_ids allowed as edge source (relationship only)"
     )
 
-    # Relationship templates only — list of template values allowed as
-    # the target endpoint of an edge.
+    # Relationship templates only — canonical template_ids allowed as
+    # the target endpoint of an edge. See source_templates above.
     target_templates: list[str] = Field(
         default_factory=list,
-        description="Template values allowed as edge target (relationship only)"
+        description="Canonical template_ids allowed as edge target (relationship only)"
     )
 
     # Whether updates create new versions (true) or overwrite in place

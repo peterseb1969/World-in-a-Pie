@@ -58,6 +58,20 @@ async def _ensure_endpoint_templates(
             raise AssertionError(f"Failed to create endpoint template {value}: {result}")
 
 
+async def _template_id(client: AsyncClient, auth_headers: dict, value: str) -> str:
+    """The canonical template_id for a template value.
+
+    Endpoint declarations are stored and served as canonical ids — callers
+    write values, the write path resolves them — so a test that asserts on a
+    served declaration has to compare ids, not the value it submitted.
+    """
+    resp = await client.get(
+        f"{API}/templates/by-value/{value}?namespace=wip", headers=auth_headers
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["template_id"]
+
+
 def _relationship_template(
     *,
     value: str = "EXPERIMENT_INPUT",
@@ -179,8 +193,13 @@ async def test_create_relationship_template_happy_path(
     assert resp.status_code == 200
     body = resp.json()
     assert body["usage"] == "relationship"
-    assert body["source_templates"] == ["EXPERIMENT"]
-    assert body["target_templates"] == ["MOLECULE"]
+    # Declared by value, stored and served canonical.
+    assert body["source_templates"] == [
+        await _template_id(client, auth_headers, "EXPERIMENT")
+    ]
+    assert body["target_templates"] == [
+        await _template_id(client, auth_headers, "MOLECULE")
+    ]
     assert body["versioned"] is True
 
 
@@ -319,8 +338,12 @@ async def test_usage_and_versioned_preserved_across_update(
     assert body["label"] == "Renamed Edge"
     assert body["usage"] == "relationship"
     assert body["versioned"] is False
-    assert body["source_templates"] == ["EXPERIMENT"]
-    assert body["target_templates"] == ["MOLECULE"]
+    assert body["source_templates"] == [
+        await _template_id(client, auth_headers, "EXPERIMENT")
+    ]
+    assert body["target_templates"] == [
+        await _template_id(client, auth_headers, "MOLECULE")
+    ]
     assert body["version"] >= 2  # new version was created
 
 
@@ -352,6 +375,42 @@ class TestEndpointListSynonymEquivalence:
         )
         result = await _post_template(client, auth_headers, payload)
         assert result["status"] == "created", result
+
+    @pytest.mark.asyncio
+    async def test_every_accepted_form_is_stored_canonical(self, client, auth_headers):
+        """Value, canonical id and ns:VALUE all land as the same stored id.
+
+        Form is an ingress concern: the caller writes whatever identifier they
+        have, and the declaration is stored canonically so that every site
+        which later compares or rewrites it compares ids to ids. Four shipped
+        defects came from that not being true.
+        """
+        src = await _post_template(client, auth_headers, _entity_template("FORM_SRC"))
+        tgt = await _post_template(client, auth_headers, _entity_template("FORM_TGT"))
+        assert src["status"] == "created" and tgt["status"] == "created"
+
+        for suffix, source_ref, target_ref in (
+            ("VALUE", "FORM_SRC", "FORM_TGT"),
+            ("ID", src["id"], tgt["id"]),
+            ("QUALIFIED", "wip:FORM_SRC", "wip:FORM_TGT"),
+        ):
+            payload = _relationship_template(
+                value=f"FORM_LINK_{suffix}",
+                source_templates=[source_ref],
+                target_templates=[target_ref],
+                source_ref_targets=[source_ref],
+                target_ref_targets=[target_ref],
+            )
+            result = await _post_template(client, auth_headers, payload)
+            assert result["status"] == "created", result
+
+            resp = await client.get(
+                f"{API}/templates/by-value/FORM_LINK_{suffix}?namespace=wip",
+                headers=auth_headers,
+            )
+            body = resp.json()
+            assert body["source_templates"] == [src["id"]], (suffix, body)
+            assert body["target_templates"] == [tgt["id"]], (suffix, body)
 
     @pytest.mark.asyncio
     async def test_genuinely_different_entities_still_rejected(self, client, auth_headers):

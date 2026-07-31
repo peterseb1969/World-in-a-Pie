@@ -255,7 +255,7 @@ release, which is what this work exists to end.
 |---|---|---|
 | C1 | Resolve template-level lists to canonical at ingress | `template_service.py` W1, W2, W3, W4 | reuse the resolver `_normalize_field_references` already builds |
 | C2 | Stop `_value_form` downgrading; store canonical | `:1691-1699` | also removes H4's per-endpoint query |
-| C3 | Render value form on egress | `_to_template_response:3043` | one choke point; keeps API/Console/`inspect` readable, preserves the documented contract at `api_models.py:114` |
+| C3 | ~~Render value form on egress~~ — **dropped**, see below | — | endpoints are served as canonical ids, like every other template reference |
 | C4 | Derive the field-level projection on egress; stop storing it | `_to_template_response` | D1 |
 | C5 | Delete the mirror-lock comparison at `:114` | keep the rest of the shape validation (fields exist, `reference_type: document`) | **keep `_ref_lists_equivalent`** — three other call sites |
 | C6 | Remap the template-level lists | `remap.py:remap_template` | the canonical-id backfill; bulk, in-process, no service calls |
@@ -299,6 +299,32 @@ edge type when adding one. `add_edge_type_endpoints` already supports exactly
 that, additively and in place. If a real taxonomy-plus-edge-type case appears,
 a template-level flag remains available — designed then against a concrete
 usage pattern rather than a hypothetical.
+
+### C3 dropped — endpoints are served as canonical ids
+
+**Decision (Peter, 2026-07-31, during implementation): drop C3.** The
+declaration is served in the form it is stored: canonical ids.
+
+C3 assumed rendering value form on egress was nearly free. It is not.
+`_to_template_response` is **synchronous**, so rendering means a lookup per
+serve — either making the serializer async or threading a batched value-map
+through all seven call sites, plus one `$in` query per served edge type.
+
+The precedent settles it: the field-level `target_templates` has **always**
+been served as canonical ids (`field.py:170`), and `@wip/client`'s
+`template-to-form` consumes them without complaint — clients already resolve
+template ids to names for that list. Serving the declaration the same way makes
+every template reference in the system canonical, everywhere, with no rendering
+layer and no per-serve cost.
+
+Cost accepted: the raw API and Console show ids rather than names for edge
+endpoints, recoverable client-side exactly as it already is for the field-level
+list. `wip-toolkit inspect` is unaffected — `ArchiveModel` resolves ids to
+labels itself.
+
+Consequence for the contract: `api_models.py` and `models/template.py` now
+document these lists as canonical ids that *accept* value, id or `ns:VALUE` on
+write. The form is an ingress concern only.
 
 ### Archive format version
 
@@ -364,6 +390,14 @@ All three questions this analysis opened were settled by Peter on 2026-07-31:
 | D2's timing — follow-on, or together with D1? | **Together** (§8) |
 | Bump the archive format version? | **Yes** (§8) |
 | Does `include_subtypes` apply to edge-type endpoints? | **No** — option A (§8) |
+| Render value form on egress (C3)? | **No** — dropped during implementation; ids are served (§8) |
+
+The format bump is **3.0 → 3.1**, not 4.0: every existing gate tests
+`format_version.startswith("3")` (`api/backup.py:199`,
+`backup_engine.py:2408`, `convert_archive.py:37`), so a major bump would make
+every new archive unrestorable on an install that has not taken this change —
+a self-inflicted break far larger than the defect. A minor bump is detectable
+and passes.
 
 Remaining, and deliberately not answered here:
 

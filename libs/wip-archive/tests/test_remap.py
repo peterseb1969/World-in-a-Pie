@@ -40,6 +40,46 @@ class TestIDRemapper:
         result = self.remapper.remap_template(tpl)
         assert result["extends"] == "TPL-UNKNOWN"
 
+    def test_remap_template_endpoint_declarations(self):
+        """An edge type's declared endpoints are absolute ids — remap them.
+
+        Without this the declaration keeps naming the SOURCE install's
+        templates after a fresh restore, while the mirrored field-level copy
+        is remapped correctly — the two halves of one fact disagreeing.
+        """
+        tpl = {
+            "template_id": "TPL-EDGE",
+            "usage": "relationship",
+            "source_templates": ["0190c000-0000-7000-0000-000000000001"],
+            "target_templates": ["0190c000-0000-7000-0000-000000000002"],
+            "fields": [],
+        }
+        result = self.remapper.remap_template(tpl)
+        assert result["source_templates"] == ["0190e000-0000-7000-0000-000000000021"]
+        assert result["target_templates"] == ["0190e000-0000-7000-0000-000000000022"]
+
+    def test_remap_template_endpoints_unknown_passthrough(self):
+        """An endpoint outside the archive was never re-minted — keep it.
+
+        Same rule as every other reference here: no map knows it, so it still
+        describes the entity it named.
+        """
+        tpl = {
+            "template_id": "TPL-EDGE",
+            "usage": "relationship",
+            "source_templates": ["TPL-OUTSIDE"],
+            "target_templates": [],
+            "fields": [],
+        }
+        result = self.remapper.remap_template(tpl)
+        assert result["source_templates"] == ["TPL-OUTSIDE"]
+        assert result["target_templates"] == []
+
+    def test_remap_template_entity_has_no_endpoints(self):
+        tpl = {"template_id": "TPL-X", "fields": []}
+        result = self.remapper.remap_template(tpl)
+        assert "source_templates" not in result
+
     def test_remap_template_terminology_ref(self):
         tpl = {
             "template_id": "TPL-X",

@@ -60,12 +60,21 @@ class IDRemapper:
         Fields remapped:
         - extends → template map
         - extends_version → pass through (version number, not ID)
+        - source_templates[] / target_templates[] → template map (edge types)
         - fields[].terminology_ref → terminology map
         - fields[].array_terminology_ref → terminology map
         - fields[].template_ref → template map
         - fields[].array_template_ref → template map
         - fields[].target_templates[] → template map
         - fields[].target_terminologies[] → terminology map
+
+        The template-level endpoint lists on an edge type are canonical ids —
+        absolute references, exactly like every other id here — so a fresh
+        restore must rewrite them or they keep naming the SOURCE install's
+        templates. Nothing else covers them: no generic id walk exists, and the
+        list is enumerated here or not at all. This is the whole of the
+        canonical-id backfill for edge types, and it is why endpoint
+        declarations cannot be stored canonically without it.
         """
         result = dict(template)
 
@@ -74,6 +83,13 @@ class IDRemapper:
             result["extends"] = self.template_map.get(
                 result["extends"], result["extends"]
             )
+
+        # Remap the edge type's declared endpoints
+        for prop in ("source_templates", "target_templates"):
+            if result.get(prop):
+                result[prop] = [
+                    self.template_map.get(t, t) for t in result[prop]
+                ]
 
         # Remap fields
         if result.get("fields"):
