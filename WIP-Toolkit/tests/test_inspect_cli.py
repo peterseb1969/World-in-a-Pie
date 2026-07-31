@@ -315,7 +315,7 @@ class TestJson:
         edge = payload["edge_types"][0]
         assert edge["edge_type"] == "MONSTER_HAS_SPELL"
         assert edge["versioned"] is False
-        assert edge["edges"] == 1
+        assert edge["relationship_documents"] == 1
         percents = {d["template"]: d["percent"] for d in edge["disconnection"]}
         assert percents == {"MONSTER": 100.0, "SPELL": 100.0}
 

@@ -205,7 +205,7 @@ def _render_edge_types(model: ArchiveModel, console: Console) -> None:
     table = Table(title="Edge types")
     table.add_column("Edge type", style="bold")
     table.add_column("Declared endpoints")
-    table.add_column("Edges", justify="right")
+    table.add_column("Rel. docs", justify="right")
     table.add_column("Latest only", justify="right")
     table.add_column("Versioned")
     table.add_column("Connectivity")
@@ -225,8 +225,8 @@ def _render_edge_types(model: ArchiveModel, console: Console) -> None:
         table.add_row(
             report.label,
             endpoints,
-            str(report.edge_count),
-            str(report.edge_count_latest_only),
+            str(report.relationship_documents),
+            str(report.relationship_documents_latest_only),
             "yes" if report.versioned else "[yellow]no[/yellow]",
             connectivity,
         )

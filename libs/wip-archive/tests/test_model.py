@@ -322,8 +322,8 @@ class TestEdges:
 
     def test_actual_document_edges(self, bestiary):
         model = load(bestiary)
-        assert model.history.template_edges[(TPL_EDGE, TPL_MONSTER)] == 1
-        assert model.history.template_edges[(TPL_EDGE, TPL_SPELL)] == 1
+        assert model.history.reference_edges[(TPL_EDGE, TPL_MONSTER)] == 1
+        assert model.history.reference_edges[(TPL_EDGE, TPL_SPELL)] == 1
 
     def test_declared_references_resolve_from_value_form(self, tmp_path):
         """Templates store references as submitted — often values, not ids.
@@ -546,7 +546,7 @@ class TestEdgeTypeConnectivity:
         report = reports[0]
         assert report.label == "MONSTER_HAS_SPELL"
         assert report.versioned is False
-        assert report.edge_count == 1
+        assert report.relationship_documents == 1
         assert report.declared_source_templates == ["MONSTER"]
         assert report.declared_target_templates == ["SPELL"]
         by_template = {d["template"]: d for d in report.disconnection}

@@ -8,6 +8,16 @@ stats, and structured findings. ``inspect`` is its read-only face; later
 so a transform's dry run is an analysis view rather than a parallel code path
 that can drift from what the transform actually does.
 
+**Vocabulary.** "Edge" is reserved here for the platform's meaning: an *edge
+type* is a template declaring ``usage: "relationship"``, and a *relationship
+document* is an instance of one. The dependency graph this model builds
+contains far more than those — every document-to-document reference field, every
+term and file reference, every template pin is a link in it. Those are called
+**references** (``reference_edges``, "declared references", "reference graph"),
+never edges, because an operator asking "how many edges does this archive have"
+means relationship documents and would be misled by a number that silently
+counted plain reference fields too.
+
 Two boundaries are deliberate:
 
 - **Archives only.** Nothing here talks to a running instance. Analysing an
@@ -20,7 +30,7 @@ Two boundaries are deliberate:
 Memory: definitions (templates, terminologies, terms, files, registry rows)
 are held in full — they are small and every analysis needs random access to
 them. Documents are streamed twice and never retained: pass 1 records each
-document's template pin and highest version, pass 2 accumulates edges into
+document's template pin and highest version, pass 2 accumulates references into
 counters. Peak memory is therefore O(definitions + document ids), not
 O(archive), which keeps the model usable on archives far larger than RAM.
 """
@@ -51,7 +61,7 @@ IDENTITY_BEARING_ENTITY_TYPES = (
     "files",
 )
 
-# Why an edge target is not in the archive.
+# Why a reference target is not in the archive.
 EXTERNAL_OTHER_NAMESPACE = "other-namespace-not-in-archive"
 EXTERNAL_UNKNOWN = "not-in-archive"
 
@@ -93,7 +103,7 @@ class Finding:
 
 @dataclass
 class ExternalRef:
-    """An edge whose target is not in the archive, with why."""
+    """A reference whose target is not in the archive, with why."""
 
     kind: str  # "template" | "terminology" | "document" | "term" | "file"
     target_id: str
@@ -245,16 +255,26 @@ class DocumentEntry:
 
 
 @dataclass
-class EdgeAccumulator:
-    """Actual (data) edges, aggregated as counts rather than kept per document.
+class ReferenceGraph:
+    """Actual references between documents, aggregated as counts.
+
+    Counts, not per-document records: the graph must stay O(templates) while
+    the archive it summarises may be far larger than memory.
 
     One instance per closure variant — with-history and latest-only — because
     the ``latest-only`` transform changes the graph and an operator choosing it
     needs both numbers, not one of them.
+
+    Vocabulary, deliberately kept apart (see the module docstring):
+    ``reference_edges`` counts EVERY document-to-document reference, whether it
+    came from a plain reference field or from a relationship document, because
+    that is what closures and islands are computed over. The
+    ``relationship_*`` counters are the narrower platform sense — instances of
+    a template whose ``usage`` is ``relationship``.
     """
 
-    # (source template_id, target template_id) -> number of document edges
-    template_edges: Counter = field(default_factory=Counter)
+    # (source template_id, target template_id) -> number of document references
+    reference_edges: Counter = field(default_factory=Counter)
     # (template_id, terminology_id) -> number of term references
     terminology_use: Counter = field(default_factory=Counter)
     # term_id -> number of references
@@ -263,15 +283,16 @@ class EdgeAccumulator:
     file_use: Counter = field(default_factory=Counter)
     # (template_id, template_version) -> distinct documents pinned
     pins: Counter = field(default_factory=Counter)
-    # documents that participate in at least one edge of an edge type:
-    # (edge template_id, endpoint role) -> set of endpoint document ids
-    edge_endpoints: dict[tuple[str, str], set[str]] = field(
+    # Documents reached by relationship documents of a given edge type:
+    # (edge type template_id, endpoint role) -> set of endpoint document ids
+    relationship_endpoints: dict[tuple[str, str], set[str]] = field(
         default_factory=lambda: defaultdict(set)
     )
-    edge_count: Counter = field(default_factory=Counter)
+    # edge type template_id -> number of relationship documents
+    relationship_docs: Counter = field(default_factory=Counter)
 
     # Adjacency indexes, built once on first use. Every per-template analysis
-    # asks for neighbours, so scanning the edge counter per question would
+    # asks for neighbours, so scanning the reference counter per question would
     # make the whole report quadratic in the number of templates.
     _out: dict[str, set[str]] | None = None
     _in: dict[str, set[str]] | None = None
@@ -280,7 +301,7 @@ class EdgeAccumulator:
     def _build_indexes(self) -> None:
         out: dict[str, set[str]] = defaultdict(set)
         inbound: dict[str, set[str]] = defaultdict(set)
-        for (src, dst) in self.template_edges:
+        for (src, dst) in self.reference_edges:
             out[src].add(dst)
             inbound[dst].add(src)
         terminologies: dict[str, set[str]] = defaultdict(set)
@@ -311,7 +332,7 @@ class EdgeAccumulator:
 class Island:
     """A connected component of templates — a minimal extraction unit.
 
-    Components are computed over template-to-template edges (declared and
+    Components are computed over template-to-template references (declared and
     actual, treated as undirected). Terminologies attach to the islands whose
     templates reference them rather than joining the components themselves:
     a vocabulary shared by two otherwise unrelated template sets should not
@@ -351,7 +372,7 @@ class TemplateReport:
     """The per-template answer to both the extraction and deletion questions.
 
     They are asymmetric and the report keeps them apart: extracting a template
-    needs its out-edges satisfied (both closures), deleting it needs its
+    needs its outgoing references satisfied (both closures), deleting it needs its
     in-degree to be zero. Conflating them is how a "safe to remove" call gets
     made from the wrong number.
     """
@@ -418,8 +439,8 @@ class EdgeTypeReport:
     versioned: bool
     declared_source_templates: list[str]
     declared_target_templates: list[str]
-    edge_count: int
-    edge_count_latest_only: int
+    relationship_documents: int
+    relationship_documents_latest_only: int
     endpoints_touched: dict[str, int]
     disconnection: list[dict[str, Any]]
 
@@ -433,8 +454,10 @@ class EdgeTypeReport:
                 "source_templates": self.declared_source_templates,
                 "target_templates": self.declared_target_templates,
             },
-            "edges": self.edge_count,
-            "edges_latest_only": self.edge_count_latest_only,
+            "relationship_documents": self.relationship_documents,
+            "relationship_documents_latest_only": (
+                self.relationship_documents_latest_only
+            ),
             "endpoints_touched": self.endpoints_touched,
             "disconnection": self.disconnection,
         }
@@ -458,8 +481,8 @@ class ArchiveModel:
         self.registry_ids: dict[str, set[str]] = {}
         self.blob_ids: set[str] = set()
         self.include_files: bool = False
-        self.history = EdgeAccumulator()
-        self.latest = EdgeAccumulator()
+        self.history = ReferenceGraph()
+        self.latest = ReferenceGraph()
         self.external_refs: list[ExternalRef] = []
         self.dangling: list[ExternalRef] = []
         self._islands: list[Island] | None = None
@@ -477,7 +500,7 @@ class ArchiveModel:
         """Build the model from an open archive reader.
 
         ``namespaces`` restricts the load to a subset; by default every
-        namespace in the archive is indexed, and edges between them count as
+        namespace in the archive is indexed, and references between them count as
         internal — a multi-namespace backup is one analysis subject.
         """
         model = cls(reader.read_manifest(), reader.read_manifest_raw())
@@ -495,9 +518,9 @@ class ArchiveModel:
             model._index_documents(reader, ns)
         model._attach_documents_to_templates()
         for ns in model.namespaces:
-            model._extract_document_edges(reader, ns)
+            model._extract_reference_edges(reader, ns)
 
-        model._classify_declared_edges()
+        model._classify_declared_references()
         return model
 
     def _load_definitions(self, reader: ArchiveReader, ns: str) -> None:
@@ -639,7 +662,7 @@ class ArchiveModel:
         A template stores its references in whatever form the caller wrote
         them: a canonical id, a bare value, or a qualified ``ns:VALUE``. The
         platform resolves all three through the Registry, and the same
-        reference is the same edge whichever form it took — so a model that
+        reference is the same link whichever form it took — so a model that
         only understood ids would report a template's real dependencies as
         pointing outside the archive.
 
@@ -729,8 +752,8 @@ class ArchiveModel:
             if tpl is not None:
                 tpl.document_ids.add(doc_id)
 
-    def _extract_document_edges(self, reader: ArchiveReader, ns: str) -> None:
-        """Pass 2: accumulate actual edges; retain nothing per document."""
+    def _extract_reference_edges(self, reader: ArchiveReader, ns: str) -> None:
+        """Pass 2: accumulate actual references; retain nothing per document."""
         for row in reader.read_entities("documents", namespace=ns):
             doc_id = row.get("document_id")
             if not doc_id:
@@ -767,7 +790,7 @@ class ArchiveModel:
         row: dict[str, Any],
         doc_id: str,
         template_id: str,
-        targets: list[EdgeAccumulator],
+        targets: list[ReferenceGraph],
     ) -> None:
         is_edge_type = (
             template_id in self.templates and self.templates[template_id].is_edge_type
@@ -808,19 +831,19 @@ class ArchiveModel:
                 continue
 
             for acc in targets:
-                acc.template_edges[(template_id, target_entry.template_id)] += 1
+                acc.reference_edges[(template_id, target_entry.template_id)] += 1
                 if is_edge_type:
                     role = str(ref.get("field_path") or "endpoint")
-                    acc.edge_endpoints[(template_id, role)].add(target_doc)
+                    acc.relationship_endpoints[(template_id, role)].add(target_doc)
         if is_edge_type:
             for acc in targets:
-                acc.edge_count[template_id] += 1
+                acc.relationship_docs[template_id] += 1
 
     def _term_reference_edges(
         self,
         row: dict[str, Any],
         template_id: str,
-        targets: list[EdgeAccumulator],
+        targets: list[ReferenceGraph],
     ) -> None:
         for tref in row.get("term_references") or []:
             term_id = tref.get("term_id")
@@ -845,7 +868,7 @@ class ArchiveModel:
         row: dict[str, Any],
         doc_id: str,
         template_id: str,
-        targets: list[EdgeAccumulator],
+        targets: list[ReferenceGraph],
     ) -> None:
         for fref in row.get("file_references") or []:
             file_id = fref.get("file_id")
@@ -875,7 +898,7 @@ class ArchiveModel:
             ExternalRef(kind, target_id, reason, referenced_by, origin_template)
         )
 
-    def _classify_declared_edges(self) -> None:
+    def _classify_declared_references(self) -> None:
         """Label declared references whose target the archive does not carry.
 
         Nothing is followed: offline there is nothing to follow, and the
@@ -1030,7 +1053,7 @@ class ArchiveModel:
                 if other in adjacency:
                     adjacency[template_id].add(other)
                     adjacency[other].add(template_id)
-        for (src, dst) in self.history.template_edges:
+        for (src, dst) in self.history.reference_edges:
             if src in adjacency and dst in adjacency and src != dst:
                 adjacency[src].add(dst)
                 adjacency[dst].add(src)
@@ -1143,15 +1166,15 @@ class ArchiveModel:
                 for t in (latest.endpoint_target_templates if latest else set())
             )
             touched: dict[str, int] = {}
-            for (edge_id, role), docs in self.history.edge_endpoints.items():
+            for (edge_id, role), docs in self.history.relationship_endpoints.items():
                 if edge_id == template_id:
                     touched[role] = len(docs)
 
             # What dropping this edge type would disconnect, per endpoint
             # template: the share of its documents that participate in at
-            # least one edge here.
+            # least one relationship document here.
             participants: set[str] = set()
-            for (edge_id, _role), docs in self.history.edge_endpoints.items():
+            for (edge_id, _role), docs in self.history.relationship_endpoints.items():
                 if edge_id == template_id:
                     participants |= docs
             disconnection: list[dict[str, Any]] = []
@@ -1182,9 +1205,11 @@ class ArchiveModel:
                     versioned=tpl.versioned,
                     declared_source_templates=declared_sources,
                     declared_target_templates=declared_targets,
-                    edge_count=self.history.edge_count.get(template_id, 0),
-                    edge_count_latest_only=self.latest.edge_count.get(
+                    relationship_documents=self.history.relationship_docs.get(
                         template_id, 0
+                    ),
+                    relationship_documents_latest_only=(
+                        self.latest.relationship_docs.get(template_id, 0)
                     ),
                     endpoints_touched=touched,
                     disconnection=disconnection,

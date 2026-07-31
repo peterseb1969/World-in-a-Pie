@@ -220,10 +220,10 @@ def test_actual_edges_come_from_real_reference_snapshots(model):
     spell = model.resolve_template("SPELL")
     edge = model.resolve_template("MONSTER_HAS_SPELL")
 
-    assert model.history.template_edges[
+    assert model.history.reference_edges[
         (edge.template_id, monster.template_id)
     ] == 2
-    assert model.history.template_edges[
+    assert model.history.reference_edges[
         (edge.template_id, spell.template_id)
     ] == 2
     assert model.dangling == []
@@ -235,7 +235,7 @@ def test_edge_type_connectivity_on_a_real_archive(model):
     report = reports[0]
     assert report.label == "MONSTER_HAS_SPELL"
     assert report.versioned is False  # the flag survives a real round-trip
-    assert report.edge_count == 2
+    assert report.relationship_documents == 2
     percents = {d["template"]: d["percent"] for d in report.disconnection}
     # Both edges hang off Smaug, so one of two monsters is connected; both
     # spells are.
