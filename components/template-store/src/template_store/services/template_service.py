@@ -64,25 +64,20 @@ class TemplateService:
 
     @staticmethod
     async def _validate_relationship_template_shape(
-        request: CreateTemplateRequest, namespace: str
+        request: CreateTemplateRequest,
     ) -> None:
         """Enforce structural constraints on relationship templates.
 
         A relationship template must declare:
           - non-empty source_templates and target_templates (at the
-            template level)
+            template level) — the single declaration of its endpoints
           - a source_ref and target_ref reference field with
             reference_type=document
-          - the source_ref / target_ref field-level target_templates
-            must name the same set of templates as the template-level
-            lists. Equivalence is by canonical entity, not by string:
-            value-form and ID-form of the same template compare equal
-            (the universal synonym rule for reference comparisons).
-            Same-form lists short-circuit on set equality without any
-            Registry call, so draft chains naming not-yet-created
-            templates keep working as long as both lists use the same
-            spelling; MIXED forms need the targets to resolve and fail
-            loudly when they cannot.
+
+        The endpoint constraint carried by those two fields is NOT checked
+        against the declaration, because it is no longer a separate input:
+        it is projected from the declaration when the template is served and
+        discarded on write. What a caller sends there is ignored.
 
         For non-relationship templates (entity, reference), the
         template-level source_templates / target_templates must be
@@ -112,10 +107,14 @@ class TemplateService:
 
         fields_by_name = {f.name: f for f in request.fields}
 
-        for endpoint, expected in (
-            ("source_ref", request.source_templates),
-            ("target_ref", request.target_templates),
-        ):
+        # The endpoint fields must exist and be document references. What they
+        # may point AT is not checked here: `target_templates` on these two
+        # fields is projected from the template-level declaration when the
+        # template is served, and discarded on write. There is no second
+        # declaration to agree with, so the cross-copy comparison this used to
+        # perform has nothing left to compare — an invariant that cannot be
+        # violated rather than one that is policed.
+        for endpoint in ("source_ref", "target_ref"):
             field = fields_by_name.get(endpoint)
             if field is None:
                 raise ValueError(
@@ -126,17 +125,6 @@ class TemplateService:
                 raise ValueError(
                     f"Relationship template field '{endpoint}' must have "
                     f"reference_type='document' (got '{field.reference_type}')"
-                )
-            field_targets = field.target_templates or []
-            if not await TemplateService._ref_lists_equivalent(
-                field_targets, list(expected), "template", namespace
-            ):
-                raise ValueError(
-                    f"Relationship template field '{endpoint}.target_templates' "
-                    f"must match template-level {endpoint.replace('_ref', '_templates')}: "
-                    f"expected {sorted(expected)}, got {sorted(field_targets)} "
-                    "(compared by canonical entity — value-form and ID-form of "
-                    "the same template are equivalent)"
                 )
 
     # =========================================================================
@@ -409,10 +397,10 @@ class TemplateService:
             raise ValueError(f"Invalid status '{request.status}': must be 'active' or 'draft'")
 
         # Structural validation for relationship templates. Runs in draft
-        # mode too; DB/Registry-free for same-form endpoint lists (the
-        # equivalence check short-circuits on set equality) — mixed
-        # value/ID forms resolve through the Registry.
-        await TemplateService._validate_relationship_template_shape(request, namespace)
+        # mode too, and now purely structural: with the endpoint constraint
+        # projected rather than supplied, there is nothing here that needs the
+        # Registry or the database.
+        await TemplateService._validate_relationship_template_shape(request)
 
         # Structural validation for full_text_indexed fields (also
         # purely declarative — runs in draft mode too).
@@ -499,6 +487,12 @@ class TemplateService:
                     await TemplateService._normalize_endpoint_declarations(
                         request.source_templates, request.target_templates, namespace
                     )
+                )
+                # The endpoint constraint on source_ref/target_ref is derived
+                # from the declaration when the template is served, so it is
+                # not persisted.
+                TemplateService._strip_endpoint_projection(
+                    request.usage or TemplateUsage.ENTITY, request.fields
                 )
             except EntityNotFoundError as e:
                 raise ValueError(str(e)) from e
@@ -1618,7 +1612,7 @@ class TemplateService:
     async def reactivate_template(
         template_id: str,
         version: int,
-    ) -> "Template":
+    ) -> TemplateResponse:
         """Reactivate a soft-deleted (inactive) template version (CASE-490).
 
         The symmetric inverse of deactivate. Flips a specific inactive
@@ -1663,7 +1657,7 @@ class TemplateService:
             changed_by=actor,
         )
 
-        return template
+        return TemplateService._to_template_response(template)
 
     @staticmethod
     async def add_edge_type_endpoints(
@@ -1671,7 +1665,7 @@ class TemplateService:
         add_source_templates: list[str] | None = None,
         add_target_templates: list[str] | None = None,
         namespace: str | None = None,
-    ) -> "Template":
+    ) -> TemplateResponse:
         """Additively widen an edge type's allowed endpoint set (CASE-515).
 
         An edge type's endpoints — the template-level ``source_templates`` /
@@ -1798,18 +1792,14 @@ class TemplateService:
         # Idempotent: every requested endpoint already present (in any form).
         if (new_source == list(template.source_templates or [])
                 and new_target == list(template.target_templates or [])):
-            return template
+            return TemplateService._to_template_response(template)
 
-        # Mutate in place — both the template-level lists AND the mirror-locked
-        # source_ref / target_ref field target_templates, keeping the shape
-        # invariant (_validate_relationship_template_shape) intact.
+        # Mutate the declaration in place. The source_ref / target_ref
+        # endpoint constraint follows automatically — it is projected from
+        # these lists when the template is served, so there is no second copy
+        # to keep in step.
         template.source_templates = new_source
         template.target_templates = new_target
-        for field in template.fields:
-            if field.name == "source_ref":
-                field.target_templates = list(new_source)
-            elif field.name == "target_ref":
-                field.target_templates = list(new_target)
 
         actor = get_identity_string()
         template.updated_at = datetime.now(UTC)
@@ -1822,7 +1812,7 @@ class TemplateService:
             changed_by=actor,
         )
 
-        return template
+        return TemplateService._to_template_response(template)
 
     @staticmethod
     async def get_namespace_template_stamp(namespace: str) -> str:
@@ -3130,6 +3120,48 @@ class TemplateService:
         }
 
     @staticmethod
+    def _project_endpoint_constraints(t: Template) -> list:
+        """Compute the endpoint constraint the generic reference validator reads.
+
+        ``source_ref`` / ``target_ref`` carry a ``target_templates`` constraint
+        so document-store's reference validator — which knows nothing about
+        edge types and simply sees a reference field — enforces the declared
+        endpoints. That constraint is a PROJECTION of the template-level
+        declaration, not a second declaration of it, so it is computed here
+        rather than stored. Storing it is what let the two disagree: a fresh
+        restore rewrote the stored projection while the declaration kept
+        naming the source install (CASE-830).
+
+        Both sides are canonical ids, so this is a copy, not a lookup.
+        """
+        if t.usage != TemplateUsage.RELATIONSHIP:
+            return t.fields
+        by_endpoint = {
+            "source_ref": list(t.source_templates or []),
+            "target_ref": list(t.target_templates or []),
+        }
+        return [
+            field.model_copy(update={"target_templates": by_endpoint[field.name]})
+            if field.name in by_endpoint
+            else field
+            for field in t.fields
+        ]
+
+    @staticmethod
+    def _strip_endpoint_projection(usage: TemplateUsage, fields: list | None) -> None:
+        """Drop the projection before persisting — it is derived on serve.
+
+        Whatever a caller sends for ``source_ref``/``target_ref``
+        ``target_templates`` is discarded: the template-level declaration is
+        the only place endpoints are declared.
+        """
+        if usage != TemplateUsage.RELATIONSHIP:
+            return
+        for field in fields or []:
+            if field.name in ("source_ref", "target_ref"):
+                field.target_templates = None
+
+    @staticmethod
     def _to_template_response(t: Template) -> TemplateResponse:
         """Convert Template document to response model."""
         return TemplateResponse(
@@ -3148,7 +3180,7 @@ class TemplateService:
             source_templates=t.source_templates,
             target_templates=t.target_templates,
             versioned=t.versioned,
-            fields=t.fields,
+            fields=TemplateService._project_endpoint_constraints(t),
             rules=t.rules,
             metadata=t.metadata,
             reporting=t.reporting,

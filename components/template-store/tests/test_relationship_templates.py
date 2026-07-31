@@ -282,19 +282,41 @@ async def test_relationship_source_ref_must_be_document_type(
 
 
 @pytest.mark.asyncio
-async def test_relationship_field_targets_must_match_template_level(
+async def test_endpoint_constraint_is_projected_not_supplied(
     client: AsyncClient, auth_headers: dict,
 ):
-    """The source_ref field's target_templates must equal source_templates."""
+    """A caller-supplied endpoint constraint is ignored, not rejected.
+
+    source_ref.target_templates used to be a second declaration that had to
+    agree with the template-level lists, policed by a cross-copy check. It is
+    now projected from the declaration when the template is served and
+    discarded on write, so disagreement is not an error state — it is not
+    representable. This is the stronger guarantee: an invariant that cannot be
+    violated beats one that is checked.
+    """
+    await _ensure_endpoint_templates(
+        client, auth_headers, "EXPERIMENT", "ASSAY", "MOLECULE"
+    )
     payload = _relationship_template(
         value="REL_MISMATCH",
         source_templates=["EXPERIMENT", "ASSAY"],
-        source_ref_targets=["EXPERIMENT"],  # missing ASSAY
+        source_ref_targets=["EXPERIMENT"],  # deliberately disagrees — ignored
     )
     result = await _post_template(client, auth_headers, payload)
-    assert result["status"] == "error", result
-    assert "target_templates" in result["error"]
-    assert "source_ref" in result["error"]
+    assert result["status"] == "created", result
+
+    resp = await client.get(
+        f"{API}/templates/by-value/REL_MISMATCH?namespace=wip", headers=auth_headers
+    )
+    body = resp.json()
+    declared = [
+        await _template_id(client, auth_headers, "EXPERIMENT"),
+        await _template_id(client, auth_headers, "ASSAY"),
+    ]
+    assert body["source_templates"] == declared
+    # The served field follows the declaration, not what the caller sent.
+    source_ref = next(f for f in body["fields"] if f["name"] == "source_ref")
+    assert source_ref["target_templates"] == declared
 
 
 # =============================================================================
@@ -421,8 +443,20 @@ class TestEndpointListSynonymEquivalence:
             value="EQ_BAD_LINK",
             source_templates=["EQ_A"],
             target_templates=["EQ_B"],
-            source_ref_targets=["EQ_C"],  # resolves fine — to the WRONG entity
+            source_ref_targets=["EQ_C"],  # names a DIFFERENT entity — ignored
         )
         result = await _post_template(client, auth_headers, payload)
-        assert result["status"] == "error"
-        assert "must match template-level" in (result.get("error") or "")
+        assert result["status"] == "created", result
+
+        # EQ_C never becomes an allowed endpoint: the declaration is the only
+        # place endpoints are declared, so a wrong field value cannot widen it.
+        resp = await client.get(
+            f"{API}/templates/by-value/EQ_BAD_LINK?namespace=wip", headers=auth_headers
+        )
+        body = resp.json()
+        eq_c = await _template_id(client, auth_headers, "EQ_C")
+        source_ref = next(f for f in body["fields"] if f["name"] == "source_ref")
+        assert eq_c not in source_ref["target_templates"]
+        assert source_ref["target_templates"] == [
+            await _template_id(client, auth_headers, "EQ_A")
+        ]
