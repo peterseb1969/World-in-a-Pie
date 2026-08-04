@@ -19,15 +19,23 @@ from ..models.api_models import (
     CascadeResponse,
     CascadeResult,
     CreateTemplateRequest,
+    EndpointRefIn,
     TemplateResponse,
     TemplateUpdateResponse,
     UpdateTemplateRequest,
     ValidateTemplateResponse,
     ValidationError,
     ValidationWarning,
+    endpoint_lookups,
 )
 from ..models.field import FieldDefinition, FieldType, ReferenceType
-from ..models.template import ReportingConfig, Template, TemplateMetadata, TemplateUsage
+from ..models.template import (
+    EndpointRef,
+    ReportingConfig,
+    Template,
+    TemplateMetadata,
+    TemplateUsage,
+)
 from .def_store_client import DefStoreError, get_def_store_client
 from .document_store_client import get_document_store_client
 from .inheritance_service import InheritanceError, InheritanceService
@@ -475,27 +483,42 @@ class TemplateService:
         # which is converted to ValueError for the API boundary.
         resolved_template_ids: list[str] = []
         resolved_terminology_ids: list[str] = []
+        source_entries: list[EndpointRef]
+        target_entries: list[EndpointRef]
         if not is_draft:
             try:
                 resolved_template_ids, resolved_terminology_ids = (
                     await TemplateService._normalize_field_references(request.fields, namespace)
                 )
                 # An edge type's declared endpoints resolve on the same write
-                # path as its field references, so the stored declaration is
-                # canonical rather than whatever form the caller typed.
-                request.source_templates, request.target_templates = (
-                    await TemplateService._normalize_endpoint_declarations(
+                # path as its field references: the submitted anchor is kept
+                # verbatim in lookup_value and the canonical id fills the
+                # server-owned resolved half.
+                source_entries, target_entries = (
+                    await TemplateService._resolve_endpoint_declarations(
                         request.source_templates, request.target_templates, namespace
                     )
                 )
-                # The endpoint constraint on source_ref/target_ref is derived
-                # from the declaration when the template is served, so it is
-                # not persisted.
-                TemplateService._strip_endpoint_projection(
-                    request.usage or TemplateUsage.ENTITY, request.fields
-                )
             except EntityNotFoundError as e:
                 raise ValueError(str(e)) from e
+        else:
+            # Drafts skip Registry resolution (their referents may not exist
+            # yet); the declaration is stored lookup-only and the resolved
+            # half fills at activation.
+            source_entries = [
+                EndpointRef(lookup_value=ref)
+                for ref in endpoint_lookups(request.source_templates)
+            ]
+            target_entries = [
+                EndpointRef(lookup_value=ref)
+                for ref in endpoint_lookups(request.target_templates)
+            ]
+        # The endpoint constraint on source_ref/target_ref is derived from
+        # the declaration when the template is served, so it is not
+        # persisted (drafts included).
+        TemplateService._strip_endpoint_projection(
+            request.usage or TemplateUsage.ENTITY, request.fields
+        )
 
         # CASE-493: every schema reference (extends + nested template refs) must
         # pin an explicit version. Presence is enforced on all paths (nested via
@@ -578,8 +601,8 @@ class TemplateService:
             header_fields=request.header_fields,
             renames=request.renames,
             usage=request.usage,
-            source_templates=request.source_templates,
-            target_templates=request.target_templates,
+            source_templates=source_entries,
+            target_templates=target_entries,
             versioned=request.versioned,
             fields=request.fields,
             rules=request.rules,
@@ -1119,25 +1142,31 @@ class TemplateService:
         """
         diff: dict[str, dict] = {}
 
+        def _stored_side(entries: list[EndpointRef] | None) -> list[str]:
+            # An entry's comparable handle is its resolved half; a legacy
+            # lookup-only entry falls back to its lookup, which
+            # _ref_lists_equivalent resolves like any other string.
+            return [e.resolved or e.lookup_value for e in (entries or [])]
+
         if not await TemplateService._ref_lists_equivalent(
-            existing.source_templates,
-            proposed.source_templates,
+            _stored_side(existing.source_templates),
+            endpoint_lookups(proposed.source_templates),
             "template",
             namespace,
         ):
             diff["source_templates"] = {
-                "old": list(existing.source_templates or []),
-                "new": list(proposed.source_templates or []),
+                "old": _stored_side(existing.source_templates),
+                "new": endpoint_lookups(proposed.source_templates),
             }
         if not await TemplateService._ref_lists_equivalent(
-            existing.target_templates,
-            proposed.target_templates,
+            _stored_side(existing.target_templates),
+            endpoint_lookups(proposed.target_templates),
             "template",
             namespace,
         ):
             diff["target_templates"] = {
-                "old": list(existing.target_templates or []),
-                "new": list(proposed.target_templates or []),
+                "old": _stored_side(existing.target_templates),
+                "new": endpoint_lookups(proposed.target_templates),
             }
 
         return diff or None
@@ -1662,15 +1691,16 @@ class TemplateService:
     @staticmethod
     async def add_edge_type_endpoints(
         template_id: str,
-        add_source_templates: list[str] | None = None,
-        add_target_templates: list[str] | None = None,
+        add_source_templates: list[str | EndpointRefIn] | None = None,
+        add_target_templates: list[str | EndpointRefIn] | None = None,
         namespace: str | None = None,
     ) -> TemplateResponse:
         """Additively widen an edge type's allowed endpoint set (CASE-515).
 
         An edge type's endpoints — the template-level ``source_templates`` /
-        ``target_templates``, mirror-locked to the ``source_ref`` / ``target_ref``
-        field ``target_templates`` — are otherwise frozen. The only previous way
+        ``target_templates`` two-half entries, from which the ``source_ref`` /
+        ``target_ref`` constraint is projected at serve — are otherwise
+        frozen. The only previous way
         to add a legal endpoint was delete+recreate, which strands every existing
         edge. This op adds endpoint template(s) IN PLACE on the latest active
         version, preserving every existing edge:
@@ -1692,8 +1722,8 @@ class TemplateService:
             ValueError: no active relationship template found, the template is not
                 a relationship template, or a new endpoint template doesn't exist.
         """
-        add_source = list(add_source_templates or [])
-        add_target = list(add_target_templates or [])
+        add_source = endpoint_lookups(add_source_templates)
+        add_target = endpoint_lookups(add_target_templates)
         if not add_source and not add_target:
             raise ValueError(
                 "add_edge_type_endpoints requires add_source_templates and/or "
@@ -1743,55 +1773,66 @@ class TemplateService:
         except EntityNotFoundError as e:
             raise ValueError(str(e)) from e
 
-        # Union into the existing lists, order-stable, with Registry-resolved
-        # dedup (CASE-515 defect, response #4). The stored lists may hold
-        # VALUE-form entries — REFERENCES ships "CASE_RECORD", … not UUIDs (create
-        # stores source/target_templates as submitted) — so comparing a
-        # resolved-canonical addition against the raw stored strings never matches,
-        # and an already-allowed endpoint gets appended a second time in the other
-        # form (the value↔UUID duplicate APP-KB hit). Resolve BOTH sides to
-        # canonical IDs before comparing: the universal "value≡UUID≡synonym at
-        # every reference-comparison site" rule (CASE-406) this site had missed.
-        async def _canonical(entry: str) -> str:
-            # Stored entries are real templates; fall back to the raw string if a
-            # historical entry no longer resolves — never drop it (data loss).
+        # Union into the existing entry lists, order-stable, deduplicated by
+        # canonical identity (CASE-515: comparing a resolved addition against
+        # raw stored strings appended already-allowed endpoints a second time
+        # in the other form; the resolved half is the comparison key now).
+        async def _entry_key(entry: EndpointRef) -> str:
+            # The resolved half is the key. A legacy lookup-only entry is
+            # resolved here — and healed in place, which is the "fills at the
+            # next write" promise for rows that predate the two-half shape.
+            # Fall back to the raw lookup if it no longer resolves — never
+            # drop an entry (data loss); its resolved half stays None and
+            # fails closed where an exact id is required.
+            if entry.resolved:
+                return entry.resolved
             try:
-                return await resolve_entity_id(
-                    entry, "template", ns, bypass_cache=True
+                entry.resolved = await resolve_entity_id(
+                    entry.lookup_value, "template", ns, bypass_cache=True
                 )
+                return entry.resolved
             except EntityNotFoundError:
-                return entry
+                return entry.lookup_value
 
         async def _widen(
-            existing: list[str] | None, additions: dict[str, str]
-        ) -> list[str]:
-            # Endpoints are stored canonical, and served that way. The list is
-            # normalised on the way through, so a template whose declaration
-            # predates that rule comes out canonical after its first widen
-            # rather than staying mixed. Nothing is downgraded to value form
-            # here any more, which also retires the per-endpoint Mongo lookup
-            # that downgrade needed — form is an ingress concern, and a caller
-            # who wants names resolves ids the way it already does for the
-            # field-level target_templates.
-            out: list[str] = []
+            existing: list[EndpointRef] | None, additions: dict[str, str]
+        ) -> tuple[list[EndpointRef], bool]:
+            # Existing entries keep their lookup_value verbatim — the anchor a
+            # declarer chose is information (Vision §4), and the synonym half
+            # is what survives a fresh re-anchoring. Additions keep the
+            # submitted form as their lookup and the canonical id as their
+            # resolved half.
+            out: list[EndpointRef] = []
             seen: set[str] = set()
+            changed = False
             for entry in existing or []:
-                canonical = await _canonical(entry)
-                if canonical not in seen:
-                    out.append(canonical)
-                    seen.add(canonical)
-            for canonical in additions.values():
-                if canonical not in seen:
-                    out.append(canonical)
-                    seen.add(canonical)
-            return out
+                had_resolved = entry.resolved is not None
+                key = await _entry_key(entry)
+                if key in seen:
+                    changed = True  # canonical duplicate collapsed
+                    continue
+                out.append(entry)
+                seen.add(key)
+                if entry.resolved is not None and not had_resolved:
+                    changed = True  # legacy entry healed in place
+            for lookup, canonical in additions.items():
+                if canonical in seen:
+                    continue
+                out.append(EndpointRef(lookup_value=lookup, resolved=canonical))
+                seen.add(canonical)
+                changed = True
+            return out, changed
 
-        new_source = await _widen(template.source_templates, resolved_source)
-        new_target = await _widen(template.target_templates, resolved_target)
+        new_source, source_changed = await _widen(
+            template.source_templates, resolved_source
+        )
+        new_target, target_changed = await _widen(
+            template.target_templates, resolved_target
+        )
 
-        # Idempotent: every requested endpoint already present (in any form).
-        if (new_source == list(template.source_templates or [])
-                and new_target == list(template.target_templates or [])):
+        # Idempotent: every requested endpoint already present (in any form)
+        # and nothing healed or collapsed.
+        if not source_changed and not target_changed:
             return TemplateService._to_template_response(template)
 
         # Mutate the declaration in place. The source_ref / target_ref
@@ -3025,11 +3066,11 @@ class TemplateService:
                     )
                 )
                 # Endpoint declarations resolve here too: a draft skipped
-                # resolution at create, so activation is where its stored
-                # declaration becomes canonical.
+                # resolution at create, so activation is where its entries'
+                # resolved halves fill (lookups stay verbatim).
                 if t.usage == TemplateUsage.RELATIONSHIP:
                     t.source_templates, t.target_templates = (
-                        await TemplateService._normalize_endpoint_declarations(
+                        await TemplateService._resolve_endpoint_declarations(
                             t.source_templates, t.target_templates, namespace,
                             known_templates=known_templates,
                             include_statuses=activation_statuses,
@@ -3132,13 +3173,21 @@ class TemplateService:
         restore rewrote the stored projection while the declaration kept
         naming the source install (CASE-830).
 
-        Both sides are canonical ids, so this is a copy, not a lookup.
+        Each entry contributes its resolved half when present, else its
+        lookup — the validator's `latest` branch resolves every allowed entry
+        through the Registry before matching anyway (CASE-525), so either
+        half enforces identically there; `pinned` needs the exact id and
+        fails closed on a lookup-only entry.
         """
         if t.usage != TemplateUsage.RELATIONSHIP:
             return t.fields
         by_endpoint = {
-            "source_ref": list(t.source_templates or []),
-            "target_ref": list(t.target_templates or []),
+            "source_ref": [
+                e.resolved or e.lookup_value for e in (t.source_templates or [])
+            ],
+            "target_ref": [
+                e.resolved or e.lookup_value for e in (t.target_templates or [])
+            ],
         }
         # include_subtypes is forced off: an edge type's endpoints are exactly
         # the templates it declares. Admitting subtypes implicitly would make
@@ -3231,36 +3280,34 @@ class TemplateService:
         return results[0] if results else None
 
     @staticmethod
-    async def _normalize_endpoint_declarations(
-        source_templates: list[str] | None,
-        target_templates: list[str] | None,
+    async def _resolve_endpoint_declarations(
+        source_templates: list | None,
+        target_templates: list | None,
         namespace: str,
         known_templates: dict[str, str] | None = None,
         include_statuses: list[str] | None = None,
-    ) -> tuple[list[str], list[str]]:
-        """Resolve an edge type's declared endpoints to canonical template ids.
+    ) -> tuple[list[EndpointRef], list[EndpointRef]]:
+        """Build an edge type's declared endpoints as two-half entries.
 
-        The template-level ``source_templates`` / ``target_templates`` are the
-        single declaration of which templates may sit at each end of an edge.
-        They were previously stored exactly as submitted — value, id, or
-        ``ns:VALUE`` — which made the stored form arbitrary and left every site
-        that compares or rewrites the list responsible for remembering that.
-        Four shipped defects came from sites that forgot. Resolving here makes
-        the form an ingress concern and the storage canonical, so downstream
-        code compares ids to ids.
+        Each entry keeps the caller's anchor verbatim in ``lookup_value`` (a
+        submitted string, or an entry's own lookup — a caller-supplied
+        ``resolved`` is never honored; that half is server-owned) and fills
+        ``resolved`` with the canonical template_id from the Registry. Storing
+        both halves is what lets the declaration survive a fresh restore: the
+        resolved half rides the id mapping table, and the lookup half is the
+        synonym that re-resolves on a target for endpoints the mapping table
+        cannot cover.
 
-        Callers may still write values — form is an ingress concern — but the
-        declaration is stored and served canonically, like every other template
-        reference in the platform.
-
-        Returns the resolved (source, target) lists, order-preserving.
+        Returns the (source, target) entry lists, order-preserving. Raises
+        EntityNotFoundError (surfaced as a per-item error by the caller) when
+        a lookup does not resolve — declaring an edge type against a template
+        the Registry does not know is a loud failure at the API door; only
+        the restore door is lenient (warning + null resolved half).
         """
-        both = list(source_templates or []) + list(target_templates or [])
-        if not both:
-            return list(source_templates or []), list(target_templates or [])
-
+        src_lookups = endpoint_lookups(source_templates)
+        tgt_lookups = endpoint_lookups(target_templates)
         pending = {
-            ref for ref in both
+            ref for ref in (src_lookups + tgt_lookups)
             if not (known_templates and ref in known_templates)
         }
         resolved: dict[str, str] = dict(known_templates or {})
@@ -3276,8 +3323,10 @@ class TemplateService:
                 )
             )
         return (
-            [resolved.get(ref, ref) for ref in (source_templates or [])],
-            [resolved.get(ref, ref) for ref in (target_templates or [])],
+            [EndpointRef(lookup_value=ref, resolved=resolved.get(ref))
+             for ref in src_lookups],
+            [EndpointRef(lookup_value=ref, resolved=resolved.get(ref))
+             for ref in tgt_lookups],
         )
 
     @staticmethod

@@ -18,12 +18,49 @@ from wip_auth.bulk_models import (
 
 from .field import FieldDefinition
 from .rule import ValidationRule
-from .template import ReportingConfig, TemplateMetadata, TemplateUsage
+from .template import EndpointRef, ReportingConfig, TemplateMetadata, TemplateUsage
 
 
 class StrictModel(BaseModel):
     """Base for API request models — rejects unknown fields."""
     model_config = ConfigDict(extra='forbid')
+
+
+class EndpointRefIn(StrictModel):
+    """An edge-type endpoint as a caller may submit it.
+
+    Only ``lookup_value`` is honored — ``resolved`` is server-owned and is
+    recomputed from the lookup at ingress, so a GET → POST round-trip of a
+    served template is valid input without letting a caller pin a stale or
+    foreign canonical id. Plain strings are accepted wherever this model is
+    (a bare value, ``ns:VALUE``, or an id), so existing callers are
+    unaffected.
+    """
+
+    lookup_value: str = Field(
+        description="The endpoint reference — template value, ns:VALUE, or canonical id"
+    )
+    resolved: str | None = Field(
+        default=None,
+        description="Ignored on write — the platform resolves lookup_value itself"
+    )
+
+
+# The submitted form of one endpoint: a bare string or a full entry.
+EndpointRefInput = str | EndpointRefIn
+
+
+def endpoint_lookups(items: list[Any] | None) -> list[str]:
+    """Project endpoints to their lookup strings, order-preserving.
+
+    Accepts every shape an endpoint travels as — a bare string, a submitted
+    ``EndpointRefIn``, or a stored/served ``EndpointRef`` — since callers on
+    the write, widen, and activation paths hold different ones.
+    """
+    return [
+        item if isinstance(item, str) else item.lookup_value
+        for item in (items or [])
+    ]
 
 
 # The reporting layer names each template version's physical table
@@ -109,22 +146,24 @@ class CreateTemplateRequest(StrictModel):
         default=TemplateUsage.ENTITY,
         description="Usage class: entity (default), reference, or relationship. Immutable after creation."
     )
-    source_templates: list[str] = Field(
+    source_templates: list[EndpointRefInput] = Field(
         default_factory=list,
         description=(
             "Templates allowed as edge source (required when usage=relationship; "
-            "rejected with an error on non-relationship templates). Accepts a "
-            "template value, a canonical template_id, or ns:VALUE; stored and "
-            "returned as canonical template_ids"
+            "rejected with an error on non-relationship templates). Each entry is "
+            "a template value, a canonical template_id, ns:VALUE, or a full "
+            "{lookup_value, resolved} entry; stored and returned as two-half "
+            "entries whose resolved half the platform fills"
         )
     )
-    target_templates: list[str] = Field(
+    target_templates: list[EndpointRefInput] = Field(
         default_factory=list,
         description=(
             "Templates allowed as edge target (required when usage=relationship; "
-            "rejected with an error on non-relationship templates). Accepts a "
-            "template value, a canonical template_id, or ns:VALUE; stored and "
-            "returned as canonical template_ids"
+            "rejected with an error on non-relationship templates). Each entry is "
+            "a template value, a canonical template_id, ns:VALUE, or a full "
+            "{lookup_value, resolved} entry; stored and returned as two-half "
+            "entries whose resolved half the platform fills"
         )
     )
     versioned: bool = Field(
@@ -254,13 +293,13 @@ class UpdateTemplateRequest(StrictModel):
 class AddEndpointsRequest(StrictModel):
     """Request to additively widen an edge type's allowed endpoint set."""
 
-    add_source_templates: list[str] = Field(
+    add_source_templates: list[EndpointRefInput] = Field(
         default_factory=list,
-        description="Endpoint template values/IDs to ADD to source_templates (additive-only)",
+        description="Endpoints to ADD to source_templates (additive-only); value, id, ns:VALUE, or {lookup_value} entry",
     )
-    add_target_templates: list[str] = Field(
+    add_target_templates: list[EndpointRefInput] = Field(
         default_factory=list,
-        description="Endpoint template values/IDs to ADD to target_templates (additive-only)",
+        description="Endpoints to ADD to target_templates (additive-only); value, id, ns:VALUE, or {lookup_value} entry",
     )
 
 
@@ -279,8 +318,11 @@ class TemplateResponse(BaseModel):
     header_fields: list[str] = []
     renames: dict[str, str] | None = None
     usage: TemplateUsage = TemplateUsage.ENTITY
-    source_templates: list[str] = []
-    target_templates: list[str] = []
+    # Two-half endpoint entries — the declaration as stored. The entries are
+    # the one read shape: consumers render lookup_value for humans and use
+    # resolved for exact-id needs.
+    source_templates: list[EndpointRef] = []
+    target_templates: list[EndpointRef] = []
     versioned: bool = True
     fields: list[FieldDefinition] = []
     rules: list[ValidationRule] = []

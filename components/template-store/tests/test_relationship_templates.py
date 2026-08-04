@@ -21,7 +21,7 @@ async def _post_template(client: AsyncClient, auth_headers: dict, payload: dict)
         headers=auth_headers,
         json=[payload],
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     data = resp.json()
     return data["results"][0]
 
@@ -61,15 +61,26 @@ async def _ensure_endpoint_templates(
 async def _template_id(client: AsyncClient, auth_headers: dict, value: str) -> str:
     """The canonical template_id for a template value.
 
-    Endpoint declarations are stored and served as canonical ids — callers
-    write values, the write path resolves them — so a test that asserts on a
-    served declaration has to compare ids, not the value it submitted.
+    An endpoint declaration entry's resolved half is a canonical id — callers
+    write values, the write path fills the resolved half — so a test that
+    asserts on the resolved side has to compare ids, not the value it
+    submitted.
     """
     resp = await client.get(
         f"{API}/templates/by-value/{value}?namespace=wip", headers=auth_headers
     )
     assert resp.status_code == 200, resp.text
     return resp.json()["template_id"]
+
+
+def _lookups(entries: list[dict]) -> list[str]:
+    """The lookup halves of served endpoint entries — the anchors as submitted."""
+    return [e["lookup_value"] for e in entries]
+
+
+def _resolved(entries: list[dict]) -> list[str | None]:
+    """The resolved halves of served endpoint entries — canonical ids."""
+    return [e["resolved"] for e in entries]
 
 
 def _relationship_template(
@@ -193,11 +204,14 @@ async def test_create_relationship_template_happy_path(
     assert resp.status_code == 200
     body = resp.json()
     assert body["usage"] == "relationship"
-    # Declared by value, stored and served canonical.
-    assert body["source_templates"] == [
+    # Declared by value: the entry keeps the submitted anchor verbatim and
+    # carries the canonical id the platform resolved it to.
+    assert _lookups(body["source_templates"]) == ["EXPERIMENT"]
+    assert _resolved(body["source_templates"]) == [
         await _template_id(client, auth_headers, "EXPERIMENT")
     ]
-    assert body["target_templates"] == [
+    assert _lookups(body["target_templates"]) == ["MOLECULE"]
+    assert _resolved(body["target_templates"]) == [
         await _template_id(client, auth_headers, "MOLECULE")
     ]
     assert body["versioned"] is True
@@ -346,8 +360,10 @@ async def test_endpoint_constraint_is_projected_not_supplied(
         await _template_id(client, auth_headers, "EXPERIMENT"),
         await _template_id(client, auth_headers, "ASSAY"),
     ]
-    assert body["source_templates"] == declared
-    # The served field follows the declaration, not what the caller sent.
+    assert _resolved(body["source_templates"]) == declared
+    assert _lookups(body["source_templates"]) == ["EXPERIMENT", "ASSAY"]
+    # The served field follows the declaration's resolved halves, not what
+    # the caller sent.
     source_ref = next(f for f in body["fields"] if f["name"] == "source_ref")
     assert source_ref["target_templates"] == declared
 
@@ -393,10 +409,11 @@ async def test_usage_and_versioned_preserved_across_update(
     assert body["label"] == "Renamed Edge"
     assert body["usage"] == "relationship"
     assert body["versioned"] is False
-    assert body["source_templates"] == [
+    assert _resolved(body["source_templates"]) == [
         await _template_id(client, auth_headers, "EXPERIMENT")
     ]
-    assert body["target_templates"] == [
+    assert _lookups(body["source_templates"]) == ["EXPERIMENT"]
+    assert _resolved(body["target_templates"]) == [
         await _template_id(client, auth_headers, "MOLECULE")
     ]
     assert body["version"] >= 2  # new version was created
@@ -408,12 +425,12 @@ async def test_usage_and_versioned_preserved_across_update(
 
 
 class TestEndpointListSynonymEquivalence:
-    """The field-level vs template-level endpoint-list check compares by
-    canonical entity, not by string: value-form and ID-form of the same
-    template are equivalent (the universal synonym rule for reference
-    comparisons). Stored templates carry field-level lists as canonical IDs
-    while template-level lists stay values, so archived edge types re-created
-    by a backup import legitimately arrive in mixed form."""
+    """Endpoint declarations compare by canonical entity, not by string:
+    value-form and ID-form of the same template are equivalent (the universal
+    synonym rule for reference comparisons). Each stored entry carries the
+    submitted anchor verbatim in lookup_value and the canonical id in
+    resolved, so mixed submissions — including archived edge types re-created
+    by a backup import — land as the same declared identity."""
 
     @pytest.mark.asyncio
     async def test_mixed_value_and_id_forms_accepted(self, client, auth_headers):
@@ -432,13 +449,15 @@ class TestEndpointListSynonymEquivalence:
         assert result["status"] == "created", result
 
     @pytest.mark.asyncio
-    async def test_every_accepted_form_is_stored_canonical(self, client, auth_headers):
-        """Value, canonical id and ns:VALUE all land as the same stored id.
+    async def test_every_accepted_form_keeps_its_anchor_and_resolves(self, client, auth_headers):
+        """Value, canonical id and ns:VALUE each keep their submitted anchor
+        and resolve to the same canonical id.
 
-        Form is an ingress concern: the caller writes whatever identifier they
-        have, and the declaration is stored canonically so that every site
-        which later compares or rewrites it compares ids to ids. Four shipped
-        defects came from that not being true.
+        Both halves of the entry are load-bearing: the lookup half is the
+        submitted anchor kept verbatim (the synonym that survives a fresh
+        restore's re-anchoring), the resolved half is the canonical id every
+        comparing or rewriting site uses. Four shipped defects came from a
+        single-slot form every consumer had to guess.
         """
         src = await _post_template(client, auth_headers, _entity_template("FORM_SRC"))
         tgt = await _post_template(client, auth_headers, _entity_template("FORM_TGT"))
@@ -464,8 +483,42 @@ class TestEndpointListSynonymEquivalence:
                 headers=auth_headers,
             )
             body = resp.json()
-            assert body["source_templates"] == [src["id"]], (suffix, body)
-            assert body["target_templates"] == [tgt["id"]], (suffix, body)
+            assert _lookups(body["source_templates"]) == [source_ref], (suffix, body)
+            assert _resolved(body["source_templates"]) == [src["id"]], (suffix, body)
+            assert _lookups(body["target_templates"]) == [target_ref], (suffix, body)
+            assert _resolved(body["target_templates"]) == [tgt["id"]], (suffix, body)
+
+    @pytest.mark.asyncio
+    async def test_caller_supplied_resolved_half_is_ignored(self, client, auth_headers):
+        """The resolved half is server-owned: a full entry round-trips by its
+        lookup, and a caller-pinned resolved id (stale, foreign, or plain
+        wrong) is recomputed rather than stored."""
+        src = await _post_template(client, auth_headers, _entity_template("OWN_SRC"))
+        tgt = await _post_template(client, auth_headers, _entity_template("OWN_TGT"))
+        assert src["status"] == "created" and tgt["status"] == "created"
+
+        payload = _relationship_template(
+            value="OWN_LINK",
+            source_templates=[
+                {"lookup_value": "OWN_SRC", "resolved": "019f0000-dead-7000-8000-000000000000"}
+            ],
+            target_templates=[{"lookup_value": "OWN_TGT"}],
+            # The field-level constraint is a strings-only surface (and is
+            # discarded on write — the projection is derived); the entry
+            # shape belongs to the template-level declaration only.
+            source_ref_targets=["OWN_SRC"],
+            target_ref_targets=["OWN_TGT"],
+        )
+        result = await _post_template(client, auth_headers, payload)
+        assert result["status"] == "created", result
+
+        resp = await client.get(
+            f"{API}/templates/by-value/OWN_LINK?namespace=wip", headers=auth_headers
+        )
+        body = resp.json()
+        assert _resolved(body["source_templates"]) == [src["id"]], body
+        assert _lookups(body["source_templates"]) == ["OWN_SRC"]
+        assert _resolved(body["target_templates"]) == [tgt["id"]]
 
     @pytest.mark.asyncio
     async def test_genuinely_different_entities_still_rejected(self, client, auth_headers):
@@ -493,3 +546,66 @@ class TestEndpointListSynonymEquivalence:
         assert source_ref["target_templates"] == [
             await _template_id(client, auth_headers, "EQ_A")
         ]
+
+
+# ---------------------------------------------------------------------------
+# Legacy single-string rows hydrate tolerantly and heal on the next write
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_legacy_string_endpoints_hydrate_and_heal(client, auth_headers):
+    """Rows written before the two-half shape hold bare strings.
+
+    They must (a) read as lookup-only entries — never 500 a read path over
+    stored history — and (b) heal in place on the next write that touches
+    the declaration (here: an idempotent widen fills the resolved halves).
+    """
+    from template_store.models.template import Template
+
+    await _ensure_endpoint_templates(client, auth_headers, "EXPERIMENT", "MOLECULE")
+    created = await _post_template(
+        client, auth_headers, _relationship_template(value="LEGACY_REL")
+    )
+    assert created["status"] == "created", created
+
+    # Rewrite the stored row to the pre-entry shape, bypassing the API —
+    # exactly what a row written by an older build looks like in Mongo.
+    coll = Template.get_motor_collection()
+    await coll.update_one(
+        {"template_id": created["id"], "version": created["version"]},
+        {"$set": {
+            "source_templates": ["EXPERIMENT"],
+            "target_templates": ["MOLECULE"],
+        }},
+    )
+
+    resp = await client.get(
+        f"{API}/templates/by-value/LEGACY_REL?namespace=wip", headers=auth_headers
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert _lookups(body["source_templates"]) == ["EXPERIMENT"]
+    assert _resolved(body["source_templates"]) == [None]
+    # The projection falls back to the lookup half, so enforcement input
+    # stays non-empty even for a legacy row.
+    source_ref = next(f for f in body["fields"] if f["name"] == "source_ref")
+    assert source_ref["target_templates"] == ["EXPERIMENT"]
+
+    # An idempotent widen heals the resolved halves in place (same version).
+    widen = await client.post(
+        f"{API}/templates/{created['id']}/endpoints",
+        headers=auth_headers,
+        params={"namespace": "wip"},
+        json={"add_source_templates": ["EXPERIMENT"], "add_target_templates": []},
+    )
+    assert widen.status_code == 200, widen.text
+    healed = widen.json()
+    assert healed["version"] == created["version"]
+    assert _lookups(healed["source_templates"]) == ["EXPERIMENT"]
+    assert _resolved(healed["source_templates"]) == [
+        await _template_id(client, auth_headers, "EXPERIMENT")
+    ]
+    # target side was not addressed by the widen call but rides the same
+    # save; it resolves lazily on ITS next touch, so it may stay lookup-only.
+    assert _lookups(healed["target_templates"]) == ["MOLECULE"]

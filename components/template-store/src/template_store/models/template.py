@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any, ClassVar
 
 from beanie import Document
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pymongo import IndexModel
 
 from .field import FieldDefinition
@@ -26,6 +26,56 @@ class TemplateUsage(StrEnum):
     ENTITY = "entity"
     REFERENCE = "reference"
     RELATIONSHIP = "relationship"
+
+
+class EndpointRef(BaseModel):
+    """One declared endpoint of an edge type — a reference with both halves.
+
+    A reference names an identity two ways at once, and both halves are
+    load-bearing across a fresh restore:
+
+    - ``lookup_value`` — the caller's anchor, kept verbatim (a template value,
+      ``ns:VALUE``, or a canonical id). This is the synonym half: it names the
+      identity rather than a specific minting of it, so it survives
+      re-anchoring and is the only resolvable handle for endpoints that are
+      not inside an archive being restored.
+    - ``resolved`` — the canonical template_id this lookup resolved to, filled
+      by the platform at write time (never by the caller) and rewritten
+      through the id mapping table on a fresh restore. ``None`` only for
+      drafts awaiting activation, rows written before this field existed, and
+      restored declarations whose endpoint does not exist on the target
+      (recorded with a job warning; a null half fails closed wherever an
+      exact id is required).
+
+    Documents' ``references[]`` store the same two halves for the same
+    reasons; this makes the edge-type declaration follow the platform's one
+    reference pattern instead of a single string whose form every consumer
+    had to guess.
+    """
+
+    lookup_value: str = Field(
+        description="The endpoint reference as submitted — value, ns:VALUE, or id; kept verbatim"
+    )
+    resolved: str | None = Field(
+        default=None,
+        description="Canonical template_id (server-owned; null when not yet / no longer resolvable)"
+    )
+
+    @classmethod
+    def coerce(cls, item: "EndpointRef | dict | str") -> "EndpointRef":
+        """Accept the legacy single-string form as a lookup-only entry.
+
+        Rows and archives written before the two-half shape hold bare
+        strings; they hydrate as ``{lookup_value: s, resolved: None}`` and
+        heal at the next write, activation, or restore-door repair.
+        """
+        if isinstance(item, EndpointRef):
+            return item
+        if isinstance(item, str):
+            return cls(lookup_value=item)
+        if isinstance(item, BaseModel):
+            return cls.model_validate(item.model_dump())
+        return cls.model_validate(item)
 
 
 class ReportingConfig(BaseModel):
@@ -198,21 +248,31 @@ class Template(Document):
     )
 
     # Relationship templates only — the single declaration of which
-    # templates may sit at each end of an edge. Stored as canonical
-    # template_ids: callers may write a value, an id or ns:VALUE, and the
-    # write path resolves through the Registry, so every site that compares
-    # or rewrites this list compares ids to ids.
-    source_templates: list[str] = Field(
+    # templates may sit at each end of an edge, stored as two-half
+    # references (see EndpointRef): the submitted anchor verbatim plus the
+    # server-resolved canonical id. Rows written before the two-half shape
+    # hold bare strings and are coerced to lookup-only entries on read.
+    source_templates: list[EndpointRef] = Field(
         default_factory=list,
-        description="Canonical template_ids allowed as edge source (relationship only)"
+        description="Declared edge-source endpoints (relationship only)"
     )
 
-    # Relationship templates only — canonical template_ids allowed as
-    # the target endpoint of an edge. See source_templates above.
-    target_templates: list[str] = Field(
+    # Relationship templates only — declared edge-target endpoints.
+    # See source_templates above.
+    target_templates: list[EndpointRef] = Field(
         default_factory=list,
-        description="Canonical template_ids allowed as edge target (relationship only)"
+        description="Declared edge-target endpoints (relationship only)"
     )
+
+    @field_validator("source_templates", "target_templates", mode="before")
+    @classmethod
+    def _coerce_endpoint_entries(cls, v: Any) -> Any:
+        # Coercion for stored history, not a write-time guard (write-time
+        # rules live at the service's write seam): legacy rows hold bare
+        # strings, which hydrate as lookup-only entries.
+        if isinstance(v, list):
+            return [EndpointRef.coerce(item) for item in v]
+        return v
 
     # Whether updates create new versions (true) or overwrite in place
     # (false). Default true matches v1.x behaviour. Immutable after

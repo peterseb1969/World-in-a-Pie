@@ -1,12 +1,13 @@
 """CASE-515 — additive edge-type endpoint widening (POST /templates/{id}/endpoints).
 
-An edge type's allowed endpoints (template-level source_templates/target_templates,
-mirror-locked to the source_ref/target_ref field target_templates) were frozen —
-the only way to add a legal endpoint was delete+recreate, which strands every
-existing edge. `add_edge_type_endpoints` widens them IN PLACE, additively:
+An edge type's allowed endpoints (the template-level two-half entries, from
+which the source_ref/target_ref field constraint is projected at serve) were
+frozen — the only way to add a legal endpoint was delete+recreate, which
+strands every existing edge. `add_edge_type_endpoints` widens the declaration
+IN PLACE, additively:
 
-- adds an endpoint template to both the template-level list and the mirrored
-  field target_templates, on the same version (no new version);
+- adds an endpoint entry to the declaration, on the same version (no new
+  version); the served field constraint follows because it is projected;
 - referential integrity preserved (the new endpoint must be a real template);
 - idempotent; rejects non-existent endpoints and non-relationship templates.
 """
@@ -20,8 +21,10 @@ from .test_relationship_templates import (
     API,
     _ensure_endpoint_templates,
     _entity_template,
+    _lookups,
     _post_template,
     _relationship_template,
+    _resolved,
     _template_id,
 )
 
@@ -58,9 +61,11 @@ async def test_add_target_endpoint_widens_in_place_with_field_mirror(client: Asy
     body = resp.json()
 
     # template-level list widened, in place (same version), source untouched.
-    # Endpoints are stored canonical, so the widened list names ids.
+    # The addition keeps its submitted form as the lookup half and carries
+    # the canonical id in the resolved half.
     compound_id = await _template_id(client, auth_headers, "COMPOUND")
-    assert compound_id in body["target_templates"]
+    assert compound_id in _resolved(body["target_templates"])
+    assert "COMPOUND" in _lookups(body["target_templates"])
     assert len(body["target_templates"]) == 2
     assert len(body["source_templates"]) == 1
     assert body["version"] == edge["version"]  # no new version
@@ -82,7 +87,7 @@ async def test_add_source_endpoint_widens_source_and_its_field(client: AsyncClie
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assay_id = await _template_id(client, auth_headers, "ASSAY")
-    assert assay_id in body["source_templates"]
+    assert assay_id in _resolved(body["source_templates"])
     source_ref = next(f for f in body["fields"] if f["name"] == "source_ref")
     assert assay_id in source_ref["target_templates"]
 
@@ -100,7 +105,10 @@ async def test_add_endpoint_is_idempotent(client: AsyncClient, auth_headers: dic
     assert second.status_code == 200
     v2 = second.json()
     assert v2["version"] == v1["version"]
-    assert sorted(v2["target_templates"]) == sorted(v1["target_templates"])
+    assert sorted(_resolved(v2["target_templates"]), key=str) == sorted(
+        _resolved(v1["target_templates"]), key=str
+    )
+    assert _lookups(v2["target_templates"]) == _lookups(v1["target_templates"])
 
 
 @pytest.mark.asyncio
@@ -120,26 +128,26 @@ async def test_readd_value_form_endpoint_is_idempotent(client: AsyncClient, auth
     """
     edge = await _create_edge_type(client, auth_headers, "EDGE_515_VALUEFORM")
     # EXPERIMENT (source) and MOLECULE (target) are the ORIGINAL endpoints.
-    # Re-adding them by VALUE must not grow the lists: the stored form is
-    # canonical, so the guard is that a value-form re-add resolves to the id
-    # already present rather than being appended as a second copy.
+    # Re-adding them by VALUE must not grow the lists: dedup keys on the
+    # resolved half, so a value-form re-add matches the entry already present
+    # rather than being appended as a second copy.
     resp = await _widen(
         client, auth_headers, edge["id"], source=["EXPERIMENT"], target=["MOLECULE"]
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     # The core guard: the template-level lists did NOT grow (the bug appended a
-    # second value↔UUID copy). They stay length 1, canonical.
-    assert body["target_templates"] == [
+    # second value↔UUID copy). They stay length 1, anchors intact.
+    assert _resolved(body["target_templates"]) == [
         await _template_id(client, auth_headers, "MOLECULE")
     ], body["target_templates"]
-    assert body["source_templates"] == [
+    assert _lookups(body["target_templates"]) == ["MOLECULE"]
+    assert _resolved(body["source_templates"]) == [
         await _template_id(client, auth_headers, "EXPERIMENT")
     ], body["source_templates"]
     assert body["version"] == edge["version"]  # true no-op, no new version
-    # The mirrored field lists also did not grow (no UUID duplicate appended).
-    # Form note: create stores field-level target_templates UUID-form while the
-    # template-level list is value-form, so assert no-growth, not exact form.
+    # The served field constraint (projected from the declaration) also did
+    # not grow — no UUID duplicate appended.
     target_ref = next(f for f in body["fields"] if f["name"] == "target_ref")
     assert len(target_ref["target_templates"]) == 1, target_ref["target_templates"]
     source_ref = next(f for f in body["fields"] if f["name"] == "source_ref")
