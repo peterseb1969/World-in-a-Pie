@@ -60,7 +60,10 @@ class IDRemapper:
         Fields remapped:
         - extends → template map
         - extends_version → pass through (version number, not ID)
-        - source_templates[] / target_templates[] → template map (edge types)
+        - source_templates[] / target_templates[] → two-half endpoint entries:
+          resolved half through the template map, lookup half through the
+          reference-string rules (legacy bare-string entries follow the same
+          reference-string rules whole)
         - fields[].terminology_ref → terminology map
         - fields[].array_terminology_ref → terminology map
         - fields[].template_ref → template map
@@ -68,13 +71,15 @@ class IDRemapper:
         - fields[].target_templates[] → template map
         - fields[].target_terminologies[] → terminology map
 
-        The template-level endpoint lists on an edge type are canonical ids —
-        absolute references, exactly like every other id here — so a fresh
-        restore must rewrite them or they keep naming the SOURCE install's
-        templates. Nothing else covers them: no generic id walk exists, and the
-        list is enumerated here or not at all. This is the whole of the
-        canonical-id backfill for edge types, and it is why endpoint
-        declarations cannot be stored canonically without it.
+        An endpoint entry's ``resolved`` half is an absolute canonical id, so
+        a fresh restore must rewrite it or it keeps naming the SOURCE
+        install's template. Nothing else covers it: no generic id walk
+        exists, and the entry is enumerated here or not at all. The
+        ``lookup_value`` half follows the document-reference rules instead —
+        bare stays (namespace-agnostic, re-resolves on the target), qualified
+        follows the namespace map — and is what the restore door re-resolves
+        for endpoints the template map cannot cover (out-of-archive targets,
+        where no mapping entry can exist).
         """
         result = dict(template)
 
@@ -88,7 +93,7 @@ class IDRemapper:
         for prop in ("source_templates", "target_templates"):
             if result.get(prop):
                 result[prop] = [
-                    self.template_map.get(t, t) for t in result[prop]
+                    self._remap_endpoint_entry(e) for e in result[prop]
                 ]
 
         # Remap fields
@@ -97,6 +102,33 @@ class IDRemapper:
                 self._remap_field(f) for f in result["fields"]
             ]
 
+        return result
+
+    def _remap_endpoint_entry(
+        self, entry: dict[str, Any] | str
+    ) -> dict[str, Any] | str:
+        """Remap one declared endpoint of an edge type.
+
+        A two-half entry follows the document-reference rules: the resolved
+        half rides the template map (pass-through when the target is outside
+        the archive — no map entry can exist for it; the restore door
+        re-resolves those from the lookup half against the target, or nulls
+        them with a warning), and the lookup half is rewritten only in its
+        qualified form's namespace half. A legacy bare-string entry is a
+        lookup and follows the reference-string rules whole.
+        """
+        if isinstance(entry, str):
+            return self._remap_reference_string(entry, (self.template_map,))
+        result = dict(entry)
+        lookup = result.get("lookup_value")
+        if isinstance(lookup, str):
+            result["lookup_value"] = self._remap_reference_string(
+                lookup, (self.template_map,)
+            )
+        if result.get("resolved"):
+            result["resolved"] = self.template_map.get(
+                result["resolved"], result["resolved"]
+            )
         return result
 
     def _remap_field(self, field: dict[str, Any]) -> dict[str, Any]:

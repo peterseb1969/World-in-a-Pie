@@ -848,6 +848,16 @@ class DirectRestoreEngine:
                 )
                 return
 
+            # Door repair for edge-type endpoint declarations. The remapper
+            # rewrote every resolved half the id map covers (in-archive
+            # targets — every archived template was provisioned into the
+            # map). What is left uncovered is out-of-archive by construction,
+            # and for those the lookup half is the only mechanism: re-resolve
+            # it here on the target, or clear the resolved half with a
+            # warning. A stale source-install id must never persist into a
+            # fresh namespace (the leak-sweep contract).
+            await self._repair_endpoint_declarations(mapping, plans, remapper)
+
             for src, target in mapping.items():
                 await self._write_remapped(target, plans[src], batch_size)
 
@@ -1050,6 +1060,132 @@ class DirectRestoreEngine:
             return ids
 
         return lambda _target: provision
+
+    async def _repair_endpoint_declarations(
+        self,
+        mapping: dict[str, str],
+        plans: dict[str, RemapPlan],
+        remapper: IDRemapper,
+    ) -> None:
+        """Make every edge type's declared endpoints honest on the target.
+
+        Runs after the remap pass, before rows are written. Three cases per
+        entry of a relationship template's ``source_templates`` /
+        ``target_templates``:
+
+        - **Covered by the id map** — the endpoint is in the archive; its
+          resolved half already names the target's re-minted id. Untouched.
+        - **In the archive by value** — a legacy bare-string entry (pre-3.1
+          archive) naming an archived template by value. The Registry cannot
+          answer for these yet (provisioned identities are *reserved*, and
+          reserved does not resolve), so they resolve against the archive's
+          own value index and are upgraded to two-half entries.
+        - **Out of archive** — no map entry can exist (the entity was never
+          re-registered), so the lookup half is the only mechanism: check it
+          resolves on the target install, and repair the resolved half to the
+          target's canonical id. If it does not resolve, the resolved half is
+          cleared and a warning lands on the job — a stale source-install id
+          kept in a fresh namespace is a leak, and enforcement still runs
+          from the lookup half (the `latest` strategy resolves it per write).
+        """
+        new_ids = set(remapper.template_map.values())
+
+        # Per-target value index over the archive's own (post-remap) template
+        # rows: value → new template_id, plus each row's new id keyed to
+        # itself for id-form legacy strings the map already rewrote.
+        value_index: dict[str, dict[str, str]] = {}
+        for src, target in mapping.items():
+            idx = value_index.setdefault(target, {})
+            for row in plans[src].rows.get("templates") or []:
+                if row.get("value") and row.get("template_id"):
+                    idx.setdefault(row["value"], row["template_id"])
+                    # An id-form legacy string was already rewritten to the
+                    # new id by the reference-string pass — key it to itself
+                    # so it recognizes as in-archive here.
+                    idx.setdefault(row["template_id"], row["template_id"])
+
+        async def _resolve_on_target(target: str, lookup: str) -> str | None:
+            # In-archive first (reserved identities are invisible to the
+            # Registry until activation). Bare value → this target's index;
+            # qualified → the named (already-remapped) namespace's index.
+            hit = value_index.get(target, {}).get(lookup)
+            if hit:
+                return hit
+            if ":" in lookup:
+                ns_half, rest = lookup.split(":", 1)
+                hit = value_index.get(ns_half, {}).get(rest)
+                if hit:
+                    return hit
+            # Out-of-archive: ask the Registry, scoped to the target — the
+            # same lookup the enforcement path runs (CASE-525 door), so what
+            # repairs here is exactly what would enforce later.
+            import httpx
+
+            url = f"{self._registry_url}/api/registry/entries/lookup/by-id"
+            headers = {
+                "X-API-Key": self._registry_api_key,
+                "Content-Type": "application/json",
+            }
+            item = {
+                "entry_id": lookup,
+                "namespace": target,
+                "entity_type": "templates",
+            }
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(url, headers=headers, json=[item])
+                if resp.status_code != 200:
+                    return None
+                results = resp.json().get("results", [])
+                if results and results[0].get("status") == "found":
+                    return cast("str | None", results[0].get("entry_id"))
+            except httpx.HTTPError:
+                return None
+            return None
+
+        for src, target in mapping.items():
+            for row in plans[src].rows.get("templates") or []:
+                if row.get("usage") != "relationship":
+                    continue
+                for prop in ("source_templates", "target_templates"):
+                    entries = row.get(prop) or []
+                    repaired: list[dict[str, Any]] = []
+                    for item in entries:
+                        # A legacy bare string is upgraded to a two-half
+                        # entry on the way through the door.
+                        entry = (
+                            {"lookup_value": item, "resolved": None}
+                            if isinstance(item, str) else dict(item)
+                        )
+                        resolved = entry.get("resolved")
+                        if resolved and resolved in new_ids:
+                            repaired.append(entry)
+                            continue
+                        lookup = entry.get("lookup_value")
+                        if not isinstance(lookup, str) or not lookup:
+                            # Malformed entry — nothing to resolve from;
+                            # clear the resolved half rather than leak.
+                            entry["resolved"] = None
+                            repaired.append(entry)
+                            continue
+                        entry["lookup_value"] = lookup
+                        hit = await _resolve_on_target(target, lookup)
+                        if hit:
+                            entry["resolved"] = hit
+                        else:
+                            entry["resolved"] = None
+                            self._emit(
+                                "warning",
+                                f"[{target}] edge type '{row.get('value')}' "
+                                f"endpoint '{entry['lookup_value']}' does not "
+                                "resolve on this install — resolved half "
+                                "cleared; the lookup anchor is kept and "
+                                "enforcement falls back to resolving it "
+                                "per write.",
+                            )
+                        repaired.append(entry)
+                    if entries:
+                        row[prop] = repaired
 
     async def _write_remapped(
         self, namespace: str, plan: RemapPlan, batch_size: int

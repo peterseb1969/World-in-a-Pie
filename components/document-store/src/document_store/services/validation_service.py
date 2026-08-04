@@ -1285,6 +1285,14 @@ class ValidationService:
         # Cache for expanded target_templates (to avoid repeated lookups)
         expanded_templates_cache: dict[str, list[str]] = {}
 
+        # An empty constraint list means "unconstrained" for a plain
+        # reference field — a feature. For an edge type's endpoints it means
+        # the projection from the declared endpoint lists was LOST (a reader
+        # that did not derive it, a stripped row read raw), and accepting the
+        # write would silently drop endpoint enforcement entirely. That is
+        # the guardrail-that-works-sometimes shape, so it refuses instead.
+        is_edge_type = template.get("usage") == "relationship"
+
         for ref_val in ref_validations:
             field_path = ref_val["field_path"]
             reference_type = ref_val["reference_type"]
@@ -1293,6 +1301,26 @@ class ValidationService:
             include_subtypes = ref_val.get("include_subtypes", False)
             target_terminologies = ref_val.get("target_terminologies", [])
             version_strategy = ref_val.get("version_strategy", "latest")
+
+            if (
+                is_edge_type
+                and field_path in ("source_ref", "target_ref")
+                and not target_templates
+            ):
+                result.add_error(
+                    code="missing_endpoint_constraint",
+                    message=(
+                        f"Edge type '{template.get('value')}' serves no "
+                        f"endpoint constraint for '{field_path}' — the "
+                        "declared endpoint lists did not reach validation, "
+                        "and an unconstrained edge endpoint would silently "
+                        "drop enforcement. Re-serve the template through "
+                        "the template-store API (the constraint is derived "
+                        "from the declaration there)."
+                    ),
+                    field=field_path,
+                )
+                continue
 
             # Expand target_templates with descendants when include_subtypes is set
             if include_subtypes and target_templates and reference_type == "document":

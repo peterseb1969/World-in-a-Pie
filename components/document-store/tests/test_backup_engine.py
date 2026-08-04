@@ -1365,3 +1365,171 @@ class TestRestoreIdentityPrecondition:
         warnings = [e.message for e in events if e.phase == "warning"]
         assert any("DERIVED" in w for w in warnings)
         assert events[-1].phase == "complete"
+
+
+class TestEndpointDeclarationDoorRepair:
+    """CASE-830: the restore door makes edge-type endpoint declarations
+    honest on the target.
+
+    The remapper covers in-archive resolved halves via the id map; the door
+    repairs everything else from the lookup half — in-archive-by-value from
+    the archive's own rows (reserved identities are invisible to the
+    Registry at this point), out-of-archive against the target's Registry —
+    and clears what does not resolve, with a job warning. A stale
+    source-install id persisted into a fresh namespace is a leak.
+    """
+
+    @staticmethod
+    def _engine(events):
+        return DirectRestoreEngine(MagicMock(), None, _collect_progress(events))
+
+    @staticmethod
+    def _plan(template_rows, id_map=None):
+        from document_store.services.remap_restore import RemapPlan
+        return RemapPlan(
+            id_map={"templates": dict(id_map or {})},
+            rows={"templates": template_rows},
+        )
+
+    @staticmethod
+    def _remapper(template_map):
+        from wip_archive.remap import IDRemapper
+        r = IDRemapper()
+        for old, new in template_map.items():
+            r.add_template_mapping(old, new)
+        return r
+
+    @staticmethod
+    def _httpx_lookup(status="not_found", entry_id=None):
+        """Fake httpx.AsyncClient whose lookup-by-id answers one way."""
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "results": [{"status": status, "entry_id": entry_id}]
+        }
+        client = MagicMock()
+        client.post = AsyncMock(return_value=response)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        return client
+
+    @pytest.mark.asyncio
+    async def test_covered_entry_untouched_no_registry_call(self):
+        events: list[ProgressEvent] = []
+        engine = self._engine(events)
+        remapper = self._remapper({"old-src-id": "new-tgt-id"})
+        edge = {
+            "template_id": "new-edge-id", "value": "EDGE",
+            "usage": "relationship",
+            "source_templates": [
+                # Already rewritten by the remapper (in-archive endpoint).
+                {"lookup_value": "MONSTER", "resolved": "new-tgt-id"}
+            ],
+            "target_templates": [],
+        }
+        plan = self._plan([edge])
+        client = self._httpx_lookup()
+        with patch("httpx.AsyncClient", return_value=client):
+            await engine._repair_endpoint_declarations(
+                {"src": "tgt"}, {"src": plan}, remapper
+            )
+        assert edge["source_templates"] == [
+            {"lookup_value": "MONSTER", "resolved": "new-tgt-id"}
+        ]
+        client.post.assert_not_called()
+        assert not [e for e in events if e.phase == "warning"]
+
+    @pytest.mark.asyncio
+    async def test_legacy_string_upgrades_from_archive_value_index(self):
+        """A pre-3.1 value-form string names an archived template; the
+        Registry cannot answer (reserved), so the archive's own rows do."""
+        events: list[ProgressEvent] = []
+        engine = self._engine(events)
+        remapper = self._remapper({})
+        monster = {
+            "template_id": "new-monster-id", "value": "MONSTER",
+            "usage": "entity",
+        }
+        edge = {
+            "template_id": "new-edge-id", "value": "EDGE",
+            "usage": "relationship",
+            "source_templates": ["MONSTER"],
+            "target_templates": [],
+        }
+        plan = self._plan([monster, edge])
+        client = self._httpx_lookup()
+        with patch("httpx.AsyncClient", return_value=client):
+            await engine._repair_endpoint_declarations(
+                {"src": "tgt"}, {"src": plan}, remapper
+            )
+        assert edge["source_templates"] == [
+            {"lookup_value": "MONSTER", "resolved": "new-monster-id"}
+        ]
+        client.post.assert_not_called()
+        assert not [e for e in events if e.phase == "warning"]
+
+    @pytest.mark.asyncio
+    async def test_out_of_archive_repairs_via_target_registry(self):
+        events: list[ProgressEvent] = []
+        engine = self._engine(events)
+        remapper = self._remapper({})
+        edge = {
+            "template_id": "new-edge-id", "value": "EDGE",
+            "usage": "relationship",
+            "source_templates": [
+                # Out-of-archive: resolved names the SOURCE install's id and
+                # no map entry can exist for it.
+                {"lookup_value": "wip:SESSION", "resolved": "old-foreign-id"}
+            ],
+            "target_templates": [],
+        }
+        plan = self._plan([edge])
+        client = self._httpx_lookup(status="found", entry_id="tgt-session-id")
+        with patch("httpx.AsyncClient", return_value=client):
+            await engine._repair_endpoint_declarations(
+                {"src": "tgt"}, {"src": plan}, remapper
+            )
+        assert edge["source_templates"] == [
+            {"lookup_value": "wip:SESSION", "resolved": "tgt-session-id"}
+        ]
+        assert not [e for e in events if e.phase == "warning"]
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_entry_nulled_with_warning_no_leak(self):
+        events: list[ProgressEvent] = []
+        engine = self._engine(events)
+        remapper = self._remapper({})
+        edge = {
+            "template_id": "new-edge-id", "value": "EDGE",
+            "usage": "relationship",
+            "source_templates": [
+                {"lookup_value": "GONE_TPL", "resolved": "old-foreign-id"}
+            ],
+            "target_templates": [],
+        }
+        plan = self._plan([edge])
+        client = self._httpx_lookup(status="not_found")
+        with patch("httpx.AsyncClient", return_value=client):
+            await engine._repair_endpoint_declarations(
+                {"src": "tgt"}, {"src": plan}, remapper
+            )
+        # The stale source id is gone (leak contract); the anchor survives.
+        assert edge["source_templates"] == [
+            {"lookup_value": "GONE_TPL", "resolved": None}
+        ]
+        warnings = [e.message for e in events if e.phase == "warning"]
+        assert any("GONE_TPL" in w for w in warnings)
+
+    @pytest.mark.asyncio
+    async def test_non_relationship_rows_ignored(self):
+        events: list[ProgressEvent] = []
+        engine = self._engine(events)
+        entity = {
+            "template_id": "t1", "value": "PLAIN", "usage": "entity",
+        }
+        plan = self._plan([entity])
+        with patch("httpx.AsyncClient", return_value=self._httpx_lookup()):
+            await engine._repair_endpoint_declarations(
+                {"src": "tgt"}, {"src": plan}, self._remapper({})
+            )
+        assert "source_templates" not in entity

@@ -651,9 +651,25 @@ class ArchiveModel:
                 node.declared_terminologies.add(ref)
 
         # Template-level endpoint lists exist only on relationship templates.
+        # An entry is either the two-half {lookup_value, resolved} shape
+        # (format 3.1+) or a legacy bare string; either way the model keeps
+        # one string handle per endpoint — the resolved id when present,
+        # else the lookup — and the downstream declared-reference resolution
+        # already accepts id, bare value, and ns:VALUE alike.
+        def _endpoint_handle(entry: Any) -> str | None:
+            if isinstance(entry, dict):
+                return entry.get("resolved") or entry.get("lookup_value")
+            return entry if isinstance(entry, str) else None
+
         if node.is_edge_type:
-            node.endpoint_source_templates.update(row.get("source_templates") or [])
-            node.endpoint_target_templates.update(row.get("target_templates") or [])
+            node.endpoint_source_templates.update(
+                h for e in (row.get("source_templates") or [])
+                if (h := _endpoint_handle(e))
+            )
+            node.endpoint_target_templates.update(
+                h for e in (row.get("target_templates") or [])
+                if (h := _endpoint_handle(e))
+            )
         return node
 
     def _resolve_declared_references(self) -> None:

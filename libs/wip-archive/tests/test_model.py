@@ -359,6 +359,39 @@ class TestEdges:
         assert model.external_refs == []
         assert len(model.islands()) == 1
 
+    def test_two_half_endpoint_entries_are_read(self, tmp_path):
+        """Format 3.1+ archives declare endpoints as {lookup_value, resolved}.
+
+        The model keeps one handle per entry — the resolved id when present,
+        else the lookup — so entries, lookup-only entries (a restore-door
+        null), and legacy strings all land in the same resolution machinery.
+        """
+        rows = {
+            "templates": [
+                _template(TPL_MONSTER, "MONSTER"),
+                _template(TPL_SPELL, "SPELL"),
+                _template(
+                    TPL_EDGE,
+                    "MONSTER_HAS_SPELL",
+                    usage="relationship",
+                    source_templates=[
+                        {"lookup_value": "MONSTER", "resolved": TPL_MONSTER}
+                    ],
+                    target_templates=[
+                        {"lookup_value": "SPELL", "resolved": None}
+                    ],
+                ),
+            ],
+            "registry_entries": [_registry(TPL_EDGE, "templates")],
+        }
+        model = load(build_archive(tmp_path / "entries.zip", rows))
+        edge = model.templates[TPL_EDGE].latest_version
+        assert edge.endpoint_source_templates == {TPL_MONSTER}
+        # resolved: null falls back to the lookup half, which the model's
+        # declared-reference resolution turns into the id it names.
+        assert edge.endpoint_target_templates == {TPL_SPELL}
+        assert model.declared_out_neighbours(TPL_EDGE) == {TPL_MONSTER, TPL_SPELL}
+
     def test_qualified_reference_crosses_a_namespace_bare_does_not(self, tmp_path):
         """`ns:VALUE` names another namespace; a bare value never does."""
         writer = ArchiveWriter(tmp_path / "cross.zip", default_namespace="a")

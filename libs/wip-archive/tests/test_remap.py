@@ -40,40 +40,93 @@ class TestIDRemapper:
         result = self.remapper.remap_template(tpl)
         assert result["extends"] == "TPL-UNKNOWN"
 
-    def test_remap_template_endpoint_declarations(self):
-        """An edge type's declared endpoints are absolute ids — remap them.
+    def test_remap_template_endpoint_entries(self):
+        """A two-half endpoint entry: resolved rides the map, lookup stays.
 
-        Without this the declaration keeps naming the SOURCE install's
-        templates after a fresh restore, while the mirrored field-level copy
-        is remapped correctly — the two halves of one fact disagreeing.
+        The resolved half is an absolute canonical id — without the rewrite
+        the declaration keeps naming the SOURCE install's template after a
+        fresh restore. The lookup half is the submitted anchor; a bare one is
+        namespace-agnostic and survives verbatim.
         """
         tpl = {
             "template_id": "TPL-EDGE",
             "usage": "relationship",
-            "source_templates": ["0190c000-0000-7000-0000-000000000001"],
-            "target_templates": ["0190c000-0000-7000-0000-000000000002"],
+            "source_templates": [
+                {"lookup_value": "MONSTER",
+                 "resolved": "0190c000-0000-7000-0000-000000000001"}
+            ],
+            "target_templates": [
+                {"lookup_value": "0190c000-0000-7000-0000-000000000002",
+                 "resolved": "0190c000-0000-7000-0000-000000000002"}
+            ],
             "fields": [],
         }
         result = self.remapper.remap_template(tpl)
-        assert result["source_templates"] == ["0190e000-0000-7000-0000-000000000021"]
-        assert result["target_templates"] == ["0190e000-0000-7000-0000-000000000022"]
+        assert result["source_templates"] == [
+            {"lookup_value": "MONSTER",
+             "resolved": "0190e000-0000-7000-0000-000000000021"}
+        ]
+        # An id-form lookup is itself a mapped reference string and follows
+        # its entity (an old id kept anywhere points into the source).
+        assert result["target_templates"] == [
+            {"lookup_value": "0190e000-0000-7000-0000-000000000022",
+             "resolved": "0190e000-0000-7000-0000-000000000022"}
+        ]
 
-    def test_remap_template_endpoints_unknown_passthrough(self):
-        """An endpoint outside the archive was never re-minted — keep it.
+    def test_remap_template_endpoints_out_of_archive_passthrough(self):
+        """An endpoint outside the archive was never re-minted — pass through.
 
-        Same rule as every other reference here: no map knows it, so it still
-        describes the entity it named.
+        No map knows its resolved half, so it survives here UNCHANGED; making
+        it honest (repair via the lookup on the target, or null + warning) is
+        the restore door's job, not the remapper's. The lookup half keeps the
+        submitted anchor that the door will re-resolve.
         """
         tpl = {
             "template_id": "TPL-EDGE",
             "usage": "relationship",
-            "source_templates": ["TPL-OUTSIDE"],
+            "source_templates": [
+                {"lookup_value": "OUTSIDE_TPL",
+                 "resolved": "0190dead-0000-7000-0000-00000000beef"}
+            ],
             "target_templates": [],
             "fields": [],
         }
         result = self.remapper.remap_template(tpl)
-        assert result["source_templates"] == ["TPL-OUTSIDE"]
+        assert result["source_templates"] == [
+            {"lookup_value": "OUTSIDE_TPL",
+             "resolved": "0190dead-0000-7000-0000-00000000beef"}
+        ]
         assert result["target_templates"] == []
+
+    def test_remap_template_endpoint_legacy_strings(self):
+        """A pre-entry archive holds bare strings — reference-string rules.
+
+        Id-form follows the map (the CASE-830 defect population), value-form
+        passes through (it re-resolves in the target namespace), qualified
+        form follows the namespace map.
+        """
+        remapper = IDRemapper(namespace_map={"oldns": "newns"})
+        remapper.add_template_mapping(
+            "0190c000-0000-7000-0000-000000000001",
+            "0190e000-0000-7000-0000-000000000021",
+        )
+        tpl = {
+            "template_id": "TPL-EDGE",
+            "usage": "relationship",
+            "source_templates": [
+                "0190c000-0000-7000-0000-000000000001",  # id-form → remapped
+                "MONSTER",                                # value-form → stays
+                "oldns:SPELL",                            # qualified → ns half
+            ],
+            "target_templates": [],
+            "fields": [],
+        }
+        result = remapper.remap_template(tpl)
+        assert result["source_templates"] == [
+            "0190e000-0000-7000-0000-000000000021",
+            "MONSTER",
+            "newns:SPELL",
+        ]
 
     def test_remap_template_entity_has_no_endpoints(self):
         tpl = {"template_id": "TPL-X", "fields": []}
