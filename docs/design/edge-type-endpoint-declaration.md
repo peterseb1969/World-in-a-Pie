@@ -1,34 +1,17 @@
 # Edge-Type Endpoint Declaration — Analysis and Design
 
-> ## ⚠ §8's design premise is UNDER REVIEW — do not implement from it
->
-> The current-state analysis (§1–§7) stands and is worth reading. **§8's clean
-> design does not.** It rests on "form is an ingress concern, storage is
-> canonical", which demotes synonyms to an input format. Synonyms are co-equal
-> first-class anchors for an identity, and a fresh restore re-anchors:
-> canonical IDs are swapped and rewritten through the re-registration mapping
-> table, while **synonyms are the only mechanism for references to entities not
-> in the archive**, where no mapping-table entry can ever exist.
->
-> §8 therefore converts reference-by-identity into reference-by-anchor and
-> breaks exactly the case the CASE-827 shaping transforms create by design.
-> Its description of value form as "the workaround crystallised in the write
-> path" is wrong: value form is the synonym half, the part that survives
-> re-anchoring.
->
-> See **FIRESIDE-29** (the model), **CASE-830#5** (implementation status and
-> what is open), **CASE-827#5** (roadmap consequences), **LESSON-45** (how a
-> principle in the wake-load failed to constrain this design).
->
-> Branch `feat/edge-endpoint-declaration` implements §8, is green on dev-test,
-> and is **unmerged pending this review**.
-
-**Status:** analysis v1 — current state mapped end to end; §8 design under review
-**Date:** 2026-07-31
+**Status:** analysis (§1–§7) current-state, mapped end to end; design (§8) decided
+**Date:** analysis 2026-07-31; design decided 2026-08-04
 **Tracking:** CASE-830 (defect), CASE-827 (found while building the M1 archive model)
+**Model:** FIRESIDE-29 — an ID is an anchor for an identity; synonyms are co-equal anchors
 **Related shipped defects in this subsystem:** CASE-406, CASE-515, CASE-525
-**Decisions taken (Peter, 2026-07-31):** archive format version bumped; D1 and
-D2 ship together; `include_subtypes` does not apply to edge-type endpoints
+**Decisions (Peter):** two-half endpoint entries; API serves the entries as the
+one shape; restore warns (not refuses) on unresolvable out-of-archive endpoints;
+`include_subtypes` does not apply to edge-type endpoints; D1 and D2 ship
+together; archive format version bumped (minor)
+**Implementation status:** branch `feat/edge-endpoint-declaration` carries a
+superseded single-slot implementation of an earlier §8; it is unmerged and must
+be reworked to this design before merge.
 
 ---
 
@@ -132,9 +115,13 @@ The structural fact that makes this tractable:
 
 > **Only one component reads template rows straight from Mongo:**
 > `document-store/services/backup_engine.py`. Everything else reads templates
-> over HTTP, and every template-serving endpoint returns `TemplateResponse`,
-> which is constructed in exactly one place — `_to_template_response`
-> (`template_service.py:3043`, 7 call sites, no other construction site).
+> over HTTP, and every template-serving endpoint returns `TemplateResponse` —
+> but NOT all through one construction site. `_to_template_response`
+> (`template_service.py:3043`) has 7 call sites, and two routes
+> (`add_edge_type_endpoints`, `reactivate_template`) return raw `Template`
+> documents that FastAPI's implicit `response_model` coercion converts,
+> bypassing the serializer. Any serve-time derivation must route those two
+> through the converter and audit all 13 template-returning routes.
 
 | Consumer | Reads | Via | Effect if the field-level list is absent |
 |---|---|---|---|
@@ -218,97 +205,151 @@ that remembers.
 
 ---
 
-## 8. Clean design
+## 8. The design: two-half endpoint entries
 
-Constraints given (Peter, 2026-07-31): clean design, no compromises for
-compatibility or to rescue existing backups; keep backup/restore fast (direct
-Mongo, bulk); where speed forces a trade, resolve clearly by name using
-auto-synonyms; canonical IDs are backfilled during or after restore as part of
-the process.
+Constraints given (Peter): the FIRESIDE-29 identity model governs — an ID is an
+anchor for an identity, synonyms are co-equal anchors, and a fresh restore
+re-anchors (identities and synonyms survive; canonical IDs are swapped through
+the re-registration mapping table; for references to entities **not in the
+archive** no mapping-table entry can exist, so the synonym is the only
+resolution mechanism). Keep backup/restore fast (direct Mongo, bulk).
+
+### Why two halves
+
+The endpoint declaration is a set of references, and a reference has two
+halves: **which identity** it names (the submitted anchor — a synonym or value
+form, the half that survives re-anchoring) and **what it resolved to here**
+(the canonical anchor — exact, comparable, remappable through the mapping
+table). Documents already store both: `references[]` carries
+`{lookup_value, resolved{…}}`, the remapper rewrites only the resolved half,
+and Vision §4 ("Preserve Original Values") is the standing commitment behind
+that shape.
+
+The template-level endpoint lists were the one reference surface in WIP that
+stored a single half, and either single-slot choice loses the other: keep the
+submitted form and every consumer must guess what the string is (the §6
+four-defect lineage); keep the canonical id and out-of-archive references
+become unrecoverable after a fresh restore. The two-half entry removes the
+guess structurally — each half has exactly one meaning.
 
 ### Principles
 
 1. **One declaration.** The template-level `source_templates` /
    `target_templates` are the single source of truth. Nothing else stores the
    same fact.
-2. **Canonical in storage.** Stored as canonical template ids — Vision §3, the
-   Registry is the identity authority. `:562`'s as-submitted assignment is the
-   principle violation that admits every form ambiguity in §6.
-3. **Form is an edge concern.** Values resolve **in** at ingress (all of W1–W4)
-   and render **out** at egress. Egress has exactly one choke point:
-   `_to_template_response`.
+2. **Both halves, fixed semantics.** Each entry is
+   `{lookup_value, resolved}`: `lookup_value` is the caller's anchor kept
+   verbatim; `resolved` is the canonical template id, filled by the platform.
+   No consumer ever infers meaning from a string's shape again.
+3. **`resolved` is server-owned.** It is computed at ingress via the Registry
+   (`bypass_cache=True` — writes hit Registry) and recomputed from
+   `lookup_value` on every write; a caller-supplied `resolved` is ignored.
 4. **Fast paths stay fast.** Backup and restore keep reading and writing Mongo
-   directly in bulk. Canonical-id backfill is a bulk step inside the existing
-   remap, not a per-row service call.
+   directly in bulk. The remap of resolved halves is a bulk step inside the
+   existing remap; the restore-door repair touches only endpoint entries whose
+   resolved half the mapping table did not cover (endpoint lists are small).
 
-### Two shapes for the enforcement projection
+### Storage shape
 
-**D1 — derive the projection at the serve boundary.** The field-level
-`target_templates` on `source_ref`/`target_ref` stops being stored and is
-computed in `_to_template_response` from the declaration. Every HTTP consumer
-(document-store's validator, `@wip/client`, MCP, Console) is unaffected because
-they all read that response. The mirror-lock check (`:114`) is deleted — there
-is nothing left to compare. Archives carry no projection, which is fine because
-nothing reads Mongo except the backup engine.
+```jsonc
+"source_templates": [
+  {"lookup_value": "MONSTER",    "resolved": "019fb7a6-3d44-7dd7-…"},
+  {"lookup_value": "kb:SESSION", "resolved": "019f4c11-…"}
+]
+// resolved: canonical template_id, or null only when a restore could not
+// re-resolve an out-of-archive endpoint on the target (job warning attached)
+```
 
-**D2 — enforce directly from the declaration, no projection at all.**
-Document-store's relationship validation (`document_service.py:270`, which
-already exists and already knows it is handling an edge type) checks the
-resolved endpoint's template against the declaration, resolving through
-Registry. This is what `document-relationships.md:93-94` specified and §3 shows
-was never built. The second representation disappears entirely rather than
-being derived.
+- `lookup_value` — bare value (own namespace), `ns:VALUE`, or UUID, exactly as
+  submitted. Never rewritten except the namespace half of a qualified form
+  when that namespace is re-minted (the same rule
+  `_remap_document_reference` applies to document lookups).
+- `resolved` — canonical id, or `null` after a restore that could not repair
+  it (see below). A `null` resolved half fails **closed** wherever an exact id
+  is required (e.g. `version_strategy: pinned`).
 
-**Decision: D1 and D2 ship together.** The concern about combining them was
-that D2 must re-implement what the generic validator gives for free —
-`include_subtypes` expansion, `version_strategy`, pinned-version handling. The
-`include_subtypes` decision below removes the largest of those, and the
-remainder is small: the `latest` branch's Registry-resolve-then-match
-(`validation_service.py:1712-1735`) is the whole algorithm, and it already
-exists to be moved rather than invented.
+### Ingress (W1–W4)
 
-Shipping them together also avoids an intermediate state in which the
-projection is derived but enforcement still reads it — a shape that would be
-correct but would leave the subsystem with two representations for one more
-release, which is what this work exists to end.
+All four write paths accept plain strings (any form) or full entries; either
+way `lookup_value` keeps the submitted anchor and `resolved` is computed
+server-side. `_widen` dedups by resolved half; its resolve-then-downgrade
+(`_value_form`) disappears, which also removes H4's per-endpoint Mongo query.
+The create-as-upsert immutability diff compares **resolved sets**, so
+synonym-equivalent declarations compare equal without the Registry round-trips
+`_ref_lists_equivalent` needs today (the CASE-406 spurious-versioning class
+stays closed by construction).
+
+### Serve — the entries are the one shape (D1 kept)
+
+`TemplateResponse.source_templates` / `target_templates` serve the entries as
+stored — both halves, one shape, no string-list projection beside them. A
+convenience copy at the API layer would recreate the declaration/projection
+drift pattern one level up: every reader would again have to know which field
+is authoritative.
+
+The **field-level** `target_templates` on `source_ref` / `target_ref` remains
+what it always should have been: a projection for the generic reference
+validator, **derived at serve** in `_to_template_response` and never stored.
+It is fed the resolved halves (falling back to `lookup_value` where resolved
+is null); `include_subtypes` is forced off. The mirror-lock comparison at
+`:114` is deleted — there is nothing left to compare. Enforcement semantics
+are unchanged: the `latest` branch resolves every entry through the Registry
+before matching (CASE-525), `pinned` compares canonical ids.
 
 ### What changes, precisely
 
 | Change | Where | Note |
 |---|---|---|
-| C1 | Resolve template-level lists to canonical at ingress | `template_service.py` W1, W2, W3, W4 | reuse the resolver `_normalize_field_references` already builds |
-| C2 | Stop `_value_form` downgrading; store canonical | `:1691-1699` | also removes H4's per-endpoint query |
-| C3 | ~~Render value form on egress~~ — **dropped**, see below | — | endpoints are served as canonical ids, like every other template reference |
-| C4 | Derive the field-level projection on egress; stop storing it | `_to_template_response` | D1 |
-| C5 | Delete the mirror-lock comparison at `:114` | keep the rest of the shape validation (fields exist, `reference_type: document`) | **keep `_ref_lists_equivalent`** — three other call sites |
-| C6 | Remap the template-level lists | `remap.py:remap_template` | the canonical-id backfill; bulk, in-process, no service calls |
+| C1 | Endpoint entries become `{lookup_value, resolved}`; ingress fills `resolved`, keeps `lookup_value` verbatim | `template_service.py` W1, W2, W3, W4 + `models/template.py` / `api_models.py` | plain-string submissions remain valid; `resolved` is server-owned |
+| C2 | `_widen` writes entries and dedups by resolved half | `:1682-1699` | `_value_form` deleted (H4 gone) |
+| C3 | Serve the entries as the one shape | `_to_template_response` + every `TemplateResponse` consumer | breaking read-shape change, one delivery train |
+| C4 | Derive the field-level projection on egress; stop storing it | `_to_template_response` | fed resolved-else-lookup; subtypes forced off |
+| C5 | Delete the mirror-lock comparison at `:114`; upsert diff compares resolved sets | keep the rest of the shape validation | `_ref_lists_equivalent`'s remaining call sites reviewed against the new diff |
+| C6 | Remap resolved halves; rewrite qualified lookup namespaces | `remap.py:remap_template` | same rules as `_remap_document_reference`; bulk, in-process |
+| C7 | Restore-door repair for out-of-archive endpoints | restore engine, post-remap | see below; **warning, never refusal** (decided) |
+| C8 | Permissive-empty fails loud | document-store validator | an edge type's ref field with no constraint is an error, not a pass |
 
-### D2, revisited during implementation
+### Fresh restore: remap, then repair (C6 + C7)
 
-D2 was "enforce directly from the declaration, no projection at all", to close
-H5 — the design's specified enforcement never having been built.
+`remap_template` rewrites each entry's `resolved` through the template map
+(pass-through when absent) and rewrites the namespace half of a qualified
+`lookup_value` when that namespace is re-minted — the document-reference rules
+applied to the declaration. C1 and C6 land together: entries whose resolved
+halves are not rewritten would name the source install.
 
-**C4 closed H5 already.** Enforcement now flows from the declaration: the
-constraint the generic validator reads is projected from it, cannot diverge
-from it, and is not stored anywhere. The *effect* is exactly what
-`document-relationships.md:93-94` specified. What remained of D2 was moving
-the check into document-store and deleting the projection — and the projection
-turns out to be worth keeping as **served** information: it is what tells a
-client which templates a given endpoint accepts, and `@wip/client`'s
-`template-to-form` builds reference pickers from it. Deleting it would strip
-schema information from the API to remove a duplication that C4 had already
-removed.
+Then the door applies the FIRESIDE-29 mechanism to every entry the mapping
+table did not cover (an out-of-archive endpoint): re-resolve `lookup_value`
+against the **target's** Registry.
 
-What D2 *did* still buy was enforcing the `include_subtypes` decision below,
-which C4 alone did not: nothing stripped the flag, so a caller could set
-`include_subtypes: true` on `source_ref` and the generic validator would
-honour it, silently widening the accepted set beyond the declaration. That is
-now closed at both ends (stripped on write, forced off in the projection) with
-a test, which is the part of D2 that had teeth.
+- Found → `resolved` is repaired to the target's canonical id.
+- Not found → `resolved: null` plus a **job warning** (decided: warning, not
+  refusal — consistent with how restore treats dangling document references).
+  Nulling is required, not cosmetic: a stale source-install id persisted into
+  a fresh namespace is exactly what the matrix's PL-LEAK sweep forbids.
 
-**Recommendation: treat D2 as delivered by C4 + the subtype fix**, and do not
-move enforcement into document-store. Recorded rather than silently dropped:
-the remaining difference is a code-location preference, not a behavioural one.
+The id-preserving restore path (W6) needs nothing: ids are preserved by
+design, so both halves stay valid.
+
+### Permissive-empty fails loud (C8)
+
+`validation_service.py:1687` treats an empty constraint as *no constraint*.
+For plain reference fields that is a feature; for an edge type it means any
+reader that loses the derived projection silently drops endpoint enforcement
+(H3). Decision: document-store — which knows `usage` (it already runs the
+edge-specific namespace/archived checks) — **refuses** an edge-type
+`source_ref`/`target_ref` that reaches the reference validator with no
+constraint. The obligation is enforced by a test that reads a stored row
+through a path that does **not** derive and asserts refusal (CASE-830#4's
+requirement), so the decision is enforced rather than merely written down.
+
+### D2 — enforcement location
+
+D2 ("enforce directly from the declaration in document-store, no projection at
+all") is delivered by C4 + C8 + the subtype rule: enforcement flows from the
+declaration, cannot diverge from it, and its absence is loud. The projection
+survives as **served** schema information — `@wip/client`'s `template-to-form`
+builds reference pickers from it. Moving the check's code into document-store
+would be a location preference, not a behavioural change; not done.
 
 ### `include_subtypes` does not apply to edge-type endpoints
 
@@ -350,111 +391,97 @@ that, additively and in place. If a real taxonomy-plus-edge-type case appears,
 a template-level flag remains available — designed then against a concrete
 usage pattern rather than a hypothetical.
 
-### C3 dropped — endpoints are served as canonical ids
-
-**Decision (Peter, 2026-07-31, during implementation): drop C3.** The
-declaration is served in the form it is stored: canonical ids.
-
-C3 assumed rendering value form on egress was nearly free. It is not.
-`_to_template_response` is **synchronous**, so rendering means a lookup per
-serve — either making the serializer async or threading a batched value-map
-through all seven call sites, plus one `$in` query per served edge type.
-
-The precedent settles it: the field-level `target_templates` has **always**
-been served as canonical ids (`field.py:170`), and `@wip/client`'s
-`template-to-form` consumes them without complaint — clients already resolve
-template ids to names for that list. Serving the declaration the same way makes
-every template reference in the system canonical, everywhere, with no rendering
-layer and no per-serve cost.
-
-Cost accepted: the raw API and Console show ids rather than names for edge
-endpoints, recoverable client-side exactly as it already is for the field-level
-list. `wip-toolkit inspect` is unaffected — `ArchiveModel` resolves ids to
-labels itself.
-
-Consequence for the contract: `api_models.py` and `models/template.py` now
-document these lists as canonical ids that *accept* value, id or `ns:VALUE` on
-write. The form is an ingress concern only.
-
 ### Archive format version
 
-**Decision: bump it.** Archives written after this change carry canonical
-declarations and no field-level projection. The bump makes that detectable by a
-reader instead of silent, which matters because the failure mode of an
-un-bumped older reader is permissive (H3), not loud.
+**Decision: bump it (minor).** Archives written after this change carry
+two-half endpoint entries and no field-level projection. The bump makes that
+detectable by a reader instead of silent, which matters because the failure
+mode of an un-bumped older reader is permissive (H3), not loud. The bump stays
+**minor** (3.x): every existing gate tests `format_version.startswith("3")`
+(`api/backup.py:199`, `backup_engine.py:2408`, `convert_archive.py:37`), so a
+major bump would make every new archive unrestorable on an install that has
+not taken this change — a self-inflicted break far larger than the defect.
 
-**Why C6 is not optional.** Today value form accidentally survives a restore,
-which is the only reason CASE-830 is `fyi`. Under canonical storage nothing
-survives by accident: ship C1 without C6 and *every* fresh-restored edge type
-loses its declaration. C1 and C6 must land together.
-
-**Where auto-synonyms carry the load.** For any endpoint the id map cannot
-cover — an archive referencing a template outside it — resolution falls back to
-the value through the Registry auto-synonym, which resolves in the *target*
-namespace by construction. That is the "be smart, resolve by name" path, and it
-is why canonical storage is safe rather than brittle.
+**Legacy rows and archives read tolerantly.** A bare string entry in a stored
+row or an older archive is read as `{lookup_value: <string>, resolved: null}`;
+the resolved half fills at the next write, restore-door repair, or an optional
+one-time normalisation. Measured population (28 archives, 365 edge types,
+2,662 endpoint entries, all value-form, zero id-form) makes this a
+non-event operationally — but tolerant reading is the design, not a bet on
+that measurement.
 
 ### Accepted consequences
 
-- Archives written after this change carry canonical declarations and no
-  projection. Restoring one into a **pre-change** install would leave endpoint
-  enforcement unconstrained (H3). Accepted by direction: clean slate, no
-  compatibility compromise — mitigated by the format-version bump above, which
-  makes the mismatch detectable rather than silent.
-- Existing stored rows hold value form. No backfill is required for
-  correctness — ingress resolution and the canonical-entity diff make old and
-  new forms compare equal, so bootstrap re-runs do not spuriously version
-  (this is what `_ref_lists_equivalent` at `:1073` already guarantees). A
-  one-time normalisation is optional tidiness, not a prerequisite.
+- **The read shape is a breaking change** for every `TemplateResponse`
+  consumer: `@wip/client` (types + minor bump), MCP schemas, the Console's
+  edge-type views (APP-RC), `ArchiveModel`/`inspect`, plus a sweep check on
+  reporting-sync's templates definitions table. All in-house; updated in the
+  same delivery per the libs-ship-with-features rule.
+- Restoring a post-change archive into a **pre-change** install leaves endpoint
+  enforcement unconstrained there (H3 on the old reader) — detectable via the
+  format bump, accepted by direction.
+- An entry whose `resolved` is null cannot satisfy `version_strategy: pinned`
+  (fails closed) until re-resolved; `latest` (the default) resolves the
+  `lookup_value` through the Registry as it always has.
+- Raw API and Console show entry objects rather than bare strings; clients
+  render `lookup_value` for humans.
 
 ---
 
 ## 9. Test obligations
 
-- Ingress: create/update/activate/widen with value, id and `ns:VALUE` → stored
-  canonical in every case.
-- Egress: the served template renders value form and carries the derived
-  projection; asserted through the same path document-store uses.
-- Restore: fresh restore of an edge type declared in **either** form leaves a
-  declaration naming a template that exists in the target namespace. This is
+- Ingress: create/update/activate/widen with bare value, `ns:VALUE` and UUID →
+  `lookup_value` kept verbatim, `resolved` canonical, in every case; a
+  caller-supplied `resolved` is ignored (server-owned half).
+- Upsert diff: value-form and UUID-form declarations of the same endpoints
+  compare **unchanged** (resolved-set comparison; the CASE-406 class).
+- Egress: the served template carries the entries and the derived field-level
+  projection (resolved-else-lookup, subtypes off); asserted through the same
+  path document-store uses.
+- Restore, in-archive: fresh restore of an edge type declared in **either**
+  form leaves `resolved` naming the target namespace's template and
+  `lookup_value` intact (bare stays; qualified namespace half rewritten).
   CASE-830's reproduction, generalised.
+- Restore, out-of-archive, target has the identity: the door repairs
+  `resolved` to the target's canonical id via the `lookup_value` synonym.
+- Restore, out-of-archive, target lacks the identity: `resolved: null` + job
+  warning, and **no source-install id survives anywhere in the row**
+  (the PL-LEAK invariant).
+- Legacy read: a bare-string entry is read as `{lookup_value, resolved: null}`
+  and heals on the next write.
 - H3 enforcement (the test CASE-830#4 asked for): a stored row read through a
-  path that does **not** derive must not silently produce an unconstrained
-  reference field — assert refusal or an explicit signal, so the decision is
-  enforced rather than merely written down.
+  path that does **not** derive must be refused, not silently unconstrained —
+  so C8 is enforced rather than merely written down.
 - `include_subtypes`: a document whose template *extends* a declared endpoint
   is **rejected** as an edge endpoint. This is the decision above made
   enforceable — without it, "subtypes are not admitted" is an intention.
-- H2 (narrowed): an edge-type endpoint field with `version_strategy: pinned`,
-  after a widen. Worth one test to pin the behaviour, but no longer the
-  general hazard the first draft claimed.
+- `version_strategy: pinned`: matches on the resolved half after a widen;
+  fails closed on a null resolved half. (H2, narrowed — the `latest` branch
+  resolves through the Registry and is form-agnostic.)
 
 ---
 
 ## 10. Decisions and remaining questions
 
-All three questions this analysis opened were settled by Peter on 2026-07-31:
-
 | Question | Decision |
 |---|---|
-| D2's timing — follow-on, or together with D1? | **Together** (§8) |
-| Bump the archive format version? | **Yes** (§8) |
-| Does `include_subtypes` apply to edge-type endpoints? | **No** — option A (§8) |
-| Render value form on egress (C3)? | **No** — dropped during implementation; ids are served (§8) |
-
-The format bump is **3.0 → 3.1**, not 4.0: every existing gate tests
-`format_version.startswith("3")` (`api/backup.py:199`,
-`backup_engine.py:2408`, `convert_archive.py:37`), so a major bump would make
-every new archive unrestorable on an install that has not taken this change —
-a self-inflicted break far larger than the defect. A minor bump is detectable
-and passes.
+| Storage shape for the declaration | **Two-half entries** `{lookup_value, resolved}` (Peter, 2026-08-04) |
+| API read shape | **The entries are the one shape** — no string-list projection beside them (Peter, 2026-08-04) |
+| Restore posture for unresolvable out-of-archive endpoints | **Warning + `resolved: null`**, never refusal (Peter, 2026-08-04) |
+| Permissive-empty (H3) | Edge-type ref field with no constraint is **refused** by the validator, pinned by a non-deriving-path test (§8 C8) |
+| Does `include_subtypes` apply to edge-type endpoints? | **No** — option A (Peter, 2026-07-31) |
+| D2's timing — follow-on, or together with D1? | **Together**; delivered by C4 + C8 + the subtype rule (Peter, 2026-07-31) |
+| Bump the archive format version? | **Yes, minor** (Peter, 2026-07-31; rationale in §8) |
 
 Remaining, and deliberately not answered here:
 
 1. Whether the id-preserving restore path (W6) needs anything at all. It
-   preserves ids by design, so canonical declarations stay valid; recorded so
-   the next reader does not have to re-derive that it was considered.
-2. Whether `_value_form`'s removal (C2) leaves any caller depending on
-   value-form storage rather than value-form *rendering*. The reader map (§5)
-   says no, since every HTTP consumer goes through `_to_template_response` —
-   but that is an argument, not a test, until the egress tests in §9 run.
+   preserves ids by design, so both halves stay valid; recorded so the next
+   reader does not have to re-derive that it was considered.
+2. Whether document `references[]` should receive the same **door repair**
+   (out-of-archive resolved halves re-resolved on the target via
+   `lookup_value`). The endpoint-list repair in §8 C7 applies FIRESIDE-29's
+   mechanism to a small list; documents are the high-cardinality case and
+   belong to the CASE-827 M2 conversation, not this one.
+3. Whether the one-time normalisation of legacy string entries is worth
+   running anywhere, given tolerant reads make it optional.
