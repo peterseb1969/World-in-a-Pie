@@ -417,9 +417,16 @@ that measurement.
   edge-type views (APP-RC), `ArchiveModel`/`inspect`, plus a sweep check on
   reporting-sync's templates definitions table. All in-house; updated in the
   same delivery per the libs-ship-with-features rule.
-- Restoring a post-change archive into a **pre-change** install leaves endpoint
-  enforcement unconstrained there (H3 on the old reader) — detectable via the
-  format bump, accepted by direction.
+- Restoring a post-change archive into a **pre-change** install BREAKS
+  template reads in the restored namespace outright (measured on the 24-cell
+  matrix, R-03 against a v2.1.0 DR target): the old `Template` model declares
+  the endpoint lists as `list[str]` and cannot hydrate entry-shaped rows, so
+  every template list/read in that namespace 500s until the namespace is
+  removed or the install upgrades. The old install cannot refuse the archive
+  either — the shipped 2.1 restore gates accept any `3.x` format version.
+  Accepted by direction (clean slate, no compatibility): cross-instance DR of
+  new archives requires the target to run post-change images. Old→new stays
+  fully compatible (tolerant reads; R-01/R-02/R-04 green cross-era).
 - An entry whose `resolved` is null cannot satisfy `version_strategy: pinned`
   (fails closed) until re-resolved; `latest` (the default) resolves the
   `lookup_value` through the Registry as it always has.
