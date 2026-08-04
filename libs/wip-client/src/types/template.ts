@@ -126,6 +126,31 @@ export type SyncStrategy = 'latest_only' | 'all_versions'
 export type TemplateUsage = 'entity' | 'reference' | 'relationship'
 
 /**
+ * One declared endpoint of an edge type — a reference with both halves.
+ *
+ * `lookup_value` is the anchor as submitted (a template value, `ns:VALUE`,
+ * or a canonical id), kept verbatim: it names the identity and survives a
+ * fresh restore's re-anchoring. `resolved` is the canonical template_id the
+ * platform resolved it to — server-owned, rewritten through the id map on a
+ * fresh restore, and `null` only when a restore could not re-resolve an
+ * out-of-archive endpoint on the target (the job carries a warning).
+ *
+ * Render `lookup_value` for humans; use `resolved` where an exact id is
+ * needed. This is the same two-half pattern document `references[]` use.
+ */
+export interface EndpointRef {
+  lookup_value: string
+  resolved: string | null
+}
+
+/**
+ * An endpoint as a caller may submit it: a plain string (value, id, or
+ * `ns:VALUE`) or a full entry. Only `lookup_value` is honored on write —
+ * `resolved` is recomputed by the platform, so served entries round-trip.
+ */
+export type EndpointRefInput = string | { lookup_value: string; resolved?: string | null }
+
+/**
  * Opt-in cross-version entity view over a template's per-version reporting
  * tables — the config behind the bare `doc_<value>` name.
  *
@@ -195,16 +220,16 @@ export interface Template {
    */
   usage?: TemplateUsage
   /**
-   * Template values allowed as the source endpoint of an edge.
-   * Set only on relationship templates; empty / absent on entity and
-   * reference templates.
+   * Declared edge-source endpoints as two-half entries. Set only on
+   * relationship templates; empty / absent on entity and reference
+   * templates.
    */
-  source_templates?: string[]
+  source_templates?: EndpointRef[]
   /**
-   * Template values allowed as the target endpoint of an edge.
-   * Set only on relationship templates.
+   * Declared edge-target endpoints as two-half entries. Set only on
+   * relationship templates.
    */
-  target_templates?: string[]
+  target_templates?: EndpointRef[]
   /**
    * True (default) = updates create new versions; false = overwrite
    * in place. Currently only available on relationship templates.
@@ -247,9 +272,9 @@ export interface CreateTemplateRequest {
   /** Usage class — defaults to 'entity' on the server when omitted. */
   usage?: TemplateUsage
   /** Required when usage='relationship'; ignored otherwise. */
-  source_templates?: string[]
+  source_templates?: EndpointRefInput[]
   /** Required when usage='relationship'; ignored otherwise. */
-  target_templates?: string[]
+  target_templates?: EndpointRefInput[]
   /** Defaults to true. Immutable after creation. See PoNIF #8. */
   versioned?: boolean
   /**

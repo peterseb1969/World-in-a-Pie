@@ -422,10 +422,17 @@ A template defines a document schema — like a form definition.
   usage "relationship" is an edge type — the schema for a class of
   relationships between documents. Edge types declare two mandatory reference
   fields (source_ref, target_ref) plus template-level source_templates /
-  target_templates allow-lists; document writes get extra validation
-  (cross-namespace and archived endpoints are rejected), and two query
-  endpoints become available: /documents/{id}/relationships and /traverse.
-  usage is immutable after creation.
+  target_templates allow-lists. Each allow-list entry is a two-half
+  reference {lookup_value, resolved}: the anchor as submitted (value,
+  ns:VALUE, or id — kept verbatim, it survives a fresh restore's
+  re-anchoring) plus the canonical template_id the platform resolved it to
+  (server-owned; rewritten through the id map on fresh restore). Writes
+  accept plain strings; the source_ref/target_ref enforcement constraint is
+  derived from the declaration when the template is served, never stored.
+  Document writes get extra validation (cross-namespace and archived
+  endpoints are rejected), and two query endpoints become available:
+  /documents/{id}/relationships and /traverse. usage is immutable after
+  creation.
 - versioned: true (default) | false. With versioned: false, document updates
   OVERWRITE in place — documents keep a stable document_id, stay at
   version 1, and no history is retained. Requires non-empty identity_fields
@@ -2293,14 +2300,19 @@ async def create_edge_type(
         value: Edge type code (e.g., 'EMPLOYEE_MANAGES'). UPPER_SNAKE_CASE,
             unique within namespace.
         label: Human-readable name (e.g., 'Employee manages employee').
-        source_templates: Non-empty list of template values (or IDs) allowed
-            as the source endpoint. e.g. ['EMPLOYEE'].
-        target_templates: Non-empty list of template values (or IDs) allowed
-            as the target endpoint. e.g. ['EMPLOYEE'] (self-ref OK).
+        source_templates: Non-empty list of templates allowed as the source
+            endpoint — each a value, canonical ID, or ns:VALUE, e.g.
+            ['EMPLOYEE']. Stored and served as two-half entries
+            {lookup_value, resolved}: the submitted anchor kept verbatim plus
+            the canonical id the platform resolves it to.
+        target_templates: Non-empty list of templates allowed as the target
+            endpoint, same forms. e.g. ['EMPLOYEE'] (self-ref OK).
         fields: Field definitions. MUST include two `reference_type: document`
-            fields named exactly `source_ref` and `target_ref`, each with
-            `target_templates` matching the corresponding template-level list.
-            Add edge-property fields (e.g. `since`, `role`, `quantity`) as needed.
+            fields named exactly `source_ref` and `target_ref`. Their
+            `target_templates` constraint is derived from the template-level
+            declaration when the template is served — do not supply it
+            (whatever is sent there is discarded). Add edge-property fields
+            (e.g. `since`, `role`, `quantity`) as needed.
         namespace: Namespace. Omit to use server default.
         description: Optional description of what this edge type represents.
         versioned: True (default) means updates create new versions
@@ -2322,9 +2334,7 @@ async def create_edge_type(
         - source_templates non-empty
         - target_templates non-empty
         - fields contains a `source_ref` reference field with reference_type=document
-          and target_templates matching the template-level source_templates
         - fields contains a `target_ref` reference field with the same shape
-          against target_templates
 
     Example:
         create_edge_type(
@@ -2334,11 +2344,9 @@ async def create_edge_type(
             target_templates=["EMPLOYEE"],
             fields=[
                 {"name": "source_ref", "label": "Manager", "type": "reference",
-                 "reference_type": "document", "target_templates": ["EMPLOYEE"],
-                 "mandatory": True},
+                 "reference_type": "document", "mandatory": True},
                 {"name": "target_ref", "label": "Direct Report", "type": "reference",
-                 "reference_type": "document", "target_templates": ["EMPLOYEE"],
-                 "mandatory": True},
+                 "reference_type": "document", "mandatory": True},
                 {"name": "since", "label": "Since", "type": "date"},
                 {"name": "reporting_type", "label": "Reporting Type", "type": "term",
                  "terminology_ref": "REPORTING_TYPE"},
@@ -2374,13 +2382,10 @@ async def create_edge_type(
             errors.append(f"`{required_field}` must have type='reference'")
         if ref_field.get("reference_type") != "document":
             errors.append(f"`{required_field}` must have reference_type='document'")
-        ref_targets = ref_field.get("target_templates")
-        if ref_targets is None or list(ref_targets) != list(expected_targets):
-            errors.append(
-                f"`{required_field}.target_templates` ({ref_targets}) must match "
-                f"the template-level {required_field.replace('_ref', '_templates')} "
-                f"({expected_targets})"
-            )
+        # The field-level target_templates is a projection derived from the
+        # template-level declaration when the template is served; whatever a
+        # caller supplies here is discarded on write, so no mirror check —
+        # disagreement is not a representable state.
 
     if errors:
         return "Edge-type contract validation failed:\n  - " + "\n  - ".join(errors)

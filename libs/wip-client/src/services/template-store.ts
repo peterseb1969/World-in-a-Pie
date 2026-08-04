@@ -9,6 +9,7 @@ import type {
   ValidateTemplateResponse,
   ActivateTemplateResponse,
   CascadeResponse,
+  EndpointRefInput,
 } from '../types/template.js'
 
 export class TemplateStoreService extends BaseService {
@@ -186,8 +187,8 @@ export class TemplateStoreService extends BaseService {
     id: string,
     options: {
       namespace: string
-      addSourceTemplates?: string[]
-      addTargetTemplates?: string[]
+      addSourceTemplates?: EndpointRefInput[]
+      addTargetTemplates?: EndpointRefInput[]
     },
   ): Promise<Template> {
     return this.post(
