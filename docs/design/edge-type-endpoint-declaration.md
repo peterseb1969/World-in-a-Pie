@@ -1,6 +1,29 @@
 # Edge-Type Endpoint Declaration — Analysis and Design
 
-**Status:** analysis v1 — current state mapped end to end; clean design proposed
+> ## ⚠ §8's design premise is UNDER REVIEW — do not implement from it
+>
+> The current-state analysis (§1–§7) stands and is worth reading. **§8's clean
+> design does not.** It rests on "form is an ingress concern, storage is
+> canonical", which demotes synonyms to an input format. Synonyms are co-equal
+> first-class anchors for an identity, and a fresh restore re-anchors:
+> canonical IDs are swapped and rewritten through the re-registration mapping
+> table, while **synonyms are the only mechanism for references to entities not
+> in the archive**, where no mapping-table entry can ever exist.
+>
+> §8 therefore converts reference-by-identity into reference-by-anchor and
+> breaks exactly the case the CASE-827 shaping transforms create by design.
+> Its description of value form as "the workaround crystallised in the write
+> path" is wrong: value form is the synonym half, the part that survives
+> re-anchoring.
+>
+> See **FIRESIDE-29** (the model), **CASE-830#5** (implementation status and
+> what is open), **CASE-827#5** (roadmap consequences), **LESSON-45** (how a
+> principle in the wake-load failed to constrain this design).
+>
+> Branch `feat/edge-endpoint-declaration` implements §8, is green on dev-test,
+> and is **unmerged pending this review**.
+
+**Status:** analysis v1 — current state mapped end to end; §8 design under review
 **Date:** 2026-07-31
 **Tracking:** CASE-830 (defect), CASE-827 (found while building the M1 archive model)
 **Related shipped defects in this subsystem:** CASE-406, CASE-515, CASE-525
