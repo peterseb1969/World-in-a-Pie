@@ -153,6 +153,8 @@ async def list_terms(
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     status: str | None = Query(None, description="Filter by status"),
     search: str | None = Query(None, description="Search in value, aliases"),
+    sort_by: str | None = Query(None, description="Sort field: value, label, sort_order, created_at, updated_at"),
+    sort_order: str | None = Query(None, description="Sort direction: asc or desc"),
     identity: UserIdentity = Depends(require_api_key)
 ) -> TermListResponse:
     """List terms in a terminology with pagination."""
@@ -181,6 +183,8 @@ async def list_terms(
         page_size=page_size,
         search=search,
         ns_filter=ns_filter.query,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
 
     return TermListResponse(

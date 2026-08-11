@@ -7,6 +7,23 @@ from typing import ClassVar
 
 from beanie.odm.enums import SortDirection
 
+_TEMPLATE_SORT_FIELDS = {"value", "label", "created_at", "updated_at", "version"}
+
+
+def _build_template_sort(
+    sort_by: str | None, sort_order: str | None,
+) -> list[tuple[str, SortDirection]]:
+    field = (sort_by or "value").strip() or "value"
+    order = (sort_order or "asc").strip().lower() or "asc"
+    if order not in ("asc", "desc"):
+        raise ValueError(f"Invalid sort_order '{sort_order}'. Must be 'asc' or 'desc'.")
+    if field not in _TEMPLATE_SORT_FIELDS:
+        raise ValueError(
+            f"Unknown sort field '{field}'. Supported: {', '.join(sorted(_TEMPLATE_SORT_FIELDS))}."
+        )
+    direction = SortDirection.ASCENDING if order == "asc" else SortDirection.DESCENDING
+    return [(field, direction), ("template_id", SortDirection.ASCENDING)]
+
 from wip_auth.resolve import (
     EntityNotFoundError,
     resolve_entity_id,
@@ -701,6 +718,8 @@ class TemplateService:
         page: int = 1,
         page_size: int = 50,
         ns_filter: dict | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
     ) -> tuple[list[TemplateResponse], int]:
         """
         List templates with pagination.
@@ -736,6 +755,8 @@ class TemplateService:
             # into one arbitrary survivor (after a remap restore, which
             # duplicates every value by construction, an unfiltered
             # latest_only list silently dropped one namespace's templates).
+            sort_clauses = _build_template_sort(sort_by, sort_order)
+            agg_sort = {f: (1 if d == SortDirection.ASCENDING else -1) for f, d in sort_clauses}
             pipeline = [
                 {"$match": query} if query else {"$match": {}},
                 {"$sort": {"value": 1, "version": -1}},
@@ -744,7 +765,7 @@ class TemplateService:
                     "doc": {"$first": "$$ROOT"}
                 }},
                 {"$replaceRoot": {"newRoot": "$doc"}},
-                {"$sort": {"label": 1}}
+                {"$sort": agg_sort}
             ]
 
             # Get total count
@@ -764,8 +785,9 @@ class TemplateService:
             total = await Template.find(query).count()
             skip = (page - 1) * page_size
 
+            sort_clauses = _build_template_sort(sort_by, sort_order)
             templates = await Template.find(query) \
-                .sort([("value", SortDirection.ASCENDING), ("version", SortDirection.DESCENDING)]) \
+                .sort(sort_clauses) \
                 .skip(skip) \
                 .limit(page_size) \
                 .to_list()

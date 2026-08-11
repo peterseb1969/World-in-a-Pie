@@ -6,6 +6,26 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from beanie.odm.enums import SortDirection
+
+_TERMINOLOGY_SORT_FIELDS = {"value", "label", "created_at", "updated_at"}
+_TERM_SORT_FIELDS = {"value", "label", "sort_order", "created_at", "updated_at"}
+
+
+def _build_sort(
+    sort_by: str | None, sort_order: str | None,
+    allowed: set[str], default_field: str, default_order: str = "asc",
+    tiebreaker: str = "terminology_id",
+) -> list[tuple[str, SortDirection]]:
+    field = (sort_by or default_field).strip() or default_field
+    order = (sort_order or default_order).strip().lower() or default_order
+    if order not in ("asc", "desc"):
+        raise ValueError(f"Invalid sort_order '{sort_order}'. Must be 'asc' or 'desc'.")
+    if field not in allowed:
+        raise ValueError(
+            f"Unknown sort field '{field}'. Supported: {', '.join(sorted(allowed))}."
+        )
+    direction = SortDirection.ASCENDING if order == "asc" else SortDirection.DESCENDING
+    return [(field, direction), (tiebreaker, SortDirection.ASCENDING)]
 from pymongo.errors import BulkWriteError, DuplicateKeyError
 
 # Import identity helper from wip-auth
@@ -336,6 +356,8 @@ class TerminologyService:
         page: int = 1,
         page_size: int = 50,
         ns_filter: dict | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
     ) -> tuple[list[TerminologyResponse], int]:
         """
         List terminologies with pagination.
@@ -346,6 +368,8 @@ class TerminologyService:
             page: Page number (1-indexed)
             page_size: Items per page
             ns_filter: Namespace filter dict from resolve_namespace_filter()
+            sort_by: Sort field (value, label, created_at, updated_at)
+            sort_order: Sort direction (asc or desc)
 
         Returns:
             Tuple of (terminologies, total_count)
@@ -361,8 +385,9 @@ class TerminologyService:
         total = await Terminology.find(query).count()
         skip = (page - 1) * page_size
 
+        sort_clauses = _build_sort(sort_by, sort_order, _TERMINOLOGY_SORT_FIELDS, "label")
         terminologies = await Terminology.find(query) \
-            .sort("label") \
+            .sort(sort_clauses) \
             .skip(skip) \
             .limit(page_size) \
             .to_list()
@@ -1254,6 +1279,8 @@ class TerminologyService:
         page_size: int = 50,
         search: str | None = None,
         ns_filter: dict | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
     ) -> tuple[list[TermResponse], int]:
         """
         List terms in a terminology with pagination.
@@ -1265,6 +1292,8 @@ class TerminologyService:
             page_size: Number of items per page
             search: Search string for value or aliases
             ns_filter: Namespace filter dict from resolve_namespace_filter()
+            sort_by: Sort field (value, label, sort_order, created_at, updated_at)
+            sort_order: Sort direction (asc or desc)
 
         Returns:
             Tuple of (list of terms, total count)
@@ -1289,8 +1318,12 @@ class TerminologyService:
 
         # Get paginated results
         skip = (page - 1) * page_size
+        sort_clauses = _build_sort(
+            sort_by, sort_order, _TERM_SORT_FIELDS, "sort_order",
+            tiebreaker="value",
+        )
         terms = await Term.find(query) \
-            .sort([("sort_order", SortDirection.ASCENDING), ("value", SortDirection.ASCENDING)]) \
+            .sort(sort_clauses) \
             .skip(skip) \
             .limit(page_size) \
             .to_list()

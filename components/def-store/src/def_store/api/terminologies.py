@@ -90,6 +90,8 @@ async def list_terminologies(
     value: str | None = Query(None, description="Filter by exact value match"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
+    sort_by: str | None = Query(None, description="Sort field: value, label, created_at, updated_at"),
+    sort_order: str | None = Query(None, description="Sort direction: asc or desc"),
     identity: UserIdentity = Depends(require_api_key)
 ) -> TerminologyListResponse:
     """List all terminologies with pagination and optional filters."""
@@ -101,6 +103,8 @@ async def list_terminologies(
         page=page,
         page_size=page_size,
         ns_filter=ns_filter.query,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
     return TerminologyListResponse(
         items=terminologies,

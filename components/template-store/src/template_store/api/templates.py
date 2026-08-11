@@ -97,7 +97,9 @@ async def list_templates(
     value: str | None = Query(None, description="Filter by template value (shows all versions)"),
     latest_only: bool = Query(False, description="Only return latest version of each template"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=1000, description="Items per page")
+    page_size: int = Query(50, ge=1, le=1000, description="Items per page"),
+    sort_by: str | None = Query(None, description="Sort field: value, label, created_at, updated_at, version"),
+    sort_order: str | None = Query(None, description="Sort direction: asc or desc"),
 ):
     """
     List templates with pagination.
@@ -120,6 +122,8 @@ async def list_templates(
         page=page,
         page_size=page_size,
         ns_filter=ns_filter.query,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
     return TemplateListResponse(
         items=templates,
