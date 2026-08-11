@@ -113,6 +113,8 @@ declare function useTerminologies(params?: {
     status?: string;
     value?: string;
     namespace?: string;
+    sort_by?: string;
+    sort_order?: 'asc' | 'desc';
 }, options?: Omit<UseQueryOptions<TerminologyListResponse>, 'queryKey' | 'queryFn'>): _tanstack_react_query.UseQueryResult<TerminologyListResponse, Error>;
 declare function useTerminology(id: string, options?: Omit<UseQueryOptions<Terminology>, 'queryKey' | 'queryFn'>): _tanstack_react_query.UseQueryResult<Terminology, Error>;
 
@@ -121,6 +123,8 @@ declare function useTerms(terminologyId: string, params?: {
     page_size?: number;
     status?: string;
     search?: string;
+    sort_by?: string;
+    sort_order?: 'asc' | 'desc';
 }, options?: Omit<UseQueryOptions<TermListResponse>, 'queryKey' | 'queryFn'>): _tanstack_react_query.UseQueryResult<TermListResponse, Error>;
 declare function useTerm(id: string, options?: Omit<UseQueryOptions<Term>, 'queryKey' | 'queryFn'>): _tanstack_react_query.UseQueryResult<Term, Error>;
 
@@ -132,6 +136,8 @@ declare function useTemplates(params?: {
     value?: string;
     latest_only?: boolean;
     namespace?: string;
+    sort_by?: string;
+    sort_order?: 'asc' | 'desc';
 }, options?: Omit<UseQueryOptions<TemplateListResponse>, 'queryKey' | 'queryFn'>): _tanstack_react_query.UseQueryResult<TemplateListResponse, Error>;
 declare function useTemplate(id: string, options?: Omit<UseQueryOptions<Template>, 'queryKey' | 'queryFn'>): _tanstack_react_query.UseQueryResult<Template, Error>;
 declare function useTemplateByValue(value: string, options?: Omit<UseQueryOptions<Template>, 'queryKey' | 'queryFn'>): _tanstack_react_query.UseQueryResult<Template, Error>;

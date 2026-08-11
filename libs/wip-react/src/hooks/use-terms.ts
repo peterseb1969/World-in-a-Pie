@@ -7,7 +7,7 @@ import { STALE_TIMES } from '../utils/defaults.js'
 
 export function useTerms(
   terminologyId: string,
-  params?: { page?: number; page_size?: number; status?: string; search?: string },
+  params?: { page?: number; page_size?: number; status?: string; search?: string; sort_by?: string; sort_order?: 'asc' | 'desc' },
   options?: Omit<UseQueryOptions<TermListResponse>, 'queryKey' | 'queryFn'>,
 ) {
   const client = useWipClient()

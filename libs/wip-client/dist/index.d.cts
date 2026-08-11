@@ -1133,6 +1133,8 @@ interface DocumentQueryParams {
     latest_only?: boolean;
     cursor?: string;
     namespace?: string;
+    sort_by?: string;
+    sort_order?: 'asc' | 'desc';
 }
 interface DocumentListResponse extends PaginatedResponse<Document> {
     next_cursor?: string;

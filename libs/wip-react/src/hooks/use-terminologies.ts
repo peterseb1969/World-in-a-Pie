@@ -6,7 +6,7 @@ import { wipKeys } from '../utils/keys.js'
 import { STALE_TIMES } from '../utils/defaults.js'
 
 export function useTerminologies(
-  params?: { page?: number; page_size?: number; status?: string; value?: string; namespace?: string },
+  params?: { page?: number; page_size?: number; status?: string; value?: string; namespace?: string; sort_by?: string; sort_order?: 'asc' | 'desc' },
   options?: Omit<UseQueryOptions<TerminologyListResponse>, 'queryKey' | 'queryFn'>,
 ) {
   const client = useWipClient()

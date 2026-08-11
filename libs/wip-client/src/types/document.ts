@@ -97,6 +97,8 @@ export interface DocumentQueryParams {
   latest_only?: boolean
   cursor?: string
   namespace?: string
+  sort_by?: string
+  sort_order?: 'asc' | 'desc'
 }
 
 export interface DocumentListResponse extends PaginatedResponse<Document> {

@@ -9,6 +9,7 @@ export function useTemplates(
   params?: {
     page?: number; page_size?: number; status?: string; extends?: string
     value?: string; latest_only?: boolean; namespace?: string
+    sort_by?: string; sort_order?: 'asc' | 'desc'
   },
   options?: Omit<UseQueryOptions<TemplateListResponse>, 'queryKey' | 'queryFn'>,
 ) {
