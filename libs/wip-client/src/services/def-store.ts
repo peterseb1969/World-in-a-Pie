@@ -40,6 +40,8 @@ export class DefStoreService extends BaseService {
     status?: string
     value?: string
     namespace?: string
+    sort_by?: string
+    sort_order?: 'asc' | 'desc'
   }): Promise<TerminologyListResponse> {
     return this.get('/terminologies', params)
   }
@@ -79,6 +81,8 @@ export class DefStoreService extends BaseService {
     status?: string
     search?: string
     namespace?: string
+    sort_by?: string
+    sort_order?: 'asc' | 'desc'
   }): Promise<TermListResponse> {
     return this.get(`/terminologies/${terminologyId}/terms`, params)
   }

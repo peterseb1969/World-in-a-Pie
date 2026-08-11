@@ -388,6 +388,8 @@ declare class DefStoreService extends BaseService {
         status?: string;
         value?: string;
         namespace?: string;
+        sort_by?: string;
+        sort_order?: 'asc' | 'desc';
     }): Promise<TerminologyListResponse>;
     getTerminology(id: string): Promise<Terminology>;
     createTerminology(data: CreateTerminologyRequest): Promise<BulkResultItem>;
@@ -403,6 +405,8 @@ declare class DefStoreService extends BaseService {
         status?: string;
         search?: string;
         namespace?: string;
+        sort_by?: string;
+        sort_order?: 'asc' | 'desc';
     }): Promise<TermListResponse>;
     /**
      * Term identifiers accept a canonical UUID, the fully qualified
@@ -959,6 +963,8 @@ declare class TemplateStoreService extends BaseService {
         value?: string;
         latest_only?: boolean;
         namespace?: string;
+        sort_by?: string;
+        sort_order?: 'asc' | 'desc';
     }): Promise<TemplateListResponse>;
     getTemplate(id: string, version?: number): Promise<Template>;
     getTemplateRaw(id: string, version?: number): Promise<Template>;

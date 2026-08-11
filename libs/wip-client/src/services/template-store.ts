@@ -26,6 +26,8 @@ export class TemplateStoreService extends BaseService {
     value?: string
     latest_only?: boolean
     namespace?: string
+    sort_by?: string
+    sort_order?: 'asc' | 'desc'
   }): Promise<TemplateListResponse> {
     return this.get('/templates', params)
   }
