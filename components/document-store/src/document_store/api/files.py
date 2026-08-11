@@ -162,6 +162,8 @@ async def list_files(
     uploaded_by: str | None = Query(None, description="Filter by uploader"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
+    sort_by: str | None = Query(None, description="Sort field: uploaded_at, filename, content_type, size"),
+    sort_order: str | None = Query(None, description="Sort direction: asc or desc"),
     identity: UserIdentity = Depends(require_api_key)
 ):
     """List files with pagination."""
@@ -180,6 +182,8 @@ async def list_files(
         page=page,
         page_size=page_size,
         ns_filter=ns_filter.query,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
 
 

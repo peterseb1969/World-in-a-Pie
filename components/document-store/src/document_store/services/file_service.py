@@ -423,6 +423,8 @@ class FileService:
 
         return self._to_response(file_doc)
 
+    _FILE_SORT_FIELDS = {"uploaded_at", "filename", "content_type", "size"}
+
     async def list_files(
         self,
         status: FileStatus | None = None,
@@ -433,6 +435,8 @@ class FileService:
         page: int = 1,
         page_size: int = 20,
         ns_filter: dict | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
     ) -> FileListResponse:
         """
         List files with pagination and filters.
@@ -475,8 +479,17 @@ class FileService:
 
         # Fetch page
         skip = (page - 1) * page_size
+        field = (sort_by or "uploaded_at").strip() or "uploaded_at"
+        order = (sort_order or "desc").strip().lower() or "desc"
+        if order not in ("asc", "desc"):
+            raise ValueError(f"Invalid sort_order '{sort_order}'. Must be 'asc' or 'desc'.")
+        if field not in self._FILE_SORT_FIELDS:
+            raise ValueError(
+                f"Unknown sort field '{field}'. Supported: {', '.join(sorted(self._FILE_SORT_FIELDS))}."
+            )
+        direction = SortDirection.ASCENDING if order == "asc" else SortDirection.DESCENDING
         files = await File.find(query).skip(skip).limit(page_size).sort(
-            [("uploaded_at", SortDirection.DESCENDING)]
+            [(field, direction), ("file_id", SortDirection.ASCENDING)]
         ).to_list()
 
         return FileListResponse(
