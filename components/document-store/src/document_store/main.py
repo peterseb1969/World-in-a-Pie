@@ -178,6 +178,24 @@ async def lifespan(app: FastAPI):
     else:
         print("File storage not enabled. Set WIP_FILE_STORAGE_ENABLED=true to enable.")
 
+    # Reconcile orphaned backup/restore jobs — mark any job still "running"
+    # or "pending" as failed. After a pod restart (OOMKill, node drain, crash)
+    # no in-process worker will ever complete these; leaving them as "running"
+    # makes the UI show a ghost job forever.
+    from .models.backup_job import BackupJobStatus
+    orphan_query = {"status": {"$in": [BackupJobStatus.RUNNING, BackupJobStatus.PENDING]}}
+    orphan_count = await BackupJob.find(orphan_query).count()
+    if orphan_count:
+        from datetime import UTC, datetime
+        await BackupJob.find(orphan_query).update_many({
+            "$set": {
+                "status": BackupJobStatus.FAILED,
+                "error": "Process terminated during execution (pod restart)",
+                "completed_at": datetime.now(UTC),
+            }
+        })
+        print(f"Reconciled {orphan_count} orphaned backup/restore job(s) as failed.")
+
     # Run startup integrity check (non-blocking, log warnings only)
     # Only check template refs, skip term refs for faster startup
     import logging
