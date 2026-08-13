@@ -210,9 +210,11 @@ async def callback(request: Request):
 # ---------------------------------------------------------------------------
 
 @app.get("/auth/logout")
-async def logout(request: Request):
-    """Clear session and redirect to the site root."""
+async def logout(request: Request, return_to: str = ""):
+    """Clear session and redirect back to the app (or site root)."""
     request.session.clear()
+    if return_to and return_to.startswith("/"):
+        return Response(status_code=302, headers={"Location": return_to})
     proto = request.headers.get("X-Forwarded-Proto", "https")
     host = request.headers.get("X-Forwarded-Host", settings.wip_hostname)
     return RedirectResponse(url=f"{proto}://{host}/", status_code=302)
