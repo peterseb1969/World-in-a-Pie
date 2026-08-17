@@ -959,6 +959,31 @@ class TemplateService:
 
         return False
 
+    @staticmethod
+    def _only_reporting_changed(
+        original: "Template",
+        request: "UpdateTemplateRequest",
+    ) -> bool:
+        """True when reporting config differs but no schema field does."""
+        import json
+
+        if request.reporting is None:
+            return False
+        orig_json = json.dumps(
+            original.reporting.model_dump() if original.reporting else {},
+            sort_keys=True, default=str,
+        )
+        new_json = json.dumps(
+            request.reporting.model_dump(), sort_keys=True, default=str,
+        )
+        if orig_json == new_json:
+            return False
+        saved = request.reporting
+        request.reporting = None
+        schema_changed = TemplateService._template_has_changed(original, request)
+        request.reporting = saved
+        return not schema_changed
+
     # CASE-406 — Field-level reference properties: prop_name -> entity_type.
     # When comparing two FieldDefinitions, these properties must resolve
     # through the Registry before comparison so that value-form and UUID-form
@@ -1260,6 +1285,31 @@ class TemplateService:
                 version=original.version,
                 is_new_version=False,
                 previous_version=None
+            )
+
+        # Reporting config is operational metadata, not document schema.
+        # A change to sync_enabled, sync_strategy, etc. mutates in place
+        # without a version bump — same pattern as add_edge_type_endpoints.
+        if TemplateService._only_reporting_changed(original, request):
+            TemplateService._validate_full_text_indexed_constraints(
+                original.fields, request.reporting,
+            )
+            actor = get_identity_string()
+            original.reporting = request.reporting
+            original.updated_at = datetime.now(UTC)
+            original.updated_by = actor
+            await original.save()
+            await publish_template_event(
+                EventType.TEMPLATE_UPDATED,
+                TemplateService._template_to_event_payload(original),
+                changed_by=actor,
+            )
+            return TemplateUpdateResponse(
+                template_id=original.template_id,
+                value=original.value,
+                version=original.version,
+                is_new_version=False,
+                previous_version=None,
             )
 
         # The template's name IS its identity — a rename is a fork (a new
