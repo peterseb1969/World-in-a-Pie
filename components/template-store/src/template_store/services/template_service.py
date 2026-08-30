@@ -7,23 +7,6 @@ from typing import ClassVar
 
 from beanie.odm.enums import SortDirection
 
-_TEMPLATE_SORT_FIELDS = {"value", "label", "created_at", "updated_at", "version"}
-
-
-def _build_template_sort(
-    sort_by: str | None, sort_order: str | None,
-) -> list[tuple[str, SortDirection]]:
-    field = (sort_by or "value").strip() or "value"
-    order = (sort_order or "asc").strip().lower() or "asc"
-    if order not in ("asc", "desc"):
-        raise ValueError(f"Invalid sort_order '{sort_order}'. Must be 'asc' or 'desc'.")
-    if field not in _TEMPLATE_SORT_FIELDS:
-        raise ValueError(
-            f"Unknown sort field '{field}'. Supported: {', '.join(sorted(_TEMPLATE_SORT_FIELDS))}."
-        )
-    direction = SortDirection.ASCENDING if order == "asc" else SortDirection.DESCENDING
-    return [(field, direction), ("template_id", SortDirection.ASCENDING)]
-
 from wip_auth.resolve import (
     EntityNotFoundError,
     resolve_entity_id,
@@ -53,6 +36,23 @@ from .reference_validator import ReferenceValidationError, get_reference_validat
 from .registry_client import RegistryError, get_registry_client
 
 logger = logging.getLogger(__name__)
+
+_TEMPLATE_SORT_FIELDS = {"value", "label", "created_at", "updated_at", "version"}
+
+
+def _build_template_sort(
+    sort_by: str | None, sort_order: str | None,
+) -> list[tuple[str, SortDirection]]:
+    field = (sort_by or "value").strip() or "value"
+    order = (sort_order or "asc").strip().lower() or "asc"
+    if order not in ("asc", "desc"):
+        raise ValueError(f"Invalid sort_order '{sort_order}'. Must be 'asc' or 'desc'.")
+    if field not in _TEMPLATE_SORT_FIELDS:
+        raise ValueError(
+            f"Unknown sort field '{field}'. Supported: {', '.join(sorted(_TEMPLATE_SORT_FIELDS))}."
+        )
+    direction = SortDirection.ASCENDING if order == "asc" else SortDirection.DESCENDING
+    return [(field, direction), ("template_id", SortDirection.ASCENDING)]
 
 
 class TemplateService:

@@ -941,3 +941,26 @@ async def test_get_file_documents_not_found(file_client: AsyncClient, auth_heade
         headers=auth_headers,
     )
     assert response.status_code == 404
+
+
+# --- sort_by / sort_order are enum-typed at the door -----------------------
+
+@pytest.mark.asyncio
+async def test_list_files_valid_sort_params_accepted(file_client: AsyncClient, auth_headers: dict):
+    resp = await file_client.get(
+        "/api/document-store/files", headers=auth_headers,
+        params={"namespace": "wip", "sort_by": "filename", "sort_order": "asc"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_list_files_invalid_sort_params_are_422_not_500(file_client: AsyncClient, auth_headers: dict):
+    """An unknown field or direction must be rejected at the door — never
+    reach the service's ValueError and surface as a 500."""
+    for params in ({"sort_by": "no_such_field"}, {"sort_order": "sideways"}):
+        resp = await file_client.get(
+            "/api/document-store/files", headers=auth_headers,
+            params={"namespace": "wip", **params},
+        )
+        assert resp.status_code == 422, resp.text

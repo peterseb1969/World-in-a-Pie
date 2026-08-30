@@ -3,6 +3,7 @@
 import hashlib
 import math
 from datetime import UTC, datetime, timedelta
+from typing import ClassVar
 
 import httpx
 from beanie.odm.enums import SortDirection
@@ -423,7 +424,9 @@ class FileService:
 
         return self._to_response(file_doc)
 
-    _FILE_SORT_FIELDS = {"uploaded_at", "filename", "content_type", "size"}
+    _FILE_SORT_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"uploaded_at", "filename", "content_type", "size"}
+    )
 
     async def list_files(
         self,

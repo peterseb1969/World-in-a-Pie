@@ -2,6 +2,7 @@
 
 import asyncio
 import math
+from typing import Literal
 
 from beanie.odm.enums import SortDirection
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
@@ -162,8 +163,8 @@ async def list_files(
     uploaded_by: str | None = Query(None, description="Filter by uploader"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
-    sort_by: str | None = Query(None, description="Sort field: uploaded_at, filename, content_type, size"),
-    sort_order: str | None = Query(None, description="Sort direction: asc or desc"),
+    sort_by: Literal["uploaded_at", "filename", "content_type", "size"] | None = Query(None, description="Sort field: uploaded_at, filename, content_type, size"),
+    sort_order: Literal["asc", "desc"] | None = Query(None, description="Sort direction: asc or desc"),
     identity: UserIdentity = Depends(require_api_key)
 ):
     """List files with pagination."""

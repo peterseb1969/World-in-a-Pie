@@ -1,6 +1,7 @@
 """API endpoints for terminology management."""
 
 import math
+from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
@@ -90,8 +91,8 @@ async def list_terminologies(
     value: str | None = Query(None, description="Filter by exact value match"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
-    sort_by: str | None = Query(None, description="Sort field: value, label, created_at, updated_at"),
-    sort_order: str | None = Query(None, description="Sort direction: asc or desc"),
+    sort_by: Literal["value", "label", "created_at", "updated_at"] | None = Query(None, description="Sort field: value, label, created_at, updated_at"),
+    sort_order: Literal["asc", "desc"] | None = Query(None, description="Sort direction: asc or desc"),
     identity: UserIdentity = Depends(require_api_key)
 ) -> TerminologyListResponse:
     """List all terminologies with pagination and optional filters."""

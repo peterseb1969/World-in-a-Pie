@@ -1,6 +1,7 @@
 """Template API endpoints."""
 
 import math
+from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
@@ -98,8 +99,8 @@ async def list_templates(
     latest_only: bool = Query(False, description="Only return latest version of each template"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page"),
-    sort_by: str | None = Query(None, description="Sort field: value, label, created_at, updated_at, version"),
-    sort_order: str | None = Query(None, description="Sort direction: asc or desc"),
+    sort_by: Literal["value", "label", "created_at", "updated_at", "version"] | None = Query(None, description="Sort field: value, label, created_at, updated_at, version"),
+    sort_order: Literal["asc", "desc"] | None = Query(None, description="Sort direction: asc or desc"),
 ):
     """
     List templates with pagination.

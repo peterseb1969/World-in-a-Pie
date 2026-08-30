@@ -6,26 +6,6 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from beanie.odm.enums import SortDirection
-
-_TERMINOLOGY_SORT_FIELDS = {"value", "label", "created_at", "updated_at"}
-_TERM_SORT_FIELDS = {"value", "label", "sort_order", "created_at", "updated_at"}
-
-
-def _build_sort(
-    sort_by: str | None, sort_order: str | None,
-    allowed: set[str], default_field: str, default_order: str = "asc",
-    tiebreaker: str = "terminology_id",
-) -> list[tuple[str, SortDirection]]:
-    field = (sort_by or default_field).strip() or default_field
-    order = (sort_order or default_order).strip().lower() or default_order
-    if order not in ("asc", "desc"):
-        raise ValueError(f"Invalid sort_order '{sort_order}'. Must be 'asc' or 'desc'.")
-    if field not in allowed:
-        raise ValueError(
-            f"Unknown sort field '{field}'. Supported: {', '.join(sorted(allowed))}."
-        )
-    direction = SortDirection.ASCENDING if order == "asc" else SortDirection.DESCENDING
-    return [(field, direction), (tiebreaker, SortDirection.ASCENDING)]
 from pymongo.errors import BulkWriteError, DuplicateKeyError
 
 # Import identity helper from wip-auth
@@ -57,6 +37,31 @@ from .nats_client import (
 from .registry_client import RegistryError, get_registry_client
 
 logger = logging.getLogger(__name__)
+
+_TERMINOLOGY_SORT_FIELDS = {"value", "label", "created_at", "updated_at"}
+_TERM_SORT_FIELDS = {"value", "label", "sort_order", "created_at", "updated_at"}
+
+
+def _build_sort(
+    sort_by: str | None, sort_order: str | None,
+    allowed: set[str], default_field: str, default_order: str = "asc",
+    tiebreaker: str = "terminology_id",
+) -> list[tuple[str, SortDirection]]:
+    field = (sort_by or default_field).strip() or default_field
+    order = (sort_order or default_order).strip().lower() or default_order
+    if order not in ("asc", "desc"):
+        raise ValueError(f"Invalid sort_order '{sort_order}'. Must be 'asc' or 'desc'.")
+    if field not in allowed:
+        raise ValueError(
+            f"Unknown sort field '{field}'. Supported: {', '.join(sorted(allowed))}."
+        )
+    direction = SortDirection.ASCENDING if order == "asc" else SortDirection.DESCENDING
+    if tiebreaker == field:
+        # A duplicate sort key collapses to the LAST occurrence in the
+        # driver's ordered spec, so appending an ascending tiebreaker on the
+        # same field would silently invert a descending request.
+        return [(field, direction)]
+    return [(field, direction), (tiebreaker, SortDirection.ASCENDING)]
 
 
 class EntityExistsError(ValueError):
