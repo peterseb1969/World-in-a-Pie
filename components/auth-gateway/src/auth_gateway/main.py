@@ -209,11 +209,26 @@ async def callback(request: Request):
 # /auth/logout
 # ---------------------------------------------------------------------------
 
+def _same_origin_path(return_to: str) -> bool:
+    """True only for a same-origin PATH a logout may redirect back to.
+
+    A protocol-relative "//host/..." (or its backslash cousin, which browsers
+    normalize to the same thing) also starts with "/" but sends the browser
+    off-site — an open redirect on the logout door. Absolute URLs and empty
+    values are rejected too; the caller falls back to the site root.
+    """
+    return bool(
+        return_to
+        and return_to.startswith("/")
+        and not return_to.startswith(("//", "/\\"))
+    )
+
+
 @app.get("/auth/logout")
 async def logout(request: Request, return_to: str = ""):
     """Clear session and redirect back to the app (or site root)."""
     request.session.clear()
-    if return_to and return_to.startswith("/"):
+    if _same_origin_path(return_to):
         return Response(status_code=302, headers={"Location": return_to})
     proto = request.headers.get("X-Forwarded-Proto", "https")
     host = request.headers.get("X-Forwarded-Host", settings.wip_hostname)
