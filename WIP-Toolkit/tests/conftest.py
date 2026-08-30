@@ -1,5 +1,20 @@
 """Shared test fixtures."""
 
+import os
+
+# CLI tests string-match rendered output, so rendering must not depend on the
+# caller's terminal. A shell exporting FORCE_COLOR (Ghostty sets FORCE_COLOR=3)
+# makes rich emit ANSI escapes inside CliRunner's captured output — "TPL-1"
+# becomes "TPL-\x1b[1;36m1\x1b[0m" — and every substring assertion on a rendered
+# table fails for reasons unrelated to the code under test. The toolkit builds
+# its rich Consoles at import time, so this has to happen before wip_toolkit is
+# imported: at conftest module level, not in a fixture. rich honors NO_COLOR and
+# a dumb TERM; FORCE_COLOR is removed so it cannot override them.
+os.environ.pop("FORCE_COLOR", None)
+os.environ.pop("CLICOLOR_FORCE", None)
+os.environ["NO_COLOR"] = "1"
+os.environ["TERM"] = "dumb"
+
 import pytest
 
 
