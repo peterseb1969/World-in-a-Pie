@@ -257,7 +257,61 @@ async def init_postgres_schema(pool: asyncpg.Pool) -> None:
             )
         """)
 
+        # Registered views bookkeeping. Apps register named SQL views at
+        # bootstrap; reporting-sync recreates them at startup so they survive
+        # pod restarts and drop_stale_reporting resets. Keyed on
+        # (namespace, view_name) — view names are unique per namespace schema.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS _wip_views (
+                namespace VARCHAR(255) NOT NULL,
+                view_name TEXT NOT NULL,
+                view_sql TEXT NOT NULL,
+                registered_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                registered_by TEXT,
+                PRIMARY KEY (namespace, view_name)
+            )
+        """)
+
         logger.info("PostgreSQL schema initialized")
+
+
+async def _recreate_registered_views(pool: asyncpg.Pool) -> None:
+    """Recreate all registered views at startup.
+
+    Views registered via POST /namespace/{ns}/views are persisted in
+    _wip_views. This function recreates them after a pod restart or a
+    drop_stale_reporting reset so they survive without re-registration.
+    Failures are logged and skipped — a broken view definition should not
+    block startup.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT namespace, view_name, view_sql FROM _wip_views ORDER BY namespace, view_name")
+
+    if not rows:
+        return
+
+    sm = SchemaManager(pool)
+    recreated = 0
+    failed = 0
+    for row in rows:
+        namespace = row["namespace"]
+        view_name = row["view_name"]
+        view_sql = row["view_sql"]
+        try:
+            schema = sm.schema_for(namespace)
+            safe_name = sm._safe_ident(view_name)
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    f'CREATE OR REPLACE VIEW "{schema}"."{safe_name}" AS {view_sql}'
+                )
+            recreated += 1
+        except Exception as e:
+            logger.warning(
+                f"Failed to recreate view {namespace}.{view_name} at startup: {e}"
+            )
+            failed += 1
+
+    logger.info(f"Recreated {recreated} registered view(s) at startup ({failed} failed)")
 
 
 async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
@@ -353,6 +407,7 @@ async def lifespan(app: FastAPI):
         # and document tables are created lazily inside each namespace's schema
         # on first sync (CASE-628) — there is no global pre-creation.
         await init_postgres_schema(state.postgres_pool)
+        await _recreate_registered_views(state.postgres_pool)
     except Exception as e:
         logger.error(f"Failed to connect to PostgreSQL: {e}")
         state.sync_status.connected_to_postgres = False
@@ -1913,7 +1968,7 @@ async def delete_namespace(prefix: str):
         # live in public, keyed by namespace — see init_postgres_schema).
         # asyncpg returns a "DELETE <n>" status string; fold those rows into
         # the audit total.
-        for table in ("_wip_schema_migrations", "_wip_sync_status"):
+        for table in ("_wip_schema_migrations", "_wip_sync_status", "_wip_views"):
             status = await conn.execute(
                 f"DELETE FROM {table} WHERE namespace = $1", prefix
             )
@@ -1921,6 +1976,128 @@ async def delete_namespace(prefix: str):
 
     logger.info(f"Namespace {prefix} reporting schema dropped ({schema})")
     return {"namespace": prefix, "dropped_schema": schema, "total_deleted": total_deleted}
+
+
+# =============================================================================
+# NAMESPACE VIEWS
+# =============================================================================
+
+class RegisterViewRequest(StrictModel):
+    name: str = Field(..., description="View name (becomes a schema-qualified SQL view)")
+    sql: str = Field(..., description="SELECT statement the view wraps")
+    registered_by: str | None = Field(None, description="Caller identity for audit")
+
+
+class RegisteredView(StrictModel):
+    namespace: str
+    view_name: str
+    view_sql: str
+    registered_at: str
+    registered_by: str | None
+
+
+@router.post("/namespace/{prefix}/views", status_code=201)
+async def register_view(prefix: str, body: RegisterViewRequest):
+    """Register a named SQL view in a namespace's reporting schema.
+
+    The view is created immediately and persisted in _wip_views so it
+    survives pod restarts and drop_stale_reporting resets. Idempotent:
+    re-registering a view with the same name replaces its definition
+    (CREATE OR REPLACE VIEW).
+
+    The view SQL must be a read-only SELECT — DDL keywords are rejected.
+    The SQL may reference tables within this namespace's schema or the
+    shared ``wip`` schema.
+    """
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+
+    sm = SchemaManager(state.postgres_pool)
+    try:
+        schema = sm.schema_for(prefix)
+        safe_name = sm._safe_ident(body.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # Reject DDL/write keywords in the view SQL
+    if _DANGEROUS_SQL_RE.search(body.sql):
+        raise HTTPException(
+            status_code=400,
+            detail="View SQL must be a read-only SELECT. "
+                   "INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, and REVOKE are prohibited.",
+        )
+
+    # Validate syntax with EXPLAIN before persisting
+    async with state.postgres_pool.acquire() as conn:
+        try:
+            await conn.execute(f"EXPLAIN {body.sql}")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"View SQL is invalid: {e}") from e
+
+        # Create the view
+        await conn.execute(
+            f'CREATE OR REPLACE VIEW "{schema}"."{safe_name}" AS {body.sql}'
+        )
+
+        # Persist in bookkeeping table (upsert)
+        await conn.execute(
+            """
+            INSERT INTO _wip_views (namespace, view_name, view_sql, registered_by)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (namespace, view_name) DO UPDATE
+                SET view_sql = EXCLUDED.view_sql,
+                    registered_at = NOW(),
+                    registered_by = EXCLUDED.registered_by
+            """,
+            prefix, body.name, body.sql, body.registered_by,
+        )
+
+    logger.info(f"Registered view {prefix}.{body.name}")
+    return {"namespace": prefix, "view_name": body.name, "schema_qualified": f'"{schema}"."{safe_name}"'}
+
+
+@router.get("/namespace/{prefix}/views")
+async def list_views(prefix: str):
+    """List all registered views for a namespace."""
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+
+    async with state.postgres_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT namespace, view_name, view_sql, registered_at, registered_by "
+            "FROM _wip_views WHERE namespace = $1 ORDER BY view_name",
+            prefix,
+        )
+
+    return {"namespace": prefix, "views": [dict(r) for r in rows]}
+
+
+@router.delete("/namespace/{prefix}/views/{view_name}")
+async def delete_view(prefix: str, view_name: str):
+    """Drop a registered view from a namespace's reporting schema."""
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+
+    sm = SchemaManager(state.postgres_pool)
+    try:
+        schema = sm.schema_for(prefix)
+        safe_name = sm._safe_ident(view_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    async with state.postgres_pool.acquire() as conn:
+        deleted = await conn.execute(
+            "DELETE FROM _wip_views WHERE namespace = $1 AND view_name = $2",
+            prefix, view_name,
+        )
+        count = int(deleted.rsplit(" ", 1)[-1])
+        if count == 0:
+            raise HTTPException(status_code=404, detail=f"View {view_name!r} not found in namespace {prefix!r}")
+
+        await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{safe_name}"')
+
+    logger.info(f"Deleted view {prefix}.{view_name}")
+    return {"namespace": prefix, "view_name": view_name, "dropped": True}
 
 
 @router.get("/")
