@@ -18,7 +18,7 @@ from typing import Any
 import asyncpg
 import httpx
 import nats
-from fastapi import APIRouter, FastAPI, HTTPException, Query
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from nats.js import JetStreamContext
 from pydantic import BaseModel, Field
@@ -258,11 +258,17 @@ async def init_postgres_schema(pool: asyncpg.Pool) -> None:
         """)
 
         # Registered views bookkeeping. Apps register named SQL views at
-        # bootstrap; reporting-sync recreates them at startup so they survive
-        # pod restarts and drop_stale_reporting resets. Keyed on
-        # (namespace, view_name) — view names are unique per namespace schema.
+        # bootstrap; reporting-sync recreates them best-effort at startup
+        # and after entity-view rebuilds. After a full schema reset the
+        # authoritative recovery is the app's bootstrap re-registration.
+        # Keyed on (namespace, view_name) — view names are unique per
+        # namespace schema. Schema-qualified `public.` on every access: an
+        # unqualified name resolves through search_path ("$user", public),
+        # and once a namespace schema matching the connection's user name
+        # exists (the default user IS `wip`), unqualified DDL lands a
+        # shadow copy there that silently splits the bookkeeping.
         await conn.execute("""
-            CREATE TABLE IF NOT EXISTS _wip_views (
+            CREATE TABLE IF NOT EXISTS public._wip_views (
                 namespace VARCHAR(255) NOT NULL,
                 view_name TEXT NOT NULL,
                 view_sql TEXT NOT NULL,
@@ -276,42 +282,42 @@ async def init_postgres_schema(pool: asyncpg.Pool) -> None:
 
 
 async def _recreate_registered_views(pool: asyncpg.Pool) -> None:
-    """Recreate all registered views at startup.
+    """Best-effort recreation of registered views at startup.
 
-    Views registered via POST /namespace/{ns}/views are persisted in
-    _wip_views. This function recreates them after a pod restart or a
-    drop_stale_reporting reset so they survive without re-registration.
-    Failures are logged and skipped — a broken view definition should not
-    block startup.
+    Views registered via POST /namespace/{ns}/views persist in _wip_views.
+    On a plain restart the views still exist in PostgreSQL and this pass is
+    a cheap no-op; after a schema reset it recreates what can be recreated
+    NOW. A view whose source tables have not been re-synced yet fails, is
+    logged, and comes back after the next reporting rebuild touches its
+    namespace — or via the app's bootstrap re-registration, which remains
+    the authoritative recovery after a full reset. Never blocks startup.
     """
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT namespace, view_name, view_sql FROM _wip_views ORDER BY namespace, view_name")
-
-    if not rows:
-        return
-
     sm = SchemaManager(pool)
-    recreated = 0
-    failed = 0
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT namespace FROM public._wip_views ORDER BY namespace"
+        )
+
+    present = 0
+    deferred = 0
     for row in rows:
         namespace = row["namespace"]
-        view_name = row["view_name"]
-        view_sql = row["view_sql"]
         try:
-            schema = sm.schema_for(namespace)
-            safe_name = sm._safe_ident(view_name)
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    f'CREATE OR REPLACE VIEW "{schema}"."{safe_name}" AS {view_sql}'
-                )
-            recreated += 1
+            await sm.ensure_schema(namespace)
+            ok, failed = await sm.recreate_registered_views(namespace)
         except Exception as e:
             logger.warning(
-                f"Failed to recreate view {namespace}.{view_name} at startup: {e}"
+                f"Registered-view recreation failed for namespace {namespace!r}: {e}"
             )
-            failed += 1
+            continue
+        present += ok
+        deferred += failed
 
-    logger.info(f"Recreated {recreated} registered view(s) at startup ({failed} failed)")
+    if present or deferred:
+        logger.info(
+            f"Registered views at startup: {present} present/recreated, "
+            f"{deferred} deferred until their tables re-sync"
+        )
 
 
 async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
@@ -1759,7 +1765,7 @@ async def execute_query(body: ReportQuery):
     params = body.params
 
     async def _run(conn: asyncpg.Connection) -> list:
-        return await conn.fetch(wrapped_sql, *params)
+        return list(await conn.fetch(wrapped_sql, *params))
 
     try:
         assert state.postgres_pool is not None  # narrowed by postgres_ok check above
@@ -1967,12 +1973,22 @@ async def delete_namespace(prefix: str):
         # Clear the namespace's rows from the shared bookkeeping tables (these
         # live in public, keyed by namespace — see init_postgres_schema).
         # asyncpg returns a "DELETE <n>" status string; fold those rows into
-        # the audit total.
-        for table in ("_wip_schema_migrations", "_wip_sync_status", "_wip_views"):
+        # the audit total. The first two stay unqualified deliberately: on
+        # installs where a schema matching the connection's user name exists
+        # (the default user IS `wip`), their LIVE rows sit in a search_path
+        # shadow copy of the table, and qualifying the delete would miss
+        # them — the shadow split itself is a separate open defect.
+        # _wip_views post-dates that discovery and is public-qualified on
+        # every access, so it is cleaned explicitly.
+        for table in ("_wip_schema_migrations", "_wip_sync_status"):
             status = await conn.execute(
                 f"DELETE FROM {table} WHERE namespace = $1", prefix
             )
             total_deleted += int(status.rsplit(" ", 1)[-1])
+        status = await conn.execute(
+            "DELETE FROM public._wip_views WHERE namespace = $1", prefix
+        )
+        total_deleted += int(status.rsplit(" ", 1)[-1])
 
     logger.info(f"Namespace {prefix} reporting schema dropped ({schema})")
     return {"namespace": prefix, "dropped_schema": schema, "total_deleted": total_deleted}
@@ -1988,72 +2004,153 @@ class RegisterViewRequest(StrictModel):
     registered_by: str | None = Field(None, description="Caller identity for audit")
 
 
-class RegisteredView(StrictModel):
-    namespace: str
-    view_name: str
-    view_sql: str
-    registered_at: str
-    registered_by: str | None
+# dependent_objects_still_exist — a no-CASCADE DROP hit a dependent relation.
+_PG_DEPENDENT_OBJECTS = "2BP01"
 
 
-@router.post("/namespace/{prefix}/views", status_code=201)
-async def register_view(prefix: str, body: RegisterViewRequest):
+@router.post("/namespace/{prefix}/views")
+async def register_view(prefix: str, body: RegisterViewRequest, response: Response):
     """Register a named SQL view in a namespace's reporting schema.
 
-    The view is created immediately and persisted in _wip_views so it
-    survives pod restarts and drop_stale_reporting resets. Idempotent:
-    re-registering a view with the same name replaces its definition
-    (CREATE OR REPLACE VIEW).
+    The view is created immediately and persisted in _wip_views, from which
+    it is recreated (best-effort) at startup and after reporting rebuilds;
+    bootstrap re-registration remains the authoritative recovery after a
+    full reset. Re-registering an existing name replaces the definition via
+    DROP + CREATE in one transaction — the column set may change freely —
+    and returns 200; a first registration returns 201.
 
-    The view SQL must be a read-only SELECT — DDL keywords are rejected.
-    The SQL may reference tables within this namespace's schema or the
-    shared ``wip`` schema.
+    The SQL runs with search_path set to this namespace's schema plus
+    public, so unqualified names (``doc_<value>``, ``term_relations``, …)
+    resolve here. Other reporting schemas are reachable only when
+    schema-qualified — the same posture as POST /query, the surface that
+    reads the view. The definition must be a single read-only SELECT:
+    write/DDL keywords are rejected, and validation EXPLAINs the statement
+    as a prepared subselect inside a read-only transaction, so a second
+    ';'-separated statement is a hard parse error rather than something
+    that executes. Platform relation names (``doc_*``, ``*__v<N>``,
+    ``*__entities``, the metadata tables, ``_wip_*``) are reserved, and a
+    name occupied by a relation this endpoint does not own is a 409.
     """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
     sm = SchemaManager(state.postgres_pool)
     try:
-        schema = sm.schema_for(prefix)
         safe_name = sm._safe_ident(body.name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
+    if SchemaManager.is_reserved_relation_name(body.name):
+        raise HTTPException(
+            status_code=400,
+            detail="View name collides with the platform's reporting relations "
+                   "(doc_*, *__v<N>, *__entities, metadata tables, _wip_*). "
+                   "Pick a distinct name, e.g. a v_ prefix.",
+        )
+
+    # Trailing semicolons would break the subselect wrap below; strip them
+    # so "SELECT 1;" registers cleanly while "SELECT 1; DROP x" still fails.
+    view_sql = body.sql.strip().rstrip(";").strip()
+    if not view_sql:
+        raise HTTPException(status_code=400, detail="View SQL is empty")
+
     # Reject DDL/write keywords in the view SQL
-    if _DANGEROUS_SQL_RE.search(body.sql):
+    if _DANGEROUS_SQL_RE.search(view_sql):
         raise HTTPException(
             status_code=400,
             detail="View SQL must be a read-only SELECT. "
                    "INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, and REVOKE are prohibited.",
         )
 
-    # Validate syntax with EXPLAIN before persisting
+    try:
+        # The schema may not exist yet when an app bootstraps views before
+        # its first sync; creating it is harmless and namespace deletion
+        # cleans it up.
+        schema = await sm.ensure_schema(prefix)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
     async with state.postgres_pool.acquire() as conn:
+        already_registered = bool(await conn.fetchval(
+            "SELECT TRUE FROM public._wip_views WHERE namespace = $1 AND view_name = $2",
+            prefix, body.name,
+        ))
+        if not already_registered:
+            # The name must be free: replacing a relation this endpoint does
+            # not own (an entity view, a metadata table, a manual view)
+            # would hijack it.
+            occupied = await conn.fetchval(
+                """
+                SELECT TRUE FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = $1 AND c.relname = $2
+                """,
+                schema, body.name,
+            )
+            if occupied:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Relation {body.name!r} already exists in schema "
+                           f"{schema!r} and is not a registered view",
+                )
+
+        # Validate before touching anything: a PREPARED statement (fetch)
+        # admits exactly one SQL command — a ';'-separated second statement
+        # fails at parse instead of executing — and the subselect wrap plus
+        # the read-only transaction keep planning side-effect-free.
         try:
-            await conn.execute(f"EXPLAIN {body.sql}")
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"View SQL is invalid: {e}") from e
+            async with conn.transaction(readonly=True):
+                await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await conn.fetch(
+                    f"EXPLAIN SELECT * FROM ({view_sql}) _wip_view_check"
+                )
+        except asyncpg.PostgresError as e:
+            raise HTTPException(
+                status_code=400, detail=f"View SQL is invalid: {e}"
+            ) from e
 
-        # Create the view
-        await conn.execute(
-            f'CREATE OR REPLACE VIEW "{schema}"."{safe_name}" AS {body.sql}'
-        )
+        # Create (or replace) the view and persist it, atomically.
+        try:
+            async with conn.transaction():
+                await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                if already_registered:
+                    # DROP + CREATE rather than CREATE OR REPLACE: Postgres
+                    # rejects OR REPLACE when the column set changes, and
+                    # evolving a view's columns is the normal workflow here.
+                    await conn.execute(
+                        f'DROP VIEW IF EXISTS "{schema}"."{safe_name}"'
+                    )
+                await conn.execute(
+                    f'CREATE VIEW "{schema}"."{safe_name}" AS {view_sql}'
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO public._wip_views (namespace, view_name, view_sql, registered_by)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (namespace, view_name) DO UPDATE
+                        SET view_sql = EXCLUDED.view_sql,
+                            registered_at = NOW(),
+                            registered_by = EXCLUDED.registered_by
+                    """,
+                    prefix, body.name, view_sql, body.registered_by,
+                )
+        except asyncpg.PostgresError as e:
+            status = (
+                409 if getattr(e, "sqlstate", None) == _PG_DEPENDENT_OBJECTS
+                else 400
+            )
+            raise HTTPException(
+                status_code=status, detail=f"View registration failed: {e}"
+            ) from e
 
-        # Persist in bookkeeping table (upsert)
-        await conn.execute(
-            """
-            INSERT INTO _wip_views (namespace, view_name, view_sql, registered_by)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (namespace, view_name) DO UPDATE
-                SET view_sql = EXCLUDED.view_sql,
-                    registered_at = NOW(),
-                    registered_by = EXCLUDED.registered_by
-            """,
-            prefix, body.name, body.sql, body.registered_by,
-        )
-
+    response.status_code = 200 if already_registered else 201
     logger.info(f"Registered view {prefix}.{body.name}")
-    return {"namespace": prefix, "view_name": body.name, "schema_qualified": f'"{schema}"."{safe_name}"'}
+    return {
+        "namespace": prefix,
+        "view_name": body.name,
+        "schema_qualified": f'"{schema}"."{safe_name}"',
+        "created": not already_registered,
+    }
 
 
 @router.get("/namespace/{prefix}/views")
@@ -2065,7 +2162,7 @@ async def list_views(prefix: str):
     async with state.postgres_pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT namespace, view_name, view_sql, registered_at, registered_by "
-            "FROM _wip_views WHERE namespace = $1 ORDER BY view_name",
+            "FROM public._wip_views WHERE namespace = $1 ORDER BY view_name",
             prefix,
         )
 
@@ -2074,7 +2171,14 @@ async def list_views(prefix: str):
 
 @router.delete("/namespace/{prefix}/views/{view_name}")
 async def delete_view(prefix: str, view_name: str):
-    """Drop a registered view from a namespace's reporting schema."""
+    """Drop a registered view and its registration, atomically.
+
+    The DROP runs first, inside the same transaction as the bookkeeping
+    delete: if the view cannot be dropped (another registered view depends
+    on it — no CASCADE), the registration survives and the caller gets a
+    409 naming the dependency, instead of an orphaned live view that
+    recreation no longer knows about.
+    """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
@@ -2086,15 +2190,30 @@ async def delete_view(prefix: str, view_name: str):
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     async with state.postgres_pool.acquire() as conn:
-        deleted = await conn.execute(
-            "DELETE FROM _wip_views WHERE namespace = $1 AND view_name = $2",
+        registered = bool(await conn.fetchval(
+            "SELECT TRUE FROM public._wip_views WHERE namespace = $1 AND view_name = $2",
             prefix, view_name,
-        )
-        count = int(deleted.rsplit(" ", 1)[-1])
-        if count == 0:
-            raise HTTPException(status_code=404, detail=f"View {view_name!r} not found in namespace {prefix!r}")
-
-        await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{safe_name}"')
+        ))
+        if not registered:
+            raise HTTPException(
+                status_code=404,
+                detail=f"View {view_name!r} not found in namespace {prefix!r}",
+            )
+        try:
+            async with conn.transaction():
+                await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{safe_name}"')
+                await conn.execute(
+                    "DELETE FROM public._wip_views WHERE namespace = $1 AND view_name = $2",
+                    prefix, view_name,
+                )
+        except asyncpg.PostgresError as e:
+            status = (
+                409 if getattr(e, "sqlstate", None) == _PG_DEPENDENT_OBJECTS
+                else 400
+            )
+            raise HTTPException(
+                status_code=status, detail=f"View drop failed: {e}"
+            ) from e
 
     logger.info(f"Deleted view {prefix}.{view_name}")
     return {"namespace": prefix, "view_name": view_name, "dropped": True}

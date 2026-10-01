@@ -9,6 +9,7 @@ Responsibilities:
 
 import contextlib
 import logging
+import re
 from typing import Any, ClassVar, cast
 
 import asyncpg
@@ -84,6 +85,31 @@ class SchemaManager:
     def schema_for(self, namespace: str) -> str:
         """The PostgreSQL schema name for a WIP namespace (validated)."""
         return self._safe_ident(namespace)
+
+    # Fixed-schema metadata tables every namespace schema carries.
+    METADATA_TABLES: ClassVar[set[str]] = {
+        "terminologies", "terms", "templates", "term_relations",
+    }
+
+    @classmethod
+    def is_reserved_relation_name(cls, name: str) -> bool:
+        """Whether a relation name belongs to the platform's reporting layout.
+
+        User-registered views must not take these names: a registered view
+        named like an entity view (``doc_<value>``) would silently REPLACE
+        the default query surface until the next rebuild clobbered it back —
+        a quiet tug-of-war between the sync pipeline and the registration.
+        Reserved: ``doc_*`` and ``_wip_*`` prefixes, per-version tables
+        (``*__v<N>``), entity-core views (``*__entities``), and the fixed
+        metadata tables.
+        """
+        lowered = name.lower()
+        return (
+            lowered.startswith(("doc_", "_wip_"))
+            or lowered in cls.METADATA_TABLES
+            or re.search(r"__v\d+$", lowered) is not None
+            or lowered.endswith("__entities")
+        )
 
     def get_table_name(
         self,
@@ -1125,6 +1151,121 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
                 shared.append((col, dtype))
         return shared
 
+    async def registered_views(
+        self, namespace: str, conn: asyncpg.Connection | None = None
+    ) -> list[tuple[str, str]]:
+        """(view_name, view_sql) rows registered for a namespace via the
+        views endpoint, oldest registration first (so recreation replays
+        them in the order they were layered)."""
+        sql = (
+            "SELECT view_name, view_sql FROM public._wip_views "
+            "WHERE namespace = $1 ORDER BY registered_at, view_name"
+        )
+        if conn is not None:
+            rows = await conn.fetch(sql, namespace)
+        else:
+            async with self.pool.acquire() as conn2:
+                rows = await conn2.fetch(sql, namespace)
+        return [(r["view_name"], r["view_sql"]) for r in rows]
+
+    async def drop_registered_views(
+        self, namespace: str, conn: asyncpg.Connection
+    ) -> list[str]:
+        """Drop the namespace's registered views ahead of an entity-view
+        rebuild, on the caller's connection (joining its transaction).
+
+        Registered views commonly SELECT from the entity views, and those
+        are dropped WITHOUT CASCADE by design — an unknown dependent must
+        fail loudly, never vanish silently. Registered views are *known*
+        dependents, so they move out of the way first; the caller recreates
+        them after the rebuild via ``recreate_registered_views``. Multi-pass
+        because registered views may depend on each other; each DROP runs in
+        a savepoint so one failure doesn't abort the enclosing transaction.
+        A view that still cannot be dropped after the passes is left in
+        place — the caller's own DROP then fails loudly, preserving the
+        unknown-dependent doctrine.
+        """
+        names = [n for n, _ in await self.registered_views(namespace, conn)]
+        if not names:
+            return []
+        schema = self.schema_for(namespace)
+        # Newest first: dependents are typically registered after what they
+        # depend on, so reverse order usually succeeds in one pass.
+        remaining = list(reversed(names))
+        dropped: list[str] = []
+        for _ in range(len(remaining)):
+            still: list[str] = []
+            for name in remaining:
+                try:
+                    async with conn.transaction():  # savepoint
+                        await conn.execute(
+                            f'DROP VIEW IF EXISTS "{schema}"."{self._safe_ident(name)}"'
+                        )
+                    dropped.append(name)
+                except asyncpg.PostgresError:
+                    still.append(name)
+            if not still:
+                break
+            remaining = still
+        else:
+            logger.warning(
+                f"Registered view(s) {remaining} in {schema!r} could not be "
+                f"dropped before rebuild (non-registered dependents?)"
+            )
+        return dropped
+
+    async def recreate_registered_views(self, namespace: str) -> tuple[int, int]:
+        """Recreate the namespace's registered views, best-effort.
+
+        Skips views that already exist (a plain restart leaves them in
+        place, and a view's definition only changes through the endpoint,
+        which drops and recreates it itself). Multi-pass so views that
+        depend on other registered views land once their dependency
+        exists. Each CREATE runs with search_path set to the namespace
+        schema plus public, matching registration-time name resolution.
+        A definition that does not validate right now (e.g. its source
+        tables have not been re-synced yet) is logged and skipped — it
+        stays in the bookkeeping table and comes back on the next rebuild,
+        restart, or bootstrap re-registration. Returns (present, failed).
+        """
+        views = await self.registered_views(namespace)
+        if not views:
+            return (0, 0)
+        schema = self.schema_for(namespace)
+        remaining = list(views)
+        present = 0
+        last_errors: dict[str, str] = {}
+        for _ in range(len(views)):
+            still: list[tuple[str, str]] = []
+            for name, view_sql in remaining:
+                try:
+                    safe_name = self._safe_ident(name)
+                    if await self.relation_kind(schema, name) == "view":
+                        present += 1
+                        continue
+                    async with self.pool.acquire() as conn, conn.transaction():
+                        await conn.execute(
+                            f'SET LOCAL search_path = "{schema}", public'
+                        )
+                        await conn.execute(
+                            f'CREATE VIEW "{schema}"."{safe_name}" AS {view_sql}'
+                        )
+                    present += 1
+                except (asyncpg.PostgresError, ValueError) as e:
+                    last_errors[name] = str(e)
+                    still.append((name, view_sql))
+            if not still:
+                break
+            remaining = still
+        else:
+            for name, _sql in remaining:
+                logger.warning(
+                    f'Could not recreate registered view "{schema}"."{name}": '
+                    f"{last_errors.get(name)}"
+                )
+            return (present, len(remaining))
+        return (present, 0)
+
     async def ensure_views_for_template(
         self,
         namespace: str,
@@ -1236,6 +1377,10 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
                 bare_sql = "\nUNION ALL\n".join(sel_selects)
 
         async with self.pool.acquire() as conn, conn.transaction():
+            # Registered views typically SELECT from the entity views being
+            # rebuilt here; as known dependents they are dropped first and
+            # recreated after the rebuild commits (best-effort, below).
+            await self.drop_registered_views(namespace, conn)
             await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{entities_view}"')
             await conn.execute(
                 f'CREATE VIEW "{schema}"."{entities_view}" AS\n{union_sql}'
@@ -1245,6 +1390,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
                 await conn.execute(
                     f'CREATE VIEW "{schema}"."{base}" AS\n{bare_sql}'
                 )
+        await self.recreate_registered_views(namespace)
         logger.info(
             f'Rebuilt entity views for "{schema}"."{base}" over versions '
             f"{ordered_versions}"
@@ -1317,6 +1463,12 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
 
         dropped: list[str] = []
         async with self.pool.acquire() as conn, conn.transaction():
+            # Known dependents first: registered views over the relations
+            # being dropped would otherwise fail the no-CASCADE drops below.
+            # Their bookkeeping rows survive — they are recreated after the
+            # next rebuild (ensure_views_for_template) or at startup.
+            for reg_name in await self.drop_registered_views(namespace, conn):
+                dropped.append(f"{schema}.{reg_name}")
             if entities_kind == "view":
                 await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{entities_view}"')
                 dropped.append(f"{schema}.{entities_view}")
