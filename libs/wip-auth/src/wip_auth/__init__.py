@@ -34,6 +34,7 @@ from .config import (
 from .dependencies import (
     optional_identity,
     require_admin,
+    require_admin_identity,
     require_api_key,
     require_groups,
     require_identity,
@@ -138,6 +139,7 @@ __all__ = [
     "optional_identity",
     "permission_sufficient",
     "require_admin",
+    "require_admin_identity",
     "require_api_key",
     "require_current_identity",
     "require_groups",

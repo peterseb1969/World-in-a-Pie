@@ -102,6 +102,15 @@ def require_admin() -> Callable[[Request], Awaitable[UserIdentity]]:
     Shortcut for require_groups(["wip-admins"]).
     The admin group names can be configured in AuthConfig.
 
+    This is a FACTORY — it must be CALLED inside Depends:
+    ``Depends(require_admin())``. Written uncalled,
+    ``Depends(require_admin)`` hands FastAPI the returned closure as the
+    dependency's VALUE and the check never runs — an admin surface that
+    silently admits every authenticated caller. Prefer
+    ``Depends(require_admin_identity)`` (below), whose spelling cannot
+    go wrong; ``wip_auth.testing.assert_no_factory_dependencies`` fails
+    any app wired with the uncalled form.
+
     Returns:
         Dependency function for use with FastAPI's Depends()
     """
@@ -109,6 +118,21 @@ def require_admin() -> Callable[[Request], Awaitable[UserIdentity]]:
 
     config = get_auth_config()
     return require_groups(config.admin_groups)
+
+
+async def require_admin_identity(request: Request) -> UserIdentity:
+    """Direct admin dependency — safe to use uncalled, the way it reads:
+    ``Depends(require_admin_identity)``.
+
+    Same check as ``require_admin()``'s product, but a plain per-request
+    dependency: there is no factory to forget to call, and the admin
+    group set is read from the live auth config on every request rather
+    than frozen when a route module imported it.
+
+    Raises 401 when unauthenticated, 403 when authenticated outside the
+    admin groups. Returns the caller's UserIdentity.
+    """
+    return await require_admin()(request)
 
 
 def optional_identity() -> Callable[[Request], Awaitable[UserIdentity | None]]:

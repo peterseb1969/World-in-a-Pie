@@ -42,7 +42,9 @@ async def require_admin_key(request: Request) -> str:
     forward; those two endpoints need an API-key caller, as they always
     did.
     """
-    await require_admin()(request)
+    from wip_auth import require_admin_identity
+
+    await require_admin_identity(request)
     return request.headers.get("X-API-Key", "")
 
 # Re-export for backward compatibility
