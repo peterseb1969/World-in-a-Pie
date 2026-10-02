@@ -152,6 +152,16 @@ The contract is small. The failure signatures when you skip a step are specific 
 
 **Origin:** apps-only deployment shape. The middleware must explicitly check `if (!process.env.OIDC_ISSUER) return next()` at the top.
 
+### Followed, not skipped: the SPA fallback answers missing API routes with 200 HTML
+
+This one is different from the entries above — it bites when you implement the SPA-fallback requirement **exactly as specified**, not when you skip it. The fallback exists so deep links and reloads work (any unmatched path → `index.html`, 200). As scaffolded it is a catch-all, so it also catches **API** paths the server doesn't have: a request for a route that does not exist gets `200 text/html`, never a 404.
+
+**Failure:** a JSON client calls an API route the server lacks — typically a client newer than the gateway it talks to, which is the *normal* state during a rollout — and receives `index.html` with 200. `JSON.parse` / `json.loads` dies on `<!DOCTYPE html>…`.
+
+**Symptom signature:** `JSONDecodeError: Expecting value: line 1 column 1 (char 0)` (or the JS equivalent) that looks like a parse bug or corrupt data. The real cause is a missing route. Second-order signature: any `if status == 404 → "route not available on this instance"` degradation branch in a client is **dead code against a contract-compliant server** — it compiles, reads correctly, and has never once fired. Do not branch on 404 to detect a missing route; decide on **content-type** (got HTML where JSON was expected). Do not flatten `JSONDecodeError` into "route missing" either — that trades a loud bug for a silent one when an existing route returns malformed JSON.
+
+**Origin:** WIP-KB's read client shipped "unavailable on this instance" messages that were unreachable since the day they were written; found while testing the degradation path for a newly added verb (CASE-831 has the full analysis). Fixed consumer-side in WIP-KB by switching the guard to content-type. The cause-side fix — excluding the API prefixes from the fallback so unmatched `/server-api/*`, `/api/*`, `/wip/*` genuinely 404 while page routes still fall through — is a scaffold change (see the scaffold-gaps table).
+
 ---
 
 ## Platform invariants you can rely on
@@ -219,6 +229,7 @@ What `--preset query` ships today vs. what this paper recommends:
 | `src/lib/wipBulk.ts` | `fetch('/wip' + path)` | `fetch(\`${import.meta.env.BASE_URL}wip\` + path)` |
 | Inline client fetches | Bare paths | Prefixed with `${import.meta.env.BASE_URL}` |
 | `/api/me` | OIDC session only | Gateway-header sniff → OIDC → anonymous |
+| SPA fallback scope | Catch-all under the base path — missing API routes return 200 HTML | Exclude the API prefixes (`/server-api`, `/api`, `/wip`) so unmatched API paths 404; page routes still fall through to `index.html` |
 | `Dockerfile.dev` | **In scaffold** | Provided as starter (canonical pattern) |
 | `Dockerfile` (production) | **In scaffold** | Two-stage; `VITE_BASE_PATH` as ARG |
 | `.dockerignore` | **In scaffold** | Provided; narrow `*.md` exclusion called out |
