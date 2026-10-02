@@ -4,6 +4,8 @@ This module provides authentication using the wip-auth shared library.
 It re-exports the common auth functions for backward compatibility.
 """
 
+from fastapi import Request
+
 from wip_auth import (
     AuthConfig,
     UserIdentity,
@@ -20,8 +22,28 @@ from wip_auth import (
     set_auth_config,
 )
 
-# Alias for backward compatibility - require_admin replaces require_admin_key
-require_admin_key = require_admin
+
+async def require_admin_key(request: Request) -> str:
+    """Admin gate for the Registry's privileged endpoints.
+
+    ``require_admin`` is a FACTORY: calling it returns the actual
+    group-checking dependency. This used to be a bare alias of the
+    uncalled factory — FastAPI then received the inner closure as the
+    dependency's VALUE, the check never executed, and every
+    authenticated caller passed every admin endpoint (including minting
+    arbitrary-group API keys). This wrapper exists to make that shape
+    impossible: the factory is invoked per request, so the check always
+    runs and the admin-group set is read from the live auth config
+    rather than frozen at import.
+
+    Returns the caller's raw API key header — the namespace export and
+    import endpoints forward it to the sibling stores as their outbound
+    credential. An admin authenticated via OIDC JWT has no API key to
+    forward; those two endpoints need an API-key caller, as they always
+    did.
+    """
+    await require_admin()(request)
+    return request.headers.get("X-API-Key", "")
 
 # Re-export for backward compatibility
 __all__ = [
