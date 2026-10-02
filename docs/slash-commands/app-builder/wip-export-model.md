@@ -38,7 +38,8 @@ For each terminology returned by `list_terminologies`:
 
 #### 3. Export templates
 For each template returned by `list_templates`:
-- Fetch the full template definition: `get_template_fields(template_value)`
+- Fetch the full template definition: `get_template_fields(template_value, portable=true)` — or `get_template(template_id, portable=true)` when you need every property.
+- **`portable=true` is mandatory for seed files.** The platform stores references (`terminology_ref`, `template_ref`, `target_templates`, `extends`, …) as this instance's UUIDs; exporting those produces seed files that bootstrap only on this instance and break everywhere else. With `portable=true` the references come back as value names (`"FIN_ACCOUNT_TYPE"`, or `"otherns:VALUE"` across namespaces), which the create APIs accept on any instance.
 - Determine creation order from references (templates that reference others must be numbered higher)
 - Write to `data-model/templates/{NN}_{VALUE}.json` where NN is the creation order:
 

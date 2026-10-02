@@ -30,6 +30,7 @@ from ..models.api_models import (
 from ..models.template import Template
 from ..services.dependency_service import DependencyService, TemplateDependencies
 from ..services.inheritance_service import InheritanceService
+from ..services.portable import template_with_portable_refs
 from ..services.registry_client import RegistryError
 from ..services.template_service import TemplateService
 from .auth import require_api_key
@@ -38,6 +39,21 @@ router = APIRouter(
     prefix="/templates",
     tags=["Templates"],
     dependencies=[Depends(require_api_key)]
+)
+
+# Shared `refs` query parameter for the single-template read routes.
+# Stored references are canonical UUIDs (instance-specific); the portable
+# form serves value names that re-create the template on any instance.
+_REFS_QUERY = Query(
+    "canonical",
+    pattern="^(canonical|portable)$",
+    description=(
+        "Reference form for field references and extends: 'canonical' (default) "
+        "returns the stored UUIDs; 'portable' maps each one to its referent's "
+        "value name — bare within the template's own namespace, 'ns:VALUE' "
+        "across namespaces — so the definition can be re-created on another "
+        "instance (seed files, cross-instance export)."
+    ),
 )
 
 
@@ -164,6 +180,7 @@ async def get_template(
     template_id: str,
     version: int | None = Query(None, description="Specific version (default: latest)"),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
+    refs: str = _REFS_QUERY,
 ):
     """
     Get a template by ID or synonym value.
@@ -187,6 +204,8 @@ async def get_template(
     # template IDs exist in which namespace).
     identity = require_current_identity()
     await check_namespace_permission(identity, template.namespace, "read")
+    if refs == "portable":
+        template = await template_with_portable_refs(template)
     return template
 
 
@@ -195,6 +214,7 @@ async def get_template_raw(
     template_id: str,
     version: int | None = Query(None, description="Specific version (default: latest)"),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
+    refs: str = _REFS_QUERY,
 ):
     """
     Get a template by ID without inheritance resolution.
@@ -217,13 +237,16 @@ async def get_template_raw(
     # CASE-386 — gate read on the template's actual namespace.
     identity = require_current_identity()
     await check_namespace_permission(identity, template.namespace, "read")
+    if refs == "portable":
+        template = await template_with_portable_refs(template)
     return template
 
 
 @router.get("/by-value/{value}", response_model=TemplateResponse)
 async def get_template_by_value(
     value: str,
-    namespace: str | None = Query(default=None, description="Namespace to search in (omit for all accessible)")
+    namespace: str | None = Query(default=None, description="Namespace to search in (omit for all accessible)"),
+    refs: str = _REFS_QUERY,
 ):
     """
     Get the latest version of a template by value.
@@ -244,13 +267,17 @@ async def get_template_by_value(
     if not versions:
         raise HTTPException(status_code=404, detail="Template not found")
     # Return the first one (highest version since sorted descending)
-    return versions[0]
+    template = versions[0]
+    if refs == "portable":
+        template = await template_with_portable_refs(template)
+    return template
 
 
 @router.get("/by-value/{value}/raw", response_model=TemplateResponse)
 async def get_template_by_value_raw(
     value: str,
     namespace: str = Query(..., description="Namespace to search in"),
+    refs: str = _REFS_QUERY,
 ):
     """
     Get the latest version of a template by value without inheritance resolution.
@@ -261,6 +288,8 @@ async def get_template_by_value_raw(
     template = await TemplateService.get_template_raw(value=value, namespace=namespace)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+    if refs == "portable":
+        template = await template_with_portable_refs(template)
     return template
 
 
@@ -298,6 +327,7 @@ async def get_template_by_value_and_version(
         default=None,
         description="Namespace to disambiguate the value (omit to search all).",
     ),
+    refs: str = _REFS_QUERY,
 ):
     """
     Get a specific version of a template.
@@ -318,6 +348,8 @@ async def get_template_by_value_and_version(
     # CASE-386 — gate read on the template's actual namespace.
     identity = require_current_identity()
     await check_namespace_permission(identity, template.namespace, "read")
+    if refs == "portable":
+        template = await template_with_portable_refs(template)
     return template
 
 

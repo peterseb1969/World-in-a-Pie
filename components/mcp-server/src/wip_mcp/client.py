@@ -877,27 +877,34 @@ class WipClient:
 
     async def get_template(
         self, template_id: str, version: int | None = None,
-        namespace: str | None = None,
+        namespace: str | None = None, portable: bool = False,
     ) -> dict:
         return await self._get(
             self.template_store_url,
             f"/api/template-store/templates/{template_id}",
             version=version,
             namespace=namespace,
+            refs="portable" if portable else None,
         )
 
-    async def get_template_by_value(self, value: str, namespace: str | None = None) -> dict:
+    async def get_template_by_value(
+        self, value: str, namespace: str | None = None, portable: bool = False,
+    ) -> dict:
         return await self._get(
             self.template_store_url,
             f"/api/template-store/templates/by-value/{value}",
             namespace=namespace,
+            refs="portable" if portable else None,
         )
 
-    async def get_template_raw(self, template_id: str, namespace: str | None = None) -> dict:
+    async def get_template_raw(
+        self, template_id: str, namespace: str | None = None, portable: bool = False,
+    ) -> dict:
         return await self._get(
             self.template_store_url,
             f"/api/template-store/templates/{template_id}/raw",
             namespace=namespace,
+            refs="portable" if portable else None,
         )
 
     async def create_template(self, template: dict) -> dict:

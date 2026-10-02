@@ -449,6 +449,24 @@ async def test_get_template_by_value_with_namespace():
     assert params == {"namespace": "custom-ns"}
 
 
+@pytest.mark.asyncio
+async def test_get_template_portable_sends_refs_param():
+    """portable=True maps to the refs=portable query param on every
+    template read; the default sends no refs param (canonical)."""
+    mock_http = _mock_http(_mock_response({"template_id": "0190c000-0000-7000-0000-000000000003"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.get_template_by_value("PATIENT", portable=True)
+        await client.get_template("PATIENT", portable=True)
+        await client.get_template_raw("PATIENT", portable=True)
+        await client.get_template_by_value("PATIENT")
+
+    calls = mock_http.get.call_args_list
+    assert all(c.kwargs["params"] == {"refs": "portable"} for c in calls[:3])
+    assert "refs" not in calls[3].kwargs["params"]
+
+
 # =========================================================================
 # Backup / Restore (CASE-23 Phase 3 STEP 8)
 # =========================================================================

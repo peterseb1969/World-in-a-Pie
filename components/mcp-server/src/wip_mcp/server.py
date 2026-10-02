@@ -2118,16 +2118,22 @@ async def get_template(
     template_id: str,
     version: int | None = None,
     namespace: str | None = None,
+    portable: bool = False,
 ) -> str:
     """Get a template by ID. Returns the resolved template (with inherited fields).
 
     Args:
         template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
         version: Specific version number. None = latest.
+        portable: If true, references (terminology_ref, target_templates,
+            extends, ...) are returned as portable value names instead of
+            this instance's UUIDs — required when writing seed files or any
+            export meant to re-create the template on another instance.
     """
     try:
         data = await get_client().get_template(
             template_id=template_id, version=version, namespace=namespace,
+            portable=portable,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -2135,11 +2141,18 @@ async def get_template(
 
 
 @mcp.tool()
-async def get_template_by_value(value: str, namespace: str | None = None) -> str:
-    """Get a template by its value code (e.g., 'BANK_TRANSACTION', 'PATIENT_RECORD')."""
+async def get_template_by_value(
+    value: str, namespace: str | None = None, portable: bool = False,
+) -> str:
+    """Get a template by its value code (e.g., 'BANK_TRANSACTION', 'PATIENT_RECORD').
+
+    Args:
+        portable: If true, references are returned as portable value names
+            instead of this instance's UUIDs — required for seed files.
+    """
     try:
         data = await get_client().get_template_by_value(
-            value=value, namespace=namespace
+            value=value, namespace=namespace, portable=portable
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -2147,14 +2160,20 @@ async def get_template_by_value(value: str, namespace: str | None = None) -> str
 
 
 @mcp.tool()
-async def get_template_raw(template_id: str, namespace: str | None = None) -> str:
+async def get_template_raw(
+    template_id: str, namespace: str | None = None, portable: bool = False,
+) -> str:
     """Get a template WITHOUT inheritance resolution. Shows only fields defined directly on this template.
 
     Args:
         template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
+        portable: If true, references are returned as portable value names
+            instead of this instance's UUIDs — required for seed files.
     """
     try:
-        data = await get_client().get_template_raw(template_id, namespace=namespace)
+        data = await get_client().get_template_raw(
+            template_id, namespace=namespace, portable=portable
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -3626,6 +3645,7 @@ async def get_file_documents(file_id: str) -> str:
 async def get_template_fields(
     template_value: str,
     namespace: str | None = None,
+    portable: bool = False,
 ) -> str:
     """Get a clean summary of a template's fields — name, type, mandatory, references.
 
@@ -3635,10 +3655,13 @@ async def get_template_fields(
     Args:
         template_value: Template value code (e.g., 'PATIENT', 'BANK_TRANSACTION').
         namespace: Optional namespace filter.
+        portable: If true, references (terminology_ref, template_ref) are
+            returned as portable value names instead of this instance's
+            UUIDs — required when writing seed files.
     """
     try:
         tmpl = await get_client().get_template_by_value(
-            value=template_value, namespace=namespace
+            value=template_value, namespace=namespace, portable=portable
         )
         fields = tmpl.get("fields", [])
         summary = {
