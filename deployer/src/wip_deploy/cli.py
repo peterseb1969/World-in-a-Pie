@@ -7,6 +7,7 @@ Step 3 scope: `validate` and `show-spec` verbs. Renderers + `install` /
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import Annotated, Any
 
 import typer
 import yaml
+from pydantic import ValidationError
 
 from wip_deploy import __version__
 from wip_deploy.apply import ApplyError, ApplyResult, apply_compose, apply_k8s
@@ -32,13 +34,13 @@ from wip_deploy.renderers import (
     render_dev_simple,
     render_k8s,
 )
-from wip_deploy.secrets import ensure_secrets
+from wip_deploy.secrets import bcrypt_secret_name, ensure_secrets
 from wip_deploy.secrets_backend import FileSecretBackend, ResolvedSecrets
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
-from wip_deploy.spec.deployment import AppRef, SpecAPIKey
+from wip_deploy.spec.deployment import AppRef, DexUser, SpecAPIKey
 from wip_deploy.spec.validators import validate_all
 
 app = typer.Typer(
@@ -158,11 +160,11 @@ def _api_keys_file_opt() -> typer.models.OptionInfo:
 
 def _parse_api_key_options(
     values: list[str] | None, file_path: str | None = None
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Merge --api-keys-file (if any) with each --api-key JSON value into a
     list of key dicts. Loud, clean error on malformed input or on a key that
     fails SpecAPIKey validation (e.g. grants outside the read scope)."""
-    parsed: list[dict] = []
+    parsed: list[dict[str, Any]] = []
 
     if file_path:
         try:
@@ -2740,10 +2742,11 @@ def rotate_key(
 
     # Consumers that mount this secret update automatically on the apply;
     # everyone else holds a now-dead key.
+    owners: list[Component | App] = [*components, *apps_list]
     auto = sorted(
         {
             owner.metadata.name
-            for owner in (*components, *apps_list)
+            for owner in owners
             for ev in (*owner.spec.env.required, *owner.spec.env.optional)
             if ev.source.from_secret == secret_name
         }
@@ -2761,6 +2764,282 @@ def rotate_key(
             fg=typer.colors.YELLOW,
         )
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Dex user management — `wip-deploy user add|remove|list`
+#
+# Users are SPEC configuration (auth.users in the deployer-state), the
+# same shape as auth.api_keys: declared once, rendered on every apply,
+# each with a generated password that lives in the secret backend
+# (dex-password-<username>) and stays stable across renders. Hand-edits
+# to the rendered dex config.yaml are OUTPUT edits — the next render
+# overwrites them by design. These verbs are the missing operator write
+# path into the spec list, mirroring --api-key / rotate-key.
+# ─────────────────────────────────────────────────────────────────────
+
+user_app = typer.Typer(no_args_is_help=True)
+app.add_typer(
+    user_app,
+    name="user",
+    help=(
+        "Manage the install's Dex static users (spec-declared — they "
+        "survive every re-render; never hand-edit the rendered dex "
+        "config.yaml)."
+    ),
+)
+
+# The username names the password secret (dex-password-<username>) and
+# the derived Dex user id, so it must be a safe filename component.
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _dex_password_secret(username: str) -> str:
+    return f"dex-password-{username}"
+
+
+@user_app.command("add")
+def user_add(
+    username: Annotated[
+        str,
+        typer.Argument(
+            help="Login username. Also names the generated password secret "
+            "(dex-password-<username>)."
+        ),
+    ],
+    email: Annotated[
+        str,
+        typer.Option(
+            "--email",
+            help="Login email. Dex identifies static users by email, so it "
+            "must be unique on the install.",
+        ),
+    ],
+    group: Annotated[
+        str,
+        typer.Option(
+            "--group",
+            help="Authorization group (e.g. wip-admins, wip-editors, "
+            "wip-viewers, or an app-defined group).",
+        ),
+    ],
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Declare a Dex static user on the install and apply.
+
+    Appends the user to the spec's auth.users and re-renders, so the user
+    survives every later operation (install, redeploy, rebuild, add-app).
+    The password is generated on this apply, stays stable across renders,
+    and is printed ONCE below.
+    """
+    if not _USERNAME_RE.match(username):
+        typer.echo(
+            "error: username must start with a letter or digit and contain "
+            "only letters, digits, '.', '_' or '-' — it names the password "
+            "secret file and the Dex user id.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+
+    users = deployment.spec.auth.users
+    if any(u.username == username for u in users):
+        typer.echo(
+            f"error: user {username!r} is already declared on this install "
+            f"— remove it first to re-create it with a fresh password.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    clash = next((u for u in users if u.email == email), None)
+    if clash is not None:
+        typer.echo(
+            f"error: email {email!r} is already used by user "
+            f"{clash.username!r} — Dex identifies static users by email, so "
+            "it must be unique.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    try:
+        new_user = DexUser(email=email, username=username, group=group)
+    except ValidationError as e:
+        first = e.errors()[0]
+        typer.echo(
+            f"error: invalid user: {'.'.join(str(p) for p in first['loc'])} — "
+            f"{first['msg']}",
+            err=True,
+        )
+        raise typer.Exit(2) from e
+
+    users.append(new_user)
+
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Added Dex user {username!r} to {resolved_name}",
+        repo_root=repo_root,
+    )
+
+    secret_name = _dex_password_secret(username)
+    secrets_spec = deployment.spec.secrets
+    typer.echo("")
+    if secrets_spec.backend == "file" and secrets_spec.location is not None:
+        secret_path = Path(secrets_spec.location) / secret_name
+        plaintext = secret_path.read_text().rstrip("\n")
+        typer.echo(
+            typer.style(
+                f"Password for {username!r} ({email}, group {group}) — "
+                "shown once:",
+                bold=True,
+            )
+        )
+        typer.echo(f"  {plaintext}")
+        typer.echo(f"  secret file: {secret_path}")
+    else:
+        typer.echo(
+            f"Password generated in secret {secret_name!r} "
+            f"(backend: {secrets_spec.backend})."
+        )
+
+
+@user_app.command("remove")
+def user_remove(
+    username: Annotated[
+        str, typer.Argument(help="Username of the spec-declared user to remove.")
+    ],
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Remove a Dex static user from the install and apply.
+
+    Logins stop working on the apply; the user's password secret (and its
+    cached bcrypt hash) are deleted, so a later re-add mints a fresh
+    password. Refuses to remove the last wip-admins user — that would lock
+    the install out of administration; declare another admin first.
+    """
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+
+    users = deployment.spec.auth.users
+    match = next((u for u in users if u.username == username), None)
+    if match is None:
+        declared = ", ".join(sorted(u.username for u in users)) or "(none)"
+        typer.echo(
+            f"error: {username!r} is not a spec-declared user on this "
+            f"install. Declared users: {declared}.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if (
+        match.group == "wip-admins"
+        and sum(1 for u in users if u.group == "wip-admins") == 1
+    ):
+        typer.echo(
+            f"error: {username!r} is the last wip-admins user — removing it "
+            "would lock the install out of administration. Add another "
+            "wip-admins user first (wip-deploy user add).",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    deployment.spec.auth.users = [u for u in users if u.username != username]
+
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Removed Dex user {username!r} from {resolved_name}",
+        repo_root=repo_root,
+    )
+
+    # Delete the password secret and its derived bcrypt hash AFTER the
+    # successful apply — a failed apply leaves the user intact and its
+    # secret with it.
+    secrets_spec = deployment.spec.secrets
+    secret_name = _dex_password_secret(username)
+    if secrets_spec.backend == "file" and secrets_spec.location is not None:
+        backend = FileSecretBackend(Path(secrets_spec.location))
+        backend.remove(secret_name)
+        backend.remove(bcrypt_secret_name(secret_name))
+        typer.echo(
+            f"Removed secrets {secret_name!r} and "
+            f"{bcrypt_secret_name(secret_name)!r}."
+        )
+    typer.echo(
+        f"Logins for {match.email!r} stop working now; re-adding the user "
+        "mints a fresh password."
+    )
+
+
+@user_app.command("list")
+def user_list(
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+) -> None:
+    """List the install's spec-declared Dex static users."""
+    resolved_name = _resolve_name(name)
+    target_dir = install_dir or _default_install_dir(resolved_name)
+    deployment = _load_deployment(target_dir)
+
+    users = deployment.spec.auth.users
+    if not users:
+        typer.echo(f"No Dex users declared on {resolved_name}.")
+        return
+
+    secrets_spec = deployment.spec.secrets
+    secrets_dir = (
+        Path(secrets_spec.location)
+        if secrets_spec.backend == "file" and secrets_spec.location is not None
+        else None
+    )
+
+    width_user = max(len("USERNAME"), *(len(u.username) for u in users))
+    width_email = max(len("EMAIL"), *(len(u.email) for u in users))
+    width_group = max(len("GROUP"), *(len(u.group) for u in users))
+    typer.echo(
+        f"{'USERNAME':<{width_user}}  {'EMAIL':<{width_email}}  "
+        f"{'GROUP':<{width_group}}  PASSWORD SECRET"
+    )
+    for u in sorted(users, key=lambda u: u.username):
+        secret_name = _dex_password_secret(u.username)
+        if secrets_dir is None:
+            state = f"{secret_name} (backend: {secrets_spec.backend})"
+        elif (secrets_dir / secret_name).exists():
+            state = secret_name
+        else:
+            state = f"{secret_name} (not yet generated — apply pending)"
+        typer.echo(
+            f"{u.username:<{width_user}}  {u.email:<{width_email}}  "
+            f"{u.group:<{width_group}}  {state}"
+        )
 
 
 @app.command("add-module")
@@ -3837,7 +4116,7 @@ def _assemble(
     secrets_location: str | None,
     repo_root: Path | None,
     name: str,
-    api_keys: list[dict] | None = None,
+    api_keys: list[dict[str, Any]] | None = None,
     remote_wip_url: str | None = None,
     apps_only: bool = False,
     skip_discovery: bool = False,
