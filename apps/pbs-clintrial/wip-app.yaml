@@ -1,0 +1,62 @@
+api_version: wip.dev/v1
+kind: App
+metadata:
+  name: pbs-clintrial
+  category: optional
+  description: |
+    PBS ClinTrial — cohort discovery for clinical trials: explore studies
+    by therapeutic area, indication, molecule, phase and sample
+    availability, cross-referencing SAMi, MDMS, VVC and CT.gov in one
+    view. Vite SPA + Express server; search runs on the reporting layer
+    (registered views + recursive CTEs over term_relations).
+
+spec:
+  image:
+    name: pbs-clintrial
+    # App lives in its own repo (../pbs-clintrial). No published image
+    # yet — dev installs build from the registered source path
+    # (`wip-deploy register-app` / `--app-source`); set a real
+    # YYYYMMDDx tag here at the first containerized build, like the
+    # other apps.
+    tag: dev
+
+  # spec below as declared by the app's own manifest.yaml (its repo
+  # root carries the authoritative fragment; this file adds the
+  # platform envelope around it).
+  ports:
+    - {name: http, container_port: 3014}
+    # Vite dev server — used only when `--app-source` / the registered
+    # path is active; Caddy then routes /apps/pbs-clintrial/* here.
+    - {name: dev, container_port: 5182}
+
+  env:
+    required:
+      - {name: WIP_BASE_URL, source: {from_component: router}}
+      - {name: WIP_API_KEY, source: {from_secret: api-key}}
+      - {name: PORT, source: {literal: "3014"}}
+      - {name: APP_BASE_PATH, source: {literal: /apps/pbs-clintrial}}
+      - {name: NODE_ENV, source: {literal: production}}
+      - {name: WIP_NAMESPACE, source: {literal: pbs-clintrial}}
+      - {name: WIP_REF_NAMESPACE, source: {literal: pbs-clintrial-ref}}
+    optional:
+      - {name: MCP_URL, source: {literal: "http://wip-router:8080/mcp"}}
+      - {name: ANTHROPIC_API_KEY_FILE, source: {literal: /data/anthropic-key}}
+      - {name: OIDC_ISSUER, source: {from_component: dex}}
+
+  routes:
+    - {path: /apps/pbs-clintrial, auth_required: true}
+
+  # Queries documents and the reporting layer; document-store is the
+  # hard start-order requirement, the rest follows the platform's
+  # normal order (the wip-kb precedent).
+  depends_on: [document-store]
+
+  healthcheck:
+    endpoint: /apps/pbs-clintrial/api/health
+    probe: auto
+    start_period_seconds: 15
+
+app_metadata:
+  display_name: PBS ClinTrial
+  route_prefix: /apps/pbs-clintrial
+  ui_only: false
