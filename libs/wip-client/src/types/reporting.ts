@@ -439,3 +439,35 @@ export interface ReferencedByResponse {
   total: number
   error: string | null
 }
+
+// ── Registered views (user-defined SQL views in a namespace's schema) ──
+
+/** A registered view as the list endpoint returns it. */
+export interface RegisteredView {
+  namespace: string
+  name: string
+  sql: string
+  registered_at: string | null
+  registered_by: string | null
+}
+
+export interface ListViewsResponse {
+  namespace: string
+  views: RegisteredView[]
+}
+
+/** Result of registering (or replacing) a view. */
+export interface RegisterViewResult {
+  namespace: string
+  name: string
+  /** Fully qualified, quote-safe relation reference, e.g. `"clintrial"."v_study_search"`. */
+  schema_qualified: string
+  /** True on first registration (HTTP 201); false on replace (HTTP 200). */
+  created: boolean
+}
+
+export interface DeleteViewResult {
+  namespace: string
+  name: string
+  dropped: boolean
+}

@@ -1294,6 +1294,42 @@ var ReportingSyncService = class extends BaseService {
     };
     return this.post("/query", body);
   }
+  // ── Registered Views ──
+  /**
+   * Register (or replace) a named SQL view in the namespace's reporting
+   * schema. Idempotent and bootstrap-friendly: re-registering the same
+   * name replaces the definition (DROP + CREATE server-side, so the
+   * column set may change); `created` distinguishes first registration
+   * from replace. Register on every bootstrap run — that is the
+   * authoritative recovery after any reporting reset.
+   *
+   * Two rules that bite first (full manual: docs/reporting-views.md):
+   * - Unqualified table names resolve in the NAMESPACE's schema
+   *   (`doc_<value>`, `term_relations`, ...); other schemas only when
+   *   qualified — the same posture as runQuery with `namespace`.
+   * - The SQL is validated against the live schema, so a view can only
+   *   register after its source templates have synced at least once.
+   *   Bootstrap order: namespace → templates → first sync → views.
+   *
+   * The SQL must be a single read-only SELECT; platform relation names
+   * (`doc_*`, `*__v<N>`, `*__entities`, metadata tables, `_wip_*`) are
+   * reserved — use a distinct name, e.g. a `v_` prefix.
+   */
+  async registerView(namespace, view) {
+    return this.post(`/namespace/${namespace}/views`, view);
+  }
+  /** List the namespace's registered views (name, sql, registration audit). */
+  async listViews(namespace) {
+    return this.get(`/namespace/${namespace}/views`);
+  }
+  /**
+   * Drop a registered view and its registration, atomically. A view
+   * another registered view depends on answers 409 — delete dependents
+   * first. A later re-register of the same name is a fresh create.
+   */
+  async deleteView(namespace, name) {
+    return this.del(`/namespace/${namespace}/views/${name}`);
+  }
   // ── Batch Sync (CASE-283) ──
   /**
    * Trigger a batch sync for ALL templates with `sync_enabled=true`.

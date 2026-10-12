@@ -1673,6 +1673,71 @@ describe('Service classes via createWipClient', () => {
   })
 
   describe('ReportingSyncService', () => {
+    it('registerView sends POST with the request vocabulary (name, sql)', async () => {
+      mockJsonResponse(
+        {
+          namespace: 'clintrial',
+          name: 'v_study_search',
+          schema_qualified: '"clintrial"."v_study_search"',
+          created: true,
+        },
+        201,
+      )
+
+      const result = await client.reporting.registerView('clintrial', {
+        name: 'v_study_search',
+        sql: 'SELECT 1 AS a',
+        registered_by: 'bootstrap',
+      })
+
+      expect(result.created).toBe(true)
+      expect(result.schema_qualified).toBe('"clintrial"."v_study_search"')
+      const [url, init] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/reporting-sync/namespace/clintrial/views')
+      expect(init?.method).toBe('POST')
+      const body = JSON.parse(init?.body as string)
+      expect(body).toEqual({
+        name: 'v_study_search',
+        sql: 'SELECT 1 AS a',
+        registered_by: 'bootstrap',
+      })
+    })
+
+    it('listViews sends GET and returns the views array', async () => {
+      mockJsonResponse({
+        namespace: 'clintrial',
+        views: [
+          {
+            namespace: 'clintrial',
+            name: 'v_study_search',
+            sql: 'SELECT 1 AS a',
+            registered_at: '2026-10-12T00:00:00Z',
+            registered_by: 'bootstrap',
+          },
+        ],
+      })
+
+      const result = await client.reporting.listViews('clintrial')
+
+      expect(result.views).toHaveLength(1)
+      expect(result.views[0].name).toBe('v_study_search')
+      expect(result.views[0].sql).toBe('SELECT 1 AS a')
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/reporting-sync/namespace/clintrial/views')
+    })
+
+    it('deleteView sends DELETE to the named view', async () => {
+      mockJsonResponse({ namespace: 'clintrial', name: 'v_study_search', dropped: true })
+
+      const result = await client.reporting.deleteView('clintrial', 'v_study_search')
+
+      expect(result.dropped).toBe(true)
+      expect(result.name).toBe('v_study_search')
+      const [url, init] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/reporting-sync/namespace/clintrial/views/v_study_search')
+      expect(init?.method).toBe('DELETE')
+    })
+
     it('getIntegrityCheck sends GET with params', async () => {
       mockJsonResponse({ status: 'ok', mismatches: [] })
 

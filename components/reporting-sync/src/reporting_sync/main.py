@@ -2228,7 +2228,10 @@ async def delete_view(prefix: str, view_name: str):
             ) from e
 
     logger.info(f"Deleted view {prefix}.{view_name}")
-    return {"namespace": prefix, "view_name": view_name, "dropped": True}
+    # `name`, not `view_name`: the responses speak the request vocabulary
+    # uniformly across register/list/delete, so typed clients never freeze
+    # an asymmetry. The _wip_views columns remain internal.
+    return {"namespace": prefix, "name": view_name, "dropped": True}
 
 
 @router.get("/")
