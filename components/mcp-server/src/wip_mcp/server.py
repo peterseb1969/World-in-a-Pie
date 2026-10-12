@@ -430,7 +430,12 @@ A template defines a document schema — like a form definition.
   reference {lookup_value, resolved}: the anchor as submitted (value,
   ns:VALUE, or id — kept verbatim, it survives a fresh restore's
   re-anchoring) plus the canonical template_id the platform resolved it to
-  (server-owned; rewritten through the id map on fresh restore). Writes
+  (server-owned; rewritten through the id map on fresh restore). resolved
+  can be null: edge types declared before the two-half shape serve null on
+  every entry until the heal-endpoints maintenance pass (or a widen,
+  activation, or restore repair) fills them, and a restore that could not
+  re-resolve an out-of-archive endpoint leaves null too — consumers needing
+  an exact id use resolved and fall back to lookup_value when null. Writes
   accept plain strings; the source_ref/target_ref enforcement constraint is
   derived from the declaration when the template is served, never stored.
   Document writes get extra validation (cross-namespace and archived
