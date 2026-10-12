@@ -190,7 +190,7 @@ Code changes on disk reach running containers through one of three paths, each c
 
 **Dockerfile or `requirements.txt` edit** — `wip-deploy rebuild <svc>`. Reads the rendered `~/.wip-deploy/<name>/docker-compose.yaml` and runs `compose up -d --build --force-recreate <svc>` for that service only. Polls for healthy by default; pass `--no-wait` to skip. Multiple services: `wip-deploy rebuild registry def-store`.
 
-**Spec or component-manifest edit** (`wip-component.yaml`, presets, secrets, network) — `wip-deploy install --target dev`. Renders the full stack and reapplies. Slower but correct when the deployment shape changes.
+**Spec or component-manifest edit** (`wip-component.yaml`, presets, secrets, deployer renderer, network) — `wip-deploy redeploy --name <install>`. Re-renders the install's **saved** spec (`deployment.deployer-state`) and recreates only the services whose rendered config changed — new secrets get generated, untouched containers keep running. `install` is for creating an install from CLI flags, not for refreshing one: a bare `wip-deploy install --target dev` defaults to `--name default` and re-specifies nothing from the existing install, so against a running stack it renders a *parallel, app-less* install (the port-in-use pre-flight error is usually this mistake, not a stale container).
 
 **Never** use the per-component `components/<svc>/docker-compose.yml` files directly — they're vestigial standalone composes from the pre-wip-deploy-v2 era and conflict with the wip-deploy-managed containers.
 
