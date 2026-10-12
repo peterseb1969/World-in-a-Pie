@@ -23,11 +23,16 @@ spec:
   # spec below as declared by the app's own manifest.yaml (its repo
   # root carries the authoritative fragment; this file adds the
   # platform envelope around it).
+  # Deliberately NO `dev` port: the app's docker-entrypoint-dev.sh always
+  # takes its deployed branch when APP_BASE_PATH is set (the platform
+  # always sets it) — it rebuilds to bake the base path and serves the
+  # production server on 3014; Vite never listens on 5182 inside a
+  # wip-deploy install. Declaring a dev port makes the dev renderer route
+  # Caddy to it and every request answers 502. The app repo's
+  # manifest.yaml fragment still lists 5182 for bare local `npm run dev`
+  # outside the platform.
   ports:
     - {name: http, container_port: 3014}
-    # Vite dev server — used only when `--app-source` / the registered
-    # path is active; Caddy then routes /apps/pbs-clintrial/* here.
-    - {name: dev, container_port: 5182}
 
   env:
     required:
