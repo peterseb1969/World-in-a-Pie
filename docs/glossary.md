@@ -123,7 +123,7 @@ The template-defined fields that form the [composite key](#composite-key). Speci
 
 ### Identity Hash
 A SHA-256 hash computed from the [identity fields](#identity-fields). Used to detect if a document is new or an update to an existing entity. An internal dedup key — never a request/response format. Algorithm:
-1. Extract identity values into a dict keyed by field name
+1. Extract identity values into a dict keyed by field name — a term- or reference-typed identity field contributes its **resolved referent's canonical ID** (term_id, referenced document_id, …), never the submitted spelling, so aliases and synonyms of one referent yield one identity (fail-closed: an unresolvable referent identity field rejects the write)
 2. Serialize as canonical JSON (`sort_keys=True`, no whitespace, `default=str`)
 3. Hash the UTF-8 bytes with SHA-256
 

@@ -1172,6 +1172,36 @@ hash = compute_identity_hash(data, identity_fields)
 > - **`compute_identity_hash(data, identity_fields)`** — standard. Values pass through the JSON encoder with `default=str` for non-JSON types.
 > - **`compute_normalized_hash(data, identity_fields)`** — case-insensitive variant. Strings are stripped and lowercased before JSON serialization (lists/dicts recursively normalized). Used when callers need case-insensitive identity matching. Called explicitly; not selected by a flag.
 
+### The resolved-referent feed rule
+
+The algorithm above is only half the contract — the other half is **what feeds it**. An identity field that is term- or reference-typed contributes the canonical ID of what it **resolves to**, never the submitted spelling:
+
+| Identity field type | Feeds the hash |
+|---|---|
+| `term` (with `terminology_ref`) | the resolved `term_id` |
+| `reference` / `reference_type: document` | the referent's `document_id` |
+| `reference` / `reference_type: term` | the resolved `term_id` |
+| `reference` / `reference_type: terminology` | the `terminology_id` |
+| `reference` / `reference_type: template` | the `template_id` |
+| array of term / reference items | element-wise, same rules (`field[i]`) |
+| everything else (string, number, date, …) | the submitted value, as before |
+
+Every alias, case variant or synonym of one referent therefore yields **one identity** — two writers naming the same term by different aliases update one document instead of forking two — and a term rename does not fork documents either. Case sensitivity is decided by the vocabulary, not the hasher: if a terminology treats `Foo` and `foo` as two terms, they resolve to two IDs and stay distinct.
+
+The rule is **fail-closed**: a write whose referent identity field cannot be resolved (Def-Store or Registry unreachable) is rejected rather than hashed from the spelling — an unresolvable identity is no identity, and hashing the spelling would fork the document on a later, resolvable write. Non-identity term fields keep their degrade-to-warning behavior on resolution outages.
+
+**Worked example (feed rule):** `app` is a term identity field on `KB_APP`; both `"ClinTrial"` and its alias `"clintrial"` resolve to term `01999999-0000-7000-8000-000000000001`:
+
+```python
+# Feed: {"app": "01999999-0000-7000-8000-000000000001"} — the term_id, not the spelling.
+# Canonical string: '{"app":"01999999-0000-7000-8000-000000000001"}'
+# → "73c1010376586438c3e0ea72e858ea2cfe0637b3caedc8d1798ae475ac684f98"  (both spellings)
+```
+
+External computers of the hash apply the same feed: `wip_auth.document_identity` exposes `resolved_identity_values(data, identity_fields, template_fields, term_references, references)` (and the composable `referent_identity_fields` / `build_referent_resolutions` / `substitute_resolved_referents`). A document's stored `term_references` / `references[]` arrays carry the resolved IDs, so the feed is recomputable offline from stored state.
+
+Decided platform-wide in DECISION-2 (2026-10-02); implemented via CASE-847. No spelling-sensitive opt-out exists.
+
 **Namespace scoping:** The identity hash itself covers only the identity field values. However, uniqueness is enforced per-namespace because the Registry's composite key includes `{namespace, identity_hash, template_id}`. This means two documents in different namespaces can share the same identity hash but receive different `document_id`s.
 
 ---

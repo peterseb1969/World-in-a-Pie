@@ -164,7 +164,7 @@ Document-Store                              Registry
     │                                           │
     │  1. Compute identity_hash from            │
     │     identity field values                 │
-    │     sha256("email=alice@...")              │
+    │     sha256('{"email":"alice@..."}')       │
     │     → "a1b2c3..."                         │
     │                                           │
     │  2. Build composite key dict:             │
@@ -209,6 +209,8 @@ def compute_identity_hash(data, identity_fields):
 ```
 
 This is an **internal computation** — the digest is a dedup key stored on the document, never a request/response format. Both field names and values are included, because they are the JSON object's keys and values: `{"email": "alice@example.com"}` hashes differently from `{"user_email": "alice@example.com"}`.
+
+**What feeds the hash — the resolved-referent rule.** A term- or reference-typed identity field contributes the canonical ID of what it resolves to (`term_id`, referenced `document_id`, …), never the submitted spelling — so every alias or synonym of one referent yields one identity, and a referent's rename does not fork documents. The rule is fail-closed: a referent identity field that cannot be resolved rejects the write instead of hashing the spelling. Plain fields (string, number, date, …) feed their submitted values as shown above. Full table and worked example: `docs/data-models.md` § Identity Hash Algorithm.
 
 ### Example
 
