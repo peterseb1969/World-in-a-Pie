@@ -21,11 +21,24 @@ raises, the check never executes, every authenticated caller passes.
 The Registry shipped exactly that for eight months across its whole
 admin surface, privilege escalation included — and happy-path tests
 cannot see it, because an authorized caller passes either way.
+
+A third contract, ``assert_anonymous_refused``, is shape-agnostic: it
+fires a request carrying NO credentials at every route of the real app
+and requires a refusal (401/403) unless the route is on the service's
+explicit public allowlist. Wiring checks only see dependency-shaped
+enforcement; this one sees the outcome, so a missing auth middleware, a
+missing route dependency and a mis-allowlisted path all fail it alike.
+Two services (reporting-sync, ingest-gateway) once served every route
+anonymously while their wiring tests stayed green — that is what this
+gate exists to make impossible.
 """
 
 import collections.abc
 import inspect
 import typing
+import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, get_args
 
 from fastapi.routing import APIRoute
@@ -230,3 +243,251 @@ def assert_no_factory_dependencies(app: Any, *, expect_dependencies: bool = True
         + "\nFix: call the factory — Depends(require_admin()) — or use "
         "a direct dependency such as wip_auth.require_admin_identity."
     )
+
+
+# =========================================================================
+# Credential-less refusal walker
+# =========================================================================
+
+_SKIPPED_METHODS = frozenset({"HEAD", "OPTIONS"})
+_REFUSED = frozenset({401, 403})
+_OPENAPI_METHODS = frozenset(
+    {"get", "put", "post", "delete", "patch", "head", "options", "trace"}
+)
+
+
+@dataclass(frozen=True)
+class AnonymousProbe:
+    """One credential-less request the walker sent, and what came back."""
+
+    method: str
+    template: str  # full path template, e.g. "/api/svc/items/{item_id}"
+    path: str  # the concrete path requested
+    status: int
+    body_excerpt: str
+
+    @property
+    def key(self) -> str:
+        """Allowlist key: "METHOD /full/path/template"."""
+        return f"{self.method} {self.template}"
+
+
+def _probe_value(param_schema: Mapping[str, Any]) -> str:
+    """A routable placeholder for one path parameter, from its OpenAPI
+    schema: integers and numbers need digits, UUID-typed params a UUID,
+    anything else a plain token."""
+    kind = param_schema.get("type")
+    if kind in ("integer", "number"):
+        return "1"
+    if param_schema.get("format") == "uuid":
+        return str(uuid.UUID(int=0))
+    return "walker-probe"
+
+
+def _convertor_value(convertor: Any) -> str:
+    """Same as _probe_value, for a route addressed by its Starlette path
+    convertors instead of the OpenAPI schema."""
+    name = type(convertor).__name__
+    if name in ("IntegerConvertor", "FloatConvertor"):
+        return "1"
+    if name == "UUIDConvertor":
+        return str(uuid.UUID(int=0))
+    return "walker-probe"
+
+
+def _fill(template: str, values: Mapping[str, str]) -> str:
+    path = template
+    for name, value in values.items():
+        path = path.replace("{" + name + "}", value)
+        path = path.replace("{" + name + ":path}", value)
+    return path
+
+
+def _addressable_operations(app: Any) -> list[tuple[str, str, str]]:
+    """Return (method, full path template, concrete path) for every route
+    operation on ``app``.
+
+    Full paths come from the OpenAPI schema, which renders include_router
+    prefixes on every FastAPI generation — unlike ``APIRoute.path``, which
+    the lazy ``_IncludedRouter`` generation leaves unprefixed (see
+    _iter_api_routes). Routes hidden from the schema are addressed by
+    their own path only when they sit directly on the app, where that
+    path is the full path on every generation. A hidden route inside an
+    included router cannot be addressed reliably, and a schema whose
+    operation count disagrees with the route walk means some route is
+    unaddressable; both fail loudly rather than shrinking the walk.
+    """
+    top_level = {id(r) for r in app.routes if isinstance(r, APIRoute)}
+    unaddressable: list[str] = []
+    expected_schema_ops = 0
+    operations: list[tuple[str, str, str]] = []
+
+    for route in _iter_api_routes(app.routes):
+        methods = sorted((route.methods or set()) - _SKIPPED_METHODS)
+        if route.include_in_schema:
+            expected_schema_ops += len(methods)
+            continue
+        if id(route) not in top_level:
+            unaddressable.append(f"{','.join(methods)} {route.path}")
+            continue
+        values = {
+            name: _convertor_value(conv)
+            for name, conv in route.param_convertors.items()
+        }
+        for method in methods:
+            operations.append((method, route.path, _fill(route.path, values)))
+
+    schema_ops = 0
+    for template, item in (app.openapi().get("paths") or {}).items():
+        for method, operation in item.items():
+            if method not in _OPENAPI_METHODS:
+                continue
+            upper = method.upper()
+            if upper in _SKIPPED_METHODS:
+                continue
+            schema_ops += 1
+            values = {
+                p["name"]: _probe_value(p.get("schema") or {})
+                for p in (operation.get("parameters") or [])
+                if p.get("in") == "path"
+            }
+            operations.append((upper, template, _fill(template, values)))
+
+    assert not unaddressable, (
+        "Routes hidden from the OpenAPI schema inside an included router "
+        "cannot be addressed by the anonymous-refusal walker on every "
+        "FastAPI generation. Register them on the app directly, or include "
+        "them in the schema:\n" + "\n".join(f"  {r}" for r in unaddressable)
+    )
+    assert schema_ops == expected_schema_ops, (
+        f"The OpenAPI schema lists {schema_ops} operations but the route "
+        f"walk found {expected_schema_ops} schema-visible route methods — "
+        "some route cannot be addressed by the walker (duplicate "
+        "method+path, or a routing shape the walk does not understand). "
+        "A gate that silently skips routes must not pass."
+    )
+    return operations
+
+
+def collect_anonymous_responses(app: Any) -> list[AnonymousProbe]:
+    """Send one credential-less request per route operation on ``app`` and
+    return what each answered.
+
+    The request carries no headers, no query string and no body, and the
+    app's lifespan is NOT run (no databases, no background workers). An
+    enforcing route refuses before validation or handler code runs; a
+    route that reaches its handler may fail on missing state, which is
+    reported as the status it produced (exceptions become 500) rather
+    than crashing the walk.
+    """
+    import asyncio
+
+    import httpx
+
+    operations = _addressable_operations(app)
+
+    async def _walk() -> list[AnonymousProbe]:
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        probes: list[AnonymousProbe] = []
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://walker"
+        ) as client:
+            for method, template, path in operations:
+                response = await client.request(method, path)
+                probes.append(AnonymousProbe(
+                    method=method,
+                    template=template,
+                    path=path,
+                    status=response.status_code,
+                    body_excerpt=response.text[:120],
+                ))
+        return probes
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_walk())
+    raise RuntimeError(
+        "collect_anonymous_responses runs its own event loop; call it from "
+        "a synchronous test, not from inside an async one."
+    )
+
+
+def _explain(status: int) -> str:
+    if status == 404:
+        return ("404 — the walker built a path the app does not route, or "
+                "the route answers 404 before checking credentials")
+    if status == 422:
+        return "422 — request validation ran before authentication"
+    if status >= 500:
+        return f"{status} — the handler ran without credentials and failed"
+    if 200 <= status < 300:
+        return f"{status} — served without credentials"
+    return f"{status} — not a refusal"
+
+
+def assert_anonymous_refused(
+    app: Any,
+    *,
+    public: Mapping[str, str],
+    expect_routes: bool = True,
+) -> None:
+    """Fail unless every route on ``app`` refuses a credential-less request.
+
+    ``public`` is the service's explicit allowlist: keys are
+    ``"METHOD /full/path/template"`` (as in the OpenAPI schema), values a
+    non-empty reason. A public route must NOT refuse (a gated health probe
+    is its own bug) and must be routable. Every allowlist entry must match
+    a route the walk visited — a stale entry fails, so the list cannot
+    quietly outlive the route it excused.
+
+    Every other route must answer 401 or 403. Anything else fails with an
+    explanation of what the status means.
+
+    ``expect_routes`` is the canary (same doctrine as the other gates): a
+    walk that visited zero routes fails.
+    """
+    empty_reasons = sorted(k for k, reason in public.items() if not reason.strip())
+    assert not empty_reasons, (
+        "Public allowlist entries need a reason:\n"
+        + "\n".join(f"  {k}" for k in empty_reasons)
+    )
+
+    probes = collect_anonymous_responses(app)
+    if expect_routes:
+        assert probes, (
+            "The anonymous-refusal walker visited ZERO routes — the route "
+            "walk is broken (or the app has no routes). A gate that "
+            "examines nothing must not pass."
+        )
+
+    seen = {p.key for p in probes}
+    stale = sorted(set(public) - seen)
+    open_routes = [
+        f"  {p.key} -> {_explain(p.status)}"
+        for p in probes
+        if p.key not in public and p.status not in _REFUSED
+    ]
+    gated_public = [
+        f"  {p.key} -> {p.status} (allowlisted as public: {public[p.key]})"
+        for p in probes
+        if p.key in public and (p.status in _REFUSED or p.status == 404)
+    ]
+
+    problems: list[str] = []
+    if open_routes:
+        problems.append(
+            "Routes that did not refuse a request without credentials:\n"
+            + "\n".join(open_routes)
+        )
+    if gated_public:
+        problems.append(
+            "Allowlisted public routes that refused or did not route:\n"
+            + "\n".join(gated_public)
+        )
+    if stale:
+        problems.append(
+            "Public allowlist entries that match no route (stale):\n"
+            + "\n".join(f"  {k}" for k in stale)
+        )
+    assert not problems, "\n\n".join(problems)

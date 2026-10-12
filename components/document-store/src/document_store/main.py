@@ -20,6 +20,7 @@ from wip_auth import (
     check_production_security,
     declare_api_key_security,
     init_beanie_with_retry,
+    require_groups,
     setup_auth,
     setup_key_sync,
     setup_rate_limiting,
@@ -523,8 +524,16 @@ async def clear_caches():
     return {"status": "cleared"}
 
 
-# Integrity check endpoint
-@app.get("/health/integrity", tags=["Health"], response_model=IntegrityCheckResult)
+# Integrity check endpoint. Operator-only: it scans every namespace with
+# the service's own access, so a caller without platform privileges must
+# not reach it (its one in-platform caller, reporting-sync's aggregator,
+# uses the install service key).
+@app.get(
+    "/health/integrity",
+    tags=["Health"],
+    response_model=IntegrityCheckResult,
+    dependencies=[Depends(require_groups(["wip-admins", "wip-services"]))],
+)
 async def integrity_check(
     status: str | None = None,
     template_id: str | None = None,

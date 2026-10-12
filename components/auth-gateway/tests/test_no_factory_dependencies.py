@@ -16,8 +16,11 @@ from wip_auth.testing import assert_no_factory_dependencies
 
 
 def test_no_factory_dependencies():
-    # This service authenticates in MIDDLEWARE and declares no route
-    # dependencies at all, so the examined-count canary would trip on an
-    # empty walk. The opt-out keeps the gate armed: the first Depends()
-    # added to this app is examined again automatically.
+    # This service declares no route dependencies at all: it is the
+    # authenticator, and checks the session cookie inside its handlers
+    # (its only middleware is the session store). So the examined-count
+    # canary would trip on an empty walk. The outcome — anonymous
+    # requests refused — is asserted by test_anonymous_refused.py. The
+    # opt-out keeps this gate armed: the first Depends() added to this
+    # app is examined again automatically.
     assert_no_factory_dependencies(app, expect_dependencies=False)

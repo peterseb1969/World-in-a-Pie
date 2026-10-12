@@ -57,7 +57,14 @@ class FileDocumentsResponse(BaseModel):
     page_size: int = 10
     pages: int = 1
 
-router = APIRouter(prefix="/files", tags=["Files"])
+# Authentication at router level: router dependencies run before the
+# per-route require_file_storage check, so a caller without credentials is
+# refused before learning anything about storage availability. Each handler
+# still takes the identity as a parameter; FastAPI resolves the shared
+# dependency once per request.
+router = APIRouter(
+    prefix="/files", tags=["Files"], dependencies=[Depends(require_api_key)]
+)
 
 
 def require_file_storage():

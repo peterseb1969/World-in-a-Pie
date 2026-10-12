@@ -8,6 +8,7 @@ Def-Store client is still mocked (template-store validates terminology
 references via Def-Store, which is a separate service).
 """
 
+import json
 import os
 import sys
 from collections.abc import AsyncGenerator
@@ -32,6 +33,17 @@ os.environ.setdefault("API_KEY", "test_api_key")
 os.environ.setdefault("REGISTRY_URL", "http://registry")
 os.environ.setdefault("REGISTRY_API_KEY", "test_api_key")
 os.environ.setdefault("MASTER_API_KEY", "test_api_key")
+# A non-privileged key, alongside the legacy admin key from API_KEY, so
+# permission gates can be exercised: an admin key passes every check,
+# which makes a gate untestable with it alone. Read by setup_auth when
+# template_store.main is imported below.
+os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
+    "name": "test-scoped",
+    "key": "test_scoped_key",
+    "owner": "test-scoped",
+    "groups": [],
+    "namespaces": ["scoped-test-ns"],
+}]))
 os.environ.setdefault("AUTH_ENABLED", "true")
 os.environ.setdefault("DEF_STORE_URL", "http://localhost:8002")
 os.environ.setdefault("DEF_STORE_API_KEY", "test_def_store_key")
