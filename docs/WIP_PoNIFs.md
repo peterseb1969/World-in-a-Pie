@@ -88,8 +88,11 @@ For `updateTemplate()`, the default should be to keep the previous version activ
 
 **Sensible default:** `@wip/client` should warn (not error) when creating a document against a template with zero identity fields. The warning should say: *"Template X has no identity fields. Every submission will create a new document. If you intend updates, add identity fields to the template."*
 
+**The resolved-referent feed (DECISION-2, CASE-847).** A term- or reference-typed identity field contributes the canonical ID of what it **resolves to** — the resolved `term_id`, the referenced document's `document_id` — never the submitted spelling. Two writers naming the same term by different aliases (`ClinTrial`, `clintrial`, `ct`) produce **one** identity, not a fork; renaming a term does not fork documents either. Case sensitivity is the vocabulary's call: two case-variant TERMS stay distinct, two aliases of one term merge. The rule is **fail-closed**: a write whose identity field cannot be resolved (Def-Store/Registry outage) is rejected rather than hashed from the spelling — non-identity term fields keep their degrade-to-warning behavior. Accepted cost: two genuinely different things aliased onto one term now merge; that is an alias-curation problem the merge makes visible, not something a hasher can solve.
+
 **What's NOT in the identity hash:**
 
+- the submitted spelling of a term/reference identity field — the resolved referent's canonical ID feeds the hash instead (see above).
 - `template_version` — see PoNIF #2's corollary; the same canonical entity carries forward across template versions cleanly.
 - `namespace` — scoped externally via the platform's composite key `(namespace, identity_hash, template_id)`. The same `identity_hash` in two different namespaces is two different entities, not a collision.
 

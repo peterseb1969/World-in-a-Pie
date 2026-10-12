@@ -242,6 +242,10 @@ The same create_document tool handles both — it's an upsert.
   hash unique, creating duplicates instead of versions
 - Avoid timestamps in non-identity fields too — they trigger unnecessary
   version updates on otherwise unchanged documents
+- Term/reference identity fields hash the RESOLVED referent's canonical ID,
+  not the submitted spelling: any alias of one term is one identity, and the
+  write fails if the identity field cannot be resolved (fail-closed) —
+  you never silently fork by spelling
 
 ### Terms
 - (namespace, terminology_id, value) — unique within terminology
@@ -512,7 +516,10 @@ A document is an instance of a template — a filled-in form.
 - Versioned: same identity → same document_id, new version — unless the
   template declares versioned: false, in which case updates overwrite in
   place and documents stay at version 1 (no history)
-- identity_fields (defined on template) control what makes a document "the same"
+- identity_fields (defined on template) control what makes a document "the same";
+  a term/reference identity field contributes its RESOLVED referent's canonical
+  ID to the identity hash, never the submitted spelling (aliases of one term =
+  one identity; unresolvable identity field = write rejected, fail-closed)
 - Zero identity fields = append-only (every POST creates a new document; PATCH is rejected with `append_only`)
 
 ### Document timestamps
@@ -745,7 +752,21 @@ Trap: Adding a timestamp to document data makes every hash unique — you get
 Rule: Identity fields answer "is this the same real-world thing?" — no more,
       no less. Never include timestamps, run IDs, or per-execution data.
 
+Resolved-referent feed: a term- or reference-typed identity field hashes the
+canonical ID of what it RESOLVES TO (term_id, referenced document_id), never
+the submitted spelling — so every alias, case variant or synonym of one
+referent is ONE identity, and renaming a term does not fork documents. Case
+sensitivity is the vocabulary's call: two case-variant TERMS stay distinct,
+two aliases of one term merge. The rule is fail-closed: a write whose
+identity field cannot be resolved (resolution service down) is REJECTED
+rather than hashed from the spelling; non-identity term fields keep their
+degrade-to-warning behavior. Corollary trap: two genuinely different things aliased onto one
+term now merge into one identity — that is an alias-curation problem the
+merge makes visible, not something any hasher can solve.
+
 What's NOT in the identity hash:
+- the submitted spelling of a term/reference identity field — the resolved
+  canonical ID feeds the hash instead (see above).
 - `template_version` — see PoNIF #2's corollary; existing docs carry forward
   across template versions cleanly.
 - `namespace` — scoped externally via the platform's composite key

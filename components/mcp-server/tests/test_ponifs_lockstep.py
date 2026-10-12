@@ -37,6 +37,8 @@ REQUIRED_ON_BOTH_SURFACES = [
     "mutable",            # PoNIF #1 — mutable-terminology terms are hard-deletable
     "append_only",        # PoNIF #3 — identity-less templates reject PATCH
     "identity_fields",    # PoNIF #3 / #8 — identity drives dedup; #8 requires non-empty
+    "fail-closed",        # PoNIF #3 — resolved-referent identity rejects unresolvable writes
+    "resolve",            # PoNIF #3 — term/reference identity fields hash resolved IDs
     "versioned",          # PoNIF #8 — overwrite-in-place opt-out
     "usage",              # PoNIF #7 — entity vs relationship templates
 ]
