@@ -1,10 +1,11 @@
 """Tests for ingest gateway FastAPI endpoints (health, status, metrics)."""
 
-import pytest
-import pytest_asyncio
+import os
 from unittest.mock import MagicMock
 
-from httpx import AsyncClient, ASGITransport
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 
 from ingest_gateway.main import app, state
 
@@ -13,7 +14,10 @@ from ingest_gateway.main import app, state
 async def client():
     """HTTP test client (does not trigger lifespan/NATS)."""
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    headers = {"X-API-Key": os.environ["WIP_AUTH_LEGACY_API_KEY"]}
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=headers
+    ) as ac:
         yield ac
 
 
@@ -143,3 +147,23 @@ class TestRootEndpoint:
         assert "version" in data
         assert data["health"] == "/api/ingest-gateway/health"
         assert data["docs"] == "/docs"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/ingest-gateway/status", "/api/ingest-gateway/metrics"])
+async def test_operational_routes_require_a_key(path):
+    """Status and metrics expose worker internals; without a key, or with a
+    wrong one, they refuse (CASE-855, Phase 2b C6)."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as anon:
+        assert (await anon.get(path)).status_code == 401
+        wrong = await anon.get(path, headers={"X-API-Key": "not-a-key"})
+        assert wrong.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_health_probe_needs_no_key():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as anon:
+        resp = await anon.get("/api/ingest-gateway/health")
+    assert resp.status_code == 200

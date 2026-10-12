@@ -76,6 +76,7 @@ from wip_deploy.spec.component import Component
 # patched by build-release.sh; dev gets the same treatment here).
 _AUTH_SERVICES: frozenset[str] = frozenset({
     "registry", "def-store", "template-store", "document-store", "reporting-sync",
+    "ingest-gateway",
 })
 
 # Services that additionally import from libs/wip-archive (the archive

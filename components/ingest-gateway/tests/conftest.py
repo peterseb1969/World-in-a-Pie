@@ -1,10 +1,20 @@
 """Shared fixtures for ingest gateway tests."""
 
-import pytest
-import pytest_asyncio
+import os
+
+# Inbound authentication for in-process app tests. ingest_gateway.main
+# calls setup_auth at import, which captures the keys from the
+# environment, so this must run before any test module imports the app
+# (conftest is imported first). The admin key is set as the wip-auth
+# legacy key, not API_KEY, which is the gateway's OUTBOUND key and is
+# asserted by the config tests. Registry lookups go nowhere.
+os.environ.setdefault("WIP_AUTH_LEGACY_API_KEY", "ig_test_admin_key")
+os.environ.setdefault("WIP_AUTH_REGISTRY_URL", "http://registry.invalid")
+
 from unittest.mock import AsyncMock, MagicMock
 
-from ingest_gateway.models import IngestAction, IngestResult, IngestResultStatus
+import pytest
+
 from ingest_gateway.http_client import IngestHTTPClient
 from ingest_gateway.worker import IngestWorker
 

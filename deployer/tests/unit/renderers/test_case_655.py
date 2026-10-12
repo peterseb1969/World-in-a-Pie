@@ -58,6 +58,7 @@ EXPECTED_CONSUMERS = {
     "template-store",
     "document-store",
     "reporting-sync",
+    "ingest-gateway",
     "auth-gateway",
     "mcp-server",
 }

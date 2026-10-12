@@ -221,9 +221,9 @@ log_info "Build provenance: sha=${GIT_SHA} stamp=${BUILD_STAMP} tag=${TAG}"
 # ── Services requiring wip-auth ─────────────────────────────────
 # document-store also needs wip-archive (backup engine imports the
 # archive format + remap library in-process)
-AUTH_SERVICES=(registry def-store template-store document-store reporting-sync)
+AUTH_SERVICES=(registry def-store template-store document-store reporting-sync ingest-gateway)
 ARCHIVE_SERVICES=(document-store)
-PLAIN_SERVICES=(ingest-gateway mcp-server auth-gateway)
+PLAIN_SERVICES=(mcp-server auth-gateway)
 
 build_python_with_libs() {
     local svc="$1"
@@ -367,9 +367,9 @@ START_TIME=$(date +%s)
 
 if [[ -n "$ONLY_SERVICE" ]]; then
     case "$ONLY_SERVICE" in
-        ingest-gateway|mcp-server|auth-gateway)
+        mcp-server|auth-gateway)
             build_python_plain "$ONLY_SERVICE" ;;
-        registry|def-store|template-store|document-store|reporting-sync)
+        registry|def-store|template-store|document-store|reporting-sync|ingest-gateway)
             build_python_with_libs "$ONLY_SERVICE" ;;
         *)
             log_error "Unknown service: $ONLY_SERVICE"

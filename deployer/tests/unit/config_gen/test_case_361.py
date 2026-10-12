@@ -43,6 +43,7 @@ _AUTH_SERVICES = frozenset({
     "template-store",
     "document-store",
     "reporting-sync",
+    "ingest-gateway",
 })
 
 

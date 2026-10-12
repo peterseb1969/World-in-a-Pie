@@ -12,8 +12,11 @@ from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 import nats
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from nats.js import JetStreamContext
+
+from wip_auth import require_api_key, setup_auth, setup_key_sync
+from wip_auth.security import check_production_security
 
 from . import __version__
 from .config import settings
@@ -102,6 +105,8 @@ async def connect_nats() -> tuple[nats.NATS, JetStreamContext]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown."""
+    # Refuse to start in a production variant on known-default secrets.
+    check_production_security()
     logger.info(f"Starting {settings.service_name} v{__version__}...")
     state.start_time = time.time()
 
@@ -130,10 +135,19 @@ async def lifespan(app: FastAPI):
     state.worker_task = asyncio.create_task(state.worker.start())
     logger.info("Ingest worker started")
 
+    # Pick up runtime API keys (created via the Registry) like the other
+    # services; REGISTRY_URL / REGISTRY_API_KEY come from the environment.
+    key_sync = await setup_key_sync(_providers)
+    if key_sync:
+        logger.info("Key sync started (polling Registry for runtime API keys)")
+
     yield
 
     # Shutdown
     logger.info(f"Shutting down {settings.service_name}...")
+
+    if key_sync:
+        await key_sync.stop()
 
     # Stop worker
     if state.worker:
@@ -163,10 +177,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-router = APIRouter(prefix="/api/ingest-gateway")
+# Authentication (reads WIP_AUTH_* env vars, falls back to API_KEY). The
+# middleware only IDENTIFIES the caller; the router-level require_api_key
+# below enforces. The health probe and the service root live on the app,
+# outside the router, and the probe is exempted so a stale key on a monitor
+# does not turn into a 401.
+_providers = setup_auth(app, public_paths=["/api/ingest-gateway/health"])
+
+router = APIRouter(
+    prefix="/api/ingest-gateway", dependencies=[Depends(require_api_key)]
+)
 
 
-@router.get("/health", response_model=HealthResponse)
+@app.get("/api/ingest-gateway/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
     """Health check endpoint."""
     nats_ok = state.nats_client is not None and state.nats_client.is_connected
@@ -229,7 +252,9 @@ async def get_metrics() -> MetricsResponse:
     )
 
 
-@router.get("/")
+# On the app, not the router: a public service-root probe, like the other
+# services' prefixed roots.
+@app.get("/api/ingest-gateway/")
 async def root() -> dict[str, Any]:
     """Root endpoint with service info."""
     return {
