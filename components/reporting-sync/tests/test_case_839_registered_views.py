@@ -163,6 +163,8 @@ async def test_register_new_view(http_client, mock_state):
     assert resp.status_code == 201
     data = resp.json()
     assert data["created"] is True
+    assert data["name"] == "v_study_search"
+    assert "view_name" not in data
     assert data["schema_qualified"] == '"clintrial"."v_study_search"'
 
     executed = _executed_sql(conn)
@@ -292,7 +294,10 @@ async def test_list_views(http_client, mock_state):
     assert resp.status_code == 200
     data = resp.json()
     assert data["namespace"] == "clintrial"
-    assert data["views"][0]["view_name"] == "v_study_search"
+    row = data["views"][0]
+    assert row["name"] == "v_study_search"
+    assert row["sql"] == "SELECT 1"
+    assert "view_name" not in row and "view_sql" not in row
 
 
 # =========================================================================
@@ -480,7 +485,7 @@ async def test_pg_delete_with_dependent_is_409_then_resolvable(http_client, real
         listing = await http_client.get(
             "/api/reporting-sync/namespace/clintrial/views"
         )
-        assert {v["view_name"] for v in listing.json()["views"]} == {"v_base", "v_child"}
+        assert {v["name"] for v in listing.json()["views"]} == {"v_base", "v_child"}
 
         ok_child = await http_client.delete(
             "/api/reporting-sync/namespace/clintrial/views/v_child"

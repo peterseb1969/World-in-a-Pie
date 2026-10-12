@@ -2147,7 +2147,7 @@ async def register_view(prefix: str, body: RegisterViewRequest, response: Respon
     logger.info(f"Registered view {prefix}.{body.name}")
     return {
         "namespace": prefix,
-        "view_name": body.name,
+        "name": body.name,
         "schema_qualified": f'"{schema}"."{safe_name}"',
         "created": not already_registered,
     }
@@ -2166,7 +2166,19 @@ async def list_views(prefix: str):
             prefix,
         )
 
-    return {"namespace": prefix, "views": [dict(r) for r in rows]}
+    return {
+        "namespace": prefix,
+        "views": [
+            {
+                "namespace": r["namespace"],
+                "name": r["view_name"],
+                "sql": r["view_sql"],
+                "registered_at": r["registered_at"],
+                "registered_by": r["registered_by"],
+            }
+            for r in rows
+        ],
+    }
 
 
 @router.delete("/namespace/{prefix}/views/{view_name}")
