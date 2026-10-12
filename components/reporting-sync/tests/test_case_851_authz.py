@@ -10,9 +10,13 @@ Groups:
 - ns_read:       routes addressing one namespace; read on it required,
                  and an invisible namespace answers 404 (existence is not
                  leaked).
-- authenticated: any valid key. The optional-namespace listings sit here
-                 until their results are scoped to the caller's
-                 namespaces (C5).
+- authenticated: any valid key (/status, which filters what it shows).
+- scoped:        listings that span namespaces. They run in the caller's
+                 effective namespace (C5): an explicit namespace must be
+                 readable (404); a key that reads one namespace gets it
+                 implicitly; a key that reads several must name one
+                 (400); a key that reads none is refused (403); an
+                 unrestricted caller keeps the all-namespaces listing.
 
 No databases run in these tests: a request that passes its gate reaches
 the handler and fails there (503, 422 or 404 for a dummy id), which is
@@ -32,6 +36,7 @@ READER = "rs_reader_key"  # read on ns-a
 WRITER = "rs_writer_key"  # write on ns-a
 SERVICE = "rs_service_key"  # wip-services, no namespace grants
 NOTHING = "rs_nothing_key"  # read on ns-z only
+MULTI = "rs_multi_key"  # read on ns-a and ns-c
 
 P = "/api/reporting-sync"
 
@@ -62,12 +67,12 @@ ROUTES = [
     ("DELETE", f"{P}/sync/batch/jobs/{{job_id}}", "privileged", None),
     ("DELETE", f"{P}/sync/batch/jobs", "privileged", None),
     ("GET", f"{P}/health/integrity", "privileged", None),
-    ("POST", f"{P}/search", "authenticated", None),
-    ("GET", f"{P}/activity/recent", "authenticated", None),
-    ("GET", f"{P}/references/term/{{term_id}}/documents", "authenticated", None),
-    ("GET", f"{P}/entity/{{entity_type}}/{{entity_id}}/references", "authenticated", None),
-    ("GET", f"{P}/entity/{{entity_type}}/{{entity_id}}/referenced-by", "authenticated", None),
-    ("GET", f"{P}/tables", "authenticated", None),
+    ("POST", f"{P}/search", "scoped", None),
+    ("GET", f"{P}/activity/recent", "scoped", None),
+    ("GET", f"{P}/references/term/{{term_id}}/documents", "scoped", None),
+    ("GET", f"{P}/entity/{{entity_type}}/{{entity_id}}/references", "entity", None),
+    ("GET", f"{P}/entity/{{entity_type}}/{{entity_id}}/referenced-by", "scoped", None),
+    ("GET", f"{P}/tables", "scoped", None),
     ("POST", f"{P}/query", "privileged", None),
     ("GET", f"{P}/export/csv", "ns_read",
      f"{P}/export/csv?namespace={{ns}}&table=doc_patient"),
@@ -92,11 +97,17 @@ def _concrete(template: str) -> str:
     )
 
 
+# Routes whose handler only runs with a valid body; without one, request
+# validation answers 422 before any namespace logic is reached.
+_BODIES = {("POST", f"{P}/search"): {"query": "x"}}
+
+
 async def _call(method: str, path: str, key: str | None) -> int:
     headers = {"X-API-Key": key} if key else {}
+    body = _BODIES.get((method, path.split("?")[0]))
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as c:
-        return (await c.request(method, path)).status_code
+        return (await c.request(method, path, json=body)).status_code
 
 
 @pytest.fixture(autouse=True)
@@ -160,6 +171,27 @@ async def test_authenticated_routes(method, template, group, _):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method,template,group,_", _of("scoped"))
+async def test_scoped_listings(method, template, group, _):
+    path = _concrete(template)
+    joiner = "&" if "?" in path else "?"
+    assert await _call(method, path, None) == 401
+    # one readable namespace: used implicitly, the gate passes
+    assert await _call(method, path, READER) not in (400, 401, 403, 404)
+    # several readable namespaces: the caller must name one
+    assert await _call(method, path, MULTI) == 400
+    assert await _call(method, f"{path}{joiner}namespace=ns-c", MULTI) not in (
+        400, 401, 403, 404,
+    )
+    # an explicit namespace the caller cannot read is not found
+    assert await _call(method, f"{path}{joiner}namespace=ns-b", READER) == 404
+    # a key that reads no namespace at all is refused
+    assert await _call(method, path, SERVICE) == 403
+    # unrestricted callers keep the all-namespaces listing
+    assert await _call(method, path, ADMIN) not in (400, 401, 403, 404)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("method,template,group,_", _of("public"))
 async def test_public_routes(method, template, group, _):
     assert await _call(method, template, None) == 200
@@ -203,3 +235,42 @@ async def test_status_hides_drops_outside_the_callers_namespaces(monkeypatch):
     assert len(admin["recent_drops"]) == 3
     # the shared status object is not mutated by a filtered response
     assert len(state.sync_status.recent_drops) == 3
+
+
+# ---------------------------------------------------------------------------
+# Entity references: authorized on the namespace the entity lives in
+# ---------------------------------------------------------------------------
+
+
+class _FakeSearchService:
+    """Returns an entity in a chosen namespace without any upstream calls."""
+
+    def __init__(self, namespace):
+        self.namespace = namespace
+
+    async def get_entity_references(self, entity_type, entity_id):
+        from reporting_sync.search_service import EntityDetails, EntityReferencesResponse
+
+        return EntityReferencesResponse(entity=EntityDetails(
+            entity_type=entity_type, entity_id=entity_id, namespace=self.namespace,
+        ))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "owner,key,expected",
+    [
+        ("ns-a", READER, 200),  # entity in the caller's namespace
+        ("ns-b", READER, 404),  # another namespace: not found, not forbidden
+        (None, READER, 404),  # unknown namespace: only unrestricted callers see it
+        ("ns-b", ADMIN, 200),
+        (None, ADMIN, 200),
+        ("ns-a", None, 401),
+    ],
+)
+async def test_entity_references_check_the_entitys_namespace(monkeypatch, owner, key, expected):
+    from reporting_sync.main import state
+
+    monkeypatch.setattr(state, "search_service", _FakeSearchService(owner))
+    status = await _call("GET", f"{P}/entity/document/doc-1/references", key)
+    assert status == expected

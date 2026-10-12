@@ -251,6 +251,9 @@ class EntityDetails(BaseModel):
     entity_value: str | None = None
     entity_label: str | None = None
     entity_status: str | None = None
+    namespace: str | None = Field(
+        default=None, description="Namespace the entity lives in"
+    )
     version: int | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -321,6 +324,13 @@ def entity_base(table_name: str) -> str:
     """Logical entity name for a reporting table: doc_case_record__v2 -> case_record."""
     base = table_name[4:] if table_name.startswith("doc_") else table_name
     return _VERSION_SUFFIX_RE.sub("", base)
+
+
+def _with_namespace(params: dict[str, Any], namespace: str | None) -> dict[str, Any]:
+    """Add a namespace filter to upstream list params when one is given."""
+    if namespace:
+        return {**params, "namespace": namespace}
+    return params
 
 
 def _paginate(
@@ -997,12 +1007,14 @@ class SearchService:
     async def get_recent_activity(
         self,
         types: list[str] | None = None,
-        limit: int = 50
+        limit: int = 50,
+        namespace: str | None = None,
     ) -> ActivityResponse:
         """
         Get recent activity across all entity types.
 
-        Aggregates recent changes from all services.
+        Aggregates recent changes from all services. ``namespace`` restricts
+        every source to that namespace; None spans all of them.
         """
         types = types or ["terminology", "term", "template", "document", "file"]
         activities: list[ActivityItem] = []
@@ -1010,15 +1022,15 @@ class SearchService:
         # Fetch recent items from each service in parallel
         tasks = []
         if "terminology" in types:
-            tasks.append(("terminology", self._get_recent_terminologies(limit)))
+            tasks.append(("terminology", self._get_recent_terminologies(limit, namespace)))
         if "term" in types:
-            tasks.append(("term", self._get_recent_terms(limit)))
+            tasks.append(("term", self._get_recent_terms(limit, namespace)))
         if "template" in types:
-            tasks.append(("template", self._get_recent_templates(limit)))
+            tasks.append(("template", self._get_recent_templates(limit, namespace)))
         if "document" in types:
-            tasks.append(("document", self._get_recent_documents(limit)))
+            tasks.append(("document", self._get_recent_documents(limit, namespace)))
         if "file" in types:
-            tasks.append(("file", self._get_recent_files(limit)))
+            tasks.append(("file", self._get_recent_files(limit, namespace)))
 
         results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
 
@@ -1036,13 +1048,15 @@ class SearchService:
             total=len(activities)
         )
 
-    async def _get_recent_terminologies(self, limit: int) -> list[ActivityItem]:
+    async def _get_recent_terminologies(
+        self, limit: int, namespace: str | None = None
+    ) -> list[ActivityItem]:
         """Get recently modified terminologies."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
                     f"{settings.def_store_url}/api/def-store/terminologies",
-                    params={"page_size": limit},
+                    params=_with_namespace({"page_size": limit}, namespace),
                     headers={"X-API-Key": settings.api_key}
                 )
 
@@ -1077,7 +1091,9 @@ class SearchService:
             logger.error(f"Failed to get recent terminologies: {e}")
             return []
 
-    async def _get_recent_terms(self, limit: int) -> list[ActivityItem]:
+    async def _get_recent_terms(
+        self, limit: int, namespace: str | None = None
+    ) -> list[ActivityItem]:
         """Get recent term audit log entries."""
         # Terms have an audit log - fetch from it if available
         # For now, just get recent terms similar to terminologies
@@ -1086,7 +1102,9 @@ class SearchService:
                 # Get terminologies first
                 term_response = await client.get(
                     f"{settings.def_store_url}/api/def-store/terminologies",
-                    params={"status": "active", "page_size": 20},
+                    params=_with_namespace(
+                        {"status": "active", "page_size": 20}, namespace
+                    ),
                     headers={"X-API-Key": settings.api_key}
                 )
 
@@ -1133,13 +1151,15 @@ class SearchService:
             logger.error(f"Failed to get recent terms: {e}")
             return []
 
-    async def _get_recent_templates(self, limit: int) -> list[ActivityItem]:
+    async def _get_recent_templates(
+        self, limit: int, namespace: str | None = None
+    ) -> list[ActivityItem]:
         """Get recently modified templates."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
                     f"{settings.template_store_url}/api/template-store/templates",
-                    params={"page_size": limit},
+                    params=_with_namespace({"page_size": limit}, namespace),
                     headers={"X-API-Key": settings.api_key}
                 )
 
@@ -1176,7 +1196,9 @@ class SearchService:
             logger.error(f"Failed to get recent templates: {e}")
             return []
 
-    async def _get_recent_documents(self, limit: int) -> list[ActivityItem]:
+    async def _get_recent_documents(
+        self, limit: int, namespace: str | None = None
+    ) -> list[ActivityItem]:
         """Get recently modified documents."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -1184,7 +1206,7 @@ class SearchService:
                 # (Document list API returns template_value as null)
                 template_response = await client.get(
                     f"{settings.template_store_url}/api/template-store/templates",
-                    params={"page_size": 100},
+                    params=_with_namespace({"page_size": 100}, namespace),
                     headers={"X-API-Key": settings.api_key}
                 )
 
@@ -1196,7 +1218,7 @@ class SearchService:
                 # Fetch documents
                 response = await client.get(
                     f"{settings.document_store_url}/api/document-store/documents",
-                    params={"page_size": limit},
+                    params=_with_namespace({"page_size": limit}, namespace),
                     headers={"X-API-Key": settings.api_key}
                 )
 
@@ -1239,7 +1261,8 @@ class SearchService:
     async def get_term_documents(
         self,
         term_id: str,
-        limit: int = 100
+        limit: int = 100,
+        namespace: str | None = None,
     ) -> TermDocumentsResponse:
         """
         Get documents that reference a specific term.
@@ -1253,14 +1276,16 @@ class SearchService:
 
         try:
             async with self.postgres_pool.acquire() as conn:
-                # Get all document tables across every namespace schema (CASE-628).
+                # Document tables across every namespace schema (CASE-628),
+                # or only the given namespace's schema.
                 tables = await conn.fetch("""
                     SELECT table_schema, table_name
                     FROM information_schema.tables
                     WHERE table_schema NOT IN
                         ('public', 'pg_catalog', 'information_schema', 'pg_toast')
                     AND table_name LIKE 'doc_%'
-                """)
+                    AND ($1::text IS NULL OR table_schema = $1)
+                """, namespace)
 
                 documents: list[DocumentReference] = []
 
@@ -1481,6 +1506,7 @@ class SearchService:
             return EntityReferencesResponse(
                 entity=EntityDetails(
                     entity_type="document",
+                    namespace=doc.get("namespace"),
                     entity_id=document_id,
                     entity_value=template_value,
                     entity_label=f"{template_value or 'Unknown'} document",
@@ -1642,6 +1668,7 @@ class SearchService:
             return EntityReferencesResponse(
                 entity=EntityDetails(
                     entity_type="template",
+                    namespace=tpl.get("namespace"),
                     entity_id=template_id,
                     entity_value=tpl.get("value"),
                     entity_label=tpl.get("label"),
@@ -1674,6 +1701,7 @@ class SearchService:
             return EntityReferencesResponse(
                 entity=EntityDetails(
                     entity_type="terminology",
+                    namespace=terminology.get("namespace"),
                     entity_id=terminology_id,
                     entity_value=terminology.get("value"),
                     entity_label=terminology.get("label"),
@@ -1748,6 +1776,7 @@ class SearchService:
             return EntityReferencesResponse(
                 entity=EntityDetails(
                     entity_type="term",
+                    namespace=term.get("namespace"),
                     entity_id=term_id,
                     entity_value=term.get("value"),
                     entity_label=term.get("label"),
@@ -1827,13 +1856,15 @@ class SearchService:
             logger.error(f"File search failed: {e}")
             return []
 
-    async def _get_recent_files(self, limit: int) -> list[ActivityItem]:
+    async def _get_recent_files(
+        self, limit: int, namespace: str | None = None
+    ) -> list[ActivityItem]:
         """Get recently uploaded/modified files."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
                     f"{settings.document_store_url}/api/document-store/files",
-                    params={"page_size": limit},
+                    params=_with_namespace({"page_size": limit}, namespace),
                     headers={"X-API-Key": settings.api_key}
                 )
 
@@ -1888,6 +1919,7 @@ class SearchService:
             return EntityReferencesResponse(
                 entity=EntityDetails(
                     entity_type="file",
+                    namespace=file_data.get("namespace"),
                     entity_id=file_id,
                     entity_value=None,
                     entity_label=file_data.get("filename"),
@@ -1912,7 +1944,7 @@ class SearchService:
             )
 
     async def _get_file_referenced_by(
-        self, file_id: str, limit: int
+        self, file_id: str, limit: int, namespace: str | None = None
     ) -> ReferencedByResponse:
         """Find documents that reference a file."""
         references: list[IncomingReference] = []
@@ -1932,6 +1964,16 @@ class SearchService:
                 )
 
             file_data = file_response.json()
+
+            # A restricted caller sees a file's references only when the file
+            # lives in its namespace — the same rule document-store applies to
+            # its file→documents listing. Answer as not found otherwise.
+            if namespace and file_data.get("namespace") != namespace:
+                return ReferencedByResponse(
+                    entity_type="file",
+                    entity_id=file_id,
+                    error=f"File not found: {file_id}"
+                )
 
             # Query the file→documents endpoint
             docs_response = await client.get(
@@ -1996,7 +2038,8 @@ class SearchService:
         self,
         entity_type: str,
         entity_id: str,
-        limit: int = 100
+        limit: int = 100,
+        namespace: str | None = None,
     ) -> ReferencedByResponse:
         """
         Find all entities that reference the given entity.
@@ -2015,13 +2058,21 @@ class SearchService:
         """
         try:
             if entity_type == "template":
-                return await self._get_template_referenced_by(entity_id, limit)
+                return await self._get_template_referenced_by(
+                    entity_id, limit, namespace
+                )
             elif entity_type == "terminology":
-                return await self._get_terminology_referenced_by(entity_id, limit)
+                return await self._get_terminology_referenced_by(
+                    entity_id, limit, namespace
+                )
             elif entity_type == "term":
-                return await self._get_term_referenced_by(entity_id, limit)
+                return await self._get_term_referenced_by(
+                    entity_id, limit, namespace
+                )
             elif entity_type == "file":
-                return await self._get_file_referenced_by(entity_id, limit)
+                return await self._get_file_referenced_by(
+                    entity_id, limit, namespace
+                )
             elif entity_type == "document":
                 # Documents don't get referenced by other entities
                 return ReferencedByResponse(
@@ -2045,7 +2096,7 @@ class SearchService:
             )
 
     async def _get_template_referenced_by(
-        self, template_id: str, limit: int
+        self, template_id: str, limit: int, namespace: str | None = None
     ) -> ReferencedByResponse:
         """Find entities referencing a template."""
         references: list[IncomingReference] = []
@@ -2070,7 +2121,9 @@ class SearchService:
             # 1. Find documents using this template
             doc_response = await client.get(
                 f"{settings.document_store_url}/api/document-store/documents",
-                params={"template_id": template_id, "page_size": limit},
+                params=_with_namespace(
+                    {"template_id": template_id, "page_size": limit}, namespace
+                ),
                 headers={"X-API-Key": settings.api_key}
             )
 
@@ -2090,7 +2143,9 @@ class SearchService:
             # 2. Find templates that extend this one
             extend_response = await client.get(
                 f"{settings.template_store_url}/api/template-store/templates",
-                params={"extends": template_id, "page_size": limit},
+                params=_with_namespace(
+                    {"extends": template_id, "page_size": limit}, namespace
+                ),
                 headers={"X-API-Key": settings.api_key}
             )
 
@@ -2112,7 +2167,7 @@ class SearchService:
             # This requires scanning all templates - do a full list and filter
             all_tpl_response = await client.get(
                 f"{settings.template_store_url}/api/template-store/templates",
-                params={"page_size": 100},  # Get templates (max page size)
+                params=_with_namespace({"page_size": 100}, namespace),
                 headers={"X-API-Key": settings.api_key}
             )
 
@@ -2152,7 +2207,7 @@ class SearchService:
         )
 
     async def _get_terminology_referenced_by(
-        self, terminology_id: str, limit: int
+        self, terminology_id: str, limit: int, namespace: str | None = None
     ) -> ReferencedByResponse:
         """Find templates referencing a terminology."""
         references: list[IncomingReference] = []
@@ -2177,7 +2232,7 @@ class SearchService:
             # Find templates with terminology_ref to this terminology
             all_tpl_response = await client.get(
                 f"{settings.template_store_url}/api/template-store/templates",
-                params={"page_size": 100},  # Max page size
+                params=_with_namespace({"page_size": 100}, namespace),
                 headers={"X-API-Key": settings.api_key}
             )
 
@@ -2220,7 +2275,7 @@ class SearchService:
         )
 
     async def _get_term_referenced_by(
-        self, term_id: str, limit: int
+        self, term_id: str, limit: int, namespace: str | None = None
     ) -> ReferencedByResponse:
         """Find documents referencing a term."""
         references: list[IncomingReference] = []
@@ -2255,7 +2310,8 @@ class SearchService:
                             WHERE schemaname NOT IN
                                 ('public', 'pg_catalog', 'information_schema', 'pg_toast')
                               AND tablename LIKE 'doc_%'
-                        """)
+                              AND ($1::text IS NULL OR schemaname = $1)
+                        """, namespace)
 
                         for table in tables:
                             schema = table["schemaname"]

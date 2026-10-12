@@ -38,6 +38,9 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([
      "groups": ["wip-services"], "grants": {}},
     {"name": "rs-nothing", "key": "rs_nothing_key", "owner": "rs-nothing",
      "groups": [], "namespaces": ["ns-z"], "grants": {"ns-z": "read"}},
+    {"name": "rs-multi", "key": "rs_multi_key", "owner": "rs-multi",
+     "groups": [], "namespaces": ["ns-a", "ns-c"],
+     "grants": {"ns-a": "read", "ns-c": "read"}},
 ]))
 
 # Connection URIs for integration tests (set in CI or locally)

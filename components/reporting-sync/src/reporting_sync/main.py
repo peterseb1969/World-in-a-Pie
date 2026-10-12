@@ -547,6 +547,40 @@ router = APIRouter(
 _PRIVILEGED = Depends(require_groups(["wip-admins", "wip-services"]))
 
 
+async def _effective_namespace(
+    identity: UserIdentity, requested: str | None
+) -> str | None:
+    """The single namespace a listing runs in, or None for "all namespaces".
+
+    reporting-sync reads the stores with its own service key, so a listing
+    must be scoped here or it returns every namespace's rows. The rule is
+    the platform's multi-namespace-key convention:
+
+    - an explicit namespace must be readable (404 when invisible);
+    - a superadmin without one keeps the all-namespaces listing;
+    - a key that can read exactly one namespace gets it implicitly;
+    - a key that can read several must say which (400), and one that
+      can read none is refused (403).
+    """
+    if requested:
+        await check_namespace_permission(identity, requested, "read")
+        return requested
+    accessible = await resolve_accessible_namespaces(identity)
+    if accessible is None:
+        return None
+    if len(accessible) == 1:
+        return accessible[0]
+    if not accessible:
+        raise HTTPException(status_code=403, detail="No accessible namespaces")
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "namespace is required: this key can read several namespaces "
+            f"({', '.join(sorted(accessible))})"
+        ),
+    )
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
     """Health check endpoint."""
@@ -1453,6 +1487,7 @@ async def unified_search(
         default=None,
         description="Restrict document search to one template (by value). Overrides request.template.",
     ),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> SearchResponse:
     """Unified search across all WIP entity types with per-type pagination.
 
@@ -1480,9 +1515,6 @@ async def unified_search(
     Returns:
         SearchResponse with per-type paginated buckets keyed by entity type.
     """
-    if not state.search_service:
-        raise HTTPException(status_code=503, detail="Search service not available")
-
     overrides: dict[str, Any] = {}
     if namespace is not None:
         overrides["namespace"] = namespace
@@ -1493,13 +1525,26 @@ async def unified_search(
     if overrides:
         request = request.model_copy(update=overrides)
 
+    # Authorize the namespace the search will actually use — the URL
+    # override or the body field — and scope an unqualified search.
+    effective = await _effective_namespace(identity, request.namespace)
+    if effective != request.namespace:
+        request = request.model_copy(update={"namespace": effective})
+
+    if not state.search_service:
+        raise HTTPException(status_code=503, detail="Search service not available")
+
     return await state.search_service.search(request)
 
 
 @router.get("/activity/recent", response_model=ActivityResponse)
 async def get_recent_activity(
     types: str | None = None,
-    limit: int = 50
+    limit: int = 50,
+    namespace: str | None = Query(
+        default=None, description="Restrict activity to this namespace"
+    ),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> ActivityResponse:
     """
     Get recent activity across all entity types.
@@ -1515,6 +1560,7 @@ async def get_recent_activity(
     Returns:
         ActivityResponse with list of activities sorted by timestamp (newest first)
     """
+    effective = await _effective_namespace(identity, namespace)
     if not state.search_service:
         raise HTTPException(status_code=503, detail="Search service not available")
 
@@ -1522,13 +1568,19 @@ async def get_recent_activity(
     if limit < 1 or limit > 200:
         limit = 50
 
-    return await state.search_service.get_recent_activity(types=type_list, limit=limit)
+    return await state.search_service.get_recent_activity(
+        types=type_list, limit=limit, namespace=effective
+    )
 
 
 @router.get("/references/term/{term_id}/documents", response_model=TermDocumentsResponse)
 async def get_term_documents(
     term_id: str,
-    limit: int = 100
+    limit: int = 100,
+    namespace: str | None = Query(
+        default=None, description="Restrict to documents in this namespace"
+    ),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> TermDocumentsResponse:
     """
     Get documents that reference a specific term.
@@ -1543,19 +1595,23 @@ async def get_term_documents(
     Returns:
         TermDocumentsResponse with list of referencing documents
     """
+    effective = await _effective_namespace(identity, namespace)
     if not state.search_service:
         raise HTTPException(status_code=503, detail="Search service not available")
 
     if limit < 1 or limit > 1000:
         limit = 100
 
-    return await state.search_service.get_term_documents(term_id=term_id, limit=limit)
+    return await state.search_service.get_term_documents(
+        term_id=term_id, limit=limit, namespace=effective
+    )
 
 
 @router.get("/entity/{entity_type}/{entity_id}/references", response_model=EntityReferencesResponse)
 async def get_entity_references(
     entity_type: str,
-    entity_id: str
+    entity_id: str,
+    identity: UserIdentity = Depends(require_api_key),
 ) -> EntityReferencesResponse:
     """
     Get an entity's details and validate all its references.
@@ -1580,17 +1636,35 @@ async def get_entity_references(
             detail=f"Invalid entity type: {entity_type}. Must be one of: {valid_types}"
         )
 
-    return await state.search_service.get_entity_references(
+    result = await state.search_service.get_entity_references(
         entity_type=entity_type,
         entity_id=entity_id
     )
+    # The entity is fetched with the service key, so authorize on the
+    # namespace it actually lives in. A caller without read on it is told
+    # the entity is not found; an entity whose namespace is unknown is only
+    # shown to unrestricted callers. Its outgoing references need no
+    # separate check: the entity's own data already carries the values it
+    # submitted for them.
+    if result.entity is not None:
+        accessible = await resolve_accessible_namespaces(identity)
+        if accessible is not None:
+            owner = result.entity.namespace
+            if owner is None:
+                raise HTTPException(status_code=404, detail="Entity not found")
+            await check_namespace_permission(identity, owner, "read")
+    return result
 
 
 @router.get("/entity/{entity_type}/{entity_id}/referenced-by", response_model=ReferencedByResponse)
 async def get_referenced_by(
     entity_type: str,
     entity_id: str,
-    limit: int = Query(100, ge=1, le=500, description="Max results to return")
+    limit: int = Query(100, ge=1, le=500, description="Max results to return"),
+    namespace: str | None = Query(
+        default=None, description="Restrict to referencing entities in this namespace"
+    ),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> ReferencedByResponse:
     """
     Find all entities that reference the given entity.
@@ -1611,6 +1685,7 @@ async def get_referenced_by(
     Returns:
         ReferencedByResponse with list of referencing entities
     """
+    effective = await _effective_namespace(identity, namespace)
     if not state.search_service:
         raise HTTPException(status_code=503, detail="Search service not available")
 
@@ -1624,7 +1699,8 @@ async def get_referenced_by(
     return await state.search_service.get_referenced_by(
         entity_type=entity_type,
         entity_id=entity_id,
-        limit=limit
+        limit=limit,
+        namespace=effective,
     )
 
 
@@ -1641,6 +1717,7 @@ _SYSTEM_SCHEMAS = ("public", "pg_catalog", "information_schema", "pg_toast")
 async def list_tables(
     namespace: str | None = Query(default=None, description="Restrict to one namespace's schema"),
     table_name: str | None = Query(default=None, description="Return full column detail for a specific (bare) table name"),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """List reporting relations across namespace schemas — entity-first.
 
@@ -1655,6 +1732,7 @@ async def list_tables(
     Filter by ``namespace`` and/or bare ``table_name`` (any relation name;
     detail mode returns its columns).
     """
+    namespace = await _effective_namespace(identity, namespace)
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
