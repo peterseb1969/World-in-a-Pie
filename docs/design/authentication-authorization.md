@@ -558,7 +558,7 @@ This replaces Dex entirely. WIP's Registry (which already manages namespaces and
 | **1** | **No anonymous app access** | None | **Done** (2026-03-31) — app-side OIDC, wip-auth 0.4.0, @wip/proxy 0.2.0 |
 | **1.5** | **App-level access control** | Phase 1 | **Done** (2026-04-01) — `ALLOWED_GROUPS` env var in scaffold middleware |
 | **2** | Per-namespace permissions | Phase 1 | **Backend done in document-store, template-store, def-store** (0e548f3), Console UX polish remaining |
-| **2b** | Complete service-side enforcement (reporting-sync, ingest-gateway) | Phase 2 | **Planned** (2026-10-12) — commit sequence C0–C9 approved, implementation in progress |
+| **2b** | Complete service-side enforcement (reporting-sync, ingest-gateway) | Phase 2 | **Implemented on develop** (2026-10-12, C0–C9) — rollout to installs pending |
 | **3** | Per-user audit trail | Phase 1 | **Verified** — code review confirmed full chain |
 | **4A** | Per-app user isolation | Phase 2 | Design needed |
 | **4B** | Gateway-level auth | Phase 1 | Fallback option, not needed while apps use scaffold |

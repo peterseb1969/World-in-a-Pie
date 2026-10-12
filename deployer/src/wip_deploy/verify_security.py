@@ -54,8 +54,24 @@ check mutates anything; the whole module is read-only.
   - The k8s secret backend and k8s port exposure — file-backend and
     compose-shaped checks report "not applicable" on k8s installs
     rather than guessing at cluster state.
-  - DB/NATS *authentication* config — infra credentials are rendered
-    per-install; auditing their strength is future scope.
+  - DB/NATS *authentication* config. PostgreSQL credentials are rendered
+    per install; NATS currently runs without authentication on every
+    target (tracked as CASE-852), which no file check can fix.
+
+### Live checks (`--live`, opt-in)
+
+  The checks above read files. With `--live` the command also sends
+  requests to the running install through its public base URL:
+
+  7. **Anonymous requests refused** — one read-only, credential-less
+     request per protected route group of every active service must get a
+     JSON 401/403/404; each service's health probe must answer 200 without
+     a key. An HTML answer is the SPA fallback for an unserved route and
+     counts as a failure, not a refusal.
+
+  8. **reporting-sync on unprivileged roles** — with the install's
+     api-key, reporting-sync's status must report
+     postgres_service_roles_ok = true.
 """
 
 from __future__ import annotations
@@ -66,6 +82,7 @@ import socket
 import stat
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -466,3 +483,198 @@ def verify_security(install_dir: Path, deployment: Deployment) -> SecurityReport
         check_caddy_security_headers(install_dir, deployment),
     ]
     return SecurityReport(install_dir=install_dir, results=results)
+
+
+# ────────────────────────────────────────────────────────────────────
+# Live checks (opt-in: `wip-deploy verify --security --live`)
+# ────────────────────────────────────────────────────────────────────
+#
+# The checks above read files; these send requests to the running install
+# through its public base URL. A guarantee that every WIP service refuses
+# a request without credentials is only verified by asking — reading the
+# rendered artifacts cannot show that a service forgot its auth layer.
+
+
+@dataclass(frozen=True)
+class LiveProbe:
+    component: str
+    method: str
+    path: str
+    body: dict[str, Any] | None = None
+
+
+# One representative request per route group that must refuse anonymous
+# callers. Read-only requests only: a probe must stay harmless even against
+# an install whose authentication is broken, so nothing here writes or
+# deletes.
+ANONYMOUS_PROBES: tuple[LiveProbe, ...] = (
+    LiveProbe("registry", "GET", "/api/registry/namespaces"),
+    LiveProbe("def-store", "GET", "/api/def-store/terminologies"),
+    LiveProbe("template-store", "GET", "/api/template-store/templates"),
+    LiveProbe("document-store", "GET", "/api/document-store/documents"),
+    LiveProbe("document-store", "GET", "/api/document-store/files"),
+    LiveProbe("reporting-sync", "GET", "/api/reporting-sync/status"),
+    LiveProbe("reporting-sync", "GET", "/api/reporting-sync/metrics"),
+    LiveProbe("reporting-sync", "GET", "/api/reporting-sync/tables"),
+    LiveProbe("reporting-sync", "GET", "/api/reporting-sync/namespace/wip/views"),
+    LiveProbe("reporting-sync", "POST", "/api/reporting-sync/query", {"sql": "SELECT 1"}),
+    LiveProbe("reporting-sync", "POST", "/api/reporting-sync/search", {"query": "x"}),
+    LiveProbe("ingest-gateway", "GET", "/api/ingest-gateway/status"),
+    LiveProbe("ingest-gateway", "GET", "/api/ingest-gateway/metrics"),
+)
+
+# Health probes stay public: a monitor without a key must still reach them.
+PUBLIC_PROBES: tuple[LiveProbe, ...] = tuple(
+    LiveProbe(svc, "GET", f"/api/{svc}/health")
+    for svc in (
+        "registry", "def-store", "template-store", "document-store",
+        "reporting-sync", "ingest-gateway",
+    )
+)
+
+_REFUSED = (401, 403, 404)
+
+
+def _is_json(response: Any) -> bool:
+    return str(response.headers.get("content-type", "")).startswith("application/json")
+
+
+def check_anonymous_refusal(
+    base_url: str, active: set[str], client: Any
+) -> CheckResult:
+    """Every probed route refuses a request without credentials; health
+    probes answer without one.
+
+    A refusal must be a JSON 401/403/404. A 200 with an HTML body is the
+    single-page-app fallback answering a route the install does not serve
+    — it says nothing about authentication, so it counts as a failure
+    rather than as a refusal.
+    """
+    problems: list[str] = []
+    probed = 0
+    for probe in ANONYMOUS_PROBES:
+        if probe.component not in active:
+            continue
+        probed += 1
+        try:
+            resp = client.request(probe.method, f"{base_url}{probe.path}", json=probe.body)
+        except Exception as e:  # noqa: BLE001 — any transport failure is a finding
+            problems.append(f"{probe.method} {probe.path}: request failed ({e})")
+            continue
+        if resp.status_code in _REFUSED and _is_json(resp):
+            continue
+        kind = "served without credentials" if resp.status_code < 300 and _is_json(resp) else (
+            "not served by this install (non-JSON answer)" if not _is_json(resp)
+            else "not a refusal"
+        )
+        problems.append(f"{probe.method} {probe.path}: {resp.status_code} — {kind}")
+
+    for probe in PUBLIC_PROBES:
+        if probe.component not in active:
+            continue
+        probed += 1
+        try:
+            resp = client.request(probe.method, f"{base_url}{probe.path}")
+        except Exception as e:  # noqa: BLE001
+            problems.append(f"{probe.method} {probe.path}: request failed ({e})")
+            continue
+        if not (resp.status_code == 200 and _is_json(resp)):
+            problems.append(
+                f"{probe.method} {probe.path}: {resp.status_code} — health probe "
+                "must answer without credentials"
+            )
+
+    if probed == 0:
+        return CheckResult(
+            name="anonymous requests refused",
+            passed=False,
+            message="no probes ran — no probed component is active on this install",
+        )
+    if problems:
+        return CheckResult(
+            name="anonymous requests refused",
+            passed=False,
+            message=f"{len(problems)} of {probed} probes failed",
+            fix_hint="\n".join(problems),
+        )
+    return CheckResult(
+        name="anonymous requests refused",
+        passed=True,
+        message=f"{probed} probes: protected routes refuse, health probes answer",
+    )
+
+
+def check_reporting_roles(
+    base_url: str, admin_key: str | None, active: set[str], client: Any
+) -> CheckResult:
+    """reporting-sync serves on its unprivileged PostgreSQL roles."""
+    name = "reporting-sync runs on unprivileged PostgreSQL roles"
+    if "reporting-sync" not in active:
+        return CheckResult(name=name, passed=True, message="not applicable (reporting-sync not active)")
+    if not admin_key:
+        return CheckResult(
+            name=name,
+            passed=False,
+            message="could not read the install's api-key to ask reporting-sync",
+            fix_hint="Pass --api-key-file with the install's admin key.",
+        )
+    try:
+        resp = client.get(
+            f"{base_url}/api/reporting-sync/status", headers={"X-API-Key": admin_key}
+        )
+    except Exception as e:  # noqa: BLE001
+        return CheckResult(name=name, passed=False, message=f"request failed: {e}")
+    if resp.status_code != 200 or not _is_json(resp):
+        return CheckResult(
+            name=name, passed=False,
+            message=f"/api/reporting-sync/status answered {resp.status_code}",
+        )
+    roles_ok = resp.json().get("postgres_service_roles_ok")
+    if roles_ok is True:
+        return CheckResult(name=name, passed=True, message="postgres_service_roles_ok = true")
+    return CheckResult(
+        name=name,
+        passed=False,
+        message=f"postgres_service_roles_ok = {roles_ok!r}",
+        fix_hint=(
+            "Re-render the install (wip-deploy) so the role passwords exist, and "
+            "check the reporting-sync startup log for the provisioning error."
+        ),
+    )
+
+
+def verify_live(
+    deployment: Deployment,
+    active: set[str],
+    admin_key: str | None,
+    *,
+    transport: Any = None,
+) -> list[CheckResult]:
+    """Run the live checks against the install's public base URL."""
+    import httpx
+
+    from wip_deploy.config_gen.spec_context import _public_base
+
+    base_url = _public_base(deployment)
+    # Only a letsencrypt install reliably presents a certificate this machine
+    # trusts: internal and self-signed ones never do, and an external
+    # terminator may use a private CA. This check is about authentication,
+    # not transport trust (check_tls_hostname_sanity covers that), so it does
+    # not let an untrusted certificate stop the probes.
+    verify_tls = deployment.spec.network.tls == "letsencrypt"
+    with httpx.Client(
+        transport=transport, verify=verify_tls, timeout=10.0, follow_redirects=False
+    ) as client:
+        return [
+            check_anonymous_refusal(base_url, active, client),
+            check_reporting_roles(base_url, admin_key, active, client),
+        ]
+
+
+def read_admin_key(install_dir: Path, deployment: Deployment) -> str | None:
+    """The install's api-key from its file secret backend, if readable."""
+    key_file = _secrets_dir(install_dir, deployment) / "api-key"
+    try:
+        return key_file.read_text().strip() or None
+    except OSError:
+        return None

@@ -1409,6 +1409,29 @@ def verify(
         ),
     ] = None,
     name: Annotated[str | None, _name_opt()] = None,
+    live: Annotated[
+        bool,
+        typer.Option(
+            "--live",
+            help=(
+                "Also probe the running install through its public base URL: "
+                "every protected route group must refuse a request without "
+                "credentials (JSON 401/403/404) and health probes must answer "
+                "without one; reporting-sync must run on unprivileged "
+                "PostgreSQL roles. Read-only requests only."
+            ),
+        ),
+    ] = False,
+    api_key_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--api-key-file",
+            help=(
+                "File holding the install's admin api-key for the --live "
+                "roles check. Defaults to the install's file secret backend."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Verify an install against a pre-exposure checklist. Read-only.
 
@@ -1428,6 +1451,7 @@ def verify(
 
       wip-deploy verify --security
       wip-deploy verify --security --name wip-prod
+      wip-deploy verify --security --live --name dev-test
     """
     if not security:
         typer.echo("nothing to verify: pass --security", err=True)
@@ -1457,6 +1481,23 @@ def verify(
         raise typer.Exit(2)
 
     report = verify_security(resolved_dir, previous)
+
+    if live:
+        from wip_deploy.verify_security import read_admin_key, verify_live
+
+        root = _load_state_repo_root(resolved_dir) or find_repo_root()
+        discovery = discover(root)
+        active = {
+            c.metadata.name
+            for c in discovery.components
+            if is_component_active(c, previous)
+        }
+        admin_key = (
+            api_key_file.read_text().strip()
+            if api_key_file is not None
+            else read_admin_key(resolved_dir, previous)
+        )
+        report.results.extend(verify_live(previous, active, admin_key))
 
     typer.echo(f"Security verification: {resolved_dir}")
     typer.echo(
