@@ -37,6 +37,22 @@ Register body:
 body tells you which). Replace is DROP + CREATE in one transaction, so
 the **column set may change freely** between versions of your view.
 
+### Who may call what
+
+Every reporting-sync route requires an API key. Beyond that:
+
+| Operation | Required |
+|---|---|
+| Register / replace / drop a view | `wip-admins` or `wip-services` |
+| List a namespace's views | read on the namespace (an invisible namespace answers `404`) |
+| `POST /api/reporting-sync/query` (raw SQL, including reading a view) | `wip-admins` or `wip-services` |
+
+A view definition is raw SQL. Schema-qualified names reach other namespaces' schemas, so namespace write access cannot be the boundary. Registration and raw queries therefore follow the same rule.
+
+An app deployed by `wip-deploy` receives the install's service key, so bootstrap registration and view queries work unchanged.
+
+**Namespace-scoped app keys** cannot register views or run raw SQL. There is currently no structured endpoint that reads a registered view for such a key.
+
 ## Name resolution — write the SQL the way you query it
 
 The SQL runs with `search_path` set to the namespace's schema plus
@@ -95,6 +111,8 @@ run_report_query(sql="SELECT * FROM v_study_search WHERE study_number = $1",
 ```
 
 or `POST /api/reporting-sync/query` with `{"sql": "...", "namespace": "clintrial"}`.
+
+`POST /query` requires a `wip-admins` or `wip-services` key (see *Who may call what* above).
 
 ## A complete example — hierarchy-aware search
 

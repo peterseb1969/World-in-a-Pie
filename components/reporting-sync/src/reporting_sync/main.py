@@ -24,9 +24,14 @@ from nats.js import JetStreamContext
 from pydantic import BaseModel, Field
 
 from wip_auth import (
+    UserIdentity,
     build_metadata,
+    check_namespace_permission,
     declare_api_key_security,
+    get_identity_string,
     require_api_key,
+    require_groups,
+    resolve_accessible_namespaces,
     setup_auth,
     setup_key_sync,
 )
@@ -534,6 +539,13 @@ router = APIRouter(
     prefix="/api/reporting-sync", dependencies=[Depends(require_api_key)]
 )
 
+# Operator and raw-SQL routes. wip-services is listed explicitly because it is
+# not a superadmin group: service keys hold no namespace grants, so these
+# routes are gated by group, never by namespace. Raw SQL (query, query-shaped
+# export, registered-view definitions) can reach any schema when it
+# schema-qualifies a name, so no namespace check could contain it.
+_PRIVILEGED = Depends(require_groups(["wip-admins", "wip-services"]))
+
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
@@ -583,7 +595,9 @@ app.add_api_route(
 
 
 @router.get("/status", response_model=SyncStatus)
-async def get_sync_status() -> SyncStatus:
+async def get_sync_status(
+    identity: UserIdentity = Depends(require_api_key),
+) -> SyncStatus:
     """Get current sync worker status.
 
     Refreshes the connection flags from live state on every call.
@@ -597,7 +611,19 @@ async def get_sync_status() -> SyncStatus:
         state.nats_client and state.nats_client.is_connected
     )
     state.sync_status.connected_to_postgres = await _postgres_live_check()
-    return state.sync_status
+
+    # Any authenticated caller may poll status (@wip/client's awaitSync does),
+    # but dropped events name a namespace and an entity: show a caller only
+    # the drops in namespaces it can read. None means unrestricted.
+    accessible = await resolve_accessible_namespaces(identity)
+    if accessible is None:
+        return state.sync_status
+    visible = set(accessible)
+    return state.sync_status.model_copy(update={
+        "recent_drops": [
+            d for d in state.sync_status.recent_drops if d.namespace in visible
+        ],
+    })
 
 
 async def _postgres_live_check() -> bool:
@@ -624,6 +650,7 @@ async def reporting_parity(
             "structure-only form used between restore phases."
         ),
     ),
+    identity: UserIdentity = Depends(require_api_key),
 ) -> NamespaceParityResult:
     """Does postgres reflect what sync should have built for this namespace?
 
@@ -638,6 +665,7 @@ async def reporting_parity(
     blocked doc-type sync shows count mismatches, and a pre-namespace-keying
     database is named explicitly with remediation.
     """
+    await check_namespace_permission(identity, namespace, "read")
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
     return await check_namespace_parity(
@@ -650,7 +678,7 @@ async def reporting_parity(
 # =============================================================================
 
 
-@router.get("/metrics", response_model=MetricsResponse)
+@router.get("/metrics", dependencies=[_PRIVILEGED], response_model=MetricsResponse)
 async def get_metrics() -> MetricsResponse:
     """
     Get comprehensive metrics for the sync service.
@@ -684,7 +712,7 @@ async def get_metrics() -> MetricsResponse:
     )
 
 
-@router.get("/metrics/consumer", response_model=ConsumerInfo | None)
+@router.get("/metrics/consumer", dependencies=[_PRIVILEGED], response_model=ConsumerInfo | None)
 async def get_consumer_metrics() -> ConsumerInfo | None:
     """
     Get NATS consumer information.
@@ -698,7 +726,7 @@ async def get_consumer_metrics() -> ConsumerInfo | None:
     return await get_consumer_info()
 
 
-@router.get("/alerts", response_model=AlertsResponse)
+@router.get("/alerts", dependencies=[_PRIVILEGED], response_model=AlertsResponse)
 async def get_alerts() -> AlertsResponse:
     """
     Get current alerts and alert configuration.
@@ -715,7 +743,7 @@ async def get_alerts() -> AlertsResponse:
     )
 
 
-@router.put("/alerts/config", response_model=AlertConfig)
+@router.put("/alerts/config", dependencies=[_PRIVILEGED], response_model=AlertConfig)
 async def update_alert_config(config: AlertConfig) -> AlertConfig:
     """
     Update alert configuration.
@@ -731,7 +759,7 @@ async def update_alert_config(config: AlertConfig) -> AlertConfig:
     return metrics.get_alert_config()
 
 
-@router.post("/alerts/test")
+@router.post("/alerts/test", dependencies=[_PRIVILEGED])
 async def test_alerts() -> dict[str, Any]:
     """
     Manually trigger an alert check and return results.
@@ -763,7 +791,11 @@ async def test_alerts() -> dict[str, Any]:
 
 
 @router.get("/table-name")
-async def resolve_table_name(namespace: str, template_value: str) -> dict[str, Any]:
+async def resolve_table_name(
+    namespace: str,
+    template_value: str,
+    identity: UserIdentity = Depends(require_api_key),
+) -> dict[str, Any]:
     """Resolve the default reporting relation for a (namespace, template_value).
 
     Post per-version split, the bare name ``doc_<value>`` is the entity
@@ -781,6 +813,7 @@ async def resolve_table_name(namespace: str, template_value: str) -> dict[str, A
     (A template's optional ``reporting.table_name`` cosmetic override is not
     reflected here yet — this returns the default ``doc_<value>`` form.)
     """
+    await check_namespace_permission(identity, namespace, "read")
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
     sm = SchemaManager(state.postgres_pool)
@@ -808,7 +841,10 @@ async def resolve_table_name(namespace: str, template_value: str) -> dict[str, A
 
 @router.get("/schema/{template_value}")
 async def get_schema(
-    template_value: str, namespace: str, version: int | None = None
+    template_value: str,
+    namespace: str,
+    version: int | None = None,
+    identity: UserIdentity = Depends(require_api_key),
 ) -> dict[str, Any]:
     """Get the PostgreSQL columns for a template's reporting relation.
 
@@ -818,6 +854,7 @@ async def get_schema(
     view (the default query surface); with ``version`` it describes that
     version's physical table ``doc_<value>__v<N>``.
     """
+    await check_namespace_permission(identity, namespace, "read")
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
@@ -884,7 +921,7 @@ async def get_schema(
         }
 
 
-@router.post("/sync/batch/terminologies")
+@router.post("/sync/batch/terminologies", dependencies=[_PRIVILEGED])
 async def trigger_terminology_sync(
     namespace: str,
     page_size: int = 100,
@@ -911,7 +948,7 @@ async def trigger_terminology_sync(
     }
 
 
-@router.post("/sync/batch/terms")
+@router.post("/sync/batch/terms", dependencies=[_PRIVILEGED])
 async def trigger_term_sync(
     namespace: str,
     page_size: int = 100,
@@ -940,7 +977,7 @@ async def trigger_term_sync(
     }
 
 
-@router.post("/sync/batch/term_relations")
+@router.post("/sync/batch/term_relations", dependencies=[_PRIVILEGED])
 async def trigger_term_relation_sync(
     namespace: str,
     page_size: int = 100,
@@ -970,7 +1007,7 @@ async def trigger_term_relation_sync(
     }
 
 
-@router.post("/sync/batch/templates")
+@router.post("/sync/batch/templates", dependencies=[_PRIVILEGED])
 async def trigger_template_metadata_sync(
     namespace: str,
     page_size: int = 100,
@@ -1037,7 +1074,7 @@ def _batch_sync_response(job, force_requested: bool = False) -> BatchSyncRespons
     )
 
 
-@router.post("/sync/batch", response_model=list[BatchSyncResponse])
+@router.post("/sync/batch", dependencies=[_PRIVILEGED], response_model=list[BatchSyncResponse])
 async def trigger_batch_sync_all(
     force: bool = False,
     page_size: int = 1000,
@@ -1089,7 +1126,7 @@ async def trigger_batch_sync_all(
     return [_batch_sync_response(job, force_requested=force) for job in jobs]
 
 
-@router.get("/sync/batch/jobs", response_model=list[BatchSyncJob])
+@router.get("/sync/batch/jobs", dependencies=[_PRIVILEGED], response_model=list[BatchSyncJob])
 async def list_batch_jobs() -> list[BatchSyncJob]:
     """List all batch sync jobs."""
     if not state.batch_sync_service:
@@ -1098,7 +1135,7 @@ async def list_batch_jobs() -> list[BatchSyncJob]:
     return state.batch_sync_service.list_jobs()
 
 
-@router.get("/sync/batch/jobs/{job_id}", response_model=BatchSyncJob)
+@router.get("/sync/batch/jobs/{job_id}", dependencies=[_PRIVILEGED], response_model=BatchSyncJob)
 async def get_batch_job(job_id: str) -> BatchSyncJob:
     """Get a specific batch sync job by ID."""
     if not state.batch_sync_service:
@@ -1111,7 +1148,7 @@ async def get_batch_job(job_id: str) -> BatchSyncJob:
     return job
 
 
-@router.post("/sync/batch/{template_value}", response_model=BatchSyncResponse)
+@router.post("/sync/batch/{template_value}", dependencies=[_PRIVILEGED], response_model=BatchSyncResponse)
 async def trigger_batch_sync(
     template_value: str,
     force: bool = False,
@@ -1171,7 +1208,7 @@ async def trigger_batch_sync(
     return _batch_sync_response(job, force_requested=force)
 
 
-@router.delete("/sync/batch/jobs/{job_id}")
+@router.delete("/sync/batch/jobs/{job_id}", dependencies=[_PRIVILEGED])
 async def cancel_batch_job(job_id: str) -> dict[str, Any]:
     """Cancel a running batch sync job."""
     if not state.batch_sync_service:
@@ -1184,7 +1221,7 @@ async def cancel_batch_job(job_id: str) -> dict[str, Any]:
         return {"status": "not_running", "job_id": job_id}
 
 
-@router.delete("/sync/batch/jobs")
+@router.delete("/sync/batch/jobs", dependencies=[_PRIVILEGED])
 async def clear_completed_jobs() -> dict[str, Any]:
     """Clear all completed/failed/cancelled jobs from memory."""
     if not state.batch_sync_service:
@@ -1242,7 +1279,7 @@ class AggregatedIntegrityResult(BaseModel):
     issues: list[IntegrityIssue] = Field(default_factory=list)
 
 
-@router.get("/health/integrity", response_model=AggregatedIntegrityResult)
+@router.get("/health/integrity", dependencies=[_PRIVILEGED], response_model=AggregatedIntegrityResult)
 async def aggregated_integrity_check(
     template_status: str | None = None,
     document_status: str | None = None,
@@ -1763,7 +1800,7 @@ _DANGEROUS_SQL_RE = re.compile(
 )
 
 
-@router.post("/query")
+@router.post("/query", dependencies=[_PRIVILEGED])
 async def execute_query(body: ReportQuery):
     """Execute a read-only SQL query against the reporting database."""
     if not state.postgres_pool:
@@ -1889,12 +1926,14 @@ async def export_table_csv(
     table: str = Query(description="Bare table name to export (e.g. doc_patient)"),
     timeout_seconds: int = Query(default=120, ge=1, le=600),
     filename: str | None = Query(default=None, description="Download filename"),
+    identity: UserIdentity = Depends(require_api_key),
 ):
     """Export a full reporting table as streaming CSV.
 
     ``namespace`` is required (CASE-628): the table lives in that namespace's
     schema.
     """
+    await check_namespace_permission(identity, namespace, "read")
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
@@ -1930,7 +1969,7 @@ async def export_table_csv(
     )
 
 
-@router.post("/export/csv")
+@router.post("/export/csv", dependencies=[_PRIVILEGED])
 async def export_query_csv(body: CsvExportQuery):
     """Export a SQL query result as streaming CSV."""
     if not state.postgres_pool:
@@ -1965,7 +2004,7 @@ async def export_query_csv(body: CsvExportQuery):
 # =============================================================================
 
 
-@router.delete("/namespace/{prefix}")
+@router.delete("/namespace/{prefix}", dependencies=[_PRIVILEGED])
 async def delete_namespace(prefix: str):
     """Delete all reporting data for a namespace.
 
@@ -2036,7 +2075,7 @@ class RegisterViewRequest(StrictModel):
 _PG_DEPENDENT_OBJECTS = "2BP01"
 
 
-@router.post("/namespace/{prefix}/views")
+@router.post("/namespace/{prefix}/views", dependencies=[_PRIVILEGED])
 async def register_view(prefix: str, body: RegisterViewRequest, response: Response):
     """Register a named SQL view in a namespace's reporting schema.
 
@@ -2160,7 +2199,8 @@ async def register_view(prefix: str, body: RegisterViewRequest, response: Respon
                             registered_at = NOW(),
                             registered_by = EXCLUDED.registered_by
                     """,
-                    prefix, body.name, view_sql, body.registered_by,
+                    prefix, body.name, view_sql,
+                    body.registered_by or get_identity_string(),
                 )
         except asyncpg.PostgresError as e:
             status = (
@@ -2182,8 +2222,12 @@ async def register_view(prefix: str, body: RegisterViewRequest, response: Respon
 
 
 @router.get("/namespace/{prefix}/views")
-async def list_views(prefix: str):
+async def list_views(
+    prefix: str,
+    identity: UserIdentity = Depends(require_api_key),
+):
     """List all registered views for a namespace."""
+    await check_namespace_permission(identity, prefix, "read")
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
@@ -2209,7 +2253,7 @@ async def list_views(prefix: str):
     }
 
 
-@router.delete("/namespace/{prefix}/views/{view_name}")
+@router.delete("/namespace/{prefix}/views/{view_name}", dependencies=[_PRIVILEGED])
 async def delete_view(prefix: str, view_name: str):
     """Drop a registered view and its registration, atomically.
 

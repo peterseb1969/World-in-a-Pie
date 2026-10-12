@@ -1,0 +1,205 @@
+"""reporting-sync per-route authorization (CASE-851, Phase 2b C4).
+
+Every route is in ROUTES with its access group, and a completeness test
+fails when a route exists that the table does not list — a new route
+cannot skip the matrix.
+
+Groups:
+- public:        probes, answered without a key.
+- privileged:    operator and raw-SQL routes; wip-admins / wip-services only.
+- ns_read:       routes addressing one namespace; read on it required,
+                 and an invisible namespace answers 404 (existence is not
+                 leaked).
+- authenticated: any valid key. The optional-namespace listings sit here
+                 until their results are scoped to the caller's
+                 namespaces (C5).
+
+No databases run in these tests: a request that passes its gate reaches
+the handler and fails there (503, 422 or 404 for a dummy id), which is
+why "passed the gate" is asserted as "not refused" rather than as 200.
+"""
+
+import os
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from reporting_sync.main import app
+from wip_auth import clear_permission_cache
+
+ADMIN = os.environ["WIP_AUTH_LEGACY_API_KEY"]
+READER = "rs_reader_key"  # read on ns-a
+WRITER = "rs_writer_key"  # write on ns-a
+SERVICE = "rs_service_key"  # wip-services, no namespace grants
+NOTHING = "rs_nothing_key"  # read on ns-z only
+
+P = "/api/reporting-sync"
+
+# (method, path template, group, concrete path for namespace ns-a or None)
+ROUTES = [
+    ("GET", "/health", "public", None),
+    ("GET", f"{P}/health", "public", None),
+    ("GET", f"{P}/", "public", None),
+    ("GET", f"{P}/status", "authenticated", None),
+    ("GET", f"{P}/parity", "ns_read", f"{P}/parity?namespace={{ns}}"),
+    ("GET", f"{P}/metrics", "privileged", None),
+    ("GET", f"{P}/metrics/consumer", "privileged", None),
+    ("GET", f"{P}/alerts", "privileged", None),
+    ("PUT", f"{P}/alerts/config", "privileged", None),
+    ("POST", f"{P}/alerts/test", "privileged", None),
+    ("GET", f"{P}/table-name", "ns_read",
+     f"{P}/table-name?namespace={{ns}}&template_value=PATIENT"),
+    ("GET", f"{P}/schema/{{template_value}}", "ns_read",
+     f"{P}/schema/PATIENT?namespace={{ns}}"),
+    ("POST", f"{P}/sync/batch/terminologies", "privileged", None),
+    ("POST", f"{P}/sync/batch/terms", "privileged", None),
+    ("POST", f"{P}/sync/batch/term_relations", "privileged", None),
+    ("POST", f"{P}/sync/batch/templates", "privileged", None),
+    ("POST", f"{P}/sync/batch", "privileged", None),
+    ("GET", f"{P}/sync/batch/jobs", "privileged", None),
+    ("GET", f"{P}/sync/batch/jobs/{{job_id}}", "privileged", None),
+    ("POST", f"{P}/sync/batch/{{template_value}}", "privileged", None),
+    ("DELETE", f"{P}/sync/batch/jobs/{{job_id}}", "privileged", None),
+    ("DELETE", f"{P}/sync/batch/jobs", "privileged", None),
+    ("GET", f"{P}/health/integrity", "privileged", None),
+    ("POST", f"{P}/search", "authenticated", None),
+    ("GET", f"{P}/activity/recent", "authenticated", None),
+    ("GET", f"{P}/references/term/{{term_id}}/documents", "authenticated", None),
+    ("GET", f"{P}/entity/{{entity_type}}/{{entity_id}}/references", "authenticated", None),
+    ("GET", f"{P}/entity/{{entity_type}}/{{entity_id}}/referenced-by", "authenticated", None),
+    ("GET", f"{P}/tables", "authenticated", None),
+    ("POST", f"{P}/query", "privileged", None),
+    ("GET", f"{P}/export/csv", "ns_read",
+     f"{P}/export/csv?namespace={{ns}}&table=doc_patient"),
+    ("POST", f"{P}/export/csv", "privileged", None),
+    ("DELETE", f"{P}/namespace/{{prefix}}", "privileged", None),
+    ("POST", f"{P}/namespace/{{prefix}}/views", "privileged", None),
+    ("GET", f"{P}/namespace/{{prefix}}/views", "ns_read", f"{P}/namespace/{{ns}}/views"),
+    ("DELETE", f"{P}/namespace/{{prefix}}/views/{{view_name}}", "privileged", None),
+]
+
+
+def _concrete(template: str) -> str:
+    """Fill path parameters with dummy values (namespace params get ns-a)."""
+    return (
+        template.replace("{prefix}", "ns-a")
+        .replace("{job_id}", "job-1")
+        .replace("{template_value}", "PATIENT")
+        .replace("{term_id}", "term-1")
+        .replace("{entity_type}", "documents")
+        .replace("{entity_id}", "doc-1")
+        .replace("{view_name}", "v_x")
+    )
+
+
+async def _call(method: str, path: str, key: str | None) -> int:
+    headers = {"X-API-Key": key} if key else {}
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as c:
+        return (await c.request(method, path)).status_code
+
+
+@pytest.fixture(autouse=True)
+def _fresh_permission_cache():
+    clear_permission_cache()
+    yield
+    clear_permission_cache()
+
+
+def _of(group: str):
+    return [r for r in ROUTES if r[2] == group]
+
+
+def test_matrix_lists_every_route():
+    """A route missing from ROUTES fails here, so the matrix stays complete."""
+    in_app = set()
+    for template, item in app.openapi()["paths"].items():
+        for method in item:
+            if method in ("get", "put", "post", "delete", "patch"):
+                in_app.add((method.upper(), template))
+    in_app.add(("GET", f"{P}/"))  # hidden-from-schema roots are not listed there
+    in_matrix = {(m, t) for m, t, _, _ in ROUTES}
+    assert in_app - in_matrix == set(), "routes missing from the matrix"
+    assert in_matrix - in_app == set(), "matrix rows for routes that no longer exist"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,template,group,_", _of("privileged"))
+async def test_privileged_routes(method, template, group, _):
+    path = _concrete(template)
+    assert await _call(method, path, None) == 401
+    for key in (READER, WRITER, NOTHING):
+        assert await _call(method, path, key) == 403, key
+    for key in (SERVICE, ADMIN):
+        assert await _call(method, path, key) not in (401, 403), key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,template,group,ns_path", _of("ns_read"))
+async def test_namespace_read_routes(method, template, group, ns_path):
+    own = ns_path.format(ns="ns-a")
+    other = ns_path.format(ns="ns-b")
+    assert await _call(method, own, None) == 401
+    # read on ns-a passes the gate (and then fails on missing infrastructure)
+    for key in (READER, WRITER, ADMIN):
+        assert await _call(method, own, key) not in (401, 403, 404), key
+    # a namespace the caller cannot see is reported as not found
+    assert await _call(method, other, READER) == 404
+    assert await _call(method, own, NOTHING) == 404
+    # a service key without grants has no namespace access
+    assert await _call(method, own, SERVICE) == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,template,group,_", _of("authenticated"))
+async def test_authenticated_routes(method, template, group, _):
+    path = _concrete(template)
+    assert await _call(method, path, None) == 401
+    for key in (READER, SERVICE, ADMIN):
+        assert await _call(method, path, key) not in (401, 403), key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,template,group,_", _of("public"))
+async def test_public_routes(method, template, group, _):
+    assert await _call(method, template, None) == 200
+
+
+@pytest.mark.asyncio
+async def test_writer_cannot_register_views():
+    """View SQL is raw SQL: namespace write is not enough to register one."""
+    path = f"{P}/namespace/ns-a/views"
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            path,
+            headers={"X-API-Key": WRITER},
+            json={"name": "v_x", "sql": "SELECT 1"},
+        )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_status_hides_drops_outside_the_callers_namespaces(monkeypatch):
+    from datetime import UTC, datetime
+
+    from reporting_sync.main import state
+    from reporting_sync.models import DroppedEvent
+
+    def drop(ns):
+        return DroppedEvent(
+            event_type="document.created", entity_id=f"doc-{ns}", namespace=ns,
+            error="x", deliveries=5, dropped_at=datetime.now(UTC),
+        )
+
+    monkeypatch.setattr(
+        state.sync_status, "recent_drops", [drop("ns-a"), drop("ns-b"), drop(None)]
+    )
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        reader = (await c.get(f"{P}/status", headers={"X-API-Key": READER})).json()
+        admin = (await c.get(f"{P}/status", headers={"X-API-Key": ADMIN})).json()
+    assert [d["namespace"] for d in reader["recent_drops"]] == ["ns-a"]
+    assert len(admin["recent_drops"]) == 3
+    # the shared status object is not mutated by a filtered response
+    assert len(state.sync_status.recent_drops) == 3

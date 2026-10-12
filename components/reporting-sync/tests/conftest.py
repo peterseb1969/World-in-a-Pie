@@ -7,6 +7,7 @@ is available, enabling integration and E2E tests.
 
 import asyncio
 import contextlib
+import json
 import os
 
 import asyncpg
@@ -24,6 +25,20 @@ import pytest_asyncio
 # alone because the live-pipeline availability checks below read it.
 os.environ.setdefault("WIP_AUTH_LEGACY_API_KEY", "rs_test_admin_key")
 os.environ.setdefault("WIP_AUTH_REGISTRY_URL", "http://registry.invalid")
+# Non-admin keys for the authorization matrix. Config-file keys that declare
+# `grants` resolve their permissions locally (no Registry call), so these
+# give real permission decisions in-process. rs-service mirrors a
+# wip-services key with no namespace grants.
+os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([
+    {"name": "rs-reader", "key": "rs_reader_key", "owner": "rs-reader",
+     "groups": [], "namespaces": ["ns-a"], "grants": {"ns-a": "read"}},
+    {"name": "rs-writer", "key": "rs_writer_key", "owner": "rs-writer",
+     "groups": [], "namespaces": ["ns-a"], "grants": {"ns-a": "write"}},
+    {"name": "rs-service", "key": "rs_service_key", "owner": "rs-service",
+     "groups": ["wip-services"], "grants": {}},
+    {"name": "rs-nothing", "key": "rs_nothing_key", "owner": "rs-nothing",
+     "groups": [], "namespaces": ["ns-z"], "grants": {"ns-z": "read"}},
+]))
 
 # Connection URIs for integration tests (set in CI or locally)
 POSTGRES_TEST_URI = os.environ.get(
