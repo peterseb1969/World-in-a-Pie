@@ -171,7 +171,7 @@ async def check_namespace_parity(
     async with pool.acquire() as conn:
         try:
             await conn.fetchval(
-                "SELECT count(*) FROM _wip_schema_migrations WHERE namespace = $1",
+                "SELECT count(*) FROM public._wip_schema_migrations WHERE namespace = $1",
                 namespace,
             )
         except asyncpg.UndefinedColumnError:
@@ -231,7 +231,7 @@ async def check_namespace_parity(
             if result.bookkeeping_tables_ok:
                 async with pool.acquire() as conn:
                     row.bookkeeping_row = bool(await conn.fetchval(
-                        "SELECT EXISTS (SELECT 1 FROM _wip_schema_migrations "
+                        "SELECT EXISTS (SELECT 1 FROM public._wip_schema_migrations "
                         "WHERE namespace = $1 AND template_value = $2)",
                         namespace, template_value,
                     ))

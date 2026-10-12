@@ -41,6 +41,7 @@ from wip_auth.startup import retry_async
 
 from . import __version__
 from .batch_sync import BatchSyncService
+from .bookkeeping import repair_bookkeeping_location
 from .config import settings
 from .metrics import metrics
 from .models import (
@@ -237,13 +238,19 @@ async def connect_postgres() -> asyncpg.Pool:
 
 
 async def init_postgres_schema(pool: asyncpg.Pool) -> None:
-    """Initialize PostgreSQL schema (migration tracking table, etc.)."""
+    """Initialize PostgreSQL schema (migration tracking table, etc.).
+
+    Every bookkeeping table is schema-qualified with ``public``: an
+    unqualified name resolves through search_path ("$user", public), and a
+    namespace schema named like the login role would capture it (see
+    bookkeeping.py, which moves an existing install's copies back first).
+    """
     async with pool.acquire() as conn:
         # Create schema migrations tracking table. Keyed on
         # (namespace, template_value, version): template_value is unique only
         # per namespace (CASE-628), so the namespace is part of the key.
         await conn.execute("""
-            CREATE TABLE IF NOT EXISTS _wip_schema_migrations (
+            CREATE TABLE IF NOT EXISTS public._wip_schema_migrations (
                 namespace VARCHAR(255) NOT NULL DEFAULT 'wip',
                 template_value TEXT NOT NULL,
                 template_version INTEGER NOT NULL,
@@ -257,7 +264,7 @@ async def init_postgres_schema(pool: asyncpg.Pool) -> None:
         # template_value) — template_value is unique only per namespace
         # (CASE-628).
         await conn.execute("""
-            CREATE TABLE IF NOT EXISTS _wip_sync_status (
+            CREATE TABLE IF NOT EXISTS public._wip_sync_status (
                 namespace VARCHAR(255) NOT NULL DEFAULT 'wip',
                 template_value TEXT NOT NULL,
                 last_sync_at TIMESTAMP WITH TIME ZONE,
@@ -273,11 +280,7 @@ async def init_postgres_schema(pool: asyncpg.Pool) -> None:
         # and after entity-view rebuilds. After a full schema reset the
         # authoritative recovery is the app's bootstrap re-registration.
         # Keyed on (namespace, view_name) — view names are unique per
-        # namespace schema. Schema-qualified `public.` on every access: an
-        # unqualified name resolves through search_path ("$user", public),
-        # and once a namespace schema matching the connection's user name
-        # exists (the default user IS `wip`), unqualified DDL lands a
-        # shadow copy there that silently splits the bookkeeping.
+        # namespace schema.
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS public._wip_views (
                 namespace VARCHAR(255) NOT NULL,
@@ -413,18 +416,24 @@ async def lifespan(app: FastAPI):
 
     try:
         # Connect to PostgreSQL with retry — same reasoning as NATS above.
-        state.postgres_pool = await retry_async(
+        pool = await retry_async(
             connect_postgres,
             retry_on=(ConnectionRefusedError, OSError),
             description="PostgreSQL connect",
         )
+        state.postgres_pool = pool
         state.sync_status.connected_to_postgres = True
+
+        # Bookkeeping that an older build left in the login role's schema
+        # moves back to public before anything reads or recreates it.
+        async with pool.acquire() as conn:
+            await repair_bookkeeping_location(conn)
 
         # Initialize schema (bookkeeping tables only). Per-namespace metadata
         # and document tables are created lazily inside each namespace's schema
         # on first sync (CASE-628) — there is no global pre-creation.
-        await init_postgres_schema(state.postgres_pool)
-        await _recreate_registered_views(state.postgres_pool)
+        await init_postgres_schema(pool)
+        await _recreate_registered_views(pool)
     except Exception as e:
         logger.error(f"Failed to connect to PostgreSQL: {e}")
         state.sync_status.connected_to_postgres = False
@@ -2115,25 +2124,15 @@ async def delete_namespace(prefix: str):
     total_deleted = await sm.drop_namespace_schema(prefix)
 
     async with state.postgres_pool.acquire() as conn:
-        # Clear the namespace's rows from the shared bookkeeping tables (these
-        # live in public, keyed by namespace — see init_postgres_schema).
+        # Clear the namespace's rows from the shared bookkeeping tables (all
+        # in public, keyed by namespace — see init_postgres_schema).
         # asyncpg returns a "DELETE <n>" status string; fold those rows into
-        # the audit total. The first two stay unqualified deliberately: on
-        # installs where a schema matching the connection's user name exists
-        # (the default user IS `wip`), their LIVE rows sit in a search_path
-        # shadow copy of the table, and qualifying the delete would miss
-        # them — the shadow split itself is a separate open defect.
-        # _wip_views post-dates that discovery and is public-qualified on
-        # every access, so it is cleaned explicitly.
-        for table in ("_wip_schema_migrations", "_wip_sync_status"):
+        # the audit total.
+        for table in ("_wip_schema_migrations", "_wip_sync_status", "_wip_views"):
             status = await conn.execute(
-                f"DELETE FROM {table} WHERE namespace = $1", prefix
+                f"DELETE FROM public.{table} WHERE namespace = $1", prefix
             )
             total_deleted += int(status.rsplit(" ", 1)[-1])
-        status = await conn.execute(
-            "DELETE FROM public._wip_views WHERE namespace = $1", prefix
-        )
-        total_deleted += int(status.rsplit(" ", 1)[-1])
 
     logger.info(f"Namespace {prefix} reporting schema dropped ({schema})")
     return {"namespace": prefix, "dropped_schema": schema, "total_deleted": total_deleted}

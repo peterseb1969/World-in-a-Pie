@@ -632,7 +632,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
             # must include the namespace or two namespaces' migrations collide.
             await conn.execute(
                 """
-                INSERT INTO _wip_schema_migrations
+                INSERT INTO public._wip_schema_migrations
                     (namespace, template_value, template_version, migration_sql)
                 VALUES ($1, $2, $3, $4)
                 ON CONFLICT (namespace, template_value, template_version) DO NOTHING
@@ -774,7 +774,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
                 migration_sql = ";\n".join(migrations)
                 await conn.execute(
                     """
-                    INSERT INTO _wip_schema_migrations
+                    INSERT INTO public._wip_schema_migrations
                         (namespace, template_value, template_version, migration_sql)
                     VALUES ($1, $2, $3, $4)
                     ON CONFLICT (namespace, template_value, template_version) DO UPDATE
