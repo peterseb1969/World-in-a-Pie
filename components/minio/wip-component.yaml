@@ -10,11 +10,13 @@ metadata:
 
 spec:
   image:
-    # MinIO no longer publishes images: docker.io/minio/minio:latest stopped
-    # pulling (the registry answers with an HTML document), so a fresh
-    # install could not start this component. Pinned to the last release
-    # published on quay.io until object storage moves off MinIO.
-    name: quay.io/minio/minio
+    # MinIO no longer publishes images anonymously: docker.io/minio/minio
+    # answers with an HTML document and quay.io/minio/minio with 401, so a
+    # node without a cached copy cannot start this component. This is our
+    # own copy of the last release in use, pushed from a cached image. It
+    # is arm64-only — an amd64 cluster needs a multi-arch copy. Kept until
+    # object storage moves off MinIO.
+    name: ghcr.io/peterseb1969/minio
     tag: RELEASE.2025-09-07T16-13-09Z
 
   ports:
