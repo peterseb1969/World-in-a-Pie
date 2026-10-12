@@ -7,6 +7,7 @@ DROP+CREATE replace semantics, and the transactional delete that keeps
 the bookkeeping row when the DROP fails. Provenance: CASE-839.
 """
 
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
@@ -63,7 +64,11 @@ def mock_state():
 @pytest.fixture
 def http_client():
     transport = ASGITransport(app=app)
-    return AsyncClient(transport=transport, base_url="http://test")
+    return AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-API-Key": os.environ["WIP_AUTH_LEGACY_API_KEY"]},
+    )
 
 
 def _executed_sql(conn) -> list[str]:

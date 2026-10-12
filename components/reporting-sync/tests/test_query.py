@@ -1,5 +1,6 @@
 """Tests for reporting query and batch sync endpoints."""
 
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -40,7 +41,11 @@ def mock_state():
 def http_client():
     """Create a test HTTP client."""
     transport = ASGITransport(app=app)
-    return AsyncClient(transport=transport, base_url="http://test")
+    return AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-API-Key": os.environ["WIP_AUTH_LEGACY_API_KEY"]},
+    )
 
 
 # =========================================================================

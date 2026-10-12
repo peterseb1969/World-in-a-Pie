@@ -18,12 +18,18 @@ from typing import Any
 import asyncpg
 import httpx
 import nats
-from fastapi import APIRouter, FastAPI, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from nats.js import JetStreamContext
 from pydantic import BaseModel, Field
 
-from wip_auth import build_metadata, declare_api_key_security
+from wip_auth import (
+    build_metadata,
+    declare_api_key_security,
+    require_api_key,
+    setup_auth,
+    setup_key_sync,
+)
 from wip_auth.ratelimit import setup_rate_limiting
 from wip_auth.security import check_production_security
 from wip_auth.startup import retry_async
@@ -459,12 +465,21 @@ async def lifespan(app: FastAPI):
     state.alert_check_task = asyncio.create_task(run_alert_check_loop())
     logger.info("Alert check loop started")
 
+    # Pick up runtime API keys (created via the Registry) the same way the
+    # other services do; REGISTRY_URL / REGISTRY_API_KEY come from the env.
+    key_sync = await setup_key_sync(_providers)
+    if key_sync:
+        logger.info("Key sync started (polling Registry for runtime API keys)")
+
     logger.info(f"{settings.service_name} started successfully")
 
     yield
 
     # Shutdown
     logger.info(f"Shutting down {settings.service_name}...")
+
+    if key_sync:
+        await key_sync.stop()
 
     # Cancel alert check task
     if state.alert_check_task:
@@ -505,10 +520,19 @@ app = FastAPI(
     docs_url="/docs",
 )
 
+# Authentication (reads WIP_AUTH_* env vars, falls back to API_KEY). The
+# middleware only IDENTIFIES the caller; enforcement is the router-level
+# require_api_key below. Probes live on the app, outside the router, and the
+# prefixed health route is exempted here so a stale or missing key on a
+# monitor does not turn into a 401.
+_providers = setup_auth(app, public_paths=["/api/reporting-sync/health"])
+
 # Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
 setup_rate_limiting(app)
 
-router = APIRouter(prefix="/api/reporting-sync")
+router = APIRouter(
+    prefix="/api/reporting-sync", dependencies=[Depends(require_api_key)]
+)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -548,9 +572,13 @@ async def health_check() -> HealthResponse:
 
 
 # Also expose /health under the api-prefix so external callers through
-# Caddy can reach it. Root /health stays for direct container probes.
-router.add_api_route(
-    "/health", health_check, methods=["GET"], response_model=HealthResponse,
+# the ingress can reach it. Root /health stays for direct container probes.
+# Registered on the app, not the router: every router route requires a key.
+app.add_api_route(
+    "/api/reporting-sync/health",
+    health_check,
+    methods=["GET"],
+    response_model=HealthResponse,
 )
 
 
@@ -2234,7 +2262,9 @@ async def delete_view(prefix: str, view_name: str):
     return {"namespace": prefix, "name": view_name, "dropped": True}
 
 
-@router.get("/")
+# On the app, not the router: a public build-provenance probe, like the other
+# services' prefixed roots.
+@app.get("/api/reporting-sync/")
 async def root():
     """Root endpoint."""
     return {

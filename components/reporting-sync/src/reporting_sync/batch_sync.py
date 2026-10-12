@@ -476,7 +476,7 @@ class BatchSyncService:
                 # parity waits for the active one's halted a restore at the
                 # 30s gate. Documents pinned to inactive versions are
                 # unaffected: their tables materialize lazily per page below.
-                eager_template = template
+                eager_template: dict[str, Any] | None = template
                 eager_version = latest_version
                 # Absent status means active (the platform default) — only a
                 # template explicitly deactivated triggers the re-fetch.

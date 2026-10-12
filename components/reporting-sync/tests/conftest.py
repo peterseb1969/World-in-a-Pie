@@ -14,6 +14,17 @@ import nats
 import pytest
 import pytest_asyncio
 
+# Authentication for in-process app tests. reporting_sync.main calls
+# setup_auth at import, which captures the keys from the environment, so
+# this must run before any test module imports the app (conftest is
+# imported first). The admin key is set as the wip-auth legacy key, not
+# API_KEY: API_KEY is also the outbound key the live pipeline tests send
+# to real services. Permission lookups go to an unroutable Registry URL,
+# so they fail closed instead of reaching the network; REGISTRY_URL is left
+# alone because the live-pipeline availability checks below read it.
+os.environ.setdefault("WIP_AUTH_LEGACY_API_KEY", "rs_test_admin_key")
+os.environ.setdefault("WIP_AUTH_REGISTRY_URL", "http://registry.invalid")
+
 # Connection URIs for integration tests (set in CI or locally)
 POSTGRES_TEST_URI = os.environ.get(
     "POSTGRES_TEST_URI",

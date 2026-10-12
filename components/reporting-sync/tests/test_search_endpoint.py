@@ -17,6 +17,7 @@ integration suite (which needs a live Postgres + reporting-sync stack).
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -525,7 +526,11 @@ async def _post_search(params: str, body: dict) -> SearchRequest:
     captured_search_service fixture records the resulting SearchRequest."""
     from reporting_sync.main import app
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-API-Key": os.environ["WIP_AUTH_LEGACY_API_KEY"]},
+    ) as client:
         resp = await client.post(f"/api/reporting-sync/search{params}", json=body)
     assert resp.status_code == 200, resp.text
     return resp

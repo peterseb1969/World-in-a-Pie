@@ -18,6 +18,7 @@ Pins:
    depend on page order across versions, not on which version is latest.
 """
 
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -49,7 +50,11 @@ def mock_state():
 @pytest.fixture
 def http_client():
     transport = ASGITransport(app=app)
-    return AsyncClient(transport=transport, base_url="http://test")
+    return AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-API-Key": os.environ["WIP_AUTH_LEGACY_API_KEY"]},
+    )
 
 
 @pytest.fixture

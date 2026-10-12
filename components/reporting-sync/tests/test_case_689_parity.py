@@ -12,12 +12,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from reporting_sync.models import FieldType, ReportingConfig
+from reporting_sync.models import ReportingConfig
 from reporting_sync.parity import check_namespace_parity
 from reporting_sync.schema_manager import SchemaManager
 
 from .conftest import requires_postgres
-
 
 # ---------------------------------------------------------------------------
 # Unit: the expected-column oracle

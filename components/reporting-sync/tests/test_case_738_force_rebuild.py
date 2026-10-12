@@ -15,6 +15,7 @@ drops), and the dedup interaction (an active job wins over force, loudly —
 never silently). The drop DDL itself is pinned in test_integration.py.
 """
 
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -204,7 +205,11 @@ class TestForceVsDedup:
 @pytest.fixture
 def http_client():
     transport = ASGITransport(app=app)
-    return AsyncClient(transport=transport, base_url="http://test")
+    return AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-API-Key": os.environ["WIP_AUTH_LEGACY_API_KEY"]},
+    )
 
 
 @pytest.fixture

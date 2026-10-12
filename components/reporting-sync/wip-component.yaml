@@ -30,6 +30,11 @@ spec:
       - {name: DEF_STORE_URL, source: {from_component: def-store}}
       - {name: TEMPLATE_STORE_URL, source: {from_component: template-store}}
       - {name: DOCUMENT_STORE_URL, source: {from_component: document-store}}
+      # Namespace authorization and runtime-key sync ask the Registry
+      # (check_namespace_permission / setup_key_sync). Without these the
+      # permission lookups fail closed and runtime keys never arrive.
+      - {name: REGISTRY_URL, source: {from_component: registry}}
+      - {name: REGISTRY_API_KEY, source: {from_secret: api-key}}
       - {name: MASTER_API_KEY, source: {from_secret: api-key}}
       # Outbound credential reporting-sync uses for ALL service-to-service
       # HTTP calls (def-store, template-store, document-store). The
@@ -54,7 +59,7 @@ spec:
   routes:
     - {path: /api/reporting-sync, auth_required: false}
 
-  depends_on: [nats, postgres, def-store, template-store, document-store]
+  depends_on: [nats, postgres, registry, def-store, template-store, document-store]
 
   healthcheck:
     endpoint: /health
