@@ -18,6 +18,8 @@ this contract, not the other way round: array rows would have broken every
 working consumer).
 """
 
+import os
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -29,8 +31,14 @@ from .conftest import requires_postgres
 
 @pytest_asyncio.fixture
 def http_client():
+    # /query and the views routes are privileged (Phase 2b C4) — the client
+    # carries the test admin key, same idiom as the registered-views tests.
     transport = ASGITransport(app=app)
-    return AsyncClient(transport=transport, base_url="http://test")
+    return AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-API-Key": os.environ["WIP_AUTH_LEGACY_API_KEY"]},
+    )
 
 
 @pytest_asyncio.fixture
