@@ -55,10 +55,11 @@ def _mock_pool():
 @pytest.fixture
 def mock_state():
     pool, conn = _mock_pool()
-    original_pool = state.postgres_pool
-    state.postgres_pool = pool
+    original_pool, original_read = state.postgres_pool, state.read_pool
+    # Role separation is not under test here: one pool serves both.
+    state.postgres_pool = state.read_pool = pool
     yield pool, conn
-    state.postgres_pool = original_pool
+    state.postgres_pool, state.read_pool = original_pool, original_read
 
 
 @pytest.fixture
@@ -336,10 +337,11 @@ def test_is_reserved_relation_name(name, reserved):
 async def real_state(pg_pool):
     """Point the app's global state at the real test pool."""
     await init_postgres_schema(pg_pool)
-    original_pool = state.postgres_pool
-    state.postgres_pool = pg_pool
+    original_pool, original_read = state.postgres_pool, state.read_pool
+    # Role separation is not under test here: one pool serves both.
+    state.postgres_pool = state.read_pool = pg_pool
     yield pg_pool
-    state.postgres_pool = original_pool
+    state.postgres_pool, state.read_pool = original_pool, original_read
 
 
 async def _seed_version_table(pool, namespace: str = "clintrial") -> None:

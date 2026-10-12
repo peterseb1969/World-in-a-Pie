@@ -27,6 +27,16 @@ class Settings(BaseSettings):
     postgres_password: str = Field(default="wip_dev_password", alias="POSTGRES_PASSWORD")
     postgres_pool_min: int = Field(default=2, alias="POSTGRES_POOL_MIN")
     postgres_pool_max: int = Field(default=10, alias="POSTGRES_POOL_MAX")
+    # The service's own roles (see pg_roles.py). POSTGRES_USER above is the
+    # bootstrap login, used only at startup to provision these two; requests
+    # are served by the owner and reader pools. Empty passwords mean "not
+    # configured" — the service then refuses to serve PostgreSQL rather than
+    # falling back to the bootstrap superuser.
+    postgres_owner_user: str = Field(default="wip_sync_owner", alias="POSTGRES_SYNC_OWNER_USER")
+    postgres_owner_password: str = Field(default="", alias="POSTGRES_SYNC_OWNER_PASSWORD")
+    postgres_read_user: str = Field(default="wip_reporting_read", alias="POSTGRES_READ_USER")
+    postgres_read_password: str = Field(default="", alias="POSTGRES_READ_PASSWORD")
+    postgres_read_pool_max: int = Field(default=5, alias="POSTGRES_READ_POOL_MAX")
 
     # Template Store API (for fetching template definitions)
     template_store_url: str = Field(

@@ -57,6 +57,7 @@ from .models import (
     SyncStatus,
 )
 from .parity import NamespaceParityResult, check_namespace_parity
+from .pg_roles import RoleSpec, is_privileged, provision_roles
 from .schema_manager import SchemaManager
 from .search_service import (
     ActivityResponse,
@@ -83,7 +84,10 @@ class AppState:
 
     nats_client: nats.NATS | None = None
     jetstream: JetStreamContext | None = None
+    # Owner pool: the sync pipeline, DDL and bookkeeping. Reader pool:
+    # caller-driven SQL (raw query, exports, view validation, search).
     postgres_pool: asyncpg.Pool | None = None
+    read_pool: asyncpg.Pool | None = None
     sync_task: asyncio.Task | None = None
     alert_check_task: asyncio.Task | None = None
     initial_sync_task: asyncio.Task | None = None
@@ -219,22 +223,95 @@ async def connect_nats() -> tuple[nats.NATS, JetStreamContext]:
     return nc, js
 
 
-async def connect_postgres() -> asyncpg.Pool:
-    """Connect to PostgreSQL and return connection pool."""
+class ServiceRolesError(RuntimeError):
+    """The service roles are missing, unprovisionable or privileged.
+
+    Never retried and never worked around by falling back to the bootstrap
+    superuser: the service stops serving PostgreSQL and reports unhealthy.
+    """
+
+
+async def connect_postgres() -> tuple[asyncpg.Pool, asyncpg.Pool]:
+    """Provision the service roles, then open the owner and reader pools.
+
+    The bootstrap login (POSTGRES_USER) is used on one connection that is
+    closed before any pool opens: it repairs the bookkeeping location (C7),
+    then creates or normalises the two service roles (pg_roles.py). A
+    bootstrap login without superuser rights cannot provision; the roles
+    must then already exist. Both pools are checked to be unprivileged.
+    """
+    if not (settings.postgres_owner_password and settings.postgres_read_password):
+        raise ServiceRolesError(
+            "POSTGRES_SYNC_OWNER_PASSWORD / POSTGRES_READ_PASSWORD are not set — "
+            "re-render the install so the deployer generates them"
+        )
+    endpoint = {
+        "host": settings.postgres_host,
+        "port": settings.postgres_port,
+        "database": settings.postgres_db,
+    }
     logger.info(
         f"Connecting to PostgreSQL at {settings.postgres_host}:{settings.postgres_port}..."
     )
-    pool = await asyncpg.create_pool(
-        host=settings.postgres_host,
-        port=settings.postgres_port,
-        database=settings.postgres_db,
-        user=settings.postgres_user,
-        password=settings.postgres_password,
+
+    bootstrap = await asyncpg.connect(
+        **endpoint, user=settings.postgres_user, password=settings.postgres_password
+    )
+    try:
+        await repair_bookkeeping_location(bootstrap)
+        if await bootstrap.fetchval(
+            "SELECT rolsuper FROM pg_roles WHERE rolname = current_user"
+        ):
+            await provision_roles(bootstrap, RoleSpec(
+                owner=settings.postgres_owner_user,
+                owner_password=settings.postgres_owner_password,
+                reader=settings.postgres_read_user,
+                reader_password=settings.postgres_read_password,
+            ))
+        else:
+            logger.warning(
+                "Bootstrap login %s is not a superuser: skipping role "
+                "provisioning; %s and %s must already exist",
+                settings.postgres_user,
+                settings.postgres_owner_user,
+                settings.postgres_read_user,
+            )
+    finally:
+        await bootstrap.close()
+
+    owner = await asyncpg.create_pool(
+        **endpoint,
+        user=settings.postgres_owner_user,
+        password=settings.postgres_owner_password,
         min_size=settings.postgres_pool_min,
         max_size=settings.postgres_pool_max,
     )
-    logger.info("Connected to PostgreSQL")
-    return pool
+    try:
+        reader = await asyncpg.create_pool(
+            **endpoint,
+            user=settings.postgres_read_user,
+            password=settings.postgres_read_password,
+            min_size=1,
+            max_size=settings.postgres_read_pool_max,
+        )
+    except BaseException:
+        await owner.close()
+        raise
+    for label, pool in (("owner", owner), ("reader", reader)):
+        async with pool.acquire() as conn:
+            privileged = await is_privileged(conn)
+        if privileged:
+            await owner.close()
+            await reader.close()
+            raise ServiceRolesError(
+                f"the {label} pool's role is a superuser or can create roles; "
+                "refusing to serve requests with it"
+            )
+    logger.info(
+        "Connected to PostgreSQL as %s (owner) and %s (reader)",
+        settings.postgres_owner_user, settings.postgres_read_user,
+    )
+    return owner, reader
 
 
 async def init_postgres_schema(pool: asyncpg.Pool) -> None:
@@ -416,24 +493,25 @@ async def lifespan(app: FastAPI):
 
     try:
         # Connect to PostgreSQL with retry — same reasoning as NATS above.
-        pool = await retry_async(
+        pool, read_pool = await retry_async(
             connect_postgres,
             retry_on=(ConnectionRefusedError, OSError),
             description="PostgreSQL connect",
         )
         state.postgres_pool = pool
+        state.read_pool = read_pool
         state.sync_status.connected_to_postgres = True
-
-        # Bookkeeping that an older build left in the login role's schema
-        # moves back to public before anything reads or recreates it.
-        async with pool.acquire() as conn:
-            await repair_bookkeeping_location(conn)
+        state.sync_status.postgres_service_roles_ok = True
 
         # Initialize schema (bookkeeping tables only). Per-namespace metadata
         # and document tables are created lazily inside each namespace's schema
         # on first sync (CASE-628) — there is no global pre-creation.
         await init_postgres_schema(pool)
         await _recreate_registered_views(pool)
+    except ServiceRolesError as e:
+        logger.critical(f"PostgreSQL service roles unusable: {e}")
+        state.sync_status.connected_to_postgres = False
+        state.sync_status.postgres_service_roles_ok = False
     except Exception as e:
         logger.error(f"Failed to connect to PostgreSQL: {e}")
         state.sync_status.connected_to_postgres = False
@@ -455,7 +533,7 @@ async def lifespan(app: FastAPI):
         logger.info("Initial metadata sync scheduled (background)")
 
     # Initialize search service (works with or without PostgreSQL)
-    state.search_service = SearchService(state.postgres_pool)
+    state.search_service = SearchService(state.read_pool)
     logger.info("Search service initialized")
 
     # Start the sync worker task if both connections are up
@@ -514,6 +592,8 @@ async def lifespan(app: FastAPI):
             await state.initial_sync_task
 
     # Close connections
+    if state.read_pool:
+        await state.read_pool.close()
     if state.postgres_pool:
         await state.postgres_pool.close()
         logger.info("PostgreSQL connection closed")
@@ -591,8 +671,13 @@ async def _effective_namespace(
 
 
 @app.get("/health", response_model=HealthResponse)
-async def health_check() -> HealthResponse:
-    """Health check endpoint."""
+async def health_check(response: Response) -> HealthResponse:
+    """Health check endpoint.
+
+    Unusable service roles answer 503, not "degraded" 200: they are a
+    deployment fault that container health must surface, not a transient
+    outage the service waits out.
+    """
     nats_ok = state.nats_client is not None and state.nats_client.is_connected
     postgres_ok = state.postgres_pool is not None
 
@@ -605,7 +690,10 @@ async def health_check() -> HealthResponse:
         except Exception:
             postgres_ok = False
 
-    if nats_ok and postgres_ok:
+    if state.sync_status.postgres_service_roles_ok is False:
+        status = "unhealthy"
+        response.status_code = 503
+    elif nats_ok and postgres_ok:
         status = "healthy"
     elif nats_ok or postgres_ok:
         status = "degraded"
@@ -1890,7 +1978,7 @@ _DANGEROUS_SQL_RE = re.compile(
 @router.post("/query", dependencies=[_PRIVILEGED])
 async def execute_query(body: ReportQuery):
     """Execute a read-only SQL query against the reporting database."""
-    if not state.postgres_pool:
+    if not state.read_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
     # Safety: reject write/DDL statements
@@ -1932,10 +2020,10 @@ async def execute_query(body: ReportQuery):
         return columns, list(await stmt.fetch(*params))
 
     try:
-        assert state.postgres_pool is not None  # narrowed by postgres_ok check above
+        assert state.read_pool is not None  # narrowed above
         for attempt in (1, 2):
             try:
-                async with state.postgres_pool.acquire() as conn:
+                async with state.read_pool.acquire() as conn:
                     # Set statement timeout and read-only transaction
                     await conn.execute(
                         f"SET statement_timeout = {body.timeout_seconds * 1000}"
@@ -2041,7 +2129,7 @@ async def export_table_csv(
     schema.
     """
     await check_namespace_permission(identity, namespace, "read")
-    if not state.postgres_pool:
+    if not state.read_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
     if not _is_allowed_table(table):
@@ -2062,8 +2150,8 @@ async def export_table_csv(
     download_name = filename or f"{namespace}_{table}.csv"
 
     async def generate():
-        assert state.postgres_pool is not None
-        async with state.postgres_pool.acquire() as conn:
+        assert state.read_pool is not None
+        async with state.read_pool.acquire() as conn:
             await conn.execute(f"SET statement_timeout = {timeout_seconds * 1000}")
             await conn.execute("SET default_transaction_read_only = on")
             async for chunk in _stream_csv(conn, f'SELECT * FROM {qualified}', []):
@@ -2079,7 +2167,7 @@ async def export_table_csv(
 @router.post("/export/csv", dependencies=[_PRIVILEGED])
 async def export_query_csv(body: CsvExportQuery):
     """Export a SQL query result as streaming CSV."""
-    if not state.postgres_pool:
+    if not state.read_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
     if _DANGEROUS_SQL_RE.search(body.sql):
@@ -2090,8 +2178,8 @@ async def export_query_csv(body: CsvExportQuery):
         )
 
     async def generate():
-        assert state.postgres_pool is not None
-        async with state.postgres_pool.acquire() as conn:
+        assert state.read_pool is not None
+        async with state.read_pool.acquire() as conn:
             await conn.execute(
                 f"SET statement_timeout = {body.timeout_seconds * 1000}"
             )
@@ -2262,10 +2350,16 @@ async def register_view(prefix: str, body: RegisterViewRequest, response: Respon
         # admits exactly one SQL command — a ';'-separated second statement
         # fails at parse instead of executing — and the subselect wrap plus
         # the read-only transaction keep planning side-effect-free.
+        # Planned as the reader role: a definition may only reference what
+        # the read path can see.
+        if not state.read_pool:
+            raise HTTPException(status_code=503, detail="PostgreSQL not connected")
         try:
-            async with conn.transaction(readonly=True):
-                await conn.execute(f'SET LOCAL search_path = "{schema}", public')
-                await conn.fetch(
+            async with state.read_pool.acquire() as read_conn, read_conn.transaction(
+                readonly=True
+            ):
+                await read_conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await read_conn.fetch(
                     f"EXPLAIN SELECT * FROM ({view_sql}) _wip_view_check"
                 )
         except asyncpg.PostgresError as e:

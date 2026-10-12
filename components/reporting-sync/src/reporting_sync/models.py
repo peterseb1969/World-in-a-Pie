@@ -187,6 +187,10 @@ class SyncStatus(BaseModel):
     running: bool
     connected_to_nats: bool
     connected_to_postgres: bool
+    # True once the service runs on its own unprivileged PostgreSQL roles;
+    # False when they are unusable (not configured, not provisionable, or
+    # privileged); None before the first connection attempt.
+    postgres_service_roles_ok: bool | None = None
     last_event_processed: datetime | None = None
     events_processed: int = 0
     # Counts every failed processing attempt, including retries that later

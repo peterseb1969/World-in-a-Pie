@@ -31,10 +31,11 @@ def _mock_pool():
 def mock_state():
     """Patch the global state with a mock postgres pool."""
     pool, conn = _mock_pool()
-    original_pool = state.postgres_pool
-    state.postgres_pool = pool
+    original_pool, original_read = state.postgres_pool, state.read_pool
+    # Role separation is not under test here: one pool serves both.
+    state.postgres_pool = state.read_pool = pool
     yield pool, conn
-    state.postgres_pool = original_pool
+    state.postgres_pool, state.read_pool = original_pool, original_read
 
 
 @pytest.fixture
@@ -167,14 +168,14 @@ async def test_list_tables_detail_not_found(http_client: AsyncClient, mock_state
 @pytest.mark.asyncio
 async def test_list_tables_no_postgres(http_client: AsyncClient):
     """List tables returns 503 when PostgreSQL not connected."""
-    original = state.postgres_pool
-    state.postgres_pool = None
+    original, original_read = state.postgres_pool, state.read_pool
+    state.postgres_pool = state.read_pool = None
     try:
         async with http_client:
             response = await http_client.get("/api/reporting-sync/tables")
         assert response.status_code == 503
     finally:
-        state.postgres_pool = original
+        state.postgres_pool, state.read_pool = original, original_read
 
 
 # =========================================================================
@@ -308,8 +309,8 @@ async def test_query_truncation(http_client: AsyncClient, mock_state):
 @pytest.mark.asyncio
 async def test_query_no_postgres(http_client: AsyncClient):
     """Query returns 503 when PostgreSQL not connected."""
-    original = state.postgres_pool
-    state.postgres_pool = None
+    original, original_read = state.postgres_pool, state.read_pool
+    state.postgres_pool = state.read_pool = None
     try:
         async with http_client:
             response = await http_client.post(
@@ -318,7 +319,7 @@ async def test_query_no_postgres(http_client: AsyncClient):
             )
         assert response.status_code == 503
     finally:
-        state.postgres_pool = original
+        state.postgres_pool, state.read_pool = original, original_read
 
 
 # =========================================================================
@@ -436,14 +437,14 @@ async def test_export_query_csv_rejects_write(http_client: AsyncClient, mock_sta
 @pytest.mark.asyncio
 async def test_export_csv_no_postgres(http_client: AsyncClient):
     """Export returns 503 when PostgreSQL not connected."""
-    original = state.postgres_pool
-    state.postgres_pool = None
+    original, original_read = state.postgres_pool, state.read_pool
+    state.postgres_pool = state.read_pool = None
     try:
         async with http_client:
             response = await http_client.get("/api/reporting-sync/export/csv?namespace=wip&table=doc_patient")
         assert response.status_code == 503
     finally:
-        state.postgres_pool = original
+        state.postgres_pool, state.read_pool = original, original_read
 
 
 @pytest.mark.asyncio

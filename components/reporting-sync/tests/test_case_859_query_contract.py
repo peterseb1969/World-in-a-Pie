@@ -45,10 +45,11 @@ def http_client():
 async def real_state(pg_pool):
     """Point the app's global state at the real test pool."""
     await init_postgres_schema(pg_pool)
-    original_pool = state.postgres_pool
-    state.postgres_pool = pg_pool
+    original_pool, original_read = state.postgres_pool, state.read_pool
+    # Role separation is not under test here: one pool serves both.
+    state.postgres_pool = state.read_pool = pg_pool
     yield pg_pool
-    state.postgres_pool = original_pool
+    state.postgres_pool, state.read_pool = original_pool, original_read
 
 
 NS = "clintrial"

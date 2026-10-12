@@ -27,6 +27,11 @@ spec:
       - {name: POSTGRES_DB, source: {literal: wip_reporting}}
       - {name: POSTGRES_USER, source: {literal: wip}}
       - {name: POSTGRES_PASSWORD, source: {from_secret: postgres-password}}
+      # The service's own unprivileged roles (pg_roles.py). POSTGRES_USER /
+      # POSTGRES_PASSWORD above are the bootstrap login, used once at
+      # startup to provision these; requests run as these two roles.
+      - {name: POSTGRES_SYNC_OWNER_PASSWORD, source: {from_secret: postgres-sync-owner-password}}
+      - {name: POSTGRES_READ_PASSWORD, source: {from_secret: postgres-reporting-read-password}}
       - {name: DEF_STORE_URL, source: {from_component: def-store}}
       - {name: TEMPLATE_STORE_URL, source: {from_component: template-store}}
       - {name: DOCUMENT_STORE_URL, source: {from_component: document-store}}

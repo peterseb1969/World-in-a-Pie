@@ -437,6 +437,11 @@ C3–C5 ship in one release; no install runs C3 without C4 and C5. Every commit 
 
 One image tag carrying C1–C9, deployed in this order: wip-local (compose) → dev-test (k8s) → AWS (k8s) → kb (k8s, last).
 
+**The install must be re-rendered, not just re-tagged.** From C8 on, reporting-sync needs two new secret-backed variables (`POSTGRES_SYNC_OWNER_PASSWORD`, `POSTGRES_READ_PASSWORD`), and reporting-sync and ingest-gateway need new auth and Registry variables (C3, C6).
+
+- **A `wip-deploy` render** generates and persists the secrets in the install's secret backend and applies the new environment.
+- **An image-only roll** (for example `kubectl set image`) leaves the old environment in place. reporting-sync then refuses to serve PostgreSQL and answers `/health` with 503. That is deliberately loud, and the fix is to re-render.
+
 For each install:
 
 1. **Baseline:**

@@ -109,6 +109,29 @@ class TestCollectRequiredSecrets:
         )
         assert "postgres-password" in names
 
+    def test_reporting_sync_service_role_passwords_follow_the_module(
+        self, real_discovery: Discovery
+    ) -> None:
+        """reporting-sync serves requests as two unprivileged PostgreSQL
+        roles whose passwords the deployer generates and persists like any
+        other secret (CASE-851 Phase 2b C8) — only when it is active."""
+        role_secrets = {
+            "postgres-sync-owner-password",
+            "postgres-reporting-read-password",
+        }
+        active = collect_required_secrets(
+            _compose_deployment(modules=["reporting-sync"]),
+            real_discovery.components,
+            real_discovery.apps,
+        )
+        inactive = collect_required_secrets(
+            _compose_deployment(),
+            real_discovery.components,
+            real_discovery.apps,
+        )
+        assert role_secrets <= active
+        assert not role_secrets & inactive
+
     def test_api_key_only_skips_dex_secrets(
         self, real_discovery: Discovery
     ) -> None:
