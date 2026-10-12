@@ -16,8 +16,10 @@ from wip_auth.testing import assert_no_factory_dependencies
 
 
 def test_no_factory_dependencies():
-    # This service authenticates in MIDDLEWARE and declares no route
-    # dependencies at all, so the examined-count canary would trip on an
-    # empty walk. The opt-out keeps the gate armed: the first Depends()
+    # This service declares no route dependencies at all, so the
+    # examined-count canary would trip on an empty walk. That is not
+    # because auth happens elsewhere: the service has no authentication
+    # layer (no auth middleware, no Depends) — an open gap tracked as
+    # CASE-851. The opt-out keeps the gate armed: the first Depends()
     # added to this app is examined again automatically.
     assert_no_factory_dependencies(app, expect_dependencies=False)
