@@ -657,11 +657,14 @@ type TemplateUsage = 'entity' | 'reference' | 'relationship';
  * or a canonical id), kept verbatim: it names the identity and survives a
  * fresh restore's re-anchoring. `resolved` is the canonical template_id the
  * platform resolved it to — server-owned, rewritten through the id map on a
- * fresh restore, and `null` only when a restore could not re-resolve an
- * out-of-archive endpoint on the target (the job carries a warning).
+ * fresh restore. `null` means not-yet-healed or unresolvable: edge types
+ * declared before the two-half shape serve `null` on every endpoint until a
+ * heal touches them, and a restore that could not re-resolve an
+ * out-of-archive endpoint leaves `null` too (the job carries a warning).
  *
- * Render `lookup_value` for humans; use `resolved` where an exact id is
- * needed. This is the same two-half pattern document `references[]` use.
+ * Render `lookup_value` for humans; where an exact id is needed, use
+ * `resolved` and fall back to `lookup_value` when it is `null`. This is the
+ * same two-half pattern document `references[]` use.
  */
 interface EndpointRef {
     lookup_value: string;
@@ -2458,8 +2461,17 @@ interface ReportQueryParams {
     namespace?: string;
 }
 interface ReportQueryResult {
+    /**
+     * Result column names, from the statement's own result description —
+     * populated even when `rows` is empty.
+     */
     columns: string[];
-    rows: unknown[][];
+    /**
+     * Each row is an object keyed by column name — the server returns
+     * records, not positional arrays. (This type once said `unknown[][]`,
+     * which compiled against code that then read `undefined` at runtime.)
+     */
+    rows: Array<Record<string, unknown>>;
     row_count: number;
     truncated: boolean;
 }

@@ -20,8 +20,17 @@ export interface ReportQueryParams {
 }
 
 export interface ReportQueryResult {
+  /**
+   * Result column names, from the statement's own result description —
+   * populated even when `rows` is empty.
+   */
   columns: string[]
-  rows: unknown[][]
+  /**
+   * Each row is an object keyed by column name — the server returns
+   * records, not positional arrays. (This type once said `unknown[][]`,
+   * which compiled against code that then read `undefined` at runtime.)
+   */
+  rows: Array<Record<string, unknown>>
   row_count: number
   truncated: boolean
 }
