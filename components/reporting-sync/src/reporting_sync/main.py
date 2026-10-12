@@ -1916,43 +1916,63 @@ async def execute_query(body: ReportQuery):
     # Build positional parameter references
     params = body.params
 
-    async def _run(conn: asyncpg.Connection) -> list:
-        return list(await conn.fetch(wrapped_sql, *params))
+    async def _run(conn: asyncpg.Connection) -> tuple[list[str], list]:
+        # Explicit prepare, two reasons:
+        # - the statement's own result description supplies the column names,
+        #   so an empty result still reports its columns (they used to come
+        #   from row 1, making "no rows" indistinguishable from "no columns");
+        # - explicit prepare bypasses asyncpg's per-connection statement
+        #   cache, so a registered view rebuilt between calls (replace is
+        #   DROP + CREATE) cannot leave this path a stale cached plan. A
+        #   cached plan error cannot self-heal here: asyncpg only re-prepares
+        #   transparently OUTSIDE explicit transactions, and the namespaced
+        #   branch below runs inside one for its SET LOCAL.
+        stmt = await conn.prepare(wrapped_sql)
+        columns = [a.name for a in stmt.get_attributes()]
+        return columns, list(await stmt.fetch(*params))
 
     try:
         assert state.postgres_pool is not None  # narrowed by postgres_ok check above
-        async with state.postgres_pool.acquire() as conn:
-            # Set statement timeout and read-only transaction
-            await conn.execute(
-                f"SET statement_timeout = {body.timeout_seconds * 1000}"
-            )
-            await conn.execute("SET default_transaction_read_only = on")
-
-            if search_path_schema:
-                # SET LOCAL inside a transaction auto-resets on commit, so the
-                # search_path never leaks back to the pooled connection.
-                async with conn.transaction():
+        for attempt in (1, 2):
+            try:
+                async with state.postgres_pool.acquire() as conn:
+                    # Set statement timeout and read-only transaction
                     await conn.execute(
-                        f'SET LOCAL search_path = "{search_path_schema}", public'
+                        f"SET statement_timeout = {body.timeout_seconds * 1000}"
                     )
-                    rows = await _run(conn)
-            else:
-                rows = await _run(conn)
+                    await conn.execute("SET default_transaction_read_only = on")
 
-            # Detect truncation
-            truncated = len(rows) > body.max_rows
-            if truncated:
-                rows = rows[: body.max_rows]
+                    if search_path_schema:
+                        # SET LOCAL inside a transaction auto-resets on
+                        # commit, so the search_path never leaks back to the
+                        # pooled connection.
+                        async with conn.transaction():
+                            await conn.execute(
+                                f'SET LOCAL search_path = "{search_path_schema}", public'
+                            )
+                            columns, rows = await _run(conn)
+                    else:
+                        columns, rows = await _run(conn)
+                break
+            except asyncpg.InvalidCachedStatementError:
+                # Residual race only (a rebuild landing between this
+                # request's prepare and fetch): the error itself purged the
+                # stale plan, so one retry re-prepares and succeeds; a second
+                # failure is a real error and propagates.
+                if attempt == 2:
+                    raise
 
-            # Extract column names from first row (or empty)
-            columns = list(rows[0].keys()) if rows else []
+        # Detect truncation
+        truncated = len(rows) > body.max_rows
+        if truncated:
+            rows = rows[: body.max_rows]
 
-            return {
-                "columns": columns,
-                "rows": [dict(r) for r in rows],
-                "row_count": len(rows),
-                "truncated": truncated,
-            }
+        return {
+            "columns": columns,
+            "rows": [dict(r) for r in rows],
+            "row_count": len(rows),
+            "truncated": truncated,
+        }
 
     except asyncpg.QueryCanceledError as e:
         raise HTTPException(

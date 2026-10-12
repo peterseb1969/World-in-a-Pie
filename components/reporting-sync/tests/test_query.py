@@ -48,6 +48,21 @@ def http_client():
     )
 
 
+def _mock_prepared(conn, rows, columns):
+    """Wire conn.prepare to a statement mock — the query path prepares
+    explicitly (uncached) and reads columns from the statement's result
+    description rather than from row 1."""
+    from types import SimpleNamespace
+
+    stmt = MagicMock()
+    stmt.get_attributes = MagicMock(
+        return_value=[SimpleNamespace(name=c) for c in columns]
+    )
+    stmt.fetch = AsyncMock(return_value=rows)
+    conn.prepare = AsyncMock(return_value=stmt)
+    return stmt
+
+
 # =========================================================================
 # GET /tables
 # =========================================================================
@@ -173,13 +188,8 @@ async def test_query_simple_select(http_client: AsyncClient, mock_state):
     _pool, conn = mock_state
 
     # Mock the query results
-    mock_row = MagicMock()
-    mock_row.keys.return_value = ["name", "country"]
-    mock_row.__getitem__ = lambda self, k: {"name": "Alice", "country": "CH"}[k]
-    # Make dict() work on the row
     mock_row_dict = {"name": "Alice", "country": "CH"}
-
-    conn.fetch = AsyncMock(return_value=[mock_row_dict])
+    _mock_prepared(conn, [mock_row_dict], ["name", "country"])
     conn.execute = AsyncMock()
 
     async with http_client:
@@ -254,7 +264,7 @@ async def test_query_rejects_truncate(http_client: AsyncClient, mock_state):
 async def test_query_allows_select_with_where(http_client: AsyncClient, mock_state):
     """SELECT with WHERE and params works."""
     _pool, conn = mock_state
-    conn.fetch = AsyncMock(return_value=[])
+    _mock_prepared(conn, [], ["name", "country"])
     conn.execute = AsyncMock()
 
     async with http_client:
@@ -269,6 +279,9 @@ async def test_query_allows_select_with_where(http_client: AsyncClient, mock_sta
     data = response.json()
     assert data["row_count"] == 0
     assert data["truncated"] is False
+    # Columns come from the statement's result description, so an empty
+    # result still reports them.
+    assert data["columns"] == ["name", "country"]
 
 
 @pytest.mark.asyncio
@@ -278,7 +291,7 @@ async def test_query_truncation(http_client: AsyncClient, mock_state):
 
     # Return max_rows + 1 rows to trigger truncation
     rows = [{"id": str(i)} for i in range(6)]
-    conn.fetch = AsyncMock(return_value=rows)
+    _mock_prepared(conn, rows, ["id"])
     conn.execute = AsyncMock()
 
     async with http_client:
