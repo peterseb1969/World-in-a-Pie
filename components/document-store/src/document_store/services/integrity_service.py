@@ -36,7 +36,13 @@ from typing import Any
 from beanie.odm.enums import SortDirection
 from pydantic import BaseModel, Field
 
-from wip_auth.document_identity import compute_hash, extract_identity_values
+from wip_auth.document_identity import (
+    build_referent_resolutions,
+    compute_hash,
+    extract_identity_values,
+    referent_identity_fields,
+    substitute_resolved_referents,
+)
 
 from ..models.document import Document
 from ..models.file import File
@@ -55,7 +61,8 @@ class IntegrityIssue(BaseModel):
         description=(
             "Issue type: orphaned_template_ref, inactive_template_ref, "
             "orphaned_term_ref, orphaned_document_ref, orphaned_file_ref, "
-            "identity_hash_mismatch, identity_field_missing"
+            "identity_hash_mismatch, identity_field_missing, "
+            "identity_resolution_missing"
         )
     )
     severity: str = Field(
@@ -107,7 +114,9 @@ _term_check_cache: dict[str, bool] = {}  # term_id -> exists
 # (template_id, version) -> identity_fields, or None when the template could
 # not be read. Identity verification needs the field list, and fetching it per
 # document would be one HTTP call per row.
-_identity_fields_cache: dict[tuple[str, int], list[str] | None] = {}
+_identity_fields_cache: dict[
+    tuple[str, int], tuple[list[str], list[dict[str, Any]]] | None
+] = {}
 
 
 def clear_integrity_cache():
@@ -320,8 +329,15 @@ async def check_batch_references(
                 ))
 
 
-async def _identity_fields_for(template_id: str, version: int) -> list[str] | None:
-    """The template version's identity_fields, cached. None = unreadable."""
+async def _identity_shape_for(
+    template_id: str, version: int
+) -> tuple[list[str], list[dict[str, Any]]] | None:
+    """The template version's (identity_fields, fields), cached. None = unreadable.
+
+    Both halves are needed to recompute a hash: identity_fields names the
+    feed, and the field definitions decide which identity fields are
+    referent-typed (resolved-referent rule).
+    """
     key = (template_id, version)
     if key in _identity_fields_cache:
         return _identity_fields_cache[key]
@@ -333,9 +349,16 @@ async def _identity_fields_for(template_id: str, version: int) -> list[str] | No
         )
     except TemplateStoreError:
         return None  # not cached: a transient failure should not stick
-    fields = None if template is None else list(template.get("identity_fields") or [])
-    _identity_fields_cache[key] = fields
-    return fields
+    shape = (
+        None
+        if template is None
+        else (
+            list(template.get("identity_fields") or []),
+            list(template.get("fields") or []),
+        )
+    )
+    _identity_fields_cache[key] = shape
+    return shape
 
 
 async def check_identity_hash(
@@ -353,11 +376,12 @@ async def check_identity_hash(
     A template with no identity_fields is append-only: its documents carry an
     empty hash by contract, and anything else is a defect.
     """
-    identity_fields = await _identity_fields_for(
+    shape = await _identity_shape_for(
         document.template_id, document.template_version
     )
-    if identity_fields is None:
+    if shape is None:
         return  # template unreadable — the orphaned-template check reports it
+    identity_fields, template_fields = shape
 
     if not identity_fields:
         if document.identity_hash:
@@ -388,6 +412,34 @@ async def check_identity_hash(
             field_path=None,
             reference=",".join(identity_fields),
             message=f"Identity cannot be computed: {exc}",
+        ))
+        return
+
+    # Resolved-referent rule: a term/reference identity field feeds its
+    # stored resolution's canonical ID, not the data spelling. A referent
+    # identity field with no stored resolution (a legacy doc written during
+    # a resolution outage) cannot be verified — that is its own defect, and
+    # exactly what the identity migration re-resolves.
+    try:
+        values = substitute_resolved_referents(
+            values,
+            referent_identity_fields(identity_fields, template_fields),
+            build_referent_resolutions(
+                document.term_references, document.references
+            ),
+        )
+    except ValueError as exc:
+        issues.append(IntegrityIssue(
+            type="identity_resolution_missing",
+            severity="error",
+            document_id=document.document_id,
+            template_id=document.template_id,
+            version=document.version,
+            field_path=None,
+            reference=",".join(identity_fields),
+            message=(
+                f"Identity cannot be verified from stored resolutions: {exc}"
+            ),
         ))
         return
 
@@ -546,7 +598,11 @@ async def check_all_documents(
         ),
         identity_hash_mismatches=sum(
             1 for i in all_issues
-            if i.type in ("identity_hash_mismatch", "identity_field_missing")
+            if i.type in (
+                "identity_hash_mismatch",
+                "identity_field_missing",
+                "identity_resolution_missing",
+            )
         ),
     )
 

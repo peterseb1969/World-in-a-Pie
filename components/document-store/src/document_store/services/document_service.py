@@ -457,6 +457,10 @@ class DocumentService:
                 namespace=namespace,
                 entry_id=restore_entry_id,
                 skip_identity_value_synonym=is_relationship,
+                # The raw-values synonym keeps the submitted spellings so
+                # business-key references resolve by human value; the hash
+                # feed above carries resolved referent IDs instead.
+                synonym_values=validation_result.submitted_identity_values or None,
             )
         except RegistryError as e:
             return None, f"Failed to generate document ID: {e!s}"
@@ -2668,6 +2672,9 @@ class DocumentService:
         for vr in validation_results:
             reg_item: dict[str, Any] = {
                 "identity_values": vr[2].identity_values or None,
+                # Submitted spellings mint the raw-values synonym; the hash
+                # feed (identity_values) carries resolved referent IDs.
+                "synonym_values": vr[2].submitted_identity_values or None,
                 "template_id": vr[1].template_id,
                 "has_identity_fields": bool(vr[2].identity_fields),
                 "skip_identity_value_synonym": await _is_relationship(vr[1].template_id),

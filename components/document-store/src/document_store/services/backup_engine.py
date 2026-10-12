@@ -773,9 +773,16 @@ class DirectRestoreEngine:
 
                 # Identity fields come from the ARCHIVE's templates: the
                 # target has none yet, and these are the definitions the
-                # documents were written against.
+                # documents were written against. The field definitions ride
+                # along so the rehash can tell referent-typed identity fields
+                # (which feed resolved IDs) from plain ones.
                 identity_fields = {
                     value: list(template.get("identity_fields") or [])
+                    for template in entities_by_type.get("templates", [])
+                    if isinstance(value := template.get("value"), str) and value
+                }
+                template_fields = {
+                    value: list(template.get("fields") or [])
                     for template in entities_by_type.get("templates", [])
                     if isinstance(value := template.get("value"), str) and value
                 }
@@ -783,6 +790,7 @@ class DirectRestoreEngine:
                     source=src, target=target,
                     entities_by_type=entities_by_type,
                     identity_fields=identity_fields,
+                    template_fields=template_fields,
                 ))
 
             # The namespaces have to exist before anything is provisioned: the

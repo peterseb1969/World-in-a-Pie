@@ -72,6 +72,12 @@ EXEMPT_FUNCTIONS = {
         "The documented happy path is the MCP tool of the same name; a "
         "multi-template envelope can be added when demand emerges."
     ),
+    "rehash_identities_endpoint": (
+        "The request body is an operation descriptor (namespace, dry_run, "
+        "template filter) and the operation is already bulk over the "
+        "namespace's documents with per-document results — the same shape "
+        "as migrate_documents above."
+    ),
 }
 
 

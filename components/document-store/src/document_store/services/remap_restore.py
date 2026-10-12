@@ -90,6 +90,10 @@ class RemapSource:
     target: str
     entities_by_type: dict[str, list[dict[str, Any]]]
     identity_fields: dict[str, list[str]] = field(default_factory=dict)
+    # template value -> field definitions, from the SAME archive templates as
+    # identity_fields: the resolved-referent rehash needs to know which
+    # identity fields are term/reference typed.
+    template_fields: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -189,12 +193,16 @@ class RemapRestore:
         remapper: Any,
         *,
         identity_fields_by_template: dict[str, list[str]] | None = None,
+        template_fields_by_template: dict[str, list[dict[str, Any]]] | None = None,
     ):
         self._provision = provision
         self._remapper = remapper
         # template value -> identity_fields, used to decide which documents
         # need their identity hash recomputed after references move.
         self._identity_fields = identity_fields_by_template or {}
+        # template value -> field definitions — which identity fields are
+        # referent-typed (resolved-referent feed) during the rehash.
+        self._template_fields = template_fields_by_template or {}
 
     async def plan(
         self,
@@ -351,26 +359,48 @@ class RemapRestore:
     def _recompute_identity_hashes(self, plan: RemapPlan, namespace: str) -> int:
         """Rehash documents whose identity values were themselves ids.
 
-        A document's identity hash is namespace-free and value-based, so it
-        survives re-minting untouched — unless one of its identity fields
-        holds a canonical ID, which has just changed. Left alone, such a
-        document would carry a hash that no longer describes its own data:
-        wrong silently, and the next write on that identity would land
-        somewhere else.
+        A document's identity hash is namespace-free, so it survives
+        re-minting untouched — unless its feed holds canonical IDs that have
+        just changed. Two ways that happens: an identity DATA value that is
+        itself an id, and (resolved-referent rule) a term/reference identity
+        field, whose feed is the resolution's canonical ID — the remapper has
+        already rewritten both the data values and the stored
+        term_references / references through the id maps, so recomputing from
+        the remapped row yields the hash the new instance's writes will
+        produce. Left alone, such a document would carry a hash that no
+        longer describes its own feed: wrong silently, and the next write on
+        that identity would land somewhere else.
         """
-        from wip_auth.document_identity import compute_hash, extract_identity_values
+        from wip_auth.document_identity import (
+            build_referent_resolutions,
+            compute_hash,
+            extract_identity_values,
+            referent_identity_fields,
+            substitute_resolved_referents,
+        )
 
         rehashed = 0
         for row in plan.rows.get("documents", []):
-            identity_fields = self._identity_fields.get(row.get("template_value") or "")
+            template_value = row.get("template_value") or ""
+            identity_fields = self._identity_fields.get(template_value)
             if not identity_fields:
                 continue
             try:
                 values = extract_identity_values(row.get("data") or {}, identity_fields)
-            except ValueError:
+                values = substitute_resolved_referents(
+                    values,
+                    referent_identity_fields(
+                        identity_fields,
+                        self._template_fields.get(template_value) or [],
+                    ),
+                    build_referent_resolutions(
+                        row.get("term_references"), row.get("references")
+                    ),
+                )
+            except ValueError as exc:
                 logger.warning(
-                    "Document %s is missing an identity field; leaving its hash "
-                    "as archived", row.get("document_id"),
+                    "Document %s cannot be rehashed (%s); leaving its hash "
+                    "as archived", row.get("document_id"), exc,
                 )
                 continue
             recomputed = compute_hash(values)
@@ -405,6 +435,7 @@ async def plan_multi(
             provision_for_target(s.target),
             remapper,
             identity_fields_by_template=s.identity_fields,
+            template_fields_by_template=s.template_fields,
         )
         for s in sources
     }

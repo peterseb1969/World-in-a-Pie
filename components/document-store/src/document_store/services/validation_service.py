@@ -8,6 +8,11 @@ from datetime import date, datetime
 from typing import Any, ClassVar, cast
 
 from wip_auth import split_qualified_value
+from wip_auth.document_identity import (
+    build_referent_resolutions,
+    referent_identity_fields,
+    substitute_resolved_referents,
+)
 
 from .def_store_client import DefStoreError, get_def_store_client
 from .identity_service import IdentityService
@@ -24,7 +29,14 @@ class ValidationResult:
         self.errors: list[dict[str, Any]] = []
         self.warnings: list[str] = []
         self.identity_hash: str | None = None
+        # The hash feed: resolved-referent rule applied — a term/reference
+        # identity field carries its referent's canonical ID here, never the
+        # submitted spelling (see wip_auth.document_identity).
         self.identity_values: dict[str, Any] = {}
+        # The submitted spellings of the same fields — what the raw-values
+        # Registry synonym is minted from, so human-readable business-key
+        # references keep resolving while the hash converges on referents.
+        self.submitted_identity_values: dict[str, Any] = {}
         self.identity_fields: list[str] = []
         self.template_version: int | None = None
         self.template_value: str | None = None
@@ -2207,8 +2219,17 @@ class ValidationService:
         """
         Stage 7: Identity extraction.
 
-        Extracts identity field values from document data.
-        The registry computes the actual identity_hash from these values.
+        Extracts identity field values from document data, then applies the
+        resolved-referent feed rule: a term- or reference-typed identity
+        field contributes its referent's canonical ID (resolved by stages
+        4/5 into term_references / references), never the submitted
+        spelling — so every alias of one referent yields one identity. The
+        Registry computes the actual identity_hash from these values.
+
+        Fail-closed: a referent identity field with no resolution (for
+        example a Def-Store outage, which degrades non-identity term fields
+        to a warning) rejects the write — hashing the spelling instead
+        would fork the document on a later, resolvable write.
         """
         identity_fields = template.get("identity_fields", [])
         result.identity_fields = identity_fields
@@ -2221,11 +2242,40 @@ class ValidationService:
             return
 
         try:
-            result.identity_values = IdentityService.extract_identity_values(
+            submitted = IdentityService.extract_identity_values(
                 data, identity_fields
             )
         except ValueError as e:
             result.add_error(
                 code="identity_error",
                 message=str(e)
+            )
+            return
+
+        result.submitted_identity_values = submitted
+        referent_fields = referent_identity_fields(
+            identity_fields, template.get("fields", [])
+        )
+        if not referent_fields:
+            result.identity_values = submitted
+            return
+
+        try:
+            result.identity_values = substitute_resolved_referents(
+                submitted,
+                referent_fields,
+                build_referent_resolutions(
+                    result.term_references, result.references
+                ),
+            )
+        except ValueError as e:
+            result.add_error(
+                code="identity_resolution_failed",
+                message=(
+                    f"{e!s}. Identity is resolved-referent based: the write "
+                    "is rejected when an identity field's term or reference "
+                    "cannot be resolved (resolution service unavailable or "
+                    "resolution missing), because hashing the submitted "
+                    "spelling would fork the document."
+                ),
             )

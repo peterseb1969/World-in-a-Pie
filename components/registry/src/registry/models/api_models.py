@@ -133,8 +133,20 @@ class RegisterKeyItem(StrictModel):
     composite_key: dict[str, Any] = Field(default_factory=dict, description="Composite key values (empty = no dedup, always generates new ID)")
     identity_values: dict[str, Any] | None = Field(
         default=None,
-        description="Raw identity field values. Registry computes identity_hash, "
-                    "injects it into composite_key, and creates a synonym with the raw values."
+        description="The identity-hash feed. Registry computes identity_hash "
+                    "from these values, injects it into composite_key, and "
+                    "(absent synonym_values) creates a synonym with them. "
+                    "Under resolved-referent identity the caller sends resolved "
+                    "referent IDs here, never submitted spellings."
+    )
+    synonym_values: dict[str, Any] | None = Field(
+        default=None,
+        description="The values to mint the raw-values synonym from, in place "
+                    "of identity_values. Document-store sends the submitted "
+                    "identity spellings here so business-key lookup stays "
+                    "human-readable while identity_values carries the resolved "
+                    "referent IDs that feed the hash. Ignored without "
+                    "identity_values; ignored when skip_identity_value_synonym."
     )
     skip_identity_value_synonym: bool = Field(
         default=False,
@@ -147,6 +159,37 @@ class RegisterKeyItem(StrictModel):
     source_info: SourceInfo | None = Field(default=None, description="Source system info")
     created_by: str | None = Field(default=None, description="Creator identifier")
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RekeyIdentityItem(StrictModel):
+    """One document entry whose composite key moves to a new identity hash.
+
+    The identity-migration leg: the hash representation changed (resolved-
+    referent feed), the entity did not. The entry keeps its ID and synonyms;
+    only the primary composite key's identity_hash member (and therefore the
+    key hash) is rewritten.
+    """
+
+    entry_id: str = Field(..., description="The document entry to re-key")
+    identity_hash: str = Field(..., description="The new identity hash")
+
+
+class RekeyIdentityResponse(BaseModel):
+    """Per-item result of a re-key operation."""
+
+    index: int
+    entry_id: str
+    status: str  # rekeyed, unchanged, not_found, conflict, error
+    error: str | None = None
+
+
+class RekeyIdentityBulkResponse(BaseModel):
+    """Response model for bulk identity re-keying."""
+
+    results: list[RekeyIdentityResponse]
+    total: int
+    succeeded: int
+    failed: int
 
 
 class RegisterKeyResponse(BaseModel):

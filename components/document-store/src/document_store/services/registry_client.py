@@ -48,6 +48,7 @@ class RegistryClient(RegistryClientBase):
         created_by: str | None = None,
         entry_id: str | None = None,
         skip_identity_value_synonym: bool = False,
+        synonym_values: dict[str, Any] | None = None,
     ) -> tuple[str, bool, str | None]:
         """Generate or retrieve a document ID. Returns (id, is_new, identity_hash).
 
@@ -55,6 +56,12 @@ class RegistryClient(RegistryClientBase):
         still compute identity_hash for the primary key but suppress the bare
         identity-values synonym ({source_ref, target_ref}) that would collide
         across edge types between the same pair.
+
+        synonym_values: the submitted identity spellings, minted as the
+        raw-values synonym in place of identity_values. The two diverge under
+        resolved-referent identity: identity_values carries resolved referent
+        IDs (the hash feed) while the human-readable spellings stay the
+        business-key lookup surface.
         """
         composite_key: dict[str, Any] = (
             {"ns": namespace, "template_id": template_id} if has_identity_fields else {}
@@ -64,6 +71,7 @@ class RegistryClient(RegistryClientBase):
             "entity_type": "documents",
             "composite_key": composite_key,
             "identity_values": identity_values if has_identity_fields else None,
+            "synonym_values": synonym_values if has_identity_fields else None,
             "skip_identity_value_synonym": skip_identity_value_synonym,
             "created_by": created_by,
             "source_info": {"system_id": "document-store"},
@@ -105,15 +113,18 @@ class RegistryClient(RegistryClientBase):
                     "template_id": item["template_id"],
                 }
                 identity_values = item.get("identity_values")
+                synonym_values = item.get("synonym_values")
             else:
                 composite_key = {}
                 identity_values = None
+                synonym_values = None
 
             entry: dict[str, Any] = {
                 "namespace": namespace,
                 "entity_type": "documents",
                 "composite_key": composite_key,
                 "identity_values": identity_values,
+                "synonym_values": synonym_values,
                 # CASE-430: relationship/edge types suppress the bare
                 # identity-values synonym (set per item by bulk_create).
                 "skip_identity_value_synonym": bool(item.get("skip_identity_value_synonym")),
@@ -136,6 +147,30 @@ class RegistryClient(RegistryClientBase):
                 )
             data = response.json()
             return cast(list[dict[str, Any]], data["results"])
+
+    async def rekey_identity(
+        self,
+        items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Re-key document entries' composite keys to new identity hashes.
+
+        The identity migration's Registry leg: each item is
+        ``{entry_id, identity_hash}``, and the Registry rewrites the entry's
+        primary composite key (a representation change on the same entity —
+        its own sanctioned path, distinct from identity-changing moves).
+        Returns the per-item result list.
+        """
+        async with self._make_client() as client:
+            response = await client.post(
+                f"{self.base_url}/api/registry/entries/rekey-identity",
+                headers=self._get_headers(),
+                json=items,
+            )
+            if response.status_code != 200:
+                raise RegistryError(
+                    f"Failed to re-key identities: {response.status_code} - {response.text}"
+                )
+            return cast(list[dict[str, Any]], response.json()["results"])
 
     async def add_synonyms(
         self,

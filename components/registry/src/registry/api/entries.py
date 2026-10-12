@@ -36,6 +36,9 @@ from ..models.api_models import (
     RegisterBulkResponse,
     RegisterKeyItem,
     RegisterKeyResponse,
+    RekeyIdentityBulkResponse,
+    RekeyIdentityItem,
+    RekeyIdentityResponse,
     ReserveBulkResponse,
     ReserveItem,
     ReserveItemResponse,
@@ -530,11 +533,18 @@ async def register_keys(
             # the primary key and edge dedup/versioning are unaffected.
             synonyms = []
             if item.identity_values and id_hash and not item.skip_identity_value_synonym:
+                # The synonym carries the human-readable spellings: under
+                # resolved-referent identity the hash feed (identity_values)
+                # holds resolved referent IDs, while synonym_values keeps the
+                # submitted business-key values lookups resolve by. Without
+                # synonym_values the two coincide and the computed hash
+                # equals id_hash, as before.
+                synonym_key = item.synonym_values or item.identity_values
                 synonyms.append(Synonym(
                     namespace=item.namespace,
                     entity_type=item.entity_type,
-                    composite_key=item.identity_values,
-                    composite_key_hash=id_hash,
+                    composite_key=synonym_key,
+                    composite_key_hash=HashService.compute_composite_key_hash(synonym_key),
                     created_by=item.created_by,
                 ))
 
@@ -614,6 +624,105 @@ async def register_keys(
         created=created_count,
         already_exists=exists_count,
         errors=error_count,
+    )
+
+
+@router.post(
+    "/rekey-identity",
+    response_model=RekeyIdentityBulkResponse,
+    summary="Re-key document entries to new identity hashes (migration)"
+)
+async def rekey_identity(
+    items: list[RekeyIdentityItem] = Body(...),
+    identity: UserIdentity = Depends(require_api_key)
+) -> RekeyIdentityBulkResponse:
+    """Rewrite document entries' primary composite keys to new identity hashes.
+
+    The sanctioned Registry leg of an identity-hash representation change
+    (the resolved-referent feed migration): the entity and its synonyms stay,
+    only the composite key's identity_hash member and the derived key hash
+    move. This is NOT an identity change — identity-changing moves are forks
+    and stay rejected elsewhere. Privileged: wip-admins / wip-services only.
+    A target key already held by a different entry is a per-item conflict
+    (two formerly-forked documents converging — curation, not migration).
+    """
+    if not identity.has_any_group(["wip-admins", "wip-services"]):
+        raise HTTPException(
+            status_code=403,
+            detail="Identity re-keying is restricted to wip-admins / wip-services",
+        )
+
+    results: list[RekeyIdentityResponse] = []
+    rekeyed = 0
+    failed = 0
+
+    for i, item in enumerate(items):
+        try:
+            entry = await RegistryEntry.find_one({
+                "entry_id": item.entry_id,
+                "entity_type": "documents",
+            })
+            if not entry:
+                results.append(RekeyIdentityResponse(
+                    index=i, entry_id=item.entry_id, status="not_found",
+                ))
+                failed += 1
+                continue
+
+            current_key = dict(entry.primary_composite_key or {})
+            if current_key.get("identity_hash") == item.identity_hash:
+                results.append(RekeyIdentityResponse(
+                    index=i, entry_id=item.entry_id, status="unchanged",
+                ))
+                rekeyed += 1
+                continue
+            if "identity_hash" not in current_key:
+                results.append(RekeyIdentityResponse(
+                    index=i, entry_id=item.entry_id, status="error",
+                    error="entry has no identity-bearing composite key (append-only document)",
+                ))
+                failed += 1
+                continue
+
+            new_key = {**current_key, "identity_hash": item.identity_hash}
+            new_hash = HashService.compute_composite_key_hash(new_key)
+
+            holder = await RegistryEntry.find_one({
+                "namespace": entry.namespace,
+                "entity_type": entry.entity_type,
+                "primary_composite_key_hash": new_hash,
+                "entry_id": {"$ne": entry.entry_id},
+            })
+            if holder:
+                results.append(RekeyIdentityResponse(
+                    index=i, entry_id=item.entry_id, status="conflict",
+                    error=(
+                        f"target key is held by entry '{holder.entry_id}' — "
+                        "two documents converge on one identity; curate "
+                        "before migrating"
+                    ),
+                ))
+                failed += 1
+                continue
+
+            entry.primary_composite_key = new_key
+            entry.primary_composite_key_hash = new_hash
+            entry.rebuild_search_values()
+            entry.updated_by = identity.identity_string
+            await entry.save()
+            results.append(RekeyIdentityResponse(
+                index=i, entry_id=item.entry_id, status="rekeyed",
+            ))
+            rekeyed += 1
+        except Exception as e:
+            logger.error("Re-key failed for %s: %s", item.entry_id, e)
+            results.append(RekeyIdentityResponse(
+                index=i, entry_id=item.entry_id, status="error", error=str(e),
+            ))
+            failed += 1
+
+    return RekeyIdentityBulkResponse(
+        results=results, total=len(items), succeeded=rekeyed, failed=failed,
     )
 
 

@@ -168,6 +168,28 @@ _TEMPLATE_DEFS = [
         "rules": [],
     },
     {
+        # Term-typed identity field: the CASE-847 resolved-referent feed —
+        # aliases of one term converge on one document; resolution outage on
+        # the identity field fails the write (fail-closed).
+        "legacy_key": "0190c000-0000-7000-0000-00000000084a",
+        "value": "TERM_IDENTITY",
+        "label": "Term-Identity Template",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["category"],
+        "fields": [
+            {
+                "name": "category",
+                "label": "Category",
+                "type": "term",
+                "terminology_ref": "GENDER",
+                "mandatory": True,
+            },
+            {"name": "note", "label": "Note", "type": "string", "mandatory": False},
+        ],
+        "rules": [],
+    },
+    {
         "legacy_key": "0190c000-0000-7000-0000-000000000002",
         "value": "EMPLOYEE",
         "label": "Employee Template",
@@ -593,6 +615,15 @@ def create_mock_def_store_client():
             return {"terminology_id": f"TERM-{terminology_value}", "status": "active"}
         return None
 
+    def _mock_term_id(value: str) -> str:
+        # One stable term_id per term, case-insensitively: "M" and "m" model
+        # aliases of one term (one id), "M" and "F" model two distinct terms.
+        # Mirrors real Def-Store alias resolution so resolved-referent
+        # identity is testable against the mock.
+        import hashlib as _hashlib
+        suffix = _hashlib.sha256(value.lower().encode()).hexdigest()[:12]
+        return f"0190b000-0000-7000-8000-{suffix}"
+
     async def mock_validate_value(terminology_ref, value, namespace=None):
         # Strip prefix for lookup
         code = terminology_ref
@@ -600,8 +631,8 @@ def create_mock_def_store_client():
             if terminology_ref.startswith(prefix):
                 code = terminology_ref[len(prefix):]
                 break
-        if code in VALID_TERMS and value in VALID_TERMS[code]:
-            return {"valid": True, "matched_term": {"term_id": "0190b000-0000-7000-0000-000000000001", "value": value}}
+        if code in VALID_TERMS and value.upper() in VALID_TERMS[code]:
+            return {"valid": True, "matched_term": {"term_id": _mock_term_id(value), "value": value}}
         return {"valid": False, "suggestion": None}
 
     async def mock_validate_values_bulk(items, namespace=None):
@@ -614,8 +645,8 @@ def create_mock_def_store_client():
                 if terminology_ref.startswith(prefix):
                     code = terminology_ref[len(prefix):]
                     break
-            if code in VALID_TERMS and value in VALID_TERMS[code]:
-                results.append({"valid": True, "matched_term": {"term_id": "0190b000-0000-7000-0000-000000000001", "value": value}})
+            if code in VALID_TERMS and value.upper() in VALID_TERMS[code]:
+                results.append({"valid": True, "matched_term": {"term_id": _mock_term_id(value), "value": value}})
             else:
                 results.append({"valid": False, "suggestion": None})
         return results
@@ -794,6 +825,8 @@ async def client(session_mongo_client) -> AsyncGenerator[AsyncClient, None]:
         patch('document_store.main.get_template_store_client', return_value=mock_template_store),
         patch('document_store.main.get_def_store_client', return_value=mock_def_store),
         patch('document_store.api.table_view.get_template_store_client', return_value=mock_template_store),
+        patch('document_store.services.identity_migration.get_template_store_client', return_value=mock_template_store),
+        patch('document_store.services.identity_migration.get_registry_client', return_value=real_registry),
     ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
