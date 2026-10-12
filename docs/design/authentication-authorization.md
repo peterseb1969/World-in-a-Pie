@@ -1,6 +1,6 @@
 # Design: Authentication & Authorization
 
-**Status:** Phase 1 implemented (2026-03-31), Phases 2-4 designed
+**Status:** Phase 1 implemented (2026-03-31); Phase 2 implemented in document-store, template-store and def-store only — Phase 2b (completing enforcement in reporting-sync and ingest-gateway) planned 2026-10-12; Phases 3-4 as below
 **Priority:** Phase 1 was critical — apps previously served sensitive data to anyone on the network
 
 ## Problem
@@ -13,7 +13,7 @@ This is the single most important gap. Everything else — per-namespace permiss
 
 | Layer | Status | Notes |
 |-------|--------|-------|
-| Service auth (API keys) | Working | All services validate `X-API-Key` |
+| Service auth (API keys) | **Partial** | Registry, def-store, template-store and document-store validate `X-API-Key`. **reporting-sync and ingest-gateway validate nothing** — see Phase 2b |
 | Console auth (OIDC) | Working | Client-side via `oidc-client-ts` + Dex, sends JWT to WIP services |
 | App auth | **Phase 1 done** | App-side OIDC via `openid-client` + `express-session`, opt-in via `OIDC_ISSUER` |
 | Namespace permissions | Designed, not enforced | `namespace-authorization.md` — grants exist, `check_namespace_permission()` exists, routes don't call it |
@@ -286,11 +286,174 @@ App (Express)                      @wip/proxy                       WIP Service
 
 ### Enforcement Rollout
 
-Phase 2 is implemented. `check_namespace_permission()` is called from route handlers in document-store, template-store, and def-store. Registry is the permission *authority* — it evaluates grants via `check_permission_internal()` and is queried by those services — rather than a caller of `check_namespace_permission()` (there are no call sites in registry).
+Phase 2 is implemented **in three services only**. `check_namespace_permission()` is called from route handlers in document-store, template-store, and def-store. reporting-sync and ingest-gateway were never part of this rollout and enforce neither authentication nor authorization — see Phase 2b. Registry is the permission *authority* — it evaluates grants via `check_permission_internal()` and is queried by those services — rather than a caller of `check_namespace_permission()` (there are no call sites in registry).
 
 ### Single-User Compatibility
 
 The `wip-admins` superadmin bypass ensures single-user deployments are unaffected. The default admin user and legacy API key are both in `wip-admins` — they skip all permission checks.
+
+---
+
+## Phase 2b: Completing Service-Side Enforcement
+
+**Goal:** Every WIP HTTP service refuses unauthenticated requests and applies namespace authorization. A namespace-scoped key means the same thing against every service.
+
+**Prerequisite:** Phase 2 (the permission model and `wip_auth` enforcement primitives exist).
+
+**Tracking:** CASE-851 (reporting-sync), CASE-855 (ingest-gateway). The design below was reviewed in CASE-851's response thread (#1 proposal, #2 critical review with Peter's rulings).
+
+### Problem (measured 2026-10-12)
+
+Phase 2 was rolled out to document-store, template-store and def-store. Two services were never included.
+
+**reporting-sync** has no authentication layer at all: no `setup_auth`, no middleware, no route dependencies. Its only `wip_auth` use is `declare_api_key_security`, which documents an `X-API-Key` requirement in the OpenAPI schema without enforcing it.
+
+Probed with no credentials, through the public ingress:
+
+| Install | Result |
+|---------|--------|
+| k8s `dev-test` | `GET …/namespace/{ns}/views`, `POST /query` and `GET /tables` answer 200 (template-store answers 401) |
+| wip-local | same, observed by the filing session |
+
+Consequences:
+
+- **Cross-namespace reads.** `/query` executes caller-supplied SQL and can read every namespace schema in the reporting database.
+- **Superuser execution.** It runs as the PostgreSQL role `wip`, which is a superuser on the k8s and wip-local installs that were checked. A keyword filter and a read-only transaction setting are the only barriers, and neither is a security boundary.
+
+**ingest-gateway** is publicly routed (`/api/ingest-gateway/*`) and has no inbound authentication. Its HTTP surface is operational (`/health`, `/status`, `/metrics`, `/`), so the exposure is information disclosure.
+
+**A false premise spread.** Both services' factory-gate tests carried a comment claiming they "authenticate in MIDDLEWARE". reporting-sync's was corrected in `47e9f5bf`; ingest-gateway's (`components/ingest-gateway/tests/test_no_factory_dependencies.py`) still carries it.
+
+### Why `setup_auth` alone does not fix it
+
+The platform's authentication has two layers:
+
+1. **`AuthMiddleware`** (installed by `setup_auth`) only *identifies* the caller. A request with no credentials proceeds with no identity.
+2. **Route dependencies** enforce. Template-store uses `APIRouter(..., dependencies=[Depends(require_api_key)])`, and adds `check_namespace_permission` / `resolve_namespace_filter` per route.
+
+A service needs both. Authorization also needs the Registry: `REGISTRY_URL` and `REGISTRY_API_KEY`, which reporting-sync's manifest does not carry today. Authentication is already wire-ready, because the manifest carries `API_KEY` and `WIP_AUTH_API_KEYS_FILE`.
+
+### Decisions
+
+**D1 — Authenticate every route.**
+- `setup_auth(app, public_paths=[<api-prefixed health>])`, `setup_key_sync` in the lifespan, and a router-level `Depends(require_api_key)`.
+- Public: health only. The middleware's default-public root `/` gets an explicit per-service decision.
+
+**D2 — Authorize per route group (reporting-sync).**
+
+| Group | Requirement |
+|-------|-------------|
+| Namespace-addressed reads (views list, schema, table-name, export by table, parity, and search/tables/activity when a namespace is given) | `read` on the namespace |
+| Optional-namespace listings (search, tables, activity, references, entity reference lookups) | `resolve_namespace_filter`, restricted to accessible namespaces — the same contract as other services' list endpoints |
+| Registered-view writes | `wip-admins` / `wip-services` — view SQL is raw SQL and can reach other schemas when schema-qualified, so it follows D3 (amended during planning, 2026-10-12) |
+| Destructive and operator routes (namespace schema drop, all batch-sync triggers and job management, alert configuration and test) | `wip-admins` / `wip-services` |
+| Operational reads (status, metrics, alerts, integrity, job listing) | authenticated; admin where they expose cross-namespace detail |
+
+**D3 — Raw SQL is admin/service-only in v1.**
+- `POST /query` and query-shaped `POST /export/csv` require `wip-admins` / `wip-services`.
+- Namespace-scoped callers use the structured endpoints, which can be namespace-checked properly.
+- **Rejected alternative:** switching to a restricted role with `SET ROLE` on the service's privileged connection. Role switching is checked against the connection's login role, so SQL submitted on that connection can switch back; it is not a boundary.
+- **Rejected alternative:** SQL parsing.
+- Per-namespace SQL isolation, if a tenant ever needs it, requires a separate low-privilege *connection*. That is a future case, not part of 2b.
+
+**D4 — No request-driven work runs as a superuser.** Two static, deployer-rendered PostgreSQL roles replace `wip` for the services:
+
+| Role | Purpose |
+|------|---------|
+| `wip_sync_owner` | DDL within namespace schemas; owns the sync pipeline's objects; not superuser; no `CREATEROLE` |
+| `wip_reporting_read` | ceiling for caller-driven SQL |
+
+- **No dynamic per-namespace roles.** They would add a role-lifecycle-vs-namespace-lifecycle consistency problem: a fresh namespace has no role until something mints it.
+- **Existing installs need a migration.** Their schemas and tables are owned by `wip`, so the deployer needs a one-time re-ownership step, not just role creation.
+
+**D5 — Callers keep working without changes.**
+- Every verified service-side caller sends `X-API-Key` from the install secret:
+  - registry's namespace deletion;
+  - document-store's reporting client and post-restore batch trigger;
+  - mcp-server.
+- `API_KEY` / `MASTER_API_KEY` map to the legacy key, which carries the admin groups (`wip_auth/config.py`). These callers therefore pass every gate above.
+- **Unverified before rollout:** browser and app consumers (React Console, `@wip/proxy` apps, the KB app's search). Any that rely on anonymous access must be fixed first.
+
+**D6 — The definition of done is mechanical.**
+- A shape-agnostic walker in `wip_auth.testing`, beside the factory and strictness gates, fires a **credential-less** request at every route of the real ASGI app.
+- It asserts 401/403 unless the route is on the service's explicit public allowlist, with the same examined-count canary.
+- It catches a missing middleware, a missing dependency and a mis-allowlisted path alike.
+- Per-route refusal tests with a non-privileged key (the CASE-845 pattern) cover the wrong-credential axis.
+- Both services' `expect_dependencies=False` factory-gate opt-outs are removed once they declare dependencies.
+
+**D7 — No stopgap.** No interim ingress rule or route restriction (Peter, 2026-10-12). The fix proceeds properly, step by step.
+
+### Out of scope
+
+- **NATS authentication (CASE-852).** The same class of gap one layer down. It shares the deployer's secret rendering but needs its own client-credential rollout across every publisher and consumer, so it is a separate phase.
+- **Registered views missing from backups (CASE-849).** Unrelated to authentication.
+
+### Plan
+
+Approved 2026-10-12.
+
+#### Planning decisions (Peter)
+
+- **Registered-view writes:** admin/service-only (D2 amended above).
+- **The walker covers every service.** Existing gaps it exposes elsewhere are fixed, not allowlisted. Known so far: `/health/integrity` on template-store and document-store.
+- **Public allowlist** (each entry must carry a reason):
+  - probes (`/health`, `/ready`, `/api/<svc>/health`);
+  - the prefixed service roots `GET /api/<svc>/` (build-provenance probe);
+  - docs;
+  - auth-gateway's OIDC protocol endpoints.
+- **Postgres roles are provisioned by reporting-sync at startup.** It uses the existing bootstrap credential on a one-off connection, before opening its two service pools.
+  - Why: this works identically on compose, dev and k8s, covers fresh and existing installs and volume rebuilds, and avoids the ordering problem. A post-install hook only runs once everything is healthy, and reporting-sync cannot become healthy without its roles.
+  - Residual risk: the process still holds the bootstrap password, but never on a request path. A follow-up moves provisioning out once the deployer supports init jobs.
+- **Out of scope:** the MCP server's network transport, tracked separately as CASE-857 (it reads `API_KEY`, while the manifest provides only `MASTER_API_KEY`).
+
+#### Facts the sequence depends on
+
+- **Registry's namespace-deletion cascade sends an empty key.** It reads `API_KEY` / `REGISTRY_API_KEY`, and its manifest sets neither. It must be fixed before reporting-sync enforces, or the cascade silently leaves rows.
+- **ingest-gateway's outbound key is the dev default on deployed installs.** It reads only `API_KEY`. This is a live bug, fixed in the same step.
+- **reporting-sync registers `/api/reporting-sync/health` on its router.** It must move to the app, or a router-level dependency would gate the probe.
+- **`@wip/client`'s `awaitSync()` polls `/status`**, so `/status` stays open to any authenticated caller, with its drop list filtered to the caller's namespaces.
+- **reporting-sync calls the stores with its own admin key**, so all namespace filtering for listings must happen inside reporting-sync.
+- **Bookkeeping tables have a `$user` shadow split.** `_wip_schema_migrations` and `_wip_sync_status` are accessed unqualified, and live rows sit in a schema named after the login role. Changing the login role would silently switch to stale copies, so the split is repaired before the role change.
+- **The bootstrap role owns the system catalogs.** Re-ownership must use targeted `ALTER … OWNER TO`, not `REASSIGN OWNED`.
+
+#### Commit sequence
+
+C3–C5 ship in one release; no install runs C3 without C4 and C5. Every commit leaves all callers working.
+
+| # | Commit | Done when |
+|---|--------|-----------|
+| C0 | This plan | — |
+| C1 | Outbound credentials: registry cascade key fallback (legacy → master → `API_KEY` → registry key; never send empty); ingest-gateway key via `API_KEY`/`DOCUMENT_STORE_API_KEY`/`MASTER_API_KEY` plus a manifest `API_KEY` | neither path can send an empty key or the dev default |
+| C2 | `wip_auth.testing` credential-less walker gate plus library tests; adopted by registry, def-store, template-store, document-store, auth-gateway; integrity routes gated; reporting-sync and ingest-gateway adopt it as strict xfail | seven suites green; library tests cover every failure mode |
+| C3 | reporting-sync: `setup_auth`, key sync, router-level `require_api_key`, health and root on the app, manifest `REGISTRY_URL`/`REGISTRY_API_KEY`, conftest keys (admin plus local-resolving scoped keys) | walker strict-green; factory gate without opt-out; all tests green |
+| C4 | reporting-sync per-route authorization (D2, D3, view writes) plus a refusal matrix with a route-completeness assert | every route in the matrix |
+| C5 | reporting-sync listings scoped to accessible namespaces (search, tables, activity, term references, entity references) | no listing returns rows from an inaccessible namespace |
+| C6 | ingest-gateway: wip-auth packaging (requirements, release build, dev renderer) in the same commit as `setup_auth`, router dependency and manifest | walker strict-green; image imports `wip_auth` |
+| C7 | Bookkeeping repaired into `public` (merge shadows) and every access qualified | integration tests green; second run no-op |
+| C8 | Static roles `wip_sync_owner` / `wip_reporting_read` provisioned at startup, re-ownership, default privileges, two pools, self-check (superuser pool → `/health` 503); two new secrets | role integration tests and deployer tests green |
+| C9 | `wip-deploy verify-security --live`: credential-less probes (JSON 401/403/404 only) and the role check | fake-transport tests green |
+
+#### Rollout
+
+One image tag carrying C1–C9, deployed in this order: wip-local (compose) → dev-test (k8s) → AWS (k8s) → kb (k8s, last).
+
+For each install:
+
+1. **Baseline:**
+   - re-run the measured reproduction;
+   - read-only inventory of roles, bookkeeping copies and object ownership;
+   - dump `public._wip_views` (registered views are not in WIP backups).
+2. **Deploy.**
+3. **Check the startup log:** roles ensured, objects re-owned, shadows merged, self-check passed.
+4. **Credential-less re-probe** of every route group.
+5. **Admin-key and scoped-key checks.**
+6. **End-to-end callers:**
+   - registry namespace-deletion cascade;
+   - document-store parity and post-restore batch;
+   - MCP report tools;
+   - toolkit status;
+   - one ingest message.
+7. **`verify-security --live`.**
 
 ---
 
@@ -389,7 +552,8 @@ This replaces Dex entirely. WIP's Registry (which already manages namespaces and
 |-------|------|-------------|--------|
 | **1** | **No anonymous app access** | None | **Done** (2026-03-31) — app-side OIDC, wip-auth 0.4.0, @wip/proxy 0.2.0 |
 | **1.5** | **App-level access control** | Phase 1 | **Done** (2026-04-01) — `ALLOWED_GROUPS` env var in scaffold middleware |
-| **2** | Per-namespace permissions | Phase 1 | **Backend done** (0e548f3), Console UX polish remaining |
+| **2** | Per-namespace permissions | Phase 1 | **Backend done in document-store, template-store, def-store** (0e548f3), Console UX polish remaining |
+| **2b** | Complete service-side enforcement (reporting-sync, ingest-gateway) | Phase 2 | **Planned** (2026-10-12) — commit sequence C0–C9 approved, implementation in progress |
 | **3** | Per-user audit trail | Phase 1 | **Verified** — code review confirmed full chain |
 | **4A** | Per-app user isolation | Phase 2 | Design needed |
 | **4B** | Gateway-level auth | Phase 1 | Fallback option, not needed while apps use scaffold |
@@ -408,9 +572,12 @@ Phase 1.5: App Access Control  ✅
 Phase 2:           Phase 3:
 Namespace Auth     Audit Trail
     │
-    ▼
-Phase 4A/4B/4C:
-Constellation
+    ├──────────────────┐
+    ▼                  ▼
+Phase 4A/4B/4C:    Phase 2b:
+Constellation      Complete enforcement
+                   (reporting-sync,
+                    ingest-gateway)
 ```
 
 ## Open Questions
