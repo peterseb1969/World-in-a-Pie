@@ -26,6 +26,26 @@ from ..models.namespace import Namespace
 
 logger = logging.getLogger("registry.namespace_deletion")
 
+# The install's service credential for calls from the Registry to other WIP
+# services, in the order the registry manifest provides it: the legacy and
+# master keys are both mapped from the install's api-key secret; API_KEY and
+# REGISTRY_API_KEY are honoured for setups that name it that way.
+_SERVICE_KEY_VARS = (
+    "WIP_AUTH_LEGACY_API_KEY",
+    "MASTER_API_KEY",
+    "API_KEY",
+    "REGISTRY_API_KEY",
+)
+
+
+def _service_api_key() -> str:
+    """Return the first non-empty service key from the environment, or ''."""
+    for var in _SERVICE_KEY_VARS:
+        value = os.getenv(var)
+        if value:
+            return value
+    return ""
+
 
 # External service databases with namespace-scoped data.
 # Each tuple: (database_name, collection_name, filter_field, service_label)
@@ -559,8 +579,22 @@ class NamespaceDeletionService:
         if not self._postgres_url:
             return 0
 
+        api_key = _service_api_key()
+        if not api_key:
+            # Sending an empty key would be refused by reporting-sync and
+            # degrade to the generic "rows may remain" below; name the real
+            # cause instead so the journal points at the misconfiguration.
+            logger.error(
+                "No service API key configured for the reporting-sync cleanup "
+                "(checked %s)", ", ".join(_SERVICE_KEY_VARS),
+            )
+            step.error = (
+                "no service API key configured for reporting-sync cleanup; "
+                "PostgreSQL rows may remain"
+            )
+            return 0
+
         try:
-            api_key = cast(str, os.getenv("API_KEY") or os.getenv("REGISTRY_API_KEY", ""))
             async with httpx.AsyncClient(timeout=120.0) as client:
                 resp = await client.delete(
                     f"{self._postgres_url}/api/reporting-sync/namespace/{namespace}",

@@ -1,6 +1,6 @@
 """Configuration for the Ingest Gateway service."""
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
@@ -48,10 +48,16 @@ class Settings(BaseSettings):
         alias="DOCUMENT_STORE_URL"
     )
 
-    # API key for authenticating with target services
+    # API key for authenticating with target services. The deployer's
+    # manifest provides the install's api-key secret as API_KEY (and, for
+    # older renders, only as DOCUMENT_STORE_API_KEY / MASTER_API_KEY); any of
+    # them is accepted so a deployed gateway never falls back to the dev
+    # default, which every target service would refuse.
     api_key: str = Field(
         default="dev_master_key_for_testing",
-        alias="API_KEY"
+        validation_alias=AliasChoices(
+            "API_KEY", "DOCUMENT_STORE_API_KEY", "MASTER_API_KEY"
+        ),
     )
 
     # Processing configuration

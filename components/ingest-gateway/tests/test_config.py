@@ -1,9 +1,9 @@
 """Tests for the Ingest Gateway configuration module."""
 
 import os
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 from ingest_gateway.config import Settings
 
@@ -51,7 +51,9 @@ class TestDefaultValues:
         s = Settings()
         assert s.document_store_url == "http://localhost:8004"
 
-    def test_api_key_default(self):
+    def test_api_key_default(self, monkeypatch):
+        for var in ("API_KEY", "DOCUMENT_STORE_API_KEY", "MASTER_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
         s = Settings()
         assert s.api_key == "dev_master_key_for_testing"
 
@@ -116,6 +118,20 @@ class TestEnvironmentVariables:
         with patch.dict(os.environ, {"API_KEY": "prod-secret-key-12345"}):
             s = Settings()
             assert s.api_key == "prod-secret-key-12345"
+
+    @pytest.mark.parametrize("var", ["DOCUMENT_STORE_API_KEY", "MASTER_API_KEY"])
+    def test_api_key_from_manifest_provided_vars(self, monkeypatch, var):
+        """A deployed gateway gets the install key under these names; it must
+        never fall back to the dev default (CASE-851, Phase 2b C1)."""
+        for name in ("API_KEY", "DOCUMENT_STORE_API_KEY", "MASTER_API_KEY"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv(var, "install-secret")
+        assert Settings().api_key == "install-secret"
+
+    def test_api_key_prefers_api_key(self, monkeypatch):
+        monkeypatch.setenv("MASTER_API_KEY", "master")
+        monkeypatch.setenv("API_KEY", "explicit")
+        assert Settings().api_key == "explicit"
 
     def test_batch_size_from_env(self):
         with patch.dict(os.environ, {"BATCH_SIZE": "500"}):
