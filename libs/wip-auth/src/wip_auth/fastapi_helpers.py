@@ -14,7 +14,7 @@ Usage:
 """
 
 import logging
-from typing import cast
+from typing import Any, cast
 
 from fastapi import HTTPException
 
@@ -23,6 +23,7 @@ from .resolve import (
     EntityNotFoundError,
     _looks_like_uuid,
     resolve_entity_id,
+    resolve_entity_ids,
     resolve_term_by_fields,
 )
 
@@ -300,6 +301,18 @@ async def resolve_bulk_ids(
             if raw_id and not item_terminology:
                 _reject_ambiguous_term_form(raw_id, id_field)
 
+    # Partition the items: field-door items (terminology-scoped opaque
+    # values) resolve per item through the structured tuple door;
+    # string-door items BATCH through resolve_entity_ids — one deduped
+    # Registry list call per distinct namespace instead of one call per
+    # item. The per-item loop this replaces cost a bulk write door two
+    # serial Registry round-trips per item (a 200-relation request made
+    # 400 resolve calls); the batch door with in-request dedup collapses
+    # that to one list call per namespace, and a hierarchy that names the
+    # same broad term many times resolves it once.
+    string_door: list[tuple[Any, str, str]] = []  # (item, raw_id, ns)
+    field_door: list[tuple[Any, str, str, str]] = []  # (item, raw_id, ns, terminology)
+
     for item in items:
         raw_id, item_ns, item_terminology = _item_context(item)
 
@@ -314,20 +327,59 @@ async def resolve_bulk_ids(
             )
             continue
 
+        if item_terminology and not _looks_like_uuid(raw_id):
+            field_door.append((item, raw_id, item_ns, item_terminology))
+        else:
+            string_door.append((item, raw_id, item_ns))
+
+    def _write_back(item: Any, resolved: str) -> None:
+        if isinstance(item, dict):
+            item[id_field] = resolved
+        else:
+            setattr(item, id_field, resolved)
+
+    # String door: one batched, deduped resolve per namespace. Non-strict —
+    # a miss leaves the item's id untouched (the downstream service reports
+    # it per item in the BulkResponse), exactly the old per-item semantics,
+    # fallback door included.
+    ids_by_ns: dict[str, list[str]] = {}
+    for _item, raw_id, item_ns in string_door:
+        ids_by_ns.setdefault(item_ns, []).append(raw_id)
+    resolved_by_ns: dict[str, dict[str, str]] = {}
+    for item_ns, ns_ids in ids_by_ns.items():
         try:
-            if item_terminology and not _looks_like_uuid(raw_id):
-                # Field door: the identifier is the raw value, uninterpreted.
-                resolved = await resolve_term_by_fields(
-                    raw_id, item_terminology, item_ns, bypass_cache=bypass_cache,
-                )
-            else:
-                resolved = await resolve_entity_id(
-                    raw_id, entity_type, item_ns, bypass_cache=bypass_cache,
-                )
-            if isinstance(item, dict):
-                item[id_field] = resolved
-            else:
-                setattr(item, id_field, resolved)
+            resolved_by_ns[item_ns] = await resolve_entity_ids(
+                ns_ids, entity_type, item_ns,
+                bypass_cache=bypass_cache, strict=False,
+            )
+        except EntityNotFoundError:
+            # Registry unreachable / non-200 for this namespace's batch —
+            # the old per-item path passed every item through on exactly
+            # this failure (caught per item); the batch door must not turn
+            # it into a whole-request 500. Every id stays unresolved and
+            # the warnings below name each one.
+            resolved_by_ns[item_ns] = {}
+    warned: set[tuple[str, str]] = set()
+    for item, raw_id, item_ns in string_door:
+        resolved = resolved_by_ns[item_ns].get(raw_id)
+        if resolved is not None:
+            _write_back(item, resolved)
+        elif (item_ns, raw_id) not in warned:
+            warned.add((item_ns, raw_id))
+            logger.warning(
+                "Could not resolve %s '%s' in namespace '%s' — passing through",
+                entity_type, raw_id, item_ns,
+            )
+
+    # Field door: per item, as before — the structured tuple door has no
+    # batch Registry endpoint yet. If a profile ever shows it hot on a bulk
+    # path, batching it is a Registry endpoint addition, not a loop change.
+    for item, raw_id, item_ns, item_terminology in field_door:
+        try:
+            resolved = await resolve_term_by_fields(
+                raw_id, item_terminology, item_ns, bypass_cache=bypass_cache,
+            )
+            _write_back(item, resolved)
         except EntityNotFoundError:
             logger.warning(
                 "Could not resolve %s '%s' in namespace '%s' — passing through",

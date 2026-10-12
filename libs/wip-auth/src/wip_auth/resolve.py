@@ -23,6 +23,7 @@ Usage:
     id_map = await resolve_entity_ids(["STATUS", "GENDER"], "terminology", "wip")
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -52,6 +53,48 @@ def set_resolve_transport(transport: Any | None) -> None:
     """Set the httpx transport for resolve calls (for in-process testing)."""
     global _resolve_transport
     _resolve_transport = transport
+
+
+# One pooled client per (event loop, injected transport) instead of a fresh
+# AsyncClient per resolve call. A fresh client per call means a new
+# connection (and potentially a DNS lookup) per resolved id — on bulk write
+# doors that was the dominant serial cost (a 200-relation request opened
+# 400 connections to Registry). The pool is rebuilt when the running loop
+# changes (each pytest-asyncio test runs its own loop), when the injected
+# transport changes (set_resolve_transport in test setups/teardowns), or
+# when the client was closed. A client abandoned on a dead loop cannot be
+# awaited closed from the new loop; it is dropped and its sockets are
+# reclaimed at GC — acceptable for a per-process singleton.
+_pooled_client: httpx.AsyncClient | None = None
+_pooled_client_loop: Any | None = None
+_pooled_client_transport: Any | None = None
+
+
+def _get_resolve_client() -> httpx.AsyncClient:
+    """The shared client for all Registry resolve/lookup calls."""
+    global _pooled_client, _pooled_client_loop, _pooled_client_transport
+    loop = asyncio.get_running_loop()
+    if (
+        _pooled_client is None
+        or _pooled_client.is_closed
+        or _pooled_client_loop is not loop
+        or _pooled_client_transport is not _resolve_transport
+    ):
+        client_kwargs: dict[str, Any] = {"timeout": 10.0}
+        if _resolve_transport is not None:
+            client_kwargs["transport"] = _resolve_transport
+        _pooled_client = httpx.AsyncClient(**client_kwargs)
+        _pooled_client_loop = loop
+        _pooled_client_transport = _resolve_transport
+    return _pooled_client
+
+
+async def close_resolve_client() -> None:
+    """Close the pooled resolve client (tidy teardown; optional)."""
+    global _pooled_client
+    if _pooled_client is not None and not _pooled_client.is_closed:
+        await _pooled_client.aclose()
+    _pooled_client = None
 
 
 def _get_registry_url() -> str:
@@ -327,16 +370,12 @@ async def _post_resolve(
     api_key = _get_api_key()
 
     try:
-        client_kwargs: dict[str, Any] = {"timeout": 10.0}
-        if _resolve_transport is not None:
-            client_kwargs["transport"] = _resolve_transport
-            client_kwargs["base_url"] = registry_url
-        async with httpx.AsyncClient(**client_kwargs) as client:
-            response = await client.post(
-                f"{registry_url}/api/registry/entries/resolve",
-                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
-                json=[payload],
-            )
+        client = _get_resolve_client()
+        response = await client.post(
+            f"{registry_url}/api/registry/entries/resolve",
+            headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+            json=[payload],
+        )
     except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
         logger.debug("Registry unreachable for resolution: %s", e)
         raise EntityNotFoundError(identifier, entity_type) from e
@@ -392,16 +431,12 @@ async def _post_lookup_by_id(
         "entity_type": _ENTITY_TYPE_PLURAL.get(entity_type, f"{entity_type}s"),
     }
     try:
-        client_kwargs: dict[str, Any] = {"timeout": 10.0}
-        if _resolve_transport is not None:
-            client_kwargs["transport"] = _resolve_transport
-            client_kwargs["base_url"] = registry_url
-        async with httpx.AsyncClient(**client_kwargs) as client:
-            response = await client.post(
-                f"{registry_url}/api/registry/entries/lookup/by-id",
-                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
-                json=[item],
-            )
+        client = _get_resolve_client()
+        response = await client.post(
+            f"{registry_url}/api/registry/entries/lookup/by-id",
+            headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+            json=[item],
+        )
     except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
         logger.debug("Registry unreachable for by-id fallback: %s", e)
         return None
@@ -466,6 +501,12 @@ async def resolve_term_by_fields(
     return canonical_id
 
 
+# Chunk size for batch resolve calls — large bulk doors (a 35k-relation
+# seed) must not send one unbounded list; mirrors the term door's
+# registry sub-batching.
+_RESOLVE_CHUNK = 200
+
+
 async def resolve_entity_ids(
     raw_ids: list[str],
     entity_type: str,
@@ -473,22 +514,34 @@ async def resolve_entity_ids(
     include_statuses: list[str] | None = None,
     *,
     bypass_cache: bool = False,
+    strict: bool = True,
 ) -> dict[str, str]:
     """Batch resolve multiple identifiers via Registry.
 
     Both synonyms and canonical IDs are verified. Cached results are
-    used where available; uncached IDs are resolved in a single batch call.
+    used where available; uncached IDs are resolved in chunked batch
+    calls (one Registry round-trip per _RESOLVE_CHUNK ids, not per id).
 
     Args:
         raw_ids: List of identifiers (mix of canonical and synonym)
         entity_type: Singular entity type
         namespace: Current namespace
+        strict: When True (default), the first unresolvable identifier
+            raises — the historical batch-door contract, relied on by
+            comparison sites that treat "different or missing" alike.
+            When False (the bulk WRITE doors), a per-item miss first
+            tries the by-id fallback door exactly as the single-resolve
+            path does — batch and single resolution stay semantically
+            identical — and an identifier that still misses is simply
+            ABSENT from the returned map; the caller's downstream
+            BulkResponse reports it per item.
 
     Returns:
-        Dict mapping each raw_id to its canonical ID
+        Dict mapping each raw_id to its canonical ID (misses absent in
+        non-strict mode).
 
     Raises:
-        EntityNotFoundError: If any identifier is not found
+        EntityNotFoundError: strict mode only — an identifier not found.
     """
     result: dict[str, str] = {}
     to_resolve: list[str] = []
@@ -499,7 +552,11 @@ async def resolve_entity_ids(
     # cache entry would bake a dead UUID into durable state — see CASE-56.
     # Skip reads; writes still update the cache with the fresh Registry
     # result below (self-heals any prior stale entry).
+    seen: set[str] = set()
     for raw_id in raw_ids:
+        if raw_id in seen:
+            continue
+        seen.add(raw_id)
         if not bypass_cache:
             cache_key = f"{namespace}:{entity_type}:{raw_id}"
             cached = _get_cached(cache_key)
@@ -511,45 +568,57 @@ async def resolve_entity_ids(
     if not to_resolve:
         return result
 
-    # Build payloads — UUIDs get entry_id, synonyms get composite_key
-    payloads = [
-        _build_resolve_payload(rid, entity_type, namespace, include_statuses)
-        for rid in to_resolve
-    ]
-
     registry_url = _get_registry_url()
     api_key = _get_api_key()
 
-    try:
-        client_kwargs: dict[str, Any] = {"timeout": 10.0}
-        if _resolve_transport is not None:
-            client_kwargs["transport"] = _resolve_transport
-            client_kwargs["base_url"] = registry_url
-        async with httpx.AsyncClient(**client_kwargs) as client:
+    for start in range(0, len(to_resolve), _RESOLVE_CHUNK):
+        chunk = to_resolve[start:start + _RESOLVE_CHUNK]
+        payloads = [
+            _build_resolve_payload(rid, entity_type, namespace, include_statuses)
+            for rid in chunk
+        ]
+        try:
+            client = _get_resolve_client()
             response = await client.post(
                 f"{registry_url}/api/registry/entries/resolve",
                 headers={"X-API-Key": api_key, "Content-Type": "application/json"},
                 json=payloads,
             )
-    except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
-        logger.debug("Registry unreachable for batch resolution: %s", e)
-        raise EntityNotFoundError(to_resolve[0], entity_type) from e
+        except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
+            logger.debug("Registry unreachable for batch resolution: %s", e)
+            raise EntityNotFoundError(chunk[0], entity_type) from e
 
-    if response.status_code != 200:
-        logger.warning("Registry batch resolve failed: %s", response.status_code)
-        raise EntityNotFoundError(to_resolve[0], entity_type)
+        if response.status_code != 200:
+            logger.warning("Registry batch resolve failed: %s", response.status_code)
+            raise EntityNotFoundError(chunk[0], entity_type)
 
-    data = response.json()
-    for i, resolve_result in enumerate(data.get("results", [])):
-        raw_id = to_resolve[i]
-        if resolve_result.get("status") == "found":
-            canonical_id = resolve_result["entry_id"]
-            cache_key = f"{namespace}:{entity_type}:{raw_id}"
-            _set_cached(cache_key, canonical_id)
-            result[raw_id] = canonical_id
-        else:
-            # Same reasoning as the single-resolve path: a per-item miss is a
-            # real lookup failure, so it carries the namespace hint.
-            raise EntityNotFoundError(raw_id, entity_type, namespace)
+        data = response.json()
+        for i, resolve_result in enumerate(data.get("results", [])):
+            raw_id = chunk[i]
+            if resolve_result.get("status") == "found":
+                canonical_id = resolve_result["entry_id"]
+                cache_key = f"{namespace}:{entity_type}:{raw_id}"
+                _set_cached(cache_key, canonical_id)
+                result[raw_id] = canonical_id
+                continue
+            if strict:
+                # Same reasoning as the single-resolve path: a per-item miss
+                # is a real lookup failure, so it carries the namespace hint.
+                raise EntityNotFoundError(raw_id, entity_type, namespace)
+            # Non-strict miss: the single door falls back to the by-id
+            # lookup for non-term, non-UUID identifiers (value-form
+            # references whose synonym key shapes /resolve cannot
+            # hash-match) — the batch door must not be weaker, or moving a
+            # caller from per-item to batch resolution would silently break
+            # exactly those references. Misses are rare; the per-miss call
+            # does not reintroduce the per-item round-trip storm.
+            if entity_type != "term" and not _looks_like_uuid(raw_id):
+                ns_prefix, value = split_qualified_value(raw_id)
+                fallback = await _post_lookup_by_id(
+                    value, ns_prefix or namespace, entity_type,
+                )
+                if fallback is not None:
+                    _set_cached(f"{namespace}:{entity_type}:{raw_id}", fallback)
+                    result[raw_id] = fallback
 
     return result
