@@ -1,6 +1,6 @@
 # Design: Authentication & Authorization
 
-**Status:** Phase 1 implemented (2026-03-31); Phase 2 implemented in document-store, template-store and def-store only — Phase 2b (completing enforcement in reporting-sync and ingest-gateway) planned 2026-10-12; Phases 3-4 as below
+**Status:** Phase 1 implemented (2026-03-31); Phase 2 implemented in document-store, template-store and def-store; Phase 2b (completing enforcement in reporting-sync and ingest-gateway) implemented and rolled out 2026-10-12 to wip-local, dev-test, prod-test and kb.internal — AWS pending; Phases 3-4 as below
 **Priority:** Phase 1 was critical — apps previously served sensitive data to anyone on the network
 
 ## Problem
@@ -13,7 +13,7 @@ This is the single most important gap. Everything else — per-namespace permiss
 
 | Layer | Status | Notes |
 |-------|--------|-------|
-| Service auth (API keys) | **Partial** | Registry, def-store, template-store and document-store validate `X-API-Key`. **reporting-sync and ingest-gateway validate nothing** — see Phase 2b |
+| Service auth (API keys) | **Implemented** | Every backend HTTP service validates `X-API-Key`; reporting-sync and ingest-gateway joined in Phase 2b. Still open on deployed installs: the MCP server's network transport (CASE-857) and NATS (CASE-852) |
 | Console auth (OIDC) | Working | Client-side via `oidc-client-ts` + Dex, sends JWT to WIP services |
 | App auth | **Phase 1 done** | App-side OIDC via `openid-client` + `express-session`, opt-in via `OIDC_ISSUER` |
 | Namespace permissions | Designed, not enforced | `namespace-authorization.md` — grants exist, `check_namespace_permission()` exists, routes don't call it |
@@ -286,7 +286,7 @@ App (Express)                      @wip/proxy                       WIP Service
 
 ### Enforcement Rollout
 
-Phase 2 is implemented **in three services only**. `check_namespace_permission()` is called from route handlers in document-store, template-store, and def-store. reporting-sync and ingest-gateway were never part of this rollout and enforce neither authentication nor authorization — see Phase 2b. Registry is the permission *authority* — it evaluates grants via `check_permission_internal()` and is queried by those services — rather than a caller of `check_namespace_permission()` (there are no call sites in registry).
+Phase 2 was implemented in three services: `check_namespace_permission()` is called from route handlers in document-store, template-store, and def-store. reporting-sync and ingest-gateway were not part of it and enforced neither authentication nor authorization until Phase 2b closed that gap (2026-10-12). Registry is the permission *authority* — it evaluates grants via `check_permission_internal()` and is queried by those services — rather than a caller of `check_namespace_permission()` (there are no call sites in registry).
 
 ### Single-User Compatibility
 
@@ -373,6 +373,7 @@ A service needs both. Authorization also needs the Registry: `REGISTRY_URL` and 
   - mcp-server.
 - `API_KEY` / `MASTER_API_KEY` map to the legacy key, which carries the admin groups (`wip_auth/config.py`). These callers therefore pass every gate above.
 - **Unverified before rollout:** browser and app consumers (React Console, `@wip/proxy` apps, the KB app's search). Any that rely on anonymous access must be fixed first.
+- **Verified during the rollout:** the React Console, the KB app and ClinTrial Explorer all send the install key (their own server-side proxies, or the auth-gateway's injected key for browser sessions). No app request was refused on any upgraded install; the only refusals logged were the rollout's own credential-less probes.
 
 **D6 — The definition of done is mechanical.**
 - A shape-agnostic walker in `wip_auth.testing`, beside the factory and strictness gates, fires a **credential-less** request at every route of the real ASGI app.
@@ -459,6 +460,23 @@ For each install:
    - toolkit status;
    - one ingest message.
 7. **`verify-security --live`.**
+
+#### Rollout record (2026-10-12)
+
+The image tag was `20261012a` for every platform service. The order changed from the plan: Peter sequenced the installs and held AWS back.
+
+| Install | Path | What the startup did | Result |
+|---|---|---|---|
+| wip-local (dev, compose) | Source clone pulled, then `wip-deploy redeploy` | Bookkeeping copies had already merged on an earlier hot reload; roles created; 15 schemas and 414 relations re-owned | `verify --security --live` 8/8; scoped key refused raw SQL and view writes, saw only its namespace; registry cascade, ingest message, MCP parity and batch syncs all passed |
+| dev-test (k8s) | Clean slate: namespace deleted, fresh `install`, backup restored | Roles created on an empty database, nothing to re-own | 8/8; parity complete after restore (`kb` 4737, `library` 19); scoped key behaved as on wip-local |
+| prod-test (k8s) | In place: saved-state tag edit, `redeploy`, apps via `app-deploy` | Bookkeeping copies both populated (32 / 40 rows, 3 conflicting rows) merged into 47 rows, the newer copy winning; 7 schemas and 139 relations re-owned | 8/8 including ingest-gateway; ClinTrial Explorer browsed end to end without refusals |
+| kb.internal (k8s) | In place, as prod-test | Copies of 28 / 39 rows, all 28 overlaps conflicting with the `wip` copy newer, merged into 39 rows; 3 schemas and 102 relations re-owned | 8/8; KB, React Console and the case client working |
+| AWS (k8s) | Pending | — | — |
+
+Findings outside Phase 2b that the rollout surfaced:
+- **MinIO images.** Docker Hub and quay.io no longer serve MinIO anonymously. The manifest now points at an arm64-only copy on ghcr, so an amd64 cluster needs a multi-arch copy first.
+- **Identity-hash migration (CASE-847)** has to run after restoring an older archive, followed by a forced reporting re-sync. It applied cleanly on every install.
+- **Startup self-healing (CASE-862).** Two startup paths do not retry a late dependency.
 
 ---
 
@@ -558,7 +576,7 @@ This replaces Dex entirely. WIP's Registry (which already manages namespaces and
 | **1** | **No anonymous app access** | None | **Done** (2026-03-31) — app-side OIDC, wip-auth 0.4.0, @wip/proxy 0.2.0 |
 | **1.5** | **App-level access control** | Phase 1 | **Done** (2026-04-01) — `ALLOWED_GROUPS` env var in scaffold middleware |
 | **2** | Per-namespace permissions | Phase 1 | **Backend done in document-store, template-store, def-store** (0e548f3), Console UX polish remaining |
-| **2b** | Complete service-side enforcement (reporting-sync, ingest-gateway) | Phase 2 | **Implemented on develop** (2026-10-12, C0–C9) — rollout to installs pending |
+| **2b** | Complete service-side enforcement (reporting-sync, ingest-gateway) | Phase 2 | **Implemented and rolled out** (2026-10-12, C0–C9): wip-local, dev-test, prod-test, kb.internal — AWS pending |
 | **3** | Per-user audit trail | Phase 1 | **Verified** — code review confirmed full chain |
 | **4A** | Per-app user isolation | Phase 2 | Design needed |
 | **4B** | Gateway-level auth | Phase 1 | Fallback option, not needed while apps use scaffold |

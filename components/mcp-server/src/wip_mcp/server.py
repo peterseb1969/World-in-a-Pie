@@ -3835,7 +3835,13 @@ async def run_report_query(
         max_rows: Maximum rows to return (default 1000).
         namespace: When set, the query runs with the search_path pointed at that
             namespace's schema, so unqualified names like doc_patient resolve
-            there. Omit and schema-qualify for cross-namespace queries.
+            there. Omit and schema-qualify for cross-namespace queries —
+            without namespace, an unqualified name fails with
+            'relation does not exist' (the search_path is then public only).
+
+    Raw SQL requires an admin or service key; a namespace-scoped key gets 403
+    and should use the document query tools instead. The query runs in a
+    read-only transaction.
 
     Example:
         run_report_query("SELECT name, country FROM doc_patient WHERE country = $1",
