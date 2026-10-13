@@ -30,21 +30,33 @@ including raw SQL, answered anonymously.
 auth-gateway). The platform's own callers — registry's namespace-deletion
 cascade, document-store, the MCP server — are updated.
 
-### Raw SQL, view registration and operator routes are admin/service-only
+### Raw SQL and operator routes are admin/service-only; view writes take namespace ADMIN
 
 These routes now require group `wip-admins` or `wip-services`; a
 namespace-scoped key gets 403:
 - `POST /query` and `POST /export/csv` (raw SQL);
-- registering or deleting a view: `POST`/`DELETE /namespace/{prefix}/views…`;
 - batch sync and its jobs (`/sync/batch…`), `/metrics…`, `/alerts…`,
   `/health/integrity`, `DELETE /namespace/{prefix}`.
 
+Registering or deleting a view (`POST`/`DELETE /namespace/{prefix}/views…`)
+takes ADMIN on the namespace **or** the privileged groups. A namespace-admin
+registration is contained: the created view may only depend on relations in
+the namespace's own schema (checked against the view Postgres actually
+built — `pg_depend`, no SQL parsing); a cross-schema dependency rolls the
+registration back with 403. Admin/service keys still register cross-schema
+views deliberately. A key with only read or write on the namespace gets 403.
+
 Namespace-scoped keys keep read access to their own namespaces through
 `GET /export/csv`, `GET /namespace/{prefix}/views`, `/parity`, `/table-name`,
-`/schema/{template}`. Another namespace answers 404. A scoped key cannot yet
-read the rows of a registered view; that gap is tracked.
-**Action:** apps that ran SQL or registered views with a scoped key must use
-the install's service key for those calls.
+`/schema/{template}` — and read a registered view's rows through the new
+structured endpoint `POST /namespace/{prefix}/views/{name}/rows` (namespace
+read; filters as column/op/value triples validated against the view's
+columns, bound parameters, sort, limit/offset; response shaped like
+`POST /query`; `@wip/client` 0.55.0 ships it as `reporting.readViewRows`).
+Another namespace answers 404.
+**Action:** apps that ran raw SQL with a scoped key must use the install's
+service key for those calls, or move view reads to the rows endpoint. An app
+that registers its own views on a scoped key needs ADMIN on its namespace.
 
 ### Listings are scoped to the caller's namespaces
 
