@@ -32,6 +32,14 @@
  *     is a lie to the seed author.
  *   server/seed/templates/<NN>_<VALUE>.json    (numeric prefix orders dependencies)
  *     { value, label, description, identity_fields[], fields[], reporting? }
+ *   server/seed/views/<NN>_<name>.json         (optional)
+ *     { name, sql }
+ *     Registered reporting views the app queries. Views are APP-OWNED
+ *     bootstrap artifacts: WIP archives do not carry them, so a restored
+ *     namespace comes back with every registered view missing — by design.
+ *     The app re-registers them idempotently (re-registering an existing
+ *     name replaces it): at bootstrap, at startup, and again whenever a
+ *     query fails because the view is gone. See ensureRegisteredViews().
  *   The runBootstrap loop reads these at runtime — no schema in code.
  *
  *   If you RENAME any template value (e.g. adopting the namespace-prefixed
@@ -159,7 +167,7 @@ export async function checkStatus(): Promise<BootstrapStatus> {
  *
  * Order matters: namespace → terminologies (with terms inline) → ontology
  * term-relations → templates (in filename-sorted order so dependencies
- * resolve) → BOOTSTRAP_RECORD audit doc.
+ * resolve) → reporting views (best-effort) → BOOTSTRAP_RECORD audit doc.
  */
 export async function runBootstrap(
   onProgress: (p: BootstrapProgress) => void,
@@ -321,7 +329,22 @@ export async function runBootstrap(
     progress('cache', 'Waiting for template cache to refresh...')
     await new Promise((resolve) => setTimeout(resolve, 6000))
 
-    // Step 6: Write the BOOTSTRAP_RECORD audit doc.
+    // Step 6: Register the app's reporting views (best-effort — see
+    // ensureRegisteredViews). A view whose underlying doc_* tables have
+    // not been synced yet stays pending; startup retries pick it up.
+    const seedViews = loadSeedViews()
+    if (seedViews.length) {
+      progress('views', `Registering ${seedViews.length} reporting views...`)
+      const { pending } = await ensureRegisteredViews()
+      if (pending.length) {
+        progress(
+          'views',
+          `${pending.length} views pending (reporting tables not synced yet — startup will retry): ${pending.join(', ')}`,
+        )
+      }
+    }
+
+    // Step 7: Write the BOOTSTRAP_RECORD audit doc.
     //
     // Per the universal pattern (see CLAUDE.md "Namespace Bootstrap on
     // Launch"): one doc captures who/when/what/which-version. The
@@ -408,6 +431,99 @@ async function writeBootstrapRecord(meta: {
   // template-store, so server-side defaults work as documented.
   const result = await wipPost('/api/document-store/documents', [doc])
   assertBulkSuccess(result, 'BOOTSTRAP_RECORD write')
+}
+
+// ===========================================================================
+// Registered reporting views — app-owned, re-registered idempotently
+// ===========================================================================
+//
+// WIP archives carry MongoDB state only; registered SQL views live in
+// PostgreSQL bookkeeping and are NOT backed up. After any restore (or a
+// fresh install) every registered view is missing, by design — the app
+// that declares a view owns re-creating it. Re-registering an existing
+// name replaces the definition (DROP + CREATE in one transaction), so
+// calling this repeatedly is safe.
+//
+// Registration validates the SQL against the namespace's real reporting
+// tables, and those exist only after reporting-sync has synced the
+// namespace's documents. A failure right after bootstrap or restore is
+// therefore EXPECTED, not an error: treat it as "pending" and retry.
+// Call ensureRegisteredViews():
+//   - once at server startup (with retries — see the loop below), and
+//   - again whenever a query against one of these views fails with a
+//     missing-relation error, before surfacing the failure to the user.
+//
+// TODO when adopting: if your app uses no registered views, delete this
+// section and the Step 6 block in runBootstrap (or just ship no
+// server/seed/views/ dir — absence is handled).
+
+interface SeedView {
+  name: string
+  sql: string
+}
+
+function loadSeedViews(): SeedView[] {
+  let files: string[]
+  try {
+    files = readdirSync(join(SEED_DIR, 'views'))
+      .filter((f) => f.endsWith('.json') && !f.startsWith('_'))
+      .sort()
+  } catch {
+    return [] // no seed/views/ dir — this app registers no views
+  }
+  return files.map(
+    (f) => JSON.parse(readFileSync(join(SEED_DIR, 'views', f), 'utf-8')) as SeedView,
+  )
+}
+
+/**
+ * Register every seed view, idempotently. Never throws: a view that cannot
+ * be registered yet (reporting tables not synced, WIP unreachable) is
+ * returned in `pending` for the caller to retry.
+ */
+export async function ensureRegisteredViews(): Promise<{
+  registered: string[]
+  pending: string[]
+}> {
+  const registered: string[] = []
+  const pending: string[] = []
+  for (const view of loadSeedViews()) {
+    try {
+      await wipPost(`/api/reporting-sync/namespace/${NAMESPACE}/views`, {
+        name: view.name,
+        sql: view.sql,
+      })
+      registered.push(view.name)
+    } catch (err) {
+      pending.push(view.name)
+      console.warn(
+        `[bootstrap] view ${view.name} not registered yet (will retry): ${(err as Error).message}`,
+      )
+    }
+  }
+  return { registered, pending }
+}
+
+/**
+ * Startup helper: retry ensureRegisteredViews until every view registers
+ * or the attempts run out. Call this (unawaited is fine) from server
+ * startup AFTER checkStatus() returned 'ready' — on 'needs_bootstrap'
+ * there is nothing to register against yet; runBootstrap handles the
+ * first registration itself.
+ */
+export async function ensureRegisteredViewsWithRetry(
+  attempts = 10,
+  delayMs = 15_000,
+): Promise<void> {
+  for (let i = 1; i <= attempts; i++) {
+    const { pending } = await ensureRegisteredViews()
+    if (!pending.length) return
+    if (i < attempts) await new Promise((r) => setTimeout(r, delayMs))
+    else
+      console.error(
+        `[bootstrap] views still unregistered after ${attempts} attempts: ${pending.join(', ')}`,
+      )
+  }
 }
 
 
