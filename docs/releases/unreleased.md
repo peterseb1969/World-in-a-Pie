@@ -79,6 +79,34 @@ fails with `relation "…" does not exist`.
 **Action:** pass `namespace` (the search path then points at that namespace's
 schema) or schema-qualify every table, as the API has always documented.
 
+### Object storage: Garage module (new) and SigV4 presigned URLs
+
+MinIO's images are no longer publicly pullable (docker.io resolves to an
+HTML page, quay.io answers 401 anonymously); the platform runs a frozen,
+arm64-only copy. This release adds **`garage`** (`--add garage`,
+dxflrs/garage v2.1.0, arm64+amd64) as the successor object-storage
+module. When garage is active it takes precedence over minio:
+document-store's file storage follows it automatically (endpoint,
+deployer-generated credentials, `/garage` public prefix), and the
+deployer provisions the node at apply time (single-node layout, key
+import, attachments bucket) — idempotently, with secrets on stdin.
+Existing installs keep running MinIO unchanged; blob migration is a
+separate step (CASE-864 Phase 2).
+
+Two cross-cutting changes ship with it:
+
+- **Presigned download URLs are now SigV4** (they were legacy V2, which
+  Garage rejects as anonymous). V4 signs the Host header, so the storage
+  routes (`/minio`, `/garage`) now forward the upstream Host at the edge
+  (`upstream_host_header` route primitive; Caddy `header_up Host`, NGINX
+  `upstream-vhost`).
+  **Action:** presigned downloads require the re-rendered router config —
+  one more reason this release upgrades by re-rendering, never by image
+  swap alone. A dev install whose document-store hot-reloaded the new
+  code serves V4 URLs that fail until the router is re-rendered.
+- New route primitive `upstream_host_header` on component manifests,
+  honored by both renderers.
+
 ### ingest-gateway requires authentication
 
 Every ingest-gateway route requires an API key except

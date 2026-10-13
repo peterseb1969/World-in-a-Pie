@@ -45,6 +45,11 @@ spec:
     - path: /minio
       auth_required: false
       strip_prefix: true
+      # document-store now presigns SigV4 (Garage requires it; V2 is
+      # treated as anonymous there). V4 signs the Host of the internal
+      # endpoint (wip-minio:9000), so the edge must forward that Host —
+      # under V2 this never mattered because V2 leaves the Host unsigned.
+      upstream_host_header: true
       preserve_prefix_subpaths:
         - /minio/health
         - /minio/admin

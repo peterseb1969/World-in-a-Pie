@@ -24,6 +24,15 @@ _DATA_CONFIG = Config(
     connect_timeout=5,
     read_timeout=60,
     retries={"max_attempts": 3, "mode": "standard"},
+    # Presigned URLs must be SigV4, explicitly: ordinary requests already
+    # sign V4 by default, but generate_presigned_url falls back to the
+    # legacy V2 query form (AWSAccessKeyId=…&Signature=…) without this.
+    # Garage rejects V2 query auth outright (it reads as anonymous), and
+    # V2's unsigned Host is the only reason the public-host rewrite ever
+    # appeared to work — V4 signs the Host, and the storage route now
+    # forwards the upstream Host at the edge (`upstream_host_header`),
+    # so the store receives exactly the Host the URL was signed against.
+    signature_version="s3v4",
 )
 
 # The health path gets a tighter budget than the data path: it exists to answer
