@@ -604,6 +604,26 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
             )
             return {row["column_name"] for row in rows}
 
+    @staticmethod
+    async def _existing_indexes(
+        conn: asyncpg.Connection, schema: str, table_name: str
+    ) -> set[str]:
+        """Index names on a table, as PostgreSQL stores them."""
+        rows = await conn.fetch(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = $1 AND tablename = $2",
+            schema,
+            table_name,
+        )
+        return {row["indexname"] for row in rows}
+
+    @staticmethod
+    def _stored_identifier(name: str) -> str:
+        """The name PostgreSQL actually stores for an identifier: it truncates
+        identifiers to 63 bytes (NAMEDATALEN - 1). Comparing an untruncated
+        long name against pg_indexes would never match and re-create forever."""
+        raw = name.encode()
+        return raw[:63].decode(errors="ignore") if len(raw) > 63 else name
+
     async def create_table(
         self,
         namespace: str,
@@ -680,8 +700,17 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
 
         existing_columns = await self.get_existing_columns(schema, table_name)
         migrations = []
+        has_fts = any(
+            getattr(f, "full_text_indexed", None) and f.type == FieldType.STRING
+            for f in fields
+        )
 
         async with self.pool.acquire() as conn:
+            # Read once, only when an FTS index may need ensuring: this path
+            # runs on every synced document event.
+            existing_indexes = (
+                await self._existing_indexes(conn, schema, table_name) if has_fts else set()
+            )
             # Identity-less template + legacy unique-identity index?
             # Drop it. The index was created when this schema-manager
             # always emitted it; identity_hash="" makes it collide on
@@ -744,8 +773,12 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
                         migrations.append(alter_sql)
 
                 # Full-text-indexed string fields: ensure the (search,
-                # tsv) column pair and the GIN index exist. Idempotent —
-                # legacy tables created before FTS landed catch up here.
+                # tsv) column pair and the GIN index exist, so legacy tables
+                # created before FTS landed catch up here. Only what is
+                # actually missing is executed and recorded: a no-op
+                # CREATE INDEX IF NOT EXISTS still takes a SHARE lock on the
+                # table, and recording it would append to the migration row
+                # on every document event.
                 if (
                     getattr(field, "full_text_indexed", None)
                     and field.type == FieldType.STRING
@@ -760,13 +793,15 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
                             logger.info(f"Adding FTS column {fts_col} to {table_name}")
                             await conn.execute(alter_sql)
                             migrations.append(alter_sql)
-                    idx_sql = (
-                        f'CREATE INDEX IF NOT EXISTS '
-                        f'"{table_name}_{base_col}_tsv_idx" ON {qualified} '
-                        f'USING GIN ("{base_col}_tsv")'
-                    )
-                    await conn.execute(idx_sql)
-                    migrations.append(idx_sql)
+                    idx_name = f"{table_name}_{base_col}_tsv_idx"
+                    if self._stored_identifier(idx_name) not in existing_indexes:
+                        idx_sql = (
+                            f'CREATE INDEX IF NOT EXISTS '
+                            f'"{idx_name}" ON {qualified} '
+                            f'USING GIN ("{base_col}_tsv")'
+                        )
+                        await conn.execute(idx_sql)
+                        migrations.append(idx_sql)
 
             if migrations:
                 # Record the migration (keyed on namespace + template_value +
@@ -1039,7 +1074,12 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
                 usage=usage, identity_fields=identity_fields,
             )
             if migrations:
-                logger.info(f"Updated table {table_name} with {len(migrations)} new columns")
+                columns = sum("ADD COLUMN" in m for m in migrations)
+                indexes = sum(m.startswith("CREATE") and " INDEX " in m for m in migrations)
+                logger.info(
+                    f"Updated table {table_name}: {columns} column(s) added, "
+                    f"{indexes} index(es) created, {len(migrations)} statement(s)"
+                )
         else:
             await self.create_table(
                 namespace, template_value, template_version, fields, config,

@@ -41,7 +41,7 @@ from wip_auth.startup import retry_async
 
 from . import __version__
 from .batch_sync import BatchSyncService
-from .bookkeeping import repair_bookkeeping_location
+from .bookkeeping import compact_migration_journal, repair_bookkeeping_location
 from .config import settings
 from .metrics import metrics
 from .models import (
@@ -259,6 +259,12 @@ async def connect_postgres() -> tuple[asyncpg.Pool, asyncpg.Pool]:
     )
     try:
         await repair_bookkeeping_location(bootstrap)
+        try:
+            await compact_migration_journal(bootstrap)
+        except asyncpg.PostgresError as e:
+            # Advisory bookkeeping: a login without rights on the journal must
+            # not stop the service from starting.
+            logger.warning("Migration journal compaction skipped: %s", e)
         if await bootstrap.fetchval(
             "SELECT rolsuper FROM pg_roles WHERE rolname = current_user"
         ):

@@ -18,6 +18,7 @@ touched.
 """
 
 import logging
+import re
 from datetime import UTC, datetime
 
 import asyncpg
@@ -157,3 +158,74 @@ async def repair_bookkeeping_location(conn: asyncpg.Connection) -> list[str]:
         else:
             logger.warning("Bookkeeping repair: %s", action)
     return actions
+
+
+# One full-text GIN index statement, exactly as the schema manager writes it
+# (a single line, optionally ending in the ";" that joins statements).
+_FTS_INDEX_LINE = re.compile(
+    r'^CREATE INDEX IF NOT EXISTS "[^"]+_tsv_idx" ON .+ USING GIN \("[^"]+_tsv"\);?$'
+)
+
+
+def compact_fts_index_lines(migration_sql: str) -> str:
+    """Drop repeated full-text index statements, keeping each one's first occurrence.
+
+    Until the schema manager learned to record only indexes it actually
+    created, every synced document of a template with full-text fields
+    appended the same no-op ``CREATE INDEX IF NOT EXISTS … _tsv_idx`` to the
+    template's migration row, which grew to megabytes. Only those statements
+    are de-duplicated: other lines may legitimately repeat inside a
+    multi-line CREATE TABLE.
+    """
+    seen: set[str] = set()
+    kept: list[str] = []
+    for line in migration_sql.split("\n"):
+        stripped = line.strip()
+        if _FTS_INDEX_LINE.match(stripped):
+            key = stripped.rstrip(";")
+            if key in seen:
+                continue
+            seen.add(key)
+        kept.append(line)
+    return "\n".join(kept)
+
+
+async def compact_migration_journal(conn: asyncpg.Connection) -> int:
+    """Shrink migration rows bloated by repeated full-text index statements.
+
+    Idempotent and safe to run on every start; returns the number of rows
+    rewritten. A row is only replaced if it has not changed since it was
+    read, so a concurrent append is never lost.
+    """
+    if not await _exists(conn, "public", "_wip_schema_migrations"):
+        return 0
+    rows = await conn.fetch(
+        "SELECT namespace, template_value, template_version, migration_sql "
+        "FROM public._wip_schema_migrations WHERE migration_sql LIKE '%\\_tsv\\_idx%'"
+    )
+    rewritten = 0
+    for row in rows:
+        compacted = compact_fts_index_lines(row["migration_sql"])
+        if compacted == row["migration_sql"]:
+            continue
+        status = await conn.execute(
+            """
+            UPDATE public._wip_schema_migrations
+               SET migration_sql = $4
+             WHERE namespace = $1 AND template_value = $2 AND template_version = $3
+               AND md5(migration_sql) = md5($5)
+            """,
+            row["namespace"],
+            row["template_value"],
+            row["template_version"],
+            compacted,
+            row["migration_sql"],
+        )
+        if status.endswith(" 1"):
+            rewritten += 1
+            logger.warning(
+                "Compacted migration journal for %s/%s v%s: %d → %d bytes",
+                row["namespace"], row["template_value"], row["template_version"],
+                len(row["migration_sql"]), len(compacted),
+            )
+    return rewritten
