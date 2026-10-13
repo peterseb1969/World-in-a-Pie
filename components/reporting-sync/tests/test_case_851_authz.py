@@ -10,6 +10,8 @@ Groups:
 - ns_read:       routes addressing one namespace; read on it required,
                  and an invisible namespace answers 404 (existence is not
                  leaked).
+- ns_admin:      view writes; ADMIN on the namespace or the privileged
+                 groups (read/write grants answer 403, invisible 404).
 - authenticated: any valid key (/status, which filters what it shows).
 - scoped:        listings that span namespaces. They run in the caller's
                  effective namespace (C5): an explicit namespace must be
@@ -34,6 +36,7 @@ from wip_auth import clear_permission_cache
 ADMIN = os.environ["WIP_AUTH_LEGACY_API_KEY"]
 READER = "rs_reader_key"  # read on ns-a
 WRITER = "rs_writer_key"  # write on ns-a
+NSADMIN = "rs_nsadmin_key"  # admin on ns-a
 SERVICE = "rs_service_key"  # wip-services, no namespace grants
 NOTHING = "rs_nothing_key"  # read on ns-z only
 MULTI = "rs_multi_key"  # read on ns-a and ns-c
@@ -78,9 +81,12 @@ ROUTES = [
      f"{P}/export/csv?namespace={{ns}}&table=doc_patient"),
     ("POST", f"{P}/export/csv", "privileged", None),
     ("DELETE", f"{P}/namespace/{{prefix}}", "privileged", None),
-    ("POST", f"{P}/namespace/{{prefix}}/views", "privileged", None),
+    ("POST", f"{P}/namespace/{{prefix}}/views", "ns_admin", f"{P}/namespace/{{ns}}/views"),
     ("GET", f"{P}/namespace/{{prefix}}/views", "ns_read", f"{P}/namespace/{{ns}}/views"),
-    ("DELETE", f"{P}/namespace/{{prefix}}/views/{{view_name}}", "privileged", None),
+    ("POST", f"{P}/namespace/{{prefix}}/views/{{view_name}}/rows", "ns_read",
+     f"{P}/namespace/{{ns}}/views/v_x/rows"),
+    ("DELETE", f"{P}/namespace/{{prefix}}/views/{{view_name}}", "ns_admin",
+     f"{P}/namespace/{{ns}}/views/v_x"),
 ]
 
 
@@ -99,7 +105,11 @@ def _concrete(template: str) -> str:
 
 # Routes whose handler only runs with a valid body; without one, request
 # validation answers 422 before any namespace logic is reached.
-_BODIES = {("POST", f"{P}/search"): {"query": "x"}}
+_BODIES = {
+    ("POST", f"{P}/search"): {"query": "x"},
+    ("POST", f"{P}/namespace/ns-a/views"): {"name": "v_x", "sql": "SELECT 1"},
+    ("POST", f"{P}/namespace/ns-b/views"): {"name": "v_x", "sql": "SELECT 1"},
+}
 
 
 async def _call(method: str, path: str, key: str | None) -> int:
@@ -159,6 +169,24 @@ async def test_namespace_read_routes(method, template, group, ns_path):
     assert await _call(method, own, NOTHING) == 404
     # a service key without grants has no namespace access
     assert await _call(method, own, SERVICE) == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,template,group,ns_path", _of("ns_admin"))
+async def test_namespace_admin_routes(method, template, group, ns_path):
+    """View writes: ADMIN on the namespace, or the privileged groups."""
+    own = ns_path.format(ns="ns-a")
+    other = ns_path.format(ns="ns-b")
+    assert await _call(method, own, None) == 401
+    # read or write on the namespace is not enough for a view write
+    for key in (READER, WRITER):
+        assert await _call(method, own, key) == 403, key
+    # invisible namespaces stay invisible, also to a key that admins another
+    assert await _call(method, other, NSADMIN) == 404
+    assert await _call(method, own, NOTHING) == 404
+    # namespace admin and the privileged groups pass the gate
+    for key in (NSADMIN, SERVICE, ADMIN):
+        assert await _call(method, own, key) not in (401, 403, 404), key
 
 
 @pytest.mark.asyncio

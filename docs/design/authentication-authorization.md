@@ -345,7 +345,8 @@ A service needs both. Authorization also needs the Registry: `REGISTRY_URL` and 
 |-------|-------------|
 | Namespace-addressed reads (views list, schema, table-name, export by table, parity, and search/tables/activity when a namespace is given) | `read` on the namespace |
 | Optional-namespace listings (search, tables, activity, references, entity reference lookups) | `resolve_namespace_filter`, restricted to accessible namespaces — the same contract as other services' list endpoints |
-| Registered-view writes | `wip-admins` / `wip-services` — view SQL is raw SQL and can reach other schemas when schema-qualified, so it follows D3 (amended during planning, 2026-10-12) |
+| Registered-view writes | `wip-admins` / `wip-services` for any view; **or ADMIN on the namespace for contained views** — after CREATE, registration checks the view's actual dependencies (`pg_depend`, no SQL parsing) and rolls back with 403 if any lie outside the namespace's own schema. Amended 2026-10-13 (CASE-860, after the CASE-849 ruling made views app-owned bootstrap artifacts): the original all-privileged rule (planning amendment 2026-10-12) made app-key bootstrap registration impossible. |
+| Registered-view rows read (`POST …/views/{name}/rows`) | `read` on the namespace — structured (closed operator set, columns validated against the view, bound params), no caller SQL, served from the read-only role. This is the "structured endpoints" path D3 points namespace-scoped callers to (added 2026-10-13, CASE-860). |
 | Destructive and operator routes (namespace schema drop, all batch-sync triggers and job management, alert configuration and test) | `wip-admins` / `wip-services` |
 | Operational reads (status, metrics, alerts, integrity, job listing) | authenticated; admin where they expose cross-namespace detail |
 

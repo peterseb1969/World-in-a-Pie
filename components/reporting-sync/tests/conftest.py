@@ -34,6 +34,8 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([
      "groups": [], "namespaces": ["ns-a"], "grants": {"ns-a": "read"}},
     {"name": "rs-writer", "key": "rs_writer_key", "owner": "rs-writer",
      "groups": [], "namespaces": ["ns-a"], "grants": {"ns-a": "write"}},
+    {"name": "rs-nsadmin", "key": "rs_nsadmin_key", "owner": "rs-nsadmin",
+     "groups": [], "namespaces": ["ns-a"], "grants": {"ns-a": "admin"}},
     {"name": "rs-service", "key": "rs_service_key", "owner": "rs-service",
      "groups": ["wip-services"], "grants": {}},
     {"name": "rs-nothing", "key": "rs_nothing_key", "owner": "rs-nothing",

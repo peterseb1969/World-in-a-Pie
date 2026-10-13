@@ -13,7 +13,7 @@ import logging
 import re
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import asyncpg
 import httpx
@@ -2256,12 +2256,55 @@ class RegisterViewRequest(StrictModel):
     registered_by: str | None = Field(None, description="Caller identity for audit")
 
 
+class ViewRowsFilter(StrictModel):
+    """One structured predicate on a view column. No caller SQL anywhere:
+    the column must be one of the view's actual columns, the operator comes
+    from this closed set, and the value is bound as a statement parameter."""
+
+    column: str
+    op: Literal[
+        "eq", "ne", "lt", "lte", "gt", "gte", "like", "ilike", "in",
+        "is_null", "not_null",
+    ] = "eq"
+    value: Any = Field(
+        None,
+        description="Comparison value; a list for 'in'; omitted for the null checks",
+    )
+
+
+class ViewRowsSort(StrictModel):
+    column: str
+    direction: Literal["asc", "desc"] = "asc"
+
+
+class ViewRowsRequest(StrictModel):
+    """Structured read of a registered view — the namespace-scoped
+    alternative to raw POST /query."""
+
+    filters: list[ViewRowsFilter] = Field(default_factory=list)
+    sort: list[ViewRowsSort] = Field(default_factory=list)
+    limit: int = Field(default=100, ge=1, le=1000)
+    offset: int = Field(default=0, ge=0)
+    timeout_seconds: int = Field(default=30, ge=1, le=300)
+
+
+_VIEW_FILTER_SQL = {
+    "eq": "=", "ne": "<>", "lt": "<", "lte": "<=", "gt": ">", "gte": ">=",
+    "like": "LIKE", "ilike": "ILIKE",
+}
+
+
 # dependent_objects_still_exist — a no-CASCADE DROP hit a dependent relation.
 _PG_DEPENDENT_OBJECTS = "2BP01"
 
 
-@router.post("/namespace/{prefix}/views", dependencies=[_PRIVILEGED])
-async def register_view(prefix: str, body: RegisterViewRequest, response: Response):
+@router.post("/namespace/{prefix}/views")
+async def register_view(
+    prefix: str,
+    body: RegisterViewRequest,
+    response: Response,
+    identity: UserIdentity = Depends(require_api_key),
+):
     """Register a named SQL view in a namespace's reporting schema.
 
     The view is created immediately and persisted in _wip_views, from which
@@ -2270,6 +2313,20 @@ async def register_view(prefix: str, body: RegisterViewRequest, response: Respon
     full reset. Re-registering an existing name replaces the definition via
     DROP + CREATE in one transaction — the column set may change freely —
     and returns 200; a first registration returns 201.
+
+    Authorization is two-tier. wip-admins / wip-services register freely.
+    A key with ADMIN on the namespace may also register here — but its
+    view must be contained: every relation the created view depends on
+    must live in this namespace's own schema. The dependency check reads
+    pg_depend on the view Postgres actually created (no SQL parsing), so
+    a schema-qualified reference to another namespace's schema, to public
+    bookkeeping, or to pg_catalog rolls the registration back with 403.
+    Views ARE the structured surface namespace keys read (the /rows
+    endpoint), so an uncontained view registered by a namespace admin
+    would be a cross-tenant read path; a privileged key registering an
+    uncontained view is a deliberate decision about what the namespace
+    exposes, and reading it with namespace read is the same trust model
+    as any other relation in the schema.
 
     The SQL runs with search_path set to this namespace's schema plus
     public, so unqualified names (``doc_<value>``, ``term_relations``, …)
@@ -2283,6 +2340,10 @@ async def register_view(prefix: str, body: RegisterViewRequest, response: Respon
     ``*__entities``, the metadata tables, ``_wip_*``) are reserved, and a
     name occupied by a relation this endpoint does not own is a 409.
     """
+    privileged = identity.has_group("wip-admins") or identity.has_group("wip-services")
+    if not privileged:
+        await check_namespace_permission(identity, prefix, "admin")
+
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
@@ -2381,6 +2442,49 @@ async def register_view(prefix: str, body: RegisterViewRequest, response: Respon
                 await conn.execute(
                     f'CREATE VIEW "{schema}"."{safe_name}" AS {view_sql}'
                 )
+                if not privileged:
+                    # Containment for namespace-admin registrations: ask
+                    # Postgres (pg_depend via the view's rewrite rule) which
+                    # relations the view it just created actually depends
+                    # on. Any dependency outside the namespace's own schema
+                    # — another namespace, public bookkeeping, pg_catalog —
+                    # rolls the whole registration back. This is exact and
+                    # privilege-independent, unlike parsing the SQL.
+                    # (Function dependencies are not checked: nothing a
+                    # caller can reach creates functions, so a view cannot
+                    # smuggle cross-schema reads through one.)
+                    foreign = await conn.fetch(
+                        """
+                        SELECT DISTINCT dn.nspname AS schema, dc.relname AS relation
+                        FROM pg_depend d
+                        JOIN pg_rewrite r ON r.oid = d.objid
+                        JOIN pg_class v ON v.oid = r.ev_class
+                        JOIN pg_namespace vn ON vn.oid = v.relnamespace
+                        JOIN pg_class dc ON dc.oid = d.refobjid
+                        JOIN pg_namespace dn ON dn.oid = dc.relnamespace
+                        WHERE d.classid = 'pg_rewrite'::regclass
+                          AND d.refclassid = 'pg_class'::regclass
+                          AND vn.nspname = $1 AND v.relname = $2
+                          AND dc.oid <> v.oid
+                          AND dn.nspname <> $1
+                        """,
+                        schema, safe_name,
+                    )
+                    if foreign:
+                        names = ", ".join(
+                            f"{r['schema']}.{r['relation']}" for r in foreign
+                        )
+                        raise HTTPException(
+                            status_code=403,
+                            detail=(
+                                "View references relations outside this "
+                                f"namespace's schema ({names}). A namespace-"
+                                "admin key may only register views contained "
+                                "in the namespace's own schema; cross-schema "
+                                "views require a wip-admins or wip-services "
+                                "key."
+                            ),
+                        )
                 await conn.execute(
                     """
                     INSERT INTO public._wip_views (namespace, view_name, view_sql, registered_by)
@@ -2444,9 +2548,150 @@ async def list_views(
     }
 
 
-@router.delete("/namespace/{prefix}/views/{view_name}", dependencies=[_PRIVILEGED])
-async def delete_view(prefix: str, view_name: str):
+@router.post("/namespace/{prefix}/views/{view_name}/rows")
+async def read_view_rows(
+    prefix: str,
+    view_name: str,
+    body: ViewRowsRequest | None = None,
+    identity: UserIdentity = Depends(require_api_key),
+):
+    """Read a registered view's rows with structured filters — the
+    namespace-scoped read path for views.
+
+    Raw SQL (POST /query) stays wip-admins / wip-services: it can name any
+    schema. This endpoint takes no caller SQL at all — the view by name, a
+    closed operator set validated against the view's actual columns, bound
+    parameters, sort, limit and offset — so READ on the namespace is a
+    sufficient and checkable gate, and it runs on the read-only reporting
+    role. Only views registered in this namespace are readable here; the
+    response matches POST /query (columns, rows as objects keyed by column,
+    row_count, truncated). An empty body reads the first page unfiltered.
+    """
+    await check_namespace_permission(identity, prefix, "read")
+    body = body or ViewRowsRequest()
+
+    if not state.postgres_pool or not state.read_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+
+    sm = SchemaManager(state.postgres_pool)
+    try:
+        schema = sm.schema_for(prefix)
+        safe_name = sm._safe_ident(view_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # Only registered views are readable here — this is the views read
+    # surface, not a general table reader (export/csv covers tables).
+    async with state.postgres_pool.acquire() as conn:
+        registered = bool(await conn.fetchval(
+            "SELECT TRUE FROM public._wip_views WHERE namespace = $1 AND view_name = $2",
+            prefix, view_name,
+        ))
+    if not registered:
+        raise HTTPException(
+            status_code=404,
+            detail=f"View {view_name!r} not found in namespace {prefix!r}",
+        )
+
+    def _quoted(column: str) -> str:
+        return '"' + column.replace('"', '""') + '"'
+
+    async def _run(conn: asyncpg.Connection) -> tuple[list[str], list]:
+        # Explicit (uncached) prepare, same reasoning as POST /query: the
+        # view's own result description supplies the columns — also for the
+        # column validation below — and a replace (DROP + CREATE) between
+        # requests cannot leave a stale cached plan.
+        base = f'SELECT * FROM "{schema}"."{safe_name}"'
+        probe = await conn.prepare(base)
+        columns = [a.name for a in probe.get_attributes()]
+        valid = set(columns)
+
+        where: list[str] = []
+        params: list[Any] = []
+        requested = [f.column for f in body.filters] + [s.column for s in body.sort]
+        unknown = [c for c in requested if c not in valid]
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown column(s) {unknown} — the view has {columns}",
+            )
+        for f in body.filters:
+            if f.op == "is_null":
+                where.append(f"{_quoted(f.column)} IS NULL")
+            elif f.op == "not_null":
+                where.append(f"{_quoted(f.column)} IS NOT NULL")
+            elif f.op == "in":
+                if not isinstance(f.value, list):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Filter op 'in' on {f.column!r} needs a list value",
+                    )
+                params.append(f.value)
+                where.append(f"{_quoted(f.column)} = ANY(${len(params)})")
+            else:
+                params.append(f.value)
+                where.append(
+                    f"{_quoted(f.column)} {_VIEW_FILTER_SQL[f.op]} ${len(params)}"
+                )
+
+        sql = base
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        if body.sort:
+            sql += " ORDER BY " + ", ".join(
+                f"{_quoted(s.column)} {s.direction.upper()}" for s in body.sort
+            )
+        # limit + 1 so truncation is detectable without a second count query.
+        sql += f" LIMIT {body.limit + 1} OFFSET {body.offset}"
+
+        stmt = await conn.prepare(sql)
+        return columns, list(await stmt.fetch(*params))
+
+    try:
+        for attempt in (1, 2):
+            try:
+                async with state.read_pool.acquire() as conn:
+                    await conn.execute(
+                        f"SET statement_timeout = {body.timeout_seconds * 1000}"
+                    )
+                    await conn.execute("SET default_transaction_read_only = on")
+                    columns, rows = await _run(conn)
+                break
+            except asyncpg.InvalidCachedStatementError:
+                # Residual race only (replace landing between prepare and
+                # fetch) — the error purged the plan; one retry re-prepares.
+                if attempt == 2:
+                    raise
+    except asyncpg.QueryCanceledError as e:
+        raise HTTPException(
+            status_code=408,
+            detail=f"Query timed out after {body.timeout_seconds} seconds",
+        ) from e
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=400, detail=f"View read failed: {e}") from e
+
+    truncated = len(rows) > body.limit
+    if truncated:
+        rows = rows[: body.limit]
+    return {
+        "columns": columns,
+        "rows": [dict(r) for r in rows],
+        "row_count": len(rows),
+        "truncated": truncated,
+    }
+
+
+@router.delete("/namespace/{prefix}/views/{view_name}")
+async def delete_view(
+    prefix: str,
+    view_name: str,
+    identity: UserIdentity = Depends(require_api_key),
+):
     """Drop a registered view and its registration, atomically.
+
+    Same two-tier authorization as registration: wip-admins / wip-services,
+    or ADMIN on the namespace — dropping a view in your own namespace
+    exposes nothing, so no containment question arises.
 
     The DROP runs first, inside the same transaction as the bookkeeping
     delete: if the view cannot be dropped (another registered view depends
@@ -2454,6 +2699,8 @@ async def delete_view(prefix: str, view_name: str):
     409 naming the dependency, instead of an orphaned live view that
     recreation no longer knows about.
     """
+    if not (identity.has_group("wip-admins") or identity.has_group("wip-services")):
+        await check_namespace_permission(identity, prefix, "admin")
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 

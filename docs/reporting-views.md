@@ -43,15 +43,14 @@ Every reporting-sync route requires an API key. Beyond that:
 
 | Operation | Required |
 |---|---|
-| Register / replace / drop a view | `wip-admins` or `wip-services` |
+| Register / replace / drop a view | ADMIN on the namespace (**contained** views only — see below), or `wip-admins` / `wip-services` (any view) |
 | List a namespace's views | read on the namespace (an invisible namespace answers `404`) |
+| Read a view's rows (`POST …/views/{name}/rows`, structured) | read on the namespace |
 | `POST /api/reporting-sync/query` (raw SQL, including reading a view) | `wip-admins` or `wip-services` |
 
-A view definition is raw SQL. Schema-qualified names reach other namespaces' schemas, so namespace write access cannot be the boundary. Registration and raw queries therefore follow the same rule.
+A view definition is raw SQL. Schema-qualified names reach other namespaces' schemas, so namespace *write* access cannot be the boundary, and raw `/query` stays admin/service-only. The namespace-ADMIN tier exists so an app can own its views with the key it deploys with — under **containment**: after creating the view, registration asks Postgres (`pg_depend`) which relations it actually depends on, and any dependency outside the namespace's own schema — another namespace, `public` bookkeeping, `pg_catalog` — rolls the registration back with `403`. No SQL parsing. A `wip-admins` / `wip-services` key may still register uncontained (cross-schema) views: that is a deliberate decision about what the namespace exposes, and reading such a view with namespace read is the same trust model as any other relation in the schema.
 
-An app deployed by `wip-deploy` receives the install's service key, so bootstrap registration and view queries work unchanged.
-
-**Namespace-scoped app keys** cannot register views or run raw SQL. There is currently no structured endpoint that reads a registered view for such a key.
+An app deployed by `wip-deploy` receives the install's service key, so bootstrap registration and raw view queries work unchanged. A **namespace-scoped app key** registers contained views with namespace ADMIN and reads them through the structured rows endpoint; it still cannot run raw SQL.
 
 ## Name resolution — write the SQL the way you query it
 
@@ -103,7 +102,30 @@ Another namespace's schema is reachable only when you schema-qualify
 
 ## Querying a registered view
 
-Exactly like any reporting relation — MCP:
+Two read paths, by key tier.
+
+**Structured rows (namespace read — the app path):**
+`POST /api/reporting-sync/namespace/{ns}/views/{name}/rows` takes no SQL:
+
+```json
+{
+  "filters": [{"column": "status", "op": "eq", "value": "active"},
+              {"column": "study_number", "op": "in", "value": ["S-001", "S-002"]}],
+  "sort": [{"column": "enrolled", "direction": "desc"}],
+  "limit": 100,
+  "offset": 0
+}
+```
+
+Operators: `eq, ne, lt, lte, gt, gte, like, ilike, in, is_null, not_null`.
+Columns are validated against the view's actual columns (`400` names them on
+a miss), values are bound parameters, and the response matches `POST /query`
+(`columns`, `rows` as objects keyed by column, `row_count`, `truncated`). An
+empty body reads the first page unfiltered. Only *registered* views answer
+here — a plain table is `404`; export tables via `GET /export/csv`. Runs on
+the read-only reporting role.
+
+**Raw SQL (admin/service keys):** exactly like any reporting relation — MCP:
 
 ```
 run_report_query(sql="SELECT * FROM v_study_search WHERE study_number = $1",
@@ -111,8 +133,8 @@ run_report_query(sql="SELECT * FROM v_study_search WHERE study_number = $1",
 ```
 
 or `POST /api/reporting-sync/query` with `{"sql": "...", "namespace": "clintrial"}`.
-
-`POST /query` requires a `wip-admins` or `wip-services` key (see *Who may call what* above).
+`POST /query` requires a `wip-admins` or `wip-services` key (see *Who may call
+what* above).
 
 ## A complete example — hierarchy-aware search
 
