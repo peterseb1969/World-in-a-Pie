@@ -480,3 +480,34 @@ export interface DeleteViewResult {
   name: string
   dropped: boolean
 }
+
+/**
+ * One structured predicate for the view rows read. No SQL anywhere: the
+ * column must be one of the view's actual columns (a miss is a 400 naming
+ * them), the operator comes from this closed set, and the value is bound
+ * as a statement parameter server-side.
+ */
+export interface ViewRowsFilter {
+  column: string
+  op?:
+    | 'eq' | 'ne' | 'lt' | 'lte' | 'gt' | 'gte'
+    | 'like' | 'ilike' | 'in' | 'is_null' | 'not_null'
+  /** Comparison value; an array for 'in'; omitted for the null checks. */
+  value?: unknown
+}
+
+export interface ViewRowsSort {
+  column: string
+  direction?: 'asc' | 'desc'
+}
+
+/** Parameters for the structured view read (all optional — an empty body reads the first page). */
+export interface ViewRowsParams {
+  filters?: ViewRowsFilter[]
+  sort?: ViewRowsSort[]
+  /** Rows per page (1-1000, default 100). */
+  limit?: number
+  offset?: number
+  /** Query timeout in seconds (1-300, default 30). */
+  timeout_seconds?: number
+}

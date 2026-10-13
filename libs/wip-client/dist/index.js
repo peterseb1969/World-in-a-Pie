@@ -1314,6 +1314,11 @@ var ReportingSyncService = class extends BaseService {
    * The SQL must be a single read-only SELECT; platform relation names
    * (`doc_*`, `*__v<N>`, `*__entities`, metadata tables, `_wip_*`) are
    * reserved — use a distinct name, e.g. a `v_` prefix.
+   *
+   * Authorization: a key with ADMIN on the namespace registers views
+   * CONTAINED in the namespace's own schema (a dependency on any other
+   * schema is refused with 403 and rolled back); wip-admins / wip-services
+   * keys may register cross-schema views deliberately.
    */
   async registerView(namespace, view) {
     return this.post(`/namespace/${namespace}/views`, view);
@@ -1321,6 +1326,19 @@ var ReportingSyncService = class extends BaseService {
   /** List the namespace's registered views (name, sql, registration audit). */
   async listViews(namespace) {
     return this.get(`/namespace/${namespace}/views`);
+  }
+  /**
+   * Read a registered view's rows with structured filters — the read path
+   * for namespace-scoped keys (requires only READ on the namespace, unlike
+   * runQuery's admin/service gate). No SQL: filters are (column, op, value)
+   * triples validated against the view's actual columns and bound as
+   * parameters; `limit`/`offset` page through; the result is shaped exactly
+   * like runQuery's (columns, rows as objects keyed by column, row_count,
+   * truncated). Only registered views answer here — a plain reporting
+   * table is a 404.
+   */
+  async readViewRows(namespace, name, params) {
+    return this.post(`/namespace/${namespace}/views/${name}/rows`, params ?? {});
   }
   /**
    * Drop a registered view and its registration, atomically. A view
