@@ -765,8 +765,10 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
     # Classify rules. strip_prefix rules need per-rule Ingresses because
     # the rewrite-target annotation is per-Ingress and applying it across
     # mixed paths would strip prefixes from routes that don't want it.
-    strip_rules = [r for r in cfg.rules if r.strip_prefix]
-    non_strip = [r for r in cfg.rules if not r.strip_prefix]
+    # upstream_host_header also forces a per-rule Ingress: the
+    # upstream-vhost annotation is per-Ingress, like rewrite-target.
+    strip_rules = [r for r in cfg.rules if r.strip_prefix or r.upstream_host_header]
+    non_strip = [r for r in cfg.rules if not (r.strip_prefix or r.upstream_host_header)]
     api_rules = [r for r in non_strip if not r.auth_protected and r.backend_service != "wip-auth-gateway"]
     auth_gateway_rules = [r for r in non_strip if r.backend_service == "wip-auth-gateway"]
     app_rules = [r for r in non_strip if r.auth_protected]
@@ -863,8 +865,15 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
     # are computed over a path that doesn't include the public prefix.
     for r in strip_rules:
         strip_annotations = dict(base_annotations)
-        strip_annotations["nginx.ingress.kubernetes.io/use-regex"] = "true"
-        strip_annotations["nginx.ingress.kubernetes.io/rewrite-target"] = "/$2"
+        if r.strip_prefix:
+            strip_annotations["nginx.ingress.kubernetes.io/use-regex"] = "true"
+            strip_annotations["nginx.ingress.kubernetes.io/rewrite-target"] = "/$2"
+        if r.upstream_host_header:
+            # The Host the backend sees must equal the Host services sign
+            # presigned URLs against — the internal endpoint host:port.
+            strip_annotations["nginx.ingress.kubernetes.io/upstream-vhost"] = (
+                f"{r.backend_service}:{r.backend_port}"
+            )
         if cfg.gateway_auth_url and r.auth_protected:
             strip_annotations["nginx.ingress.kubernetes.io/auth-url"] = cfg.gateway_auth_url
             strip_annotations["nginx.ingress.kubernetes.io/auth-signin"] = (
@@ -910,8 +919,15 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
             strip_path = f"{r.path}(/|$)(.*)"
             strip_rewrite = "/$2"
 
-        # Override the rewrite-target if we computed a custom one.
-        strip_annotations["nginx.ingress.kubernetes.io/rewrite-target"] = strip_rewrite
+        if r.strip_prefix:
+            # Override the rewrite-target if we computed a custom one.
+            strip_annotations["nginx.ingress.kubernetes.io/rewrite-target"] = strip_rewrite
+            path_entry = {"path": strip_path, "pathType": "ImplementationSpecific"}
+        else:
+            # upstream_host_header without strip: plain Prefix path,
+            # no rewrite — the per-rule Ingress exists only to carry
+            # the upstream-vhost annotation.
+            path_entry = {"path": r.path, "pathType": "Prefix"}
 
         docs.append({
             "apiVersion": "networking.k8s.io/v1",
@@ -928,8 +944,7 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
                 "rules": [{
                     "host": cfg.hostname,
                     "http": {"paths": [{
-                        "path": strip_path,
-                        "pathType": "ImplementationSpecific",
+                        **path_entry,
                         "backend": {
                             "service": {
                                 "name": r.backend_service,

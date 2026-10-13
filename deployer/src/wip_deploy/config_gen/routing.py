@@ -36,6 +36,9 @@ class ResolvedRoute:
     streaming: bool
     strip_prefix: bool
     redirect_bare_path: bool
+    # Rewrite Host to the upstream's host:port when proxying — backends
+    # that validate the signed Host of presigned URLs (object storage).
+    upstream_host_header: bool = False
     # Subpaths within `path` to NOT strip when strip_prefix=True.
     # MinIO admin/health under /minio is the canonical case. CASE-248.
     preserve_prefix_subpaths: tuple[str, ...] = ()
@@ -155,4 +158,5 @@ def _resolve_one(
         strip_prefix=route.strip_prefix,
         redirect_bare_path=route.redirect_bare_path,
         preserve_prefix_subpaths=tuple(route.preserve_prefix_subpaths),
+        upstream_host_header=route.upstream_host_header,
     )

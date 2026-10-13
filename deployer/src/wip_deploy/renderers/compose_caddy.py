@@ -145,6 +145,29 @@ def _write_forward_auth(out: StringIO, cfg: CaddyConfig) -> None:
     out.write("        }\n")
 
 
+
+
+def _write_reverse_proxy(out, backend: str, route) -> None:  # type: ignore[no-untyped-def]
+    """One reverse_proxy directive, with the route's proxy options.
+
+    `upstream_host_header` sets Host to the upstream's host:port —
+    backends that validate the signed Host of presigned URLs (object
+    storage) reject the public host otherwise. `streaming` disables
+    response buffering.
+    """
+    opts: list[str] = []
+    if route.upstream_host_header:
+        opts.append("            header_up Host {upstream_hostport}\n")
+    if route.streaming:
+        opts.append("            flush_interval -1\n")
+    if opts:
+        out.write(f"        reverse_proxy {backend} {{\n")
+        for line in opts:
+            out.write(line)
+        out.write("        }\n")
+    else:
+        out.write(f"        reverse_proxy {backend}\n")
+
 def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyped-def]
     # Bare-path redirect: /apps/rc (no trailing slash) must 301 to
     # /apps/rc/, otherwise the bare path falls through the /apps/rc/*
@@ -180,12 +203,7 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
             out.write(f"    handle {sub}/* {{\n")
             if route.auth_protected:
                 _write_forward_auth(out, cfg)
-            if route.streaming:
-                out.write(f"        reverse_proxy {backend} {{\n")
-                out.write("            flush_interval -1\n")
-                out.write("        }\n")
-            else:
-                out.write(f"        reverse_proxy {backend}\n")
+            _write_reverse_proxy(out, backend, route)
             out.write("    }\n\n")
 
     # `handle_path` strips the route's prefix before forwarding; `handle`
@@ -199,12 +217,7 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
         out.write(f"    {directive} {matcher_path} {{\n")
         if route.auth_protected:
             _write_forward_auth(out, cfg)
-        if route.streaming:
-            out.write(f"        reverse_proxy {backend} {{\n")
-            out.write("            flush_interval -1\n")
-            out.write("        }\n")
-        else:
-            out.write(f"        reverse_proxy {backend}\n")
+        _write_reverse_proxy(out, backend, route)
         out.write("    }\n\n")
 
     # CASE-312: when redirect_bare_path is False, no companion `handle

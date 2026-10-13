@@ -117,6 +117,17 @@ class Route(WIPModel):
     # precedence over the regex/strip rule. Only meaningful when
     # `strip_prefix=True`. CASE-248.
     preserve_prefix_subpaths: list[str] = Field(default_factory=list)
+    # Rewrite the Host header to the upstream's own host:port when
+    # proxying. Needed when the backend validates the Host it receives
+    # against a cryptographic signature: SigV4 presigned URLs sign the
+    # Host of the INTERNAL endpoint (what services sign against, e.g.
+    # wip-garage:3900), while the browser presents the public host —
+    # without this rewrite the two differ and the store rejects the
+    # signature. Object storage (Garage; MinIO under SigV4) is the
+    # canonical case. Caddy: `header_up Host {upstream_hostport}`.
+    # NGINX Ingress: the `upstream-vhost` annotation (forces a
+    # per-rule Ingress, same as strip_prefix).
+    upstream_host_header: bool = False
     # Emit a 301 from the bare path to the trailing-slash variant
     # (Caddy only — nginx Ingress matches both via pathType=Prefix).
     # Defaults True for SPA-friendly behavior (relative-URL resolution
