@@ -1,0 +1,57 @@
+api_version: wip.dev/v1
+kind: Component
+metadata:
+  name: garage
+  category: optional
+  description: |
+    S3-compatible object storage for document file attachments — the
+    MinIO successor (MinIO stopped publishing pullable images; the
+    interim ghcr copy is arm64-only and frozen). Document-Store's file
+    storage follows the active storage module: when garage is active it
+    takes precedence over minio. Toggle via `--add garage`.
+
+spec:
+  image:
+    # Upstream multi-arch image (arm64 + amd64 + more), actively
+    # published — the property the MinIO copy lost.
+    name: docker.io/dxflrs/garage
+    tag: v2.1.0
+
+  ports:
+    # Declaration order matters: from_component URL resolution uses the
+    # first declared port, and document-store signs S3 requests against
+    # http://wip-garage:3900.
+    - {name: s3, container_port: 3900}
+    - {name: rpc, container_port: 3901}
+    - {name: admin, container_port: 3903}
+
+  # Garage reads everything from /etc/garage.toml (rendered per install
+  # with the rpc secret, admin token and the pinned us-east-1 SigV4
+  # region); it takes no env. Credentials are deployer-generated
+  # secrets imported at apply time — see the garage provisioning step.
+
+  # Browser-facing route for presigned download URLs. document-store
+  # signs SigV4 URLs against the internal wip-garage:3900 endpoint and
+  # rewrites the host portion to `features.file_storage_public_endpoint`
+  # (…/garage). Two properties Garage enforces (verified live, v2.1.0):
+  # the signed PATH must be what Garage sees — strip the public prefix —
+  # and the signed HOST must be what Garage receives — forward the
+  # upstream Host at the edge. auth_required=false because the presigned
+  # URL carries its own expiring signature.
+  routes:
+    - path: /garage
+      auth_required: false
+      strip_prefix: true
+      upstream_host_header: true
+
+  storage:
+    - {name: meta, mount_path: /var/lib/garage/meta, size: 2Gi}
+    - {name: data, mount_path: /var/lib/garage/data, size: 50Gi}
+
+  # No healthcheck, deliberately: the image is shell-less (a single
+  # /garage binary) and compose healthchecks are CMD-SHELL by necessity
+  # (podman-compose flattens CMD arrays through a shell), so any
+  # in-container probe would fail on this image. The deployer's garage
+  # provisioning pass performs its own readiness wait against the admin
+  # API before provisioning, which covers the startup race the
+  # healthcheck would otherwise gate.

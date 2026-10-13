@@ -19,10 +19,18 @@ fresh random values for any missing names and returning a
 from __future__ import annotations
 
 import secrets as py_secrets
+from collections.abc import Callable
 
 import bcrypt
 
 from wip_deploy.config_gen.dex import generate_dex_config
+from wip_deploy.config_gen.garage import (
+    GARAGE_SECRET_NAMES,
+    SECRET_KEY_ID,
+    SECRET_KEY_SECRET,
+    SECRET_RPC,
+    garage_component,
+)
 from wip_deploy.secrets_backend.base import ResolvedSecrets, SecretBackend
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
@@ -77,6 +85,12 @@ def collect_required_secrets(
     for k in deployment.spec.auth.api_keys:
         names.add(k.secret_name)
 
+    # Garage object storage (CASE-864): its secrets live in the rendered
+    # garage.toml and in document-store's env, not in garage's own env
+    # declaration, so manifest scanning cannot find them.
+    if garage_component(deployment, components) is not None:
+        names.update(GARAGE_SECRET_NAMES)
+
     dex_cfg = generate_dex_config(deployment, components, apps)
     if dex_cfg is not None:
         for u in dex_cfg.users:
@@ -100,6 +114,27 @@ def _collect_from_env(owner: Component | App, names: set[str]) -> None:
 
 
 # ────────────────────────────────────────────────────────────────────
+
+
+def _hex32_generator() -> str:
+    """32 random bytes, hex-encoded (64 chars) — Garage's rpc_secret and
+    key-secret format."""
+    return py_secrets.token_hex(32)
+
+
+def _garage_key_id_generator() -> str:
+    """A Garage access key id: "GK" + 12 random bytes hex-encoded —
+    the format `garage key import` requires."""
+    return "GK" + py_secrets.token_hex(12)
+
+
+# Secrets whose consumer has a format constraint, keyed by exact name
+# (the documented exception to "opaque random is strictly better").
+_FORMAT_GENERATORS: dict[str, Callable[[], str]] = {
+    SECRET_RPC: _hex32_generator,
+    SECRET_KEY_SECRET: _hex32_generator,
+    SECRET_KEY_ID: _garage_key_id_generator,
+}
 
 
 def default_generator() -> str:
@@ -149,7 +184,7 @@ def ensure_secrets(
                 )
             generator = _bcrypt_generator(plaintext)
         else:
-            generator = default_generator
+            generator = _FORMAT_GENERATORS.get(name, default_generator)
         resolved[name] = backend.get_or_generate(name, generator)
 
     backend.persist()

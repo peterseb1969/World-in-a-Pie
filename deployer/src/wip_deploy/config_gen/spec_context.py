@@ -205,15 +205,31 @@ def _compute_auth(deployment: Deployment) -> SpecContextAuth:
     )
 
 
+def active_storage_module(
+    deployment: Deployment, components: list[Component]
+) -> str | None:
+    """The object-storage module document-store talks to: garage when
+    active, else minio, else None. Garage wins when both are active —
+    that is the migration posture (stand garage up next to minio, copy
+    the blobs, then remove minio); document-store can only point at one.
+    """
+    for name in ("garage", "minio"):
+        comp = next((c for c in components if c.metadata.name == name), None)
+        if comp is not None and is_component_active(comp, deployment):
+            return name
+    return None
+
+
 def _compute_features(
     deployment: Deployment, components: list[Component]
 ) -> SpecContextFeatures:
-    # File storage is "on" iff minio is active in this deployment.
-    minio = next(
-        (c for c in components if c.metadata.name == "minio"), None
-    )
-    files_on = minio is not None and is_component_active(minio, deployment)
+    # File storage is "on" iff an object-storage module (garage or
+    # minio) is active. The public presigned-URL prefix follows the
+    # active module's route path.
+    storage = active_storage_module(deployment, components)
     return SpecContextFeatures(
-        files_enabled="true" if files_on else "false",
-        file_storage_public_endpoint=f"{_public_base(deployment)}/minio",
+        files_enabled="true" if storage is not None else "false",
+        file_storage_public_endpoint=(
+            f"{_public_base(deployment)}/{storage or 'minio'}"
+        ),
     )

@@ -43,6 +43,7 @@ from wip_deploy.config_gen.api_keys import (
     generate_api_keys_json,
 )
 from wip_deploy.config_gen.env import Literal
+from wip_deploy.config_gen.garage import garage_component, render_garage_toml
 from wip_deploy.config_gen.images import image_ref as _image_ref
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.base import FileTree
@@ -421,6 +422,21 @@ def _render_configmaps(
             "data": {"config.yaml": dex_yaml},
         })
 
+    # Garage config — carries secrets; lives in a ConfigMap like dex's
+    # (the cluster boundary is the namespace, matching the compose
+    # posture where the file sits 0600 in the install dir).
+    if garage_component(deployment, components) is not None:
+        docs.append({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "wip-garage-config",
+                "namespace": ns,
+                "labels": {_LABELS_PART_OF: "wip"},
+            },
+            "data": {"garage.toml": render_garage_toml(secrets)},
+        })
+
     # wip-router Caddyfile
     router_active = any(
         c.metadata.name == "router" and is_component_active(c, deployment)
@@ -549,6 +565,17 @@ def _render_component(
         volumes.append({
             "name": "config",
             "configMap": {"name": "wip-dex-config"},
+        })
+    elif name == "garage":
+        volume_mounts.append({
+            "name": "config",
+            "mountPath": "/etc/garage.toml",
+            "subPath": "garage.toml",
+            "readOnly": True,
+        })
+        volumes.append({
+            "name": "config",
+            "configMap": {"name": "wip-garage-config"},
         })
     elif name == "router":
         # Caddy reads /etc/caddy/Caddyfile. Mount just that key via

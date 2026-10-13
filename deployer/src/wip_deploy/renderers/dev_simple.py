@@ -44,6 +44,7 @@ from wip_deploy.config_gen.api_keys import (
     declares_api_keys_file,
     generate_api_keys_json,
 )
+from wip_deploy.config_gen.garage import garage_component, render_garage_toml
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose import (
@@ -255,6 +256,13 @@ def render_dev_simple(
     dex_cfg = generate_dex_config(deployment, components, apps)
     if dex_cfg is not None:
         tree.add("config/dex/config.yaml", render_dex_config(dex_cfg, secrets))
+
+    # Garage config — same posture as the compose renderer: the file
+    # carries the rpc secret and admin token, so 0600.
+    if garage_component(deployment, components) is not None:
+        tree.add(
+            "config/garage/garage.toml", render_garage_toml(secrets), mode=0o600,
+        )
 
     # wip-router Caddyfile — same as compose renderer. Without this,
     # the wip-router container boots with the stock caddy image's
@@ -572,6 +580,8 @@ def _dev_volumes_for(
     # Dex config bind mount — same as prod.
     if owner.metadata.name == "dex":
         volumes.append("./config/dex/config.yaml:/etc/dex/config.yaml:ro")
+    elif owner.metadata.name == "garage":
+        volumes.append("./config/garage/garage.toml:/etc/garage.toml:ro")
 
     # Router config bind mount — same as prod. Without this, wip-router
     # starts with the stock caddy default Caddyfile and all /api/* routing

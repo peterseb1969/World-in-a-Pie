@@ -44,6 +44,7 @@ from wip_deploy.config_gen.api_keys import (
 from wip_deploy.config_gen.env import (
     Literal,
 )
+from wip_deploy.config_gen.garage import garage_component, render_garage_toml
 from wip_deploy.config_gen.images import image_ref as _image_ref
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.base import FileTree
@@ -115,6 +116,15 @@ def render_compose(
         tree.add(
             "config/dex/config.yaml",
             render_dex_config(dex_cfg, secrets),
+        )
+
+    # Garage config — only when Garage is active. Carries the rpc secret
+    # and admin token, so 0600 (same posture as .env).
+    if garage_component(deployment, components) is not None:
+        tree.add(
+            "config/garage/garage.toml",
+            render_garage_toml(secrets),
+            mode=0o600,
         )
 
     # Spec-declared config-file API keys — carries plaintext, so 0600
@@ -414,6 +424,8 @@ def _volumes_for(owner: Component | App) -> list[str]:
     # Component spec is a follow-up (see intent-audit memo).
     if owner.metadata.name == "dex":
         volumes.append("./config/dex/config.yaml:/etc/dex/config.yaml:ro")
+    elif owner.metadata.name == "garage":
+        volumes.append("./config/garage/garage.toml:/etc/garage.toml:ro")
     elif owner.metadata.name == "router":
         volumes.append("./config/router/Caddyfile:/etc/caddy/Caddyfile:ro")
 

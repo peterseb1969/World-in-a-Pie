@@ -22,11 +22,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal as TypingLiteral
 
-from wip_deploy.config_gen.spec_context import SpecContext, resolve_from_spec
+from wip_deploy.config_gen.garage import SECRET_KEY_ID, SECRET_KEY_SECRET
+from wip_deploy.config_gen.spec_context import (
+    SpecContext,
+    active_storage_module,
+    resolve_from_spec,
+)
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
-from wip_deploy.spec.component import Component, EnvSource, Port
+from wip_deploy.spec.component import Component, EnvSource, EnvVar, Port
 
 # ────────────────────────────────────────────────────────────────────
 # Resolved env value types
@@ -268,6 +273,46 @@ def _lookup_active_component(
 # ────────────────────────────────────────────────────────────────────
 
 
+def _storage_env_overrides(
+    component: Component | App,
+    deployment: Deployment,
+    components: list[Component],
+) -> tuple[list[EnvVar], list[EnvVar]]:
+    """document-store's file-storage env follows the ACTIVE storage module.
+
+    The manifest declares the MinIO sources (endpoint from_component
+    minio, the MinIO root credentials). When Garage is the active
+    storage module (see `active_storage_module` — garage wins over
+    minio), those three sources are rewritten here, BEFORE resolution:
+    rewriting after would be too late, because a required
+    `from_component: minio` raises InactiveComponentRef the moment
+    minio is inactive. Phase 3 of the MinIO retirement flips the
+    manifest defaults to garage and deletes this function.
+    """
+    required = list(component.spec.env.required)
+    optional = list(component.spec.env.optional)
+    if component.metadata.name != "document-store":
+        return required, optional
+    if active_storage_module(deployment, components) != "garage":
+        return required, optional
+
+    overrides: dict[str, EnvSource] = {
+        "WIP_FILE_STORAGE_ENDPOINT": EnvSource(from_component="garage"),
+        "WIP_FILE_STORAGE_ACCESS_KEY": EnvSource(from_secret=SECRET_KEY_ID),
+        "WIP_FILE_STORAGE_SECRET_KEY": EnvSource(from_secret=SECRET_KEY_SECRET),
+    }
+
+    def _swap(evars: list[EnvVar]) -> list[EnvVar]:
+        return [
+            EnvVar(name=ev.name, source=overrides[ev.name])
+            if ev.name in overrides
+            else ev
+            for ev in evars
+        ]
+
+    return _swap(required), _swap(optional)
+
+
 def resolve_component_env(
     component: Component | App,
     deployment: Deployment,
@@ -328,9 +373,13 @@ def resolve_component_env(
                 raise
         return out
 
+    required_vars, optional_vars = _storage_env_overrides(
+        component, deployment, components
+    )
+
     return ResolvedEnv(
-        required=_resolve(component.spec.env.required, skip_inactive=False),
-        optional=_resolve(component.spec.env.optional, skip_inactive=True),
+        required=_resolve(required_vars, skip_inactive=False),
+        optional=_resolve(optional_vars, skip_inactive=True),
     )
 
 

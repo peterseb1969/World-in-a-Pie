@@ -34,10 +34,19 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
+from wip_deploy.config_gen.garage import (
+    GARAGE_BUCKET,
+    GARAGE_KEY_NAME,
+    SECRET_KEY_ID,
+    SECRET_KEY_SECRET,
+    garage_component,
+)
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
@@ -210,6 +219,14 @@ def apply_compose(
         # silent: see ApplyResult.post_install_skipped.
         if deployment.spec.apply.wait and healthy:
             _run_post_install(install_dir, compose_cmd, components, apps, deployment)
+            _provision_garage_if_active(
+                deployment, components,
+                exec_prefix=[
+                    *compose_cmd, "-f", "docker-compose.yaml",
+                    "exec", "-T", "garage",
+                ],
+                cwd=install_dir,
+            )
         else:
             post_install_skipped = _skipped_post_install_labels(
                 components, apps, deployment
@@ -1017,6 +1034,133 @@ def _run_post_install(
 
 
 # ────────────────────────────────────────────────────────────────────
+# Garage provisioning (CASE-864)
+# ────────────────────────────────────────────────────────────────────
+
+
+def _provision_garage_if_active(
+    deployment: Deployment,
+    components: list[Component],
+    *,
+    exec_prefix: list[str],
+    cwd: Path | None,
+) -> None:
+    """One idempotent provisioning pass over a healthy Garage node.
+
+    Garage cannot be provisioned declaratively: a fresh node has no
+    cluster layout, no keys and no buckets, and its image is shell-less
+    (one /garage binary), so post_install `sh -c` hooks cannot run in
+    it. The deployer drives the admin API through `garage json-api`
+    instead — secrets travel on STDIN, never on argv.
+
+    Steps, each a no-op when already done:
+      1. layout: a fresh single node has an empty role list — assign it
+         (the empty node-id prefix matches the only node) and apply the
+         next layout version.
+      2. key: import the deployer-generated access key; "KeyAlreadyExists"
+         is the idempotent re-run answer.
+      3. bucket: create the attachments bucket if its global alias does
+         not resolve, then grant the key read/write/owner (AllowBucketKey
+         is naturally idempotent).
+    """
+    if garage_component(deployment, components) is None:
+        return
+    from wip_deploy.secrets_backend import FileSecretBackend
+
+    location = deployment.spec.secrets.location
+    if location is None:
+        raise ApplyError(
+            "garage provisioning needs the install's file secret store, "
+            "but the deployment declares no secrets location"
+        )
+    backend = FileSecretBackend(Path(location))
+    key_id = backend.get_or_generate(SECRET_KEY_ID, _refuse_generate(SECRET_KEY_ID))
+    key_secret = backend.get_or_generate(
+        SECRET_KEY_SECRET, _refuse_generate(SECRET_KEY_SECRET)
+    )
+
+    def run(
+        args: list[str], *, stdin: str | None = None, check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [*exec_prefix, "/garage", *args],
+            cwd=cwd, input=stdin, capture_output=True, text=True, check=check,
+        )
+
+    def api(endpoint: str, payload: str | None = None) -> Any:
+        args = ["json-api", endpoint]
+        stdin = None
+        if payload is not None:
+            args.append("-")
+            stdin = payload
+        proc = run(args, stdin=stdin)
+        return json.loads(proc.stdout)
+
+    # Readiness: the component declares no healthcheck (shell-less image,
+    # compose healthchecks are CMD-SHELL), so wait for the admin API
+    # here before provisioning.
+    deadline = time.monotonic() + 60
+    while True:
+        probe = run(["json-api", "GetClusterHealth"], check=False)
+        if probe.returncode == 0:
+            break
+        if time.monotonic() > deadline:
+            raise ApplyError(
+                "garage did not become ready within 60s: "
+                f"{probe.stderr.strip() or probe.stdout.strip()}"
+            )
+        time.sleep(2)
+
+    # 1. Cluster layout.
+    layout = api("GetClusterLayout")
+    if not layout.get("roles"):
+        run(["layout", "assign", "-z", "wip", "-c", "1TB", ""])
+        run(["layout", "apply", "--version", str(int(layout.get("version", 0)) + 1)])
+        print("  garage: single-node layout applied", file=sys.stderr)
+
+    # 2. Access key (idempotent via the explicit already-exists answer).
+    import_payload = json.dumps({
+        "accessKeyId": key_id,
+        "secretAccessKey": key_secret,
+        "name": GARAGE_KEY_NAME,
+    })
+    proc = run(["json-api", "ImportKey", "-"], stdin=import_payload, check=False)
+    if proc.returncode != 0 and "KeyAlreadyExists" not in (proc.stderr + proc.stdout):
+        raise ApplyError(
+            f"garage key import failed (exit {proc.returncode}): "
+            f"{proc.stderr.strip() or proc.stdout.strip()}"
+        )
+
+    # 3. Bucket + grant.
+    lookup = json.dumps({"globalAlias": GARAGE_BUCKET})
+    proc = run(["json-api", "GetBucketInfo", "-"], stdin=lookup, check=False)
+    if proc.returncode != 0:
+        api("CreateBucket", lookup)
+        proc = run(["json-api", "GetBucketInfo", "-"], stdin=lookup)
+    bucket_id = json.loads(proc.stdout)["id"]
+    api("AllowBucketKey", json.dumps({
+        "bucketId": bucket_id,
+        "accessKeyId": key_id,
+        "permissions": {"read": True, "write": True, "owner": True},
+    }))
+    print(
+        f"  garage: bucket {GARAGE_BUCKET!r} ready for key {GARAGE_KEY_NAME!r}",
+        file=sys.stderr,
+    )
+
+
+def _refuse_generate(name: str):  # type: ignore[no-untyped-def]
+    """Provisioning runs after render, so the secret must already exist —
+    a missing one means the render/provision contract broke."""
+    def _gen() -> str:
+        raise ApplyError(
+            f"secret {name!r} missing from the install's secret store — "
+            "re-render the install (the renderer generates it)"
+        )
+    return _gen
+
+
+# ────────────────────────────────────────────────────────────────────
 # Misc
 # ────────────────────────────────────────────────────────────────────
 
@@ -1140,6 +1284,19 @@ def apply_k8s(
         # is the CASE-426 race. The skip is surfaced via post_install_skipped.
         if deployment.spec.apply.wait and healthy:
             _run_post_install_k8s(ns, components, apps, deployment)
+            garage_pod = (
+                _pod_for_component(ns, "garage")
+                if garage_component(deployment, components) is not None
+                else None
+            )
+            if garage_pod is not None:
+                _provision_garage_if_active(
+                    deployment, components,
+                    exec_prefix=[
+                        "kubectl", "exec", "-i", "-n", ns, garage_pod, "--",
+                    ],
+                    cwd=None,
+                )
         else:
             post_install_skipped = _skipped_post_install_labels(
                 components, apps, deployment
