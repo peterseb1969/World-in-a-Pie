@@ -2609,6 +2609,8 @@ def redeploy(
             help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
         ),
     ] = None,
+    tag: Annotated[str | None, _tag_opt()] = None,
+    image_tag: Annotated[list[str] | None, _image_tag_opt()] = None,
     repo_root: Annotated[Path | None, _repo_root_opt()] = None,
 ) -> None:
     """Re-render an existing install from its saved spec, recreating only what changed.
@@ -2625,6 +2627,15 @@ def redeploy(
     rendered config actually changed. Untouched containers keep running
     (CASE-528).
 
+    `--tag` / `--image-tag` roll the install to new image tags in the same
+    pass: they update the SAVED spec (`spec.images.tag` /
+    `tag_overrides`) before the re-render, so the deployer-state and the
+    running install stay in agreement — the sanctioned form of the former
+    hand-edit-then-redeploy workaround. `--image-tag NAME=TAG` upserts the
+    named overrides and keeps the others; removing an override remains a
+    deliberate state edit. An override naming no enabled component/app
+    warns (the service would silently render at the base tag).
+
     Pass service names to scope the apply to a subset (compose/dev only;
     a k8s `kubectl apply` is already incremental, so a service list is
     rejected there).
@@ -2636,10 +2647,42 @@ def redeploy(
 
       # Re-render but recreate only two backend services
       wip-deploy redeploy registry def-store --name wip-local
+
+      # Roll every WIP-built image to a new tag (overrides keep their pins)
+      wip-deploy redeploy --name dev-test --tag 20261013a
+
+      # Hotfix one service on top of the rolled tag
+      wip-deploy redeploy --name dev-test --tag 20261013a --image-tag registry=20261014-fix
     """
     resolved_name, target_dir, deployment, components, apps_list, repo_root = (
         _load_and_discover_for_mutation(name, install_dir, repo_root)
     )
+
+    # Tag roll (CASE-863): mutate the loaded spec before the re-render, the
+    # same shape as app-deploy's single-app override write. The persist at
+    # the end of this verb writes the updated spec back to deployer-state.
+    tag_changes: list[str] = []
+    if tag is not None:
+        if not tag.strip():
+            typer.echo("error: --tag must be a non-empty image tag", err=True)
+            raise typer.Exit(2)
+        tag = tag.strip()
+        if deployment.spec.images.tag == tag:
+            typer.echo(f"⊙ base tag is already {tag!r} — no change.")
+        else:
+            deployment.spec.images.tag = tag
+            tag_changes.append(f"tag={tag}")
+    overrides = _parse_image_tags_or_exit(image_tag or [])
+    for svc, svc_tag in overrides.items():
+        if deployment.spec.images.tag_overrides.get(svc) == svc_tag:
+            typer.echo(f"⊙ {svc!r} is already pinned to {svc_tag!r} — no change.")
+        else:
+            deployment.spec.images.tag_overrides[svc] = svc_tag
+            tag_changes.append(f"{svc}={svc_tag}")
+    if overrides:
+        # CASE-556: an override that matches no enabled component/app is
+        # never consulted — warn here as install does.
+        _warn_unmatched_tag_overrides(deployment, components, apps_list)
 
     scope = [s.strip() for s in (services or []) if s.strip()]
     if scope:
@@ -2671,10 +2714,23 @@ def redeploy(
             )
             raise typer.Exit(2)
 
+    if tag_changes and scope:
+        typer.echo(
+            "warning: tag change with a service subset — services outside "
+            f"the scope ({', '.join(scope)}) keep running their old images "
+            "while the saved spec now names the new tag; the next unscoped "
+            "`redeploy` rolls them.",
+            err=True,
+        )
+
+    rolled = f" (rolled {', '.join(tag_changes)})" if tag_changes else ""
     label = (
-        f"Redeployed {', '.join(scope)} on {resolved_name}"
+        f"Redeployed {', '.join(scope)} on {resolved_name}{rolled}"
         if scope
-        else f"Redeployed {resolved_name} (re-rendered; recreated changed services)"
+        else (
+            f"Redeployed {resolved_name} (re-rendered; recreated changed "
+            f"services){rolled}"
+        )
     )
     _apply_and_persist_mutation(
         deployment,
