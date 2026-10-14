@@ -918,10 +918,15 @@ def render(
         deployment.spec.network.external_ca_mount = True
 
     secrets = _ensure_secrets_via_spec(deployment, components, apps_list)
+    # The same root _assemble discovered from; its success above
+    # guarantees the walk resolves.
+    render_root = (repo_root or find_repo_root()).resolve()
     # CASE-355: render-time errors (e.g. dev app without source) surface
     # as a clean actionable message instead of a Python traceback.
     try:
-        tree = _render_tree(deployment, components, apps_list, secrets)
+        tree = _render_tree(
+            deployment, components, apps_list, secrets, repo_root=render_root,
+        )
     except ValueError as e:
         typer.echo(
             typer.style(f"✗ render aborted: {e}", fg=typer.colors.RED, bold=True),
@@ -1149,11 +1154,26 @@ def install(
         legacy_state.unlink()
 
     secrets = _ensure_secrets_via_spec(deployment, components, apps_list)
+
+    # CASE-459: stamp the source checkout into the deployer-state so the
+    # mutation verbs (add-app / app-deploy / ...) can discover manifests
+    # from any cwd. Same resolution _assemble used — its success above
+    # guarantees the walk resolves; the guard is belt-and-braces. The dev
+    # target also mounts its source from this root, so what is stamped is
+    # what runs.
+    try:
+        effective_repo_root = (repo_root or find_repo_root()).resolve()
+    except FileNotFoundError:
+        effective_repo_root = None
+
     # CASE-355: render-time errors (e.g., dev app without source) bubble
     # as ValueError from the renderer. Surface them as a clean
     # actionable message + exit 2, not as a traceback.
     try:
-        tree = _render_tree(deployment, components, apps_list, secrets)
+        tree = _render_tree(
+            deployment, components, apps_list, secrets,
+            repo_root=effective_repo_root,
+        )
     except ValueError as e:
         typer.echo(
             typer.style(f"✗ install aborted: {e}", fg=typer.colors.RED, bold=True),
@@ -1167,15 +1187,6 @@ def install(
         f"{len([a for a in apps_list if a.metadata.name in {ref.name for ref in deployment.spec.apps if ref.enabled}])} apps"
     )
     typer.echo("")
-
-    # CASE-459: stamp the source checkout into the deployer-state so the
-    # mutation verbs (add-app / app-deploy / ...) can discover manifests
-    # from any cwd. Same resolution _assemble used — its success above
-    # guarantees the walk resolves; the guard is belt-and-braces.
-    try:
-        effective_repo_root = (repo_root or find_repo_root()).resolve()
-    except FileNotFoundError:
-        effective_repo_root = None
 
     apply_fn = apply_k8s if deployment.spec.target == "k8s" else apply_compose
     try:
@@ -2192,10 +2203,22 @@ def _load_and_discover_for_mutation(
     # been added since the last install (which is exactly what the
     # operator is trying to use here).
     root = repo_root
+    stamped = _load_state_repo_root(target_dir)
     if root is None:
-        stamped = _load_state_repo_root(target_dir)
         if stamped is not None and stamped.is_dir():
             root = stamped
+    elif stamped is not None and stamped.resolve() != root.resolve():
+        # An explicit root that differs from the stamped one moves the
+        # install: discovery, the re-stamped state and — on the dev target —
+        # the bind-mounted source all follow the flag. Legitimate, but never
+        # silent.
+        mounts = " and the dev source mounts" if deployment.spec.target == "dev" else ""
+        typer.echo(
+            f"note: --repo-root {root} differs from the checkout this install "
+            f"was stamped with ({stamped}); manifests{mounts} now come from "
+            f"{root}, and the install is re-stamped to it.",
+            err=True,
+        )
     if root is None:
         try:
             root = find_repo_root()
@@ -2273,7 +2296,9 @@ def _apply_and_persist_mutation(
     # verbs too — `add-app NAME` without --app-source on a dev install
     # hits the same gate.
     try:
-        tree = _render_tree(deployment, components, apps_list, secrets)
+        tree = _render_tree(
+            deployment, components, apps_list, secrets, repo_root=repo_root,
+        )
     except ValueError as e:
         typer.echo(
             typer.style(f"✗ {action_label} aborted: {e}", fg=typer.colors.RED, bold=True),
@@ -4740,8 +4765,11 @@ def _do_status_diff(install_dir: Path, namespace_override: str | None) -> None:
         )
         raise typer.Exit(2)
 
+    # The install's stamped checkout first, then the cwd — the same order
+    # the mutation verbs use, so a diff run from another checkout still
+    # compares against this install's manifests.
     try:
-        root = find_repo_root()
+        root = _load_state_repo_root(install_dir) or find_repo_root()
     except FileNotFoundError as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(1) from e
@@ -4757,7 +4785,8 @@ def _do_status_diff(install_dir: Path, namespace_override: str | None) -> None:
         deployment, discovery.components, discovery.apps
     )
     tree = _render_tree(
-        deployment, discovery.components, discovery.apps, secrets
+        deployment, discovery.components, discovery.apps, secrets,
+        repo_root=root.resolve(),
     )
 
     with tempfile.TemporaryDirectory(prefix="wip-deploy-diff-") as td:
@@ -4815,8 +4844,17 @@ def _render_tree(
     components: list[Component],
     apps_list: list[App],
     secrets: ResolvedSecrets,
+    *,
+    repo_root: Path | None,
 ) -> FileTree:
-    """Dispatch to the right renderer for the deployment's target."""
+    """Dispatch to the right renderer for the deployment's target.
+
+    `repo_root` is the checkout the caller resolved for discovery (and
+    stamps into the deployer-state). The dev target bind-mounts its source
+    from it, so it must be that same root — never a fresh lookup from the
+    cwd, which would mount whichever clone the command happens to run in.
+    Compose and k8s render image references and ignore it.
+    """
     if deployment.spec.target == "compose":
         return render_compose(deployment, components, apps_list, secrets)
     if deployment.spec.target == "k8s":
@@ -4830,13 +4868,15 @@ def _render_tree(
                 err=True,
             )
             raise typer.Exit(2)
-        try:
-            root = find_repo_root()
-        except FileNotFoundError as e:
-            typer.echo(f"error: {e}", err=True)
-            raise typer.Exit(1) from e
+        if repo_root is None:
+            typer.echo(
+                "error: cannot resolve the WIP repo root for the dev target's "
+                "source mounts — pass --repo-root <path>",
+                err=True,
+            )
+            raise typer.Exit(1)
         return render_dev_simple(
-            deployment, components, apps_list, secrets, repo_root=root,
+            deployment, components, apps_list, secrets, repo_root=repo_root,
         )
     typer.echo(
         f"error: renderer for target={deployment.spec.target!r} not implemented yet",

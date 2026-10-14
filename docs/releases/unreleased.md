@@ -315,6 +315,17 @@ sync afterwards.
 
 ## Deployment changes
 
+- **Dev installs mount the checkout they were installed from, whatever
+  the cwd.** A dev redeploy (or any other mutation verb) used to bind-mount
+  the backend source of whichever git checkout the command ran in, while
+  the deployer-state kept recording the original one — running wip-deploy
+  from a second clone silently re-pointed a running dev install at that
+  clone. The mounts now follow the same root as discovery: `--repo-root` /
+  `WIP_REPO_ROOT`, else the root stamped at install, else the cwd. An
+  explicit `--repo-root` that differs from the stamped root still moves the
+  install, and now prints a `note:` naming both. `render` and `install`
+  with `--repo-root` also mount from the flag (before, always from the cwd).
+  `status --diff` discovers from the stamped root before the cwd.
 - **MinIO image** is `ghcr.io/peterseb1969/minio:RELEASE.2025-09-07T16-13-09Z`.
   MinIO no longer publishes pullable images (Docker Hub answers with HTML,
   quay.io with 401); this is a copy of the last release in use. It is
