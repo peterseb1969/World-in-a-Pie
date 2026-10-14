@@ -225,28 +225,36 @@ class DefStoreClient:
 
         Returns a dict mapping lowercase values to term data:
         - value (lowercase) -> term
-        - each alias (lowercase) -> term
-        """
-        lookup = {}
-        for term in terms:
-            term_id = term.get("term_id")
-            value = term.get("value", "").lower()
-            aliases = term.get("aliases", [])
+        - each name/alias (lowercase) -> term
 
-            # Create term reference data
-            term_ref = {
-                "term_id": term_id,
+        Built in two passes with value precedence: every term's canonical
+        value is indexed before any term's names, so a name can never
+        shadow another term's value. Among names, the first term in list
+        order wins a contested key (a single-pass build let the LAST
+        writer win, silently rebinding duplicate aliases — and worse,
+        letting an alias overwrite a canonical value).
+        """
+        lookup: dict[str, dict[str, Any]] = {}
+
+        def _term_ref(term: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "term_id": term.get("term_id"),
                 "value": term.get("value"),
             }
 
-            # Index by value
+        # Pass 1: canonical values — these keys are never overwritten
+        for term in terms:
+            value = term.get("value", "").lower()
             if value:
-                lookup[value] = {"term": term_ref, "matched_via": "value"}
+                lookup[value] = {"term": _term_ref(term), "matched_via": "value"}
 
-            # Index by aliases
-            for alias in aliases:
-                if alias:
-                    lookup[alias.lower()] = {"term": term_ref, "matched_via": "alias"}
+        # Pass 2: names (def-store's derived `aliases` covers every name's
+        # value; older def-store versions serve the same field natively)
+        for term in terms:
+            ref = _term_ref(term)
+            for alias in term.get("aliases", []):
+                if alias and alias.lower() not in lookup:
+                    lookup[alias.lower()] = {"term": ref, "matched_via": "alias"}
 
         return lookup
 

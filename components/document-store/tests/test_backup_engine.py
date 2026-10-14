@@ -752,6 +752,41 @@ class TestInsertBatch:
         coll.insert_many.assert_awaited_once_with(batch, ordered=False)
 
     @pytest.mark.asyncio
+    async def test_legacy_term_rows_convert_to_names(self):
+        """A pre-names archive's term rows gain `names` at restore-write.
+
+        Mirrors def-store's startup migration: untyped names from aliases,
+        language names from translations, exact duplicates and own-value
+        echoes dropped, case variants kept. A row that already carries
+        `names` is left alone.
+        """
+        mongo, _ = _make_mongo_mock()
+        engine = DirectRestoreEngine(mongo, None, lambda _: None)
+        coll = MagicMock()
+        coll.insert_many = AsyncMock()
+
+        legacy = {
+            "term_id": "T-1",
+            "value": "mr",
+            "aliases": ["MR.", "MR.", "Mr", "mr"],
+            "translations": [{"language": "fr", "label": "M.", "description": "d"}],
+        }
+        modern = {"term_id": "T-2", "value": "x", "names": [{"value": "y"}]}
+        await engine._insert_batch(coll, [legacy, modern], "terms")
+
+        assert "aliases" not in legacy and "translations" not in legacy
+        assert [(n["value"], n["language"]) for n in legacy["names"]] == [
+            ("MR.", None), ("Mr", None), ("M.", "fr"),
+        ]
+        assert legacy["names"][2]["description"] == "d"
+        assert modern["names"] == [{"value": "y"}]
+
+        # Non-term batches are untouched
+        doc = {"value": "v", "aliases": ["a"]}
+        await engine._insert_batch(coll, [doc], "documents")
+        assert "names" not in doc and doc["aliases"] == ["a"]
+
+    @pytest.mark.asyncio
     async def test_raises_restore_engine_error_on_bulk_write_error(self):
         mongo, _ = _make_mongo_mock()
         engine = DirectRestoreEngine(mongo, None, lambda _: None)

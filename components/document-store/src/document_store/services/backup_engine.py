@@ -419,6 +419,41 @@ def _rehydrate_timestamps(row: dict[str, Any]) -> None:
             continue
 
 
+def _convert_legacy_term_names(row: dict[str, Any]) -> None:
+    """Convert a legacy term row's aliases/translations to names, in place.
+
+    Mirrors def-store's startup migration (its term_names module): plain
+    aliases become untyped names, translations become language-bearing
+    names; exact duplicates and names exactly equal to the term's own
+    value are dropped (first occurrence wins). Case variants are kept —
+    in a case-sensitive terminology they are genuine resolution.
+    """
+    seen: set[tuple[str, str | None]] = {(row.get("value", ""), None)}
+    names: list[dict[str, Any]] = []
+    for alias in row.pop("aliases", None) or []:
+        key = (alias, None)
+        if not alias or key in seen:
+            continue
+        seen.add(key)
+        names.append({
+            "value": alias, "type": None, "language": None,
+            "description": None, "source": None, "preferred": False,
+        })
+    for tr in row.pop("translations", None) or []:
+        label = tr.get("label")
+        language = tr.get("language")
+        key = (label or "", language)
+        if not label or key in seen:
+            continue
+        seen.add(key)
+        names.append({
+            "value": label, "type": None, "language": language,
+            "description": tr.get("description"), "source": None,
+            "preferred": False,
+        })
+    row["names"] = names
+
+
 class DirectRestoreEngine:
     """Restore a namespace from an archive via direct MongoDB bulk inserts.
 
@@ -3064,6 +3099,15 @@ class DirectRestoreEngine:
 
         for row in batch:
             _rehydrate_timestamps(row)
+            # A pre-names archive carries terms with legacy aliases /
+            # translations fields. Def-store converts those only at ITS
+            # startup, so restoring into a running def-store would leave
+            # the rows unmigrated (names invisible to resolution) until
+            # the next restart — convert at restore-write instead, with
+            # the same rule def-store's migration applies: exact-match
+            # dedupe, first occurrence wins, own-value echoes dropped.
+            if entity_type == "terms" and "names" not in row:
+                _convert_legacy_term_names(row)
         try:
             await collection.insert_many(batch, ordered=False)
         except BulkWriteError as exc:
