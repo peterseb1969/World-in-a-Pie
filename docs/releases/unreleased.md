@@ -189,6 +189,24 @@ first start below) and legacy API shapes keep working. Review seeds for
 literal duplicate aliases, and any consumer that assumed `aliases`
 excluded translations.
 
+### Ranked term search (typeahead); unified search actually finds terms
+
+Def-store gains `GET /api/def-store/terms/search` (MCP tool
+`search_terms`, `@wip/client` 0.57.0 `defStore.searchTerms`): literal,
+case-insensitive search over a term's value, label and every name, with
+match modes (`exact`/`prefix`/`word-start`/`substring`), ranked hits that
+carry the exact matched string and — for name hits — the name's type and
+language, and `rollup=root` to collapse hits onto their root `is_a`
+ancestor (a trade name returns the molecule). Exact mode returns ALL
+candidates, making it the inspection surface for ambiguous names.
+
+The unified search (`POST /api/reporting-sync/search`) now delegates its
+term type to that endpoint. Before, it fetched one page of 100 terms from
+the first 20 terminologies and substring-matched in Python — any
+vocabulary beyond 100 terms was effectively invisible and alias matches
+were never found. Term results now cover full vocabularies and name
+matches say what matched.
+
 ---
 
 ## What happens on first start after the upgrade

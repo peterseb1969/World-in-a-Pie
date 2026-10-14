@@ -421,6 +421,11 @@ A term is an entry in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).
   name types, and preferred conflicts are rejected per item with
   error_code 'invalid_names'. Case-variant names are legal.
 - Terms can have ontology relations (see Ontology section below)
+- Ranked search: GET /api/def-store/terms/search (the search_terms tool) —
+  typeahead over value, label and every name, with match modes
+  (exact/prefix/word-start/substring), ranked hits carrying the matched
+  name and its type, and optional rollup to the root is_a ancestor.
+  Always case-insensitive and literal; exact mode returns ALL candidates.
 - Addressing: term identifiers accept a canonical UUID, the fully
   qualified 'ns:terminology:value' form, or a terminology-scoped opaque
   value (field form). The 2-part 'TERMINOLOGY:VALUE' shorthand is
@@ -1805,6 +1810,50 @@ async def create_terms(
     try:
         data = await get_client().create_terms(
             terminology_id=terminology_id, terms=terms, on_conflict=on_conflict
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def search_terms(
+    query: str,
+    terminology: str | None = None,
+    namespace: str | None = None,
+    mode: str = "prefix",
+    limit: int = 20,
+    statuses: str | None = None,
+    rollup: str = "none",
+) -> str:
+    """Ranked term search — the typeahead surface: type a name, get ranked candidates.
+
+    Searches a term's value, label and every name (typed aliases, trade
+    names, translated labels). Each hit carries the exact string that
+    matched, where it matched (value | label | alias — with the name's
+    type and language for alias hits), and a rank: exact > prefix >
+    word-start > substring, then value > label > preferred name > name.
+    Matching is always case-insensitive and LITERAL (no regex). Exact mode
+    returns ALL candidates — two terms sharing a name both appear, which
+    makes it the ambiguity-inspection surface; strict one-answer
+    resolution stays with validate_term_value.
+
+    Args:
+        query: The search string.
+        terminology: Terminology ID or value to scope the search; omit for
+            namespace-wide.
+        namespace: Namespace to search (derived for single-namespace keys;
+            required otherwise).
+        mode: 'exact' | 'prefix' (default — typeahead) | 'word-start' | 'substring'.
+        limit: Maximum hits (default 20, cap 100).
+        statuses: Comma-separated statuses (default 'active').
+        rollup: 'root' replaces each hit with its root is_a ancestor,
+            deduped — a trade name returns the molecule.
+    """
+    try:
+        data = await get_client().search_terms(
+            query=query, terminology=terminology, namespace=namespace,
+            mode=mode, limit=limit, statuses=statuses, rollup=rollup,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

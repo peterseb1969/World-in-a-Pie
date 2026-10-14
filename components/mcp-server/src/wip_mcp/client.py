@@ -710,6 +710,28 @@ class WipClient:
             json={key: terminology, "value": value},
         )
 
+    async def search_terms(
+        self,
+        query: str,
+        terminology: str | None = None,
+        namespace: str | None = None,
+        mode: str = "prefix",
+        limit: int = 20,
+        statuses: str | None = None,
+        rollup: str = "none",
+    ) -> dict:
+        return await self._get(
+            self.def_store_url,
+            "/api/def-store/terms/search",
+            q=query,
+            terminology=terminology,
+            namespace=namespace,
+            mode=mode,
+            limit=limit,
+            statuses=statuses,
+            rollup=rollup,
+        )
+
     # ========================================================
     # Def-Store: Ontology
     # ========================================================
