@@ -26,7 +26,7 @@ from .models import (
     ReportingConfig,
 )
 from .schema_manager import SchemaManager
-from .transformer import DocumentTransformer, _parse_datetime
+from .transformer import DocumentTransformer, _parse_datetime, term_name_rows
 
 logger = logging.getLogger(__name__)
 
@@ -992,6 +992,7 @@ class BatchSyncService:
         """
         # Rows route to their own namespace's schema (CASE-628).
         ns_tables: dict[str, str] = {}
+        ns_names_tables: dict[str, str] = {}
         synced = 0
         failed = 0
 
@@ -1042,11 +1043,15 @@ class BatchSyncService:
                         if not items:
                             break
 
-                        # Ensure a table per namespace present in this page.
+                        # Ensure tables per namespace present in this page.
                         for t in items:
                             ns = t.get("namespace") or namespace or "wip"
                             if ns not in ns_tables:
                                 ns_tables[ns] = await self.schema_manager.ensure_terms_table(ns)
+                            if ns not in ns_names_tables:
+                                ns_names_tables[ns] = (
+                                    await self.schema_manager.ensure_term_names_table(ns)
+                                )
 
                         async with self.pool.acquire() as conn:
                             for t in items:
@@ -1093,6 +1098,32 @@ class BatchSyncService:
                                         _parse_datetime(t.get("updated_at")),
                                         t.get("updated_by"),
                                     )
+                                    # Refresh the term's name rows wholesale
+                                    t_ns = t.get("namespace") or namespace or "wip"
+                                    names_table = ns_names_tables[t_ns]
+                                    await conn.execute(
+                                        f'DELETE FROM {names_table} WHERE "namespace" = $1 AND "term_id" = $2',
+                                        t_ns, t["term_id"],
+                                    )
+                                    name_rows = term_name_rows(t)
+                                    if name_rows:
+                                        await conn.executemany(
+                                            f"""
+                                            INSERT INTO {names_table} (
+                                                "namespace", "term_id", "terminology_id",
+                                                "value", "type", "language", "source", "preferred"
+                                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                                            """,
+                                            [
+                                                (
+                                                    t_ns, t["term_id"],
+                                                    t.get("terminology_id"),
+                                                    r["value"], r["type"], r["language"],
+                                                    r["source"], r["preferred"],
+                                                )
+                                                for r in name_rows
+                                            ],
+                                        )
                                     synced += 1
                                 except Exception as e:
                                     logger.error(f"Error syncing term {t.get('value')}: {e}")

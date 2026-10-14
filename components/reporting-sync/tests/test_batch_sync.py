@@ -42,6 +42,7 @@ def service(mock_pool):
     svc = BatchSyncService(pool)
     svc.schema_manager.ensure_terminologies_table = AsyncMock(return_value="terminologies")
     svc.schema_manager.ensure_terms_table = AsyncMock(return_value="terms")
+    svc.schema_manager.ensure_term_names_table = AsyncMock(return_value="term_names")
     svc.schema_manager.ensure_term_relations_table = AsyncMock(return_value="term_relations")
     return svc
 
@@ -366,7 +367,8 @@ class TestBatchSyncTerms:
 
             await service.batch_sync_terms(namespace="wip")
 
-        args = conn.execute.call_args[0]
+        # The terms upsert is the first execute; the names-row refresh follows
+        args = conn.execute.call_args_list[0][0]
         # $2 = namespace (index 2)
         assert args[2] == "wip"
 
@@ -382,7 +384,7 @@ class TestBatchSyncTerms:
 
             await service.batch_sync_terms()
 
-        args = conn.execute.call_args[0]
+        args = conn.execute.call_args_list[0][0]
         # $14 = created_at (index 14), $16 = updated_at (index 16)
         created_at = args[14]
         updated_at = args[16]
@@ -401,7 +403,7 @@ class TestBatchSyncTerms:
 
             await service.batch_sync_terms()
 
-        args = conn.execute.call_args[0]
+        args = conn.execute.call_args_list[0][0]
         # $6 = aliases (index 6)
         assert args[6] == json.dumps(["UK", "GB"])
 
@@ -417,7 +419,7 @@ class TestBatchSyncTerms:
 
             await service.batch_sync_terms()
 
-        args = conn.execute.call_args[0]
+        args = conn.execute.call_args_list[0][0]
         # $9 = sort_order (index 9)
         assert isinstance(args[9], int), f"sort_order should be int, got {type(args[9])}"
 

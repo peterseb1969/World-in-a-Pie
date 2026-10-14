@@ -52,6 +52,7 @@ def worker(mock_pool):
     w.schema_manager.ensure_table_for_template = AsyncMock(return_value='"wip"."doc_person"')
     w.schema_manager.ensure_terminologies_table = AsyncMock(return_value='"wip"."terminologies"')
     w.schema_manager.ensure_terms_table = AsyncMock(return_value='"wip"."terms"')
+    w.schema_manager.ensure_term_names_table = AsyncMock(return_value='"wip"."term_names"')
     w.schema_manager.ensure_term_relations_table = AsyncMock(return_value='"wip"."term_relations"')
     w.schema_manager.update_table_schema = AsyncMock(return_value=[])
     return w
@@ -255,10 +256,18 @@ class TestTermEvents:
 
         assert result is True
         worker.schema_manager.ensure_terms_table.assert_awaited_once()
-        conn.execute.assert_awaited_once()
-        sql = conn.execute.call_args[0][0]
+        # Two executes: the terms upsert, then the names-row DELETE; the
+        # name rows themselves go through executemany
+        assert conn.execute.await_count == 2
+        sql = conn.execute.call_args_list[0][0][0]
         assert "INSERT INTO" in sql
         assert "ON CONFLICT" in sql
+        delete_sql = conn.execute.call_args_list[1][0][0]
+        assert "DELETE FROM" in delete_sql
+        assert '"term_names"' in delete_sql
+        conn.executemany.assert_awaited_once()
+        rows = conn.executemany.call_args[0][1]
+        assert [(r[3], r[4]) for r in rows] == [("UK", None), ("GB", None)]
 
     @pytest.mark.asyncio
     async def test_create_event_arg_types(self, worker, mock_pool):
@@ -268,7 +277,7 @@ class TestTermEvents:
 
         await worker._process_term_event(event)
 
-        args = conn.execute.call_args[0]
+        args = conn.execute.call_args_list[0][0]
         # $6=aliases (JSON string)
         assert isinstance(args[6], str), f"aliases: expected JSON str, got {type(args[6])}"
         assert json.loads(args[6]) == ["UK", "GB"]  # valid JSON
@@ -287,7 +296,7 @@ class TestTermEvents:
         result = await worker._process_term_event(event)
 
         assert result is True
-        sql = conn.execute.call_args[0][0]
+        sql = conn.execute.call_args_list[0][0][0]
         assert "INSERT INTO" in sql
 
     @pytest.mark.asyncio
@@ -331,10 +340,10 @@ class TestTermEvents:
         result = await worker._process_term_event(event)
 
         assert result is True
-        # Hard delete calls execute twice: first relations, then terms
+        # Hard delete cascades: relations, then term_names, then terms
         calls = conn.execute.call_args_list
-        assert len(calls) == 2
-        terms_sql = calls[1][0][0]
+        assert len(calls) == 3
+        terms_sql = calls[2][0][0]
         assert "DELETE FROM" in terms_sql
         assert '"terms"' in terms_sql
 
@@ -348,11 +357,14 @@ class TestTermEvents:
 
         assert result is True
         calls = conn.execute.call_args_list
-        assert len(calls) == 2
+        assert len(calls) == 3
         rel_sql = calls[0][0][0]
         assert "DELETE FROM" in rel_sql
         assert '"term_relations"' in rel_sql
-        terms_sql = calls[1][0][0]
+        names_sql = calls[1][0][0]
+        assert "DELETE FROM" in names_sql
+        assert '"term_names"' in names_sql
+        terms_sql = calls[2][0][0]
         assert "DELETE FROM" in terms_sql
         assert '"terms"' in terms_sql
 
@@ -387,11 +399,34 @@ class TestTermEvents:
 
         await worker._process_term_event(event)
 
-        # Find the aliases argument (position 5, 0-indexed in the call args)
-        args = conn.execute.call_args[0]
+        # The terms upsert is the first execute call
+        args = conn.execute.call_args_list[0][0]
         # The aliases should be a JSON string somewhere in the args
         aliases_json = json.dumps(["UK", "GB", "Britain"])
         assert aliases_json in args, f"Expected serialized aliases in args: {args}"
+
+    @pytest.mark.asyncio
+    async def test_typed_names_rows_inserted(self, worker, mock_pool):
+        """Structured names flow into term_names rows with type/language/preferred."""
+        _pool, conn = mock_pool
+        event = self._make_event(
+            "term.created",
+            names=[
+                {"value": "bevacizumab", "type": "INN", "preferred": True},
+                {"value": "Avastin", "type": "TRADE_GLOBAL"},
+                {"value": "Bev-DE", "language": "de"},
+            ],
+        )
+
+        await worker._process_term_event(event)
+
+        rows = conn.executemany.call_args[0][1]
+        # (namespace, term_id, terminology_id, value, type, language, source, preferred)
+        assert [(r[3], r[4], r[5], r[7]) for r in rows] == [
+            ("bevacizumab", "INN", None, True),
+            ("Avastin", "TRADE_GLOBAL", None, False),
+            ("Bev-DE", None, "de", False),
+        ]
 
     @pytest.mark.asyncio
     async def test_term_message_routes_correctly(self, worker, mock_pool):

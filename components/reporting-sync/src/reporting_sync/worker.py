@@ -27,7 +27,7 @@ from .config import settings
 from .metrics import metrics
 from .models import DroppedEvent, EventType, ReportingConfig, SyncStatus
 from .schema_manager import SchemaManager
-from .transformer import DocumentTransformer, _parse_datetime
+from .transformer import DocumentTransformer, _parse_datetime, term_name_rows
 
 logger = logging.getLogger(__name__)
 
@@ -495,10 +495,16 @@ class SyncWorker:
             async with self.pool.acquire() as conn:
                 if event_type == "term.deleted":
                     if term_data.get("hard_delete"):
-                        # Hard delete: remove from terms and cascade term_relations
+                        # Hard delete: remove from terms and cascade
+                        # term_relations and term_names
                         rel_table = await self.schema_manager.ensure_term_relations_table(namespace)
+                        names_table = await self.schema_manager.ensure_term_names_table(namespace)
                         await conn.execute(
                             f'DELETE FROM {rel_table} WHERE "namespace" = $1 AND ("source_term_id" = $2 OR "target_term_id" = $2)',
+                            namespace, term_id,
+                        )
+                        await conn.execute(
+                            f'DELETE FROM {names_table} WHERE "namespace" = $1 AND "term_id" = $2',
                             namespace, term_id,
                         )
                         await conn.execute(
@@ -579,6 +585,33 @@ class SyncWorker:
                         _parse_datetime(term_data.get("updated_at")),
                         term_data.get("updated_by"),
                     )
+
+                    # Refresh the term's name rows wholesale — a term's
+                    # names are a set, replaced as one
+                    names_table = await self.schema_manager.ensure_term_names_table(namespace)
+                    await conn.execute(
+                        f'DELETE FROM {names_table} WHERE "namespace" = $1 AND "term_id" = $2',
+                        namespace, term_id,
+                    )
+                    rows = term_name_rows(term_data)
+                    if rows:
+                        await conn.executemany(
+                            f"""
+                            INSERT INTO {names_table} (
+                                "namespace", "term_id", "terminology_id",
+                                "value", "type", "language", "source", "preferred"
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                            """,
+                            [
+                                (
+                                    namespace, term_id,
+                                    term_data.get("terminology_id"),
+                                    r["value"], r["type"], r["language"],
+                                    r["source"], r["preferred"],
+                                )
+                                for r in rows
+                            ],
+                        )
 
             latency_ms = (time.perf_counter() - start_time) * 1000
             logger.info(

@@ -972,6 +972,50 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_parent_idx"
         logger.info(f"Created {qualified} table")
         return qualified
 
+    async def ensure_term_names_table(self, namespace: str) -> str:
+        """
+        Ensure the term_names table exists in the namespace's schema.
+
+        One row per term name (typed aliases, trade names, translated
+        labels) — the queryable surface for name-based lookups and ranked
+        search, so no app has to unnest the terms table's aliases jsonb.
+        Rows are replaced wholesale per term on sync (a term's names are a
+        set, not independently keyed rows).
+
+        Returns:
+            The schema-qualified table reference ("<ns>"."term_names").
+        """
+        schema = await self.ensure_schema(namespace)
+        table_name = "term_names"
+        qualified = f'"{schema}"."{table_name}"'
+
+        if await self.table_exists(schema, table_name):
+            return qualified
+
+        ddl = f"""
+CREATE TABLE IF NOT EXISTS {qualified} (
+    "namespace" VARCHAR(255) NOT NULL DEFAULT 'wip',
+    "term_id" TEXT NOT NULL,
+    "terminology_id" TEXT NOT NULL,
+    "value" TEXT NOT NULL,
+    "type" TEXT,
+    "language" VARCHAR(16),
+    "source" TEXT,
+    "preferred" BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_term_idx"
+  ON {qualified}("namespace", "term_id");
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_terminology_value_idx"
+  ON {qualified}("namespace", "terminology_id", lower("value"));
+"""
+
+        async with self.pool.acquire() as conn:
+            await conn.execute(ddl)
+
+        logger.info(f"Created {qualified} table")
+        return qualified
+
     async def ensure_term_relations_table(self, namespace: str) -> str:
         """
         Ensure the term_relations table exists in the namespace's schema.

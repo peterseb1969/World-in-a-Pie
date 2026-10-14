@@ -109,6 +109,30 @@ TIME_UNIT_FACTORS = {
 }
 
 
+def term_name_rows(term: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize a term payload's names into term_names row dicts.
+
+    Reads the structured `names` list (def-store's unified naming model).
+    A payload from an older def-store carries only the flat `aliases`
+    list; those arrive as untyped names, so the table never goes empty
+    across a version skew.
+    """
+    names = term.get("names")
+    if names is None:
+        names = [{"value": a} for a in term.get("aliases", []) if a]
+    return [
+        {
+            "value": n["value"],
+            "type": n.get("type"),
+            "language": n.get("language"),
+            "source": n.get("source"),
+            "preferred": bool(n.get("preferred", False)),
+        }
+        for n in names
+        if n.get("value")
+    ]
+
+
 def _parse_datetime(value: Any) -> datetime | None:
     """Parse ISO datetime string to datetime object."""
     if value is None:
