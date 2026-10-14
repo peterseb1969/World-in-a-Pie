@@ -91,6 +91,12 @@ class Terminology(Document):
         default=False,
         description="Whether terms can be hard-deleted (vs deprecated). Implies extensible=True."
     )
+    unique_names: bool = Field(
+        default=False,
+        description="Whether a name colliding with another term's value or "
+                    "name in this terminology rejects the write (default: "
+                    "collisions are reported as per-item warnings)"
+    )
 
     # Metadata
     metadata: TerminologyMetadata = Field(

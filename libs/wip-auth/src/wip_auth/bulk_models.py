@@ -40,7 +40,8 @@ class BulkResultItemBase(BaseModel):
             "forbidden, archived, identity_field_change, "
             "concurrency_conflict, validation_failed, reference_violation, "
             "internal_error, incompatible_schema, already_exists, "
-            "incompatible_config, force_unsupported."
+            "incompatible_config, force_unsupported, invalid_names, "
+            "name_collision."
         ),
     )
     details: dict[str, Any] | None = Field(

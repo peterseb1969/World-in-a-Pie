@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 from beanie.odm.enums import SortDirection
 from pymongo.errors import BulkWriteError, DuplicateKeyError
@@ -111,6 +111,39 @@ class AmbiguousTerminologyValueError(ValueError):
         )
 
 
+class NameCollisionError(ValueError):
+    """A unique_names terminology rejects a write whose names collide."""
+
+    def __init__(self, collisions: list[dict[str, Any]]) -> None:
+        self.collisions = collisions
+        shown = ", ".join(
+            f"'{c['name']}' collides with term '{c['conflicts_with_value']}'"
+            for c in collisions[:5]
+        )
+        if len(collisions) > 5:
+            shown += f" (and {len(collisions) - 5} more)"
+        super().__init__(
+            f"Name collision in a unique_names terminology: {shown}"
+        )
+
+
+class ValueResolution(NamedTuple):
+    """Result of resolving a submitted value against a terminology.
+
+    candidates lists EVERY (term, matched name) bearing the value when the
+    match came through names — more than one entry means the name is
+    ambiguous in this vocabulary, and matched_term is merely the first
+    bearer in database order, not a principled choice.
+    """
+
+    valid: bool
+    matched_term: Term | None
+    matched_via: str | None
+    suggestion: Term | None
+    matched_name: TermName | None
+    candidates: list[tuple[Term, TermName]]
+
+
 def conflict_result(
     index: int,
     exc: EntityExistsError,
@@ -172,6 +205,7 @@ class TerminologyService:
             "allow_multiple": existing.allow_multiple != request.allow_multiple,
             "extensible": existing.extensible != effective_extensible,
             "mutable": existing.mutable != request.mutable,
+            "unique_names": existing.unique_names != request.unique_names,
             "metadata": existing.metadata != (request.metadata or TerminologyMetadata()),
         }
         return [name for name, differs in checks.items() if differs]
@@ -195,6 +229,70 @@ class TerminologyService:
             "metadata": existing.metadata != request.metadata,
         }
         return [name for name, differs in checks.items() if differs]
+
+    @staticmethod
+    async def find_name_collisions(
+        terminology: Terminology,
+        term_value: str,
+        names: list[TermName],
+        exclude_term_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Submitted strings that collide with OTHER active terms.
+
+        A collision is the submitted term's value or any of its names
+        equalling another active term's value or name in the same
+        terminology — the raw material of resolution ambiguity. Comparison
+        follows the terminology's case sensitivity (collation strength 2
+        when case-insensitive), matching how resolution itself compares.
+
+        Returns one entry per (submitted string, conflicting term):
+        {name, conflicts_with_term_id, conflicts_with_value, via} where
+        via says whether the conflict is with the other term's 'value' or
+        one of its 'names'.
+        """
+        from pymongo.collation import Collation
+
+        submitted = [term_value] + [n.value for n in names]
+        query: dict[str, Any] = {
+            "namespace": terminology.namespace,
+            "terminology_id": terminology.terminology_id,
+            "status": "active",
+            "$or": [
+                {"value": {"$in": submitted}},
+                {"names.value": {"$in": submitted}},
+            ],
+        }
+        if exclude_term_id:
+            query["term_id"] = {"$ne": exclude_term_id}
+
+        coll = Term.get_motor_collection()
+        cursor = coll.find(
+            query,
+            projection={"term_id": 1, "value": 1, "names.value": 1},
+        )
+        if not terminology.case_sensitive:
+            cursor = cursor.collation(Collation(locale="en", strength=2))
+
+        def _fold(s: str) -> str:
+            return s if terminology.case_sensitive else s.lower()
+
+        submitted_folded = {_fold(s): s for s in submitted}
+        collisions: list[dict[str, Any]] = []
+        async for other in cursor:
+            other_strings = (
+                [("value", other.get("value", ""))]
+                + [("names", n.get("value", "")) for n in other.get("names", [])]
+            )
+            for via, other_string in other_strings:
+                hit = submitted_folded.get(_fold(other_string))
+                if hit is not None:
+                    collisions.append({
+                        "name": hit,
+                        "conflicts_with_term_id": other.get("term_id"),
+                        "conflicts_with_value": other.get("value"),
+                        "via": via,
+                    })
+        return collisions
 
     @staticmethod
     async def create_terminology(
@@ -258,6 +356,7 @@ class TerminologyService:
             allow_multiple=request.allow_multiple,
             extensible=extensible,
             mutable=request.mutable,
+            unique_names=request.unique_names,
             metadata=request.metadata or TerminologyMetadata(),
             created_by=actor,
         )
@@ -480,6 +579,7 @@ class TerminologyService:
         _track("allow_multiple", terminology.allow_multiple, request.allow_multiple)
         _track("extensible", terminology.extensible, request.extensible)
         _track("mutable", terminology.mutable, request.mutable)
+        _track("unique_names", terminology.unique_names, request.unique_names)
 
         # Reject mutable changes if terms exist
         if (
@@ -509,6 +609,8 @@ class TerminologyService:
             # mutable implies extensible
             if request.mutable:
                 terminology.extensible = True
+        if request.unique_names is not None:
+            terminology.unique_names = request.unique_names
         if request.metadata is not None:
             terminology.metadata = request.metadata
 
@@ -712,6 +814,7 @@ class TerminologyService:
     async def create_term(
         terminology_id: str,
         request: CreateTermRequest,
+        collision_out: list[dict[str, Any]] | None = None,
     ) -> TermResponse:
         """
         Create a new term in a terminology.
@@ -721,12 +824,17 @@ class TerminologyService:
         Args:
             terminology_id: Parent terminology ID
             request: Creation request
+            collision_out: When provided, name collisions with other terms
+                are appended here for the caller to surface as a warning
+                (unique_names terminologies raise instead)
 
         Returns:
             Created term
 
         Raises:
             ValueError: If terminology not found or value exists
+            NameCollisionError: If names collide and the terminology
+                declares unique_names
         """
         # Verify terminology exists
         terminology = await Terminology.find_one({"terminology_id": terminology_id})
@@ -759,6 +867,17 @@ class TerminologyService:
         # loud per-term rejection, before anything is registered.
         names = normalize_names(request.names, request.aliases, request.translations)
         validate_names(names, request.value, await NameTypeService.get_valid_name_types())
+
+        # Cross-term collisions: reject under unique_names, otherwise hand
+        # them to the caller to surface as a warning — before registering.
+        collisions = await TerminologyService.find_name_collisions(
+            terminology, request.value, names
+        )
+        if collisions:
+            if terminology.unique_names:
+                raise NameCollisionError(collisions)
+            if collision_out is not None:
+                collision_out.extend(collisions)
 
         # Register with Registry to get ID (or use pre-assigned ID for restore)
         client = get_registry_client()
@@ -852,6 +971,97 @@ class TerminologyService:
         return TerminologyService._to_term_response(term)
 
     @staticmethod
+    async def _batch_name_collisions(
+        terminology: Terminology,
+        batch_terms: list[CreateTermRequest],
+    ) -> dict[int, list[dict[str, Any]]]:
+        """Per-item name collisions for a bulk create, in ONE query.
+
+        Covers collisions with existing active terms AND between items of
+        the batch itself (an import carrying the same alias on two rows —
+        the measured real-world shape). Returns batch-local index →
+        collision list; items without collisions are absent. Batch
+        collisions carry via='batch' and no term_id (the other bearer has
+        none yet).
+        """
+        from pymongo.collation import Collation
+
+        def _fold(s: str) -> str:
+            return s if terminology.case_sensitive else s.lower()
+
+        # Per-item submitted strings (an item whose names are invalid gets
+        # an empty list — the partition pass rejects it on its own)
+        item_strings: list[list[str]] = []
+        all_strings: set[str] = set()
+        for req in batch_terms:
+            try:
+                names = normalize_names(req.names, req.aliases, req.translations)
+            except ValueError:
+                item_strings.append([])
+                continue
+            strings = [req.value] + [n.value for n in names]
+            item_strings.append(strings)
+            all_strings.update(strings)
+
+        if not all_strings:
+            return {}
+
+        # One query for every existing bearer of any submitted string
+        query: dict[str, Any] = {
+            "namespace": terminology.namespace,
+            "terminology_id": terminology.terminology_id,
+            "status": "active",
+            "$or": [
+                {"value": {"$in": list(all_strings)}},
+                {"names.value": {"$in": list(all_strings)}},
+            ],
+        }
+        coll = Term.get_motor_collection()
+        cursor = coll.find(
+            query, projection={"term_id": 1, "value": 1, "names.value": 1}
+        )
+        if not terminology.case_sensitive:
+            cursor = cursor.collation(Collation(locale="en", strength=2))
+
+        owners: dict[str, list[tuple[str, str, str]]] = {}
+        async for other in cursor:
+            for via, other_string in (
+                [("value", other.get("value", ""))]
+                + [("names", n.get("value", "")) for n in other.get("names", [])]
+            ):
+                if other_string:
+                    owners.setdefault(_fold(other_string), []).append(
+                        (other.get("term_id"), other.get("value"), via)
+                    )
+
+        collisions_by_index: dict[int, list[dict[str, Any]]] = {}
+        seen_in_batch: dict[str, tuple[int, str]] = {}
+        for i, strings in enumerate(item_strings):
+            cols: list[dict[str, Any]] = []
+            for s in strings:
+                folded = _fold(s)
+                for term_id, value, via in owners.get(folded, []):
+                    cols.append({
+                        "name": s,
+                        "conflicts_with_term_id": term_id,
+                        "conflicts_with_value": value,
+                        "via": via,
+                    })
+                prev = seen_in_batch.get(folded)
+                if prev is not None and prev[0] != i:
+                    cols.append({
+                        "name": s,
+                        "conflicts_with_term_id": None,
+                        "conflicts_with_value": prev[1],
+                        "via": "batch",
+                    })
+            for s in strings:
+                seen_in_batch.setdefault(_fold(s), (i, batch_terms[i].value))
+            if cols:
+                collisions_by_index[i] = cols
+        return collisions_by_index
+
+    @staticmethod
     def _partition_term_batch(
         batch_terms: list[CreateTermRequest],
         batch_start: int,
@@ -866,6 +1076,8 @@ class TerminologyService:
         skip_duplicates: bool,
         update_existing: bool,
         valid_name_types: dict[str, str],
+        collisions_by_index: dict[int, list[dict[str, Any]]],
+        unique_names: bool,
     ) -> tuple[list[Term], list[int]]:
         """Partition a batch of term requests into inserts + result rows.
 
@@ -947,6 +1159,21 @@ class TerminologyService:
                     value=term_req.value,
                     error=str(e),
                     error_code="invalid_names",
+                )
+                continue
+
+            # Cross-term name collisions reject the item in a unique_names
+            # terminology; otherwise they decorate the created row as a
+            # warning after the write phase
+            item_collisions = collisions_by_index.get(i)
+            if item_collisions and unique_names:
+                results[global_idx] = BulkResultItem(
+                    index=global_idx,
+                    status="error",
+                    value=term_req.value,
+                    error=str(NameCollisionError(item_collisions)),
+                    error_code="name_collision",
+                    details={"name_collisions": item_collisions},
                 )
                 continue
 
@@ -1156,6 +1383,11 @@ class TerminologyService:
             }).to_list()
             existing_by_value = {t.value: t for t in value_matches}
 
+        # Phase C2: Cross-term and intra-batch name collisions (one query)
+        collisions_by_index = await TerminologyService._batch_name_collisions(
+            terminology, batch_terms
+        )
+
         # Phase D: Partition this batch into create/skip/error
         terms_to_insert, insert_indices = TerminologyService._partition_term_batch(
             batch_terms=batch_terms,
@@ -1171,10 +1403,12 @@ class TerminologyService:
             skip_duplicates=skip_duplicates,
             update_existing=update_existing,
             valid_name_types=await NameTypeService.get_valid_name_types(),
+            collisions_by_index=collisions_by_index,
+            unique_names=terminology.unique_names,
         )
 
         # Phases E-F3: Insert + per-create side effects
-        return await TerminologyService._write_term_batch(
+        created = await TerminologyService._write_term_batch(
             terms_to_insert=terms_to_insert,
             insert_indices=insert_indices,
             results=results,
@@ -1185,6 +1419,15 @@ class TerminologyService:
             now=now,
             client=client,
         )
+
+        # Collisions on successfully created rows surface as per-item
+        # warnings (details), never silently
+        for local_idx, cols in collisions_by_index.items():
+            row = results[batch_start + local_idx]
+            if row is not None and row.status == "created":
+                row.details = {**(row.details or {}), "name_collisions": cols}
+
+        return created
 
     @staticmethod
     async def create_terms_bulk(
@@ -1386,12 +1629,15 @@ class TerminologyService:
     @staticmethod
     async def update_term(
         term_id: str,
-        request: UpdateTermRequest
+        request: UpdateTermRequest,
+        collision_out: list[dict[str, Any]] | None = None,
     ) -> TermResponse | None:
         """
         Update a term.
 
-        Creates an audit log entry for all changes.
+        Creates an audit log entry for all changes. When the update changes
+        names, cross-term collisions are rejected under unique_names or
+        appended to collision_out for the caller to surface as a warning.
         """
         term = await Term.find_one({"term_id": term_id})
         if not term:
@@ -1442,11 +1688,24 @@ class TerminologyService:
                 )
 
         if new_names is not None:
+            effective_value = request.value if request.value is not None else term.value
             validate_names(
                 new_names,
-                request.value if request.value is not None else term.value,
+                effective_value,
                 await NameTypeService.get_valid_name_types(),
             )
+            parent = await Terminology.find_one({
+                "terminology_id": term.terminology_id
+            })
+            if parent:
+                collisions = await TerminologyService.find_name_collisions(
+                    parent, effective_value, new_names, exclude_term_id=term_id
+                )
+                if collisions:
+                    if parent.unique_names:
+                        raise NameCollisionError(collisions)
+                    if collision_out is not None:
+                        collision_out.extend(collisions)
             if [n.model_dump() for n in new_names] != [n.model_dump() for n in term.names]:
                 changed_fields.append("names")
                 previous_values["names"] = [n.model_dump() for n in term.names]
@@ -1670,14 +1929,18 @@ class TerminologyService:
         terminology_id: str | None = None,
         terminology_value: str | None = None,
         value: str = ""
-    ) -> tuple[bool, Term | None, str | None, Term | None, TermName | None]:
+    ) -> "ValueResolution":
         """
         Validate a value against a terminology.
 
         Matches against the term's value or any of its names, with value
         precedence: every term's value is checked before any term's names,
         so a name on one term can never shadow another term's canonical
-        value.
+        value. A value match is unambiguous by construction (values are
+        unique within a terminology). A name match collects EVERY term
+        bearing the name: the first (database order — today's pick) stays
+        the matched_term for compatibility, but the full candidate list
+        and count make the ambiguity visible instead of silently resolved.
 
         Args:
             terminology_id: Terminology ID
@@ -1685,10 +1948,9 @@ class TerminologyService:
             value: Value to validate
 
         Returns:
-            Tuple of (is_valid, matched_term, matched_via, suggestion,
-            matched_name). matched_via is 'value' or 'alias' if matched;
-            matched_name is the TermName that matched when matched_via is
-            'alias'.
+            A ValueResolution. matched_via is 'value' or 'alias';
+            matched_name is the TermName that matched for 'alias';
+            candidates lists every (term, name) bearing the name.
         """
         # Find terminology — an unscoped value that exists in several
         # namespaces raises rather than validating against an arbitrary one
@@ -1697,10 +1959,10 @@ class TerminologyService:
         elif terminology_value:
             terminology = await TerminologyService.find_by_value(terminology_value, None)
         else:
-            return (False, None, None, None, None)
+            return ValueResolution(False, None, None, None, None, [])
 
         if not terminology:
-            return (False, None, None, None, None)
+            return ValueResolution(False, None, None, None, None, [])
 
         # Prepare value for comparison
         compare_value = value if terminology.case_sensitive else value.lower()
@@ -1717,13 +1979,23 @@ class TerminologyService:
         # Pass 1: canonical values only
         for term in terms:
             if _cmp(term.value) == compare_value:
-                return (True, term, "value", None, None)
+                return ValueResolution(True, term, "value", None, None, [])
 
-        # Pass 2: names
+        # Pass 2: names — collect every bearer, first one wins the match
+        candidates: list[tuple[Term, TermName]] = []
+        seen_terms: set[str] = set()
         for term in terms:
             for name in term.names:
                 if _cmp(name.value) == compare_value:
-                    return (True, term, "alias", None, name)
+                    if term.term_id not in seen_terms:
+                        seen_terms.add(term.term_id)
+                        candidates.append((term, name))
+                    break
+        if candidates:
+            first_term, first_name = candidates[0]
+            return ValueResolution(
+                True, first_term, "alias", None, first_name, candidates
+            )
 
         # No exact match - try to find suggestion
         # Simple approach: find terms that start with the value
@@ -1734,7 +2006,7 @@ class TerminologyService:
                     suggestion = t
                     break
 
-        return (False, None, None, suggestion, None)
+        return ValueResolution(False, None, None, suggestion, None, [])
 
     # =========================================================================
     # HELPERS
@@ -1753,6 +2025,7 @@ class TerminologyService:
             allow_multiple=t.allow_multiple,
             extensible=t.extensible,
             mutable=t.mutable,
+            unique_names=t.unique_names,
             metadata=t.metadata,
             status=t.status,
             term_count=t.term_count,
@@ -1801,6 +2074,7 @@ class TerminologyService:
             "allow_multiple": t.allow_multiple,
             "extensible": t.extensible,
             "mutable": t.mutable,
+            "unique_names": t.unique_names,
             "status": t.status,
             "term_count": t.term_count,
             "created_at": t.created_at.isoformat() if t.created_at else None,

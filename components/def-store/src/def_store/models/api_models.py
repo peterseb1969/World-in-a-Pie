@@ -67,6 +67,11 @@ class CreateTerminologyRequest(StrictModel):
         default=False,
         description="Whether terms can be hard-deleted (vs deprecated). Implies extensible=True."
     )
+    unique_names: bool = Field(
+        default=False,
+        description="Reject (not just warn about) term writes whose names "
+                    "collide with another term's value or name"
+    )
     metadata: TerminologyMetadata | None = Field(
         default=None,
         description="Additional metadata"
@@ -108,6 +113,10 @@ class UpdateTerminologyRequest(StrictModel):
         default=None,
         description="Update mutability (only allowed when term_count is 0)"
     )
+    unique_names: bool | None = Field(
+        default=None,
+        description="Update name-collision strictness"
+    )
     metadata: TerminologyMetadata | None = Field(
         default=None,
         description="Update metadata"
@@ -130,6 +139,7 @@ class TerminologyResponse(BaseModel):
     allow_multiple: bool = False
     extensible: bool = False
     mutable: bool = False
+    unique_names: bool = False
     metadata: TerminologyMetadata
     status: str
     term_count: int = 0
@@ -413,6 +423,15 @@ class ValidateValueRequest(StrictModel):
     )
 
 
+class TermMatchCandidate(BaseModel):
+    """One bearer of an ambiguous name."""
+
+    term: TermResponse
+    matched_name: TermName = Field(
+        description="The name on this term that matched the submitted value"
+    )
+
+
 class ValidateValueResponse(BaseModel):
     """Response for value validation."""
 
@@ -429,6 +448,17 @@ class ValidateValueResponse(BaseModel):
         default=None,
         description="The exact name that matched (set when matched_via='alias'), "
                     "with its type and language"
+    )
+    matches: int = Field(
+        default=0,
+        description="How many distinct terms bear the submitted value. A "
+                    "value match is 1 by construction; more than 1 means "
+                    "the name is ambiguous and matched_term is merely the "
+                    "first bearer in storage order."
+    )
+    candidates: list[TermMatchCandidate] = Field(
+        default_factory=list,
+        description="Every bearer of the name, populated when matches > 1"
     )
     suggestion: TermResponse | None = Field(
         default=None,
