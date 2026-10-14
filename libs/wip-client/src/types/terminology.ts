@@ -205,6 +205,28 @@ export interface ValidateValueResponse {
   error?: string
 }
 
+/** One ranked hit from the term search (typeahead) surface. */
+export interface TermSearchHit {
+  term: Term
+  /** The exact string that matched. */
+  matched_value: string
+  matched_via: 'value' | 'label' | 'alias'
+  /** The name that matched, with type and language (alias hits only). */
+  matched_name?: TermName | null
+  rank: number
+  /** rollup 'root' only: the term that actually matched, when `term` was
+   * replaced by its root ancestor. */
+  matched_term?: Term | null
+}
+
+export interface TermSearchResponse {
+  query: string
+  mode: string
+  rollup: string
+  items: TermSearchHit[]
+  total_matched: number
+}
+
 export interface BulkValidateRequest {
   items: ValidateValueRequest[]
 }

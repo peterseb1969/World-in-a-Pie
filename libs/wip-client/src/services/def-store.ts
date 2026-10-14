@@ -17,6 +17,7 @@ import type {
   ValidateValueResponse,
   BulkValidateRequest,
   BulkValidateResponse,
+  TermSearchResponse,
   AuditLogResponse,
 } from '../types/terminology.js'
 import type {
@@ -85,6 +86,27 @@ export class DefStoreService extends BaseService {
     sort_order?: 'asc' | 'desc'
   }): Promise<TermListResponse> {
     return this.get(`/terminologies/${terminologyId}/terms`, params)
+  }
+
+  /**
+   * Ranked term search — the typeahead surface. Searches value, label and
+   * every name; each hit carries the matched string, where it matched
+   * (with the name's type for alias hits) and a rank (exact > prefix >
+   * word-start > substring, then value > label > preferred name > name).
+   * Always case-insensitive and literal. Exact mode returns ALL
+   * candidates (the ambiguity-inspection surface); rollup 'root' replaces
+   * each hit with its root is_a ancestor so a trade name returns the
+   * molecule.
+   */
+  async searchTerms(query: string, options?: {
+    terminology?: string
+    namespace?: string
+    mode?: 'exact' | 'prefix' | 'word-start' | 'substring'
+    limit?: number
+    statuses?: string
+    rollup?: 'none' | 'root'
+  }): Promise<TermSearchResponse> {
+    return this.get('/terms/search', { q: query, ...options })
   }
 
   /**
