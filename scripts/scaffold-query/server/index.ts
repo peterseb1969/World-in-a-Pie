@@ -97,7 +97,17 @@ if (process.env.NODE_ENV === 'production') {
   router.use(express.static(distDir))
   // SPA fallback for client-side routes. A middleware (not app.get('*')) —
   // Express 5 / path-to-regexp rejects a bare '*' route pattern.
+  // API prefixes never fall through to the SPA: a JSON client asking for a
+  // route this server does not serve gets a 404 it can parse, not a page of
+  // HTML that dies in JSON.parse and reads as a parse bug. Any method.
+  // req.path is relative to the router's mount, so BASE_PATH needs no
+  // handling here. Add your app's own API prefixes to this list.
+  const API_PREFIXES = /^\/(api|auth|wip|server-api|mcp)(\/|$)/
   router.use((req, res, next) => {
+    if (API_PREFIXES.test(req.path)) {
+      res.status(404).json({ error: 'not_found', path: req.path })
+      return
+    }
     if (req.method !== 'GET') return next()
     res.sendFile(path.join(distDir, 'index.html'))
   })
