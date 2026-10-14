@@ -12,6 +12,7 @@
   "tree": [
     ".claude/.app-meta",
     ".claude/.session-role",
+    ".claude/.settings-baseline.json",
     ".claude/commands/wip-add-app.md",
     ".claude/commands/wip-analyst.md",
     ".claude/commands/wip-bootstrap.md",

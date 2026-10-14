@@ -17,6 +17,12 @@ policy — the per-surface policy matrix from the design doc, as code:
                   on a refresh, render to a `.refresh` sidecar instead
                   (unless force) — app CLAUDE.md is generated-then-customised;
                   a silent overwrite would destroy app-authored content
+- MERGE_JSON_BASELINE  a scaffold-owned JSON baseline in an app-extended file:
+                  three-way merge (last applied baseline, new baseline, the
+                  file) keeps app entries, adds and retires baseline entries,
+                  records the applied baseline beside the file, and notes
+                  every change; an unparseable file is left untouched and the
+                  baseline goes to a `.refresh` sidecar (json_merge.py)
 
 Stdlib only — zero third-party deps, so the engine can never be blocked
 by venv drift or a dependency pin.
@@ -24,6 +30,7 @@ by venv drift or a dependency pin.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import tempfile
@@ -37,6 +44,7 @@ class Policy(Enum):
     REGENERATE = "regenerate"
     PRESERVE_OR_SET = "preserve_or_set"
     RENDER_REFRESH = "render_refresh"
+    MERGE_JSON_BASELINE = "merge_json_baseline"
 
 
 @dataclass
@@ -116,6 +124,9 @@ def run_surfaces(surfaces: list[Surface], ctx: Context) -> list[str]:
                     redirected[rel] = data
             files = redirected
 
+        if s.policy is Policy.MERGE_JSON_BASELINE:
+            files = _merge_json_baselines(s.name, files, ctx)
+
         wiped: list[Path] = []
         if s.wipe_glob:
             wiped = sorted((ctx.target_root).glob(s.wipe_glob))
@@ -135,3 +146,46 @@ def run_surfaces(surfaces: list[Surface], ctx: Context) -> list[str]:
             log.append(f"{s.name}: wrote {rel}")
 
     return log
+
+
+def _merge_json_baselines(name: str, files: dict[str, bytes], ctx: Context) -> dict[str, bytes]:
+    """Turn each rendered baseline into the files to write: the merged
+    target (only when it changes) and the applied-baseline record."""
+    from .json_merge import MISSING, baseline_record_path, three_way
+
+    out: dict[str, bytes] = {}
+    for rel, data in files.items():
+        target = ctx.target_root / rel
+        record_rel = baseline_record_path(rel)
+        if not target.exists():
+            out[rel] = data
+            out[record_rel] = data
+            continue
+        try:
+            cur = json.loads(target.read_text(encoding="utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            out[rel + ".refresh"] = data
+            ctx.notes.append(
+                f"NOTICE: {rel} is not valid JSON ({e}) — left untouched; the scaffold "
+                f"baseline was written to {rel}.refresh. Fix {rel}, then re-run."
+            )
+            continue
+        old = MISSING
+        record = ctx.target_root / record_rel
+        if record.exists():
+            try:
+                old = json.loads(record.read_text(encoding="utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                ctx.notes.append(
+                    f"Warning: {record_rel} is not valid JSON — merged {rel} without it "
+                    f"(baseline entries added, none retired)."
+                )
+        merged, changes = three_way(old, json.loads(data), cur)
+        if merged != cur:
+            out[rel] = (json.dumps(merged, indent=2, ensure_ascii=False) + "\n").encode()
+            ctx.notes.append(
+                f"NOTICE: {name}: merged the scaffold baseline into {rel}; app entries kept. "
+                + "; ".join(changes)
+            )
+        out[record_rel] = data
+    return out

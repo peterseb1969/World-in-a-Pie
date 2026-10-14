@@ -10,7 +10,8 @@
 #     • already set up                     → RE-SYNC: regenerate the same surfaces (idempotent).
 #     • --kb <url>                         → TIER 3: fold KB enablement into the same run (no
 #                                            separate step); without it the clone stays tier 2.
-#                                            An existing .claude/kb.json is preserved.
+#                                            An existing .claude/kb.json keeps every key
+#                                            except the two this run sets.
 #
 # This script:
 #   1. Sets up Python venv with a compatible Python (3.11-3.13)
@@ -18,8 +19,10 @@
 #   3. Generates a backend-focused CLAUDE.md (overwrites any existing)
 #   4. Copies backend slash commands to .claude/commands/ (deletes any existing
 #      *.md in that directory first — custom commands will be lost)
-#   4b. Regenerates the committed .claude/settings.json permission baseline
-#       on every run (CASE-446); .claude/settings.local.json is never touched
+#   4b. Merges the scaffold's permission/hook baseline into the committed
+#       .claude/settings.json on every run (CASE-446, CASE-882): baseline
+#       entries added and retired, entries added locally kept;
+#       .claude/settings.local.json is never touched
 #   5. Verifies MCP connectivity (local target only)
 #
 # Re-sync (an already-set-up clone, auto-detected — no flag):
@@ -28,7 +31,7 @@
 #   regenerates .mcp.json with current arguments, and re-runs the idempotent
 #   wip_mcp install so dependency changes pick up. Preserves: venv (recreates
 #   only if missing), .claude/settings.local.json (never touched; the
-#   committed .claude/settings.json baseline is regenerated — CASE-446).
+#   committed .claude/settings.json is merged with the baseline — CASE-882).
 #   Run it after a `git pull` brings new docs/slash-commands/backend/*.md or
 #   scaffold/templates/ changes — those don't propagate automatically
 #   because that directory is generated, not git-tracked.
@@ -110,7 +113,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --kb URL          KB instance URL — makes this clone tier 3 (KB-backed collaboration,"
             echo "                    CASE-463) and folds enablement into this run: writes .claude/kb.json,"
             echo "                    installs the served KB client, drops the /wip-case stub. Idempotent;"
-            echo "                    an existing kb.json is preserved. Default is tier 2: WIP-only, no KB."
+            echo "                    an existing kb.json keeps its other keys. Default is tier 2: WIP-only, no KB."
             echo "                    Scheme optional (kb.internal → https://kb.internal)."
             echo "  --kb-key PATH     KB API key file (default: ~/.wip-deploy/kb/secrets/api-key)"
             echo "  -h, --help        Show this help"
@@ -155,7 +158,7 @@ fi
 # transition: tier-2→tier-3, or a re-affirmed tier-3). TIER3 is the resulting
 # tier STATE (kb.json present OR --kb given) and gates emitted content. The tier
 # is user intent, not generated content; it deliberately does NOT live in
-# settings.json, which is regenerated every run.
+# settings.json, whose scaffold-owned entries are rewritten every run.
 KB_CONFIG="$WIP_ROOT/.claude/kb.json"
 KB_OPT_IN=false
 [ -n "$KB_URL" ] && KB_OPT_IN=true
@@ -175,12 +178,30 @@ enable_kb() {
     fi
     KB_KEY_FILE="${KB_KEY_FILE:-$HOME/.wip-deploy/kb/secrets/api-key}"
     mkdir -p "$WIP_ROOT/.claude/commands"
-    cat > "$KB_CONFIG" << KBEOF
-{
-  "kb_app_url": "$KB_URL",
-  "kb_api_key_file": "$KB_KEY_FILE"
-}
-KBEOF
+    # Update only the two keys this script owns: kb.json also carries keys
+    # set elsewhere (the repo's KB namespace/project tags), and a rewrite
+    # from scratch would silently drop them. An unparseable file aborts
+    # rather than being overwritten.
+    KB_URL="$KB_URL" KB_KEY_FILE="$KB_KEY_FILE" python3 - "$KB_CONFIG" << 'PYEOF'
+import json, os, sys
+path = sys.argv[1]
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except ValueError as e:
+        sys.exit(f"Error: {path} is not valid JSON ({e}). Fix or remove it, then re-run.")
+    if not isinstance(data, dict):
+        sys.exit(f"Error: {path} is not a JSON object. Fix or remove it, then re-run.")
+data["kb_app_url"] = os.environ["KB_URL"]
+data["kb_api_key_file"] = os.environ["KB_KEY_FILE"]
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+os.replace(tmp, path)
+PYEOF
     echo "   Wrote: .claude/kb.json (tier 3 — KB at $KB_URL)"
     if [ -f "$KB_KEY_FILE" ]; then
         # Never pipe an un-inspected HTTP response into sh (CASE-557). Fetch the

@@ -10,7 +10,7 @@
 #     • populated dir → SET UP IN PLACE: refresh everything propagatable from the
 #       gene pool without disturbing the app's CLAUDE.md or working tree.
 #     • --kb <url>    → TIER 3: fold KB enablement into the same run (no separate
-#       step); without it the repo stays tier 2. An existing kb.json is preserved.
+#       step); without it the repo stays tier 2. An existing kb.json keeps its other keys.
 #
 # Create does:
 #   1. Creates the directory structure
@@ -30,9 +30,10 @@
 #   with the current WIP installation path. It is idempotent.
 #   Does NOT touch: CLAUDE.md (would clobber app-specific customisation — a fresh
 #   render is written to CLAUDE.md.refresh unless --force-claude-md),
-#   .claude/settings.local.json (never touched — the committed
-#   .claude/settings.json baseline is regenerated instead, CASE-446), bootstrap
-#   templates, or git state.
+#   .claude/settings.local.json (never touched), bootstrap templates, or git
+#   state. The committed .claude/settings.json is MERGED with the scaffold
+#   baseline (CASE-446, CASE-882): baseline entries are added and retired,
+#   app-added hooks and permissions are kept, and every change is printed.
 #
 # The generated .mcp.json uses WIP_API_KEY_FILE instead of a hardcoded key,
 # so API key rotation in WIP automatically applies to all apps.
@@ -118,7 +119,7 @@ while [[ $# -gt 0 ]]; do
             echo "              explicit tier-3 opt-in. Writes .claude/kb.json, installs the served"
             echo "              KB client, drops the /wip-case stub, registers the role. Scheme is"
             echo "              optional (https:// assumed). Without --kb (and no existing kb.json)"
-            echo "              the repo stays tier 2 (WIP-only); an existing kb.json is preserved."
+            echo "              the repo stays tier 2 (WIP-only); an existing kb.json keeps its other keys."
             echo "  --kb-key    Path to the KB API key file (default: ~/.wip-deploy/kb/secrets/api-key)"
             echo "  --name      Display name for the app (default: derived from directory name)"
             echo "  --prefix    Session-role prefix (APP-KB, APP-RC, ...). Written to .claude/.session-role"
@@ -208,7 +209,7 @@ fi
 # transition: tier-2→tier-3, or a fresh tier-3 create). TIER3 is the resulting
 # tier STATE (kb.json present OR --kb given) and gates emitted content. The tier
 # is user intent, not generated content; it deliberately does NOT live in
-# settings.json, which is regenerated every run.
+# settings.json, whose scaffold-owned entries are rewritten every run.
 KB_CONFIG="$APP_DIR/.claude/kb.json"
 KB_OPT_IN=false
 [ -n "$KB_URL" ] && KB_OPT_IN=true
@@ -228,12 +229,30 @@ enable_kb() {
     fi
     KB_KEY_FILE="${KB_KEY_FILE:-$HOME/.wip-deploy/kb/secrets/api-key}"
     mkdir -p "$APP_DIR/.claude/commands"
-    cat > "$KB_CONFIG" << KBEOF
-{
-  "kb_app_url": "$KB_URL",
-  "kb_api_key_file": "$KB_KEY_FILE"
-}
-KBEOF
+    # Update only the two keys this script owns: kb.json also carries keys
+    # set elsewhere (the repo's KB namespace/project tags), and a rewrite
+    # from scratch would silently drop them. An unparseable file aborts
+    # rather than being overwritten.
+    KB_URL="$KB_URL" KB_KEY_FILE="$KB_KEY_FILE" python3 - "$KB_CONFIG" << 'PYEOF'
+import json, os, sys
+path = sys.argv[1]
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except ValueError as e:
+        sys.exit(f"Error: {path} is not valid JSON ({e}). Fix or remove it, then re-run.")
+    if not isinstance(data, dict):
+        sys.exit(f"Error: {path} is not a JSON object. Fix or remove it, then re-run.")
+data["kb_app_url"] = os.environ["KB_URL"]
+data["kb_api_key_file"] = os.environ["KB_KEY_FILE"]
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+os.replace(tmp, path)
+PYEOF
     echo "   Wrote: .claude/kb.json (tier 3 — KB at $KB_URL)"
     # Served-client install: digest-gated, harmless to re-run. Failure is
     # non-fatal — the cached runner may already exist; recovery is the same

@@ -8,6 +8,7 @@ test itself, so the *why* survives refactors.
 
 from __future__ import annotations
 
+import json as _json
 import os
 import stat
 from pathlib import Path
@@ -426,6 +427,139 @@ def test_settings_one_baseline_both_roles(tmp_path):
     parsed = j.loads((b / ".claude/settings.json").read_text())
     assert "hooks" in parsed, "the post-compact hook registration ships in the baseline"
     assert any("wip-kb" in x for x in parsed["permissions"]["allow"])
+
+
+# --- settings: three-way merge of the baseline -------------------------------
+# A refresh used to regenerate .claude/settings.json whole and silently drop
+# every hook an app had added — in WIP-KB that was the action-triggered gate
+# refusing writes to the canonical KB. The baseline is now merged: app entries
+# survive, baseline changes still land, and every change is announced.
+
+SETTINGS = ".claude/settings.json"
+RECORD = ".claude/.settings-baseline.json"
+APP_GATE = {
+    "matcher": "Bash",
+    "hooks": [{
+        "type": "command",
+        "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-canonical-writes.sh",
+        "timeout": 10,
+    }],
+}
+
+
+def _baseline(allow=("Bash(cat:*)",), hooks=None) -> bytes:
+    doc = {"permissions": {"allow": list(allow)}, "hooks": hooks or {}}
+    return (_json.dumps(doc, indent=2) + "\n").encode()
+
+
+def _merge_surface(data: bytes) -> Surface:
+    return _surface(name="settings", policy=Policy.MERGE_JSON_BASELINE, files={SETTINGS: data})
+
+
+def _read(root: Path, rel: str = SETTINGS):
+    return _json.loads((root / rel).read_text())
+
+
+def test_settings_refresh_keeps_app_added_hook(tmp_path):
+    """The filer's case, through the real app settings surface."""
+    settings = [s for s in app_surfaces(
+        {"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"}
+    ) if s.name == "settings"]
+    run_surfaces(settings, _ctx(tmp_path))
+    doc = _read(tmp_path)
+    doc["hooks"]["PreToolUse"] = [APP_GATE]
+    (tmp_path / SETTINGS).write_text(_json.dumps(doc, indent=2) + "\n")
+
+    run_surfaces(settings, _ctx(tmp_path, refresh=True))
+    assert _read(tmp_path)["hooks"]["PreToolUse"] == [APP_GATE]
+
+
+def test_settings_first_create_writes_baseline_and_record(tmp_path):
+    data = _baseline()
+    ctx = _ctx(tmp_path)
+    run_surfaces([_merge_surface(data)], ctx)
+    assert (tmp_path / SETTINGS).read_bytes() == data
+    assert (tmp_path / RECORD).read_bytes() == data
+    assert ctx.notes == []
+
+
+def test_settings_new_baseline_entry_added_and_noted(tmp_path):
+    run_surfaces([_merge_surface(_baseline(["A"]))], _ctx(tmp_path))
+    ctx = _ctx(tmp_path, refresh=True)
+    run_surfaces([_merge_surface(_baseline(["A", "B"]))], ctx)
+    assert _read(tmp_path)["permissions"]["allow"] == ["A", "B"]
+    assert any("+ B" in n for n in ctx.notes), ctx.notes
+
+
+def test_settings_retired_baseline_entry_removed(tmp_path):
+    run_surfaces([_merge_surface(_baseline(["A", "OLD"]))], _ctx(tmp_path))
+    ctx = _ctx(tmp_path, refresh=True)
+    run_surfaces([_merge_surface(_baseline(["A"]))], ctx)
+    assert _read(tmp_path)["permissions"]["allow"] == ["A"]
+    assert any("- OLD" in n for n in ctx.notes), ctx.notes
+
+
+def test_settings_app_removed_baseline_entry_stays_removed(tmp_path):
+    run_surfaces([_merge_surface(_baseline(["A", "B"]))], _ctx(tmp_path))
+    doc = _read(tmp_path)
+    doc["permissions"]["allow"] = ["A"]  # the app chose to drop B
+    (tmp_path / SETTINGS).write_text(_json.dumps(doc))
+    run_surfaces([_merge_surface(_baseline(["A", "B"]))], _ctx(tmp_path, refresh=True))
+    assert _read(tmp_path)["permissions"]["allow"] == ["A"]
+
+
+def test_settings_app_edited_scaffold_hook_is_kept(tmp_path):
+    scaffold_group = {"matcher": "compact", "hooks": [{"type": "command", "command": "s.sh"}]}
+    run_surfaces([_merge_surface(_baseline(hooks={"SessionStart": [scaffold_group]}))], _ctx(tmp_path))
+    edited = {"matcher": "compact", "hooks": [{"type": "command", "command": "s.sh", "timeout": 5}]}
+    doc = _read(tmp_path)
+    doc["hooks"]["SessionStart"] = [edited]
+    (tmp_path / SETTINGS).write_text(_json.dumps(doc))
+    changed = {"matcher": "compact", "hooks": [{"type": "command", "command": "s2.sh"}]}
+    run_surfaces([_merge_surface(_baseline(hooks={"SessionStart": [changed]}))], _ctx(tmp_path, refresh=True))
+    # The app's edit made the group its own: kept; the new baseline group lands beside it.
+    assert _read(tmp_path)["hooks"]["SessionStart"] == [edited, changed]
+
+
+def test_settings_no_record_only_adds(tmp_path):
+    """First run after the merge policy landed: nothing to retire against."""
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / SETTINGS).write_text(_json.dumps(
+        {"permissions": {"allow": ["APP", "LEGACY"]}, "hooks": {"PreToolUse": [APP_GATE]}}
+    ))
+    run_surfaces([_merge_surface(_baseline(["A"]))], _ctx(tmp_path, refresh=True))
+    doc = _read(tmp_path)
+    assert doc["permissions"]["allow"] == ["APP", "LEGACY", "A"]
+    assert doc["hooks"]["PreToolUse"] == [APP_GATE]
+    assert (tmp_path / RECORD).exists()
+
+
+def test_settings_unchanged_file_is_not_rewritten(tmp_path):
+    # Keeps the app's own formatting when there is nothing to merge.
+    run_surfaces([_merge_surface(_baseline(["A"]))], _ctx(tmp_path))
+    (tmp_path / SETTINGS).write_text('{"permissions":{"allow":["A"]},"hooks":{}}')
+    log = run_surfaces([_merge_surface(_baseline(["A"]))], _ctx(tmp_path, refresh=True))
+    assert (tmp_path / SETTINGS).read_text() == '{"permissions":{"allow":["A"]},"hooks":{}}'
+    assert not any(line.endswith(f"wrote {SETTINGS}") for line in log)
+
+
+def test_settings_unparseable_file_gets_sidecar(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / SETTINGS).write_text("{ not json")
+    ctx = _ctx(tmp_path, refresh=True)
+    run_surfaces([_merge_surface(_baseline())], ctx)
+    assert (tmp_path / SETTINGS).read_text() == "{ not json"
+    assert (tmp_path / (SETTINGS + ".refresh")).read_bytes() == _baseline()
+    assert not (tmp_path / RECORD).exists()
+    assert any("not valid JSON" in n for n in ctx.notes)
+
+
+def test_settings_merge_dry_run_touches_nothing(tmp_path):
+    run_surfaces([_merge_surface(_baseline(["A"]))], _ctx(tmp_path))
+    before = (tmp_path / SETTINGS).read_bytes()
+    log = run_surfaces([_merge_surface(_baseline(["A", "B"]))], _ctx(tmp_path, refresh=True, dry_run=True))
+    assert (tmp_path / SETTINGS).read_bytes() == before
+    assert any("would write" in line for line in log)
 
 
 def test_backend_gets_post_compact_hook(tmp_path):

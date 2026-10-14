@@ -413,8 +413,8 @@ def backend_surfaces() -> list[Surface]:
         ),
         Surface(
             name="settings",
-            policy=Policy.REGENERATE,
-            rationale="ONE baseline for both roles — the old per-role pair drifted apart; scaffold-owned, regenerated every run; settings.local.json is operator-owned and never touched",
+            policy=Policy.MERGE_JSON_BASELINE,
+            rationale="ONE baseline for both roles — the old per-role pair drifted apart; merged, not regenerated, so baseline changes still reach every repo while app-added hooks and permissions survive; settings.local.json is operator-owned and never touched",
             produce=lambda ctx: {
                 ".claude/settings.json": _template(ctx, "settings/settings.json").encode()
             },
@@ -541,8 +541,8 @@ def app_surfaces(app_meta: dict[str, str]) -> list[Surface]:
         ),
         Surface(
             name="settings",
-            policy=Policy.REGENERATE,
-            rationale="ONE baseline for both roles — the old per-role pair drifted apart; settings.local.json never touched",
+            policy=Policy.MERGE_JSON_BASELINE,
+            rationale="ONE baseline for both roles — the old per-role pair drifted apart; merged, not regenerated, so app-added hooks and permissions survive a refresh; settings.local.json never touched",
             produce=lambda ctx: {
                 ".claude/settings.json": _template(ctx, "settings/settings.json").encode()
             },
