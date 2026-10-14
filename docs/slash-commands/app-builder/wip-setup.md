@@ -34,7 +34,7 @@ The environment is verified, so now write identity. A failed check above left **
 python3 .claude/scripts/wake-rollover.py --fresh
 ```
 
-It re-enforces Step 0's decision at write time (sentinel absent → clean fresh start, no `continues_from`; prior `status: closed` → discontinuous restart, sentinel overwritten, no `continues_from`; prior still active → refuses and points at `/wip-wake`), mints `<ROLE>-<YYYYMMDD-HHMMSS>` (seconds precision — eliminates the same-minute collision class), creates `reports/<ID>/session.md` with `status: active` frontmatter, atomically swaps the sentinel, and mirrors the session to kb (tier-gated: skipped silently without `.claude/kb.json`; unreachable kb warns and continues — local state is authoritative). Stdout contract: `PRIOR_ID=-` (or the closed prior on a discontinuous restart) and `NEW_ID=<ID>`.
+It re-enforces Step 0's decision at write time (sentinel absent → clean fresh start, no `continues_from`; prior `status: closed` → discontinuous restart, sentinel overwritten, no `continues_from`; prior still active → refuses and points at `/wip-wake`), mints `<ROLE>-<YYYYMMDD-HHMMSS>` (seconds precision — eliminates the same-minute collision class), creates `reports/<ID>/session.md` with `status: active` frontmatter, atomically swaps the sentinel, and mirrors the session to kb (tier-gated: skipped silently without `.claude/kb.json`; unreachable kb warns and continues — local state is authoritative). Stdout contract: `PRIOR_ID=-` (or the closed prior on a discontinuous restart) and `NEW_ID=<ID>`, plus `PROJECT_BRIEF=<path>|none|failed` — the kb brief of the project `.claude/kb.json` names, fetched and saved next to `session.md` (loaded in the context step below).
 
 If the mirror warns because the served KB client is missing (`~/.cache/wip-kb-client/kb-client.sh`), install it via the one-liner in the `/wip-case` pre-flight, then retry manually: `kbc kb-write.py SESSION reports/<ID>/session.md`. Add a short body stub (task list, phase) to `session.md` as work begins.
 
@@ -47,10 +47,11 @@ After the five environment checks pass, **actually load the baseline context** i
 Perform each of the following as concrete tool calls:
 
 - `Read` `docs/Vision.md` — WIP's theses and design principles (bundled into this project by the scaffold, in `docs/`). Every architectural decision traces back here. If any work feels like it might drift toward a specific use case at the expense of WIP's generic engine, this is the correction mechanism.
-- `ReadMcpResourceTool server=wip uri=wip://ponifs` — the six Powerful, Non-Intuitive Features. Conventional assumptions cause silent failures against these.
+- `ReadMcpResourceTool server=wip uri=wip://ponifs` — the eight Powerful, Non-Intuitive Features. Conventional assumptions cause silent failures against these.
 - `ReadMcpResourceTool server=wip uri=wip://data-model` — authoritative data model (field types, reference types, templates, terminologies, documents, ontology relations).
 - `ReadMcpResourceTool server=wip uri=wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache TTL, namespace / authorization rules.
 - `Read` `docs/wip-deployable-app-contract.md` — what your app must satisfy to ship under `wip-deploy install`. Synthesizes the May 2026 cross-host + WIP-KB containerization work into a one-page checklist. Bundled into this project by the scaffold (in `docs/`). Mandatory because skipping the contract is a multi-day retrofit; reading it once is a 30-minute scaffold tax.
+- **Project brief** — if the mint printed `PROJECT_BRIEF=<path>`, `Read` that file: the kb brief of the project `.claude/kb.json` names (`project` key) — its open cases, decisions, lessons, firesides, recent sessions, memories and mirrored documents, as handles and titles. Untagged documents are not listed, so an empty section is not proof that nothing exists. `PROJECT_BRIEF=failed` → the script's stderr warning says why; report it and continue (fetch it by hand later with `kbc case-fetch.py brief`). `PROJECT_BRIEF=none` → this repo names no project; nothing to load.
 
 After each call, output one line confirming the source was loaded. Do not summarise the content at this step — the content is now in context where the subsequent work can use it.
 

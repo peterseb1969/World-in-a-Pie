@@ -66,7 +66,20 @@ Output contract (stdout, last lines, machine-readable):
     PRIOR_ID=<id or ->
     NEW_ID=<id>
     PRIOR_SUMMARY=content|stub|absent
+    PROJECT_BRIEF=<path>|none|failed|skipped
 Progress/warnings go to stderr.
+
+PROJECT_BRIEF: when `.claude/kb.json` names a `project`, both modes fetch
+that project's brief from kb (`case-fetch.py brief <project>`) and save it
+as `reports/<NEW_ID>/project-brief.md` next to session.md; the value is
+that path, relative to the project root, for the caller to Read. `none` =
+tier 2 or no `project` key (no call made). `failed` = the fetch did not
+succeed (non-zero exit, timeout, client missing, unreadable kb.json); a
+warning carrying the reason goes to stderr. `skipped` = --dry-run with a
+project set (nothing fetched). The project key is read here rather than
+left to the verb, because the verb's "no project" exit code is the same as
+its transport-failure one. Like the mirror, a failed fetch never changes
+the exit code — the brief is context, not identity.
 
 PRIOR_SUMMARY describes the prior's `## Session Summary` as it stands once
 the rollover is done: `content` = a real summary someone wrote, `stub` = a
@@ -87,11 +100,13 @@ uses.
 Test hooks (env, used only by the test suite):
     WAKE_ROLLOVER_NOW  freeze the timestamp (YYYYMMDD-HHMMSS)
     WAKE_ROLLOVER_KBC  override the kb shim command
+    WAKE_ROLLOVER_BRIEF_TIMEOUT  override the brief fetch timeout (seconds)
 """
 
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import subprocess
 import sys
@@ -107,6 +122,7 @@ EXIT_ACTIVE_PRIOR = 5
 EXIT_MKDIR = 6
 
 KB_TIMEOUT_S = 60
+BRIEF_TIMEOUT_S = 30
 
 
 def log(msg: str) -> None:
@@ -165,6 +181,14 @@ def render_frontmatter(fields: list[tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def kbc_cmd(*args: str) -> list[str]:
+    """The served kb client runner, or the test override, with `args`."""
+    shim = os.environ.get("WAKE_ROLLOVER_KBC")
+    if shim:
+        return [*shim.split(), *args]
+    return ["bash", str(Path.home() / ".cache" / "wip-kb-client" / "kb-client.sh"), *args]
+
+
 def kb_mirror(root: Path, session_md: Path, dry_run: bool) -> None:
     """Tier-gated, warn-and-continue mirror of session.md to kb."""
     if not (root / ".claude" / "kb.json").exists():
@@ -173,17 +197,7 @@ def kb_mirror(root: Path, session_md: Path, dry_run: bool) -> None:
     if dry_run:
         log(f"kb mirror (dry-run): would push {session_md}")
         return
-    shim = os.environ.get("WAKE_ROLLOVER_KBC")
-    if shim:
-        cmd = [*shim.split(), "kb-write.py", "SESSION", str(session_md)]
-    else:
-        cmd = [
-            "bash",
-            str(Path.home() / ".cache" / "wip-kb-client" / "kb-client.sh"),
-            "kb-write.py",
-            "SESSION",
-            str(session_md),
-        ]
+    cmd = kbc_cmd("kb-write.py", "SESSION", str(session_md))
     try:
         res = subprocess.run(
             cmd, capture_output=True, text=True, timeout=KB_TIMEOUT_S, cwd=str(root)
@@ -197,6 +211,48 @@ def kb_mirror(root: Path, session_md: Path, dry_run: bool) -> None:
             )
     except (OSError, subprocess.TimeoutExpired) as e:
         log(f"WARNING: kb mirror unreachable (local write is authoritative): {e}")
+
+
+def fetch_project_brief(root: Path, new_id: str, dry_run: bool) -> str:
+    """Save the kb brief of the project kb.json names; return PROJECT_BRIEF."""
+    kb_json = root / ".claude" / "kb.json"
+    if not kb_json.exists():
+        return "none"
+    try:
+        config = json.loads(kb_json.read_text())
+    except (OSError, ValueError) as e:
+        log(f"WARNING: project brief not loaded — .claude/kb.json is unreadable: {e}")
+        return "failed"
+    project = config.get("project") if isinstance(config, dict) else None
+    if not isinstance(project, str) or not project.strip():
+        log("project brief: none (kb.json names no project)")
+        return "none"
+    project = project.strip()
+    if dry_run:
+        log(f"project brief (dry-run): would fetch the brief for '{project}'")
+        return "skipped"
+
+    timeout = float(os.environ.get("WAKE_ROLLOVER_BRIEF_TIMEOUT") or BRIEF_TIMEOUT_S)
+    try:
+        res = subprocess.run(
+            kbc_cmd("case-fetch.py", "brief", project),
+            capture_output=True, text=True, timeout=timeout, cwd=str(root),
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log(f"WARNING: project brief for '{project}' not loaded — kb unreachable: {e}")
+        return "failed"
+    if res.returncode != 0 or not res.stdout.strip():
+        reason = res.stderr.strip() or res.stdout.strip() or "empty output"
+        log(
+            f"WARNING: project brief for '{project}' not loaded "
+            f"(exit {res.returncode}): {reason}"
+        )
+        return "failed"
+
+    rel = Path("reports") / new_id / "project-brief.md"
+    atomic_write(root / rel, res.stdout)
+    log(f"project brief: '{project}' saved to {rel}")
+    return str(rel)
 
 
 def summary_state(root: Path, prior_id: str | None) -> str:
@@ -459,10 +515,12 @@ def main(argv: list[str]) -> int:
         prior, new_id, prior_summary = fresh(root, dry_run)
     else:
         prior, new_id, prior_summary = wake(root, dry_run)
+    project_brief = fetch_project_brief(root, new_id, dry_run)
 
     print(f"PRIOR_ID={prior}")
     print(f"NEW_ID={new_id}")
     print(f"PRIOR_SUMMARY={prior_summary}")
+    print(f"PROJECT_BRIEF={project_brief}")
     return 0
 
 

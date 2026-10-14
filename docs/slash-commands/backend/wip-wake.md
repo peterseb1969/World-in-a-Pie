@@ -14,6 +14,7 @@ It closes the prior session if still active (atomic frontmatter flip + auto-clos
 PRIOR_ID=<prior-id>
 NEW_ID=<NEW_ID>
 PRIOR_SUMMARY=content|stub|absent
+PROJECT_BRIEF=<path>|none|failed
 ```
 
 **Do not re-implement the rollover by hand** — the full state machine (every edge case: missing sentinel, missing prior dir + the legacy shared-path transition note, malformed frontmatter regeneration, collision retry, partial-failure convergence) lives in the script's docstring and its test suite (`agent-scripts/`, `./scripts/wip-test.sh agent-scripts`). On a non-zero exit, read the script's error message: missing sentinel → run `/wip-setup`; missing `reports/<prior-id>/` → resolve per the message (never fabricate state); missing `.session-role` → re-run `scripts/setup-backend-agent.sh` on this clone (there is NO `--refresh` flag; the scaffolds auto-detect mode).
@@ -64,6 +65,7 @@ Compaction wipes prior reads. The same baseline that `/wip-setup` enforces at se
 - `ReadMcpResourceTool server=wip uri=wip://ponifs` — the eight PoNIFs (#7 Edge Types and #8 `versioned: false` added 2026-04-25). Conventional assumptions cause silent failures against these.
 - `ReadMcpResourceTool server=wip uri=wip://data-model` — what entities exist in WIP and how they're shaped.
 - `ReadMcpResourceTool server=wip uri=wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache, namespace/authorization rules.
+- **Project brief** — if Step A printed `PROJECT_BRIEF=<path>`, `Read` that file: the kb brief of the project `.claude/kb.json` names (`project` key) — its open cases, decisions, lessons, firesides, recent sessions, memories and mirrored documents, as handles and titles. Untagged documents are not listed, so an empty section is not proof that nothing exists. `PROJECT_BRIEF=failed` → the script's stderr warning says why; carry it into the report and continue (fetch it by hand later with `kbc case-fetch.py brief`). `PROJECT_BRIEF=none` → this repo names no project; nothing to load.
 
 Output one line per source confirming it was loaded. This step is non-optional; recovery without baseline context is recovery into the same drift the previous session ended in.
 
@@ -113,6 +115,7 @@ Context Recovery Summary:
 Branch: develop
 Last commit: "Fix reporting-sync template metadata sync" (3 hours ago)
 Uncommitted: changes to components/reporting-sync/src/sync.py
+Project brief: loaded (<project>) | none | failed (<reason>)
 
 Active component: reporting-sync
 Related design doc: docs/design/... (if applicable)

@@ -367,6 +367,152 @@ class TestPriorSummarySignal:
         assert out_ids(res)["PRIOR_SUMMARY"] == "stub"
 
 
+class TestProjectBrief:
+    """CASE-877 — a repo that names its kb project starts with that project's
+    brief in hand. The fetch is context, not identity: it never changes the
+    exit code, and no `project` key means no call at all."""
+
+    BRIEF = "Project brief: DEMO [kb]\n\n### Open cases (1)\n  - CASE-1 [open] demo\n"
+
+    def _project(self, tmp_path: Path, kb_json: str | None, **kw) -> Path:
+        root = make_project(tmp_path, with_kb=kb_json is not None, **kw)
+        if kb_json is not None:
+            (root / ".claude" / "kb.json").write_text(kb_json)
+        return root
+
+    def _fake(self, tmp_path: Path, *, brief_exit: int = 0, brief_out: str = BRIEF,
+              brief_err: str = "", sleep: float = 0) -> tuple[str, Path]:
+        """A kb shim that answers the mirror with 0 and the brief as told."""
+        log = tmp_path / "kbc-calls.log"
+        out = tmp_path / "brief-out.txt"
+        out.write_text(brief_out)
+        fake = tmp_path / "fake-brief-kbc.sh"
+        fake.write_text(
+            "#!/bin/bash\n"
+            f'echo "$@" >> "{log}"\n'
+            'if [ "$1" = "case-fetch.py" ]; then\n'
+            f"  sleep {sleep}\n"
+            f'  cat "{out}"\n'
+            f'  printf %s "{brief_err}" >&2\n'
+            f"  exit {brief_exit}\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+        return str(fake), log
+
+    def _brief_calls(self, log: Path) -> list[str]:
+        if not log.exists():
+            return []
+        return [c for c in log.read_text().splitlines() if c.startswith("case-fetch.py")]
+
+    def test_named_project_brief_saved_next_to_session(self, tmp_path):
+        root = self._project(tmp_path, '{"kb_app_url": "x", "project": "DEMO"}')
+        kbc, log = self._fake(tmp_path)
+        res = run(root, kbc=kbc)
+        assert res.returncode == 0, res.stderr
+        ids = out_ids(res)
+        rel = f"reports/{ids['NEW_ID']}/project-brief.md"
+        assert ids["PROJECT_BRIEF"] == rel
+        assert (root / rel).read_text() == self.BRIEF
+        # The project is passed explicitly, not left to the verb's default.
+        assert self._brief_calls(log) == ["case-fetch.py brief DEMO"]
+
+    def test_fresh_mode_fetches_too(self, tmp_path):
+        root = self._project(tmp_path, '{"project": "DEMO"}', with_prior=False)
+        kbc, log = self._fake(tmp_path)
+        res = run(root, "--fresh", kbc=kbc)
+        assert res.returncode == 0, res.stderr
+        ids = out_ids(res)
+        assert ids["PROJECT_BRIEF"] == f"reports/{ids['NEW_ID']}/project-brief.md"
+        assert len(self._brief_calls(log)) == 1
+
+    def test_no_project_key_makes_no_call(self, tmp_path):
+        root = self._project(tmp_path, '{"kb_app_url": "x"}')
+        kbc, log = self._fake(tmp_path)
+        res = run(root, kbc=kbc)
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res)["PROJECT_BRIEF"] == "none"
+        assert self._brief_calls(log) == []
+
+    def test_blank_project_counts_as_none(self, tmp_path):
+        root = self._project(tmp_path, '{"project": "  "}')
+        kbc, log = self._fake(tmp_path)
+        res = run(root, kbc=kbc)
+        assert out_ids(res)["PROJECT_BRIEF"] == "none"
+        assert self._brief_calls(log) == []
+
+    def test_tier2_reports_none(self, tmp_path):
+        root = self._project(tmp_path, None)
+        kbc, log = self._fake(tmp_path)
+        res = run(root, kbc=kbc)
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res)["PROJECT_BRIEF"] == "none"
+        assert not log.exists()
+
+    def test_unknown_project_warns_and_continues(self, tmp_path):
+        root = self._project(tmp_path, '{"project": "NOPE"}')
+        kbc, _ = self._fake(tmp_path, brief_exit=1, brief_out="",
+                            brief_err="no project 'NOPE' in kb")
+        res = run(root, kbc=kbc)
+        assert res.returncode == 0, res.stderr
+        ids = out_ids(res)
+        assert ids["PROJECT_BRIEF"] == "failed"
+        assert "no project 'NOPE' in kb" in res.stderr
+        assert not (root / "reports" / ids["NEW_ID"] / "project-brief.md").exists()
+        # The rollover itself completed.
+        assert (root / ".claude" / ".session-id").read_text().strip() == ids["NEW_ID"]
+
+    def test_transport_failure_warns_and_continues(self, tmp_path):
+        root = self._project(tmp_path, '{"project": "DEMO"}')
+        kbc, _ = self._fake(tmp_path, brief_exit=2, brief_out="",
+                            brief_err="connection refused")
+        res = run(root, kbc=kbc)
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res)["PROJECT_BRIEF"] == "failed"
+        assert "exit 2" in res.stderr and "connection refused" in res.stderr
+
+    def test_empty_output_is_a_failure_not_an_empty_file(self, tmp_path):
+        root = self._project(tmp_path, '{"project": "DEMO"}')
+        kbc, _ = self._fake(tmp_path, brief_out="")
+        res = run(root, kbc=kbc)
+        ids = out_ids(res)
+        assert ids["PROJECT_BRIEF"] == "failed"
+        assert not (root / "reports" / ids["NEW_ID"] / "project-brief.md").exists()
+
+    def test_timeout_warns_and_continues(self, tmp_path, monkeypatch):
+        root = self._project(tmp_path, '{"project": "DEMO"}')
+        kbc, _ = self._fake(tmp_path, sleep=5)
+        monkeypatch.setenv("WAKE_ROLLOVER_BRIEF_TIMEOUT", "0.5")  # run() copies os.environ
+        res = run(root, kbc=kbc)
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res)["PROJECT_BRIEF"] == "failed"
+        assert "unreachable" in res.stderr
+
+    def test_missing_client_warns_and_continues(self, tmp_path):
+        root = self._project(tmp_path, '{"project": "DEMO"}')
+        res = run(root, kbc=str(tmp_path / "no-such-client"))
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res)["PROJECT_BRIEF"] == "failed"
+
+    def test_unreadable_kb_json_warns_and_continues(self, tmp_path):
+        root = self._project(tmp_path, "{not json")
+        kbc, log = self._fake(tmp_path)
+        res = run(root, kbc=kbc)
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res)["PROJECT_BRIEF"] == "failed"
+        assert "kb.json is unreadable" in res.stderr
+        assert self._brief_calls(log) == []
+
+    def test_dry_run_fetches_nothing(self, tmp_path):
+        root = self._project(tmp_path, '{"project": "DEMO"}')
+        kbc, log = self._fake(tmp_path)
+        res = run(root, "--dry-run", kbc=kbc)
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res)["PROJECT_BRIEF"] == "skipped"
+        assert not log.exists()
+
+
 class TestDryRun:
     def test_dry_run_writes_nothing(self, tmp_path):
         root = make_project(tmp_path)

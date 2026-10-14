@@ -35,7 +35,7 @@ The environment is verified, so now write identity. A failed check above left **
 python3 .claude/scripts/wake-rollover.py --fresh
 ```
 
-It re-enforces Step 0's decision at write time (sentinel absent → clean fresh start, no `continues_from`; prior `status: closed` → discontinuous restart, sentinel overwritten, no `continues_from`; prior still active → refuses and points at `/wip-wake`), mints `<ROLE>-<YYYYMMDD-HHMMSS>` (seconds precision — eliminates the same-minute collision class), creates `reports/<ID>/session.md` with `status: active` frontmatter, atomically swaps the sentinel, and mirrors the session to kb (tier-gated: skipped silently without `.claude/kb.json`; unreachable kb warns and continues — local state is authoritative). Stdout contract: `PRIOR_ID=-` (or the closed prior on a discontinuous restart) and `NEW_ID=<ID>`.
+It re-enforces Step 0's decision at write time (sentinel absent → clean fresh start, no `continues_from`; prior `status: closed` → discontinuous restart, sentinel overwritten, no `continues_from`; prior still active → refuses and points at `/wip-wake`), mints `<ROLE>-<YYYYMMDD-HHMMSS>` (seconds precision — eliminates the same-minute collision class), creates `reports/<ID>/session.md` with `status: active` frontmatter, atomically swaps the sentinel, and mirrors the session to kb (tier-gated: skipped silently without `.claude/kb.json`; unreachable kb warns and continues — local state is authoritative). Stdout contract: `PRIOR_ID=-` (or the closed prior on a discontinuous restart) and `NEW_ID=<ID>`, plus `PROJECT_BRIEF=<path>|none|failed` — the kb brief of the project `.claude/kb.json` names, fetched and saved next to `session.md` (loaded in the context step below).
 
 If the mirror warns because the served KB client is missing (`~/.cache/wip-kb-client/kb-client.sh`), install it via the one-liner in the `/wip-case` pre-flight, then retry manually: `kbc kb-write.py SESSION reports/<ID>/session.md`. Add a short body stub (task list, phase) to `session.md` as work begins.
 
@@ -48,9 +48,10 @@ After the six environment checks pass, **actually load the baseline context** in
 Perform each of the following as concrete tool calls:
 
 - `Read` `docs/Vision.md` — the theses and design principles that drive every architecture decision. Every design principle in CLAUDE.md §3 traces back here. If any future work feels like it might drift toward a specific use case at the expense of WIP's generic engine, this document is the correction mechanism.
-- `ReadMcpResourceTool server=wip uri=wip://ponifs` — the six Powerful, Non-Intuitive Features. Conventional assumptions will cause silent failures against these.
+- `ReadMcpResourceTool server=wip uri=wip://ponifs` — the eight Powerful, Non-Intuitive Features. Conventional assumptions will cause silent failures against these.
 - `ReadMcpResourceTool server=wip uri=wip://data-model` — authoritative data model (field types, reference types, templates, terminologies, documents, ontology relations).
 - `ReadMcpResourceTool server=wip uri=wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache TTL, namespace/authorization rules.
+- **Project brief** — if the mint printed `PROJECT_BRIEF=<path>`, `Read` that file: the kb brief of the project `.claude/kb.json` names (`project` key) — its open cases, decisions, lessons, firesides, recent sessions, memories and mirrored documents, as handles and titles. Untagged documents are not listed, so an empty section is not proof that nothing exists. `PROJECT_BRIEF=failed` → the script's stderr warning says why; report it and continue (fetch it by hand later with `kbc case-fetch.py brief`). `PROJECT_BRIEF=none` → this repo names no project; nothing to load.
 
 After each call, output one line confirming the source was loaded. Do not summarise the content at this step — the content is now in context where it belongs; let the subsequent work use it.
 

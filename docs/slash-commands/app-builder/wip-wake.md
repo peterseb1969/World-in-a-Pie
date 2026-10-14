@@ -14,6 +14,7 @@ It closes the prior session if still active (atomic frontmatter flip + auto-clos
 PRIOR_ID=<prior-id>
 NEW_ID=<NEW_ID>
 PRIOR_SUMMARY=content|stub|absent
+PROJECT_BRIEF=<path>|none|failed
 ```
 
 **Do not re-implement the rollover by hand** — the full state machine (every edge case: missing sentinel, missing prior dir + the legacy shared-path transition note, malformed frontmatter regeneration, collision retry, partial-failure convergence) lives in the script's docstring and its test suite (`agent-scripts/`, `./scripts/wip-test.sh agent-scripts`). On a non-zero exit, read the script's error message: missing sentinel → run `/wip-setup`; missing `reports/<prior-id>/` → resolve per the message (never fabricate state); missing `.session-role` → re-run `scripts/create-app-project.sh <app-dir> --prefix APP-<X>` from the WIP clone (repos whose committed `.app-meta` records `ROLE_PREFIX` self-heal without `--prefix`) (there is NO `--refresh` flag; the scaffolds auto-detect mode).
@@ -66,6 +67,7 @@ Compaction wipes prior reads. As an APP-YAC, you must reload baseline context as
 - `ReadMcpResourceTool server=wip uri=wip://data-model` — entity shapes in WIP.
 - `ReadMcpResourceTool server=wip uri=wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache, namespace/authorization rules.
 - `Read` `docs/wip-deployable-app-contract.md` — what your app must satisfy to ship under `wip-deploy install` (bundled into this project by the scaffold, in `docs/`). Reload it so deploy-contract drift doesn't creep in across a long build.
+- **Project brief** — if Step A printed `PROJECT_BRIEF=<path>`, `Read` that file: the kb brief of the project `.claude/kb.json` names (`project` key) — its open cases, decisions, lessons, firesides, recent sessions, memories and mirrored documents, as handles and titles. Untagged documents are not listed, so an empty section is not proof that nothing exists. `PROJECT_BRIEF=failed` → the script's stderr warning says why; carry it into the report and continue (fetch it by hand later with `kbc case-fetch.py brief`). `PROJECT_BRIEF=none` → this repo names no project; nothing to load.
 
 Output one line per source confirming it was loaded. This step is non-optional; recovery without baseline context is recovery into the same drift the previous session ended in.
 
@@ -145,6 +147,7 @@ WIP state:
 - 127 documents (42 accounts, 85 transactions)
 
 Seed files: present and matching WIP state
+Project brief: loaded (<project>) | none | failed (<reason>)
 
 Suggested next step: Complete the import flow in ImportPage.tsx, then commit.
 ```
