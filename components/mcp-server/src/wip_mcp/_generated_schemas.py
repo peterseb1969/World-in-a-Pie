@@ -124,12 +124,117 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                            '— Registry uses as-is '
                                                                            'instead of '
                                                                            'generating)'},
+                                                'names': {'items': {'properties': {'value': {'type': 'string',
+                                                                                             'description': 'The '
+                                                                                                            'name '
+                                                                                                            'itself '
+                                                                                                            '(e.g., '
+                                                                                                            "'Avastin', "
+                                                                                                            "'bevacizumab', "
+                                                                                                            "'NSC-704865')"},
+                                                                                   'type': {'type': 'string',
+                                                                                            'description': 'Name '
+                                                                                                           'type '
+                                                                                                           'from '
+                                                                                                           'the '
+                                                                                                           '_NAME_TYPES '
+                                                                                                           'terminology '
+                                                                                                           '(e.g., '
+                                                                                                           "'INN', "
+                                                                                                           "'TRADE_GLOBAL', "
+                                                                                                           "'CODE'). "
+                                                                                                           'None '
+                                                                                                           '= '
+                                                                                                           'untyped '
+                                                                                                           'synonym.'},
+                                                                                   'language': {'type': 'string',
+                                                                                                'description': 'Language '
+                                                                                                               'code '
+                                                                                                               '(ISO '
+                                                                                                               '639-1) '
+                                                                                                               'for '
+                                                                                                               'language-specific '
+                                                                                                               'names'},
+                                                                                   'description': {'type': 'string',
+                                                                                                   'description': 'Free-text '
+                                                                                                                  'note '
+                                                                                                                  'on '
+                                                                                                                  'this '
+                                                                                                                  'name '
+                                                                                                                  '(e.g., '
+                                                                                                                  'a '
+                                                                                                                  'translated '
+                                                                                                                  'description)'},
+                                                                                   'source': {'type': 'string',
+                                                                                              'description': 'Where '
+                                                                                                             'this '
+                                                                                                             'name '
+                                                                                                             'came '
+                                                                                                             'from '
+                                                                                                             '(e.g., '
+                                                                                                             "'RTiS', "
+                                                                                                             "'OBO:hasExactSynonym')"},
+                                                                                   'preferred': {'type': 'boolean',
+                                                                                                 'description': 'Preferred '
+                                                                                                                'name '
+                                                                                                                'within '
+                                                                                                                'its '
+                                                                                                                '(type, '
+                                                                                                                'language) '
+                                                                                                                'group '
+                                                                                                                '— '
+                                                                                                                'at '
+                                                                                                                'most '
+                                                                                                                'one '
+                                                                                                                'per '
+                                                                                                                'group',
+                                                                                                 'default': False}},
+                                                                    'type': 'object',
+                                                                    'required': ['value'],
+                                                                    'description': 'One name of a '
+                                                                                   'term — the '
+                                                                                   'unified naming '
+                                                                                   'model.\n'
+                                                                                   '\n'
+                                                                                   'A term is a '
+                                                                                   'code (`value`) '
+                                                                                   'plus a set of '
+                                                                                   'names. Trade '
+                                                                                   'names,\n'
+                                                                                   'development '
+                                                                                   'codes, '
+                                                                                   'registry '
+                                                                                   'numbers, '
+                                                                                   'translated '
+                                                                                   'labels and '
+                                                                                   'plain\n'
+                                                                                   'synonyms are '
+                                                                                   'all names; '
+                                                                                   'what '
+                                                                                   'distinguishes '
+                                                                                   'them is data '
+                                                                                   'on the name,\n'
+                                                                                   'not which '
+                                                                                   'field they '
+                                                                                   'live in. Every '
+                                                                                   'name resolves '
+                                                                                   'in validation\n'
+                                                                                   'exactly like '
+                                                                                   "the term's "
+                                                                                   'value does.'},
+                                                          'type': 'array',
+                                                          'description': 'Alternative names that '
+                                                                         'resolve to this term, '
+                                                                         'each with optional type, '
+                                                                         'language, source and '
+                                                                         'preferred flag'},
                                                 'aliases': {'items': {'type': 'string'},
                                                             'type': 'array',
-                                                            'description': 'Alternative values '
-                                                                           'that resolve to this '
-                                                                           "term (e.g., ['MR.', "
-                                                                           "'mr'])"},
+                                                            'description': 'Legacy shape: plain '
+                                                                           'alternative values. '
+                                                                           'Normalized into '
+                                                                           'untyped names on '
+                                                                           'write.'},
                                                 'label': {'type': 'string',
                                                           'description': 'Display label for UI. '
                                                                          'Defaults to value if not '
@@ -161,13 +266,58 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                            'type': 'object',
                                                                            'required': ['language',
                                                                                         'label'],
-                                                                           'description': 'Translation '
-                                                                                          'of a '
-                                                                                          "term's "
-                                                                                          'display '
-                                                                                          'values.'},
+                                                                           'description': 'Legacy '
+                                                                                          'translation '
+                                                                                          'shape, '
+                                                                                          'kept '
+                                                                                          'for the '
+                                                                                          'API '
+                                                                                          'edge '
+                                                                                          'only.\n'
+                                                                                          '\n'
+                                                                                          'Stored '
+                                                                                          'terms '
+                                                                                          'no '
+                                                                                          'longer '
+                                                                                          'carry a '
+                                                                                          'translations '
+                                                                                          'list — '
+                                                                                          'a '
+                                                                                          'translation '
+                                                                                          'is a\n'
+                                                                                          'TermName '
+                                                                                          'with a '
+                                                                                          'language. '
+                                                                                          'Requests '
+                                                                                          'may '
+                                                                                          'still '
+                                                                                          'submit '
+                                                                                          'this '
+                                                                                          'shape; '
+                                                                                          'it is\n'
+                                                                                          'normalized '
+                                                                                          'into '
+                                                                                          'names '
+                                                                                          'on '
+                                                                                          'write, '
+                                                                                          'and '
+                                                                                          'term '
+                                                                                          'responses '
+                                                                                          'derive '
+                                                                                          'it back '
+                                                                                          'for\n'
+                                                                                          'callers '
+                                                                                          'that '
+                                                                                          'still '
+                                                                                          'read '
+                                                                                          'it.'},
                                                                  'type': 'array',
-                                                                 'description': 'Translations'},
+                                                                 'description': 'Legacy shape: '
+                                                                                'per-language '
+                                                                                'labels. '
+                                                                                'Normalized into '
+                                                                                'language-bearing '
+                                                                                'names on write.'},
                                                 'metadata': {'additionalProperties': True,
                                                              'type': 'object',
                                                              'description': 'Custom metadata'},
@@ -468,15 +618,36 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                          'extends_version': {'type': 'integer',
                                                                              'description': 'Pinned '
                                                                                             'parent '
-                                                                                            'version '
-                                                                                            '(None '
-                                                                                            '= '
-                                                                                            'always '
-                                                                                            'use '
-                                                                                            'latest '
-                                                                                            'active '
+                                                                                            'version. '
+                                                                                            'Required '
+                                                                                            '(non-null) '
+                                                                                            'whenever '
+                                                                                            'the '
+                                                                                            'template '
+                                                                                            'declares '
+                                                                                            "'extends' "
+                                                                                            '— a '
+                                                                                            'null '
+                                                                                            'there '
+                                                                                            'is '
+                                                                                            'rejected; '
+                                                                                            'the '
                                                                                             'parent '
-                                                                                            'version)'},
+                                                                                            'is '
+                                                                                            'validated '
+                                                                                            'against '
+                                                                                            'this '
+                                                                                            'exact '
+                                                                                            'pinned '
+                                                                                            'version, '
+                                                                                            'never '
+                                                                                            "'latest'. "
+                                                                                            'Null '
+                                                                                            'only '
+                                                                                            'when '
+                                                                                            'there '
+                                                                                            'is no '
+                                                                                            'parent.'},
                                                          'identity_fields': {'items': {'type': 'string'},
                                                                              'type': 'array',
                                                                              'description': 'Fields '
@@ -579,10 +750,103 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                   'template.\n'
                                                                                   '  See '
                                                                                   'docs/design/document-relationships.md.'},
-                                                         'source_templates': {'items': {'type': 'string'},
+                                                         'source_templates': {'items': {'anyOf': [{'type': 'string'},
+                                                                                                  {'properties': {'lookup_value': {'type': 'string',
+                                                                                                                                   'description': 'The '
+                                                                                                                                                  'endpoint '
+                                                                                                                                                  'reference '
+                                                                                                                                                  '— '
+                                                                                                                                                  'template '
+                                                                                                                                                  'value, '
+                                                                                                                                                  'ns:VALUE, '
+                                                                                                                                                  'or '
+                                                                                                                                                  'canonical '
+                                                                                                                                                  'id'},
+                                                                                                                  'resolved': {'type': 'string',
+                                                                                                                               'description': 'Ignored '
+                                                                                                                                              'on '
+                                                                                                                                              'write '
+                                                                                                                                              '— '
+                                                                                                                                              'the '
+                                                                                                                                              'platform '
+                                                                                                                                              'resolves '
+                                                                                                                                              'lookup_value '
+                                                                                                                                              'itself'}},
+                                                                                                   'additionalProperties': False,
+                                                                                                   'type': 'object',
+                                                                                                   'required': ['lookup_value'],
+                                                                                                   'description': 'An '
+                                                                                                                  'edge-type '
+                                                                                                                  'endpoint '
+                                                                                                                  'as '
+                                                                                                                  'a '
+                                                                                                                  'caller '
+                                                                                                                  'may '
+                                                                                                                  'submit '
+                                                                                                                  'it.\n'
+                                                                                                                  '\n'
+                                                                                                                  'Only '
+                                                                                                                  '``lookup_value`` '
+                                                                                                                  'is '
+                                                                                                                  'honored '
+                                                                                                                  '— '
+                                                                                                                  '``resolved`` '
+                                                                                                                  'is '
+                                                                                                                  'server-owned '
+                                                                                                                  'and '
+                                                                                                                  'is\n'
+                                                                                                                  'recomputed '
+                                                                                                                  'from '
+                                                                                                                  'the '
+                                                                                                                  'lookup '
+                                                                                                                  'at '
+                                                                                                                  'ingress, '
+                                                                                                                  'so '
+                                                                                                                  'a '
+                                                                                                                  'GET '
+                                                                                                                  '→ '
+                                                                                                                  'POST '
+                                                                                                                  'round-trip '
+                                                                                                                  'of '
+                                                                                                                  'a\n'
+                                                                                                                  'served '
+                                                                                                                  'template '
+                                                                                                                  'is '
+                                                                                                                  'valid '
+                                                                                                                  'input '
+                                                                                                                  'without '
+                                                                                                                  'letting '
+                                                                                                                  'a '
+                                                                                                                  'caller '
+                                                                                                                  'pin '
+                                                                                                                  'a '
+                                                                                                                  'stale '
+                                                                                                                  'or\n'
+                                                                                                                  'foreign '
+                                                                                                                  'canonical '
+                                                                                                                  'id. '
+                                                                                                                  'Plain '
+                                                                                                                  'strings '
+                                                                                                                  'are '
+                                                                                                                  'accepted '
+                                                                                                                  'wherever '
+                                                                                                                  'this '
+                                                                                                                  'model '
+                                                                                                                  'is\n'
+                                                                                                                  '(a '
+                                                                                                                  'bare '
+                                                                                                                  'value, '
+                                                                                                                  '``ns:VALUE``, '
+                                                                                                                  'or '
+                                                                                                                  'an '
+                                                                                                                  'id), '
+                                                                                                                  'so '
+                                                                                                                  'existing '
+                                                                                                                  'callers '
+                                                                                                                  'are\n'
+                                                                                                                  'unaffected.'}]},
                                                                               'type': 'array',
-                                                                              'description': 'Template '
-                                                                                             'values '
+                                                                              'description': 'Templates '
                                                                                              'allowed '
                                                                                              'as '
                                                                                              'edge '
@@ -590,12 +854,136 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                              '(required '
                                                                                              'when '
                                                                                              'usage=relationship; '
-                                                                                             'ignored '
-                                                                                             'otherwise)'},
-                                                         'target_templates': {'items': {'type': 'string'},
+                                                                                             'rejected '
+                                                                                             'with '
+                                                                                             'an '
+                                                                                             'error '
+                                                                                             'on '
+                                                                                             'non-relationship '
+                                                                                             'templates). '
+                                                                                             'Each '
+                                                                                             'entry '
+                                                                                             'is a '
+                                                                                             'template '
+                                                                                             'value, '
+                                                                                             'a '
+                                                                                             'canonical '
+                                                                                             'template_id, '
+                                                                                             'ns:VALUE, '
+                                                                                             'or a '
+                                                                                             'full '
+                                                                                             '{lookup_value, '
+                                                                                             'resolved} '
+                                                                                             'entry; '
+                                                                                             'stored '
+                                                                                             'and '
+                                                                                             'returned '
+                                                                                             'as '
+                                                                                             'two-half '
+                                                                                             'entries '
+                                                                                             'whose '
+                                                                                             'resolved '
+                                                                                             'half '
+                                                                                             'the '
+                                                                                             'platform '
+                                                                                             'fills'},
+                                                         'target_templates': {'items': {'anyOf': [{'type': 'string'},
+                                                                                                  {'properties': {'lookup_value': {'type': 'string',
+                                                                                                                                   'description': 'The '
+                                                                                                                                                  'endpoint '
+                                                                                                                                                  'reference '
+                                                                                                                                                  '— '
+                                                                                                                                                  'template '
+                                                                                                                                                  'value, '
+                                                                                                                                                  'ns:VALUE, '
+                                                                                                                                                  'or '
+                                                                                                                                                  'canonical '
+                                                                                                                                                  'id'},
+                                                                                                                  'resolved': {'type': 'string',
+                                                                                                                               'description': 'Ignored '
+                                                                                                                                              'on '
+                                                                                                                                              'write '
+                                                                                                                                              '— '
+                                                                                                                                              'the '
+                                                                                                                                              'platform '
+                                                                                                                                              'resolves '
+                                                                                                                                              'lookup_value '
+                                                                                                                                              'itself'}},
+                                                                                                   'additionalProperties': False,
+                                                                                                   'type': 'object',
+                                                                                                   'required': ['lookup_value'],
+                                                                                                   'description': 'An '
+                                                                                                                  'edge-type '
+                                                                                                                  'endpoint '
+                                                                                                                  'as '
+                                                                                                                  'a '
+                                                                                                                  'caller '
+                                                                                                                  'may '
+                                                                                                                  'submit '
+                                                                                                                  'it.\n'
+                                                                                                                  '\n'
+                                                                                                                  'Only '
+                                                                                                                  '``lookup_value`` '
+                                                                                                                  'is '
+                                                                                                                  'honored '
+                                                                                                                  '— '
+                                                                                                                  '``resolved`` '
+                                                                                                                  'is '
+                                                                                                                  'server-owned '
+                                                                                                                  'and '
+                                                                                                                  'is\n'
+                                                                                                                  'recomputed '
+                                                                                                                  'from '
+                                                                                                                  'the '
+                                                                                                                  'lookup '
+                                                                                                                  'at '
+                                                                                                                  'ingress, '
+                                                                                                                  'so '
+                                                                                                                  'a '
+                                                                                                                  'GET '
+                                                                                                                  '→ '
+                                                                                                                  'POST '
+                                                                                                                  'round-trip '
+                                                                                                                  'of '
+                                                                                                                  'a\n'
+                                                                                                                  'served '
+                                                                                                                  'template '
+                                                                                                                  'is '
+                                                                                                                  'valid '
+                                                                                                                  'input '
+                                                                                                                  'without '
+                                                                                                                  'letting '
+                                                                                                                  'a '
+                                                                                                                  'caller '
+                                                                                                                  'pin '
+                                                                                                                  'a '
+                                                                                                                  'stale '
+                                                                                                                  'or\n'
+                                                                                                                  'foreign '
+                                                                                                                  'canonical '
+                                                                                                                  'id. '
+                                                                                                                  'Plain '
+                                                                                                                  'strings '
+                                                                                                                  'are '
+                                                                                                                  'accepted '
+                                                                                                                  'wherever '
+                                                                                                                  'this '
+                                                                                                                  'model '
+                                                                                                                  'is\n'
+                                                                                                                  '(a '
+                                                                                                                  'bare '
+                                                                                                                  'value, '
+                                                                                                                  '``ns:VALUE``, '
+                                                                                                                  'or '
+                                                                                                                  'an '
+                                                                                                                  'id), '
+                                                                                                                  'so '
+                                                                                                                  'existing '
+                                                                                                                  'callers '
+                                                                                                                  'are\n'
+                                                                                                                  'unaffected.'}]},
                                                                               'type': 'array',
-                                                                              'description': 'Template '
-                                                                                             'values '
+                                                                              'description': 'Templates '
                                                                                              'allowed '
                                                                                              'as '
                                                                                              'edge '
@@ -603,8 +991,39 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                              '(required '
                                                                                              'when '
                                                                                              'usage=relationship; '
-                                                                                             'ignored '
-                                                                                             'otherwise)'},
+                                                                                             'rejected '
+                                                                                             'with '
+                                                                                             'an '
+                                                                                             'error '
+                                                                                             'on '
+                                                                                             'non-relationship '
+                                                                                             'templates). '
+                                                                                             'Each '
+                                                                                             'entry '
+                                                                                             'is a '
+                                                                                             'template '
+                                                                                             'value, '
+                                                                                             'a '
+                                                                                             'canonical '
+                                                                                             'template_id, '
+                                                                                             'ns:VALUE, '
+                                                                                             'or a '
+                                                                                             'full '
+                                                                                             '{lookup_value, '
+                                                                                             'resolved} '
+                                                                                             'entry; '
+                                                                                             'stored '
+                                                                                             'and '
+                                                                                             'returned '
+                                                                                             'as '
+                                                                                             'two-half '
+                                                                                             'entries '
+                                                                                             'whose '
+                                                                                             'resolved '
+                                                                                             'half '
+                                                                                             'the '
+                                                                                             'platform '
+                                                                                             'fills'},
                                                          'versioned': {'type': 'boolean',
                                                                        'description': 'True = '
                                                                                       'updates '
@@ -1726,7 +2145,7 @@ template_id (string): Pre-assigned template ID (for restore/migration — Regist
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)
 namespace (string, REQUIRED): Namespace for the template
 extends (string): Parent template ID for inheritance
-extends_version (integer): Pinned parent version (None = always use latest active parent version)
+extends_version (integer): Pinned parent version. Required (non-null) whenever the template declares 'extends' — a null there is rejected; the parent is validated against this exact pinned version, never 'latest'. Null only when there is no parent.
 identity_fields (array of string): Fields that form the composite identity key
 header_fields (array of string): Fields to include in peer/header projections. Bare names → data.<name>; metadata.custom.<name> paths allowed. Empty → projection falls back to identity_fields.
 renames (object): Field renames relative to the previous version, {new_field: old_field}. Only meaningful when this create versions an existing template (create is an upsert); rejected on a first version. Identity fields cannot be renamed. Declared renames migrate losslessly and map in reporting.
@@ -1739,8 +2158,8 @@ usage (enum): One of: entity, reference, relationship. How a template's document
   documents. Requires source_templates / target_templates to be set
   and a source_ref / target_ref reference field on the template.
   See docs/design/document-relationships.md.
-source_templates (array of string): Template values allowed as edge source (required when usage=relationship; ignored otherwise)
-target_templates (array of string): Template values allowed as edge target (required when usage=relationship; ignored otherwise)
+source_templates (array of object): Templates allowed as edge source (required when usage=relationship; rejected with an error on non-relationship templates). Each entry is a template value, a canonical template_id, ns:VALUE, or a full {lookup_value, resolved} entry; stored and returned as two-half entries whose resolved half the platform fills
+target_templates (array of object): Templates allowed as edge target (required when usage=relationship; rejected with an error on non-relationship templates). Each entry is a template value, a canonical template_id, ns:VALUE, or a full {lookup_value, resolved} entry; stored and returned as two-half entries whose resolved half the platform fills
 versioned (boolean, default: true): True = updates create new versions; False = overwrite in place. Immutable after creation.
 fields (array of object): Field definitions
   Each item:
@@ -1846,7 +2265,7 @@ template_id (string): Pre-assigned template ID (for restore/migration — Regist
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)
 namespace (string, REQUIRED): Namespace for the template
 extends (string): Parent template ID for inheritance
-extends_version (integer): Pinned parent version (None = always use latest active parent version)
+extends_version (integer): Pinned parent version. Required (non-null) whenever the template declares 'extends' — a null there is rejected; the parent is validated against this exact pinned version, never 'latest'. Null only when there is no parent.
 identity_fields (array of string): Fields that form the composite identity key
 header_fields (array of string): Fields to include in peer/header projections. Bare names → data.<name>; metadata.custom.<name> paths allowed. Empty → projection falls back to identity_fields.
 renames (object): Field renames relative to the previous version, {new_field: old_field}. Only meaningful when this create versions an existing template (create is an upsert); rejected on a first version. Identity fields cannot be renamed. Declared renames migrate losslessly and map in reporting.
@@ -1859,8 +2278,8 @@ usage (enum): One of: entity, reference, relationship. How a template's document
   documents. Requires source_templates / target_templates to be set
   and a source_ref / target_ref reference field on the template.
   See docs/design/document-relationships.md.
-source_templates (array of string): Template values allowed as edge source (required when usage=relationship; ignored otherwise)
-target_templates (array of string): Template values allowed as edge target (required when usage=relationship; ignored otherwise)
+source_templates (array of object): Templates allowed as edge source (required when usage=relationship; rejected with an error on non-relationship templates). Each entry is a template value, a canonical template_id, ns:VALUE, or a full {lookup_value, resolved} entry; stored and returned as two-half entries whose resolved half the platform fills
+target_templates (array of object): Templates allowed as edge target (required when usage=relationship; rejected with an error on non-relationship templates). Each entry is a template value, a canonical template_id, ns:VALUE, or a full {lookup_value, resolved} entry; stored and returned as two-half entries whose resolved half the platform fills
 versioned (boolean, default: true): True = updates create new versions; False = overwrite in place. Immutable after creation.
 fields (array of object): Field definitions
   Each item:
@@ -2023,12 +2442,20 @@ Optional: aliases (list of strings), label, description, sort_order.
 Fields (from OpenAPI — these are the exact field names):
 value (string, REQUIRED): The value stored in documents (unique within terminology)
 term_id (string): Pre-assigned term ID (for restore/migration — Registry uses as-is instead of generating)
-aliases (array of string): Alternative values that resolve to this term (e.g., ['MR.', 'mr'])
+names (array of object): Alternative names that resolve to this term, each with optional type, language, source and preferred flag
+  Each item:
+    value (string, REQUIRED): The name itself (e.g., 'Avastin', 'bevacizumab', 'NSC-704865')
+    type (string): Name type from the _NAME_TYPES terminology (e.g., 'INN', 'TRADE_GLOBAL', 'CODE'). None = untyped synonym.
+    language (string): Language code (ISO 639-1) for language-specific names
+    description (string): Free-text note on this name (e.g., a translated description)
+    source (string): Where this name came from (e.g., 'RTiS', 'OBO:hasExactSynonym')
+    preferred (boolean, default: false): Preferred name within its (type, language) group — at most one per group
+aliases (array of string): Legacy shape: plain alternative values. Normalized into untyped names on write.
 label (string): Display label for UI. Defaults to value if not provided.
 description (string): Detailed description
 sort_order (integer, default: 0): Sort order within terminology
 parent_term_id (string): Parent term ID for hierarchical terms
-translations (array of object): Translations
+translations (array of object): Legacy shape: per-language labels. Normalized into language-bearing names on write.
   Each item:
     language (string, REQUIRED): Language code (ISO 639-1)
     label (string, REQUIRED): Translated display label
