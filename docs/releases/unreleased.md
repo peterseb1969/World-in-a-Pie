@@ -148,9 +148,57 @@ reporting silently diverged.
   supervised consumers' restarts. `/health` stays HTTP 200 regardless:
   readiness and liveness probe the same endpoint.
 
+### Terms carry typed names; aliases and translations are now projections
+
+A term is now a code plus a set of **names**: each name carries `value`,
+optional `type` (validated against the new seeded, extensible `_NAME_TYPES`
+terminology — INN, TRADE_GLOBAL, TRADE_LOCAL, CODE, REGISTRY_ID, SYNONYM,
+ABBREVIATION), optional `language` and `source`, and a `preferred` flag (at
+most one per (type, language) group). The term API keeps accepting
+plain-string `aliases` (stored as untyped names) and `translations` (stored
+as language-bearing names), and responses serve derived `aliases` /
+`translations` projections alongside `names` — but four behaviors change:
+
+- **Translated labels now resolve.** Every name participates in validation
+  and document term resolution; `translations` used to be display-only
+  payload, invisible to validation, document-store and reporting. A value
+  that collided with a translated label and was invalid before is valid now.
+- **Exact-duplicate names are rejected loudly** (per-item
+  `error_code='invalid_names'`), as are a name equal to the term's own
+  value, an unknown `type`, and two preferred names in one group.
+  Case-variant names (`'MR.'` vs `'Mr.'`) stay legal. Seeds that submitted
+  literal duplicate aliases must deduplicate.
+- **The `aliases` projection covers every name** — including translated
+  labels — so consumers keying on it see more entries than before.
+- **Term resolution gained value precedence**: every term's canonical value
+  is checked before any term's names (def-store validation and
+  document-store's local lookup both), so a name can no longer shadow
+  another term's canonical value — duplicate-alias resolution used to
+  depend on storage/pagination order. The validate response carries the
+  matched name (with type and language) as `matched_name`.
+
+Reporting gains a **`term_names` table** per namespace schema (one row per
+name: `value`, `type`, `language`, `source`, `preferred`), synced by event
+and batch paths, exported and listed like the other fixed tables. OBO
+import keeps each synonym's predicate in the name's `source` and no longer
+caps synonyms at 10 silently — `max_synonyms` defaults to unlimited and
+reports `dropped_synonyms` when a cap is passed. `@wip/client` 0.56.0
+ships the `TermName` types and `matched_name`.
+**Action:** none for most installs — the stored data migrates itself (see
+first start below) and legacy API shapes keep working. Review seeds for
+literal duplicate aliases, and any consumer that assumed `aliases`
+excluded translations.
+
 ---
 
 ## What happens on first start after the upgrade
+
+def-store converts stored terms to the unified names shape before serving
+traffic (legacy `aliases`/`translations` fields fold into `names`,
+exact duplicates deduped first-occurrence-wins, the legacy alias index is
+dropped). Idempotent and fast — look for `Term-name migration:` in the log.
+Restoring a pre-upgrade archive is also covered: the restore engine
+converts term rows at write time.
 
 reporting-sync does this once, idempotently, while still connected as the
 bootstrap login:
