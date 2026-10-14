@@ -379,8 +379,8 @@ class DeleteItem(StrictModel):
 
     id: str = Field(..., description="ID of entity to delete")
     version: int | None = Field(default=None, description="Specific version to delete. Required for soft-delete — a version-less deactivate is rejected (it would ambiguously target the latest version during a version event). Hard-delete without a version removes ALL versions.")
-    force: bool = Field(default=False, description="Force deletion even if documents exist")
-    hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
+    force: bool = Field(default=False, description="Soft-delete only: deactivate even if active documents use the template. Has no effect on hard-delete.")
+    hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full'). Refused while any document row of any status references the template, or when that cannot be verified — delete those documents first.")
     updated_by: str | None = Field(default=None, description="User performing deletion")
 
 

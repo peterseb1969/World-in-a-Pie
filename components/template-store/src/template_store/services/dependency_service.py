@@ -105,23 +105,36 @@ class DependencyService:
         return result
 
     @classmethod
-    async def _get_document_count(cls, template_id: str) -> int:
-        """Get count of documents using this template from Document Store."""
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{cls.DOCUMENT_STORE_URL}/api/document-store/documents",
-                    params={
-                        "template_id": template_id,
-                        "status": "active",
-                        "page_size": 1  # We only need the count
-                    },
-                    headers={"X-API-Key": cls.DOCUMENT_STORE_API_KEY}
-                )
+    async def hard_delete_document_rows(cls, template_id: str) -> int:
+        """Document rows of ANY status that reference this template.
 
-                if response.status_code == 200:
-                    data = response.json()
-                    return cast(int, data.get("total", 0))
-                return 0
-        except Exception:
-            raise
+        The count a hard-delete is judged by: archived and inactive rows carry
+        the template_id too, and are orphaned just the same when the template
+        disappears. Raises when the count cannot be established — the caller
+        must refuse an irreversible delete on "unknown", never treat it as 0.
+        """
+        return await cls._get_document_count(template_id, all_statuses=True)
+
+    @classmethod
+    async def _get_document_count(cls, template_id: str, *, all_statuses: bool = False) -> int:
+        """Count document rows using this template, from Document Store.
+
+        Active rows only, unless `all_statuses`. Raises on a transport failure
+        AND on any non-200 answer: an auth, routing or server error is an
+        unknown count, and reporting it as 0 would make every guard built on
+        this count fail open.
+        """
+        params: dict[str, str | int] = {"template_id": template_id, "page_size": 1}
+        if not all_statuses:
+            params["status"] = "active"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{cls.DOCUMENT_STORE_URL}/api/document-store/documents",
+                params=params,
+                headers={"X-API-Key": cls.DOCUMENT_STORE_API_KEY},
+            )
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Document Store answered {response.status_code}: {response.text[:200]}"
+            )
+        return cast(int, response.json().get("total", 0))

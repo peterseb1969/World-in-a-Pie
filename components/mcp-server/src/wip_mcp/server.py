@@ -2743,13 +2743,16 @@ async def deactivate_template(
     hard_delete=true may omit version, meaning: remove ALL versions.
 
     Blocked if other templates extend it.
-    If documents reference it, use force=true to delete anyway.
+    Soft-delete: if active documents use it, force=true deactivates anyway.
+    Hard-delete: refused while any document (of any status) references it,
+    or when that cannot be verified; force does not override this. Delete
+    the documents first.
 
     Args:
         template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
         version: The version to retire. Required for soft-delete; omit only
             with hard_delete=true (removes all versions).
-        force: Force deletion even if documents exist.
+        force: Soft-delete only: deactivate even if active documents exist.
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
     """
     try:

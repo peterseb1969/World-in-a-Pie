@@ -468,11 +468,15 @@ async def delete_templates(
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
 ):
     """
-    Soft-delete one or more templates.
+    Soft-delete (deactivate) or hard-delete one or more templates.
 
-    Sets the template status to 'inactive'. Cannot delete templates that
-    have other templates extending them.
-    Set force=true per item to delete even if documents exist.
+    Soft-delete sets the template version's status to 'inactive'; set
+    force=true per item to deactivate even if active documents use it.
+    Hard-delete (hard_delete=true, namespace deletion_mode='full') removes
+    the template permanently and is refused while any document row of any
+    status references it, or when Document Store cannot confirm there is
+    none; force does not apply to it. Templates that other templates extend
+    cannot be deleted either way.
     """
     await resolve_bulk_ids(items, "id", "template", namespace=namespace)
 
@@ -536,8 +540,37 @@ async def delete_templates(
                 ))
                 continue
 
-            # Warn if documents exist (unless force)
-            if deps.document_count > 0 and not item.force:
+            if item.hard_delete:
+                # Hard-delete is irreversible and orphans every document row
+                # that still carries this template_id, whatever its status.
+                # So it refuses whenever such rows exist — `force` (which
+                # means "deactivate anyway", a reversible act) does not apply
+                # — and refuses when the count is unknown, never treating
+                # "could not check" as "none".
+                force_note = " force=true does not apply to hard-delete." if item.force else ""
+                try:
+                    rows = await DependencyService.hard_delete_document_rows(item.id)
+                except Exception as e:
+                    results.append(BulkResultItem(
+                        index=i, status="error", id=item.id,
+                        error=(
+                            "Hard-delete refused: cannot verify that no documents use this "
+                            f"template ({e}).{force_note}"
+                        ),
+                    ))
+                    continue
+                if rows > 0:
+                    results.append(BulkResultItem(
+                        index=i, status="error", id=item.id,
+                        error=(
+                            f"Hard-delete refused: {rows} document row(s) of any status, "
+                            "across all versions, reference this template. Delete them first "
+                            f"(hard_delete=true per document in this namespace).{force_note}"
+                        ),
+                    ))
+                    continue
+            # Soft-delete: warn if active documents exist (unless force)
+            elif deps.document_count > 0 and not item.force:
                 results.append(BulkResultItem(
                     index=i, status="error", id=item.id,
                     error=f"Template has {deps.document_count} dependent document(s). Use force=true to deactivate anyway."
