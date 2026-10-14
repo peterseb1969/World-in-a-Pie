@@ -47,7 +47,8 @@ export interface CreateTerminologyRequest {
 export interface UpdateTerminologyRequest {
   value?: string
   label?: string
-  description?: string
+  /** Explicit null clears; omitted means unchanged. */
+  description?: string | null
   case_sensitive?: boolean
   allow_multiple?: boolean
   extensible?: boolean
@@ -126,14 +127,20 @@ export interface CreateTermRequest {
 export interface UpdateTermRequest {
   value?: string
   /** Full replacement of the names list; mutually exclusive with the
-   * legacy aliases/translations fields. */
+   * legacy aliases/translations fields. Pass [] to remove all names
+   * (null is rejected). */
   names?: TermName[]
   /** Legacy update: replaces only the untyped, language-less names. */
   aliases?: string[]
-  label?: string
-  description?: string
-  sort_order?: number
-  parent_term_id?: string
+  /** Explicit null clears (display falls back to the value); omitted
+   * means unchanged — RFC 7396 semantics, like document PATCH. */
+  label?: string | null
+  /** Explicit null clears; omitted means unchanged. */
+  description?: string | null
+  /** Explicit null resets to 0; omitted means unchanged. */
+  sort_order?: number | null
+  /** Explicit null detaches from the parent; omitted means unchanged. */
+  parent_term_id?: string | null
   /** Legacy update: replaces only the language-bearing, untyped names. */
   translations?: TermTranslation[]
   metadata?: Record<string, unknown>
