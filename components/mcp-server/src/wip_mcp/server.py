@@ -406,7 +406,20 @@ A terminology is a controlled vocabulary (e.g., COUNTRY, GENDER, DIAGNOSIS_CODE)
 
 ## Terms
 A term is an entry in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).
-- Fields: value (unique within terminology), label, aliases, description
+- Fields: value (unique within terminology), label, names, description
+- A term is a code plus a set of NAMES. Each name carries: value
+  (required), type (optional, validated against the extensible _NAME_TYPES
+  terminology: INN, TRADE_GLOBAL, TRADE_LOCAL, CODE, REGISTRY_ID, SYNONYM,
+  ABBREVIATION), language (optional, ISO 639-1), source (optional), and a
+  preferred flag (at most one preferred name per (type, language) group).
+  EVERY name resolves in validation, exactly like the term's value.
+- Legacy shapes still work at the API edge: plain-string `aliases` become
+  untyped names, `translations` become language-bearing names. Term
+  responses serve derived `aliases` (every name's value) and
+  `translations` projections alongside the structured `names`.
+- Exact-duplicate names, a name equal to the term's own value, unknown
+  name types, and preferred conflicts are rejected per item with
+  error_code 'invalid_names'. Case-variant names are legal.
 - Terms can have ontology relations (see Ontology section below)
 - Addressing: term identifiers accept a canonical UUID, the fully
   qualified 'ns:terminology:value' form, or a terminology-scoped opaque
@@ -1767,7 +1780,12 @@ async def create_terms(
     Args:
         terminology_id: Terminology ID (UUID) or value (e.g., 'COUNTRY').
         terms: List of term objects. Each must have 'value' and 'label'.
-            Optional: 'description', 'aliases' (list of strings).
+            Optional: 'description', 'names' (typed names: each with
+            'value', optional 'type' from _NAME_TYPES, 'language',
+            'source', 'preferred'), 'aliases' (plain strings — become
+            untyped names). A names-rule violation (exact duplicate,
+            name equal to the term's value, unknown type, preferred
+            conflict) rejects that item with error_code='invalid_names'.
         on_conflict: Single-term calls only: 'error' (default) fails on an
             existing value with error_code='already_exists'; 'validate' makes
             the call idempotent — identical re-create returns
@@ -1778,7 +1796,10 @@ async def create_terms(
     Example:
         create_terms("T-xxx", [
             {"value": "GB", "label": "United Kingdom", "aliases": ["UK", "Britain"]},
-            {"value": "US", "label": "United States", "aliases": ["USA"]}
+            {"value": "RO4876646", "names": [
+                {"value": "bevacizumab", "type": "INN", "preferred": True},
+                {"value": "Avastin", "type": "TRADE_GLOBAL"}
+            ]}
         ])
     """
     try:
@@ -1811,13 +1832,14 @@ async def validate_term_value(terminology: str, value: str) -> str:
 async def update_term(
     term_id: str,
     label: str | None = None,
+    names: list[dict] | None = None,
     aliases: list[str] | None = None,
     description: str | None = None,
     sort_order: int | None = None,
     namespace: str | None = None,
     terminology: str | None = None,
 ) -> str:
-    """Update a term's label, aliases, description, or sort order.
+    """Update a term's label, names, description, or sort order.
 
     Args:
         term_id: Canonical UUID, fully qualified 'ns:terminology:value',
@@ -1826,7 +1848,11 @@ async def update_term(
             shorthand is rejected (422) on write doors: it could silently
             select the wrong term when the value contains ':'.
         label: New label (optional).
-        aliases: New aliases list (optional). Replaces existing aliases.
+        names: Full replacement names list (optional). Each entry: 'value',
+            optional 'type' (from _NAME_TYPES), 'language', 'source',
+            'preferred'. Mutually exclusive with aliases.
+        aliases: Plain-string update (optional): replaces only the untyped,
+            language-less names; typed and language names survive.
         description: New description (optional).
         sort_order: New sort order (optional).
         terminology: Terminology scoping a value-form term_id — the
@@ -1836,6 +1862,8 @@ async def update_term(
         updates: dict = {}
         if label is not None:
             updates["label"] = label
+        if names is not None:
+            updates["names"] = names
         if aliases is not None:
             updates["aliases"] = aliases
         if description is not None:
