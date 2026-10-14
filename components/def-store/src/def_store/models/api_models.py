@@ -15,7 +15,7 @@ from wip_auth.bulk_models import (
     TerminologyTermBulkResultItem as BulkResultItem,  # noqa: F401
 )
 
-from .term import TermTranslation
+from .term import TermName, TermTranslation
 from .terminology import TerminologyMetadata
 
 
@@ -164,9 +164,15 @@ class CreateTermRequest(StrictModel):
         default=None,
         description="Pre-assigned term ID (for restore/migration — Registry uses as-is instead of generating)"
     )
+    names: list[TermName] = Field(
+        default_factory=list,
+        description="Alternative names that resolve to this term, each with "
+                    "optional type, language, source and preferred flag"
+    )
     aliases: list[str] = Field(
         default_factory=list,
-        description="Alternative values that resolve to this term (e.g., ['MR.', 'mr'])"
+        description="Legacy shape: plain alternative values. Normalized into "
+                    "untyped names on write."
     )
     label: str | None = Field(
         default=None,
@@ -186,7 +192,8 @@ class CreateTermRequest(StrictModel):
     )
     translations: list[TermTranslation] = Field(
         default_factory=list,
-        description="Translations"
+        description="Legacy shape: per-language labels. Normalized into "
+                    "language-bearing names on write."
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict,
@@ -205,9 +212,15 @@ class UpdateTermRequest(StrictModel):
         default=None,
         description="New value (unique within terminology)"
     )
+    names: list[TermName] | None = Field(
+        default=None,
+        description="Replace the full names list. Mutually exclusive with "
+                    "the legacy aliases/translations fields."
+    )
     aliases: list[str] | None = Field(
         default=None,
-        description="Update aliases (replaces existing list)"
+        description="Legacy update: replaces the untyped, language-less "
+                    "names; typed and language names survive"
     )
     label: str | None = Field(
         default=None,
@@ -227,7 +240,8 @@ class UpdateTermRequest(StrictModel):
     )
     translations: list[TermTranslation] | None = Field(
         default=None,
-        description="Update translations"
+        description="Legacy update: replaces the language-bearing, untyped "
+                    "names; typed and plain names survive"
     )
     metadata: dict[str, Any] | None = Field(
         default=None,
@@ -264,6 +278,10 @@ class TermResponse(BaseModel):
     terminology_id: str
     terminology_value: str | None = None
     value: str
+    names: list[TermName] = []
+    # Derived projections for legacy readers: aliases carries every name's
+    # value (all names resolve); translations carries the language-bearing,
+    # untyped names. Stored shape is names only.
     aliases: list[str] = []
     label: str | None = None
     description: str | None = None
@@ -406,6 +424,11 @@ class ValidateValueResponse(BaseModel):
     matched_via: str | None = Field(
         default=None,
         description="How the match was made: 'value' or 'alias'"
+    )
+    matched_name: TermName | None = Field(
+        default=None,
+        description="The exact name that matched (set when matched_via='alias'), "
+                    "with its type and language"
     )
     suggestion: TermResponse | None = Field(
         default=None,

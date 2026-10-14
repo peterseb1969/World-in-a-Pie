@@ -37,6 +37,7 @@ from .models.terminology import Terminology
 from .services.nats_client import close_nats_client, configure_nats_client, nats_stats
 from .services.registry_client import configure_registry_client, get_registry_client
 from .services.system_terminologies import ensure_system_terminologies
+from .services.term_names import migrate_legacy_term_names
 
 
 # Application configuration
@@ -119,6 +120,17 @@ async def lifespan(app: FastAPI):
         description=f"MongoDB init ({settings.DATABASE_NAME})",
     )
     print("MongoDB connection and Beanie initialization successful.")
+
+    # Convert legacy term aliases/translations to the unified names shape
+    # BEFORE serving traffic — a term whose aliases live only in the legacy
+    # field would be unresolvable by alias until converted. Idempotent and
+    # cheap once converted (matches nothing).
+    migration = await migrate_legacy_term_names()
+    if migration["converted"] or migration["initialized"]:
+        print(
+            f"Term-name migration: {migration['converted']} converted, "
+            f"{migration['initialized']} initialized."
+        )
 
     # Store client in app state
     app.state.mongodb_client = client

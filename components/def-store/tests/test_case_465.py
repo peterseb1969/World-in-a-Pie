@@ -189,7 +189,7 @@ async def test_divergent_term_revalidate_is_incompatible_config(
     item = rerun.json()["results"][0]
     assert item["status"] == "error"
     assert item["error_code"] == "incompatible_config"
-    assert sorted(item["details"]["changed"]) == ["aliases", "label"]
+    assert sorted(item["details"]["changed"]) == ["label", "names"]
 
 
 @pytest.mark.asyncio

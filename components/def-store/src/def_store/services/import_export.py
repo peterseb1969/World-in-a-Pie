@@ -16,7 +16,7 @@ from ..models.api_models import (
     CreateTermRelationRequest,
     CreateTermRequest,
 )
-from ..models.term import Term, TermTranslation
+from ..models.term import Term, TermName, TermTranslation
 from ..models.term_relation import TermRelation
 from ..models.terminology import Terminology, TerminologyMetadata
 from .ontology_service import OntologyService
@@ -76,12 +76,12 @@ class ImportExportService:
 
         terms = await Term.find(query).sort("sort_order").to_list()
 
-        # Filter translations if languages specified
+        # Filter language-bearing names if languages specified
         if languages:
             for term in terms:
-                term.translations = [
-                    t for t in term.translations
-                    if t.language in languages
+                term.names = [
+                    n for n in term.names
+                    if n.language is None or n.language in languages
                 ]
 
         # Get relations if requested
@@ -134,15 +134,15 @@ class ImportExportService:
                 "sort_order": t.sort_order,
                 "status": t.status,
             }
-            if t.aliases:
-                term_dict["aliases"] = t.aliases
+            if t.names:
+                # Required `value` always serializes; optional fields only
+                # when set, so simple vocabularies export compact
+                term_dict["names"] = [
+                    n.model_dump(exclude_none=True, exclude_defaults=True)
+                    for n in t.names
+                ]
             if t.parent_term_id:
                 term_dict["parent_term_id"] = t.parent_term_id
-            if t.translations:
-                term_dict["translations"] = [
-                    {"language": tr.language, "label": tr.label, "description": tr.description}
-                    for tr in t.translations
-                ]
             if include_metadata and t.metadata:
                 term_dict["metadata"] = t.metadata
             if t.status == "deprecated":
@@ -367,15 +367,22 @@ class ImportExportService:
             terminology_id = terminology_response.terminology_id
             terminology_status = "created"
 
-        # Build CreateTermRequest objects for batch operation
+        # Build CreateTermRequest objects for batch operation. Structured
+        # names are the native shape; legacy aliases/translations in the
+        # import payload still fold in via request normalization.
         term_requests = []
         for i, term_data in enumerate(terms_data):
             translations = [
                 TermTranslation(**tr)
                 for tr in term_data.get("translations", [])
             ]
+            names = [
+                TermName(**n)
+                for n in term_data.get("names", [])
+            ]
             term_requests.append(CreateTermRequest(
                 value=term_data["value"],
+                names=names,
                 aliases=term_data.get("aliases", []),
                 label=term_data.get("label"),
                 description=term_data.get("description"),
@@ -646,7 +653,7 @@ class ImportExportService:
         carry no OBO-style prefix at all (a non-OBO graph), where the
         filename is the last available hint.
         """
-        counts: Counter = Counter()
+        counts: Counter[str] = Counter()
         for n in graph.get("nodes", []):
             if n.get("type") != "CLASS":
                 continue
@@ -683,11 +690,17 @@ class ImportExportService:
         data: dict,
         prefix_filter: str | None = None,
         include_deprecated: bool = False,
-        max_synonyms: int = 10,
+        max_synonyms: int | None = None,
     ) -> dict[str, Any]:
-        """Parse OBO Graph JSON into nodes and edges."""
+        """Parse OBO Graph JSON into nodes and edges.
+
+        max_synonyms=None (the default) keeps every synonym. When a cap is
+        passed, the count of synonyms it drops is reported in the result's
+        stats — never dropped silently.
+        """
         graph = data["graphs"][0]
         meta = graph.get("meta", {})
+        dropped_synonyms = 0
 
         if not prefix_filter:
             prefix_filter = cls._detect_prefix(graph)
@@ -722,7 +735,28 @@ class ImportExportService:
             label = n.get("lbl", value)
             definition = node_meta.get("definition", {})
             description = definition.get("val") if definition else None
-            aliases = [s["val"] for s in node_meta.get("synonyms", []) if s.get("val")][:max_synonyms]
+
+            # Synonyms become names, keeping the OBO predicate (exact /
+            # related / broad / narrow scope) as the name's source instead
+            # of discarding it. Machine-generated synonym lists carry
+            # duplicates and label-echoes, so dedupe here rather than
+            # letting per-term validation reject whole terms.
+            raw_synonyms = [s for s in node_meta.get("synonyms", []) if s.get("val")]
+            if max_synonyms is not None and len(raw_synonyms) > max_synonyms:
+                dropped_synonyms += len(raw_synonyms) - max_synonyms
+                raw_synonyms = raw_synonyms[:max_synonyms]
+            names: list[dict] = []
+            seen_names = {value}
+            for s in raw_synonyms:
+                if s["val"] in seen_names:
+                    continue
+                seen_names.add(s["val"])
+                pred = s.get("pred")
+                names.append({
+                    "value": s["val"],
+                    "source": f"OBO:{pred}" if pred else "OBO",
+                })
+
             xrefs = [x.get("val") for x in node_meta.get("xrefs", []) if x.get("val")]
 
             term_metadata: dict[str, Any] = {}
@@ -733,7 +767,7 @@ class ImportExportService:
                 "value": value,
                 "label": label,
                 "description": description,
-                "aliases": aliases,
+                "names": names,
                 "metadata": term_metadata,
             }
 
@@ -763,6 +797,7 @@ class ImportExportService:
                 "nodes_parsed": len(nodes),
                 "edges_parsed": len(edges),
                 "predicate_distribution": dict(pred_counts.most_common()),
+                "dropped_synonyms": dropped_synonyms,
             },
         }
 
@@ -860,7 +895,7 @@ class ImportExportService:
             data,
             prefix_filter=options.get("prefix_filter"),
             include_deprecated=options.get("include_deprecated", False),
-            max_synonyms=options.get("max_synonyms", 10),
+            max_synonyms=options.get("max_synonyms"),
         )
 
         nodes = parsed["nodes"]
@@ -878,7 +913,7 @@ class ImportExportService:
             1 for n in data["graphs"][0].get("nodes", []) if n.get("type") == "CLASS"
         )
         if not nodes and graph_node_count:
-            observed = Counter()
+            observed: Counter[str] = Counter()
             for n in data["graphs"][0].get("nodes", []):
                 if n.get("type") != "CLASS":
                     continue
@@ -936,7 +971,7 @@ class ImportExportService:
                 value=info["value"],
                 label=info["label"],
                 description=info["description"],
-                aliases=info["aliases"],
+                names=[TermName(**n) for n in info["names"]],
                 metadata=info["metadata"],
                 created_by=created_by,
             ))
@@ -1037,6 +1072,9 @@ class ImportExportService:
                 "created": terms_created,
                 "skipped": terms_skipped,
                 "errors": terms_errors,
+                # Non-zero only when a max_synonyms cap was passed — the
+                # cap is opt-in and its cost is reported, never silent
+                "dropped_synonyms": parsed["stats"]["dropped_synonyms"],
             },
             "relations": {
                 "total": len(edges),

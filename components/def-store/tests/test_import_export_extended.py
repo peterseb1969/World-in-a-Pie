@@ -306,8 +306,10 @@ class TestAliasesExportImport:
         assert len(data["terms"]) == 1
         term = data["terms"][0]
         assert term["value"] == "Mr"
-        assert "aliases" in term
-        assert set(term["aliases"]) == {"MR.", "mr", "Mister"}
+        # Exports carry the structured names shape; legacy plain aliases
+        # arrive as untyped names
+        assert "names" in term
+        assert {n["value"] for n in term["names"]} == {"MR.", "mr", "Mister"}
 
     @pytest.mark.asyncio
     async def test_import_term_with_aliases(self, client: AsyncClient, auth_headers: dict):

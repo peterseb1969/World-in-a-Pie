@@ -23,7 +23,7 @@ from ..models.api_models import (
     UpdateTermRequest,
 )
 from ..models.audit_log import TermAuditLog
-from ..models.term import Term
+from ..models.term import Term, TermName
 from ..models.term_relation import TermRelation
 from ..models.terminology import Terminology, TerminologyMetadata
 from .nats_client import (
@@ -36,6 +36,16 @@ from .nats_client import (
     publish_terminology_event,
 )
 from .registry_client import RegistryError, get_registry_client
+from .term_names import (
+    NAME_TYPES_TERMINOLOGY_VALUE,
+    NameTypeService,
+    derived_aliases,
+    derived_translations,
+    normalize_names,
+    replace_translations,
+    replace_untyped,
+    validate_names,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -172,13 +182,16 @@ class TerminologyService:
         request — empty list means an identical re-create (CASE-465)."""
         # Label defaults to value at create time — compare the effective value.
         effective_label = request.label or request.value
+        # Legacy aliases/translations fold into names before comparing, so a
+        # re-create submitted in either shape compares against one stored shape.
+        request_names = normalize_names(request.names, request.aliases, request.translations)
         checks = {
             "label": existing.label != effective_label,
-            "aliases": existing.aliases != request.aliases,
+            "names": [n.model_dump() for n in existing.names]
+                     != [n.model_dump() for n in request_names],
             "description": (existing.description or None) != (request.description or None),
             "sort_order": existing.sort_order != request.sort_order,
             "parent_term_id": existing.parent_term_id != request.parent_term_id,
-            "translations": existing.translations != request.translations,
             "metadata": existing.metadata != request.metadata,
         }
         return [name for name, differs in checks.items() if differs]
@@ -741,6 +754,12 @@ class TerminologyService:
         # Default label to value if not provided
         label = request.label or request.value
 
+        # Fold legacy aliases/translations into names and enforce the
+        # naming rules (unknown type, duplicate, preferred conflicts) —
+        # loud per-term rejection, before anything is registered.
+        names = normalize_names(request.names, request.aliases, request.translations)
+        validate_names(names, request.value, await NameTypeService.get_valid_name_types())
+
         # Register with Registry to get ID (or use pre-assigned ID for restore)
         client = get_registry_client()
         term_id = await client.register_term(
@@ -758,12 +777,11 @@ class TerminologyService:
             terminology_id=terminology_id,
             terminology_value=terminology.value,
             value=request.value,
-            aliases=request.aliases,
+            names=names,
             label=label,
             description=request.description,
             sort_order=request.sort_order,
             parent_term_id=request.parent_term_id,
-            translations=request.translations,
             metadata=request.metadata,
             created_by=actor,
         )
@@ -806,7 +824,7 @@ class TerminologyService:
             changed_by=actor,
             new_values={
                 "value": request.value,
-                "aliases": request.aliases,
+                "names": [n.model_dump() for n in names],
                 "label": label,
             },
             namespace=namespace
@@ -824,10 +842,12 @@ class TerminologyService:
             changed_by=actor,
         )
 
-        # Invalidate relation type cache if this is the system terminology
+        # Invalidate the derived caches when a system terminology changes
         if terminology.value == "_ONTOLOGY_RELATIONSHIP_TYPES":
             from .ontology_service import OntologyService
             OntologyService.invalidate_relation_type_cache()
+        if terminology.value == NAME_TYPES_TERMINOLOGY_VALUE:
+            NameTypeService.invalidate_name_type_cache()
 
         return TerminologyService._to_term_response(term)
 
@@ -845,6 +865,7 @@ class TerminologyService:
         actor: str,
         skip_duplicates: bool,
         update_existing: bool,
+        valid_name_types: dict[str, str],
     ) -> tuple[list[Term], list[int]]:
         """Partition a batch of term requests into inserts + result rows.
 
@@ -912,6 +933,23 @@ class TerminologyService:
             # Default label to value if not provided
             label = term_req.label or term_req.value
 
+            # Fold legacy shapes into names and enforce the naming rules —
+            # a violation is this item's error row, not the batch's
+            try:
+                names = normalize_names(
+                    term_req.names, term_req.aliases, term_req.translations
+                )
+                validate_names(names, term_req.value, valid_name_types)
+            except ValueError as e:
+                results[global_idx] = BulkResultItem(
+                    index=global_idx,
+                    status="error",
+                    value=term_req.value,
+                    error=str(e),
+                    error_code="invalid_names",
+                )
+                continue
+
             # Build Term document for batch insert
             term = Term(
                 namespace=namespace,
@@ -919,12 +957,11 @@ class TerminologyService:
                 terminology_id=terminology_id,
                 terminology_value=terminology_value,
                 value=term_req.value,
-                aliases=term_req.aliases,
+                names=names,
                 label=label,
                 description=term_req.description,
                 sort_order=term_req.sort_order,
                 parent_term_id=term_req.parent_term_id,
-                translations=term_req.translations,
                 metadata=term_req.metadata,
                 created_by=actor,
             )
@@ -1009,7 +1046,7 @@ class TerminologyService:
                 changed_at=now,
                 new_values={
                     "value": terms_to_insert[pos].value,
-                    "aliases": terms_to_insert[pos].aliases,
+                    "names": [n.model_dump() for n in terms_to_insert[pos].names],
                     "label": terms_to_insert[pos].label,
                 },
             )
@@ -1133,6 +1170,7 @@ class TerminologyService:
             actor=actor,
             skip_duplicates=skip_duplicates,
             update_existing=update_existing,
+            valid_name_types=await NameTypeService.get_valid_name_types(),
         )
 
         # Phases E-F3: Insert + per-create side effects
@@ -1246,10 +1284,12 @@ class TerminologyService:
             terminology.updated_at = now
             await terminology.save()
 
-        # Invalidate relation type cache if this is the system terminology
+        # Invalidate the derived caches when a system terminology changes
         if total_created > 0 and terminology.value == "_ONTOLOGY_RELATIONSHIP_TYPES":
             from .ontology_service import OntologyService
             OntologyService.invalidate_relation_type_cache()
+        if total_created > 0 and terminology.value == NAME_TYPES_TERMINOLOGY_VALUE:
+            NameTypeService.invalidate_name_type_cache()
 
         logger.info(
             f"Bulk import complete: {total_created} terms created out of {total_terms} submitted"
@@ -1323,7 +1363,7 @@ class TerminologyService:
                 {"term_id": {"$regex": escaped, "$options": "i"}},
                 {"value": {"$regex": escaped, "$options": "i"}},
                 {"label": {"$regex": escaped, "$options": "i"}},
-                {"aliases": {"$regex": escaped, "$options": "i"}}
+                {"names.value": {"$regex": escaped, "$options": "i"}}
             ]
 
         # Get total count
@@ -1379,11 +1419,39 @@ class TerminologyService:
             new_values["value"] = request.value
             term.value = request.value
 
-        if request.aliases is not None and request.aliases != term.aliases:
-            changed_fields.append("aliases")
-            previous_values["aliases"] = term.aliases
-            new_values["aliases"] = request.aliases
-            term.aliases = request.aliases
+        # Names: either the full structured list, or the legacy fields each
+        # replacing their own partition (aliases -> untyped names,
+        # translations -> language names; typed names survive legacy writes).
+        if request.names is not None and (
+            request.aliases is not None or request.translations is not None
+        ):
+            raise ValueError(
+                "names is mutually exclusive with the legacy aliases/translations fields"
+            )
+
+        new_names: list[TermName] | None = None
+        if request.names is not None:
+            new_names = request.names
+        else:
+            if request.aliases is not None:
+                new_names = replace_untyped(term.names, request.aliases)
+            if request.translations is not None:
+                new_names = replace_translations(
+                    new_names if new_names is not None else term.names,
+                    request.translations,
+                )
+
+        if new_names is not None:
+            validate_names(
+                new_names,
+                request.value if request.value is not None else term.value,
+                await NameTypeService.get_valid_name_types(),
+            )
+            if [n.model_dump() for n in new_names] != [n.model_dump() for n in term.names]:
+                changed_fields.append("names")
+                previous_values["names"] = [n.model_dump() for n in term.names]
+                new_values["names"] = [n.model_dump() for n in new_names]
+                term.names = new_names
 
         if request.label is not None and request.label != term.label:
             changed_fields.append("label")
@@ -1408,12 +1476,6 @@ class TerminologyService:
             previous_values["parent_term_id"] = term.parent_term_id
             new_values["parent_term_id"] = request.parent_term_id
             term.parent_term_id = request.parent_term_id
-
-        if request.translations is not None:
-            changed_fields.append("translations")
-            previous_values["translations"] = [t.model_dump() for t in term.translations]
-            new_values["translations"] = [t.model_dump() for t in request.translations]
-            term.translations = request.translations
 
         if request.metadata is not None:
             changed_fields.append("metadata")
@@ -1447,6 +1509,10 @@ class TerminologyService:
             TerminologyService._term_to_event_dict(term),
             changed_by=actor,
         )
+
+        # A changed name-type term must not serve stale from the cache
+        if term.terminology_value == NAME_TYPES_TERMINOLOGY_VALUE:
+            NameTypeService.invalidate_name_type_cache()
 
         return TerminologyService._to_term_response(term)
 
@@ -1487,6 +1553,10 @@ class TerminologyService:
             TerminologyService._term_to_event_dict(term),
             changed_by=actor,
         )
+
+        # A deprecated name type stops validating new names immediately
+        if term.terminology_value == NAME_TYPES_TERMINOLOGY_VALUE:
+            NameTypeService.invalidate_name_type_cache()
 
         return TerminologyService._to_term_response(term)
 
@@ -1600,11 +1670,14 @@ class TerminologyService:
         terminology_id: str | None = None,
         terminology_value: str | None = None,
         value: str = ""
-    ) -> tuple[bool, Term | None, str | None, Term | None]:
+    ) -> tuple[bool, Term | None, str | None, Term | None, TermName | None]:
         """
         Validate a value against a terminology.
 
-        Matches against value OR aliases.
+        Matches against the term's value or any of its names, with value
+        precedence: every term's value is checked before any term's names,
+        so a name on one term can never shadow another term's canonical
+        value.
 
         Args:
             terminology_id: Terminology ID
@@ -1612,8 +1685,10 @@ class TerminologyService:
             value: Value to validate
 
         Returns:
-            Tuple of (is_valid, matched_term, matched_via, suggestion)
-            matched_via is 'value' or 'alias' if matched
+            Tuple of (is_valid, matched_term, matched_via, suggestion,
+            matched_name). matched_via is 'value' or 'alias' if matched;
+            matched_name is the TermName that matched when matched_via is
+            'alias'.
         """
         # Find terminology — an unscoped value that exists in several
         # namespaces raises rather than validating against an arbitrary one
@@ -1622,10 +1697,10 @@ class TerminologyService:
         elif terminology_value:
             terminology = await TerminologyService.find_by_value(terminology_value, None)
         else:
-            return (False, None, None, None)
+            return (False, None, None, None, None)
 
         if not terminology:
-            return (False, None, None, None)
+            return (False, None, None, None, None)
 
         # Prepare value for comparison
         compare_value = value if terminology.case_sensitive else value.lower()
@@ -1636,33 +1711,30 @@ class TerminologyService:
             "status": "active"
         }).to_list()
 
-        # Try to find match by value or alias
+        def _cmp(s: str) -> str:
+            return s if terminology.case_sensitive else s.lower()
+
+        # Pass 1: canonical values only
         for term in terms:
-            if terminology.case_sensitive:
-                # Check value
-                if term.value == value:
-                    return (True, term, "value", None)
-                # Check aliases
-                if value in term.aliases:
-                    return (True, term, "alias", None)
-            else:
-                # Case-insensitive matching
-                if term.value.lower() == compare_value:
-                    return (True, term, "value", None)
-                if any(alias.lower() == compare_value for alias in term.aliases):
-                    return (True, term, "alias", None)
+            if _cmp(term.value) == compare_value:
+                return (True, term, "value", None, None)
+
+        # Pass 2: names
+        for term in terms:
+            for name in term.names:
+                if _cmp(name.value) == compare_value:
+                    return (True, term, "alias", None, name)
 
         # No exact match - try to find suggestion
         # Simple approach: find terms that start with the value
         suggestion = None
         if len(value) >= 2:
             for t in terms:
-                t_value = t.value if terminology.case_sensitive else t.value.lower()
-                if t_value.startswith(compare_value):
+                if _cmp(t.value).startswith(compare_value):
                     suggestion = t
                     break
 
-        return (False, None, None, suggestion)
+        return (False, None, None, suggestion, None)
 
     # =========================================================================
     # HELPERS
@@ -1699,12 +1771,13 @@ class TerminologyService:
             terminology_id=t.terminology_id,
             terminology_value=t.terminology_value,
             value=t.value,
-            aliases=t.aliases,
+            names=t.names,
+            aliases=derived_aliases(t.names),
             label=t.label or t.value,
             description=t.description,
             sort_order=t.sort_order,
             parent_term_id=t.parent_term_id,
-            translations=t.translations,
+            translations=derived_translations(t.names),
             metadata=t.metadata,
             status=t.status,
             deprecated_reason=t.deprecated_reason,
@@ -1745,7 +1818,11 @@ class TerminologyService:
             "terminology_id": t.terminology_id,
             "terminology_value": t.terminology_value,
             "value": t.value,
-            "aliases": t.aliases,
+            "names": [n.model_dump() for n in t.names],
+            # Derived flat projection — downstream consumers that key on
+            # aliases (reporting-sync, document validation caches) keep
+            # resolving every name without knowing the structured shape.
+            "aliases": derived_aliases(t.names),
             "label": t.label or t.value,
             "description": t.description,
             "sort_order": t.sort_order,

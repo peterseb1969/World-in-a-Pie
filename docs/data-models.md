@@ -30,7 +30,7 @@ This document defines the conceptual data structures used throughout World In a 
 │   │              │            ┌──────────────────┐                         │
 │   │ • term_id    │            │  FieldDefinition │                         │
 │   │ • value      │◄───────────│ • name, label    │                         │
-│   │ • aliases[]  │  canonical │ • type           │                         │
+│   │ • names[]    │  canonical │ • type           │                         │
 │   │ • label?     │  IDs       │ • terminology_ref│                         │
 │   │ • parent_id  │            │ • template_ref   │                         │
 │   └──────────────┘            │ • version_strategy│                        │
@@ -169,10 +169,14 @@ class Term(BaseModel):
         description="Primary value (unique within terminology)",
         examples=["Draft", "Under Review", "Approved", "Archived"]
     )
-    aliases: list[str] = Field(
+    names: list[TermName] = Field(
         default_factory=list,
-        description="Alternative values that resolve to this term",
-        examples=[["DRAFT", "draft", "New"]]
+        description="Alternative names that resolve to this term. Each name "
+                    "carries: value (required), type (optional, from the "
+                    "extensible _NAME_TYPES terminology: INN, TRADE_GLOBAL, "
+                    "TRADE_LOCAL, CODE, REGISTRY_ID, SYNONYM, ABBREVIATION), "
+                    "language (optional, ISO 639-1), source (optional), and "
+                    "preferred (at most one per (type, language) group)."
     )
     label: str | None = Field(
         None,
@@ -197,10 +201,6 @@ class Term(BaseModel):
         default_factory=dict,
         description="Additional metadata (mappings, etc.)"
     )
-    translations: list[TermTranslation] = Field(
-        default_factory=list,
-        description="Multi-language translations"
-    )
     deprecated_reason: str | None = None
     replaced_by_term_id: str | None = None
     created_at: datetime
@@ -217,7 +217,13 @@ class Term(BaseModel):
   "terminology_id": "019469a0-1234-7abc-8def-abcdef123456",
   "terminology_value": "DOC_STATUS",
   "value": "Draft",
-  "aliases": ["DRAFT", "draft", "New"],
+  "names": [
+    { "value": "DRAFT" },
+    { "value": "draft" },
+    { "value": "New", "type": "SYNONYM" },
+    { "value": "Entwurf", "language": "de" },
+    { "value": "Brouillon", "language": "fr" }
+  ],
   "label": "Draft",
   "description": "Document is in draft state, not yet submitted for review",
   "status": "active",
@@ -226,22 +232,27 @@ class Term(BaseModel):
   "metadata": {
     "workflow_step": 1
   },
-  "translations": [
-    { "language": "de", "value": "Entwurf" },
-    { "language": "fr", "value": "Brouillon" }
-  ],
   "created_at": "2024-01-15T10:00:00Z",
   "created_by": "apikey:legacy"
 }
 ```
 
-### Term Alias Resolution
+API compatibility: the term API still accepts plain-string `aliases`
+(stored as untyped names) and legacy `translations` (stored as
+language-bearing names), and term responses serve derived `aliases` and
+`translations` projections alongside the structured `names`.
 
-When validating a value against a terminology, the system checks in order:
-1. **value** — Exact match on primary value
-2. **aliases** — Match against any alias
+### Term Name Resolution
 
-The validation response indicates which match type was used:
+When validating a value against a terminology, the system checks with
+value precedence — every term's canonical value before any term's names,
+so a name can never shadow another term's value:
+1. **value** — Exact match on primary value (all terms)
+2. **names** — Match against any name (all terms)
+
+The validation response indicates which match type was used
+(`matched_via: "alias"` for any name match, with the matched name and its
+type in `matched_name`):
 
 ```json
 {
@@ -287,9 +298,9 @@ class TermAuditEntry(BaseModel):
   "action": "updated",
   "changed_at": "2024-01-30T10:00:00Z",
   "changed_by": "user:admin-001",
-  "changed_fields": ["aliases"],
-  "previous_values": {"aliases": ["DRAFT"]},
-  "new_values": {"aliases": ["DRAFT", "draft", "New"]}
+  "changed_fields": ["names"],
+  "previous_values": {"names": [{"value": "DRAFT"}]},
+  "new_values": {"names": [{"value": "DRAFT"}, {"value": "draft"}, {"value": "New", "type": "SYNONYM"}]}
 }
 ```
 

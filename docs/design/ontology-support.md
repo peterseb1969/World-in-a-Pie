@@ -27,9 +27,9 @@ The single `parent_term_id` field on Term only supports one parent within one te
 |---|---|---|
 | Concepts | Terms | ✅ |
 | Preferred labels | `term.value` | ✅ |
-| Alternative labels | `term.aliases` | ✅ |
+| Alternative labels | `term.names` | ✅ |
 | Definitions | `term.description` | ✅ |
-| Multi-language labels | `term.translations` | ✅ |
+| Multi-language labels | `term.names` (language-bearing) | ✅ |
 | Custom annotations | `term.metadata` | ✅ |
 | Single-parent hierarchy | `term.parent_term_id` | ✅ |
 | Identity / exact match | Registry synonyms | ✅ |
@@ -333,9 +333,9 @@ Relations can be created and deleted via the term detail view. The form requires
 | Terminology | `owl:Ontology` | `skos:ConceptScheme` |
 | Term | `owl:Class` or `owl:NamedIndividual` | `skos:Concept` |
 | `term.value` | `rdfs:label` | `skos:prefLabel` |
-| `term.aliases` | — | `skos:altLabel` |
+| `term.names` | — | `skos:altLabel` |
 | `term.description` | `rdfs:comment` | `skos:definition` |
-| `term.translations` | `rdfs:label@lang` | `skos:prefLabel@lang` |
+| `term.names` (language) | `rdfs:label@lang` | `skos:prefLabel@lang` |
 | `is_a` relation | `rdfs:subClassOf` | `skos:broader` |
 | `related_to` relation | — | `skos:related` |
 | `maps_to` relation | — | `skos:exactMatch` / `skos:closeMatch` |
@@ -357,7 +357,7 @@ Classification schemes, controlled vocabularies, and simple ontologies map lossl
 | Polyhierarchy (broader/narrower) | TermRelation `is_a` | Lossless |
 | Associative links (related) | TermRelation `related_to` | Lossless |
 | External code mappings | Registry synonyms | Lossless |
-| Multi-language labels | translations | Lossless |
+| Multi-language labels | names (language-bearing) | Lossless |
 | ConceptScheme metadata | Terminology fields + metadata | Lossless |
 
 This covers ICD-10, ICD-11, MedDRA, LOINC, most of SNOMED CT's hierarchy, and any SKOS thesaurus.

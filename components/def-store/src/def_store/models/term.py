@@ -9,7 +9,13 @@ from pymongo import IndexModel
 
 
 class TermTranslation(BaseModel):
-    """Translation of a term's display values."""
+    """Legacy translation shape, kept for the API edge only.
+
+    Stored terms no longer carry a translations list — a translation is a
+    TermName with a language. Requests may still submit this shape; it is
+    normalized into names on write, and term responses derive it back for
+    callers that still read it.
+    """
 
     language: str = Field(
         ...,
@@ -22,6 +28,43 @@ class TermTranslation(BaseModel):
     description: str | None = Field(
         default=None,
         description="Translated description"
+    )
+
+
+class TermName(BaseModel):
+    """One name of a term — the unified naming model.
+
+    A term is a code (`value`) plus a set of names. Trade names,
+    development codes, registry numbers, translated labels and plain
+    synonyms are all names; what distinguishes them is data on the name,
+    not which field they live in. Every name resolves in validation
+    exactly like the term's value does.
+    """
+
+    value: str = Field(
+        ...,
+        description="The name itself (e.g., 'Avastin', 'bevacizumab', 'NSC-704865')"
+    )
+    type: str | None = Field(
+        default=None,
+        description="Name type from the _NAME_TYPES terminology "
+                    "(e.g., 'INN', 'TRADE_GLOBAL', 'CODE'). None = untyped synonym."
+    )
+    language: str | None = Field(
+        default=None,
+        description="Language code (ISO 639-1) for language-specific names"
+    )
+    description: str | None = Field(
+        default=None,
+        description="Free-text note on this name (e.g., a translated description)"
+    )
+    source: str | None = Field(
+        default=None,
+        description="Where this name came from (e.g., 'RTiS', 'OBO:hasExactSynonym')"
+    )
+    preferred: bool = Field(
+        default=False,
+        description="Preferred name within its (type, language) group — at most one per group"
     )
 
 
@@ -65,10 +108,11 @@ class Term(Document):
         description="The value stored in documents (e.g., 'approved'). Unique within terminology."
     )
 
-    # Alternative values that resolve to this term
-    aliases: list[str] = Field(
+    # All alternative names of this term (typed, resolvable)
+    names: list[TermName] = Field(
         default_factory=list,
-        description="Alternative values that resolve to this term (e.g., ['MR.', 'mr', 'Mr.'])"
+        description="Alternative names that resolve to this term. Each carries "
+                    "optional type, language, source and preferred flag."
     )
 
     # Display information
@@ -89,12 +133,6 @@ class Term(Document):
     parent_term_id: str | None = Field(
         default=None,
         description="Parent term ID for hierarchical terminologies"
-    )
-
-    # Multi-language support
-    translations: list[TermTranslation] = Field(
-        default_factory=list,
-        description="Translations for internationalization"
     )
 
     # Additional data
@@ -138,8 +176,8 @@ class Term(Document):
             IndexModel([("namespace", 1), ("term_id", 1)], unique=True, name="ns_term_id_unique_idx"),
             # Unique value within terminology within namespace
             IndexModel([("namespace", 1), ("terminology_id", 1), ("value", 1)], unique=True, name="ns_terminology_value_unique_idx"),
-            # Alias lookup within terminology
-            IndexModel([("namespace", 1), ("terminology_id", 1), ("aliases", 1)], name="ns_terminology_aliases_idx"),
+            # Name lookup within terminology (multikey over names.value)
+            IndexModel([("namespace", 1), ("terminology_id", 1), ("names.value", 1)], name="ns_terminology_name_values_idx"),
             # Sort order within terminology
             IndexModel([("namespace", 1), ("terminology_id", 1), ("sort_order", 1)], name="ns_terminology_sort_idx"),
             # Status filter within terminology

@@ -221,8 +221,12 @@ async def test_create_term_with_empty_aliases(client: AsyncClient, auth_headers:
 
 
 @pytest.mark.asyncio
-async def test_create_term_with_duplicate_aliases(client: AsyncClient, auth_headers: dict, test_terminology):
-    """Test creating a term with duplicate alias values — stored as-is."""
+async def test_create_term_with_duplicate_aliases_rejected(client: AsyncClient, auth_headers: dict, test_terminology):
+    """An exact duplicate alias is rejected loudly, not stored or deduped.
+
+    Case VARIANTS ('Sir.' vs 'SIR') remain legal — only the exact repeat
+    is an error.
+    """
     terminology_id = test_terminology["terminology_id"]
 
     response = await client.post(
@@ -237,15 +241,22 @@ async def test_create_term_with_duplicate_aliases(client: AsyncClient, auth_head
 
     assert response.status_code == 200
     data = response.json()
-    assert data["succeeded"] == 1
-    term_id = data["results"][0]["id"]
+    assert data["succeeded"] == 0
+    assert data["results"][0]["status"] == "error"
+    assert data["results"][0]["error_code"] == "invalid_names"
+    assert "Duplicate name" in data["results"][0]["error"]
 
-    get_response = await client.get(
-        f"/api/def-store/terms/{term_id}",
-        headers=auth_headers
+    # The case-variant list without the exact repeat is accepted
+    response = await client.post(
+        f"/api/def-store/terminologies/{terminology_id}/terms",
+        headers=auth_headers,
+        json=[{
+            "value": "sir",
+            "label": "Sir",
+            "aliases": ["Sir.", "SIR"]
+        }]
     )
-    # Duplicates are stored as provided
-    assert get_response.json()["aliases"] == ["Sir.", "Sir.", "SIR"]
+    assert response.json()["succeeded"] == 1
 
 
 @pytest.mark.asyncio
@@ -692,7 +703,9 @@ async def test_create_term_with_all_fields(client: AsyncClient, auth_headers: di
     assert detail["value"] == "mr"
     assert detail["label"] == "Mr"
     assert detail["description"] == "Mister honorific"
-    assert detail["aliases"] == ["MR.", "Mister"]
+    # aliases is the derived flat projection of ALL names — plain aliases
+    # and translated labels alike, since every name resolves
+    assert detail["aliases"] == ["MR.", "Mister", "M.", "Herr"]
     assert len(detail["translations"]) == 2
     assert detail["metadata"]["color"] == "#333"
     assert detail["metadata"]["formal"] is True
@@ -726,7 +739,8 @@ async def test_list_terms_includes_aliases_and_translations(client: AsyncClient,
     items = response.json()["items"]
     assert len(items) == 1
     item = items[0]
-    assert item["aliases"] == ["Mister"]
+    # aliases is derived from all names — the translated label included
+    assert item["aliases"] == ["Mister", "M."]
     assert len(item["translations"]) == 1
     assert item["translations"][0]["language"] == "fr"
     assert item["metadata"]["icon"] == "male"

@@ -20,6 +20,69 @@ from .terminology_service import TerminologyService
 # System terminology definitions
 # The `_` prefix indicates a system-managed terminology
 SYSTEM_TERMINOLOGIES: list[dict[str, Any]] = [
+    # _NAME_TYPES is seeded FIRST: every later term create (seed or user)
+    # validates its names' types against it
+    {
+        "value": "_NAME_TYPES",
+        "label": "Term Name Types",
+        "description": "System terminology defining the types a term name can carry "
+                       "(names: trade names, development codes, registry numbers, "
+                       "plain synonyms). Extensible — apps add their own types.",
+        "case_sensitive": False,
+        "metadata": {
+            "source": "WIP System",
+            "version": "1.0",
+            "language": "en",
+            "custom": {
+                "system_managed": True,
+                "term_names": True
+            }
+        },
+        "terms": [
+            {
+                "value": "INN",
+                "label": "INN",
+                "description": "International Nonproprietary Name (WHO)",
+                "sort_order": 1
+            },
+            {
+                "value": "TRADE_GLOBAL",
+                "label": "Global trade name",
+                "description": "Brand name used internationally",
+                "sort_order": 2
+            },
+            {
+                "value": "TRADE_LOCAL",
+                "label": "Local trade name",
+                "description": "Brand name specific to a market or region",
+                "sort_order": 3
+            },
+            {
+                "value": "CODE",
+                "label": "Code",
+                "description": "Development or internal code (e.g., RG435)",
+                "sort_order": 4
+            },
+            {
+                "value": "REGISTRY_ID",
+                "label": "Registry identifier",
+                "description": "Identifier in an external registry (e.g., NSC-704865, CAS number)",
+                "sort_order": 5
+            },
+            {
+                "value": "SYNONYM",
+                "label": "Synonym",
+                "description": "General synonym with no more specific type",
+                "sort_order": 6
+            },
+            {
+                "value": "ABBREVIATION",
+                "label": "Abbreviation",
+                "description": "Shortened form of the term's name",
+                "sort_order": 7
+            },
+        ]
+    },
     {
         "value": "_TIME_UNITS",
         "label": "Time Units",

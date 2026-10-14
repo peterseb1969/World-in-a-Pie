@@ -29,6 +29,7 @@ from ..models.api_models import (
 )
 from ..models.terminology import Terminology
 from ..services.registry_client import RegistryError
+from ..services.term_names import TermNameError
 from ..services.terminology_service import (
     AmbiguousTerminologyValueError,
     EntityExistsError,
@@ -113,6 +114,13 @@ async def create_terms(
             results = [BulkResultItem(index=0, status="created", id=result.term_id, value=items[0].value)]
         except EntityExistsError as e:
             results = [conflict_result(0, e, on_conflict, value=items[0].value)]
+        except TermNameError as e:
+            # Same machine-readable code the bulk path emits for a names
+            # rule violation — callers branch on the code, not the message
+            results = [BulkResultItem(
+                index=0, status="error", value=items[0].value,
+                error=str(e), error_code="invalid_names",
+            )]
         except ValueError as e:
             msg = str(e)
             if "not found" in msg:
@@ -153,7 +161,7 @@ async def list_terms(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     status: str | None = Query(None, description="Filter by status"),
-    search: str | None = Query(None, description="Search in value, aliases"),
+    search: str | None = Query(None, description="Search in value, label, names"),
     sort_by: Literal["value", "label", "sort_order", "created_at", "updated_at"] | None = Query(None, description="Sort field: value, label, sort_order, created_at, updated_at"),
     sort_order: Literal["asc", "desc"] | None = Query(None, description="Sort direction: asc or desc"),
     identity: UserIdentity = Depends(require_api_key)
@@ -283,6 +291,11 @@ async def update_terms(
                 results.append(BulkResultItem(index=i, status="error", id=item.term_id, error="Term not found"))
             else:
                 results.append(BulkResultItem(index=i, status="updated", id=item.term_id))
+        except TermNameError as e:
+            results.append(BulkResultItem(
+                index=i, status="error", id=item.term_id,
+                error=str(e), error_code="invalid_names",
+            ))
         except ValueError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.term_id, error=str(e)))
         except RegistryError as e:
@@ -457,7 +470,9 @@ async def validate_value(
         terminology = await Terminology.find_one({"terminology_id": request.terminology_id})
     else:
         try:
-            terminology = await TerminologyService.find_by_value(request.terminology_value, None)
+            terminology = await TerminologyService.find_by_value(
+                request.terminology_value or "", None
+            )
         except AmbiguousTerminologyValueError as e:
             return ValidateValueResponse(
                 valid=False,
@@ -481,9 +496,11 @@ async def validate_value(
     # namespace.
     await check_namespace_permission(identity, terminology.namespace, "read")
 
-    is_valid, matched_term, matched_via, suggestion = await TerminologyService.validate_value(
-        terminology_id=terminology.terminology_id,
-        value=request.value
+    is_valid, matched_term, matched_via, suggestion, matched_name = (
+        await TerminologyService.validate_value(
+            terminology_id=terminology.terminology_id,
+            value=request.value
+        )
     )
 
     return ValidateValueResponse(
@@ -493,6 +510,7 @@ async def validate_value(
         value=request.value,
         matched_term=TerminologyService._to_term_response(matched_term) if matched_term else None,
         matched_via=matched_via,
+        matched_name=matched_name,
         suggestion=TerminologyService._to_term_response(suggestion) if suggestion else None
     )
 
@@ -562,9 +580,11 @@ async def validate_values_bulk(
         # CASE-384 — gate per-item by read on the terminology's namespace.
         await check_namespace_permission(identity, terminology.namespace, "read")
 
-        is_valid, matched_term, matched_via, suggestion = await TerminologyService.validate_value(
-            terminology_id=terminology.terminology_id,
-            value=item.value
+        is_valid, matched_term, matched_via, suggestion, matched_name = (
+            await TerminologyService.validate_value(
+                terminology_id=terminology.terminology_id,
+                value=item.value
+            )
         )
 
         results.append(ValidateValueResponse(
@@ -574,6 +594,7 @@ async def validate_values_bulk(
             value=item.value,
             matched_term=TerminologyService._to_term_response(matched_term) if matched_term else None,
             matched_via=matched_via,
+            matched_name=matched_name,
             suggestion=TerminologyService._to_term_response(suggestion) if suggestion else None
         ))
 
