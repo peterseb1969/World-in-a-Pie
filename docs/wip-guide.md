@@ -720,8 +720,11 @@ old value gets 401.
 
 After rotating:
 
-- Clients that read the key **file** follow automatically: `kbc`, and MCP
-  configurations using `WIP_API_KEY_FILE`.
+- Clients that read the key **file** need no config change, but only some
+  re-read it while running: `kbc` reads it on every call and follows at once;
+  an MCP server configured with `WIP_API_KEY_FILE` reads it once at start, so
+  open MCP sessions get 401 until they are reconnected (e.g. `/mcp` in Claude
+  Code); app servers using `apiKeyFile` follow on their next restart.
 - Anyone holding a **copy** of the key (scripts, other machines, people)
   must be given the new value.
 - For zero downtime with external consumers that cannot switch at once,

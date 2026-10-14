@@ -24,7 +24,7 @@ Everything is done by **`create-app-project.sh`**, run **from your World-in-a-Pi
 - **empty / new dir → CREATE** a fresh app project (scaffold + `git init`) — *[Scenario B](#scenario-b--a-fresh-app-yac-new-app)*
 - **populated dir → SET UP IN PLACE** — add the APP-YAC scaffolding to an existing app repo without disturbing its working tree or `CLAUDE.md` — *[Scenario A](#scenario-a--an-app-yac-for-an-existing-app)*
 
-It generates `.mcp.json` pointing at your **running WIP install** (it auto-detects the install and uses its `secrets/api-key` via `WIP_API_KEY_FILE`, so key rotation just works), copies the app-builder slash commands + reference docs, and drops in the client-lib tarballs.
+It generates `.mcp.json` pointing at your **running WIP install** (it auto-detects the install and uses its `secrets/api-key` via `WIP_API_KEY_FILE`, so a key rotation needs no config change — reconnect the MCP server afterwards), copies the app-builder slash commands + reference docs, and drops in the client-lib tarballs.
 
 ---
 

@@ -16,7 +16,7 @@ Use the helper script to create a fully configured app project in one command:
 
 This creates the entire directory structure, copies slash commands and reference docs, generates `.mcp.json` (with automatic API key rotation support in production), copies client library tarballs with extracted READMEs, generates a starter `CLAUDE.md`, and initialises a git repo.
 
-**API key handling:** The generated `.mcp.json` uses `WIP_API_KEY_FILE` pointing at the wip-deploy install's secret backend (default `~/.wip-deploy/wip-dev-local/secrets/api-key`; override with `WIP_API_KEY_FILE_OVERRIDE`). When you rotate the API key in WIP, all apps pick up the new key automatically — no per-app config changes needed.
+**API key handling:** The generated `.mcp.json` uses `WIP_API_KEY_FILE` pointing at the wip-deploy install's secret backend (default `~/.wip-deploy/wip-dev-local/secrets/api-key`; override with `WIP_API_KEY_FILE_OVERRIDE`). When you rotate the API key in WIP, no per-app config changes are needed; a running MCP server picks up the new key when it is restarted or reconnected.
 
 After running the script:
 ```bash
