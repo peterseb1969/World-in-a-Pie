@@ -54,10 +54,28 @@ export interface UpdateTerminologyRequest {
 
 export type TerminologyListResponse = PaginatedResponse<Terminology>
 
+/** Legacy per-language label shape, accepted at the API edge and served
+ * as a derived projection; stored terms carry TermName entries instead. */
 export interface TermTranslation {
   language: string
   label: string
   description?: string
+}
+
+/** One name of a term — the unified naming model. Every name resolves in
+ * validation exactly like the term's value. */
+export interface TermName {
+  value: string
+  /** Name type from the extensible _NAME_TYPES terminology
+   * (e.g. 'INN', 'TRADE_GLOBAL', 'CODE'); null/absent = untyped synonym. */
+  type?: string | null
+  /** ISO 639-1 language code for language-specific names. */
+  language?: string | null
+  description?: string | null
+  /** Where this name came from (e.g. 'RTiS', 'OBO:hasExactSynonym'). */
+  source?: string | null
+  /** At most one preferred name per (type, language) group. */
+  preferred?: boolean
 }
 
 export interface Term {
@@ -66,11 +84,14 @@ export interface Term {
   terminology_id: string
   terminology_value?: string
   value: string
+  names: TermName[]
+  /** Derived projection: every name's value, flat. */
   aliases: string[]
   label?: string
   description?: string
   sort_order: number
   parent_term_id?: string
+  /** Derived projection: language-bearing, untyped names. */
   translations: TermTranslation[]
   metadata: Record<string, unknown>
   status: 'active' | 'deprecated' | 'inactive'
@@ -84,11 +105,14 @@ export interface Term {
 
 export interface CreateTermRequest {
   value: string
+  names?: TermName[]
+  /** Legacy shape: plain strings become untyped names. */
   aliases?: string[]
   label?: string
   description?: string
   sort_order?: number
   parent_term_id?: string
+  /** Legacy shape: entries become language-bearing names. */
   translations?: TermTranslation[]
   metadata?: Record<string, unknown>
   created_by?: string
@@ -96,11 +120,16 @@ export interface CreateTermRequest {
 
 export interface UpdateTermRequest {
   value?: string
+  /** Full replacement of the names list; mutually exclusive with the
+   * legacy aliases/translations fields. */
+  names?: TermName[]
+  /** Legacy update: replaces only the untyped, language-less names. */
   aliases?: string[]
   label?: string
   description?: string
   sort_order?: number
   parent_term_id?: string
+  /** Legacy update: replaces only the language-bearing, untyped names. */
   translations?: TermTranslation[]
   metadata?: Record<string, unknown>
   updated_by?: string
@@ -169,6 +198,9 @@ export interface ValidateValueResponse {
   value: string
   matched_term?: Term
   matched_via?: 'value' | 'alias'
+  /** The exact name that matched (set when matched_via is 'alias'),
+   * with its type and language. */
+  matched_name?: TermName
   suggestion?: Term
   error?: string
 }
