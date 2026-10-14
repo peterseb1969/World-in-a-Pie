@@ -555,66 +555,83 @@ class SearchService:
     async def _search_terms(
         self, query: str, namespace: str | None, status: str | None,
     ) -> list[SearchResult]:
-        """Search terms across all terminologies.
+        """Search terms via def-store's ranked search, one call per namespace.
+
+        Def-store's /terms/search scans each namespace's full term corpus
+        (value, label and every name) — the old shape here fetched ONE page
+        of 100 terms from the first 20 terminologies and substring-matched
+        in Python, which made any vocabulary beyond 100 terms effectively
+        invisible. namespace=None is the admin cross-namespace case: the
+        namespaces are enumerated from the terminology listing (paged
+        fully, not one page).
 
         Returns ALL matching items sorted by relevance (CASE-329).
         Capped at MAX_RESULTS_PER_TYPE; the orchestrator slices.
         """
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                term_params: dict[str, Any] = {"status": "active", "page_size": 100}
+                headers = {"X-API-Key": settings.api_key}
+
                 if namespace:
-                    term_params["namespace"] = namespace
-                term_response = await client.get(
-                    f"{settings.def_store_url}/api/def-store/terminologies",
-                    params=term_params,
-                    headers={"X-API-Key": settings.api_key}
-                )
+                    namespaces = [namespace]
+                else:
+                    namespaces_set: set[str] = set()
+                    page = 1
+                    while True:
+                        term_response = await client.get(
+                            f"{settings.def_store_url}/api/def-store/terminologies",
+                            params={"status": "active", "page_size": 100, "page": page},
+                            headers=headers,
+                        )
+                        if term_response.status_code != 200:
+                            break
+                        data = term_response.json()
+                        for t in data.get("items", []):
+                            if t.get("namespace"):
+                                namespaces_set.add(t["namespace"])
+                        if page >= data.get("pages", 1):
+                            break
+                        page += 1
+                    namespaces = sorted(namespaces_set)
 
-                if term_response.status_code != 200:
-                    return []
-
-                terminologies = term_response.json().get("items", [])
                 results = []
-                query_lower = query.lower()
-
-                # Search terms in each terminology. Cap on terminologies
-                # iterated stays at 20 to keep tail latency bounded; cap
-                # on returned results uses MAX_RESULTS_PER_TYPE.
-                for terminology in terminologies[:20]:
-                    term_id = terminology.get("terminology_id")
-                    params: dict[str, Any] = {"page_size": 100}
+                for ns in namespaces:
+                    params: dict[str, Any] = {
+                        "q": query,
+                        "namespace": ns,
+                        "mode": "substring",
+                        "limit": 100,
+                    }
                     if status:
-                        params["status"] = status
+                        params["statuses"] = status
 
-                    terms_response = await client.get(
-                        f"{settings.def_store_url}/api/def-store/terminologies/{term_id}/terms",
+                    resp = await client.get(
+                        f"{settings.def_store_url}/api/def-store/terms/search",
                         params=params,
-                        headers={"X-API-Key": settings.api_key}
+                        headers=headers,
                     )
-
-                    if terms_response.status_code != 200:
+                    if resp.status_code != 200:
                         continue
 
-                    for term in terms_response.json().get("items", []):
-                        if (query_lower in term.get("value", "").lower() or
-                            query_lower in term.get("label", "").lower() or
-                            query_lower in term.get("term_id", "").lower() or
-                            any(query_lower in alias.lower() for alias in term.get("aliases", []))):
-                            results.append(SearchResult(
-                                type="term",
-                                id=term.get("term_id"),
-                                value=term.get("value"),
-                                label=term.get("label"),
-                                status=term.get("status"),
-                                description=f"In {terminology.get('value')}",
-                                updated_at=self._parse_datetime(term.get("updated_at"))
-                            ))
+                    for hit in resp.json().get("items", []):
+                        term = hit.get("term", {})
+                        context = f"In {term.get('terminology_value')}"
+                        if hit.get("matched_via") == "alias":
+                            context += f" (matched name: {hit.get('matched_value')})"
+                        results.append(SearchResult(
+                            type="term",
+                            id=term.get("term_id"),
+                            value=term.get("value"),
+                            label=term.get("label"),
+                            status=term.get("status"),
+                            description=context,
+                            updated_at=self._parse_datetime(term.get("updated_at")),
+                        ))
 
                     if len(results) >= MAX_RESULTS_PER_TYPE:
                         break
 
-                results = self._sort_by_relevance(results, query_lower)
+                results = self._sort_by_relevance(results, query.lower())
                 return results[:MAX_RESULTS_PER_TYPE]
         except Exception as e:
             logger.error(f"Term search failed: {e}")

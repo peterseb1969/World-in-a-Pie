@@ -564,3 +564,99 @@ async def test_search_no_namespace_anywhere_stays_unscoped(captured_search_servi
     """No query param and no body field → namespace stays None (global)."""
     await _post_search("", {"query": "document"})
     assert captured_search_service["request"].namespace is None
+
+
+# =========================================================================
+# _search_terms — delegates to def-store's ranked /terms/search
+# =========================================================================
+
+
+def _mock_async_client(responses):
+    """An httpx.AsyncClient mock yielding the given responses per get()."""
+    client = AsyncMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.get = AsyncMock(side_effect=responses)
+    return client
+
+
+def _resp(payload, status_code=200):
+    r = MagicMock()
+    r.status_code = status_code
+    r.json = MagicMock(return_value=payload)
+    return r
+
+
+_SEARCH_HIT = {
+    "term": {
+        "term_id": "T-1",
+        "value": "RO4876646",
+        "label": "RO4876646",
+        "status": "active",
+        "terminology_value": "PCT_MOLECULE",
+        "updated_at": "2026-10-14T10:00:00Z",
+    },
+    "matched_value": "bevacizumab",
+    "matched_via": "alias",
+    "matched_name": {"value": "bevacizumab", "type": "INN"},
+    "rank": 0,
+}
+
+
+@pytest.mark.asyncio
+async def test_search_terms_scoped_namespace_single_call(monkeypatch):
+    """With a namespace, one call to def-store's search endpoint — the full
+    corpus is searched there, not one page of 100 terms here."""
+    import reporting_sync.search_service as mod
+
+    client = _mock_async_client([
+        _resp({"items": [_SEARCH_HIT], "total_matched": 1}),
+    ])
+    monkeypatch.setattr(mod.httpx, "AsyncClient", MagicMock(return_value=client))
+
+    service = SearchService()
+    results = await service._search_terms("bevacizumab", "pbs-clintrial-ref", None)
+
+    assert client.get.await_count == 1
+    url = client.get.call_args[0][0]
+    params = client.get.call_args.kwargs["params"]
+    assert url.endswith("/api/def-store/terms/search")
+    assert params["q"] == "bevacizumab"
+    assert params["namespace"] == "pbs-clintrial-ref"
+    assert params["mode"] == "substring"
+
+    assert len(results) == 1
+    assert results[0].id == "T-1"
+    assert results[0].value == "RO4876646"
+    # The alias match is surfaced, fixing "finds nothing for aliases"
+    assert "matched name: bevacizumab" in results[0].description
+
+
+@pytest.mark.asyncio
+async def test_search_terms_cross_namespace_enumerates(monkeypatch):
+    """namespace=None (admin): namespaces come from the FULL terminology
+    listing, and the search endpoint is called once per namespace."""
+    import reporting_sync.search_service as mod
+
+    client = _mock_async_client([
+        # terminology listing, one page, two namespaces
+        _resp({
+            "items": [
+                {"terminology_id": "A", "namespace": "ns-a"},
+                {"terminology_id": "B", "namespace": "ns-b"},
+            ],
+            "pages": 1,
+        }),
+        # one search call per namespace (sorted order: ns-a, ns-b)
+        _resp({"items": [_SEARCH_HIT], "total_matched": 1}),
+        _resp({"items": [], "total_matched": 0}),
+    ])
+    monkeypatch.setattr(mod.httpx, "AsyncClient", MagicMock(return_value=client))
+
+    service = SearchService()
+    results = await service._search_terms("beva", None, None)
+
+    assert client.get.await_count == 3
+    search_calls = client.get.call_args_list[1:]
+    assert [c.kwargs["params"]["namespace"] for c in search_calls] == ["ns-a", "ns-b"]
+    assert len(results) == 1
