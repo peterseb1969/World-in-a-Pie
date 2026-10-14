@@ -2,8 +2,8 @@
 
 Builds and executes a persistent delete journal for namespace deletion.
 Crash-safety is a MongoDB guarantee: Mongo steps fail the journal loudly
-and resume idempotently. MinIO and PostgreSQL cleanup is best-effort by
-design — a dead secondary store must not make a namespace undeletable —
+and resume idempotently. File-storage and PostgreSQL cleanup is
+best-effort by design — a dead secondary store must not make a namespace undeletable —
 but a degraded step records its error and the journal terminates as
 "completed_with_warnings" instead of a bare "completed", so the outcome
 is visible in the journal itself, not only in service logs.
@@ -30,6 +30,12 @@ logger = logging.getLogger("registry.namespace_deletion")
 # services, in the order the registry manifest provides it: the legacy and
 # master keys are both mapped from the install's api-key secret; API_KEY and
 # REGISTRY_API_KEY are honoured for setups that name it that way.
+# Journal store values for the stored-objects step. "minio" is the name
+# older journals carry; it executes the same way so they stay resumable.
+_FILE_STORAGE_STORES = ("file_storage", "minio")
+# document-store accepts at most this many keys per request.
+_STORAGE_DELETE_BATCH = 1000
+
 _SERVICE_KEY_VARS = (
     "WIP_AUTH_LEGACY_API_KEY",
     "MASTER_API_KEY",
@@ -82,10 +88,10 @@ class NamespaceDeletionService:
     """Orchestrates namespace deletion with a persistent journal."""
 
     def __init__(self):
-        self._minio_url = os.getenv("MINIO_URL")
-        self._minio_access_key = os.getenv("MINIO_ACCESS_KEY")
-        self._minio_secret_key = os.getenv("MINIO_SECRET_KEY")
-        self._minio_bucket = os.getenv("MINIO_BUCKET", "wip-attachments")
+        # Stored objects are deleted by document-store, which owns the
+        # storage client, bucket and credentials for whichever object store
+        # the install runs; the registry only sends it the journal's keys.
+        self._document_store_url = os.getenv("DOCUMENT_STORE_URL")
         self._postgres_url = os.getenv("REPORTING_SYNC_URL")
 
     async def dry_run(self, prefix: str) -> dict[str, Any]:
@@ -95,7 +101,7 @@ class NamespaceDeletionService:
             return {"error": "Namespace not found"}
 
         entity_counts = await self._count_entities(prefix)
-        minio_keys = await self._get_minio_keys(prefix)
+        storage_keys = await self._get_storage_keys(prefix)
         inbound_refs = await self._check_inbound_references(prefix)
 
         has_high_severity = any(
@@ -108,7 +114,9 @@ class NamespaceDeletionService:
             "deletion_mode": ns.deletion_mode,
             "dry_run": True,
             "entity_counts": entity_counts,
-            "minio_objects": len(minio_keys),
+            # Key name kept for API compatibility: it counts stored file
+            # objects in whichever object store the install runs.
+            "minio_objects": len(storage_keys),
             "inbound_references": [r.model_dump() for r in inbound_refs],
             "safe_to_delete": not has_high_severity,
             "requires_force": has_high_severity,
@@ -238,8 +246,8 @@ class NamespaceDeletionService:
 
         return counts
 
-    async def _get_minio_keys(self, prefix: str) -> list[str]:
-        """Get MinIO storage keys for files in this namespace."""
+    async def _get_storage_keys(self, prefix: str) -> list[str]:
+        """Storage keys of every file record in this namespace (any status)."""
         motor_client = Namespace.get_motor_collection().database.client
         doc_store_db = motor_client["wip_document_store"]
         files_coll = doc_store_db["files"]
@@ -340,15 +348,18 @@ class NamespaceDeletionService:
         steps: list[DeletionStep] = []
         order = 1
 
-        # Step 1: MinIO objects (must come before files metadata deletion)
-        minio_keys = await self._get_minio_keys(prefix)
-        if minio_keys and self._minio_url:
+        # Step 1: stored file objects. Runs before the files metadata is
+        # deleted, and the keys are persisted on the step itself, so a step
+        # that fails or is retried later still knows what to remove after the
+        # file records are gone.
+        storage_keys = await self._get_storage_keys(prefix)
+        if storage_keys:
             steps.append(DeletionStep(
                 order=order,
-                store="minio",
+                store="file_storage",
                 action="delete_objects",
-                detail=f"Delete {len(minio_keys)} objects from MinIO",
-                storage_keys=minio_keys,
+                detail=f"Delete {len(storage_keys)} stored file objects",
+                storage_keys=storage_keys,
             ))
             order += 1
 
@@ -457,7 +468,7 @@ class NamespaceDeletionService:
                 # Already done (crash recovery)
                 if step.collection:
                     summary[step.collection] = step.deleted_count
-                elif step.store == "minio":
+                elif step.store in _FILE_STORAGE_STORES:
                     summary["minio_objects"] = step.deleted_count
                 elif step.store == "postgresql":
                     summary["postgres_rows"] = step.deleted_count
@@ -474,7 +485,7 @@ class NamespaceDeletionService:
 
                 if step.collection:
                     summary[step.collection] = deleted
-                elif step.store == "minio":
+                elif step.store in _FILE_STORAGE_STORES:
                     summary["minio_objects"] = deleted
                 elif step.store == "postgresql":
                     summary["postgres_rows"] = deleted
@@ -515,8 +526,8 @@ class NamespaceDeletionService:
         """Execute a single journal step. Returns count of deleted items."""
         if step.store == "mongodb":
             return await self._exec_mongodb_step(step)
-        elif step.store == "minio":
-            return await self._exec_minio_step(step)
+        elif step.store in _FILE_STORAGE_STORES:
+            return await self._exec_file_storage_step(step, namespace)
         elif step.store == "postgresql":
             return await self._exec_postgresql_step(step, namespace)
         else:
@@ -531,48 +542,71 @@ class NamespaceDeletionService:
         result = await coll.delete_many(cast(dict, step.filter) or {})
         return result.deleted_count
 
-    async def _exec_minio_step(self, step: DeletionStep) -> int:
-        """Delete objects from MinIO via S3 API."""
-        if not step.storage_keys or not self._minio_url:
+    async def _exec_file_storage_step(self, step: DeletionStep, namespace: str) -> int:
+        """Delete the step's stored objects through document-store."""
+        keys = step.storage_keys or []
+        if not keys:
+            return 0
+        # A re-run must not inherit the error of an earlier attempt.
+        step.error = None
+
+        if not self._document_store_url:
+            logger.error("DOCUMENT_STORE_URL is not configured; stored objects not deleted")
+            step.error = (
+                "DOCUMENT_STORE_URL not configured; "
+                f"{len(keys)} stored objects may remain"
+            )
+            return 0
+        api_key = _service_api_key()
+        if not api_key:
+            logger.error(
+                "No service API key configured for the file-storage cleanup "
+                "(checked %s)", ", ".join(_SERVICE_KEY_VARS),
+            )
+            step.error = (
+                "no service API key configured for file-storage cleanup; "
+                f"{len(keys)} stored objects may remain"
+            )
             return 0
 
+        deleted = 0
+        problems: list[str] = []
+        url = f"{self._document_store_url}/api/document-store/files/storage/delete"
         try:
-            from urllib.parse import urlparse
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                for i in range(0, len(keys), _STORAGE_DELETE_BATCH):
+                    batch = keys[i:i + _STORAGE_DELETE_BATCH]
+                    resp = await client.post(
+                        url,
+                        json={"namespace": namespace, "storage_keys": batch},
+                        headers={"X-API-Key": api_key},
+                    )
+                    if resp.status_code != 200:
+                        problems.append(
+                            f"document-store answered {resp.status_code} for "
+                            f"{len(batch)} keys: {resp.text[:200]}"
+                        )
+                        continue
+                    data = resp.json()
+                    deleted += int(data.get("deleted") or 0)
+                    if data.get("refused"):
+                        problems.append(
+                            f"{len(data['refused'])} keys refused (owned by another "
+                            "namespace)"
+                        )
+                    if data.get("failed"):
+                        problems.append(f"{len(data['failed'])} keys failed to delete")
+        except httpx.HTTPError as e:
+            logger.warning("Could not reach document-store for file-storage cleanup: %s", e)
+            problems.append(f"could not reach document-store: {e}")
 
-            parsed = urlparse(self._minio_url)
-            base_url = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
-
-            deleted = 0
-            failed = 0
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                for key in step.storage_keys:
-                    url = f"{base_url}/{self._minio_bucket}/{key}"
-                    try:
-                        # Simple DELETE per object — works without complex S3 signing
-                        # for internal MinIO with access key auth
-                        resp = await client.delete(url, auth=(
-                            cast(str, self._minio_access_key),
-                            cast(str, self._minio_secret_key),
-                        ))
-                        if resp.status_code in (200, 204, 404):
-                            deleted += 1
-                        else:
-                            failed += 1
-                    except Exception as e:
-                        failed += 1
-                        logger.warning("Failed to delete MinIO object %s: %s", key, e)
-            if failed:
-                step.error = (
-                    f"{failed} of {len(step.storage_keys)} MinIO objects "
-                    "failed to delete; objects may remain in storage"
-                )
-            return deleted
-        except Exception as e:
-            logger.error("MinIO deletion failed: %s", e)
-            # Best-effort: don't block the deletion, but record the degraded
-            # outcome so the journal doesn't report a clean completion.
-            step.error = f"MinIO cleanup failed: {e}; objects may remain in storage"
-            return 0
+        if problems:
+            step.error = (
+                f"{deleted} of {len(keys)} stored objects deleted; "
+                + "; ".join(problems)
+                + "; objects may remain in storage"
+            )
+        return deleted
 
     async def _exec_postgresql_step(self, step: DeletionStep, namespace: str) -> int:
         """Delete namespace rows from PostgreSQL via reporting-sync API."""

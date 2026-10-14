@@ -65,6 +65,12 @@ spec:
       # reporting-sync is itself optional: when it's inactive, the
       # var stays unset and Registry skips the cascade call cleanly.
       - {name: REPORTING_SYNC_URL, source: {from_component: reporting-sync}}
+      # Namespace deletion asks document-store to delete the namespace's
+      # stored file objects (POST /api/document-store/files/storage/delete);
+      # document-store owns the object-store client, bucket and credentials.
+      # Unset, the deletion records the step as degraded instead of
+      # silently leaving the objects behind.
+      - {name: DOCUMENT_STORE_URL, source: {from_component: document-store}}
 
   routes:
     - {path: /api/registry, auth_required: false}

@@ -16,7 +16,9 @@ class DeletionStep(BaseModel):
     """A single step in the deletion journal."""
 
     order: int
-    store: Literal["mongodb", "postgresql", "minio"]
+    # "file_storage": stored file objects, deleted through document-store.
+    # "minio" is the same step as written by older journals.
+    store: Literal["mongodb", "postgresql", "file_storage", "minio"]
     database: str | None = None
     collection: str | None = None
     action: str | None = None
@@ -24,7 +26,7 @@ class DeletionStep(BaseModel):
     filter: dict[str, Any] | None = None
     storage_keys: list[str] | None = None
     # completed_with_errors: the step ran to completion under best-effort
-    # semantics (MinIO/PostgreSQL cleanup must not block namespace deletion —
+    # semantics (file-storage/PostgreSQL cleanup must not block namespace deletion —
     # MongoDB is the system of record) but swallowed a failure, so data may
     # remain in that store. error carries the reason. A resumed journal
     # re-runs such steps (deletes are idempotent), unlike "completed" ones.
@@ -66,7 +68,7 @@ class DeletionJournal(Document):
 
     namespace: str = Field(..., description="Namespace being deleted")
     # completed_with_warnings: every step executed, but at least one
-    # best-effort step (MinIO/PostgreSQL) degraded — data may remain in a
+    # best-effort step (file storage/PostgreSQL) degraded — data may remain in a
     # secondary store. Terminal, like "completed"; the per-step error fields
     # say what degraded. Operators must not read bare "completed" semantics
     # into it.

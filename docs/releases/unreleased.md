@@ -232,6 +232,32 @@ vocabulary beyond 100 terms was effectively invisible and alias matches
 were never found. Term results now cover full vocabularies and name
 matches say what matched.
 
+### Namespace deletion removes the namespace's stored files
+
+Until now, deleting a namespace removed its file records but left every
+stored file object in the bucket, and still reported `completed`. The
+Registry's object-store step was only built when `MINIO_URL` was set (no
+deployer ever set it), and its request used an authentication scheme MinIO
+and Garage both reject. The objects of every namespace deleted so far are
+still in storage, with no record pointing at them.
+
+The step now always runs when the namespace has files. The Registry sends
+the storage keys from its deletion journal to a new document-store route,
+`POST /api/document-store/files/storage/delete` (wip-admins / wip-services
+only), which deletes them with document-store's own storage client, so it
+follows whichever object store the install runs. The route refuses a
+namespace that is not being deleted (409), refuses a key whose file record
+belongs to another namespace, and answers 503 if the Registry cannot
+confirm the namespace's state. A failed or refused key leaves the journal
+`completed_with_warnings` with the keys kept on the step.
+
+**Action:** re-render the install (`wip-deploy redeploy --name <install>`)
+so the Registry receives `DOCUMENT_STORE_URL`. Without it, deletions record
+the storage step as degraded instead of deleting the objects. The Registry
+no longer reads `MINIO_URL`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` or
+`MINIO_BUCKET`. The impact report and journal summary keep the key name
+`minio_objects` for compatibility; it counts objects in any object store.
+
 ---
 
 ## What happens on first start after the upgrade

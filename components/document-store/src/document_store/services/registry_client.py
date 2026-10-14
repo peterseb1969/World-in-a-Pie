@@ -277,6 +277,27 @@ class RegistryClient(RegistryClientBase):
             created_by=created_by,
         )
 
+    async def get_namespace_status(self, namespace: str) -> str | None:
+        """The namespace's lifecycle status, or None once the Registry no
+        longer has it (a completed deletion removes the record).
+
+        Raises RegistryError (or the transport's error) when the Registry
+        cannot answer — callers gating a destructive action must fail closed.
+        """
+        async with self._make_client() as client:
+            response = await client.get(
+                f"{self.base_url}/api/registry/namespaces/{namespace}",
+                headers=self._get_headers(),
+            )
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            raise RegistryError(
+                f"Failed to fetch namespace {namespace}: "
+                f"{response.status_code} - {response.text}"
+            )
+        return cast(str, response.json().get("status"))
+
 
 # ── Singleton ───────────────────────────────────────────────────────────────
 

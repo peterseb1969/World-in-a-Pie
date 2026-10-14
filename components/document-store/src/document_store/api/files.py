@@ -1,6 +1,7 @@
 """File API endpoints for binary file storage."""
 
 import asyncio
+import logging
 import math
 from typing import Literal
 
@@ -27,16 +28,21 @@ from ..models.api_models import (
     FileListResponse,
     FileResponse,
     FileUploadMetadata,
+    StrictModel,
     UpdateFileItem,
 )
 from ..models.file import FileStatus
 from ..services.file_service import FileServiceError, get_file_service
 from ..services.file_storage_client import (
+    FileStorageError,
     get_file_storage_client,
     is_file_storage_enabled,
 )
 from ..services.nats_client import get_throttle_delay
-from .auth import require_api_key
+from ..services.registry_client import get_registry_client
+from .auth import require_api_key, require_groups
+
+logger = logging.getLogger(__name__)
 
 
 class FileDocumentRef(BaseModel):
@@ -489,6 +495,97 @@ async def hard_delete_file(
         return {"status": "permanently_deleted", "file_id": file_id}
     except FileServiceError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+class StorageDeleteRequest(StrictModel):
+    """Stored objects to remove for a namespace that is being deleted."""
+
+    namespace: str = Field(..., min_length=1, description="Namespace being deleted")
+    storage_keys: list[str] = Field(
+        ...,
+        max_length=1000,
+        description="Storage keys recorded in the namespace's deletion journal",
+    )
+
+
+@router.post(
+    "/storage/delete",
+    summary="Delete the stored objects of a namespace being deleted",
+    description="""
+Remove objects from file storage on behalf of namespace deletion. The
+Registry's deletion journal records each file's storage key before any
+metadata is removed and sends those keys here, so the step can be retried
+even after the files' records are gone.
+
+Guards, because this removes bytes outright:
+- wip-admins / wip-services only;
+- the namespace must be `locked` (deletion in progress) or already gone
+  from the Registry — a live namespace is refused with 409, and an
+  unreachable Registry with 503;
+- a key whose file record belongs to a different namespace is refused
+  per key and left untouched.
+
+Deleting an object that does not exist counts as deleted, so a retried
+request is safe. Always 200 once the guards pass: per-key outcomes are in
+`deleted`, `refused` and `failed`.
+    """,
+    dependencies=[
+        Depends(require_groups(["wip-admins", "wip-services"])),
+        Depends(require_file_storage),
+    ],
+)
+async def delete_namespace_storage_objects(request: StorageDeleteRequest) -> dict:
+    """Delete stored objects for a namespace that is being deleted."""
+    from ..models.file import File as FileModel
+
+    try:
+        ns_status = await get_registry_client().get_namespace_status(request.namespace)
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Registry could not confirm that namespace {request.namespace!r} "
+            f"is being deleted: {e}",
+        ) from e
+    if ns_status not in (None, "locked"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Namespace {request.namespace!r} is {ns_status!r}. Stored objects are "
+            "only deleted for a namespace whose deletion is in progress (locked) or done.",
+        )
+
+    keys = list(dict.fromkeys(request.storage_keys))
+    owners: dict[str, set[str]] = {}
+    for file_doc in await FileModel.find({"storage_key": {"$in": keys}}).to_list():
+        owners.setdefault(file_doc.storage_key, set()).add(file_doc.namespace)
+
+    storage = get_file_storage_client()
+    deleted = 0
+    refused: list[dict] = []
+    failed: list[dict] = []
+    for key in keys:
+        foreign = sorted(ns for ns in owners.get(key, set()) if ns != request.namespace)
+        if foreign:
+            refused.append({"storage_key": key, "owner_namespaces": foreign})
+            continue
+        try:
+            await storage.delete(key)
+            deleted += 1
+        except FileStorageError as e:
+            failed.append({"storage_key": key, "error": str(e)})
+
+    if refused or failed:
+        logger.warning(
+            "Namespace %r storage cleanup: %d deleted, %d refused, %d failed",
+            request.namespace, deleted, len(refused), len(failed),
+        )
+    else:
+        logger.info("Namespace %r storage cleanup: %d deleted", request.namespace, deleted)
+    return {
+        "namespace": request.namespace,
+        "deleted": deleted,
+        "refused": refused,
+        "failed": failed,
+    }
 
 
 @router.get(
