@@ -27,6 +27,7 @@ from .config import settings
 from .metrics import metrics
 from .models import DroppedEvent, EventType, ReportingConfig, SyncStatus
 from .schema_manager import SchemaManager
+from .term_closure import TermClosureMaintainer
 from .transformer import DocumentTransformer, _parse_datetime, term_name_rows
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ class SyncWorker:
         self.pool = postgres_pool
         self.status = status
         self.schema_manager = SchemaManager(postgres_pool)
+        self.closure = TermClosureMaintainer(postgres_pool, self.schema_manager)
         self._running = False
         self._template_cache: dict[str, dict[str, Any]] = {}
         self._managed_tables: set[str] = set()
@@ -618,6 +620,9 @@ class SyncWorker:
                 f"Synced term {term_data.get('value')} ({term_id}) "
                 f"to {table_name} ({latency_ms:.1f}ms)"
             )
+            # Hierarchy may have moved (parent_term_id, term lifecycle) —
+            # the debounce coalesces bursts into one closure rebuild
+            self.closure.mark_dirty(namespace)
             return True
 
         except Exception as e:
@@ -710,6 +715,7 @@ class SyncWorker:
                 f"Synced term_relation {source_term_id} --{relation_type}--> "
                 f"{target_term_id} to {table_name} ({latency_ms:.1f}ms)"
             )
+            self.closure.mark_dirty(namespace)
             return True
 
         except Exception as e:

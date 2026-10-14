@@ -596,6 +596,15 @@ Terms can be connected via typed relations:
 - Extensible: apps can add their own relation types to _ONTOLOGY_RELATIONSHIP_TYPES; OBO Graph import auto-creates any type it references
 - Fields: source_term_id, target_term_id, relation_type
 - Supports traversal: ancestors, descendants, parents, children
+- Reporting carries a platform-maintained `term_closure` table per
+  namespace schema: one row per (ancestor_id, descendant_id,
+  relation_type) with shortest-path depth, reflexive rows included,
+  parent_term_id links counted as is_a. "Documents whose term is anywhere
+  under X" is one indexed subquery — no recursive SQL, correct under
+  multiple parents:
+  `... WHERE t._term_id IN (SELECT descendant_id FROM term_closure
+  WHERE ancestor_id = $1 AND relation_type = 'is_a')`.
+  Kept in sync from term and term-relation events (debounced rebuild).
 - Supports OBO Graph JSON import for bulk relation loading
 """
 

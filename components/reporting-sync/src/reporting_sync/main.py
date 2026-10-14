@@ -1798,7 +1798,7 @@ async def list_tables(
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
     allowed_prefixes = ("doc_",)
-    allowed_exact = {"terminologies", "terms", "term_names", "term_relations", "templates"}
+    allowed_exact = {"terminologies", "terms", "term_names", "term_relations", "term_closure", "templates"}
     version_re = re.compile(r"^(doc_.+)__v(\d+)$")
 
     async with state.postgres_pool.acquire() as conn:
@@ -2043,7 +2043,7 @@ async def execute_query(body: ReportQuery):
 
 # Allowed tables for CSV export (same whitelist as /tables)
 _EXPORT_ALLOWED_PREFIXES = ("doc_",)
-_EXPORT_ALLOWED_EXACT = {"terminologies", "terms", "term_names", "term_relations", "templates"}
+_EXPORT_ALLOWED_EXACT = {"terminologies", "terms", "term_names", "term_relations", "term_closure", "templates"}
 
 
 def _is_allowed_table(name: str) -> bool:

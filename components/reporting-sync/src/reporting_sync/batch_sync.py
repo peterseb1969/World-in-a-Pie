@@ -26,6 +26,7 @@ from .models import (
     ReportingConfig,
 )
 from .schema_manager import SchemaManager
+from .term_closure import TermClosureMaintainer
 from .transformer import DocumentTransformer, _parse_datetime, term_name_rows
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ class BatchSyncService:
     def __init__(self, postgres_pool: asyncpg.Pool):
         self.pool = postgres_pool
         self.schema_manager = SchemaManager(postgres_pool)
+        self.closure = TermClosureMaintainer(postgres_pool, self.schema_manager)
         self._jobs: dict[str, BatchSyncJob] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}
         # Strong refs to fire-and-forget tasks (definitions pre-sync) so the
@@ -1143,6 +1145,13 @@ class BatchSyncService:
         except Exception as e:
             logger.error(f"Batch term sync error: {e}", exc_info=True)
 
+        if synced:
+            for ns in ns_tables:
+                try:
+                    await self.closure.rebuild(ns)
+                except Exception as e:
+                    logger.error(f"term_closure rebuild failed for {ns}: {e}")
+
         logger.info(f"Term batch sync: {synced} synced, {failed} failed")
         return {"synced": synced, "failed": failed, "total": synced + failed}
 
@@ -1249,6 +1258,16 @@ class BatchSyncService:
 
         except Exception as e:
             logger.error(f"Batch term_relation sync error: {e}", exc_info=True)
+
+        # A batch is one burst by definition — rebuild each touched
+        # namespace's closure once, immediately. A batch that wrote
+        # nothing changed no edges, so there is nothing to rebuild.
+        if synced:
+            for ns in ns_tables:
+                try:
+                    await self.closure.rebuild(ns)
+                except Exception as e:
+                    logger.error(f"term_closure rebuild failed for {ns}: {e}")
 
         logger.info(f"TermRelation batch sync: {synced} synced, {failed} failed")
         return {"synced": synced, "failed": failed, "total": synced + failed}

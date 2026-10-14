@@ -214,6 +214,24 @@ storage order served first. Three changes make the ambiguity loud:
 except ambiguous names on identity fields, which were producing
 storage-order-dependent identities and should be corrected, not relied on.
 
+### Platform-maintained term closure in reporting
+
+Each namespace schema gains a `term_closure` table: one row per
+(ancestor, descendant, relation_type) with the shortest-path depth,
+reflexive rows included, `parent_term_id` links counted as `is_a` (the
+same union the ontology traversal uses). "Documents whose term is
+anywhere in the subtree of X" becomes one indexed subquery — no app-side
+recursive CTEs, and correct under multiple parents, which fixed-depth
+joins silently are not (926 multi-parent terms measured in one real
+vocabulary). Closures are per relation type, never blended, and are
+rebuilt wholesale per namespace (debounced from term and term-relation
+events; immediately after a batch sync) inside one transaction, so
+readers never see a half-built closure. The table is listed by `/tables`
+and exportable like the other fixed tables.
+**Action:** none. Apps using the CASE-849-style registered closure view
+can switch their joins to `term_closure` and drop the view at their own
+pace.
+
 ### Terminology snapshot reconcile
 
 `POST /api/def-store/terminologies/{id}/reconcile` (MCP tool

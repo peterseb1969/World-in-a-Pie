@@ -479,7 +479,7 @@ class TestBatchSyncRelations:
 
             await service.batch_sync_term_relations(namespace="wip")
 
-        args = conn.execute.call_args[0]
+        args = conn.execute.call_args_list[0][0]
         # $11 = created_at (index 11)
         created_at = args[11]
         assert isinstance(created_at, datetime), f"created_at should be datetime, got {type(created_at)}"
@@ -498,7 +498,7 @@ class TestBatchSyncRelations:
 
             await service.batch_sync_term_relations(namespace="wip")
 
-        args = conn.execute.call_args[0]
+        args = conn.execute.call_args_list[0][0]
         # $9 = metadata (index 9)
         assert args[9] == json.dumps({"source_ontology": "SNOMED"})
 

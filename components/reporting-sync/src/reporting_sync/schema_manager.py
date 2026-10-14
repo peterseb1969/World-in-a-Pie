@@ -1016,6 +1016,50 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_terminology_value_idx"
         logger.info(f"Created {qualified} table")
         return qualified
 
+    async def ensure_term_closure_table(self, namespace: str) -> str:
+        """
+        Ensure the term_closure table exists in the namespace's schema.
+
+        The platform-maintained transitive closure over term relations
+        (plus parent_term_id links as is_a), one row per
+        (ancestor, descendant, relation_type) with the shortest-path
+        depth, reflexive rows included — a subtree lookup is an index
+        range scan, never query-time recursion. Rebuilt wholesale per
+        namespace by the closure maintainer.
+
+        Returns:
+            The schema-qualified table reference ("<ns>"."term_closure").
+        """
+        schema = await self.ensure_schema(namespace)
+        table_name = "term_closure"
+        qualified = f'"{schema}"."{table_name}"'
+
+        if await self.table_exists(schema, table_name):
+            return qualified
+
+        ddl = f"""
+CREATE TABLE IF NOT EXISTS {qualified} (
+    "namespace" VARCHAR(255) NOT NULL DEFAULT 'wip',
+    "relation_type" TEXT NOT NULL,
+    "ancestor_id" TEXT NOT NULL,
+    "descendant_id" TEXT NOT NULL,
+    "depth" INTEGER NOT NULL,
+    "ancestor_terminology_id" TEXT,
+    "descendant_terminology_id" TEXT
+);
+
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_ancestor_idx"
+  ON {qualified}("namespace", "ancestor_id", "relation_type");
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_descendant_idx"
+  ON {qualified}("namespace", "descendant_id", "relation_type");
+"""
+
+        async with self.pool.acquire() as conn:
+            await conn.execute(ddl)
+
+        logger.info(f"Created {qualified} table")
+        return qualified
+
     async def ensure_term_relations_table(self, namespace: str) -> str:
         """
         Ensure the term_relations table exists in the namespace's schema.
