@@ -11,11 +11,10 @@ import time
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
-import nats
 from fastapi import APIRouter, Depends, FastAPI
-from nats.js import JetStreamContext
 
 from wip_auth import require_api_key, setup_auth, setup_key_sync
+from wip_auth.events import EventBus, StreamSpec
 from wip_auth.security import check_production_security
 
 from . import __version__
@@ -36,8 +35,10 @@ logger = logging.getLogger(__name__)
 class AppState:
     """Application state holding connections and worker."""
 
-    nats_client: nats.NATS | None = None
-    jetstream: JetStreamContext | None = None
+    # The shared self-healing NATS connection: connects in the background,
+    # reconnects without limit, ensures both ingest streams, and supervises
+    # the worker (restarting it whenever its consumer loop dies).
+    bus: EventBus = EventBus(None, name="ingest-gateway")
     http_client: IngestHTTPClient | None = None
     result_publisher: ResultPublisher | None = None
     worker: IngestWorker | None = None
@@ -48,58 +49,38 @@ class AppState:
 state = AppState()
 
 
-async def connect_nats() -> tuple[nats.NATS, JetStreamContext]:
-    """Connect to NATS and get JetStream context."""
-    logger.info(f"Connecting to NATS at {settings.nats_url}...")
-    nc = await nats.connect(settings.nats_url)
-    js = nc.jetstream()
-
-    # Ensure WIP_INGEST stream exists
-    try:
-        stream_info = await js.stream_info(settings.nats_ingest_stream_name)
-        logger.info(
-            f"Stream {settings.nats_ingest_stream_name} exists "
-            f"(messages: {stream_info.state.messages})"
-        )
-    except nats.js.errors.NotFoundError:
-        logger.info(f"Creating stream {settings.nats_ingest_stream_name}...")
-        # Use explicit subjects to avoid overlap with results stream
-        # (wip.ingest.> would also capture wip.ingest.results.>)
-        await js.add_stream(
+def _ingest_streams() -> list[StreamSpec]:
+    """The ingest gateway's two streams, ensured on every (re)connect."""
+    return [
+        # Explicit subjects so the ingest stream does not overlap the results
+        # stream (wip.ingest.> would also capture wip.ingest.results.>).
+        StreamSpec(
             name=settings.nats_ingest_stream_name,
-            subjects=[
+            subjects=(
                 "wip.ingest.terminologies.>",
                 "wip.ingest.terms.>",
                 "wip.ingest.templates.>",
                 "wip.ingest.documents.>",
-            ],
-            retention="limits",
+            ),
             max_msgs=settings.stream_max_msgs,
             max_bytes=settings.stream_max_bytes,
-        )
-        logger.info(f"Stream {settings.nats_ingest_stream_name} created")
-
-    # Ensure WIP_INGEST_RESULTS stream exists
-    try:
-        results_info = await js.stream_info(settings.nats_results_stream_name)
-        logger.info(
-            f"Stream {settings.nats_results_stream_name} exists "
-            f"(messages: {results_info.state.messages})"
-        )
-    except nats.js.errors.NotFoundError:
-        logger.info(f"Creating stream {settings.nats_results_stream_name}...")
-        # Note: max_age removed due to nats-py serialization issue
-        await js.add_stream(
+        ),
+        StreamSpec(
             name=settings.nats_results_stream_name,
-            subjects=["wip.ingest.results.>"],
-            retention="limits",
+            subjects=("wip.ingest.results.>",),
             max_msgs=settings.stream_max_msgs,
             max_bytes=settings.stream_max_bytes,
-        )
-        logger.info(f"Stream {settings.nats_results_stream_name} created")
+        ),
+    ]
 
-    logger.info("Connected to NATS with JetStream")
-    return nc, js
+
+async def _run_worker(js: Any) -> None:
+    """One run of the ingest worker, bound to the bus's current connection."""
+    assert state.worker is not None and state.result_publisher is not None
+    state.result_publisher.js = js
+    state.worker.nc = state.bus.client
+    state.worker.js = js
+    await state.worker.start()
 
 
 @asynccontextmanager
@@ -110,30 +91,19 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.service_name} v{__version__}...")
     state.start_time = time.time()
 
-    # Connect to NATS. The NATS client library has its own built-in
-    # reconnect loop (configurable via max_reconnect_attempts), which
-    # handles NATS-not-ready-yet on k8s fresh boot.
-    try:
-        state.nats_client, state.jetstream = await connect_nats()
-    except Exception as e:
-        logger.error(f"Failed to connect to NATS: {e}")
-        raise
+    # NATS connects in the background and heals itself, so a late or
+    # vanished NATS never blocks startup or leaves the worker dead.
+    state.bus = EventBus(settings.nats_url, name="ingest-gateway", streams=_ingest_streams())
+    await state.bus.start()
 
     # Initialize HTTP client
     state.http_client = IngestHTTPClient()
 
-    # Initialize result publisher
-    state.result_publisher = ResultPublisher(state.jetstream)
-
-    # Create and start worker
-    state.worker = IngestWorker(
-        state.nats_client,
-        state.jetstream,
-        state.http_client,
-        state.result_publisher,
-    )
-    state.worker_task = asyncio.create_task(state.worker.start())
-    logger.info("Ingest worker started")
+    # The publisher and worker are bound to a JetStream context per run.
+    state.result_publisher = ResultPublisher(None)
+    state.worker = IngestWorker(None, None, state.http_client, state.result_publisher)
+    state.worker_task = state.bus.supervise("ingest-worker", _run_worker)
+    logger.info("Ingest worker scheduled (runs while NATS is connected)")
 
     # Pick up runtime API keys (created via the Registry) like the other
     # services; REGISTRY_URL / REGISTRY_API_KEY come from the environment.
@@ -162,10 +132,9 @@ async def lifespan(app: FastAPI):
     if state.http_client:
         await state.http_client.close()
 
-    # Close NATS connection
-    if state.nats_client:
-        await state.nats_client.close()
-        logger.info("NATS connection closed")
+    # Stop the NATS event bus
+    await state.bus.stop()
+    logger.info("NATS event bus stopped")
 
     logger.info(f"{settings.service_name} shutdown complete")
 
@@ -192,7 +161,7 @@ router = APIRouter(
 @app.get("/api/ingest-gateway/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
     """Health check endpoint."""
-    nats_ok = state.nats_client is not None and state.nats_client.is_connected
+    nats_ok = state.bus.connected
     worker_ok = state.worker is not None and state.worker.is_running
 
     if nats_ok and worker_ok:
@@ -225,7 +194,7 @@ async def health_check() -> HealthResponse:
 @router.get("/status", response_model=StatusResponse)
 async def get_status() -> StatusResponse:
     """Get current worker status and statistics."""
-    nats_ok = state.nats_client is not None and state.nats_client.is_connected
+    nats_ok = state.bus.connected
     uptime = time.time() - state.start_time if state.start_time > 0 else 0
 
     return StatusResponse(

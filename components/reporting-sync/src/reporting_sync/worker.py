@@ -31,6 +31,10 @@ from .transformer import DocumentTransformer, _parse_datetime
 
 logger = logging.getLogger(__name__)
 
+# Consecutive failed fetches (timeouts excluded) after which the consumer loop
+# gives up and lets its supervisor re-subscribe.
+MAX_CONSECUTIVE_FETCH_ERRORS = 30
+
 
 class SyncWorker:
     """Processes events from NATS and syncs to PostgreSQL."""
@@ -814,16 +818,32 @@ class SyncWorker:
             )
 
             # Process messages
+            fetch_errors = 0
             while self._running:
                 try:
                     messages = await sub.fetch(batch=settings.batch_size, timeout=5)
+                except TimeoutError:
+                    # No messages available: a healthy, empty poll
+                    fetch_errors = 0
+                    continue
+                except Exception as e:
+                    # A subscription whose stream or consumer is gone fails
+                    # every fetch. Give up after a run of failures so the
+                    # supervisor re-subscribes, instead of spinning forever.
+                    fetch_errors += 1
+                    if fetch_errors >= MAX_CONSECUTIVE_FETCH_ERRORS:
+                        raise RuntimeError(
+                            f"{fetch_errors} consecutive fetch failures: {e}"
+                        ) from e
+                    logger.error(f"Error fetching messages: {e}")
+                    await asyncio.sleep(1)
+                    continue
+                fetch_errors = 0
+                try:
                     for msg in messages:
                         await self._process_message(msg)
-                except TimeoutError:
-                    # No messages available, continue
-                    pass
                 except Exception as e:
-                    logger.error(f"Error fetching messages: {e}")
+                    logger.error(f"Error processing messages: {e}")
                     await asyncio.sleep(1)
 
         except Exception as e:

@@ -115,6 +115,39 @@ anonymously. Its outbound key now also falls back to `MASTER_API_KEY`, and the
 component manifest sets `API_KEY`, so it no longer writes with the dev default
 key on deployed installs.
 
+### NATS connections heal themselves; `WIP_EVENTS` has one definition
+
+def-store, template-store, document-store, reporting-sync and ingest-gateway
+share one NATS connection module (`wip_auth.events`). Before, a store whose
+first connect failed published nothing until restarted, and any client gave
+up after about two minutes of NATS outage — writes kept succeeding while
+reporting silently diverged.
+- **Startup never waits for NATS.** Services connect in the background and
+  reconnect without limit; a closed client is rebuilt. ingest-gateway no
+  longer crashes on start when NATS is down.
+- **Events survive short outages.** While NATS is unreachable, events wait in
+  a per-process retry queue (10,000 events, 1 hour) and are published in
+  order once it is back. Beyond those bounds, or across a restart, events are
+  dropped and counted; repair with a batch sync, as before.
+- **Consumers are supervised.** The reporting-sync and ingest-gateway workers
+  start whenever NATS is connected, and restart when their consumer loop
+  dies (a missing stream, a deleted durable consumer).
+- **`WIP_EVENTS` converges on every (re)connect** to one definition: subjects
+  `wip.documents/files/templates/terminologies/terms/term_relations.>`,
+  1,000,000 messages, 1 GiB, **7 days**. Missing subjects are added (file
+  events had no stream on installs where reporting-sync created it first);
+  subjects added by others are kept.
+  **Action:** on such installs the stream had no age limit, so the first
+  start purges stored events older than 7 days. reporting-sync normally
+  processed them long before; if its consumer is days behind (check
+  `/api/reporting-sync/metrics/consumer`), run a batch sync after upgrading.
+- **Visibility.** `/health` reports `"nats"` as `connected`, `connecting`,
+  `reconnecting` or `not_configured` (was `connected` / `disabled`).
+  `GET /api/<service>/health/events` (wip-admins / wip-services) returns the
+  connection state, published / queued / dropped-by-reason counters and the
+  supervised consumers' restarts. `/health` stays HTTP 200 regardless:
+  readiness and liveness probe the same endpoint.
+
 ---
 
 ## What happens on first start after the upgrade

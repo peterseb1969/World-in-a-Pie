@@ -8,6 +8,7 @@ The actual sync work is done by the worker module.
 import asyncio
 import contextlib
 import csv
+import dataclasses
 import io
 import logging
 import re
@@ -17,10 +18,8 @@ from typing import Any, Literal
 
 import asyncpg
 import httpx
-import nats
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
-from nats.js import JetStreamContext
 from pydantic import BaseModel, Field
 
 from wip_auth import (
@@ -35,6 +34,7 @@ from wip_auth import (
     setup_auth,
     setup_key_sync,
 )
+from wip_auth.events import WIP_EVENTS_STREAM, EventBus, StreamSpec
 from wip_auth.ratelimit import setup_rate_limiting
 from wip_auth.security import check_production_security
 from wip_auth.startup import retry_async
@@ -82,8 +82,10 @@ logger = logging.getLogger(__name__)
 class AppState:
     """Application state holding connections."""
 
-    nats_client: nats.NATS | None = None
-    jetstream: JetStreamContext | None = None
+    # The shared self-healing NATS connection: it connects in the background,
+    # reconnects without limit, converges WIP_EVENTS, and supervises the sync
+    # worker (restarting it whenever its consumer loop dies).
+    bus: EventBus = EventBus(None, name="reporting-sync")
     # Owner pool: the sync pipeline, DDL and bookkeeping. Reader pool:
     # caller-driven SQL (raw query, exports, view validation, search).
     postgres_pool: asyncpg.Pool | None = None
@@ -98,6 +100,17 @@ class AppState:
         connected_to_nats=False,
         connected_to_postgres=False,
     )
+
+
+    @property
+    def nats_client(self) -> Any:
+        """The live NATS client, or None while not connected."""
+        return self.bus.client
+
+    @property
+    def jetstream(self) -> Any:
+        """The live JetStream context, or None while not connected."""
+        return self.bus.jetstream
 
 
 state = AppState()
@@ -166,61 +179,9 @@ async def run_alert_check_loop() -> None:
             await asyncio.sleep(10)  # Back off on error
 
 
-# CASE-52: NATS client callbacks. Update sync_status on connection
-# lifecycle events so the /status endpoint reflects reality, not just
-# "did we connect at startup." Belt-and-suspenders: the status endpoint
-# also does a live is_connected check, so missed callbacks don't leave
-# a stale flag.
-async def _on_nats_disconnected() -> None:
-    logger.warning("NATS connection dropped")
-    state.sync_status.connected_to_nats = False
-
-
-async def _on_nats_reconnected() -> None:
-    logger.info("NATS connection re-established")
-    state.sync_status.connected_to_nats = True
-
-
-async def _on_nats_closed() -> None:
-    logger.warning("NATS connection closed")
-    state.sync_status.connected_to_nats = False
-
-
-async def connect_nats() -> tuple[nats.NATS, JetStreamContext]:
-    """Connect to NATS and get JetStream context."""
-    logger.info(f"Connecting to NATS at {settings.nats_url}...")
-    nc = await nats.connect(
-        settings.nats_url,
-        disconnected_cb=_on_nats_disconnected,
-        reconnected_cb=_on_nats_reconnected,
-        closed_cb=_on_nats_closed,
-    )
-    js = nc.jetstream()
-
-    # Ensure the stream exists
-    try:
-        await js.stream_info(settings.nats_stream_name)
-        logger.info(f"Stream {settings.nats_stream_name} exists")
-    except nats.js.errors.NotFoundError:
-        # Create the stream if it doesn't exist
-        logger.info(f"Creating stream {settings.nats_stream_name}...")
-        await js.add_stream(
-            name=settings.nats_stream_name,
-            subjects=[
-                "wip.documents.>",
-                "wip.templates.>",
-                "wip.terminologies.>",
-                "wip.terms.>",
-                "wip.term_relations.>",
-            ],
-            retention="limits",
-            max_msgs=1_000_000,
-            max_bytes=1024 * 1024 * 1024,  # 1GB
-        )
-        logger.info(f"Stream {settings.nats_stream_name} created")
-
-    logger.info("Connected to NATS with JetStream")
-    return nc, js
+def _events_stream() -> StreamSpec:
+    """The canonical platform event stream, under this install's configured name."""
+    return dataclasses.replace(WIP_EVENTS_STREAM, name=settings.nats_stream_name)
 
 
 class ServiceRolesError(RuntimeError):
@@ -484,21 +445,15 @@ async def lifespan(app: FastAPI):
     check_production_security()
     logger.info(f"Starting {settings.service_name} v{__version__}...")
 
-    try:
-        # Connect to NATS with retry — tolerates NATS not being ready yet
-        # on fresh k8s boot, node drain, pod reschedule.
-        state.nats_client, state.jetstream = await retry_async(
-            connect_nats,
-            retry_on=(ConnectionRefusedError, OSError, nats.errors.NoServersError),
-            description="NATS connect",
-        )
-        state.sync_status.connected_to_nats = True
-    except Exception as e:
-        logger.error(f"Failed to connect to NATS: {e}")
-        state.sync_status.connected_to_nats = False
+    # NATS connects in the background and heals itself, so a NATS that is
+    # late (fresh k8s boot, node drain) or away for a while never blocks or
+    # disables the service. /status and /health read the live state.
+    state.bus = EventBus(settings.nats_url, name="reporting-sync", streams=[_events_stream()])
+    await state.bus.start()
 
     try:
-        # Connect to PostgreSQL with retry — same reasoning as NATS above.
+        # Connect to PostgreSQL with retry — tolerates PostgreSQL not being
+        # ready yet on fresh k8s boot, node drain, pod reschedule.
         pool, read_pool = await retry_async(
             connect_postgres,
             retry_on=(ConnectionRefusedError, OSError),
@@ -542,22 +497,18 @@ async def lifespan(app: FastAPI):
     state.search_service = SearchService(state.read_pool)
     logger.info("Search service initialized")
 
-    # Start the sync worker task if both connections are up
-    if state.sync_status.connected_to_nats and state.sync_status.connected_to_postgres:
-        assert state.nats_client is not None  # narrowed by connected_to_nats
-        assert state.jetstream is not None  # narrowed by connected_to_nats
-        state.sync_task = asyncio.create_task(
-            run_sync_worker(
-                state.nats_client,
-                state.jetstream,
-                state.postgres_pool,
-                state.sync_status,
-            )
+    # Start the sync worker once PostgreSQL is up. The bus runs it as soon as
+    # NATS is connected and restarts it whenever its consumer loop dies (e.g.
+    # the stream was missing, or a NATS outage outlived the subscription).
+    if state.sync_status.connected_to_postgres:
+        pool = state.postgres_pool
+        state.sync_task = state.bus.supervise(
+            "sync-worker",
+            lambda js: run_sync_worker(state.bus.client, js, pool, state.sync_status),
         )
-        state.sync_status.running = True
-        logger.info("Sync worker started")
+        logger.info("Sync worker scheduled (runs while NATS is connected)")
     else:
-        logger.warning("Sync worker not started - missing connections")
+        logger.warning("Sync worker not started - PostgreSQL unavailable")
 
     # Start alert check background task
     state.alert_check_task = asyncio.create_task(run_alert_check_loop())
@@ -604,9 +555,8 @@ async def lifespan(app: FastAPI):
         await state.postgres_pool.close()
         logger.info("PostgreSQL connection closed")
 
-    if state.nats_client:
-        await state.nats_client.close()
-        logger.info("NATS connection closed")
+    await state.bus.stop()
+    logger.info("NATS event bus stopped")
 
     logger.info(f"{settings.service_name} shutdown complete")
 
@@ -729,6 +679,14 @@ app.add_api_route(
     methods=["GET"],
     response_model=HealthResponse,
 )
+
+
+@router.get("/health/events", dependencies=[_PRIVILEGED])
+async def events_health() -> dict[str, Any]:
+    """NATS event-bus state and counters, including the supervised sync
+    worker's run state and restart count. Operator-only: its last error can
+    name a subject, and subjects carry namespaces and entity IDs."""
+    return state.bus.stats()
 
 
 @router.get("/status", response_model=SyncStatus)

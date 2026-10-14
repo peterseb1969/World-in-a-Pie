@@ -1,6 +1,7 @@
 """Tests for ingest gateway FastAPI endpoints (health, status, metrics)."""
 
 import os
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,14 +26,12 @@ async def client():
 def mock_state():
     """Set up mock state for all tests, restore after."""
     originals = {
-        "nats_client": state.nats_client,
+        "bus": state.bus,
         "worker": state.worker,
         "start_time": state.start_time,
     }
 
-    mock_nc = MagicMock()
-    mock_nc.is_connected = True
-    state.nats_client = mock_nc
+    state.bus = SimpleNamespace(connected=True)
 
     mock_worker = MagicMock()
     mock_worker.is_running = True
@@ -44,7 +43,7 @@ def mock_state():
 
     yield
 
-    state.nats_client = originals["nats_client"]
+    state.bus = originals["bus"]
     state.worker = originals["worker"]
     state.start_time = originals["start_time"]
 
@@ -73,7 +72,7 @@ class TestHealthEndpoint:
 
     @pytest.mark.asyncio
     async def test_unhealthy_when_nats_disconnected(self, client):
-        state.nats_client.is_connected = False
+        state.bus.connected = False
 
         resp = await client.get("/api/ingest-gateway/health")
         data = resp.json()
@@ -81,8 +80,8 @@ class TestHealthEndpoint:
         assert data["nats_connected"] is False
 
     @pytest.mark.asyncio
-    async def test_unhealthy_when_no_nats_client(self, client):
-        state.nats_client = None
+    async def test_unhealthy_when_nats_not_configured(self, client):
+        state.bus = SimpleNamespace(connected=False)
 
         resp = await client.get("/api/ingest-gateway/health")
         data = resp.json()

@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 class ResultPublisher:
     """Publishes ingest results to NATS results stream."""
 
-    def __init__(self, jetstream: JetStreamContext):
+    def __init__(self, jetstream: JetStreamContext | None):
+        # Rebound by the supervised worker run to the live connection's context.
         self.js = jetstream
         self._published_count = 0
         self._failed_count = 0
@@ -39,6 +40,8 @@ class ResultPublisher:
             True if published successfully, False otherwise
         """
         try:
+            if self.js is None:
+                raise RuntimeError("NATS not connected")
             # Subject includes correlation_id for easy filtering
             subject = f"wip.ingest.results.{result.correlation_id}"
             payload = json.dumps(result.model_dump_json_safe()).encode()

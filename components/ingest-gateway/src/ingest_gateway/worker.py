@@ -31,17 +31,22 @@ from .result_publisher import ResultPublisher
 
 logger = logging.getLogger(__name__)
 
+# Consecutive failed fetches (timeouts excluded) after which the consumer loop
+# gives up and lets its supervisor re-subscribe.
+MAX_CONSECUTIVE_FETCH_ERRORS = 30
+
 
 class IngestWorker:
     """Processes ingest messages from NATS and forwards to REST APIs."""
 
     def __init__(
         self,
-        nats_client: NATS,
-        jetstream: JetStreamContext,
+        nats_client: NATS | None,
+        jetstream: JetStreamContext | None,
         http_client: IngestHTTPClient,
         result_publisher: ResultPublisher,
     ):
+        # Rebound to the live connection before every supervised run.
         self.nc = nats_client
         self.js = jetstream
         self.http_client = http_client
@@ -219,6 +224,8 @@ class IngestWorker:
     async def start(self) -> None:
         """Start the ingest worker."""
         logger.info("Starting ingest worker...")
+        if self.js is None:
+            raise RuntimeError("NATS not connected")
         self._running = True
 
         try:
@@ -262,6 +269,7 @@ class IngestWorker:
             )
 
             # Main processing loop
+            fetch_errors = 0
             while self._running:
                 try:
                     # Fetch batch of messages with timeout
@@ -269,18 +277,35 @@ class IngestWorker:
                         batch=settings.batch_size,
                         timeout=5
                     )
-                    for msg in messages:
-                        await self._process_message(msg)
-
                 except TimeoutError:
-                    # No messages available, continue loop
-                    pass
+                    # No messages available: a healthy, empty poll
+                    fetch_errors = 0
+                    continue
                 except asyncio.CancelledError:
                     logger.info("Worker cancelled, stopping...")
                     break
                 except Exception as e:
+                    # A subscription whose stream or consumer is gone fails
+                    # every fetch. Give up after a run of failures so the
+                    # supervisor re-subscribes, instead of spinning forever.
+                    fetch_errors += 1
+                    if fetch_errors >= MAX_CONSECUTIVE_FETCH_ERRORS:
+                        raise RuntimeError(
+                            f"{fetch_errors} consecutive fetch failures: {e}"
+                        ) from e
                     logger.error(f"Error fetching messages: {e}")
                     await asyncio.sleep(1)  # Brief pause before retry
+                    continue
+                fetch_errors = 0
+                try:
+                    for msg in messages:
+                        await self._process_message(msg)
+                except asyncio.CancelledError:
+                    logger.info("Worker cancelled, stopping...")
+                    break
+                except Exception as e:
+                    logger.error(f"Error processing messages: {e}")
+                    await asyncio.sleep(1)
 
         except asyncio.CancelledError:
             logger.info("Worker task cancelled")
