@@ -13,7 +13,9 @@ Output tree:
 Design decisions:
   - Literals go inline in compose `environment:`; secret refs go via
     `${VAR}` interpolation from `.env`. Both .env and compose are
-    written to the install dir with 0600/0644 respectively.
+    written to the install dir with 0600/0644 respectively. `.env` is
+    the interpolation source only — no service gets it as `env_file`,
+    so a container sees just the secrets its manifest declares.
   - Each component with storage gets a named volume
     `wip-<component>-<storage>-data`.
   - Config files bound read-only from the install dir.
@@ -270,9 +272,10 @@ def _service_block(
     if environment:
         block["environment"] = environment
 
-    # .env interpolation wants this for every service that uses ${VAR}.
-    if any(isinstance(v, SecretRef) for v in env.merged().values()):
-        block["env_file"] = [".env"]
+    # No `env_file:` — compose interpolates `${VAR}` from the project's .env
+    # on its own (apply passes --env-file .env), while `env_file` would also
+    # inject EVERY install secret into the container. A service gets only the
+    # secrets its manifest declares, the same set k8s gives it.
 
     command = _command_for(owner)
     if command:

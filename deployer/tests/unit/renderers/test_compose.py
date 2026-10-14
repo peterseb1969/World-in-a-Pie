@@ -396,14 +396,15 @@ class TestComposeYaml:
         # that shape amplified a slow VM into an unresponsive one.
         assert "mongosh" not in test[1]
 
-    def test_env_secrets_go_via_env_file(
+    def test_env_secrets_go_via_interpolation(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
         doc = self._render_compose(tmp_path, real_discovery)
         reg = doc["services"]["registry"]
         # MASTER_API_KEY references a secret → ${API_KEY} interpolation
         assert reg["environment"]["MASTER_API_KEY"] == "${API_KEY}"
-        assert reg["env_file"] == [".env"]
+        # .env is the interpolation source, not injected wholesale.
+        assert "env_file" not in reg
 
     def test_env_literals_go_inline(
         self, tmp_path: Path, real_discovery: Discovery

@@ -387,6 +387,17 @@ sync afterwards.
   install, and now prints a `note:` naming both. `render` and `install`
   with `--repo-root` also mount from the flag (before, always from the cwd).
   `status --diff` discovers from the stamped root before the cwd.
+- **Compose and dev containers receive only the secrets they declare.**
+  Every service or app that referenced any secret also got the install's
+  whole `.env` as `env_file`, so each such container — apps included —
+  held the PostgreSQL superuser and MinIO root passwords, the Dex user
+  passwords and the master key, whatever its manifest declared. `.env` is
+  now only the `${VAR}` interpolation source (as it already was for the
+  values themselves), so a container sees exactly its manifest's
+  `from_secret` variables — the same set k8s gives it. Code that read an
+  undeclared variable worked only through the leak; none was found in the
+  platform services or the local apps. The next apply recreates every
+  container that referenced a secret.
 - **MinIO image** is `ghcr.io/peterseb1969/minio:RELEASE.2025-09-07T16-13-09Z`.
   MinIO no longer publishes pullable images (Docker Hub answers with HTML,
   quay.io with 401); this is a copy of the last release in use. It is

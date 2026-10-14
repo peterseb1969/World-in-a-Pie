@@ -32,7 +32,6 @@ from typing import Any
 import yaml
 
 from wip_deploy.config_gen import (
-    SecretRef,
     generate_caddy_config,
     generate_dex_config,
     make_spec_context,
@@ -478,8 +477,8 @@ def _dev_service_block(
     if environment:
         block["environment"] = environment
 
-    if any(isinstance(v, SecretRef) for v in env.merged().values()):
-        block["env_file"] = [".env"]
+    # No `env_file:` — see compose.py: secrets reach the container only
+    # through the `${VAR}` entries its manifest declares.
 
     # Dev: if the command is uvicorn-based, append --reload for hot reload AND
     # force the reload watcher to poll (CASE-523). uvicorn --reload's watcher
