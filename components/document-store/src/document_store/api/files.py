@@ -546,6 +546,12 @@ async def delete_namespace_storage_objects(request: StorageDeleteRequest) -> dic
             detail=f"Registry could not confirm that namespace {request.namespace!r} "
             f"is being deleted: {e}",
         ) from e
+    # The Registry answers 404 for a namespace locked for deletion, so
+    # "deletion in progress" and "already deleted" both arrive as None. An
+    # active or archived namespace comes back with its status; that relies on
+    # this service's Registry key being privileged (the install's service
+    # key) — a non-privileged key would get 404 for namespaces it holds no
+    # grant on, and this guard would let them through.
     if ns_status not in (None, "locked"):
         raise HTTPException(
             status_code=409,

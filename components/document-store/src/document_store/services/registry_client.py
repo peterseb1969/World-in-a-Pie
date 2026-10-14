@@ -278,8 +278,10 @@ class RegistryClient(RegistryClientBase):
         )
 
     async def get_namespace_status(self, namespace: str) -> str | None:
-        """The namespace's lifecycle status, or None once the Registry no
-        longer has it (a completed deletion removes the record).
+        """The namespace's lifecycle status as the Registry serves it, or None
+        when the Registry does not serve it: deleted, or locked for deletion
+        (the Registry hides a locked namespace from every caller, so the two
+        are indistinguishable here).
 
         Raises RegistryError (or the transport's error) when the Registry
         cannot answer — callers gating a destructive action must fail closed.
