@@ -79,6 +79,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --preset)
             PRESET="$2"
+            PRESET_EXPLICIT=1
             shift 2
             ;;
         --prefix)
@@ -321,6 +322,17 @@ if $REFRESH_MODE; then
         APP_NAME="$(meta_get APP_NAME)"
         APP_SLUG="$(meta_get APP_SLUG)"
         DEV_NAMESPACE="$(meta_get DEV_NAMESPACE)"
+        # The preset resolves like the other recorded fields: --preset wins,
+        # else the recorded value, else the default. Without this a plain
+        # refresh rewrote a query app's .app-meta to the default preset.
+        if [ -z "${PRESET_EXPLICIT:-}" ]; then
+            PRESET="$(meta_get PRESET)"
+            PRESET="${PRESET:-standard}"
+            if [[ "$PRESET" != "standard" && "$PRESET" != "query" ]]; then
+                echo "Error: .claude/.app-meta records unknown preset '$PRESET'. Use --preset standard|query."
+                exit 1
+            fi
+        fi
         META_SOURCE=".claude/.app-meta"
     elif [ -n "$APP_NAME" ]; then
         META_SOURCE="--name"

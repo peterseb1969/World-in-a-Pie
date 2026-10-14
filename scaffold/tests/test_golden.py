@@ -4,10 +4,12 @@ Coverage matrix per docs/design/scaffold-revamp.md:
 - backend: local x {create, refresh} x {tier2, tier3}   (4 — ssh/http are
   ported by inspection per the open-question-3 resolution in the design doc)
 - app:     {create, refresh} x {tier2, tier3} x {standard} + create x query
-  (query x refresh / query x tier3 excluded: the preset only affects
-  create-time file copies, refresh never re-copies preset files, and tier
-  is orthogonal to preset — the standard-preset refresh/tier fixtures
-  cover those code paths)
+  (query x refresh / query x tier3 excluded from the snapshot matrix: the
+  preset only affects create-time file copies, refresh never re-copies
+  preset files, and tier is orthogonal to preset — the standard-preset
+  refresh/tier fixtures cover those code paths. What a refresh DOES do
+  with the preset — keep the recorded value in .claude/.app-meta — is
+  pinned by test_app_refresh_keeps_recorded_preset below.)
 - modifier flags (--force-claude-md, --with-bootstrap) as targeted
   single-purpose fixtures, not a cross-product.
 
@@ -22,9 +24,8 @@ import os
 import tempfile
 from pathlib import Path
 
-import pytest
-
 import golden_lib as G
+import pytest
 
 pytestmark = pytest.mark.golden
 
@@ -85,10 +86,39 @@ def test_app_query_create(tmp: Path):
 
 # --- targeted modifier fixtures --------------------------------------------
 
+def _app_meta_preset(app_dir: Path) -> str:
+    for line in (app_dir / ".claude" / ".app-meta").read_text().splitlines():
+        if line.startswith("PRESET="):
+            return line.split("=", 1)[1].strip('"')
+    return ""
+
+
+def test_app_refresh_keeps_recorded_preset(tmp: Path):
+    """A refresh without --preset keeps the preset recorded in .app-meta
+    (it used to rewrite a query app to the default); an explicit --preset
+    on refresh still wins."""
+    app_dir = tmp / "preset-refresh"
+    script = str(G.REPO_ROOT / "scripts/create-app-project.sh")
+    base = [script, str(app_dir), "--name", "Golden preset-refresh", "--prefix", "APP-GLD"]
+    try:
+        for cmd in (
+            ["bash", *base, "--preset", "query"],   # create
+            ["bash", *base],                        # refresh, no --preset
+        ):
+            r = G._run(cmd, cwd=G.REPO_ROOT)
+            assert r.returncode == 0, r.stdout + r.stderr
+        assert _app_meta_preset(app_dir) == "query"
+
+        r = G._run(["bash", *base, "--preset", "standard"], cwd=G.REPO_ROOT)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert _app_meta_preset(app_dir) == "standard"
+    finally:
+        G._cleanup_namespace("dev-golden-preset-refresh")
+
+
 def test_app_force_claude_md(tmp: Path):
     """--force-claude-md on refresh overwrites CLAUDE.md instead of writing
     the .refresh sidecar."""
-    import subprocess
 
     app_dir = tmp / "force"
     base = [
@@ -100,7 +130,7 @@ def test_app_force_claude_md(tmp: Path):
     # Mutate CLAUDE.md the way an app would, then force-refresh.
     claude = app_dir / "CLAUDE.md"
     claude.write_text(claude.read_text() + "\n## App-authored section\n")
-    r2 = G._run(base + ["--force-claude-md"], cwd=G.REPO_ROOT)
+    r2 = G._run([*base, "--force-claude-md"], cwd=G.REPO_ROOT)
     assert r2.returncode == 0, r2.stdout + r2.stderr
     G._cleanup_namespace("dev-golden-force")
 
@@ -140,7 +170,7 @@ def test_app_with_bootstrap_retrofit(tmp: Path):
     )
 
     # --with-bootstrap retrofits when absent.
-    r3 = G._run(base + ["--with-bootstrap"], cwd=G.REPO_ROOT)
+    r3 = G._run([*base, "--with-bootstrap"], cwd=G.REPO_ROOT)
     assert r3.returncode == 0, r3.stdout + r3.stderr
     assert (app_dir / "templates/bootstrap").is_dir(), (
         "--with-bootstrap must retrofit when the dir is absent"
