@@ -212,20 +212,24 @@ class DefStoreClient:
                     page += 1
 
                 terminology["terms"] = all_terms
-                terminology["_lookup"] = self._build_term_lookup(all_terms)
+                lookup, ambiguous = self._build_term_lookup(all_terms)
+                terminology["_lookup"] = lookup
+                terminology["_ambiguous"] = ambiguous
 
                 return cast(dict[str, Any] | None, terminology)
 
         except httpx.RequestError as e:
             raise DefStoreError(f"Request failed: {e!s}") from e
 
-    def _build_term_lookup(self, terms: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    def _build_term_lookup(
+        self, terms: list[dict[str, Any]]
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
         """
         Build lookup indexes for fast term validation.
 
-        Returns a dict mapping lowercase values to term data:
-        - value (lowercase) -> term
-        - each name/alias (lowercase) -> term
+        Returns (lookup, ambiguous): lookup maps lowercase values to term
+        data (value and each name/alias), ambiguous maps each contested
+        name key to every term bearing it.
 
         Built in two passes with value precedence: every term's canonical
         value is indexed before any term's names, so a name can never
@@ -249,14 +253,31 @@ class DefStoreClient:
                 lookup[value] = {"term": _term_ref(term), "matched_via": "value"}
 
         # Pass 2: names (def-store's derived `aliases` covers every name's
-        # value; older def-store versions serve the same field natively)
+        # value; older def-store versions serve the same field natively).
+        # A name key already claimed by another term's NAME is ambiguous —
+        # the first term keeps the binding (list order), and every bearer
+        # is recorded so validation can make the ambiguity visible instead
+        # of silently resolving it. A key owned by a canonical value is not
+        # ambiguous: value precedence is the rule, not a tie-break.
+        ambiguous: dict[str, list[dict[str, Any]]] = {}
         for term in terms:
             ref = _term_ref(term)
             for alias in term.get("aliases", []):
-                if alias and alias.lower() not in lookup:
-                    lookup[alias.lower()] = {"term": ref, "matched_via": "alias"}
+                if not alias:
+                    continue
+                key = alias.lower()
+                existing = lookup.get(key)
+                if existing is None:
+                    lookup[key] = {"term": ref, "matched_via": "alias"}
+                elif (
+                    existing["matched_via"] == "alias"
+                    and existing["term"]["term_id"] != ref["term_id"]
+                ):
+                    bearers = ambiguous.setdefault(key, [existing["term"]])
+                    if ref["term_id"] not in {t["term_id"] for t in bearers}:
+                        bearers.append(ref)
 
-        return lookup
+        return lookup, ambiguous
 
     async def _get_terminology_cached(
         self, terminology_id: str, force_refresh: bool = False
@@ -298,11 +319,19 @@ class DefStoreClient:
 
         if value_lower in lookup:
             match = lookup[value_lower]
-            return {
+            result = {
                 "valid": True,
                 "matched_term": match["term"],
                 "matched_via": match["matched_via"],
             }
+            bearers = terminology.get("_ambiguous", {}).get(value_lower)
+            if bearers:
+                # The binding above is merely the first bearer in list
+                # order — the caller decides whether that is acceptable
+                # (warn) or not (reject, for identity fields)
+                result["ambiguous"] = True
+                result["candidates"] = bearers
+            return result
 
         return {
             "valid": False,

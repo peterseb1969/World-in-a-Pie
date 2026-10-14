@@ -1220,6 +1220,41 @@ class ValidationService:
                         }
                     )
                 else:
+                    # Ambiguous name: several terms bear the submitted
+                    # string, and the match is merely the first bearer in
+                    # storage order. On an IDENTITY field that arbitrary
+                    # pick would feed the identity hash — fail closed, the
+                    # same rule as an unresolvable identity referent. On a
+                    # non-identity field, keep the pick but say so loudly.
+                    if validation_result.get("ambiguous"):
+                        candidates = validation_result.get("candidates", [])
+                        bearer_desc = ", ".join(
+                            f"'{c.get('value')}' ({c.get('term_id')})"
+                            for c in candidates
+                        )
+                        if field_path in (template.get("identity_fields") or []):
+                            result.add_error(
+                                code="ambiguous_term",
+                                message=(
+                                    f"Value '{term_val['value']}' is ambiguous in "
+                                    f"terminology '{term_val['terminology_ref']}': "
+                                    f"{len(candidates)} terms bear this name "
+                                    f"({bearer_desc}). An identity field cannot "
+                                    "resolve by storage order — submit the term's "
+                                    "canonical value or an unambiguous name."
+                                ),
+                                field=field_path,
+                                details={"candidates": candidates},
+                            )
+                            continue
+                        result.add_warning(
+                            f"Value '{term_val['value']}' in field '{field_path}' "
+                            f"is ambiguous in terminology "
+                            f"'{term_val['terminology_ref']}': {len(candidates)} "
+                            f"terms bear this name ({bearer_desc}); resolved to "
+                            "the first in storage order."
+                        )
+
                     # Extract term_id from matched_term and store in term_references (array format)
                     matched_term = validation_result.get("matched_term")
                     if matched_term and matched_term.get("term_id"):
