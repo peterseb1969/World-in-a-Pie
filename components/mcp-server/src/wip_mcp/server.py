@@ -420,6 +420,12 @@ A term is an entry in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).
 - Exact-duplicate names, a name equal to the term's own value, unknown
   name types, and preferred conflicts are rejected per item with
   error_code 'invalid_names'. Case-variant names are legal.
+- Updates clear with explicit null (RFC 7396, like document PATCH): an
+  explicitly submitted null clears description/label/parent_term_id and
+  resets sort_order; an OMITTED field stays unchanged. value cannot be
+  cleared; names clears with []. Terminology descriptions clear the same
+  way, and reconcile snapshots may carry explicit nulls with the same
+  meaning.
 - A name borne by SEVERAL terms is ambiguous, and the platform makes that
   visible instead of silently picking: validation responses carry
   `matches` (bearer count) and `candidates` (every bearer with its
@@ -1968,6 +1974,7 @@ async def update_term(
     aliases: list[str] | None = None,
     description: str | None = None,
     sort_order: int | None = None,
+    clear: list[str] | None = None,
     namespace: str | None = None,
     terminology: str | None = None,
 ) -> str:
@@ -1979,19 +1986,34 @@ async def update_term(
             colon-parsed). The ambiguous 2-part 'TERMINOLOGY:VALUE'
             shorthand is rejected (422) on write doors: it could silently
             select the wrong term when the value contains ':'.
-        label: New label (optional).
+        label: New label (optional). Explicit null clears it (display
+            falls back to the term's value).
         names: Full replacement names list (optional). Each entry: 'value',
             optional 'type' (from _NAME_TYPES), 'language', 'source',
-            'preferred'. Mutually exclusive with aliases.
+            'preferred'. Mutually exclusive with aliases. Pass [] to
+            remove all names (null is rejected).
         aliases: Plain-string update (optional): replaces only the untyped,
             language-less names; typed and language names survive.
         description: New description (optional).
         sort_order: New sort order (optional).
+        clear: Field names to CLEAR: any of 'description', 'label',
+            'parent_term_id' (removed; label display falls back to the
+            value) or 'sort_order' (reset to 0). Sent as explicit nulls —
+            RFC 7396 semantics, matching document PATCH; an omitted field
+            is always unchanged.
         terminology: Terminology scoping a value-form term_id — the
             preferred way to address a term by value.
     """
     try:
         updates: dict = {}
+        clearable = {"description", "label", "parent_term_id", "sort_order"}
+        for field in clear or []:
+            if field not in clearable:
+                return (
+                    f"Error: '{field}' is not clearable. "
+                    f"Clearable: {sorted(clearable)}."
+                )
+            updates[field] = None
         if label is not None:
             updates["label"] = label
         if names is not None:

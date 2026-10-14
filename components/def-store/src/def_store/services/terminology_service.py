@@ -575,6 +575,16 @@ class TerminologyService:
         _track("value", terminology.value, request.value)
         _track("label", terminology.label, request.label)
         _track("description", terminology.description, request.description)
+        # _track skips None new values; a clear (explicit null) is a real
+        # change and must reach the audit trail
+        if (
+            request.description is None
+            and "description" in request.model_fields_set
+            and terminology.description is not None
+        ):
+            changed_fields.append("description")
+            previous_values["description"] = terminology.description
+            new_values["description"] = None
         _track("case_sensitive", terminology.case_sensitive, request.case_sensitive)
         _track("allow_multiple", terminology.allow_multiple, request.allow_multiple)
         _track("extensible", terminology.extensible, request.extensible)
@@ -598,6 +608,10 @@ class TerminologyService:
             terminology.label = request.label
         if request.description is not None:
             terminology.description = request.description
+        elif "description" in request.model_fields_set:
+            # An explicitly submitted null clears the description — RFC
+            # 7396 semantics, same as term fields; omitted keeps it
+            terminology.description = None
         if request.case_sensitive is not None:
             terminology.case_sensitive = request.case_sensitive
         if request.allow_multiple is not None:
@@ -1712,29 +1726,41 @@ class TerminologyService:
                 new_values["names"] = [n.model_dump() for n in new_names]
                 term.names = new_names
 
-        if request.label is not None and request.label != term.label:
-            changed_fields.append("label")
-            previous_values["label"] = term.label
-            new_values["label"] = request.label
-            term.label = request.label
+        # RFC 7396 alignment: an EXPLICITLY submitted null clears the
+        # field (detected via model_fields_set — an omitted field is not
+        # in the set and keeps meaning "unchanged"). Document PATCH
+        # already speaks this vocabulary; terms now match. `value` and
+        # `names` are excluded: value is the identity, and the names list
+        # has an explicit clear idiom already ([]).
+        fields_set = request.model_fields_set
+        if "value" in fields_set and request.value is None:
+            raise ValueError(
+                "value cannot be cleared — it is the term's identity"
+            )
+        if "names" in fields_set and request.names is None:
+            raise ValueError(
+                "names cannot be null — pass [] to remove all names"
+            )
 
-        if request.description is not None and request.description != term.description:
-            changed_fields.append("description")
-            previous_values["description"] = term.description
-            new_values["description"] = request.description
-            term.description = request.description
+        def _apply_clearable(field: str, default=None) -> None:
+            submitted = getattr(request, field)
+            if submitted is not None:
+                new_value = submitted
+            elif field in fields_set:
+                new_value = default  # explicit null: clear / reset
+            else:
+                return  # omitted: unchanged
+            if new_value == getattr(term, field):
+                return
+            changed_fields.append(field)
+            previous_values[field] = getattr(term, field)
+            new_values[field] = new_value
+            setattr(term, field, new_value)
 
-        if request.sort_order is not None and request.sort_order != term.sort_order:
-            changed_fields.append("sort_order")
-            previous_values["sort_order"] = term.sort_order
-            new_values["sort_order"] = request.sort_order
-            term.sort_order = request.sort_order
-
-        if request.parent_term_id is not None and request.parent_term_id != term.parent_term_id:
-            changed_fields.append("parent_term_id")
-            previous_values["parent_term_id"] = term.parent_term_id
-            new_values["parent_term_id"] = request.parent_term_id
-            term.parent_term_id = request.parent_term_id
+        _apply_clearable("label")
+        _apply_clearable("description")
+        _apply_clearable("sort_order", default=0)
+        _apply_clearable("parent_term_id")
 
         if request.metadata is not None:
             changed_fields.append("metadata")

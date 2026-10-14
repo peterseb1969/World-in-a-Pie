@@ -16,8 +16,10 @@ Semantics, deliberately scoped:
   is a lifecycle decision the data owner makes explicitly.
 - The snapshot is authoritative for a term's SUBSTANCE: label and names
   always; description, sort_order and parent_term_id only when the
-  snapshot sets them (a feed that omits them keeps the existing values —
-  reconcile cannot clear a field, which keeps re-runs idempotent).
+  snapshot sets them (a feed that OMITS them keeps the existing values).
+  An EXPLICITLY submitted null clears description or parent_term_id —
+  RFC 7396 semantics, matching update_term — and stays idempotent: a
+  cleared field compares equal to the explicit null on the re-run.
   `metadata` is caller-attached context by platform convention: honored on
   create, never diffed or rewritten on update.
 - Absent terms (active in the terminology, not in the snapshot) are
@@ -129,6 +131,14 @@ def _reconcile_diff(
         "description": (
             desired.description is not None
             and (existing.description or None) != desired.description
+        ) or (
+            # explicit null in the snapshot clears
+            # existing.description is not None (not `or None`): an
+            # explicit null also normalizes the "" workaround to a real
+            # cleared field
+            "description" in desired.model_fields_set
+            and desired.description is None
+            and existing.description is not None
         ),
         "sort_order": (
             desired.sort_order != 0
@@ -137,6 +147,10 @@ def _reconcile_diff(
         "parent_term_id": (
             desired.parent_term_id is not None
             and existing.parent_term_id != desired.parent_term_id
+        ) or (
+            "parent_term_id" in desired.model_fields_set
+            and desired.parent_term_id is None
+            and existing.parent_term_id is not None
         ),
     }
     return [name for name, differs in checks.items() if differs]
@@ -292,13 +306,26 @@ class TermReconcileService:
                     counts.errors += 1
 
         for i, item, existing, changed, desired_names in to_update:
-            update_req = UpdateTermRequest(
-                label=_effective_label(item),
-                names=desired_names,
-                description=item.description,
-                sort_order=item.sort_order if item.sort_order != 0 else None,
-                parent_term_id=item.parent_term_id,
-            )
+            update_kwargs: dict[str, Any] = {
+                "label": _effective_label(item),
+                "names": desired_names,
+            }
+            # A field the snapshot sets is applied; one it explicitly
+            # nulls is cleared (passed as explicit None so update_term's
+            # fields_set sees it); one it omits stays omitted here too
+            if item.description is not None or (
+                "description" in item.model_fields_set
+                and existing.description is not None
+            ):
+                update_kwargs["description"] = item.description
+            if item.sort_order != 0:
+                update_kwargs["sort_order"] = item.sort_order
+            if item.parent_term_id is not None or (
+                "parent_term_id" in item.model_fields_set
+                and existing.parent_term_id is not None
+            ):
+                update_kwargs["parent_term_id"] = item.parent_term_id
+            update_req = UpdateTermRequest(**update_kwargs)
             try:
                 collision_warnings: list[dict[str, Any]] = []
                 await TerminologyService.update_term(

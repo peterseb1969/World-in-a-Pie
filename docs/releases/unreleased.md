@@ -214,6 +214,21 @@ storage order served first. Three changes make the ambiguity loud:
 except ambiguous names on identity fields, which were producing
 storage-order-dependent identities and should be corrected, not relied on.
 
+### Explicit null clears optional term and terminology fields
+
+Term updates align with the platform's RFC 7396 vocabulary: an EXPLICITLY
+submitted `null` clears `description`, `label` (display falls back to the
+value) and `parent_term_id`, and resets `sort_order` to 0 — while an
+OMITTED field keeps meaning "unchanged", so nothing existing breaks.
+`value` and `names` reject explicit null loudly (`names` clears with
+`[]`). Terminology `description` clears the same way. Reconcile snapshots
+may carry explicit nulls with the same meaning, idempotently — and an
+explicit null also normalizes the historical `""` workaround to a truly
+cleared field. The MCP `update_term` tool exposes this as a `clear`
+parameter. Until now there was NO way to remove a term's description;
+consumers treating `""` as absent can drop that shim once their data is
+normalized.
+
 ### Platform-maintained term closure in reporting
 
 Each namespace schema gains a `term_closure` table: one row per
