@@ -184,6 +184,68 @@ def api_key() -> str:
     return os.environ["API_KEY"]
 
 
+# =========================================================================
+# Fake Template Store
+# =========================================================================
+# The terminology-delete guard calls Template Store over HTTP. Tests used
+# to reach for http://localhost:8003, find nothing there, and get an
+# "unknown" count — which the guard once let through and now refuses, so
+# every unforced delete in the suite needs a check that can complete.
+# Every test gets a fake Template Store (empty, so deletes proceed); tests
+# exercising the guard set its knobs. Only dependency_service's view of
+# httpx is swapped; the test client and registry transport are untouched.
+
+from types import SimpleNamespace  # noqa: E402
+
+import httpx as _httpx  # noqa: E402
+
+from def_store.services import dependency_service as _dependency_service  # noqa: E402
+
+_REAL_ASYNC_CLIENT = _httpx.AsyncClient
+
+
+class FakeTemplateStore:
+    """In-memory Template Store answering the dependency check's list call.
+
+    `templates` entries are template dicts as the list endpoint serves them
+    (value/label/template_id/status/fields). A request carrying a `status`
+    param gets only templates of that status; without one it gets all —
+    mirroring the real endpoint's optional filter.
+    """
+
+    def __init__(self):
+        self.templates: list[dict] = []
+        self.http_status = 200
+        self.unreachable = False
+        self.requests: list[dict] = []
+
+    def handle(self, request: _httpx.Request) -> _httpx.Response:
+        if self.unreachable:
+            raise _httpx.ConnectError("Connection refused", request=request)
+        params = dict(request.url.params)
+        self.requests.append(params)
+        if self.http_status != 200:
+            return _httpx.Response(self.http_status, text="unauthorized")
+        status = params.get("status")
+        items = [
+            t for t in self.templates
+            if status is None or t.get("status", "active") == status
+        ]
+        return _httpx.Response(200, json={"items": items, "total": len(items)})
+
+
+@pytest.fixture(autouse=True)
+def template_store(monkeypatch) -> FakeTemplateStore:
+    fake = FakeTemplateStore()
+    shim = SimpleNamespace(
+        AsyncClient=lambda **kw: _REAL_ASYNC_CLIENT(
+            transport=_httpx.MockTransport(fake.handle), **kw
+        )
+    )
+    monkeypatch.setattr(_dependency_service, "httpx", shim)
+    return fake
+
+
 @pytest.fixture
 def auth_headers(api_key: str) -> dict:
     """Return headers with API key for authenticated requests."""

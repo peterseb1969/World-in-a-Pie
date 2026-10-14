@@ -85,6 +85,21 @@ def test_all_components_discoverable() -> None:
     assert infra_required <= names
 
 
+def test_def_store_wires_the_template_store_dependency_check() -> None:
+    """def-store's terminology-delete guard calls Template Store; the
+    manifest must hand it the URL and a key under the names the service
+    reads, or the guard cannot run on any install (it then fails closed and
+    refuses every non-forced delete)."""
+    manifest_path = next(
+        p for p in COMPONENT_MANIFESTS if p.parent.name == "def-store"
+    )
+    component = Component.model_validate(_load_yaml(manifest_path))
+    required = {e.name: e.source for e in component.spec.env.required}
+
+    assert required["TEMPLATE_STORE_URL"].from_component == "template-store"
+    assert required["TEMPLATE_STORE_API_KEY"].from_secret == "api-key"
+
+
 def test_no_duplicate_component_names() -> None:
     components = [Component.model_validate(_load_yaml(p)) for p in COMPONENT_MANIFESTS]
     names = [c.metadata.name for c in components]

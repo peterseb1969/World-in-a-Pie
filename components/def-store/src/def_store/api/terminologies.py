@@ -236,7 +236,9 @@ async def get_terminology_dependencies(
     Returns information about what depends on this terminology:
     - Templates that reference it via terminology_ref fields
 
-    Use this to check before deactivating a terminology.
+    When the check cannot complete (Template Store unreachable or refusing),
+    template_count is -1 and has_dependencies is null ("unknown") — never
+    false. Use this to check before deactivating a terminology.
     """
     terminology_id = await resolve_or_404(
         terminology_id, "terminology", namespace=None, param_name="terminology_id"
@@ -297,10 +299,17 @@ async def delete_terminologies(
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """
-    Soft-delete one or more terminologies (set status to inactive).
+    Soft-delete (deactivate) or hard-delete one or more terminologies.
 
-    All terms in each terminology will also be deactivated.
-    Set force=true per item to delete even if templates reference it.
+    Soft-delete sets the terminology and all its terms to 'inactive'. It is
+    refused while active templates reference the terminology, or when that
+    cannot be verified (deactivating the terms breaks new writes against
+    referencing templates) — set force=true per item to deactivate anyway.
+
+    Hard-delete (hard_delete=true, namespace deletion_mode='full') removes
+    the terminology permanently and is refused while any template of any
+    status references it, or when that cannot be verified; force does not
+    apply to it.
     """
     await resolve_bulk_ids(items, "id", "terminology", namespace=namespace)
 
@@ -319,9 +328,54 @@ async def delete_terminologies(
     results = []
     for i, item in enumerate(items):
         try:
-            # Check dependencies unless forcing
-            if not item.force:
+            if item.hard_delete:
+                # Hard-delete permanently removes the terminology; a template
+                # whose fields reference it — of ANY status, since an inactive
+                # template still validates the documents pinned to it — would
+                # be left with a terminology_ref that resolves to nothing. So
+                # the guard refuses while such templates exist or while that
+                # cannot be verified. `force` means "deactivate despite
+                # dependents", a reversible act; it does not apply here.
+                force_note = " force=true does not apply to hard-delete." if item.force else ""
+                deps = await DependencyService.check_terminology_dependencies(
+                    item.id, all_statuses=True
+                )
+                if deps.template_count == -1:
+                    results.append(BulkResultItem(
+                        index=i, status="error", id=item.id,
+                        error=(
+                            "Hard-delete refused: cannot verify that no templates "
+                            f"reference this terminology (Template Store unavailable).{force_note}"
+                        ),
+                    ))
+                    continue
+                if deps.template_count > 0:
+                    results.append(BulkResultItem(
+                        index=i, status="error", id=item.id,
+                        error=(
+                            f"Hard-delete refused: {deps.template_count} template(s) of "
+                            "any status reference this terminology. Update or delete "
+                            f"them first.{force_note}"
+                        ),
+                    ))
+                    continue
+            elif not item.force:
+                # Soft-delete also deactivates every term in the terminology,
+                # so new writes against referencing templates start failing —
+                # hence the guard refuses on known references AND on an
+                # unverifiable count (never reading "could not check" as
+                # "none"). force=true overrides both refusals; the deactivate
+                # stays reversible via restore.
                 deps = await DependencyService.check_terminology_dependencies(item.id)
+                if deps.template_count == -1:
+                    results.append(BulkResultItem(
+                        index=i, status="error", id=item.id,
+                        error=(
+                            "Could not verify template dependencies (Template Store "
+                            "unavailable); retry, or use force=true to deactivate anyway."
+                        ),
+                    ))
+                    continue
                 if deps.template_count > 0:
                     results.append(BulkResultItem(
                         index=i, status="error", id=item.id,

@@ -285,6 +285,37 @@ vocabulary beyond 100 terms was effectively invisible and alias matches
 were never found. Term results now cover full vocabularies and name
 matches say what matched.
 
+### Terminology deletion checks its template dependencies for real
+
+The guard "a terminology referenced by templates cannot be deleted without
+`force`" was silently off on every install: def-store's manifest never
+handed the service `TEMPLATE_STORE_URL` or a key, the check's call went to
+`localhost:8003` inside def-store's own container, and any failure — an
+unreachable Template Store and a non-200 answer alike — collapsed to a
+count the guard read as "no dependencies". A successful delete therefore
+never meant "nothing depended on this".
+
+The manifest now wires both variables, and the guard fails closed:
+
+- A non-forced **soft delete** is refused while active templates reference
+  the terminology, **and** while that cannot be verified ("Could not verify
+  template dependencies … retry, or use force=true"). `force=true` keeps
+  its meaning — the deactivate stays reversible via restore.
+- A **hard-delete** (`hard_delete=true`, namespace `deletion_mode='full'`)
+  is refused while templates of **any** status reference the terminology —
+  an inactive template still validates the documents pinned to it — or when
+  that cannot be verified. `force` does not apply to hard-delete.
+- `GET /terminologies/{id}/dependencies` reports an incomplete check as
+  `template_count: -1` with `has_dependencies: null` (unknown), never
+  `false`.
+
+**Action:** re-render the install (`wip-deploy redeploy --name <install>`)
+so def-store receives `TEMPLATE_STORE_URL` and `TEMPLATE_STORE_API_KEY`.
+Without them every non-forced terminology delete is now refused instead of
+silently succeeding.
+
+---
+
 ### Namespace deletion removes the namespace's stored files
 
 Until now, deleting a namespace removed its file records but left every

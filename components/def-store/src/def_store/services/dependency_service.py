@@ -16,17 +16,25 @@ logger = logging.getLogger(__name__)
 
 
 class TerminologyDependencies(BaseModel):
-    """Dependencies of a terminology."""
+    """Dependencies of a terminology.
+
+    `template_count == -1` means the check could not be completed (Template
+    Store unreachable or answering non-200); `has_dependencies` is then None
+    ("unknown"), never False — callers must not read a failed check as "no
+    dependencies".
+    """
 
     terminology_id: str
     terminology_value: str
 
-    # Templates that reference this terminology
+    # Templates that reference this terminology (-1 = could not check)
     template_count: int = 0
     templates: list[dict] = Field(default_factory=list)
 
-    # Summary
-    has_dependencies: bool = False
+    # Summary. None = unknown (the check did not complete).
+    has_dependencies: bool | None = False
+    # Deactivation is always possible (force=true overrides the guard);
+    # the delete endpoint decides what a non-forced delete may do.
     can_deactivate: bool = True
     warning_message: str | None = None
 
@@ -34,17 +42,19 @@ class TerminologyDependencies(BaseModel):
 class DependencyService:
     """Service to check dependencies before deactivation."""
 
-    # Template Store configuration (from environment)
-    TEMPLATE_STORE_URL = os.getenv("TEMPLATE_STORE_URL", "http://localhost:8003")
-    TEMPLATE_STORE_API_KEY = os.getenv("TEMPLATE_STORE_API_KEY", "dev_master_key_for_testing")
-
     @classmethod
     async def check_terminology_dependencies(
         cls,
-        terminology_id: str
+        terminology_id: str,
+        *,
+        all_statuses: bool = False,
     ) -> TerminologyDependencies:
         """
         Check all dependencies of a terminology.
+
+        all_statuses=True counts referencing templates of every status, not
+        just active ones — the set a hard-delete must be judged by, since an
+        inactive template still validates the documents pinned to it.
 
         Returns:
             TerminologyDependencies with counts and details
@@ -65,16 +75,21 @@ class DependencyService:
         try:
             templates = await cls._get_referencing_templates(
                 terminology_id,
-                terminology.value
+                terminology.value,
+                all_statuses=all_statuses,
             )
             result.template_count = len(templates)
             result.templates = templates[:10]  # Limit to first 10
         except Exception:
-            # If Template Store is unavailable, we can't check
+            # Template Store unavailable or refusing — the count is UNKNOWN,
+            # which must never read as "no dependencies" (the delete guard
+            # fails closed on it).
             result.template_count = -1
 
-        # Calculate summary
-        result.has_dependencies = result.template_count > 0
+        # Calculate summary; None = unknown, not False
+        result.has_dependencies = (
+            None if result.template_count == -1 else result.template_count > 0
+        )
 
         # Build warning message
         if result.template_count > 0:
@@ -91,13 +106,19 @@ class DependencyService:
     async def _get_referencing_templates(
         cls,
         terminology_id: str,
-        terminology_value: str
+        terminology_value: str,
+        *,
+        all_statuses: bool = False,
     ) -> list[dict]:
         """
         Get templates that reference this terminology.
 
         This is a simplified check - we fetch all templates and filter locally.
         For production, this should be a dedicated API endpoint.
+
+        Raises on any failure, a non-200 answer included: an unauthorized or
+        erroring Template Store means the reference set is UNKNOWN, and an
+        empty list here would read as "nothing references this terminology".
         """
         # Read URL at call time to ensure we have the latest env var
         template_store_url = os.getenv("TEMPLATE_STORE_URL", "http://localhost:8003")
@@ -109,21 +130,23 @@ class DependencyService:
             page = 1
             page_size = 100
 
+            params: dict[str, str | int] = {"page_size": page_size}
+            if not all_statuses:
+                params["status"] = "active"
+
             async with httpx.AsyncClient(timeout=30.0) as client:
                 while True:
                     response = await client.get(
                         f"{template_store_url}/api/template-store/templates",
-                        params={
-                            "status": "active",
-                            "page": page,
-                            "page_size": page_size
-                        },
+                        params={**params, "page": page},
                         headers={"X-API-Key": template_store_api_key}
                     )
 
                     if response.status_code != 200:
                         logger.warning(f"Template Store returned {response.status_code}")
-                        return []
+                        raise RuntimeError(
+                            f"Template Store returned {response.status_code}"
+                        )
 
                     data = response.json()
                     templates = data.get("items", [])

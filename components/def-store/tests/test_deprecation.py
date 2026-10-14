@@ -650,6 +650,8 @@ async def test_dependency_check_when_template_store_unavailable(
     assert response.status_code == 200
     data = response.json()
     assert data["terminology_id"] == terminology_id
-    # template_count is -1 when Template Store is unavailable
+    # template_count is -1 when Template Store is unavailable, and
+    # has_dependencies is null (unknown) — never false
     assert data["template_count"] == -1
+    assert data["has_dependencies"] is None
     assert "unavailable" in data["warning_message"].lower()

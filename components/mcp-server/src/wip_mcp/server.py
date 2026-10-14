@@ -1711,11 +1711,14 @@ async def delete_terminology(
     """Delete a terminology. Mutable terminologies are always hard-deleted.
     Immutable ones are soft-deleted unless hard_delete=true (requires namespace deletion_mode='full').
 
-    Blocked if terms depend on it unless force=true.
+    Soft-delete is refused while active templates reference the terminology,
+    or when that cannot be verified — force=true deactivates anyway.
+    Hard-delete is refused while any template of any status references it,
+    or when that cannot be verified; force does not apply to hard-delete.
 
     Args:
         terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
-        force: Force deletion even if terms exist.
+        force: Deactivate even if templates reference the terminology (soft-delete only).
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
     """
     try:
