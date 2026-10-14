@@ -348,6 +348,19 @@ sync afterwards.
 
 ## Deployment changes
 
+- **The MCP server's network transports authenticate on every install.**
+  They enabled their key check only when `API_KEY` or
+  `WIP_AUTH_LEGACY_API_KEY` was set; the deployer provides the key as
+  `MASTER_API_KEY`, so on k8s installs any workload in the namespace got an
+  MCP session — acting with the server's admin key — without credentials
+  (compose/dev were covered only because their `.env` happens to carry
+  `API_KEY`). The transports now require `X-API-Key` equal to the key the
+  server itself uses (`WIP_API_KEY` > `MASTER_API_KEY` > `API_KEY` >
+  `WIP_API_KEY_FILE`), compare it in constant time, no longer accept it as a
+  `?api_key=` query parameter, and **refuse to start without a key** unless
+  `MCP_ALLOW_UNAUTHENTICATED=1` is set for local development. In-cluster
+  clients (WIP-KB's query agent) already send `X-API-Key`. Takes effect with
+  the next mcp-server image.
 - **A rotated key now reaches the services that read it, and the master
   key can be rotated.** Services read their secrets and `api-keys.json`
   only at start, and a change to that content alone left every rendered

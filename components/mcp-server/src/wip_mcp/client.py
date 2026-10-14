@@ -45,21 +45,22 @@ def _raise_for_status_with_body(resp: httpx.Response) -> None:
     )
 
 
-def _resolve_api_key() -> str:
-    """Resolve the API key from env var or file.
+def configured_api_key() -> str | None:
+    """The API key this process was configured with, or None if there is none.
 
     Priority: WIP_API_KEY env var > MASTER_API_KEY > API_KEY > WIP_API_KEY_FILE
-    contents > default dev key.
+    contents.
 
     WIP_API_KEY is the canonical name when wip_mcp is invoked as a host-spawned
     stdio server (apps/CLI tools set it explicitly). MASTER_API_KEY and API_KEY
     are the names the deployer sets in the wip-mcp-server container env (per
-    the component manifest's `MASTER_API_KEY: from_secret: api-key`); without
-    them in the priority list, an HTTP-transport invocation through the
-    deployed cluster falls through to the dev default and every upstream call
-    silently 401s — CASE-312 reopen.
+    the component manifest's `MASTER_API_KEY: from_secret: api-key`).
 
     WIP_API_KEY_FILE allows key rotation without updating each app's .mcp.json.
+
+    There is deliberately no default here: the network transports require
+    inbound requests to present exactly this key, and a well-known default
+    must never become an accepted credential.
     """
     # Each os.getenv read is unrolled (rather than looped) so the
     # docstring-env-var-drift static check finds every name as a string
@@ -76,11 +77,22 @@ def _resolve_api_key() -> str:
     key_file = os.getenv("WIP_API_KEY_FILE")
     if key_file:
         try:
-            return open(key_file).read().strip()
+            return open(key_file).read().strip() or None
         except OSError as e:
             import logging
             logging.getLogger("wip_mcp").warning("Cannot read WIP_API_KEY_FILE %s: %s", key_file, e)
-    return "dev_master_key_for_testing"
+    return None
+
+
+def _resolve_api_key() -> str:
+    """The key for outbound calls to the WIP services: `configured_api_key()`,
+    else the development default a local stack accepts.
+
+    Without the deployer's names in `configured_api_key`, an HTTP-transport
+    invocation through the deployed cluster would fall through to the dev
+    default and every upstream call silently 401s (CASE-312 reopen).
+    """
+    return configured_api_key() or "dev_master_key_for_testing"
 
 
 class WipClient:

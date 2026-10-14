@@ -53,12 +53,37 @@ def _base_env(**overrides) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@asynccontextmanager
-async def _network_server(transport_flag: str, port: int, api_key: str | None = None):
-    """Start the MCP server with --http or --sse on a given port, yield, then kill."""
+# Every variable the server takes its key from, plus the dev override. Stripped
+# from the inherited environment so each test sets exactly the key it means.
+_KEY_VARS = (
+    "WIP_API_KEY", "MASTER_API_KEY", "API_KEY", "WIP_AUTH_LEGACY_API_KEY",
+    "WIP_API_KEY_FILE", "MCP_ALLOW_UNAUTHENTICATED",
+)
+
+
+def _network_env(port: int, api_key: str | None, key_var: str) -> dict:
     env = _base_env(MCP_PORT=str(port), MCP_HOST="127.0.0.1")
+    for var in _KEY_VARS:
+        env.pop(var, None)
     if api_key:
-        env["API_KEY"] = api_key
+        env[key_var] = api_key
+    else:
+        # Transport tests that do not exercise auth run with the explicit
+        # local-development override; without a key the server refuses to start.
+        env["MCP_ALLOW_UNAUTHENTICATED"] = "1"
+    return env
+
+
+@asynccontextmanager
+async def _network_server(
+    transport_flag: str, port: int, api_key: str | None = None, key_var: str = "API_KEY"
+):
+    """Start the MCP server with --http or --sse on a given port, yield, then kill.
+
+    `key_var` names the env var carrying the key; the deployer provides
+    MASTER_API_KEY, so tests of the deployed shape pass that.
+    """
+    env = _network_env(port, api_key, key_var)
 
     proc = subprocess.Popen(
         [sys.executable, "-m", "wip_mcp", transport_flag],
@@ -99,14 +124,16 @@ async def test_stdio_list_tools():
         env=_base_env(),
     )
 
-    async with stdio_client(server_params) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            tools = await session.list_tools()
-            tool_names = {t.name for t in tools.tools}
-            assert len(tool_names) > 50, f"Expected 50+ tools, got {len(tool_names)}"
-            assert "get_wip_status" in tool_names
-            assert "describe_data_model" in tool_names
+    async with (
+        stdio_client(server_params) as (read_stream, write_stream),
+        ClientSession(read_stream, write_stream) as session,
+    ):
+        await session.initialize()
+        tools = await session.list_tools()
+        tool_names = {t.name for t in tools.tools}
+        assert len(tool_names) > 50, f"Expected 50+ tools, got {len(tool_names)}"
+        assert "get_wip_status" in tool_names
+        assert "describe_data_model" in tool_names
 
 
 @pytest.mark.asyncio
@@ -121,12 +148,14 @@ async def test_stdio_list_resources():
         env=_base_env(),
     )
 
-    async with stdio_client(server_params) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            resources = await session.list_resources()
-            resource_uris = {str(r.uri) for r in resources.resources}
-            assert "wip://query-assistant-prompt" in resource_uris
+    async with (
+        stdio_client(server_params) as (read_stream, write_stream),
+        ClientSession(read_stream, write_stream) as session,
+    ):
+        await session.initialize()
+        resources = await session.list_resources()
+        resource_uris = {str(r.uri) for r in resources.resources}
+        assert "wip://query-assistant-prompt" in resource_uris
 
 
 @pytest.mark.asyncio
@@ -141,17 +170,19 @@ async def test_stdio_readonly_mode():
         env=_base_env(WIP_MCP_MODE="readonly"),
     )
 
-    async with stdio_client(server_params) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            tools = await session.list_tools()
-            tool_names = {t.name for t in tools.tools}
-            # Write tools must be absent
-            assert "create_terminology" not in tool_names
-            assert "create_namespace" not in tool_names
-            # Read tools must be present
-            assert "get_wip_status" in tool_names
-            assert "list_templates" in tool_names
+    async with (
+        stdio_client(server_params) as (read_stream, write_stream),
+        ClientSession(read_stream, write_stream) as session,
+    ):
+        await session.initialize()
+        tools = await session.list_tools()
+        tool_names = {t.name for t in tools.tools}
+        # Write tools must be absent
+        assert "create_terminology" not in tool_names
+        assert "create_namespace" not in tool_names
+        # Read tools must be present
+        assert "get_wip_status" in tool_names
+        assert "list_templates" in tool_names
 
 
 # ---------------------------------------------------------------------------
@@ -168,14 +199,16 @@ async def test_http_list_tools():
     port = _free_port()
     async with _network_server("--http", port):
         url = f"http://127.0.0.1:{port}/mcp"
-        async with streamable_http_client(url) as (read_stream, write_stream, _):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                tools = await session.list_tools()
-                tool_names = {t.name for t in tools.tools}
-                assert len(tool_names) > 50
-                assert "get_wip_status" in tool_names
-                assert "describe_data_model" in tool_names
+        async with (
+            streamable_http_client(url) as (read_stream, write_stream, _),
+            ClientSession(read_stream, write_stream) as session,
+        ):
+            await session.initialize()
+            tools = await session.list_tools()
+            tool_names = {t.name for t in tools.tools}
+            assert len(tool_names) > 50
+            assert "get_wip_status" in tool_names
+            assert "describe_data_model" in tool_names
 
 
 @pytest.mark.asyncio
@@ -187,12 +220,14 @@ async def test_http_list_resources():
     port = _free_port()
     async with _network_server("--http", port):
         url = f"http://127.0.0.1:{port}/mcp"
-        async with streamable_http_client(url) as (read_stream, write_stream, _):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                resources = await session.list_resources()
-                resource_uris = {str(r.uri) for r in resources.resources}
-                assert "wip://query-assistant-prompt" in resource_uris
+        async with (
+            streamable_http_client(url) as (read_stream, write_stream, _),
+            ClientSession(read_stream, write_stream) as session,
+        ):
+            await session.initialize()
+            resources = await session.list_resources()
+            resource_uris = {str(r.uri) for r in resources.resources}
+            assert "wip://query-assistant-prompt" in resource_uris
 
 
 @pytest.mark.asyncio
@@ -202,22 +237,21 @@ async def test_http_api_key_required():
 
     port = _free_port()
     api_key = "test-secret-key-12345"
-    async with _network_server("--http", port, api_key=api_key):
-        async with httpx.AsyncClient() as client:
-            # No key → 401
-            resp = await client.post(
-                f"http://127.0.0.1:{port}/mcp",
-                json={"jsonrpc": "2.0", "method": "initialize", "id": 1, "params": {}},
-            )
-            assert resp.status_code == 401
+    async with _network_server("--http", port, api_key=api_key), httpx.AsyncClient() as client:
+        # No key → 401
+        resp = await client.post(
+            f"http://127.0.0.1:{port}/mcp",
+            json={"jsonrpc": "2.0", "method": "initialize", "id": 1, "params": {}},
+        )
+        assert resp.status_code == 401
 
-            # Wrong key → 401
-            resp = await client.post(
-                f"http://127.0.0.1:{port}/mcp",
-                json={"jsonrpc": "2.0", "method": "initialize", "id": 1, "params": {}},
-                headers={"X-API-Key": "wrong-key"},
-            )
-            assert resp.status_code == 401
+        # Wrong key → 401
+        resp = await client.post(
+            f"http://127.0.0.1:{port}/mcp",
+            json={"jsonrpc": "2.0", "method": "initialize", "id": 1, "params": {}},
+            headers={"X-API-Key": "wrong-key"},
+        )
+        assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -228,13 +262,12 @@ async def test_http_health_exempt_from_api_key():
     import httpx
 
     port = _free_port()
-    async with _network_server("--http", port, api_key="any-key"):
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"http://127.0.0.1:{port}/health")
-            assert resp.status_code == 200
-            body = resp.json()
-            assert body["status"] == "ok"
-            assert body["service"] == "mcp-server"
+    async with _network_server("--http", port, api_key="any-key"), httpx.AsyncClient() as client:
+        resp = await client.get(f"http://127.0.0.1:{port}/health")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert body["service"] == "mcp-server"
 
 
 @pytest.mark.asyncio
@@ -251,11 +284,10 @@ async def test_http_api_key_accepted():
         http_client = httpx.AsyncClient(headers={"X-API-Key": api_key})
         async with streamable_http_client(url, http_client=http_client) as (
             read_stream, write_stream, _
-        ):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                tools = await session.list_tools()
-                assert len(tools.tools) > 50
+        ), ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            tools = await session.list_tools()
+            assert len(tools.tools) > 50
 
 
 # ---------------------------------------------------------------------------
@@ -272,14 +304,16 @@ async def test_sse_list_tools():
     port = _free_port()
     async with _network_server("--sse", port):
         url = f"http://127.0.0.1:{port}/sse"
-        async with sse_client(url) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                tools = await session.list_tools()
-                tool_names = {t.name for t in tools.tools}
-                assert len(tool_names) > 50
-                assert "get_wip_status" in tool_names
-                assert "describe_data_model" in tool_names
+        async with (
+            sse_client(url) as (read_stream, write_stream),
+            ClientSession(read_stream, write_stream) as session,
+        ):
+            await session.initialize()
+            tools = await session.list_tools()
+            tool_names = {t.name for t in tools.tools}
+            assert len(tool_names) > 50
+            assert "get_wip_status" in tool_names
+            assert "describe_data_model" in tool_names
 
 
 @pytest.mark.asyncio
@@ -291,12 +325,14 @@ async def test_sse_list_resources():
     port = _free_port()
     async with _network_server("--sse", port):
         url = f"http://127.0.0.1:{port}/sse"
-        async with sse_client(url) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                resources = await session.list_resources()
-                resource_uris = {str(r.uri) for r in resources.resources}
-                assert "wip://query-assistant-prompt" in resource_uris
+        async with (
+            sse_client(url) as (read_stream, write_stream),
+            ClientSession(read_stream, write_stream) as session,
+        ):
+            await session.initialize()
+            resources = await session.list_resources()
+            resource_uris = {str(r.uri) for r in resources.resources}
+            assert "wip://query-assistant-prompt" in resource_uris
 
 
 @pytest.mark.asyncio
@@ -306,10 +342,9 @@ async def test_sse_api_key_required():
 
     port = _free_port()
     api_key = "test-secret-key-sse"
-    async with _network_server("--sse", port, api_key=api_key):
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"http://127.0.0.1:{port}/sse")
-            assert resp.status_code == 401
+    async with _network_server("--sse", port, api_key=api_key), httpx.AsyncClient() as client:
+        resp = await client.get(f"http://127.0.0.1:{port}/sse")
+        assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -331,28 +366,25 @@ async def test_all_transports_same_tools():
         args=["-m", "wip_mcp"],
         env=_base_env(),
     )
-    async with stdio_client(server_params) as (r, w):
-        async with ClientSession(r, w) as session:
-            await session.initialize()
-            stdio_tools = {t.name for t in (await session.list_tools()).tools}
+    async with stdio_client(server_params) as (r, w), ClientSession(r, w) as session:
+        await session.initialize()
+        stdio_tools = {t.name for t in (await session.list_tools()).tools}
 
     # HTTP
     http_port = _free_port()
     async with _network_server("--http", http_port):
         url = f"http://127.0.0.1:{http_port}/mcp"
-        async with streamable_http_client(url) as (r, w, _):
-            async with ClientSession(r, w) as session:
-                await session.initialize()
-                http_tools = {t.name for t in (await session.list_tools()).tools}
+        async with streamable_http_client(url) as (r, w, _), ClientSession(r, w) as session:
+            await session.initialize()
+            http_tools = {t.name for t in (await session.list_tools()).tools}
 
     # SSE
     sse_port = _free_port()
     async with _network_server("--sse", sse_port):
         url = f"http://127.0.0.1:{sse_port}/sse"
-        async with sse_client(url) as (r, w):
-            async with ClientSession(r, w) as session:
-                await session.initialize()
-                sse_tools = {t.name for t in (await session.list_tools()).tools}
+        async with sse_client(url) as (r, w), ClientSession(r, w) as session:
+            await session.initialize()
+            sse_tools = {t.name for t in (await session.list_tools()).tools}
 
     # All three must match
     assert stdio_tools == http_tools, (
@@ -377,28 +409,25 @@ async def test_all_transports_same_resources():
         args=["-m", "wip_mcp"],
         env=_base_env(),
     )
-    async with stdio_client(server_params) as (r, w):
-        async with ClientSession(r, w) as session:
-            await session.initialize()
-            stdio_res = {str(r.uri) for r in (await session.list_resources()).resources}
+    async with stdio_client(server_params) as (r, w), ClientSession(r, w) as session:
+        await session.initialize()
+        stdio_res = {str(r.uri) for r in (await session.list_resources()).resources}
 
     # HTTP
     http_port = _free_port()
     async with _network_server("--http", http_port):
         url = f"http://127.0.0.1:{http_port}/mcp"
-        async with streamable_http_client(url) as (r, w, _):
-            async with ClientSession(r, w) as session:
-                await session.initialize()
-                http_res = {str(r.uri) for r in (await session.list_resources()).resources}
+        async with streamable_http_client(url) as (r, w, _), ClientSession(r, w) as session:
+            await session.initialize()
+            http_res = {str(r.uri) for r in (await session.list_resources()).resources}
 
     # SSE
     sse_port = _free_port()
     async with _network_server("--sse", sse_port):
         url = f"http://127.0.0.1:{sse_port}/sse"
-        async with sse_client(url) as (r, w):
-            async with ClientSession(r, w) as session:
-                await session.initialize()
-                sse_res = {str(r.uri) for r in (await session.list_resources()).resources}
+        async with sse_client(url) as (r, w), ClientSession(r, w) as session:
+            await session.initialize()
+            sse_res = {str(r.uri) for r in (await session.list_resources()).resources}
 
     assert stdio_res == http_res, (
         f"stdio vs HTTP diff: {stdio_res.symmetric_difference(http_res)}"
@@ -422,31 +451,110 @@ async def test_http_custom_port():
         assert _wait_for_port(port, timeout=1.0)
 
 
-@pytest.mark.asyncio
-async def test_http_no_api_key_warning():
-    """HTTP without API_KEY prints a warning to stderr."""
-    port = _free_port()
-    env = _base_env(MCP_PORT=str(port), MCP_HOST="127.0.0.1")
-    env.pop("API_KEY", None)
-    env.pop("WIP_AUTH_LEGACY_API_KEY", None)
+def test_http_without_key_refuses_to_start():
+    """No configured key and no override: the server exits instead of serving
+    every caller with its own downstream credentials."""
+    env = _network_env(_free_port(), None, "API_KEY")
+    env.pop("MCP_ALLOW_UNAUTHENTICATED")
+    proc = subprocess.run(
+        [sys.executable, "-m", "wip_mcp", "--http"],
+        env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode != 0
+    assert "refusing to serve" in proc.stderr
+    assert "MCP_ALLOW_UNAUTHENTICATED" in proc.stderr
 
+
+@pytest.mark.asyncio
+async def test_http_dev_override_starts_with_a_loud_warning():
+    """MCP_ALLOW_UNAUTHENTICATED=1 starts without a key and says so."""
+    port = _free_port()
     proc = subprocess.Popen(
         [sys.executable, "-m", "wip_mcp", "--http"],
-        env=env,
+        env=_network_env(port, None, "API_KEY"),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
     try:
-        _wait_for_port(port, timeout=15.0)
-        # Read stderr for warning
-        # Give a moment for stderr to flush
+        assert _wait_for_port(port, timeout=15.0)
         await asyncio.sleep(0.5)
         proc.terminate()
         proc.wait(timeout=5)
         stderr = proc.stderr.read().decode()
-        assert "WARNING" in stderr, f"Expected WARNING in stderr, got: {stderr}"
-        assert "API key" in stderr.lower() or "API_KEY" in stderr
+        assert "WITHOUT authentication" in stderr, stderr
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+
+
+_INIT = {"jsonrpc": "2.0", "method": "initialize", "id": 1, "params": {
+    "protocolVersion": "2025-03-26", "capabilities": {},
+    "clientInfo": {"name": "auth-test", "version": "0"},
+}}
+_MCP_HEADERS = {"Accept": "application/json, text/event-stream"}
+
+
+@pytest.mark.asyncio
+async def test_http_deployed_key_name_is_enforced():
+    """The deployer provides the key ONLY as MASTER_API_KEY. A server started
+    that way must refuse an anonymous handshake and accept the right key."""
+    import httpx
+
+    port = _free_port()
+    key = "deployed-master-key-123"
+    async with _network_server("--http", port, api_key=key, key_var="MASTER_API_KEY"):
+        url = f"http://127.0.0.1:{port}/mcp"
+        async with httpx.AsyncClient() as client:
+            anonymous = await client.post(url, json=_INIT, headers=_MCP_HEADERS)
+            assert anonymous.status_code == 401
+            ok = await client.post(url, json=_INIT, headers={**_MCP_HEADERS, "X-API-Key": key})
+            assert ok.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_http_key_in_query_string_is_refused():
+    """Header only — a key in the URL would land in access and proxy logs."""
+    import httpx
+
+    port = _free_port()
+    key = "deployed-master-key-123"
+    async with (
+        _network_server("--http", port, api_key=key, key_var="MASTER_API_KEY"),
+        httpx.AsyncClient() as client,
+    ):
+        resp = await client.post(
+            f"http://127.0.0.1:{port}/mcp?api_key={key}", json=_INIT, headers=_MCP_HEADERS,
+        )
+        assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_http_dev_default_key_is_never_accepted():
+    """The outbound fallback key is public; it must not authenticate inbound."""
+    import httpx
+
+    port = _free_port()
+    async with (
+        _network_server("--http", port, api_key="real-key", key_var="MASTER_API_KEY"),
+        httpx.AsyncClient() as client,
+    ):
+        resp = await client.post(
+            f"http://127.0.0.1:{port}/mcp", json=_INIT,
+            headers={**_MCP_HEADERS, "X-API-Key": "dev_master_key_for_testing"},
+        )
+        assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_sse_deployed_key_name_is_enforced():
+    """Same contract on the SSE transport, started the deployer's way."""
+    import httpx
+
+    port = _free_port()
+    async with (
+        _network_server("--sse", port, api_key="sse-key", key_var="MASTER_API_KEY"),
+        httpx.AsyncClient() as client,
+    ):
+        resp = await client.get(f"http://127.0.0.1:{port}/sse")
+        assert resp.status_code == 401

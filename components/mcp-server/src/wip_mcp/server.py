@@ -4782,6 +4782,91 @@ _apply_read_only_mode()
 # ===================================================================
 
 
+def build_network_app(transport: str):
+    """The Starlette app for a network transport ("streamable-http" or "sse").
+
+    Inbound requests must carry `X-API-Key` equal to the key this server acts
+    with downstream (`configured_api_key()`: WIP_API_KEY > MASTER_API_KEY >
+    API_KEY > WIP_API_KEY_FILE). Requiring the same key means a caller never
+    gains authority beyond the key it presents. Without a configured key the
+    app refuses to build — the server would otherwise serve every caller with
+    its own downstream credentials — unless MCP_ALLOW_UNAUTHENTICATED=1 is set
+    for local development. `/health` stays unauthenticated for probes.
+    """
+    import hmac
+
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    from .client import configured_api_key
+
+    api_key = configured_api_key()
+    if not api_key:
+        if os.getenv("MCP_ALLOW_UNAUTHENTICATED") != "1":
+            raise SystemExit(
+                f"error: refusing to serve the {transport} transport without an "
+                "API key. Set MASTER_API_KEY (or WIP_API_KEY / API_KEY / "
+                "WIP_API_KEY_FILE); for local development only, set "
+                "MCP_ALLOW_UNAUTHENTICATED=1."
+            )
+        print(
+            f"WARNING: MCP_ALLOW_UNAUTHENTICATED=1 — serving {transport} WITHOUT "
+            "authentication. Anyone who can reach this port gets full access "
+            "through the AI tools. Local development only.",
+            file=sys.stderr,
+        )
+
+    # Configure allowed hosts for DNS rebinding protection
+    allowed_host = os.getenv("MCP_ALLOWED_HOST")
+    if allowed_host and mcp.settings.transport_security:
+        ts = mcp.settings.transport_security
+        ts.allowed_hosts.append(allowed_host)
+        ts.allowed_hosts.append(f"{allowed_host}:*")
+        ts.allowed_origins.append(f"https://{allowed_host}")
+        ts.allowed_origins.append(f"https://{allowed_host}:*")
+
+    # Create the transport-appropriate Starlette app
+    starlette_app = (
+        mcp.streamable_http_app() if transport == "streamable-http"
+        else mcp.sse_app()
+    )
+
+    # /health — unauthenticated liveness probe. Lets orchestrators
+    # (compose, k8s) check the server is up without needing to know
+    # the API key. Returns 200 OK as long as the uvicorn worker is
+    # serving requests. Registered BEFORE the auth middleware so the
+    # middleware's path-skip list can exempt it cleanly.
+    async def health(_request: Request) -> JSONResponse:
+        return JSONResponse({"status": "ok", "service": "mcp-server"})
+
+    starlette_app.router.routes.append(Route("/health", health, methods=["GET"]))
+
+    if api_key:
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        _UNAUTH_PATHS = {"/health"}
+        expected = api_key.encode()
+
+        class ApiKeyMiddleware(BaseHTTPMiddleware):
+            # Header only: a key in the query string ends up in access and
+            # proxy logs. Constant-time comparison.
+            async def dispatch(self, request: Request, call_next):
+                if request.url.path in _UNAUTH_PATHS:
+                    return await call_next(request)
+                key = request.headers.get("x-api-key") or ""
+                if not hmac.compare_digest(key.encode(), expected):
+                    return JSONResponse(
+                        {"error": "Missing or invalid API key. Pass X-API-Key header."},
+                        status_code=401,
+                    )
+                return await call_next(request)
+
+        starlette_app.add_middleware(ApiKeyMiddleware)
+
+    return starlette_app
+
+
 def main():
     if "--http" in sys.argv:
         transport = "streamable-http"
@@ -4794,65 +4879,8 @@ def main():
         mcp.run(transport="stdio")
     else:
         import uvicorn
-        from starlette.requests import Request
-        from starlette.responses import JSONResponse
 
-        api_key = os.getenv("API_KEY") or os.getenv("WIP_AUTH_LEGACY_API_KEY")
-        if not api_key:
-            print(
-                f"WARNING: MCP server running in {transport} mode without API key protection.\n"
-                "Anyone with network access will have full CRUD access via AI tools.\n"
-                "Set API_KEY environment variable for network transports.",
-                file=sys.stderr,
-            )
-
-        # Configure allowed hosts for DNS rebinding protection
-        allowed_host = os.getenv("MCP_ALLOWED_HOST")
-        if allowed_host and mcp.settings.transport_security:
-            ts = mcp.settings.transport_security
-            ts.allowed_hosts.append(allowed_host)
-            ts.allowed_hosts.append(f"{allowed_host}:*")
-            ts.allowed_origins.append(f"https://{allowed_host}")
-            ts.allowed_origins.append(f"https://{allowed_host}:*")
-
-        # Create the transport-appropriate Starlette app
-        starlette_app = (
-            mcp.streamable_http_app() if transport == "streamable-http"
-            else mcp.sse_app()
-        )
-
-        # /health — unauthenticated liveness probe. Lets orchestrators
-        # (compose, k8s) check the server is up without needing to know
-        # the API key. Returns 200 OK as long as the uvicorn worker is
-        # serving requests. Registered BEFORE the auth middleware so the
-        # middleware's path-skip list can exempt it cleanly.
-        from starlette.routing import Route
-
-        async def health(_request: Request) -> JSONResponse:
-            return JSONResponse({"status": "ok", "service": "mcp-server"})
-
-        starlette_app.router.routes.append(Route("/health", health, methods=["GET"]))
-
-        # API key auth middleware (M7). Skips /health so orchestration
-        # probes don't need to carry credentials.
-        if api_key:
-            from starlette.middleware.base import BaseHTTPMiddleware
-
-            _UNAUTH_PATHS = {"/health"}
-
-            class ApiKeyMiddleware(BaseHTTPMiddleware):
-                async def dispatch(self, request: Request, call_next):
-                    if request.url.path in _UNAUTH_PATHS:
-                        return await call_next(request)
-                    key = request.headers.get("x-api-key") or request.query_params.get("api_key")
-                    if not key or key != api_key:
-                        return JSONResponse(
-                            {"error": "Missing or invalid API key. Pass X-API-Key header."},
-                            status_code=401,
-                        )
-                    return await call_next(request)
-
-            starlette_app.add_middleware(ApiKeyMiddleware)
+        starlette_app = build_network_app(transport)
 
         # Allow port override via env var (default: FastMCP's 8000)
         port = int(os.getenv("MCP_PORT", mcp.settings.port))

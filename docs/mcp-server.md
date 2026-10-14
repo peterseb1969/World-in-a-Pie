@@ -91,7 +91,7 @@ Discovery, listing, get-by-ID, search, query, export, validation, hierarchy, rep
 | `MCP_PORT` | `8000` | Port for HTTP/SSE transports |
 | `MCP_HOST` | `0.0.0.0` | Bind address for HTTP/SSE transports |
 | `MCP_ALLOWED_HOST` | *(none)* | DNS rebinding protection — set to the hostname clients use (e.g. `wip-kubi.local`) |
-| `API_KEY` | *(none)* | API key required for HTTP/SSE clients (also accepts `WIP_AUTH_LEGACY_API_KEY`) |
+| `MCP_ALLOW_UNAUTHENTICATED` | *(unset)* | Local development only: `1` lets the HTTP/SSE transports start without a configured key (they refuse to otherwise) |
 
 ### WIP Service URLs
 
@@ -116,6 +116,13 @@ The server authenticates to WIP services using an API key, resolved in priority 
 3. `API_KEY` — generic fallback the deployer may set
 4. `WIP_API_KEY_FILE` — path to a file containing the key (supports key rotation without restarting)
 5. Fallback: `dev_master_key_for_testing` (local development only)
+
+The HTTP/SSE transports require every request (except `GET /health`) to carry
+**the same key** in an `X-API-Key` header — the key resolved by steps 1–4, so a
+caller never gets more authority than the key it presents. The fallback in
+step 5 is never accepted inbound: with no key from steps 1–4 the network
+transports refuse to start, unless `MCP_ALLOW_UNAUTHENTICATED=1` is set for
+local development. The key is not accepted as a query parameter.
 
 ### Optional
 
@@ -234,7 +241,7 @@ wip-mcp-reader:
 ## Security
 
 - **stdio transport** inherits the permissions of the parent process (the IDE). No additional auth needed.
-- **HTTP/SSE transports** should always set `API_KEY`. Without it, anyone with network access has full tool access. The server prints a warning to stderr if no API key is configured.
+- **HTTP/SSE transports** require a configured key (see API Key Resolution) and refuse to start without one. Clients send it as `X-API-Key`. `MCP_ALLOW_UNAUTHENTICATED=1` overrides this for local development only — then anyone who can reach the port has full tool access.
 - **Read-only mode** is structural, not a permission check — write tools are removed from the registry at startup. The AI cannot discover or invoke them.
 - **DNS rebinding protection** — set `MCP_ALLOWED_HOST` for HTTP/SSE transports.
 
