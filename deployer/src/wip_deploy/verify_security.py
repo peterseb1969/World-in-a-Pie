@@ -671,6 +671,63 @@ def verify_live(
         ]
 
 
+def check_key_rotation(
+    deployment: Deployment,
+    new_key: str,
+    old_key: str | None,
+    *,
+    transport: Any = None,
+    attempts: int = 30,
+    delay_seconds: float = 2.0,
+) -> list[str]:
+    """Probe the install's public URL after a key rotation; return problems.
+
+    The Registry validates every API key the install knows, so one
+    authenticated read against it answers both questions: is the new key
+    accepted (retried while restarted services come back), and is the old
+    one refused. An empty list means both held.
+    """
+    import time
+
+    import httpx
+
+    from wip_deploy.config_gen.spec_context import _public_base
+
+    url = f"{_public_base(deployment)}/api/registry/namespaces"
+    verify_tls = deployment.spec.network.tls == "letsencrypt"
+    problems: list[str] = []
+    with httpx.Client(
+        transport=transport, verify=verify_tls, timeout=10.0, follow_redirects=False
+    ) as client:
+
+        def status(key: str) -> int | None:
+            try:
+                return client.get(url, headers={"X-API-Key": key}).status_code
+            except httpx.HTTPError:
+                return None
+
+        new_status: int | None = None
+        for attempt in range(attempts):
+            new_status = status(new_key)
+            if new_status == 200:
+                break
+            if attempt < attempts - 1:
+                time.sleep(delay_seconds)
+        if new_status != 200:
+            problems.append(
+                f"the new key is not accepted at {url} "
+                f"(last answer: {new_status if new_status is not None else 'no response'})"
+            )
+        if old_key:
+            old_status = status(old_key)
+            if old_status not in (401, 403):
+                problems.append(
+                    f"the old key is still answered {old_status} at {url} — "
+                    "a service may still hold it"
+                )
+    return problems
+
+
 def read_admin_key(install_dir: Path, deployment: Deployment) -> str | None:
     """The install's api-key from its file secret backend, if readable."""
     key_file = _secrets_dir(install_dir, deployment) / "api-key"

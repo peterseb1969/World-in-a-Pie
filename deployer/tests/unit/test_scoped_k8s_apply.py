@@ -106,9 +106,11 @@ class TestKubectlApplyScoped:
 
     def test_missing_manifest_is_a_hard_error(self, tmp_path: Path) -> None:
         _write_install_dir(tmp_path, {"wip-kb": "services"})
-        with patch("wip_deploy.apply._kubectl_run"):
-            with pytest.raises(ApplyError, match="no rendered manifest"):
-                _kubectl_apply_scoped(tmp_path, "kb", ["nonexistent"])
+        with (
+            patch("wip_deploy.apply._kubectl_run"),
+            pytest.raises(ApplyError, match="no rendered manifest"),
+        ):
+            _kubectl_apply_scoped(tmp_path, "kb", ["nonexistent"])
 
 
 # ────────────────────────────────────────────────────────────────────

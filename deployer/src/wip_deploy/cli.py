@@ -20,6 +20,7 @@ from pydantic import ValidationError
 from wip_deploy import __version__
 from wip_deploy.apply import ApplyError, ApplyResult, apply_compose, apply_k8s
 from wip_deploy.build import BuildInputs, build_deployment
+from wip_deploy.config_gen.api_keys import declares_api_keys_file
 from wip_deploy.discovery import discover, find_repo_root
 from wip_deploy.export_ca import (
     TRUST_INSTRUCTIONS,
@@ -2768,15 +2769,60 @@ def redeploy(
     )
 
 
+# Install secrets rotate-key may regenerate in place: rotating them needs only
+# a re-render and the restart of the services that read them. Database
+# passwords and other generated secrets also need a store-side change.
+_ROTATABLE_SECRETS = ("api-key",)
+
+
+def _key_readers(
+    secret_name: str,
+    deployment: Deployment,
+    components: list[Component],
+    apps_list: list[App],
+    *,
+    declared_key: bool,
+) -> list[str]:
+    """Active, storage-free services that read `secret_name` at start.
+
+    These are the services the rotation's apply restarts: their rendered
+    definition carries a hash of the secrets (and, for a declared key, the
+    api-keys.json) they consume. A declared key's file is read by every
+    service that mounts api-keys.json, not only by the key's env consumers.
+    """
+    enabled_apps = {ref.name for ref in deployment.spec.apps if ref.enabled}
+    owners: list[Component | App] = [
+        c for c in components if is_component_active(c, deployment)
+    ] + [a for a in apps_list if a.metadata.name in enabled_apps]
+    readers = set()
+    for owner in owners:
+        if owner.spec.storage:
+            continue
+        env_vars = (*owner.spec.env.required, *owner.spec.env.optional)
+        reads_env = any(ev.source.from_secret == secret_name for ev in env_vars)
+        if reads_env or (declared_key and declares_api_keys_file(owner)):
+            readers.add(owner.metadata.name)
+    return sorted(readers)
+
+
 @app.command("rotate-key")
 def rotate_key(
     key_name: Annotated[
-        str,
+        str | None,
         typer.Argument(
             help="Name of the spec-declared config API key to rotate "
-            "(one of auth.api_keys)."
+            "(one of auth.api_keys). Omit when rotating with --secret."
         ),
-    ],
+    ] = None,
+    secret: Annotated[
+        str | None,
+        typer.Option(
+            "--secret",
+            help="Rotate an install secret instead of a declared key. "
+            "Supported: api-key (the install's master key, read by every "
+            "service and app).",
+        ),
+    ] = None,
     name: Annotated[str | None, _name_opt()] = None,
     install_dir: Annotated[
         Path | None,
@@ -2786,43 +2832,85 @@ def rotate_key(
         ),
     ] = None,
     repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+    check: Annotated[
+        bool,
+        typer.Option(
+            "--check/--no-check",
+            help="After the apply, probe the install's public URL: the new "
+            "key must be accepted and the old one refused (default: check).",
+        ),
+    ] = True,
 ) -> None:
-    """Rotate a spec-declared config-file API key — mint a fresh plaintext and re-apply.
+    """Rotate an API key in place — mint a fresh plaintext, re-apply, check it.
 
-    Removes the key's secret (`<name>-api-key`) from the install's secret
-    backend, then re-renders and re-applies the saved spec — regenerating a
-    fresh plaintext, rewriting api-keys.json, and reloading services. Prints
-    the new plaintext ONCE.
+    Two kinds of key rotate here:
 
-    No grace window: the old plaintext stops working the moment the apply
-    completes. Consumers that read the key from a mounted `*_API_KEY_FILE`
-    pick up the new value automatically (listed on success); external holders
-    (scripts, other machines, humans) must be re-handed it.
+      wip-deploy rotate-key NAME            a spec-declared config key (auth.api_keys)
+      wip-deploy rotate-key --secret api-key  the install's master key
 
-    Only config-declared keys (auth.api_keys) rotate in place. Runtime keys
-    (console / POST /api-keys) have a server-generated, once-returned
-    plaintext — rotate those by revoke + create.
+    The secret is removed from the install's secret backend and the saved
+    spec is re-rendered and re-applied, which generates a fresh value. The
+    services that read the key restart in that apply: each one's rendered
+    definition carries a hash of the secrets and key files it reads at
+    start, so a changed key is a changed definition (k8s rolls those pods,
+    compose recreates those containers; dev recreates everything anyway).
+    The new plaintext is printed ONCE.
+
+    No grace window: once the apply completes the old value is refused.
+    Holders outside the install (scripts, other machines, people) must be
+    re-handed the new value. With --check (the default) the command then
+    probes the install's public URL and fails if the new key is not
+    accepted or the old one still is.
+
+    Runtime keys (console / POST /api-keys) have a server-generated,
+    once-returned plaintext — rotate those by revoke + create. Database
+    passwords and other generated secrets need a store-side change this
+    command does not make, and are refused.
 
     Zero-downtime rotation when external consumers can't switch atomically:
     declare a second key, apply, migrate consumers, then remove the first and
     apply.
     """
+    if (key_name is None) == (secret is None):
+        typer.echo(
+            "error: name a declared key (rotate-key NAME) or an install secret "
+            "(rotate-key --secret api-key) — exactly one of the two.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
     resolved_name, target_dir, deployment, components, apps_list, repo_root = (
         _load_and_discover_for_mutation(name, install_dir, repo_root)
     )
 
-    keys = deployment.spec.auth.api_keys
-    match = next((k for k in keys if k.name == key_name), None)
-    if match is None:
-        declared = ", ".join(sorted(k.name for k in keys)) or "(none)"
-        typer.echo(
-            f"error: {key_name!r} is not a spec-declared api key on this "
-            f"install. Declared config keys: {declared}. Runtime keys "
-            "(console / POST /api-keys) can't be rotated in place — revoke "
-            "and create a new one instead.",
-            err=True,
-        )
-        raise typer.Exit(2)
+    if secret is not None:
+        if secret not in _ROTATABLE_SECRETS:
+            typer.echo(
+                f"error: {secret!r} cannot be rotated by rotate-key. Supported "
+                f"secrets: {', '.join(_ROTATABLE_SECRETS)}. Database passwords "
+                "and other generated secrets also need a change in the store "
+                "that uses them, which this command does not make.",
+                err=True,
+            )
+            raise typer.Exit(2)
+        secret_name = secret
+        label = f"install secret {secret!r}"
+    else:
+        keys = deployment.spec.auth.api_keys
+        match = next((k for k in keys if k.name == key_name), None)
+        if match is None:
+            declared = ", ".join(sorted(k.name for k in keys)) or "(none)"
+            typer.echo(
+                f"error: {key_name!r} is not a spec-declared api key on this "
+                f"install. Declared config keys: {declared}. The install's "
+                "master key rotates with `rotate-key --secret api-key`. Runtime "
+                "keys (console / POST /api-keys) can't be rotated in place — "
+                "revoke and create a new one instead.",
+                err=True,
+            )
+            raise typer.Exit(2)
+        secret_name = match.secret_name
+        label = f"api key {key_name!r}"
 
     secrets_spec = deployment.spec.secrets
     if secrets_spec.backend != "file" or secrets_spec.location is None:
@@ -2833,8 +2921,12 @@ def rotate_key(
         )
         raise typer.Exit(2)
 
-    secret_name = match.secret_name
     secrets_location = Path(secrets_spec.location)
+    secret_path = secrets_location / secret_name
+    try:
+        old_plaintext: str | None = secret_path.read_text().rstrip("\n") or None
+    except OSError:
+        old_plaintext = None
     # Remove the current secret so the re-apply's ensure_secrets regenerates
     # a fresh plaintext (get_or_generate: absent → generate).
     FileSecretBackend(secrets_location).remove(secret_name)
@@ -2844,40 +2936,28 @@ def rotate_key(
         components,
         apps_list,
         target_dir,
-        f"Rotated api key {key_name!r} on {resolved_name}",
+        f"Rotated {label} on {resolved_name}",
         repo_root=repo_root,
     )
 
     # Read the regenerated plaintext straight off disk (the apply used its own
     # backend instance; this reads the persisted value).
-    secret_path = secrets_location / secret_name
     new_plaintext = secret_path.read_text().rstrip("\n")
 
     typer.echo("")
-    typer.echo(
-        typer.style(
-            f"New plaintext for {key_name!r} (shown once):", bold=True
-        )
-    )
+    typer.echo(typer.style(f"New plaintext for {label} (shown once):", bold=True))
     typer.echo(f"  {new_plaintext}")
     typer.echo(f"  secret file: {secret_path}")
 
-    # Consumers that mount this secret update automatically on the apply;
-    # everyone else holds a now-dead key.
-    owners: list[Component | App] = [*components, *apps_list]
-    auto = sorted(
-        {
-            owner.metadata.name
-            for owner in owners
-            for ev in (*owner.spec.env.required, *owner.spec.env.optional)
-            if ev.source.from_secret == secret_name
-        }
+    readers = _key_readers(
+        secret_name, deployment, components, apps_list,
+        declared_key=key_name is not None,
     )
     typer.echo("")
-    if auto:
+    if readers:
         typer.echo(
-            "Picks up the new value automatically (mounts the secret): "
-            + ", ".join(auto)
+            "Restarted by this apply (they read the key at start): "
+            + ", ".join(readers)
         )
     typer.echo(
         typer.style(
@@ -2887,6 +2967,26 @@ def rotate_key(
         )
     )
 
+    if not check:
+        return
+    from wip_deploy.verify_security import check_key_rotation
+
+    problems = check_key_rotation(deployment, new_plaintext, old_plaintext)
+    if problems:
+        typer.echo(
+            typer.style("✗ post-rotation check failed:", fg=typer.colors.RED, bold=True),
+            err=True,
+        )
+        for problem in problems:
+            typer.echo(f"  - {problem}", err=True)
+        raise typer.Exit(1)
+    typer.echo(
+        typer.style(
+            "✓ post-rotation check: the Registry accepts the new key and "
+            "refuses the old one",
+            fg=typer.colors.GREEN,
+        )
+    )
 
 # ─────────────────────────────────────────────────────────────────────
 # Dex user management — `wip-deploy user add|remove|list`

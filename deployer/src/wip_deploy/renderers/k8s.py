@@ -42,6 +42,7 @@ from wip_deploy.config_gen.api_keys import (
     declares_api_keys_file,
     generate_api_keys_json,
 )
+from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY, config_hash
 from wip_deploy.config_gen.env import Literal
 from wip_deploy.config_gen.garage import garage_component, render_garage_toml
 from wip_deploy.config_gen.images import image_ref as _image_ref
@@ -120,12 +121,24 @@ def render_k8s(
         if a.metadata.name in enabled_app_names:
             active.append(a)
 
+    # The router reads its Caddyfile through a subPath mount, which a running
+    # pod never sees change; it is part of the router's config hash.
+    router_files: dict[str, str] = {}
+    if any(o.metadata.name == "router" for o in active):
+        router_files["Caddyfile"] = render_router_caddyfile(
+            generate_router_config(deployment, components, apps)
+        )
+
     for owner in active:
         name = owner.metadata.name
         env = resolved_env.get(name)
         if env is None:
             continue
-        content = _render_component(owner, deployment, env, ns)
+        workload_hash = config_hash(
+            owner, deployment, env, secrets,
+            mounted_files=router_files if name == "router" else None,
+        )
+        content = _render_component(owner, deployment, env, ns, workload_hash)
         # Storage-bearing → infrastructure/, otherwise services/
         if owner.spec.storage:
             tree.add(f"infrastructure/{name}.yaml", content)
@@ -468,6 +481,7 @@ def _render_component(
     deployment: Deployment,
     env: ResolvedEnv,
     ns: str,
+    workload_hash: str | None = None,
 ) -> str:
     name = owner.metadata.name
     svc_name = f"wip-{name}"
@@ -634,6 +648,13 @@ def _render_component(
     # StatefulSet needs serviceName
     if workload_kind == "StatefulSet":
         workload["spec"]["serviceName"] = svc_name
+
+    # A changed secret or key file must roll the pods that read it at start;
+    # the hash makes that content change a template change (config_hash).
+    if workload_hash is not None and workload_kind == "Deployment":
+        workload["spec"]["template"]["metadata"]["annotations"] = {
+            CONFIG_HASH_KEY: workload_hash,
+        }
 
     docs.append(workload)
     return _dump_multi(docs)

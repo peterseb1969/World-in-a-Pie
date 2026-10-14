@@ -41,6 +41,7 @@ from wip_deploy.config_gen.api_keys import (
     declares_api_keys_file,
     generate_api_keys_json,
 )
+from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY, config_hash
 from wip_deploy.config_gen.env import (
     Literal,
 )
@@ -96,7 +97,7 @@ def render_compose(
     # docker-compose.yaml
     tree.add(
         "docker-compose.yaml",
-        _render_compose_yaml(deployment, components, apps, resolved_env),
+        _render_compose_yaml(deployment, components, apps, resolved_env, secrets),
     )
 
     # .env (secrets + any interpolation the compose file refers to)
@@ -160,6 +161,7 @@ def _render_compose_yaml(
     components: list[Component],
     apps: list[App],
     resolved_env: dict[str, ResolvedEnv],
+    secrets: ResolvedSecrets,
 ) -> str:
     services: dict[str, Any] = {}
     volumes: dict[str, Any] = {}
@@ -192,6 +194,9 @@ def _render_compose_yaml(
             is_app=False,
             healthcheck_owners=healthcheck_owners,
             active_names=active_names,
+            workload_hash=config_hash(
+                c, deployment, resolved_env[c.metadata.name], secrets
+            ),
         )
         _collect_volumes(c, volumes)
 
@@ -205,6 +210,9 @@ def _render_compose_yaml(
             is_app=True,
             healthcheck_owners=healthcheck_owners,
             active_names=active_names,
+            workload_hash=config_hash(
+                a, deployment, resolved_env[a.metadata.name], secrets
+            ),
         )
         _collect_volumes(a, volumes)
 
@@ -230,11 +238,17 @@ def _service_block(
     is_app: bool,
     healthcheck_owners: set[str],
     active_names: set[str],
+    workload_hash: str | None = None,
 ) -> dict[str, Any]:
     block: dict[str, Any] = {
         "container_name": _container_name(owner.metadata.name),
         "image": _image_ref(owner, deployment),
     }
+    # `compose up -d` recreates only services whose definition changed; the
+    # label makes a changed secret or bind-mounted key file such a change
+    # (config_hash). The Caddy proxies are reloaded by the apply instead.
+    if workload_hash is not None:
+        block["labels"] = {CONFIG_HASH_KEY: workload_hash}
 
     # Build context, if applicable (local-build mode: no registry set).
     build = _build_block(owner, deployment)

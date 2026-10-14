@@ -275,11 +275,11 @@ wip-deploy install --api-keys-file keys.yaml
 ```
 
 Rotate a declared key in place with `wip-deploy rotate-key <name>`: the
-key's secret is regenerated, the spec re-applied, and the fresh
-plaintext printed exactly once. No grace window — the old plaintext
-stops working at apply; services reading a mounted `*_API_KEY_FILE`
-pick up the new value automatically, external holders must be re-handed
-it. (Runtime keys can't rotate in place — revoke + create.)
+key's secret is regenerated, the spec re-applied — restarting the
+services that read the key — and the fresh plaintext printed exactly
+once. No grace window — the old plaintext stops working at apply;
+external holders must be re-handed it. (Runtime keys can't rotate in
+place — revoke + create. All key kinds: §7.2.)
 
 ### 4.4 Runtime API keys: CRUD endpoints
 
@@ -692,32 +692,46 @@ tar czf - "$WIP_DATA_DIR" \
   > backup.tar.gz.gpg
 ```
 
-### 7.2 Key rotation — recreate, don't restart
+### 7.2 Key rotation
 
-> **Environment variables are read at container *creation*, not start.** A `podman-compose restart` keeps the old `.env`. After every secret change you must `podman-compose down && podman-compose up -d` (or the equivalent `wip-deploy` flow) to pick up the new value. This is the single most common rotation mistake.
+Services read their secrets and key files **once, at start**. A rotated key
+reaches them only when they restart, and a plain restart is not enough on
+every target (a compose `restart` keeps the old environment; on k8s a
+`subPath`-mounted file never changes inside a running pod). `wip-deploy`
+handles this: every service's rendered definition carries a hash of the
+secrets and key files it reads, so a rotation re-applies the install and
+restarts exactly the services whose key changed — k8s rolls their pods,
+compose recreates their containers, dev recreates everything. Storage
+services (MongoDB, PostgreSQL, NATS, MinIO, Dex) are not restarted this way.
 
-Rotating the master API key (Tier 1 / single-key flow):
+**Three kinds of API key, three procedures:**
 
-```bash
-# 1. Generate a new key
-./scripts/security/generate-api-key.sh --name master-key-v2
+| Key | Where it lives | Rotate with |
+|---|---|---|
+| The install's **master key** (`secrets/api-key`), read by every service and app | install secret | `wip-deploy rotate-key --secret api-key --name <install>` |
+| **Declared keys** (`auth.api_keys`, e.g. agent keys) | install secret + rendered `api-keys.json` | `wip-deploy rotate-key <key-name> --name <install>` |
+| **Runtime keys** (console / `POST /api/registry/api-keys`) | Registry (MongoDB, bcrypt hash) | revoke + create a new one; other services see the change within the 30 s key sync |
 
-# 2. Update .env — replace API_KEY (and the legacy aliases)
-#    API_KEY=<new>
-#    WIP_AUTH_LEGACY_API_KEY=<new>
-#    MASTER_API_KEY=<new>     # legacy compat — services map it to WIP_AUTH_LEGACY_API_KEY
+`rotate-key` prints the new plaintext **once**, names the services the apply
+restarted, and then probes the install's public URL: the Registry must
+accept the new key and refuse the old one, or the command fails (`--no-check`
+skips the probe). There is no grace window — once the apply completes, the
+old value gets 401.
 
-# 3. Recreate (NOT restart)
-podman-compose down && podman-compose up -d
+After rotating:
 
-# 4. Update clients
-# 5. Verify
-curl -k -H "X-API-Key: <new>" https://<host>:8443/api/registry/namespaces
-```
+- Clients that read the key **file** follow automatically: `kbc`, and MCP
+  configurations using `WIP_API_KEY_FILE`.
+- Anyone holding a **copy** of the key (scripts, other machines, people)
+  must be given the new value.
+- For zero downtime with external consumers that cannot switch at once,
+  declare a second key, apply, move consumers over, then remove the first.
 
-The same recreate-don't-restart rule applies to MongoDB / PostgreSQL passwords, the NATS token, and Dex client secrets. The recipe is always: change the secret in its source of truth, update `.env`, `down && up -d`, verify, update clients.
-
-For Tier 2 deployments with per-service keys in `config/api-keys.json`: add the new key, deploy, switch clients, then remove the old key.
+**Not rotatable with `rotate-key`:** MongoDB / PostgreSQL passwords, the
+MinIO password and Dex secrets. These also need a change in the store that
+uses them (the database keeps its own copy of the password), which
+`rotate-key` does not make, so it refuses them. NATS currently runs without
+authentication, so there is no NATS credential to rotate.
 
 Rotation cadences worth defaulting to:
 
@@ -725,7 +739,6 @@ Rotation cadences worth defaulting to:
 |---|---|---|
 | API keys | Annually, immediately on compromise | Higher frequency in regulated environments |
 | Database passwords | Annually | Coordinate with maintenance window |
-| NATS token | Annually | Brief disruption while NATS clients reconnect |
 | Dex client secret | Annually | Affects active sessions |
 | TLS (Let's Encrypt) | Automatic | Caddy renews 30 days before expiry |
 
@@ -844,7 +857,7 @@ If using SSH stdio and the connection drops:
 | 401 after a successful Dex login | §3.1 Three-Value OIDC Rule | Match `issuer:` / `WIP_AUTH_JWT_ISSUER_URL` / `VITE_OIDC_AUTHORITY` exactly, recreate containers |
 | 404 on `/api/<svc>/...` calls | §3.2 Caddy `handle` vs `handle_path` | Use `handle`, not `handle_path` |
 | Health probe says "200" but the service isn't really up | §3.3 Caddy 200-on-unmatched | Validate by content, not just status code |
-| Env change didn't take effect | §7.2 Recreate, don't restart | `podman-compose down && podman-compose up -d` |
+| Env change didn't take effect | §7.2 Key rotation | `wip-deploy redeploy --name <install>` (or `podman-compose down && podman-compose up -d`) — a `restart` keeps the old env |
 | "unable to open database file" on Dex | §5.4 Container user mapping | `podman unshare chown 1001:1001 <data-dir>/dex` |
 | App returns 502 calling WIP from inside its container | §6.3 gotcha 2 | Use `http://wip-caddy:8080`, not `https://wip-caddy:8443` |
 | App's static assets return 404 with MIME-type errors | §6.3 gotcha 1 | Bake `VITE_BASE_PATH` at build time with `--build-arg` |

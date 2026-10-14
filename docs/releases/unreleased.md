@@ -333,6 +333,21 @@ sync afterwards.
 
 ## Deployment changes
 
+- **A rotated key now reaches the services that read it, and the master
+  key can be rotated.** Services read their secrets and `api-keys.json`
+  only at start, and a change to that content alone left every rendered
+  workload identical — k8s rolled nothing (and `subPath` mounts never
+  refresh in a running pod), compose recreated nothing for a changed key
+  file. Each non-storage workload now carries a hash of those inputs (k8s
+  pod-template annotation, compose label `wip.dev/config-hash`), so an
+  apply restarts exactly the services whose key changed. `wip-deploy
+  rotate-key --secret api-key` rotates the install's master key;
+  `rotate-key` names the services it restarted and then probes the install
+  (new key accepted, old refused; `--no-check` skips it). Database
+  passwords and other generated secrets are refused — they need a
+  store-side change. **First apply after upgrading the deployer:** the
+  hash is new on every non-storage workload, so that one apply rolls all
+  Deployments (k8s) or recreates those containers (compose) once.
 - **Dev installs mount the checkout they were installed from, whatever
   the cwd.** A dev redeploy (or any other mutation verb) used to bind-mount
   the backend source of whichever git checkout the command ran in, while
