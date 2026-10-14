@@ -10,7 +10,7 @@ import contextlib
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -29,11 +29,12 @@ from wip_auth import (
 
 from . import __version__
 from .api import api_router
+from .api.auth import require_groups
 from .models.audit_log import TermAuditLog
 from .models.term import Term
 from .models.term_relation import TermRelation
 from .models.terminology import Terminology
-from .services.nats_client import close_nats_client, configure_nats_client
+from .services.nats_client import close_nats_client, configure_nats_client, nats_stats
 from .services.registry_client import configure_registry_client, get_registry_client
 from .services.system_terminologies import ensure_system_terminologies
 
@@ -129,10 +130,11 @@ async def lifespan(app: FastAPI):
     )
     print(f"Registry client configured for {settings.REGISTRY_URL}")
 
-    # Configure NATS client (optional — for event publishing to reporting-sync)
-    if settings.NATS_URL:
-        nats_ok = await configure_nats_client(settings.NATS_URL)
-        print(f"NATS client: {'connected' if nats_ok else 'failed'} ({settings.NATS_URL})")
+    # Configure NATS client (optional — for event publishing to reporting-sync).
+    # Connects in the background and heals itself; events wait in a retry
+    # queue meanwhile.
+    if await configure_nats_client(settings.NATS_URL):
+        print(f"NATS event bus started for {settings.NATS_URL} (connecting in background)")
     else:
         print("NATS URL not configured, event publishing disabled")
 
@@ -318,6 +320,19 @@ async def health_check_fresh():
 app.add_api_route(
     "/api/def-store/health", health_check_fresh, methods=["GET"], tags=["Health"]
 )
+
+
+@app.get(
+    "/api/def-store/health/events",
+    tags=["Health"],
+    dependencies=[Depends(require_groups(["wip-admins", "wip-services"]))],
+)
+async def events_health():
+    """NATS event-bus state and counters: published, queued for retry, and
+    dropped (by reason). Dropped events are missing from reporting until a
+    batch sync repairs them. Operator-only: its last error can name a
+    subject, and subjects carry namespaces and entity IDs."""
+    return nats_stats()
 
 
 # Ready check endpoint (for Kubernetes)

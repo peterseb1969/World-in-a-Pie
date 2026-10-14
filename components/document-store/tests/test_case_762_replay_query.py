@@ -62,8 +62,7 @@ class _FakeJetStream:
 @pytest.fixture
 def fake_nats(monkeypatch):
     js = _FakeJetStream()
-    monkeypatch.setattr(nats_client, "_nats_enabled", True)
-    monkeypatch.setattr(nats_client, "_jetstream", js)
+    monkeypatch.setattr(nats_client, "get_jetstream", lambda: js)
     return js
 
 

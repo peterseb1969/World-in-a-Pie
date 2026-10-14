@@ -31,8 +31,7 @@ from .api import api_router
 from .models.template import Template
 from .services.def_store_client import configure_def_store_client, get_def_store_client
 from .services.integrity_service import IntegrityCheckResult, check_all_templates
-from .services.nats_client import close_nats_client, configure_nats_client
-from .services.nats_client import health_check as nats_health_check
+from .services.nats_client import close_nats_client, configure_nats_client, nats_stats
 from .services.registry_client import configure_registry_client, get_registry_client
 
 
@@ -105,13 +104,10 @@ async def lifespan(app: FastAPI):
     else:
         print("WARNING: Def-Store service is not reachable. Terminology validation may not work.")
 
-    # Configure NATS client (optional - for reporting sync)
-    if settings.NATS_URL:
-        nats_connected = await configure_nats_client(settings.NATS_URL)
-        if nats_connected:
-            print(f"NATS client connected to {settings.NATS_URL}")
-        else:
-            print("WARNING: NATS not available. Template events will not be published.")
+    # Configure NATS client (optional - for reporting sync). Connects in the
+    # background and heals itself; events wait in a retry queue meanwhile.
+    if await configure_nats_client(settings.NATS_URL):
+        print(f"NATS event bus started for {settings.NATS_URL} (connecting in background)")
     else:
         print("NATS_URL not configured. Template event publishing disabled.")
 
@@ -266,17 +262,15 @@ async def _probe_dependencies() -> dict[str, str]:
     after another their timeouts ADD — two independent 5s DNS stalls once
     produced a single 10.272s response, against a 5s probe budget.
     """
-    mongo, registry_ok, def_store_ok, nats_ok = await asyncio.gather(
+    mongo, registry_ok, def_store_ok = await asyncio.gather(
         _mongo_status(),
         get_registry_client().health_check(),
         get_def_store_client().health_check(),
-        nats_health_check(),
     )
     return {
         "database": mongo,
         "registry": "connected" if registry_ok else "disconnected",
         "def_store": "connected" if def_store_ok else "disconnected",
-        "nats": "connected" if nats_ok else "disabled",
     }
 
 
@@ -295,6 +289,9 @@ async def health_check(fresh: bool = False):
     return {
         "status": status,
         **deps,
+        # Live, not cached: the event bus's state is in-process and free to
+        # read. One of connected / connecting / reconnecting / not_configured.
+        "nats": nats_stats()["state"],
     }
 
 
@@ -308,6 +305,19 @@ async def health_check_fresh():
 app.add_api_route(
     "/api/template-store/health", health_check_fresh, methods=["GET"], tags=["Health"]
 )
+
+
+@app.get(
+    "/api/template-store/health/events",
+    tags=["Health"],
+    dependencies=[Depends(require_groups(["wip-admins", "wip-services"]))],
+)
+async def events_health():
+    """NATS event-bus state and counters: published, queued for retry, and
+    dropped (by reason). Dropped events are missing from reporting until a
+    batch sync repairs them. Operator-only: its last error can name a
+    subject, and subjects carry namespaces and entity IDs."""
+    return nats_stats()
 
 
 # Ready check endpoint (for Kubernetes)

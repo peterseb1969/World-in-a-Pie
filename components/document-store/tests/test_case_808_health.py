@@ -46,7 +46,6 @@ def stub_dependencies():
         patch.object(ds_main, "get_registry_client", return_value=AsyncMock(health_check=healthy)),
         patch.object(ds_main, "get_template_store_client", return_value=AsyncMock(health_check=healthy)),
         patch.object(ds_main, "get_def_store_client", return_value=AsyncMock(health_check=healthy)),
-        patch.object(ds_main, "nats_health_check", AsyncMock(return_value=True)),
         patch.object(ds_main, "_probe_dependencies", counting_probe),
     ):
         ds_main._health_cache.invalidate()

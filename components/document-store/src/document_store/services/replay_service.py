@@ -76,9 +76,10 @@ class ReplayService:
     ) -> dict:
         """Start a new replay session."""
         from ..models.replay import ReplayFilter, ReplaySession
-        from .nats_client import _jetstream, _nats_enabled
+        from .nats_client import get_jetstream
 
-        if not _nats_enabled or not _jetstream:
+        _jetstream = get_jetstream()
+        if not _jetstream:
             raise RuntimeError("NATS not connected — cannot start replay")
 
         session_id = str(uuid.uuid4())[:8]
@@ -204,10 +205,11 @@ class ReplayService:
 
     async def _cleanup_stream(self, stream_name: str):
         """Delete a replay NATS stream."""
-        from .nats_client import _jetstream
-        if _jetstream:
+        from .nats_client import get_jetstream
+        js = get_jetstream()
+        if js:
             try:
-                await _jetstream.delete_stream(stream_name)
+                await js.delete_stream(stream_name)
                 logger.info(f"Deleted replay stream {stream_name}")
             except Exception as e:
                 logger.warning(f"Failed to delete stream {stream_name}: {e}")
@@ -216,8 +218,9 @@ class ReplayService:
         """Background task that publishes replay events."""
         from ..models.document import Document
         from ..models.replay import ReplayStatus
-        from .nats_client import _jetstream
-        assert _jetstream is not None  # start() enforces NATS enabled before launching this task
+        from .nats_client import get_jetstream
+        _jetstream = get_jetstream()
+        assert _jetstream is not None  # start() enforces NATS connected before launching this task
 
         session = self._sessions[session_id]
         session.status = ReplayStatus.RUNNING
