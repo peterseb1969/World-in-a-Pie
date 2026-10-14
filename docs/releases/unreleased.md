@@ -189,6 +189,31 @@ first start below) and legacy API shapes keep working. Review seeds for
 literal duplicate aliases, and any consumer that assumed `aliases`
 excluded translations.
 
+### Ambiguous term names are visible, and identity fields refuse them
+
+A name borne by several terms used to resolve silently to whichever term
+storage order served first. Three changes make the ambiguity loud:
+
+- **Validation reports every bearer.** `/validate` responses carry
+  `matches` (how many distinct terms bear the submitted value) and
+  `candidates` (each bearer with its matched name). A single hit keeps
+  the previous shape; a value match is unambiguous by construction.
+- **Document writes fail closed on ambiguous identity fields.** A term
+  identity field resolving an ambiguous name is rejected (per-field code
+  `ambiguous_term`) — the arbitrary pick would otherwise feed the
+  identity hash. On ordinary fields the first bearer still resolves,
+  now with a warning naming all candidates.
+- **Authoring warns at the source.** Creating or updating a term whose
+  value or names collide with another active term's value or names (per
+  the terminology's case sensitivity, including collisions inside one
+  bulk import) reports them in the per-item `details.name_collisions`.
+  A terminology declaring `unique_names: true` rejects such writes with
+  `error_code='name_collision'` instead.
+
+**Action:** none — defaults warn, nothing previously accepted is rejected
+except ambiguous names on identity fields, which were producing
+storage-order-dependent identities and should be corrected, not relied on.
+
 ### Ranked term search (typeahead); unified search actually finds terms
 
 Def-store gains `GET /api/def-store/terms/search` (MCP tool

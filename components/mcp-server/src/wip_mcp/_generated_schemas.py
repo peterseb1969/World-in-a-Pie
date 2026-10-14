@@ -384,6 +384,22 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                   'Implies '
                                                                                   'extensible=True.',
                                                                    'default': False},
+                                                       'unique_names': {'type': 'boolean',
+                                                                        'description': 'Reject '
+                                                                                       '(not just '
+                                                                                       'warn '
+                                                                                       'about) '
+                                                                                       'term '
+                                                                                       'writes '
+                                                                                       'whose '
+                                                                                       'names '
+                                                                                       'collide '
+                                                                                       'with '
+                                                                                       'another '
+                                                                                       "term's "
+                                                                                       'value or '
+                                                                                       'name',
+                                                                        'default': False},
                                                        'metadata': {'properties': {'source': {'type': 'string',
                                                                                               'description': 'Source '
                                                                                                              'of '
@@ -2404,6 +2420,7 @@ case_sensitive (boolean, default: false): Whether term values are case-sensitive
 allow_multiple (boolean, default: false): Whether multiple terms can be selected
 extensible (boolean, default: false): Whether users can add new terms at runtime
 mutable (boolean, default: false): Whether terms can be hard-deleted (vs deprecated). Implies extensible=True.
+unique_names (boolean, default: false): Reject (not just warn about) term writes whose names collide with another term's value or name
 metadata (object): Additional metadata
   source (string): Source of the terminology (e.g., 'ISO 3166', 'internal')
   source_url (string): URL to the source specification
@@ -2426,6 +2443,7 @@ case_sensitive (boolean, default: false): Whether term values are case-sensitive
 allow_multiple (boolean, default: false): Whether multiple terms can be selected
 extensible (boolean, default: false): Whether users can add new terms at runtime
 mutable (boolean, default: false): Whether terms can be hard-deleted (vs deprecated). Implies extensible=True.
+unique_names (boolean, default: false): Reject (not just warn about) term writes whose names collide with another term's value or name
 metadata (object): Additional metadata
   source (string): Source of the terminology (e.g., 'ISO 3166', 'internal')
   source_url (string): URL to the source specification

@@ -420,6 +420,16 @@ A term is an entry in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).
 - Exact-duplicate names, a name equal to the term's own value, unknown
   name types, and preferred conflicts are rejected per item with
   error_code 'invalid_names'. Case-variant names are legal.
+- A name borne by SEVERAL terms is ambiguous, and the platform makes that
+  visible instead of silently picking: validation responses carry
+  `matches` (bearer count) and `candidates` (every bearer with its
+  matched name); a document write resolving an ambiguous name on an
+  IDENTITY field is rejected (per-field code 'ambiguous_term' — the
+  fail-closed identity rule), on an ordinary field it resolves to the
+  first bearer with a warning. Authoring a term whose name collides with
+  another term's value or name reports the collisions in
+  details.name_collisions; a terminology created with unique_names=true
+  rejects such writes outright (error_code 'name_collision').
 - Terms can have ontology relations (see Ontology section below)
 - Ranked search: GET /api/def-store/terms/search (the search_terms tool) —
   typeahead over value, label and every name, with match modes
@@ -1572,6 +1582,7 @@ async def create_terminology(
     namespace: str | None = None,
     description: str | None = None,
     mutable: bool = False,
+    unique_names: bool = False,
     on_conflict: str = "error",
 ) -> str:
     """Create a terminology (controlled vocabulary).
@@ -1582,6 +1593,10 @@ async def create_terminology(
         namespace: Namespace to create in. Uses WIP_MCP_DEFAULT_NAMESPACE if omitted.
         description: Optional description of what this terminology contains.
         mutable: If true, terms can be hard-deleted (not just deprecated). Implies extensible=true.
+        unique_names: If true, a term write whose name collides with another
+            term's value or name is REJECTED (error_code='name_collision').
+            Default: collisions are reported as per-item warnings in
+            details.name_collisions.
         on_conflict: 'error' (default) fails on an existing value with
             error_code='already_exists'; 'validate' makes the call idempotent —
             identical re-create returns status='unchanged' with the existing ID,
@@ -1595,6 +1610,8 @@ async def create_terminology(
             kwargs["description"] = description
         if mutable:
             kwargs["mutable"] = True
+        if unique_names:
+            kwargs["unique_names"] = True
         data = await client.create_terminology(
             value=value, label=label, namespace=namespace,
             on_conflict=on_conflict, **kwargs
