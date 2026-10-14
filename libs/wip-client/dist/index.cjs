@@ -414,6 +414,22 @@ var DefStoreService = class extends BaseService {
     return this.get(`/terminologies/${terminologyId}/terms`, params);
   }
   /**
+   * Snapshot reconcile: make the terminology match the submitted full
+   * term set. dry_run defaults to TRUE server-side — the response is the
+   * plan (created / updated with changed fields / deprecated / errors;
+   * unchanged terms counted, not listed); pass dry_run: false to apply.
+   * Absent active terms are deprecated (never deleted) only under
+   * on_missing: 'deprecate'. Reconcile never clears a field and never
+   * reactivates retired terms.
+   */
+  async reconcileTerminology(terminologyId, request, options) {
+    return this.post(
+      `/terminologies/${terminologyId}/reconcile`,
+      request,
+      options
+    );
+  }
+  /**
    * Ranked term search — the typeahead surface. Searches value, label and
    * every name; each hit carries the matched string, where it matched
    * (with the name's type for alias hits) and a rank (exact > prefix >

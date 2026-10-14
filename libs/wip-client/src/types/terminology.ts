@@ -1,4 +1,4 @@
-import type { PaginatedResponse } from './common.js'
+import type { BulkResultItem, PaginatedResponse } from './common.js'
 
 export interface TerminologyMetadata {
   source?: string
@@ -242,6 +242,40 @@ export interface TermSearchResponse {
   rollup: string
   items: TermSearchHit[]
   total_matched: number
+}
+
+/** Policy + desired term set for a terminology snapshot reconcile. */
+export interface ReconcileTerminologyRequest {
+  /** The complete desired term set, keyed by value. */
+  terms: CreateTermRequest[]
+  /** 'ignore' (default) counts absent active terms; 'deprecate' retires them. */
+  on_missing?: 'ignore' | 'deprecate'
+  /** Absent value -> successor value (may itself be new in the snapshot). */
+  successors?: Record<string, string>
+  deprecation_reason?: string
+  /** true (default): return the plan, write nothing. */
+  dry_run?: boolean
+}
+
+export interface ReconcileCounts {
+  created: number
+  updated: number
+  unchanged: number
+  deprecated: number
+  missing_ignored: number
+  errors: number
+}
+
+export interface ReconcileTerminologyResponse {
+  dry_run: boolean
+  terminology_id: string
+  terminology_value: string
+  counts: ReconcileCounts
+  /** Rows for creates, updates, deprecations and errors — unchanged terms
+   * are counted, not listed. */
+  results: BulkResultItem[]
+  total_submitted: number
+  total_existing_active: number
 }
 
 export interface BulkValidateRequest {

@@ -18,6 +18,8 @@ import type {
   BulkValidateRequest,
   BulkValidateResponse,
   TermSearchResponse,
+  ReconcileTerminologyRequest,
+  ReconcileTerminologyResponse,
   AuditLogResponse,
 } from '../types/terminology.js'
 import type {
@@ -86,6 +88,27 @@ export class DefStoreService extends BaseService {
     sort_order?: 'asc' | 'desc'
   }): Promise<TermListResponse> {
     return this.get(`/terminologies/${terminologyId}/terms`, params)
+  }
+
+  /**
+   * Snapshot reconcile: make the terminology match the submitted full
+   * term set. dry_run defaults to TRUE server-side — the response is the
+   * plan (created / updated with changed fields / deprecated / errors;
+   * unchanged terms counted, not listed); pass dry_run: false to apply.
+   * Absent active terms are deprecated (never deleted) only under
+   * on_missing: 'deprecate'. Reconcile never clears a field and never
+   * reactivates retired terms.
+   */
+  async reconcileTerminology(
+    terminologyId: string,
+    request: ReconcileTerminologyRequest,
+    options?: { namespace?: string },
+  ): Promise<ReconcileTerminologyResponse> {
+    return this.post(
+      `/terminologies/${terminologyId}/reconcile`,
+      request,
+      options,
+    )
   }
 
   /**
