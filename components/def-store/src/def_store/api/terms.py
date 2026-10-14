@@ -31,6 +31,11 @@ from ..models.api_models import (
 from ..models.terminology import Terminology
 from ..services.registry_client import RegistryError
 from ..services.term_names import TermNameError
+from ..services.term_reconcile import (
+    ReconcileRequest,
+    ReconcileResponse,
+    TermReconcileService,
+)
 from ..services.term_search import TermSearchResponse, TermSearchService
 from ..services.terminology_service import (
     AmbiguousTerminologyValueError,
@@ -166,6 +171,42 @@ async def create_terms(
     succeeded = sum(1 for r in results if r.status != "error")
     failed = sum(1 for r in results if r.status == "error")
     return BulkResponse(results=results, total=len(results), succeeded=succeeded, failed=failed)
+
+
+@router.post(
+    "/terminologies/{terminology_id}/reconcile",
+    response_model=ReconcileResponse,
+    summary="Reconcile a terminology against a full desired term set",
+)
+async def reconcile_terminology(
+    terminology_id: str,
+    request: ReconcileRequest,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
+    identity: UserIdentity = Depends(require_api_key),
+) -> ReconcileResponse:
+    """Make the terminology match the submitted snapshot — with a preview.
+
+    Terms are keyed by exact value. The snapshot is authoritative for
+    label and names; description, sort_order and parent_term_id apply only
+    when set (reconcile never clears a field, so re-runs are idempotent);
+    metadata is honored on create and never rewritten. Active terms absent
+    from the snapshot are deprecated — never deleted — and only under
+    on_missing='deprecate', optionally with successors. dry_run (the
+    default) returns the full plan and writes nothing; unchanged terms are
+    counted, not listed. Writes route through the normal term doors, so
+    Registry registration, names validation, the collision guard, events
+    and audit behave exactly like individual writes.
+    """
+    terminology_id = await resolve_or_404(
+        terminology_id, "terminology", namespace, param_name="terminology_id"
+    )
+    terminology = await Terminology.find_one({"terminology_id": terminology_id})
+    if not terminology:
+        raise HTTPException(status_code=404, detail="Terminology not found")
+
+    await check_namespace_permission(identity, terminology.namespace, "write")
+
+    return await TermReconcileService.reconcile(terminology, request)
 
 
 @router.get(
