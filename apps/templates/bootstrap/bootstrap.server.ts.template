@@ -12,7 +12,11 @@
  *   2. If the namespace DOES exist, the app uses it as-is. No schema
  *      reconciliation, no merge logic, no "templates differ" check.
  *      Rolling redeploys against an existing namespace must come up
- *      clean.
+ *      clean. The one exception is a bootstrap that never finished: the
+ *      namespace exists but holds no BOOTSTRAP_RECORD (rule 3 writes it
+ *      last). checkStatus() reports that as 'incomplete', and the gate
+ *      OFFERS to resume. Every step is idempotent, so resuming is safe.
+ *      Nothing is ever re-bootstrapped without the user asking.
  *   3. On user-initiated bootstrap, the app writes one BOOTSTRAP_RECORD
  *      audit doc capturing app version, timestamp, what was created,
  *      and the current commit SHA. This is the provenance trail any
@@ -22,6 +26,15 @@
  * or restore an old backup, that's a console-initiated action via
  * `wip-deploy` or direct API. The bootstrap UI just MENTIONS restore as
  * an alternative the user may prefer; it does not provide UI for it.
+ *
+ * WHERE THE SEEDS ARE: SEED_DIR = $SEED_DIR, else <cwd>/server/seed.
+ *   The seed dir is resolved from the working directory, not from this
+ *   module's location: bundling the server (esbuild/tsup → dist/server/)
+ *   moves the module, and a module-relative path then points at a
+ *   directory that does not exist. The seed dir must also be SHIPPED in
+ *   the runtime image (`COPY server ./server`, or your SEED_DIR) — a bundled
+ *   entry does not carry it. A missing seed dir fails the bootstrap with
+ *   its resolved path before anything is written.
  *
  * SEED FILE CONVENTION (read before adapting):
  *   server/seed/terminologies/<VALUE>.json
@@ -41,6 +54,40 @@
  *     name replaces it): at bootstrap, at startup, and again whenever a
  *     query fails because the view is gone. See ensureRegisteredViews().
  *   The runBootstrap loop reads these at runtime — no schema in code.
+ *   Every seed is loaded and checked BEFORE the first write, so a packaging
+ *   or seed error can never leave half-built namespaces behind.
+ *
+ * MULTI-NAMESPACE APPS (e.g. a main namespace plus a reference-data one):
+ *   Key the seed dirs by ROLE, never by namespace name — the names differ
+ *   between deployments (dev-<app>-ref locally, <app>-ref deployed):
+ *     server/seed/terminologies/<role>/…   server/seed/templates/<role>/…
+ *   and declare the roles in server/seed/namespaces.json:
+ *     {
+ *       "roles": {
+ *         "ref":  { "authored_as": "dev-myapp-ref", "env": "WIP_REF_NAMESPACE" },
+ *         "main": { "authored_as": "dev-myapp" }
+ *       },
+ *       "external": ["shared-vocab"]
+ *     }
+ *   - Roles are bootstrapped in the order listed: list the namespaces
+ *     others reference first. "main" is required; its configured name is
+ *     NAMESPACE below. Other roles read theirs from `env` (falling back to
+ *     authored_as, with a warning — set the env var on every deployment).
+ *   - authored_as is the namespace the seeds were exported from:
+ *     `/wip-export-model` (portable=true) writes cross-namespace refs as
+ *     "<that name>:VALUE". At load time those refs are rewritten to the
+ *     configured names — field by field (terminology_ref, template_ref,
+ *     target_templates, target_terminologies, array_terminology_ref,
+ *     array_template_ref, extends, source_templates, and term-relation
+ *     endpoints), never by string replacement.
+ *   - A ref to any other namespace fails the bootstrap before the first
+ *     write — unless that namespace is listed in "external" (a namespace
+ *     the app may reference but does not own); "wip" is always allowed.
+ *   - Views (server/seed/views/) and the BOOTSTRAP_RECORD belong to "main".
+ *   - "config" on a role is reserved for per-namespace settings
+ *     (isolation, id_config, …) and is not read yet.
+ *   Without namespaces.json the app is single-namespace: flat seed dirs,
+ *   one role "main".
  *
  *   If you RENAME any template value (e.g. adopting the namespace-prefixed
  *   bootstrap value), grep the WHOLE seed dir for the old literal — sibling
@@ -69,26 +116,30 @@
  */
 
 import { wipGet, wipPost, wipPut } from './wip-api.js'
-import { readFileSync, readdirSync } from 'fs'
-import { join, dirname } from 'path'
-import { fileURLToPath } from 'url'
+import { existsSync, readFileSync, readdirSync } from 'fs'
+import { join } from 'path'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const SEED_DIR = join(__dirname, '..', 'seed')
+// Resolved from the working directory (or SEED_DIR), not this module's
+// location — see "WHERE THE SEEDS ARE" in the header.
+const SEED_DIR = process.env.SEED_DIR ?? join(process.cwd(), 'server', 'seed')
 
-// TODO: set this to your app's namespace prefix.
-const NAMESPACE = 'TODO_APP_NAMESPACE'
+// TODO: set this to your app's namespace prefix — the name its seeds were
+// authored in. A deployment may run the app under another name (dev-<app>
+// locally, <app> deployed); WIP_NAMESPACE, set by the deployer, wins.
+const DEFAULT_NAMESPACE = 'TODO_APP_NAMESPACE'
+const NAMESPACE = process.env.WIP_NAMESPACE || DEFAULT_NAMESPACE
 
 // The bootstrap template's VALUE is namespace-prefixed (e.g. namespace 'kb'
-// -> 'KB_BOOTSTRAP_RECORD'), derived from NAMESPACE — never a shared literal.
-// Every app minting the same value from its own seed copy meant any merge of
-// two app-derived archives collided on that one template (same value,
-// drifted shapes). Prefixed, the values differ, so merges carry each side's
-// provenance intact — and a transplanted record's name announces its origin:
-// KB_BOOTSTRAP_RECORD sitting in a merged namespace is self-labeled foreign
-// history, not a record masquerading as the target's own bootstrap.
+// -> 'KB_BOOTSTRAP_RECORD'), derived from the AUTHORED name, so it stays the
+// same on every deployment and matches the seed file — never a shared
+// literal. Every app minting the same value from its own seed copy meant any
+// merge of two app-derived archives collided on that one template (same
+// value, drifted shapes). Prefixed, the values differ, so merges carry each
+// side's provenance intact — and a transplanted record's name announces its
+// origin: KB_BOOTSTRAP_RECORD sitting in a merged namespace is self-labeled
+// foreign history, not a record masquerading as the target's own bootstrap.
 // Your seed file in server/seed/templates/ MUST declare this same value.
-const BOOTSTRAP_RECORD_VALUE = `${NAMESPACE.toUpperCase().replace(/-/g, '_')}_BOOTSTRAP_RECORD`
+const BOOTSTRAP_RECORD_VALUE = `${DEFAULT_NAMESPACE.toUpperCase().replace(/-/g, '_')}_BOOTSTRAP_RECORD`
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyObj = Record<string, any>
@@ -132,7 +183,7 @@ function assertBulkSuccess(response: unknown, context: string): void {
   }
 }
 
-export type BootstrapStatus = 'unknown' | 'wip_unreachable' | 'needs_bootstrap' | 'ready'
+export type BootstrapStatus = 'unknown' | 'wip_unreachable' | 'needs_bootstrap' | 'incomplete' | 'ready'
 
 export interface BootstrapProgress {
   step: string
@@ -141,14 +192,194 @@ export interface BootstrapProgress {
   error?: string
 }
 
+// ===========================================================================
+// Namespace roles and seed loading
+// ===========================================================================
+
+interface NamespaceRole {
+  role: string
+  /** The namespace the seeds were authored/exported in. */
+  authoredAs: string
+  /** The namespace this deployment uses. */
+  namespace: string
+  /** Seed subdirectory under terminologies/ and templates/ ('' = flat). */
+  dir: string
+}
+
+interface NamespacesFile {
+  roles: Record<string, { authored_as: string; env?: string; config?: AnyObj }>
+  external?: string[]
+}
+
 /**
- * Check if WIP is reachable and whether the namespace exists.
+ * The namespaces this app owns, in bootstrap order. Without
+ * server/seed/namespaces.json the app is single-namespace: one role "main"
+ * with flat seed dirs. Reads only the declaration file, never the seeds, so
+ * checkStatus() can call it cheaply.
+ */
+function loadRoles(): { roles: NamespaceRole[]; external: string[] } {
+  const file = join(SEED_DIR, 'namespaces.json')
+  if (!existsSync(file)) {
+    return {
+      roles: [{ role: 'main', authoredAs: DEFAULT_NAMESPACE, namespace: NAMESPACE, dir: '' }],
+      external: [],
+    }
+  }
+  const decl = JSON.parse(readFileSync(file, 'utf-8')) as NamespacesFile
+  if (!decl.roles?.main) throw new Error(`${file}: a "main" role is required`)
+  const roles = Object.entries(decl.roles).map(([role, r]) => {
+    let namespace = NAMESPACE
+    if (role !== 'main') {
+      const configured = r.env ? process.env[r.env] : undefined
+      if (!configured) {
+        console.warn(
+          `[bootstrap] ${r.env ?? `role ${role}`} not set — using the authored name ` +
+            `${r.authored_as}. Set it on every deployment.`,
+        )
+      }
+      namespace = configured || r.authored_as
+    }
+    return { role, authoredAs: r.authored_as, namespace, dir: role }
+  })
+  return { roles, external: decl.external ?? [] }
+}
+
+interface SeedSet {
+  role: NamespaceRole
+  terminologies: AnyObj[]
+  templates: AnyObj[]
+}
+
+// Template keys whose values may carry an 'ns:VALUE' cross-namespace ref.
+const REF_KEYS = new Set([
+  'terminology_ref', 'template_ref', 'target_templates', 'target_terminologies',
+  'array_terminology_ref', 'array_template_ref', 'extends', 'source_templates',
+])
+
+function readSeedDir(dir: string): AnyObj[] {
+  // A role may have only templates or only terminologies, so one missing
+  // kind dir is not an error. What must never pass silently is a role with
+  // NO seeds at all — loadSeeds() throws on that, and on a missing
+  // templates/ root. Swallowing that case is exactly how an app once
+  // bootstrapped two EMPTY namespaces and then failed on a 404.
+  if (!existsSync(dir)) return []
+  return readdirSync(dir)
+    .filter((f) => f.endsWith('.json') && !f.startsWith('_'))
+    .sort()
+    .map((f) => JSON.parse(readFileSync(join(dir, f), 'utf-8')) as AnyObj)
+}
+
+/**
+ * Load every seed file and rewrite cross-namespace refs from the authored
+ * names to this deployment's names. Throws before any WIP write when the
+ * seed dir is missing, a role has no seeds, the BOOTSTRAP_RECORD template is
+ * absent, or a ref names a namespace that is neither owned nor external.
+ */
+function loadSeeds(): SeedSet[] {
+  if (!existsSync(join(SEED_DIR, 'templates'))) {
+    throw new Error(
+      `seed dir not found: ${join(SEED_DIR, 'templates')} — set SEED_DIR, or ship ` +
+        `server/seed/ in the runtime image`,
+    )
+  }
+  const { roles, external } = loadRoles()
+  const nsMap = new Map<string, string>([['wip', 'wip']])
+  for (const ns of external) nsMap.set(ns, ns)
+  for (const r of roles) nsMap.set(r.authoredAs, r.namespace)
+
+  // A bare value means "own namespace" and stays bare. Only the namespace
+  // part is mapped: 'ns:VALUE', or the first part of a term's
+  // 'ns:terminology:value'.
+  const mapRef = (v: string, where: string): string => {
+    const i = v.indexOf(':')
+    if (i < 0) return v
+    const target = nsMap.get(v.slice(0, i))
+    if (target === undefined) {
+      throw new Error(
+        `seed ${where}: '${v}' names namespace '${v.slice(0, i)}', which is neither ` +
+          `one of this app's namespaces nor listed as "external" in namespaces.json`,
+      )
+    }
+    return target + v.slice(i)
+  }
+  const rewriteTemplate = (tpl: AnyObj): AnyObj => {
+    const where = `template ${tpl.value}`
+    const walk = (o: unknown): unknown => {
+      if (Array.isArray(o)) return o.map(walk)
+      if (o && typeof o === 'object') {
+        return Object.fromEntries(
+          Object.entries(o as AnyObj).map(([k, v]) => {
+            if (REF_KEYS.has(k) && typeof v === 'string') return [k, mapRef(v, where)]
+            if (REF_KEYS.has(k) && Array.isArray(v)) {
+              return [k, v.map((x) => (typeof x === 'string' ? mapRef(x, where) : x))]
+            }
+            return [k, walk(v)]
+          }),
+        )
+      }
+      return o
+    }
+    return walk(tpl) as AnyObj
+  }
+  // Term-relation endpoints are rewritten only when namespace-qualified
+  // ('ns:terminology:value'); bare term values and IDs pass unchanged.
+  const rewriteTerminology = (t: AnyObj): AnyObj => {
+    const rels = t.ontology?.relationships
+    if (!Array.isArray(rels)) return t
+    const where = `terminology ${t.value}`
+    const qualified = (v: unknown) =>
+      typeof v === 'string' && v.split(':').length >= 3 ? mapRef(v, where) : v
+    return {
+      ...t,
+      ontology: {
+        ...t.ontology,
+        relationships: rels.map((r: AnyObj) => ({
+          ...r,
+          source: qualified(r.source),
+          target: qualified(r.target),
+        })),
+      },
+    }
+  }
+
+  const seeds = roles.map((role) => {
+    const set = {
+      role,
+      terminologies: readSeedDir(join(SEED_DIR, 'terminologies', role.dir)).map(rewriteTerminology),
+      templates: readSeedDir(join(SEED_DIR, 'templates', role.dir)).map(rewriteTemplate),
+    }
+    if (!set.terminologies.length && !set.templates.length) {
+      throw new Error(`no seed files for role "${role.role}" under ${SEED_DIR}`)
+    }
+    return set
+  })
+  const main = seeds.find((s) => s.role.role === 'main')!
+  if (!main.templates.some((t) => t.value === BOOTSTRAP_RECORD_VALUE)) {
+    throw new Error(
+      `seed template ${BOOTSTRAP_RECORD_VALUE} missing from ` +
+        join(SEED_DIR, 'templates', main.role.dir),
+    )
+  }
+  return seeds
+}
+
+// ===========================================================================
+// Status and bootstrap
+// ===========================================================================
+
+/**
+ * Check whether WIP is reachable and the app's namespaces are bootstrapped.
  *
- * Per the spec: namespace exists → ready, period. We do NOT also check
- * "and has expected templates" — that's schema reconciliation, which is a
- * YAC or migration-tool concern, not a startup gate. A partially-bootstrapped
- * namespace is the user's signal to use the console (wip-deploy / direct
- * API), not the app's signal to silently re-bootstrap.
+ * - none of the app's namespaces exists      → 'needs_bootstrap'
+ * - all exist and the BOOTSTRAP_RECORD exists → 'ready'
+ * - anything in between                      → 'incomplete'
+ *
+ * The BOOTSTRAP_RECORD is written last, so its presence means the bootstrap
+ * finished. A namespace that exists without it (a bootstrap that died
+ * partway, or a namespace created empty by hand or by tooling) is
+ * 'incomplete', not 'ready' — treating it as ready would leave the app on a
+ * half-built namespace for good. We still do NOT check "has the expected
+ * templates": that's schema reconciliation, a YAC or migration-tool concern.
  */
 export async function checkStatus(): Promise<BootstrapStatus> {
   // Use namespace listing as health probe — no dedicated /health endpoint
@@ -158,16 +389,41 @@ export async function checkStatus(): Promise<BootstrapStatus> {
   } catch {
     return 'wip_unreachable'
   }
+  const existing = new Set(namespaces.map((ns) => ns.prefix))
+  const { roles } = loadRoles()
+  const present = roles.filter((r) => existing.has(r.namespace))
+  if (!present.length) return 'needs_bootstrap'
+  if (present.length < roles.length) return 'incomplete'
+  return (await hasBootstrapRecord()) ? 'ready' : 'incomplete'
+}
 
-  return namespaces.some((ns) => ns.prefix === NAMESPACE) ? 'ready' : 'needs_bootstrap'
+async function hasBootstrapRecord(): Promise<boolean> {
+  try {
+    const tmpl = (await wipGet(
+      `/api/template-store/templates/by-value/${BOOTSTRAP_RECORD_VALUE}?namespace=${NAMESPACE}`,
+    )) as { template_id: string }
+    const docs = (await wipGet(
+      `/api/document-store/documents?namespace=${NAMESPACE}&template_id=${tmpl.template_id}&page_size=1`,
+    )) as { total?: number; items?: unknown[] }
+    return (docs.total ?? docs.items?.length ?? 0) > 0
+  } catch {
+    // Template not there (404) — the bootstrap never reached it.
+    return false
+  }
 }
 
 /**
- * Run the full bootstrap. Calls onProgress for each step.
+ * Run the full bootstrap, or resume an incomplete one. Calls onProgress for
+ * each step.
  *
- * Order matters: namespace → terminologies (with terms inline) → ontology
- * term-relations → templates (in filename-sorted order so dependencies
- * resolve) → reporting views (best-effort) → BOOTSTRAP_RECORD audit doc.
+ * All seeds are loaded and checked first; nothing is written if that fails.
+ * Then, per namespace in role order: namespace → terminologies (with terms
+ * inline) → ontology term-relations → templates (in filename-sorted order so
+ * dependencies resolve). Then reporting views (best-effort) and the
+ * BOOTSTRAP_RECORD audit doc in the main namespace. Every create is
+ * idempotent (namespace PUT is an upsert, terminology and term creates use
+ * on_conflict=validate, template create upserts, duplicate term-relations
+ * are skipped), so a re-run after a failure picks up where it stopped.
  */
 export async function runBootstrap(
   onProgress: (p: BootstrapProgress) => void,
@@ -176,30 +432,88 @@ export async function runBootstrap(
     onProgress({ step, detail, done: false })
 
   const startedAt = new Date().toISOString()
-  const templatesCreated: string[] = []
-  const edgeTypesCreated: string[] = []
-  const terminologiesCreated: string[] = []
+  const created: CreatedLists = { templates: [], edgeTypes: [], terminologies: [] }
 
   try {
-    // Step 1: Create namespace (idempotent upsert via PUT)
-    progress('namespace', `Creating ${NAMESPACE} namespace...`)
-    await wipPut(`/api/registry/namespaces/${NAMESPACE}`, {
-      description: `${NAMESPACE} app data (bootstrap created)`,
-    })
+    progress('seeds', `Loading seed data from ${SEED_DIR}...`)
+    const seeds = loadSeeds()
 
-    // Step 2: Load and create terminologies
-    progress('terminologies', 'Loading seed data...')
-    const termFiles = readdirSync(join(SEED_DIR, 'terminologies'))
-      .filter((f) => f.endsWith('.json') && !f.startsWith('_'))
-      .sort()
-
-    const terminologies: AnyObj[] = []
-    for (const file of termFiles) {
-      const data = JSON.parse(readFileSync(join(SEED_DIR, 'terminologies', file), 'utf-8'))
-      terminologies.push(data)
+    for (const seed of seeds) {
+      await bootstrapNamespace(seed, progress, created)
     }
 
-    progress('terminologies', `Creating ${terminologies.length} terminologies...`)
+    // Wait for template cache to refresh (PoNIF #6 — see wip://ponifs).
+    // Without this, the BOOTSTRAP_RECORD write below races the just-
+    // created BOOTSTRAP_RECORD template and may validate against an
+    // empty resolution.
+    progress('cache', 'Waiting for template cache to refresh...')
+    await new Promise((resolve) => setTimeout(resolve, 6000))
+
+    // Register the app's reporting views (best-effort — see
+    // ensureRegisteredViews). A view whose underlying doc_* tables have
+    // not been synced yet stays pending; startup retries pick it up.
+    const seedViews = loadSeedViews()
+    if (seedViews.length) {
+      progress('views', `Registering ${seedViews.length} reporting views...`)
+      const { pending } = await ensureRegisteredViews()
+      if (pending.length) {
+        progress(
+          'views',
+          `${pending.length} views pending (reporting tables not synced yet — startup will retry): ${pending.join(', ')}`,
+        )
+      }
+    }
+
+    // Write the BOOTSTRAP_RECORD audit doc — LAST, because its presence is
+    // what checkStatus() reads as "bootstrap finished".
+    //
+    // Per the universal pattern (see CLAUDE.md "Namespace Bootstrap on
+    // Launch"): one doc captures who/when/what/which-version. The
+    // <NS_PREFIX>_BOOTSTRAP_RECORD template MUST exist in seed/templates/ —
+    // loadSeeds() refuses to start without it.
+    progress('audit', 'Writing BOOTSTRAP_RECORD audit doc...')
+    await writeBootstrapRecord({
+      startedAt,
+      templatesCreated: created.templates,
+      edgeTypesCreated: created.edgeTypes,
+      terminologiesCreated: created.terminologies,
+    })
+
+    onProgress({ step: 'done', detail: 'Bootstrap complete', done: true })
+  } catch (err) {
+    onProgress({
+      step: 'error',
+      detail: (err as Error).message,
+      done: true,
+      error: (err as Error).message,
+    })
+    throw err
+  }
+}
+
+interface CreatedLists {
+  templates: string[]
+  edgeTypes: string[]
+  terminologies: string[]
+}
+
+async function bootstrapNamespace(
+  seed: SeedSet,
+  progress: (step: string, detail: string) => void,
+  created: CreatedLists,
+): Promise<void> {
+  const ns = seed.role.namespace
+
+  // Create namespace (idempotent upsert via PUT)
+  progress('namespace', `Creating ${ns} namespace...`)
+  await wipPut(`/api/registry/namespaces/${ns}`, {
+    description: `${ns} app data (bootstrap created)`,
+  })
+
+  // Terminologies
+  const terminologies = seed.terminologies
+  if (terminologies.length) {
+    progress('terminologies', `Creating ${terminologies.length} terminologies in ${ns}...`)
     // Forward EVERY behavioural flag the seed declares, preserving explicit
     // false. A builder that whitelists a subset makes the seed file look
     // authoritative while the platform silently never sees the rest — that
@@ -210,16 +524,20 @@ export async function runBootstrap(
       value: t.value,
       label: t.label,
       description: t.description || '',
-      namespace: NAMESPACE,
+      namespace: ns,
       ...(t.mutable !== undefined ? { mutable: t.mutable } : {}),
       ...(t.extensible !== undefined ? { extensible: t.extensible } : {}),
       ...(t.case_sensitive !== undefined ? { case_sensitive: t.case_sensitive } : {}),
       ...(t.allow_multiple !== undefined ? { allow_multiple: t.allow_multiple } : {}),
     }))
-    const termResult = (await wipPost('/api/def-store/terminologies', termBulk)) as {
-      results: Array<{ status: string; id: string; error?: string }>
-    }
-    assertBulkSuccess(termResult, 'terminologies create')
+    // on_conflict=validate: an identical terminology from an earlier run
+    // comes back 'unchanged' with its id (a resume), a different one fails
+    // loudly with incompatible_config.
+    const termResult = (await wipPost(
+      '/api/def-store/terminologies?on_conflict=validate',
+      termBulk,
+    )) as { results: Array<{ status: string; id: string; error?: string }> }
+    assertBulkSuccess(termResult, `terminologies create in ${ns}`)
 
     // Build value → terminology_id map. assertBulkSuccess above already
     // threw on any per-item error, so the skip-on-no-id branch only
@@ -229,11 +547,11 @@ export async function runBootstrap(
       const r = termResult.results[i]
       if (r.id) {
         termIdMap.set(terminologies[i].value, r.id)
-        terminologiesCreated.push(terminologies[i].value)
+        created.terminologies.push(terminologies[i].value)
       }
     }
 
-    // Step 3: Create terms for each terminology
+    // Terms for each terminology
     let totalTerms = 0
     for (const termData of terminologies) {
       const terms = termData.terms || []
@@ -244,7 +562,7 @@ export async function runBootstrap(
 
       progress('terms', `Creating ${terms.length} terms for ${termData.value}...`)
       const termsResult = await wipPost(
-        `/api/def-store/terminologies/${termId}/terms`,
+        `/api/def-store/terminologies/${termId}/terms?on_conflict=validate`,
         terms,
       )
       assertBulkSuccess(termsResult, `terms create for ${termData.value}`)
@@ -252,7 +570,7 @@ export async function runBootstrap(
     }
     progress('terms', `Created ${totalTerms} terms across ${terminologies.length} terminologies`)
 
-    // Step 4: Create ontology term-relations.
+    // Ontology term-relations.
     //
     // Note the API path: /api/def-store/ontology/term-relations (not
     // /relationships — that path was renamed in WIP Phase 0, commit
@@ -273,100 +591,49 @@ export async function runBootstrap(
     if (allRelations.length) {
       progress('term-relations', `Creating ${allRelations.length} ontology term-relations...`)
       const relsResult = await wipPost(
-        `/api/def-store/ontology/term-relations?namespace=${NAMESPACE}`,
+        `/api/def-store/ontology/term-relations?namespace=${ns}`,
         allRelations,
       )
       assertBulkSuccess(relsResult, 'ontology term-relations create')
     }
+  }
 
-    // Step 5: Create templates (sorted by filename prefix for dependency order)
-    const templateFiles = readdirSync(join(SEED_DIR, 'templates'))
-      .filter((f) => f.endsWith('.json'))
-      .sort()
+  // Templates (sorted by filename prefix for dependency order)
+  progress('templates', `Creating ${seed.templates.length} templates in ${ns}...`)
+  for (const data of seed.templates) {
+    progress('templates', `Creating ${data.value}...`)
 
-    progress('templates', `Creating ${templateFiles.length} templates...`)
-    for (const file of templateFiles) {
-      const data = JSON.parse(readFileSync(join(SEED_DIR, 'templates', file), 'utf-8'))
-      progress('templates', `Creating ${data.value}...`)
-
-      const template: AnyObj = {
-        value: data.value,
-        label: data.label,
-        description: data.description || '',
-        namespace: NAMESPACE,
-        identity_fields: data.identity_fields || [],
-        fields: data.fields.map((f: AnyObj) => mapField(f)),
-      }
-
-      // Forward edge-type metadata when present. See
-      // docs/design/document-relationships.md and CASE-64.
-      if (data.usage && data.usage !== 'entity') template.usage = data.usage
-      if (data.source_templates) template.source_templates = data.source_templates
-      if (data.target_templates) template.target_templates = data.target_templates
-      if (data.versioned === false) template.versioned = false
-
-      // header_fields drives peer-projection rendering (CASE-343). Forwarded
-      // here so seed JSON that declares header_fields (e.g. CASE_RECORD,
-      // DOCUMENT, SESSION) propagates through bootstrap intact.
-      if (data.header_fields) template.header_fields = data.header_fields
-
-      if (data.reporting) template.reporting = data.reporting
-
-      const tplResult = await wipPost(
-        '/api/template-store/templates?on_conflict=validate',
-        [template],
-      )
-      assertBulkSuccess(tplResult, `template create ${data.value}`)
-
-      if (data.usage === 'relationship') edgeTypesCreated.push(data.value)
-      else templatesCreated.push(data.value)
+    const template: AnyObj = {
+      value: data.value,
+      label: data.label,
+      description: data.description || '',
+      namespace: ns,
+      identity_fields: data.identity_fields || [],
+      fields: data.fields.map((f: AnyObj) => mapField(f)),
     }
 
-    // Wait for template cache to refresh (PoNIF #6 — see wip://ponifs).
-    // Without this, the BOOTSTRAP_RECORD write below races the just-
-    // created BOOTSTRAP_RECORD template and may validate against an
-    // empty resolution.
-    progress('cache', 'Waiting for template cache to refresh...')
-    await new Promise((resolve) => setTimeout(resolve, 6000))
+    // Forward edge-type metadata when present. See
+    // docs/design/document-relationships.md and CASE-64.
+    if (data.usage && data.usage !== 'entity') template.usage = data.usage
+    if (data.source_templates) template.source_templates = data.source_templates
+    if (data.target_templates) template.target_templates = data.target_templates
+    if (data.versioned === false) template.versioned = false
 
-    // Step 6: Register the app's reporting views (best-effort — see
-    // ensureRegisteredViews). A view whose underlying doc_* tables have
-    // not been synced yet stays pending; startup retries pick it up.
-    const seedViews = loadSeedViews()
-    if (seedViews.length) {
-      progress('views', `Registering ${seedViews.length} reporting views...`)
-      const { pending } = await ensureRegisteredViews()
-      if (pending.length) {
-        progress(
-          'views',
-          `${pending.length} views pending (reporting tables not synced yet — startup will retry): ${pending.join(', ')}`,
-        )
-      }
-    }
+    // header_fields drives peer-projection rendering (CASE-343). Forwarded
+    // here so seed JSON that declares header_fields (e.g. CASE_RECORD,
+    // DOCUMENT, SESSION) propagates through bootstrap intact.
+    if (data.header_fields) template.header_fields = data.header_fields
 
-    // Step 7: Write the BOOTSTRAP_RECORD audit doc.
-    //
-    // Per the universal pattern (see CLAUDE.md "Namespace Bootstrap on
-    // Launch"): one doc captures who/when/what/which-version. The
-    // The <NS_PREFIX>_BOOTSTRAP_RECORD template MUST exist in seed/templates/ — without
-    // it this step fails with a "template not found" error.
-    progress('audit', 'Writing BOOTSTRAP_RECORD audit doc...')
-    await writeBootstrapRecord({
-      startedAt,
-      templatesCreated,
-      edgeTypesCreated,
-      terminologiesCreated,
-    })
+    if (data.reporting) template.reporting = data.reporting
 
-    onProgress({ step: 'done', detail: 'Bootstrap complete', done: true })
-  } catch (err) {
-    onProgress({
-      step: 'error',
-      detail: (err as Error).message,
-      done: true,
-      error: (err as Error).message,
-    })
-    throw err
+    const tplResult = await wipPost(
+      '/api/template-store/templates?on_conflict=validate',
+      [template],
+    )
+    assertBulkSuccess(tplResult, `template create ${data.value}`)
+
+    if (data.usage === 'relationship') created.edgeTypes.push(data.value)
+    else created.templates.push(data.value)
   }
 }
 
