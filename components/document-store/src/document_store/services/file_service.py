@@ -2,6 +2,7 @@
 
 import hashlib
 import math
+import re
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar
 
@@ -465,8 +466,11 @@ class FileService:
             query["status"] = status.value
         if content_type:
             if content_type.endswith("/*"):
-                # Match MIME type prefix (e.g., "image/*")
-                prefix = content_type[:-2]
+                # Match MIME type prefix (e.g., "image/*"). The prefix is
+                # caller text landing in a pattern — escape it so a stray
+                # metacharacter can neither 500 the query nor widen the
+                # match (same literal-text rule as term search).
+                prefix = re.escape(content_type[:-2])
                 query["content_type"] = {"$regex": f"^{prefix}/"}
             else:
                 query["content_type"] = content_type

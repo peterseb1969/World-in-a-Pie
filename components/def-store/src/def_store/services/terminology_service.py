@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -1309,13 +1310,20 @@ class TerminologyService:
         if status:
             query["status"] = status
 
-        # Add search filter if provided
+        # Add search filter if provided. The search string is a LITERAL,
+        # case-insensitive substring, so escape it before it becomes a
+        # pattern — unescaped, an invalid pattern (`(`, `[`, a trailing
+        # `\`) made MongoDB reject the query as a 500, and a valid one
+        # changed meaning silently (`a.b` matched `axb`). Same rule as
+        # the Registry's search (CASE-568). A real regex mode, if ever
+        # wanted, is a separate explicit parameter, not this one.
         if search:
+            escaped = re.escape(search)
             query["$or"] = [
-                {"term_id": {"$regex": search, "$options": "i"}},
-                {"value": {"$regex": search, "$options": "i"}},
-                {"label": {"$regex": search, "$options": "i"}},
-                {"aliases": {"$regex": search, "$options": "i"}}
+                {"term_id": {"$regex": escaped, "$options": "i"}},
+                {"value": {"$regex": escaped, "$options": "i"}},
+                {"label": {"$regex": escaped, "$options": "i"}},
+                {"aliases": {"$regex": escaped, "$options": "i"}}
             ]
 
         # Get total count
