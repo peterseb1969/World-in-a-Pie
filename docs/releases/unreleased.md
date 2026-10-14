@@ -214,6 +214,26 @@ storage order served first. Three changes make the ambiguity loud:
 except ambiguous names on identity fields, which were producing
 storage-order-dependent identities and should be corrected, not relied on.
 
+### Terminology snapshot reconcile
+
+`POST /api/def-store/terminologies/{id}/reconcile` (MCP tool
+`reconcile_terminology`, `@wip/client` 0.59.0
+`defStore.reconcileTerminology`) takes a terminology's complete desired
+term set and a policy, and answers with the diff — created, updated with
+changed fields, deprecated, errors; unchanged terms counted, not listed.
+`dry_run` is the **default**: writing is the explicit choice. Built for
+externally sourced vocabularies that refresh periodically, replacing each
+app's hand-rolled diff script. Absent active terms are deprecated (never
+deleted) and only under `on_missing='deprecate'`, optionally with
+successor mappings; the snapshot is authoritative for label and names
+while description/sort_order/parent apply only when set (reconcile never
+clears a field, keeping re-runs idempotent); metadata is honored on
+create and never rewritten; a snapshot value matching a retired term is a
+per-item `exists_inactive` error — reconcile does not reactivate. Writes
+route through the normal term doors, so Registry registration, names
+validation, the collision guard, events and audit behave exactly like
+individual writes.
+
 ### Ranked term search (typeahead); unified search actually finds terms
 
 Def-store gains `GET /api/def-store/terms/search` (MCP tool

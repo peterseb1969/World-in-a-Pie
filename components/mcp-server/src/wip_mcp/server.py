@@ -436,6 +436,12 @@ A term is an entry in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).
   (exact/prefix/word-start/substring), ranked hits carrying the matched
   name and its type, and optional rollup to the root is_a ancestor.
   Always case-insensitive and literal; exact mode returns ALL candidates.
+- Snapshot reconcile: POST /api/def-store/terminologies/{id}/reconcile
+  (the reconcile_terminology tool) — submit the complete desired term set
+  for a terminology and get the diff (dry_run=true is the default), then
+  apply: creates, substance updates, and opt-in deprecation of absent
+  terms with successors. Built for externally sourced vocabularies that
+  refresh periodically.
 - Addressing: term identifiers accept a canonical UUID, the fully
   qualified 'ns:terminology:value' form, or a terminology-scoped opaque
   value (field form). The 2-part 'TERMINOLOGY:VALUE' shorthand is
@@ -1827,6 +1833,57 @@ async def create_terms(
     try:
         data = await get_client().create_terms(
             terminology_id=terminology_id, terms=terms, on_conflict=on_conflict
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def reconcile_terminology(
+    terminology_id: str,
+    terms: list[dict],
+    on_missing: str = "ignore",
+    successors: dict | None = None,
+    deprecation_reason: str | None = None,
+    dry_run: bool = True,
+    namespace: str | None = None,
+) -> str:
+    """Make a terminology match a full desired term set — with a preview.
+
+    The natural operation for an externally sourced vocabulary: submit the
+    complete desired list, get the diff (created / updated with changed
+    fields / deprecated / errors; unchanged terms are counted, not
+    listed), then apply it. dry_run=true is the DEFAULT — writing is the
+    explicit choice (pass dry_run=false).
+
+    Semantics: terms are keyed by exact value; the snapshot is
+    authoritative for label and names, while description/sort_order/parent
+    apply only when set (reconcile never clears a field — re-runs are
+    idempotent); metadata is honored on create, never rewritten. Active
+    terms absent from the snapshot are DEPRECATED (never deleted) and only
+    under on_missing='deprecate', optionally with successors (which may
+    themselves be new in the snapshot). A snapshot value matching a
+    deprecated/inactive term errors with 'exists_inactive' — reconcile
+    does not reactivate retired terms.
+
+    Args:
+        terminology_id: Terminology ID (UUID) or value.
+        terms: The complete desired term set — same shape as create_terms
+            items (value required; label, description, names, aliases,
+            sort_order, parent_term_id, metadata optional).
+        on_missing: 'ignore' (default) counts absent terms; 'deprecate'
+            retires them.
+        successors: Absent value -> successor value map for deprecations.
+        deprecation_reason: Reason recorded on deprecated terms.
+        dry_run: true (default) returns the plan without writing.
+        namespace: Namespace for synonym resolution.
+    """
+    try:
+        data = await get_client().reconcile_terminology(
+            terminology_id=terminology_id, terms=terms, on_missing=on_missing,
+            successors=successors, deprecation_reason=deprecation_reason,
+            dry_run=dry_run, namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

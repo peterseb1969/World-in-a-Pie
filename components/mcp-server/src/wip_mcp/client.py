@@ -710,6 +710,32 @@ class WipClient:
             json={key: terminology, "value": value},
         )
 
+    async def reconcile_terminology(
+        self,
+        terminology_id: str,
+        terms: list[dict],
+        on_missing: str = "ignore",
+        successors: dict[str, str] | None = None,
+        deprecation_reason: str | None = None,
+        dry_run: bool = True,
+        namespace: str | None = None,
+    ) -> dict:
+        body: dict = {
+            "terms": terms,
+            "on_missing": on_missing,
+            "dry_run": dry_run,
+        }
+        if successors:
+            body["successors"] = successors
+        if deprecation_reason:
+            body["deprecation_reason"] = deprecation_reason
+        return await self._post(
+            self.def_store_url,
+            f"/api/def-store/terminologies/{terminology_id}/reconcile",
+            json=body,
+            namespace=namespace,
+        )
+
     async def search_terms(
         self,
         query: str,
