@@ -18,6 +18,9 @@ export interface Terminology {
   allow_multiple: boolean
   extensible: boolean
   mutable: boolean
+  /** Reject (not just warn about) term writes whose names collide with
+   * another term's value or name. */
+  unique_names: boolean
   metadata: TerminologyMetadata
   status: 'active' | 'inactive'
   term_count: number
@@ -36,6 +39,7 @@ export interface CreateTerminologyRequest {
   allow_multiple?: boolean
   extensible?: boolean
   mutable?: boolean
+  unique_names?: boolean
   metadata?: Partial<TerminologyMetadata>
   created_by?: string
 }
@@ -48,6 +52,7 @@ export interface UpdateTerminologyRequest {
   allow_multiple?: boolean
   extensible?: boolean
   mutable?: boolean
+  unique_names?: boolean
   metadata?: Partial<TerminologyMetadata>
   updated_by?: string
 }
@@ -201,8 +206,20 @@ export interface ValidateValueResponse {
   /** The exact name that matched (set when matched_via is 'alias'),
    * with its type and language. */
   matched_name?: TermName
+  /** How many distinct terms bear the submitted value; more than 1 means
+   * the name is ambiguous and matched_term is merely the first bearer in
+   * storage order. */
+  matches?: number
+  /** Every bearer of the name, populated when matches > 1. */
+  candidates?: TermMatchCandidate[]
   suggestion?: Term
   error?: string
+}
+
+/** One bearer of an ambiguous name. */
+export interface TermMatchCandidate {
+  term: Term
+  matched_name: TermName
 }
 
 /** One ranked hit from the term search (typeahead) surface. */
