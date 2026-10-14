@@ -10,6 +10,9 @@ from .models import IngestAction, IngestResult, IngestResultStatus
 
 logger = logging.getLogger(__name__)
 
+# 4xx statuses that mean "not now" rather than "never".
+_TRANSIENT_4XX = frozenset({408, 429})
+
 
 # Action to endpoint mapping
 ACTION_ENDPOINTS: dict[IngestAction, dict[str, Any]] = {
@@ -142,7 +145,11 @@ class IngestHTTPClient:
             except Exception:
                 response_data = {"raw": response.text[:1000]}
 
-            # Handle HTTP-level errors (e.g., 422 validation, 401 auth)
+            # Handle HTTP-level errors. A 5xx, 408 or 429 means the target
+            # could not take the request right now (starting, overloaded,
+            # restarting) — redelivery may succeed. Any other 4xx is a
+            # definitive answer about this request (validation, auth,
+            # not found) that redelivery cannot change.
             if response.status_code >= 400:
                 error_detail = response_data.get("detail") if response_data else response.text[:500]
                 return IngestResult(
@@ -152,6 +159,10 @@ class IngestHTTPClient:
                     http_status_code=response.status_code,
                     response=response_data,
                     error=f"HTTP {response.status_code}: {error_detail}",
+                    retryable=(
+                        response.status_code >= 500
+                        or response.status_code in _TRANSIENT_4XX
+                    ),
                 )
 
             # Check BulkResponse for per-item failures.
@@ -187,6 +198,7 @@ class IngestHTTPClient:
                 action=action,
                 status=IngestResultStatus.FAILED,
                 error=f"Timeout: {e}",
+                retryable=True,
             )
         except httpx.ConnectError as e:
             logger.error(f"Connection error calling {url}: {e}")
@@ -195,6 +207,16 @@ class IngestHTTPClient:
                 action=action,
                 status=IngestResultStatus.FAILED,
                 error=f"Connection error: {e}",
+                retryable=True,
+            )
+        except httpx.TransportError as e:
+            logger.error(f"Transport error calling {url}: {e}")
+            return IngestResult(
+                correlation_id=correlation_id,
+                action=action,
+                status=IngestResultStatus.FAILED,
+                error=f"Transport error: {e}",
+                retryable=True,
             )
         except Exception as e:
             logger.error(f"Error calling {url}: {e}", exc_info=True)

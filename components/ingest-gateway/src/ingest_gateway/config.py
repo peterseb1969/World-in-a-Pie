@@ -62,8 +62,16 @@ class Settings(BaseSettings):
 
     # Processing configuration
     batch_size: int = Field(default=100, alias="BATCH_SIZE")
-    retry_attempts: int = Field(default=3, alias="RETRY_ATTEMPTS")
-    retry_delay_ms: int = Field(default=1000, alias="RETRY_DELAY_MS")
+    # Redelivery of a message whose forward failed for a transient reason
+    # (target unreachable, timeout, 5xx, 429). Deliveries are capped at
+    # retry_attempts (the consumer's max_deliver); the wait before delivery
+    # n+1 is retry_backoff_seconds[n-1], the last value repeating. The
+    # defaults span about 16 minutes — long enough to outlast a restart or
+    # rolling update of the target service.
+    retry_attempts: int = Field(default=12, alias="RETRY_ATTEMPTS")
+    retry_backoff_seconds: list[float] = Field(
+        default=[5, 15, 30, 60, 120], alias="RETRY_BACKOFF_SECONDS"
+    )
     http_timeout_seconds: float = Field(default=30.0, alias="HTTP_TIMEOUT_SECONDS")
 
     # Stream configuration

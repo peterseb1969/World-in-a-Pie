@@ -63,11 +63,11 @@ class TestDefaultValues:
 
     def test_retry_attempts(self):
         s = Settings()
-        assert s.retry_attempts == 3
+        assert s.retry_attempts == 12
 
-    def test_retry_delay_ms(self):
+    def test_retry_backoff_seconds(self):
         s = Settings()
-        assert s.retry_delay_ms == 1000
+        assert s.retry_backoff_seconds == [5, 15, 30, 60, 120]
 
     def test_http_timeout_seconds(self):
         s = Settings()
@@ -143,10 +143,10 @@ class TestEnvironmentVariables:
             s = Settings()
             assert s.retry_attempts == 5
 
-    def test_retry_delay_ms_from_env(self):
-        with patch.dict(os.environ, {"RETRY_DELAY_MS": "2000"}):
+    def test_retry_backoff_seconds_from_env(self):
+        with patch.dict(os.environ, {"RETRY_BACKOFF_SECONDS": "[1, 2.5, 10]"}):
             s = Settings()
-            assert s.retry_delay_ms == 2000
+            assert s.retry_backoff_seconds == [1, 2.5, 10]
 
     def test_http_timeout_seconds_from_env(self):
         with patch.dict(os.environ, {"HTTP_TIMEOUT_SECONDS": "60.0"}):
@@ -271,9 +271,9 @@ class TestProcessingConfiguration:
         s = Settings()
         assert s.retry_attempts > 0
 
-    def test_retry_delay_is_positive(self):
+    def test_retry_backoff_is_positive(self):
         s = Settings()
-        assert s.retry_delay_ms > 0
+        assert s.retry_backoff_seconds and all(d > 0 for d in s.retry_backoff_seconds)
 
     def test_http_timeout_is_positive(self):
         s = Settings()

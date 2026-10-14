@@ -49,6 +49,8 @@ class IngestWorker:
         self._running = False
         self._messages_processed = 0
         self._messages_failed = 0
+        self._messages_retried = 0
+        self._messages_gave_up = 0
 
     @property
     def messages_processed(self) -> int:
@@ -59,6 +61,29 @@ class IngestWorker:
     def messages_failed(self) -> int:
         """Messages that resulted in failed status."""
         return self._messages_failed
+
+    @property
+    def messages_retried(self) -> int:
+        """Redeliveries requested after a transient forward failure."""
+        return self._messages_retried
+
+    @property
+    def messages_gave_up(self) -> int:
+        """Messages whose forward still failed transiently on the last allowed delivery."""
+        return self._messages_gave_up
+
+    @staticmethod
+    def _delivery_count(msg: Any) -> int:
+        try:
+            return int(msg.metadata.num_delivered)
+        except (AttributeError, TypeError, ValueError):
+            return 1
+
+    @staticmethod
+    def _retry_delay(delivery: int) -> float:
+        """Seconds to wait before the next delivery after delivery `delivery` failed."""
+        schedule = settings.retry_backoff_seconds or [5.0]
+        return float(schedule[min(delivery, len(schedule)) - 1])
 
     @property
     def is_running(self) -> bool:
@@ -115,6 +140,40 @@ class IngestWorker:
             duration_ms = (time.perf_counter() - start_time) * 1000
             result.duration_ms = duration_ms
 
+            # A transient failure (target unreachable, timeout, 5xx, 429)
+            # must not consume the message: hand it back for redelivery
+            # with a growing delay, so a target that is starting or
+            # restarting gets the request once it is back. Only the final
+            # outcome is published to the results stream.
+            if result.retryable:
+                delivery = self._delivery_count(msg)
+                if delivery < settings.retry_attempts:
+                    delay = self._retry_delay(delivery)
+                    self._messages_retried += 1
+                    logger.warning(
+                        f"Transient failure for {action.value} "
+                        f"correlation_id={correlation_id} on delivery "
+                        f"{delivery}/{settings.retry_attempts}: {result.error} "
+                        f"— redelivering in {delay:.0f}s"
+                    )
+                    await msg.nak(delay=delay)
+                    return
+                result.error = (
+                    f"{result.error} (gave up after {delivery} deliveries)"
+                )
+                await self.result_publisher.publish(result)
+                self._messages_processed += 1
+                self._messages_failed += 1
+                self._messages_gave_up += 1
+                logger.error(
+                    f"Giving up on {action.value} correlation_id={correlation_id}: "
+                    f"{result.error}"
+                )
+                # term(): stop redelivery explicitly instead of letting the
+                # server drop the message silently at max_deliver.
+                await msg.term()
+                return
+
             # Publish result to results stream
             await self.result_publisher.publish(result)
 
@@ -123,7 +182,8 @@ class IngestWorker:
             if result.status == IngestResultStatus.FAILED:
                 self._messages_failed += 1
 
-            # Acknowledge message (always ack after processing)
+            # A definitive outcome — success, per-item results in a 200, or
+            # a 4xx redelivery cannot change — is acknowledged.
             await msg.ack()
 
             logger.info(
@@ -154,7 +214,7 @@ class IngestWorker:
             self._messages_processed += 1
             self._messages_failed += 1
             # NAK to retry with delay
-            await msg.nak(delay=settings.retry_delay_ms / 1000)
+            await msg.nak(delay=self._retry_delay(self._delivery_count(msg)))
 
     async def start(self) -> None:
         """Start the ingest worker."""
@@ -169,7 +229,24 @@ class IngestWorker:
                 ack_policy=AckPolicy.EXPLICIT,
                 max_deliver=settings.retry_attempts,
                 ack_wait=60,  # seconds - longer for HTTP calls
+                filter_subject="wip.ingest.>",
             )
+
+            # pull_subscribe only applies `config` when it creates the
+            # consumer; an existing durable keeps whatever it was created
+            # with. add_consumer on the existing name updates it in place
+            # (acks and position are kept), so a changed retry policy
+            # reaches installs whose consumer already exists.
+            try:
+                await self.js.add_consumer(
+                    settings.nats_ingest_stream_name, config=consumer_config
+                )
+            except Exception as e:
+                logger.error(
+                    f"Could not apply consumer config to "
+                    f"{settings.nats_ingest_durable_name} "
+                    f"(continuing with its existing config): {e}"
+                )
 
             # Subscribe to all ingest subjects
             sub = await self.js.pull_subscribe(

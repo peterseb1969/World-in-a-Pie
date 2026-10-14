@@ -82,6 +82,9 @@ class IngestResult(BaseModel):
         default_factory=lambda: datetime.now(UTC)
     )
     duration_ms: float = 0.0
+    # True when the failure is transient (target unreachable, timeout, 5xx,
+    # 429), so redelivering the message may succeed. Internal: not published.
+    retryable: bool = False
 
     def model_dump_json_safe(self) -> dict[str, Any]:
         """Dump to JSON-serializable dict."""
@@ -115,6 +118,8 @@ class StatusResponse(BaseModel):
     nats_connected: bool
     messages_processed: int
     messages_failed: int
+    messages_retried: int = 0
+    messages_gave_up: int = 0
     uptime_seconds: float
 
 

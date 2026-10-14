@@ -82,11 +82,16 @@ fi
 # Case statement (not assoc array) for macOS bash 3.2 compatibility.
 _component_deps() {
     case "$1" in
-        registry|def-store|template-store|document-store|ingest-gateway|wip-toolkit)
+        registry|def-store|template-store|document-store|wip-toolkit)
             # wip-toolkit: the tests/integration/ suite mounts the four
             # services in-process and needs a real MongoDB (unit tests
             # skip gracefully without it, but the wrapper should provide it)
             echo "mongo"
+            ;;
+        ingest-gateway)
+            # NATS: the consumer-convergence test runs against a real
+            # JetStream server (it skips without NATS_TEST_URL).
+            echo "mongo nats"
             ;;
         reporting-sync)
             echo "postgres nats"

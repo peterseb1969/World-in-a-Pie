@@ -212,6 +212,12 @@ async def health_check() -> HealthResponse:
             "nats_url": settings.nats_url,
             "ingest_stream": settings.nats_ingest_stream_name,
             "results_stream": settings.nats_results_stream_name,
+            # Redeliveries after transient forward failures, and messages
+            # given up on after the last allowed delivery. Reported, not
+            # turned into a non-200: this endpoint is also the liveness
+            # probe, and restarting the gateway cannot fix a down target.
+            "messages_retried": state.worker.messages_retried if state.worker else 0,
+            "messages_gave_up": state.worker.messages_gave_up if state.worker else 0,
         },
     )
 
@@ -227,6 +233,8 @@ async def get_status() -> StatusResponse:
         nats_connected=nats_ok,
         messages_processed=state.worker.messages_processed if state.worker else 0,
         messages_failed=state.worker.messages_failed if state.worker else 0,
+        messages_retried=state.worker.messages_retried if state.worker else 0,
+        messages_gave_up=state.worker.messages_gave_up if state.worker else 0,
         uptime_seconds=uptime,
     )
 
