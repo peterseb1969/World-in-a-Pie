@@ -30,6 +30,7 @@ from ..models.api_models import (
 from ..models.terminology import Terminology
 from ..services.registry_client import RegistryError
 from ..services.term_names import TermNameError
+from ..services.term_search import TermSearchResponse, TermSearchService
 from ..services.terminology_service import (
     AmbiguousTerminologyValueError,
     EntityExistsError,
@@ -204,6 +205,85 @@ async def list_terms(
         pages=math.ceil(total / page_size) if total > 0 else 0,
         terminology_id=terminology.terminology_id,
         terminology_value=terminology.value
+    )
+
+
+@router.get(
+    "/terms/search",
+    response_model=TermSearchResponse,
+    summary="Ranked term search (typeahead)",
+)
+async def search_terms(
+    q: str = Query(..., min_length=1, description="The search string (treated as literal text)"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology ID or value to scope the search; omit for namespace-wide",
+    ),
+    namespace: str | None = Query(
+        None,
+        description="Namespace to search (derived for single-namespace keys; required otherwise)",
+    ),
+    mode: Literal["exact", "prefix", "word-start", "substring"] = Query(
+        "prefix",
+        description="Match mode. A narrower match still outranks a broader one inside a broad mode.",
+    ),
+    limit: int = Query(20, ge=1, le=100, description="Maximum hits"),
+    statuses: str = Query("active", description="Comma-separated statuses to include"),
+    rollup: Literal["none", "root"] = Query(
+        "none",
+        description="root: replace each hit with its root is_a ancestor (deduped, best rank wins)",
+    ),
+    identity: UserIdentity = Depends(require_api_key),
+) -> TermSearchResponse:
+    """Search terms by value, label or any name, ranked for typeahead.
+
+    Rank: match specificity (exact > prefix > word-start > substring),
+    then matched field (value > label > preferred name > name), then the
+    matched string alphabetically. Each hit carries the exact string that
+    matched, where it matched, and — for name matches — the name with its
+    type and language. Matching is always case-insensitive: this is the
+    discovery surface; strict, case-respecting resolution stays with
+    /validate. Exact mode returns ALL candidates — two terms sharing a
+    name both appear, making this the ambiguity-inspection surface.
+    """
+    # Search needs one concrete namespace: ranking spans one vocabulary
+    # scope and rollup walks that namespace's relations.
+    ns_filter = await resolve_namespace_filter(identity, namespace)
+    if ns_filter.namespaces is not None and len(ns_filter.namespaces) == 1:
+        search_namespace = ns_filter.namespaces[0]
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Search requires a namespace: pass ?namespace= (keys "
+                   "scoped to a single namespace derive it automatically)",
+        )
+
+    terminology_id: str | None = None
+    if terminology is not None:
+        terminology_id = await resolve_or_404(
+            terminology, "terminology", search_namespace, param_name="terminology"
+        )
+        parent = await Terminology.find_one({"terminology_id": terminology_id})
+        if not parent:
+            # Value-form fallback within the resolved namespace
+            try:
+                parent = await TerminologyService.find_by_value(terminology, search_namespace)
+            except AmbiguousTerminologyValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+            if not parent:
+                raise HTTPException(status_code=404, detail="Terminology not found")
+            terminology_id = parent.terminology_id
+
+    status_list = [s.strip() for s in statuses.split(",") if s.strip()]
+
+    return await TermSearchService.search(
+        query=q,
+        namespace=search_namespace,
+        terminology_id=terminology_id,
+        mode=mode,
+        limit=limit,
+        statuses=status_list,
+        rollup=rollup,
     )
 
 

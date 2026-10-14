@@ -412,6 +412,19 @@ var DefStoreService = class extends BaseService {
     return this.get(`/terminologies/${terminologyId}/terms`, params);
   }
   /**
+   * Ranked term search — the typeahead surface. Searches value, label and
+   * every name; each hit carries the matched string, where it matched
+   * (with the name's type for alias hits) and a rank (exact > prefix >
+   * word-start > substring, then value > label > preferred name > name).
+   * Always case-insensitive and literal. Exact mode returns ALL
+   * candidates (the ambiguity-inspection surface); rollup 'root' replaces
+   * each hit with its root is_a ancestor so a trade name returns the
+   * molecule.
+   */
+  async searchTerms(query, options) {
+    return this.get("/terms/search", { q: query, ...options });
+  }
+  /**
    * Term identifiers accept a canonical UUID, the fully qualified
    * 'ns:terminology:value' form, or — with the terminology option set —
    * the opaque raw term value (never colon-parsed). The ambiguous
