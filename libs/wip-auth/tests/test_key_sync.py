@@ -136,6 +136,28 @@ class TestKeySyncService:
         assert provider._keys[0].name == "wip-services"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("exc_name", ["ConnectError", "ConnectTimeout", "ReadTimeout"])
+    async def test_unreachable_registry_is_a_warning_not_a_traceback(self, exc_name, caplog):
+        """A Registry still starting (connect timeout) is routine: one
+        warning line, no 'unexpected error' traceback."""
+        import logging
+
+        import httpx
+        service, _ = self._make_service()
+        with patch("wip_auth.key_sync.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(side_effect=getattr(httpx, exc_name)("down"))
+            mock_client_cls.return_value = mock_client
+            with caplog.at_level(logging.WARNING, logger="wip_auth.key_sync"):
+                await service._sync_once()
+
+        messages = [(r.levelno, r.getMessage()) for r in caplog.records]
+        assert any(lvl == logging.WARNING and "connection failed" in msg for lvl, msg in messages)
+        assert not any(lvl >= logging.ERROR for lvl, _ in messages)
+
+    @pytest.mark.asyncio
     async def test_start_stop(self):
         service, _ = self._make_service()
 

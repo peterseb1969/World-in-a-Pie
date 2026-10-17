@@ -98,7 +98,11 @@ class KeySyncService:
 
         except httpx.HTTPStatusError as e:
             logger.warning("Key sync HTTP error: %s %s", e.response.status_code, url)
-        except httpx.ConnectError:
+        except (httpx.ConnectError, httpx.TimeoutException):
+            # An unreachable or still-starting Registry is routine (parallel
+            # start, a Registry restart) and the next poll retries: a warning,
+            # not a traceback. A connect timeout is a TimeoutException, not a
+            # ConnectError, so both are named.
             logger.warning("Key sync connection failed: %s", url)
         except Exception:
             logger.exception("Key sync unexpected error")
