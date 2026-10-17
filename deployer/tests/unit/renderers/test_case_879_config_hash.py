@@ -120,11 +120,15 @@ class TestK8s:
         }
 
     def test_statefulsets_carry_no_hash(self, tmp_path, discovery):
+        """Storage workloads are not rolled by secret changes. NATS is the
+        one exception and carries the hash of its rendered config instead
+        (config_gen/nats.py), not of its secrets."""
         d = _deployment("k8s")
         w = _k8s_workloads(d, discovery, _secrets(tmp_path, d, discovery))
         stateful = [n for n, doc in w.items() if doc["kind"] == "StatefulSet"]
         assert stateful, "expected storage-bearing components in the standard set"
-        assert all(_annotation(w[n]) is None for n in stateful)
+        assert all(_annotation(w[n]) is None for n in stateful if n != "wip-nats")
+        assert _annotation(w["wip-nats"]) is not None
 
     def test_master_key_rotation_moves_exactly_its_readers(self, tmp_path, discovery):
         d = _deployment("k8s")
@@ -163,7 +167,8 @@ class TestCompose:
         d = _deployment("compose")
         svc = self._services(d, discovery, _secrets(tmp_path, d, discovery))
         storage = {c.metadata.name for c in discovery.components if c.spec.storage}
-        for name in (storage & set(svc)) | {"caddy"}:
+        # NATS is the storage exception: labelled with its config's hash.
+        for name in ((storage - {"nats"}) & set(svc)) | {"caddy"}:
             assert CONFIG_HASH_KEY not in (svc[name].get("labels") or {}), name
 
     def test_master_key_rotation_relabels_its_readers_only(self, tmp_path, discovery):

@@ -23,6 +23,12 @@ from dataclasses import dataclass
 from typing import Literal as TypingLiteral
 
 from wip_deploy.config_gen.garage import SECRET_KEY_ID, SECRET_KEY_SECRET
+from wip_deploy.config_gen.nats import (
+    NATS_COMPONENT,
+    nats_clients,
+    password_secret,
+    server_password_env,
+)
 from wip_deploy.config_gen.spec_context import (
     SpecContext,
     active_storage_module,
@@ -118,8 +124,7 @@ def _default_port(component: Component) -> Port:
     Preference order: port named "http", then the first declared port.
     Components with multiple ports put the primary (data-path) port
     first; secondary ports (monitoring, console, etc.) come after. This
-    matches how NATS (`[nats:4222, monitor:8222]`) and MinIO
-    (`[s3:9000, console:9001]`) declare.
+    matches how MinIO (`[s3:9000, console:9001]`) declares.
     """
     by_name = {p.name: p for p in component.spec.ports}
     if "http" in by_name:
@@ -313,6 +318,37 @@ def _storage_env_overrides(
     return _swap(required), _swap(optional)
 
 
+def _nats_env(
+    component: Component | App,
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+) -> list[EnvVar]:
+    """NATS credentials, derived from the `nats_client` declarations.
+
+    A client gets its user name and password (read by wip_auth's EventBus);
+    NATS itself gets every client's password, which its rendered config
+    references by variable name (see config_gen/nats.py). Nothing is added
+    while NATS is inactive.
+    """
+    clients = nats_clients(deployment, components, apps)
+    name = component.metadata.name
+    if name == NATS_COMPONENT:
+        return [
+            EnvVar(
+                name=server_password_env(client),
+                source=EnvSource(from_secret=password_secret(client)),
+            )
+            for client, _ in clients
+        ]
+    if any(client == name for client, _ in clients):
+        return [
+            EnvVar(name="NATS_USER", source=EnvSource(literal=name)),
+            EnvVar(name="NATS_PASSWORD", source=EnvSource(from_secret=password_secret(name))),
+        ]
+    return []
+
+
 def resolve_component_env(
     component: Component | App,
     deployment: Deployment,
@@ -376,6 +412,7 @@ def resolve_component_env(
     required_vars, optional_vars = _storage_env_overrides(
         component, deployment, components
     )
+    required_vars += _nats_env(component, deployment, components, apps)
 
     return ResolvedEnv(
         required=_resolve(required_vars, skip_inactive=False),

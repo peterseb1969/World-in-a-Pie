@@ -9,6 +9,7 @@ Output tree:
     .env
     config/caddy/Caddyfile     (when auth.gateway=True or OIDC active)
     config/dex/config.yaml     (when Dex active)
+    config/nats/nats.conf      (when NATS active)
 
 Design decisions:
   - Literals go inline in compose `environment:`; secret refs go via
@@ -49,6 +50,13 @@ from wip_deploy.config_gen.env import (
 )
 from wip_deploy.config_gen.garage import garage_component, render_garage_toml
 from wip_deploy.config_gen.images import image_ref as _image_ref
+from wip_deploy.config_gen.nats import (
+    NATS_COMPONENT,
+    NATS_CONFIG_CONTAINER_PATH,
+    NATS_CONFIG_RENDER_PATH,
+    nats_config_hash,
+    render_nats_conf,
+)
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose_caddy import render_caddyfile
@@ -130,6 +138,12 @@ def render_compose(
             mode=0o600,
         )
 
+    # NATS config — only when NATS is active. Holds no secrets (passwords
+    # are env references), so the default 0644.
+    nats_conf = render_nats_conf(deployment, components, apps)
+    if nats_conf is not None:
+        tree.add(NATS_CONFIG_RENDER_PATH, nats_conf)
+
     # Spec-declared config-file API keys — carries plaintext, so 0600
     # (same posture as .env). Mounted into components whose manifest
     # declares WIP_AUTH_API_KEYS_FILE.
@@ -196,8 +210,8 @@ def _render_compose_yaml(
             is_app=False,
             healthcheck_owners=healthcheck_owners,
             active_names=active_names,
-            workload_hash=config_hash(
-                c, deployment, resolved_env[c.metadata.name], secrets
+            workload_hash=_workload_hash(
+                c, deployment, components, apps, resolved_env, secrets
             ),
         )
         _collect_volumes(c, volumes)
@@ -230,6 +244,23 @@ def _render_compose_yaml(
         top["volumes"] = volumes
 
     return yaml.safe_dump(top, sort_keys=False, default_flow_style=False)
+
+
+def _workload_hash(
+    c: Component,
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+    resolved_env: dict[str, ResolvedEnv],
+    secrets: ResolvedSecrets,
+) -> str | None:
+    """The config-hash label value for component `c`. NATS is a storage
+    component (no config_hash), but its bind-mounted config must still
+    recreate it when it changes, so it is labelled with the config's hash."""
+    if c.metadata.name == NATS_COMPONENT:
+        conf = render_nats_conf(deployment, components, apps)
+        return nats_config_hash(conf) if conf is not None else None
+    return config_hash(c, deployment, resolved_env[c.metadata.name], secrets)
 
 
 def _service_block(
@@ -443,6 +474,8 @@ def _volumes_for(owner: Component | App) -> list[str]:
         volumes.append("./config/dex/config.yaml:/etc/dex/config.yaml:ro")
     elif owner.metadata.name == "garage":
         volumes.append("./config/garage/garage.toml:/etc/garage.toml:ro")
+    elif owner.metadata.name == NATS_COMPONENT:
+        volumes.append(f"./{NATS_CONFIG_RENDER_PATH}:{NATS_CONFIG_CONTAINER_PATH}:ro")
     elif owner.metadata.name == "router":
         volumes.append("./config/router/Caddyfile:/etc/caddy/Caddyfile:ro")
 

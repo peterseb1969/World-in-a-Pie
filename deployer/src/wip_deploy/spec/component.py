@@ -219,6 +219,33 @@ class OidcClientSpec(WIPModel):
     redirect_paths: list[str] = Field(default_factory=lambda: ["/auth/callback"])
 
 
+class NatsClientSpec(WIPModel):
+    """Declares this component as a NATS client with its own NATS user.
+
+    NATS requires authentication; each client connects as a user named
+    after the component, allowed exactly the subjects listed here. The
+    deployer generates the user's password secret, injects
+    ``NATS_USER`` / ``NATS_PASSWORD`` into the component and renders the
+    user into NATS's config. Subjects are NATS permission subjects —
+    data subjects and the ``$JS.API.*`` / ``$JS.ACK.*`` JetStream API
+    subjects — where ``*`` and ``>`` only match whole tokens. A
+    subscription to the user's own reply inbox (``_INBOX_<name>.>``) is
+    always granted; JetStream replies arrive there. ``publish_deny``
+    overrides ``publish``.
+    """
+
+    publish: list[str] = Field(min_length=1)
+    publish_deny: list[str] = Field(default_factory=list)
+    subscribe: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def subjects_are_plain(self) -> NatsClientSpec:
+        for subject in [*self.publish, *self.publish_deny, *self.subscribe]:
+            if not subject or any(c.isspace() or c == '"' for c in subject):
+                raise ValueError(f"invalid NATS subject {subject!r}")
+        return self
+
+
 class PostInstallHook(WIPModel):
     """Escape hatch for actions the platform cannot express declaratively
     (e.g., Registry's /initialize-wip API call).
@@ -342,6 +369,7 @@ class ComponentSpec(WIPModel):
     healthcheck: HealthcheckSpec | None = None
     resources: ResourceSpec | None = None
     oidc_client: OidcClientSpec | None = None
+    nats_client: NatsClientSpec | None = None
     post_install: list[PostInstallHook] = Field(default_factory=list)
     observability: ObservabilitySpec | None = None
     activation: ActivationSpec | None = None

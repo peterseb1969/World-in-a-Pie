@@ -12,34 +12,34 @@ metadata:
 spec:
   image:
     name: docker.io/library/nats
-    # Alpine variant carries busybox (wget included) so compose's
-    # in-container healthcheck exec has something to probe with. The
-    # scratch-based nats:2 image has no shell/curl/wget — on compose
-    # the probe can't run and NATS is reported unhealthy, which cascades
-    # (reporting-sync + ingest-gateway block on depends_on: service_healthy).
-    # On k8s, probes use kubelet's httpGet (bypasses in-container tooling),
-    # so either tag works there.
+    # Alpine variant carries busybox (wget included): the healthcheck runs
+    # inside the container on every target, because the monitor listens on
+    # 127.0.0.1 only. The scratch-based nats:2 image has no shell/wget.
     tag: "2-alpine"
 
+  # Only the client port is exposed. The monitoring endpoint (8222) has no
+  # authentication of its own and `/connz` lists every client, so the
+  # rendered config binds it to 127.0.0.1 and the healthcheck probes it
+  # from inside the container.
   ports:
     - {name: nats, container_port: 4222}
-    - {name: monitor, container_port: 8222}
 
-  # `-js` enables JetStream (ingest-gateway + reporting-sync both use
-  # it). `-m 8222` exposes the monitor endpoint for healthchecks.
+  # The deployer renders the server config (config_gen/nats.py) and mounts
+  # it at /etc/nats/nats.conf: JetStream with its store on the `jetstream`
+  # volume below, the monitor on localhost, and one authenticated user per
+  # component that declares a `nats_client` — each limited to its own
+  # subjects. The users' passwords arrive as NATS_PASSWORD_* env (injected
+  # by the deployer) and the config references them by name.
   # Full argv (including binary) so k8s's `command:` replacement works;
   # `nats-server` (PATH-relative) works on nats:2-alpine (binary at
-  # /usr/local/bin/nats-server). The scratch nats:2 image had it at
-  # /nats-server but we switched away from scratch so the compose
-  # healthcheck can exec into the container.
-  command: [nats-server, -js, -m, "8222"]
+  # /usr/local/bin/nats-server).
+  command: [nats-server, -c, /etc/nats/nats.conf]
 
   storage:
     - {name: jetstream, mount_path: /data, size: 5Gi}
 
   healthcheck:
-    endpoint: /healthz
-    port: monitor
+    command: [wget, -q, -O, /dev/null, "http://127.0.0.1:8222/healthz"]
     interval_seconds: 10
     timeout_seconds: 5
     start_period_seconds: 10

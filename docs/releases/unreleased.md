@@ -115,6 +115,67 @@ anonymously. Its outbound key now also falls back to `MASTER_API_KEY`, and the
 component manifest sets `API_KEY`, so it no longer writes with the dev default
 key on deployed installs.
 
+### NATS requires authentication; each service is its own NATS user
+
+NATS accepted anonymous clients on every target. Any workload that could reach
+it could read every change event, publish forged events that reporting-sync
+applied, delete the streams, and publish ingest work items that ingest-gateway
+forwarded with the platform's admin key.
+- **Per-service users.** NATS now refuses anonymous connections. Each NATS
+  client (def-store, template-store, document-store, reporting-sync,
+  ingest-gateway) connects as its own user and may publish only its own event
+  subjects and use only the JetStream API it needs. No service can delete or
+  purge the platform streams (`WIP_EVENTS`, `WIP_INGEST`,
+  `WIP_INGEST_RESULTS`). document-store may create and delete streams in
+  general, which replay needs (`WIP_REPLAY_<session>`); the platform streams
+  are denied to it explicitly. Each user reads replies only on its own inbox
+  prefix (`_INBOX_<user>`).
+- **Where it is declared.** Components declare a `nats_client` block (their
+  permitted subjects). The deployer generates a `nats-password-<component>`
+  secret per client, injects `NATS_USER` / `NATS_PASSWORD` into the client
+  and the passwords into NATS, and renders `config/nats/nats.conf` (k8s:
+  ConfigMap `wip-nats-config`). The config holds no secrets: it references
+  the passwords as environment variables.
+- **JetStream store on its volume.** NATS kept its JetStream store in
+  `/tmp/nats/jetstream` inside the container, and the 5 GiB volume mounted at
+  `/data` stayed empty. Every NATS restart therefore lost all streams:
+  unconsumed events, the ingest backlog, replay streams. The store is now
+  `/data/jetstream` (CASE-891).
+- **Monitoring on localhost.** The monitoring endpoint (port 8222, no
+  authentication, `/connz` lists every client) listens on 127.0.0.1 only.
+  It is no longer a Service port on k8s, and the healthcheck runs inside
+  the container.
+- **External NATS clients have no access for now.** Clients outside the
+  platform have no NATS user yet and are refused:
+  - producers publishing `wip.ingest.*` work items;
+  - subscribers to replay streams or `WIP_EVENTS`;
+  - react-console's NATS page, whose `NATS_URL` was removed (the page reports
+    NATS as unreachable).
+
+  Outside producers can use ingest again once ingest-gateway forwards the
+  producer's own API key instead of the admin key (CASE-852, phase 3).
+- **Diagnosing a refusal.** A publish the server refuses shows up in the
+  client as a timeout. NATS logs `Publish Violation - Subject "<subject>"`
+  with the user name.
+
+**Action:** re-render with `wip-deploy redeploy`.
+- **Images first:** the services send credentials from `wip_auth.events`,
+  which is baked into their images. On k8s and compose, re-render together
+  with images built from this release. Re-rendering while services still run
+  older images makes NATS refuse all of them: no events, no reporting sync,
+  no ingest. Dev installs bind-mount the wip-auth source and are not
+  affected.
+- **Rollout order:** a client with credentials can still connect to a NATS
+  server that doesn't enforce them yet. So on k8s the order the pods roll in
+  doesn't matter, apart from a brief window in which old, credential-less
+  pods are refused. They queue their events (see below) until replaced.
+- **Lost streams:** the first start with the store on the volume begins with
+  empty streams, as every NATS restart did before. Run a reporting batch sync
+  afterwards if reporting-sync had not consumed everything. Unprocessed
+  ingest items are gone.
+- **Verification:** `wip-deploy verify --security` now fails an install whose
+  NATS accepts anonymous clients.
+
 ### NATS connections heal themselves; `WIP_EVENTS` has one definition
 
 def-store, template-store, document-store, reporting-sync and ingest-gateway

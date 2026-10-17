@@ -61,6 +61,21 @@ spec:
       # JWT issuer URL — honored in jwt_only / dual; ignored otherwise. CASE-361.
       - {name: WIP_AUTH_JWT_ISSUER_URL, source: {from_spec: auth.issuer_url_internal}}
 
+  # NATS user for this service (config_gen/nats.py). It may publish only the
+  # JetStream API it needs: ensure WIP_EVENTS, and create/read/pull/ack its own
+  # durable consumer. It publishes no events and cannot delete streams.
+  nats_client:
+    publish:
+      - "$JS.API.STREAM.INFO.WIP_EVENTS"
+      - "$JS.API.STREAM.CREATE.WIP_EVENTS"
+      - "$JS.API.STREAM.UPDATE.WIP_EVENTS"
+      - "$JS.API.CONSUMER.INFO.WIP_EVENTS.reporting-sync-durable"
+      - "$JS.API.CONSUMER.CREATE.WIP_EVENTS.reporting-sync-durable"
+      - "$JS.API.CONSUMER.CREATE.WIP_EVENTS.reporting-sync-durable.>"
+      - "$JS.API.CONSUMER.DURABLE.CREATE.WIP_EVENTS.reporting-sync-durable"
+      - "$JS.API.CONSUMER.MSG.NEXT.WIP_EVENTS.reporting-sync-durable"
+      - "$JS.ACK.WIP_EVENTS.reporting-sync-durable.>"
+
   routes:
     - {path: /api/reporting-sync, auth_required: false}
 

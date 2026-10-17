@@ -36,7 +36,8 @@ spec:
       # askBar / NL-query feature uses Anthropic. Degrades gracefully
       # when the key is unset.
       - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
-      - {name: NATS_URL, source: {from_component: nats}}
+      # No NATS_URL: NATS requires authentication and react-console has no
+      # NATS user; its NATS page reports NATS as unreachable.
       - {name: MONGO_URI, source: {from_component: mongodb}}
 
   routes:

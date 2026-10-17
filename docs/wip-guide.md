@@ -87,7 +87,7 @@ Three security tiers cover the realistic deployment ranges.
 | Tier | Use case | What you get |
 |---|---|---|
 | **Tier 1 — Home Pi** | Local network, trusted users | Random secrets, self-signed TLS (`--tls internal`), single API key |
-| **Tier 2 — Internet-exposed** | Public access, multiple users | Let's Encrypt (`--tls letsencrypt`), per-service / per-app API keys, MongoDB + NATS auth |
+| **Tier 2 — Internet-exposed** | Public access, multiple users | Let's Encrypt (`--tls letsencrypt`), per-service / per-app API keys, NATS authentication (per-service users). MongoDB authentication is not yet available (CASE-890). |
 | **Tier 3 — Enterprise** | High-security requirements | External secrets manager, mTLS, enterprise OIDC. WIP is wired for these but does not ship a turnkey enterprise install today. |
 
 This guide focuses on Tier 1 and Tier 2 — the ones you can stand up with the bundled tooling.
@@ -214,7 +214,7 @@ WIP has two independent authentication concerns:
 ```
 
 - **API auth** — how clients (browser, scripts, other services) prove identity to WIP's REST API. This is what the rest of this section covers.
-- **DB auth** — how WIP services connect to MongoDB / PostgreSQL / NATS internally. Configured via connection strings (`MONGO_URI`, etc.). It is independent of API auth and not affected by anything below.
+- **DB auth** — how WIP services connect to MongoDB / PostgreSQL / NATS internally. Configured via connection strings (`MONGO_URI`, etc.); NATS credentials are per-service users the deployer generates and injects (`NATS_USER` / `NATS_PASSWORD`). It is independent of API auth and not affected by anything below.
 
 ### 4.2 API auth modes
 
@@ -733,8 +733,10 @@ After rotating:
 **Not rotatable with `rotate-key`:** MongoDB / PostgreSQL passwords, the
 MinIO password and Dex secrets. These also need a change in the store that
 uses them (the database keeps its own copy of the password), which
-`rotate-key` does not make, so it refuses them. NATS currently runs without
-authentication, so there is no NATS credential to rotate.
+`rotate-key` does not make, so it refuses them. The NATS user passwords
+(`nats-password-<service>`) are refused too: NATS and the client read the
+password only at start, and on k8s a changed secret does not restart NATS, so
+the two would disagree until both restart.
 
 Rotation cadences worth defaulting to:
 

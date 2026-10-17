@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 import yaml
 
+from wip_deploy.config_gen.nats import password_secret
 from wip_deploy.discovery import Discovery, discover
 from wip_deploy.renderers import render_compose, render_dev_simple
 from wip_deploy.renderers.compose import _secret_to_env_var
@@ -92,12 +93,24 @@ def _render(
     return doc, tree.files[Path(".env")].content, secrets
 
 
-def _declared_secret_vars(owner: Any) -> set[str]:
-    return {
+def _declared_secret_vars(owner: Any, discovery: Discovery) -> set[str]:
+    """Secrets the owner's manifest declares: its env's from_secret
+    entries, plus the NATS passwords derived from `nats_client` blocks
+    (its own as a client; every client's when the owner is NATS)."""
+    declared = {
         _secret_to_env_var(v.source.from_secret)
         for v in [*owner.spec.env.required, *owner.spec.env.optional]
         if v.source.from_secret
     }
+    if owner.spec.nats_client is not None:
+        declared.add(_secret_to_env_var(password_secret(owner.metadata.name)))
+    if owner.metadata.name == "nats":
+        declared |= {
+            _secret_to_env_var(password_secret(o.metadata.name))
+            for o in [*discovery.components, *discovery.apps]
+            if o.spec.nats_client is not None
+        }
+    return declared
 
 
 def _referenced_vars(service: dict[str, Any]) -> set[str]:
@@ -129,7 +142,7 @@ class TestOnlyDeclaredSecrets:
                 # Platform-generated services (Caddy) declare no manifest env.
                 assert refs == set(), name
                 continue
-            assert refs <= _declared_secret_vars(owners[name]), name
+            assert refs <= _declared_secret_vars(owners[name], discovery), name
             checked += bool(refs)
         assert checked >= 5  # not vacuous: the backend services reference secrets
 

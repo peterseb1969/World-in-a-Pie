@@ -25,6 +25,7 @@ Design decisions:
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import Any
 
 import yaml
@@ -46,6 +47,12 @@ from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY, config_hash
 from wip_deploy.config_gen.env import Literal
 from wip_deploy.config_gen.garage import garage_component, render_garage_toml
 from wip_deploy.config_gen.images import image_ref as _image_ref
+from wip_deploy.config_gen.nats import (
+    NATS_COMPONENT,
+    NATS_CONFIG_CONTAINER_PATH,
+    nats_config_hash,
+    render_nats_conf,
+)
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose_dex import render_dex_config
@@ -138,6 +145,11 @@ def render_k8s(
             owner, deployment, env, secrets,
             mounted_files=router_files if name == "router" else None,
         )
+        if name == NATS_COMPONENT:
+            # NATS is storage-bearing (no config_hash), but a changed config
+            # must still roll it: nothing else restarts the StatefulSet.
+            nats_conf = render_nats_conf(deployment, components, apps)
+            workload_hash = nats_config_hash(nats_conf) if nats_conf else None
         content = _render_component(owner, deployment, env, ns, workload_hash)
         # Storage-bearing → infrastructure/, otherwise services/
         if owner.spec.storage:
@@ -450,6 +462,21 @@ def _render_configmaps(
             "data": {"garage.toml": render_garage_toml(secrets)},
         })
 
+    # NATS config — no secrets (passwords are env references resolved by
+    # nats-server), so a plain ConfigMap.
+    nats_conf = render_nats_conf(deployment, components, apps)
+    if nats_conf is not None:
+        docs.append({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "wip-nats-config",
+                "namespace": ns,
+                "labels": {_LABELS_PART_OF: "wip"},
+            },
+            "data": {PurePosixPath(NATS_CONFIG_CONTAINER_PATH).name: nats_conf},
+        })
+
     # wip-router Caddyfile
     router_active = any(
         c.metadata.name == "router" and is_component_active(c, deployment)
@@ -591,6 +618,16 @@ def _render_component(
             "name": "config",
             "configMap": {"name": "wip-garage-config"},
         })
+    elif name == NATS_COMPONENT:
+        volume_mounts.append({
+            "name": "config",
+            "mountPath": str(PurePosixPath(NATS_CONFIG_CONTAINER_PATH).parent),
+            "readOnly": True,
+        })
+        volumes.append({
+            "name": "config",
+            "configMap": {"name": "wip-nats-config"},
+        })
     elif name == "router":
         # Caddy reads /etc/caddy/Caddyfile. Mount just that key via
         # subPath so we don't replace the directory.
@@ -651,7 +688,8 @@ def _render_component(
 
     # A changed secret or key file must roll the pods that read it at start;
     # the hash makes that content change a template change (config_hash).
-    if workload_hash is not None and workload_kind == "Deployment":
+    # Only NATS reaches here with a StatefulSet (its config hash).
+    if workload_hash is not None:
         workload["spec"]["template"]["metadata"]["annotations"] = {
             CONFIG_HASH_KEY: workload_hash,
         }

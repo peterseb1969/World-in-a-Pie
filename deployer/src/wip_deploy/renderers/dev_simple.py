@@ -43,7 +43,15 @@ from wip_deploy.config_gen.api_keys import (
     declares_api_keys_file,
     generate_api_keys_json,
 )
+from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY
 from wip_deploy.config_gen.garage import garage_component, render_garage_toml
+from wip_deploy.config_gen.nats import (
+    NATS_COMPONENT,
+    NATS_CONFIG_CONTAINER_PATH,
+    NATS_CONFIG_RENDER_PATH,
+    nats_config_hash,
+    render_nats_conf,
+)
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose import (
@@ -263,6 +271,11 @@ def render_dev_simple(
             "config/garage/garage.toml", render_garage_toml(secrets), mode=0o600,
         )
 
+    # NATS config — same as the compose renderer (no secrets: 0644).
+    nats_conf = render_nats_conf(deployment, components, apps)
+    if nats_conf is not None:
+        tree.add(NATS_CONFIG_RENDER_PATH, nats_conf)
+
     # wip-router Caddyfile — same as compose renderer. Without this,
     # the wip-router container boots with the stock caddy image's
     # default Caddyfile (listening on :80, serving static files) and
@@ -327,6 +340,14 @@ def _render_dev_compose_yaml(
             app_sources=app_sources,
         )
         _collect_volumes(c, volumes)
+        if c.metadata.name == NATS_COMPONENT:
+            # The bind-mounted config must recreate NATS when it changes;
+            # `compose up -d` only recreates on a definition change.
+            nats_conf = render_nats_conf(deployment, components, apps)
+            if nats_conf is not None:
+                services[c.metadata.name]["labels"] = {
+                    CONFIG_HASH_KEY: nats_config_hash(nats_conf),
+                }
 
     for a in apps:
         if a.metadata.name not in enabled_app_names:
@@ -581,6 +602,8 @@ def _dev_volumes_for(
         volumes.append("./config/dex/config.yaml:/etc/dex/config.yaml:ro")
     elif owner.metadata.name == "garage":
         volumes.append("./config/garage/garage.toml:/etc/garage.toml:ro")
+    elif owner.metadata.name == NATS_COMPONENT:
+        volumes.append(f"./{NATS_CONFIG_RENDER_PATH}:{NATS_CONFIG_CONTAINER_PATH}:ro")
 
     # Router config bind mount — same as prod. Without this, wip-router
     # starts with the stock caddy default Caddyfile and all /api/* routing

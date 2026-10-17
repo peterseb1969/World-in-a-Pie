@@ -20,6 +20,7 @@ from wip_deploy.spec.component import (
     EnvVar,
     HealthcheckSpec,
     ImageRef,
+    NatsClientSpec,
     ObservabilitySpec,
     OidcClientSpec,
     Port,
@@ -78,6 +79,7 @@ __all__ = [
     "HealthcheckSpec",
     "ResourceSpec",
     "OidcClientSpec",
+    "NatsClientSpec",
     "PostInstallHook",
     "ObservabilitySpec",
     # App

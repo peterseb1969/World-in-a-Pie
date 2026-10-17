@@ -49,6 +49,25 @@ spec:
       # JWT issuer URL — honored in jwt_only / dual; ignored otherwise. CASE-361.
       - {name: WIP_AUTH_JWT_ISSUER_URL, source: {from_spec: auth.issuer_url_internal}}
 
+  # NATS user for this service (config_gen/nats.py). It may publish only the
+  # results it emits, plus the JetStream API to ensure its two streams and to
+  # create/read/pull/ack its own durable consumer on WIP_INGEST.
+  nats_client:
+    publish:
+      - "wip.ingest.results.>"
+      - "$JS.API.STREAM.INFO.WIP_INGEST"
+      - "$JS.API.STREAM.CREATE.WIP_INGEST"
+      - "$JS.API.STREAM.UPDATE.WIP_INGEST"
+      - "$JS.API.STREAM.INFO.WIP_INGEST_RESULTS"
+      - "$JS.API.STREAM.CREATE.WIP_INGEST_RESULTS"
+      - "$JS.API.STREAM.UPDATE.WIP_INGEST_RESULTS"
+      - "$JS.API.CONSUMER.INFO.WIP_INGEST.ingest-gateway-durable"
+      - "$JS.API.CONSUMER.CREATE.WIP_INGEST.ingest-gateway-durable"
+      - "$JS.API.CONSUMER.CREATE.WIP_INGEST.ingest-gateway-durable.>"
+      - "$JS.API.CONSUMER.DURABLE.CREATE.WIP_INGEST.ingest-gateway-durable"
+      - "$JS.API.CONSUMER.MSG.NEXT.WIP_INGEST.ingest-gateway-durable"
+      - "$JS.ACK.WIP_INGEST.ingest-gateway-durable.>"
+
   routes:
     - {path: /api/ingest-gateway, auth_required: false}
 

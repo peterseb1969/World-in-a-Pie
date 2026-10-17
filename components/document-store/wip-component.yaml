@@ -61,6 +61,30 @@ spec:
       - {name: WIP_FILE_STORAGE_BUCKET, source: {literal: wip-attachments}}
       - {name: CORS_ORIGINS, source: {from_spec: network.cors_origins}}
 
+  # NATS user for this service (config_gen/nats.py). It may publish only the
+  # events it emits and replays, the stream API that ensures WIP_EVENTS, and
+  # create/delete of replay streams (WIP_REPLAY_<session>). NATS wildcards match
+  # whole tokens only and a stream name is one token, so replay needs stream
+  # create/delete in general; the platform streams are denied explicitly.
+  # CONSUMER.INFO on reporting-sync's durable feeds the write backpressure.
+  nats_client:
+    publish:
+      - "wip.documents.>"
+      - "wip.files.>"
+      - "wip.replay.>"
+      - "$JS.API.STREAM.INFO.WIP_EVENTS"
+      - "$JS.API.STREAM.CREATE.WIP_EVENTS"
+      - "$JS.API.STREAM.UPDATE.WIP_EVENTS"
+      - "$JS.API.STREAM.CREATE.*"
+      - "$JS.API.STREAM.DELETE.*"
+      - "$JS.API.CONSUMER.INFO.WIP_EVENTS.reporting-sync-durable"
+    publish_deny:
+      - "$JS.API.STREAM.DELETE.WIP_EVENTS"
+      - "$JS.API.STREAM.DELETE.WIP_INGEST"
+      - "$JS.API.STREAM.DELETE.WIP_INGEST_RESULTS"
+      - "$JS.API.STREAM.CREATE.WIP_INGEST"
+      - "$JS.API.STREAM.CREATE.WIP_INGEST_RESULTS"
+
   routes:
     - {path: /api/document-store, auth_required: false, streaming: true}
 

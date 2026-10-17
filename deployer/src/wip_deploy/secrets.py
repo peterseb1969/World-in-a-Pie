@@ -31,6 +31,7 @@ from wip_deploy.config_gen.garage import (
     SECRET_RPC,
     garage_component,
 )
+from wip_deploy.config_gen.nats import nats_clients, password_secret
 from wip_deploy.secrets_backend.base import ResolvedSecrets, SecretBackend
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
@@ -63,6 +64,7 @@ def collect_required_secrets(
       - `from_secret` in required env vars of active components + enabled apps
       - Dex user password secrets (when Dex is active)
       - Dex static client secrets (one per active OIDC-capable component/app)
+      - NATS user passwords (one per active `nats_client`, when NATS is active)
     """
     names: set[str] = set()
 
@@ -90,6 +92,12 @@ def collect_required_secrets(
     # declaration, so manifest scanning cannot find them.
     if garage_component(deployment, components) is not None:
         names.update(GARAGE_SECRET_NAMES)
+
+    # NATS users (CASE-852): one password per declared nats_client. The
+    # password reaches the client through env injection and NATS through
+    # its own env, neither of which the manifest scan above can see.
+    for client, _ in nats_clients(deployment, components, apps):
+        names.add(password_secret(client))
 
     dex_cfg = generate_dex_config(deployment, components, apps)
     if dex_cfg is not None:

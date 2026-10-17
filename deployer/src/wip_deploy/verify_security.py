@@ -48,28 +48,34 @@ check mutates anything; the whole module is read-only.
      and k8s installs are not applicable (their edge is nginx-ingress,
      with controller-provided HSTS).
 
+  7. **NATS requires authentication** — the rendered NATS config must
+     define per-service users (an install rendered before NATS
+     authentication accepts anonymous clients: any workload could read,
+     forge or delete platform events) and keep the unauthenticated
+     monitoring endpoint on 127.0.0.1.
+
 ### What's NOT checked
 
   - Live service health — that's `wip-deploy status`.
   - The k8s secret backend and k8s port exposure — file-backend and
     compose-shaped checks report "not applicable" on k8s installs
     rather than guessing at cluster state.
-  - DB/NATS *authentication* config. PostgreSQL credentials are rendered
-    per install; NATS currently runs without authentication on every
-    target (tracked as CASE-852), which no file check can fix.
+  - Database authentication config. PostgreSQL credentials are rendered
+    per install; MongoDB currently runs without authentication on every
+    target (CASE-890), which no file check can fix.
 
 ### Live checks (`--live`, opt-in)
 
   The checks above read files. With `--live` the command also sends
   requests to the running install through its public base URL:
 
-  7. **Anonymous requests refused** — one read-only, credential-less
+  8. **Anonymous requests refused** — one read-only, credential-less
      request per protected route group of every active service must get a
      JSON 401/403/404; each service's health probe must answer 200 without
      a key. An HTML answer is the SPA fallback for an unserved route and
      counts as a failure, not a refusal.
 
-  8. **reporting-sync on unprivileged roles** — with the install's
+  9. **reporting-sync on unprivileged roles** — with the install's
      api-key, reporting-sync's status must report
      postgres_service_roles_ok = true.
 """
@@ -466,6 +472,50 @@ def check_caddy_security_headers(install_dir: Path, deployment: Deployment) -> C
     )
 
 
+def _rendered_nats_conf(install_dir: Path, deployment: Deployment) -> tuple[bool, str | None]:
+    """(NATS deployed?, its rendered config) from the install's files."""
+    if deployment.spec.target == "k8s":
+        if not (install_dir / "infrastructure" / "nats.yaml").is_file():
+            return False, None
+        configmaps = install_dir / "configmaps.yaml"
+        if configmaps.is_file():
+            for doc in yaml.safe_load_all(configmaps.read_text()):
+                if doc and doc.get("metadata", {}).get("name") == "wip-nats-config":
+                    return True, (doc.get("data") or {}).get("nats.conf")
+        return True, None
+    compose_yaml = install_dir / "docker-compose.yaml"
+    if not compose_yaml.is_file():
+        return False, None
+    services = (yaml.safe_load(compose_yaml.read_text()) or {}).get("services") or {}
+    if "nats" not in services:
+        return False, None
+    conf = install_dir / "config" / "nats" / "nats.conf"
+    return True, conf.read_text() if conf.is_file() else None
+
+
+def check_nats_authentication(install_dir: Path, deployment: Deployment) -> CheckResult:
+    """NATS refuses anonymous clients and keeps its monitor on localhost."""
+    name = "NATS authentication"
+    try:
+        deployed, conf = _rendered_nats_conf(install_dir, deployment)
+    except yaml.YAMLError as exc:
+        return CheckResult(name, False, f"could not parse the rendered manifests: {exc}")
+    if not deployed:
+        return CheckResult(name, True, "not applicable (NATS not deployed)")
+    fix_hint = (
+        "This install was rendered before NATS required authentication, so\n"
+        "any workload that reaches NATS can read, forge or delete platform\n"
+        "events. Re-render it with the current deployer: `wip-deploy redeploy\n"
+        "--name <install>`."
+    )
+    if conf is None or "authorization" not in conf:
+        return CheckResult(name, False, "NATS accepts anonymous clients (no authorization in its config)", fix_hint=fix_hint)
+    if "http: 127.0.0.1:" not in conf:
+        return CheckResult(name, False, "NATS monitoring endpoint is not bound to 127.0.0.1", fix_hint=fix_hint)
+    users = len(re.findall(r"^\s*\{ user: ", conf, re.MULTILINE))
+    return CheckResult(name, True, f"{users} authenticated NATS users; monitor on 127.0.0.1")
+
+
 # ────────────────────────────────────────────────────────────────────
 # Top-level entry
 # ────────────────────────────────────────────────────────────────────
@@ -481,6 +531,7 @@ def verify_security(install_dir: Path, deployment: Deployment) -> SecurityReport
         check_variant_exposure(deployment),
         check_published_ports(install_dir, deployment),
         check_caddy_security_headers(install_dir, deployment),
+        check_nats_authentication(install_dir, deployment),
     ]
     return SecurityReport(install_dir=install_dir, results=results)
 

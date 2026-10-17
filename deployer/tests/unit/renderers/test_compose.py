@@ -314,7 +314,7 @@ class TestComposeYaml:
         )
         nats = doc["services"]["nats"]
         assert nats["entrypoint"] == ["nats-server"]
-        assert nats["command"] == ["-js", "-m", "8222"]
+        assert nats["command"] == ["-c", "/etc/nats/nats.conf"]
 
         # MinIO too (full argv including the binary).
         doc2 = self._render_compose(
