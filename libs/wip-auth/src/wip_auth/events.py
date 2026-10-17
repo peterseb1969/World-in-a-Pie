@@ -30,6 +30,15 @@ the same four guarantees, and they live here, once:
 
 ``stats()`` exposes connection state and the counters for ``/health``.
 
+**Credentials.** NATS requires each service to authenticate as its own
+user, restricted to the subjects that service needs. The bus reads
+``NATS_USER`` / ``NATS_PASSWORD`` (the deployer injects both) unless they
+are passed explicitly, and hands them to ``nats.connect`` as arguments —
+never inside the URL, which is logged. A user also gets its own reply
+inbox prefix (``_INBOX_<user>``): JetStream acks and pulled messages
+arrive on reply inboxes, and the server lets each user subscribe only to
+its own, so one service cannot read another's replies.
+
 nats-py is imported lazily, so services that never touch NATS do not need
 it installed (install ``wip-auth[events]`` otherwise).
 """
@@ -39,6 +48,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import time
 import uuid
 from collections import deque
@@ -144,7 +154,9 @@ class EventBus:
     Lifecycle: construct, ``await start()`` (returns immediately), use
     ``publish()`` / ``supervise()`` / ``jetstream``, ``await stop()``.
     A falsy ``url`` builds a disabled bus: ``publish()`` returns
-    ``DISABLED`` and ``state`` is ``not_configured``.
+    ``DISABLED`` and ``state`` is ``not_configured``. ``user`` / ``password``
+    default to ``NATS_USER`` / ``NATS_PASSWORD``; without a user the bus
+    connects anonymously (a server without authorization, e.g. tests).
     """
 
     def __init__(
@@ -152,6 +164,8 @@ class EventBus:
         url: str | None,
         *,
         name: str,
+        user: str | None = None,
+        password: str | None = None,
         streams: Sequence[StreamSpec] = (),
         queue_max_events: int = 10_000,
         queue_max_age_seconds: float = 3600,
@@ -162,6 +176,10 @@ class EventBus:
     ) -> None:
         self._url = url or None
         self._name = name
+        self._user = (user if user is not None else os.environ.get("NATS_USER")) or None
+        self._password = (
+            password if password is not None else os.environ.get("NATS_PASSWORD")
+        ) or None
         self._streams = tuple(streams)
         self._queue_max_events = queue_max_events
         self._queue_max_age = queue_max_age_seconds
@@ -305,6 +323,7 @@ class EventBus:
                     disconnected_cb=self._on_disconnected,
                     reconnected_cb=self._on_reconnected,
                     closed_cb=self._on_closed,
+                    **self._credential_options(),
                 )
             except asyncio.CancelledError:
                 raise
@@ -315,7 +334,10 @@ class EventBus:
 
             self._nc, self._js = nc, nc.jetstream()
             self._connect_errors = 0
-            logger.info("%s: connected to NATS at %s", self._name, self._url)
+            logger.info(
+                "%s: connected to NATS at %s as %s",
+                self._name, self._url, self._user or "anonymous",
+            )
             await self._on_connected()
             await self._closed.wait()
             if not self._stopping:
@@ -324,6 +346,16 @@ class EventBus:
                 logger.warning("%s: NATS client closed unexpectedly; rebuilding", self._name)
                 self._connected.clear()
                 await asyncio.sleep(self._reconnect_wait)
+
+    def _credential_options(self) -> dict[str, Any]:
+        """``nats.connect`` keyword arguments for this bus's NATS user."""
+        if self._user is None:
+            return {}
+        return {
+            "user": self._user,
+            "password": self._password,
+            "inbox_prefix": f"_INBOX_{self._user}",
+        }
 
     async def _on_connected(self) -> None:
         self._ever_connected = True

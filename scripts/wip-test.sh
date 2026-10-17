@@ -120,11 +120,26 @@ _container_running() {
     "$CONTAINER_CLI" ps --format '{{.Names}}' 2>/dev/null | grep -qx "$name"
 }
 
+# The test containers publish their ports on loopback only: test-mongo and
+# test-nats accept unauthenticated clients, and a 0.0.0.0 binding put them
+# on the LAN for as long as they ran. A container created before that (bound
+# to all interfaces — podman reports 0.0.0.0, docker an empty HostIp) is
+# removed so the run below recreates it on 127.0.0.1; it holds test data only.
+_drop_if_exposed() {
+    local name="$1"
+    if "$CONTAINER_CLI" inspect -f '{{json .HostConfig.PortBindings}}' "$name" 2>/dev/null \
+        | grep -qE '"HostIp":"(0\.0\.0\.0)?"'; then
+        echo "  Recreating $name on 127.0.0.1 (it was published on all interfaces)..."
+        "$CONTAINER_CLI" rm -f "$name" >/dev/null
+    fi
+}
+
 _ensure_mongo() {
+    _drop_if_exposed test-mongo
     if _container_running test-mongo; then return 0; fi
     echo "  Starting test-mongo on host port 27017..."
     "$CONTAINER_CLI" start test-mongo >/dev/null 2>&1 || \
-        "$CONTAINER_CLI" run -d --name test-mongo -p 27017:27017 mongo:7 >/dev/null
+        "$CONTAINER_CLI" run -d --name test-mongo -p 127.0.0.1:27017:27017 mongo:7 >/dev/null
     for _ in $(seq 1 15); do
         if "$CONTAINER_CLI" exec test-mongo mongosh --quiet --eval "db.runCommand('ping')" >/dev/null 2>&1; then
             return 0
@@ -136,10 +151,11 @@ _ensure_mongo() {
 }
 
 _ensure_postgres() {
+    _drop_if_exposed test-postgres
     if _container_running test-postgres; then return 0; fi
     echo "  Starting test-postgres on host port 5433..."
     "$CONTAINER_CLI" start test-postgres >/dev/null 2>&1 || \
-        "$CONTAINER_CLI" run -d --name test-postgres -p 5433:5432 \
+        "$CONTAINER_CLI" run -d --name test-postgres -p 127.0.0.1:5433:5432 \
             -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test \
             -e POSTGRES_DB=wip_test postgres:16 >/dev/null
     for _ in $(seq 1 15); do
@@ -153,10 +169,11 @@ _ensure_postgres() {
 }
 
 _ensure_nats() {
+    _drop_if_exposed test-nats
     if _container_running test-nats; then return 0; fi
     echo "  Starting test-nats on host ports 4223/8223..."
     "$CONTAINER_CLI" start test-nats >/dev/null 2>&1 || \
-        "$CONTAINER_CLI" run -d --name test-nats -p 4223:4222 -p 8223:8222 \
+        "$CONTAINER_CLI" run -d --name test-nats -p 127.0.0.1:4223:4222 -p 127.0.0.1:8223:8222 \
             nats:2 -js -m 8222 >/dev/null
     for _ in $(seq 1 15); do
         if curl -fsS http://localhost:8223/healthz >/dev/null 2>&1; then

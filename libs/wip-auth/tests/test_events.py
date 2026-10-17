@@ -155,6 +155,49 @@ async def test_reconnect_is_unlimited(server: FakeServer) -> None:
     await bus.stop()
 
 
+async def test_credentials_come_from_the_environment(
+    server: FakeServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deployer injects NATS_USER/NATS_PASSWORD; they reach
+    nats.connect as arguments, with a reply inbox of the user's own."""
+    monkeypatch.setenv("NATS_USER", "document-store")
+    monkeypatch.setenv("NATS_PASSWORD", "dummy-password")
+    bus = _bus()
+    await bus.start()
+    server.up.set()
+    await bus.wait_connected(1)
+    opts = server.options[0]
+    assert opts["user"] == "document-store"
+    assert opts["password"] == "dummy-password"
+    assert opts["inbox_prefix"] == "_INBOX_document-store"
+    await bus.stop()
+
+
+async def test_explicit_credentials_win_over_the_environment(
+    server: FakeServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NATS_USER", "from-env")
+    bus = _bus(user="explicit", password="pw")
+    await bus.start()
+    server.up.set()
+    await bus.wait_connected(1)
+    assert server.options[0]["user"] == "explicit"
+    await bus.stop()
+
+
+async def test_without_a_user_the_bus_connects_anonymously(
+    server: FakeServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("NATS_USER", raising=False)
+    monkeypatch.delenv("NATS_PASSWORD", raising=False)
+    bus = _bus()
+    await bus.start()
+    server.up.set()
+    await bus.wait_connected(1)
+    assert not {"user", "password", "inbox_prefix"} & server.options[0].keys()
+    await bus.stop()
+
+
 async def test_no_latch_a_late_nats_is_picked_up(server: FakeServer) -> None:
     """A failed first connect must not disable publishing for good."""
     bus = _bus()
