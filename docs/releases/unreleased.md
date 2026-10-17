@@ -145,15 +145,25 @@ forwarded with the platform's admin key.
   authentication, `/connz` lists every client) listens on 127.0.0.1 only.
   It is no longer a Service port on k8s, and the healthcheck runs inside
   the container.
-- **External NATS clients have no access for now.** Clients outside the
-  platform have no NATS user yet and are refused:
-  - producers publishing `wip.ingest.*` work items;
-  - subscribers to replay streams or `WIP_EVENTS`;
-  - react-console's NATS page, whose `NATS_URL` was removed (the page reports
-    NATS as unreachable).
-
-  Outside producers can use ingest again once ingest-gateway forwards the
-  producer's own API key instead of the admin key (CASE-852, phase 3).
+- **Ingest is written with the producer's key.** ingest-gateway forwarded
+  every work item with the install's master key, and it had no outbound key
+  of its own beyond that. Now a producer puts its WIP API key in the
+  message's `X-API-Key` NATS header and the gateway writes with exactly that
+  key, so the producer's namespace grants apply. **A message without the
+  header is refused** (published as a failed result with
+  `http_status_code: 401`) and nothing is written. The gateway no longer
+  receives `API_KEY` / `DOCUMENT_STORE_API_KEY`.
+- **Apps get NATS through roles.** An app manifest declares
+  `nats_client: {roles: [...]}` with any of `ingest-producer`,
+  `event-subscriber` (one durable on `WIP_EVENTS` named after the app, which
+  sees every namespace) and `replay-subscriber` (a plain subscription to
+  `wip.replay.>`). The deployer expands each role to fixed grants and injects
+  `NATS_URL` / `NATS_USER` / `NATS_PASSWORD`. Raw subject lists are rejected
+  in app manifests. react-console has no role, and its `NATS_URL` was
+  removed: its NATS page reports NATS as unreachable. See
+  `docs/wip-deployable-app-contract.md` ("NATS access is a role").
+- **Clients outside an app manifest are refused.** Scripts and external
+  services have no NATS user.
 - **Diagnosing a refusal.** A publish the server refuses shows up in the
   client as a timeout. NATS logs `Publish Violation - Subject "<subject>"`
   with the user name.

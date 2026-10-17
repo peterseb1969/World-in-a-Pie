@@ -219,27 +219,53 @@ class OidcClientSpec(WIPModel):
     redirect_paths: list[str] = Field(default_factory=lambda: ["/auth/callback"])
 
 
+NatsRole = Literal["ingest-producer", "event-subscriber", "replay-subscriber"]
+
+
 class NatsClientSpec(WIPModel):
     """Declares this component as a NATS client with its own NATS user.
 
     NATS requires authentication; each client connects as a user named
-    after the component, allowed exactly the subjects listed here. The
-    deployer generates the user's password secret, injects
-    ``NATS_USER`` / ``NATS_PASSWORD`` into the component and renders the
-    user into NATS's config. Subjects are NATS permission subjects —
-    data subjects and the ``$JS.API.*`` / ``$JS.ACK.*`` JetStream API
-    subjects — where ``*`` and ``>`` only match whole tokens. A
-    subscription to the user's own reply inbox (``_INBOX_<name>.>``) is
-    always granted; JetStream replies arrive there. ``publish_deny``
-    overrides ``publish``.
+    after the component, restricted to the subjects it is granted. The
+    deployer generates the user's password secret, injects ``NATS_URL``
+    (unless declared), ``NATS_USER`` / ``NATS_PASSWORD`` into the component
+    and renders the user into NATS's config. A subscription to the user's
+    own reply inbox (``_INBOX_<name>.>``) is always granted; JetStream
+    replies arrive there.
+
+    Exactly one of two forms:
+
+    - ``roles`` — fixed, safe grants the deployer expands
+      (config_gen/nats.py): ``ingest-producer`` publishes ingest work items,
+      ``event-subscriber`` consumes the platform event stream through a
+      durable named after the owner, ``replay-subscriber`` receives replayed
+      events. **Apps must use roles.**
+    - ``publish`` / ``publish_deny`` / ``subscribe`` — raw NATS permission
+      subjects, data subjects and the ``$JS.API.*`` / ``$JS.ACK.*``
+      JetStream API, where ``*`` and ``>`` only match whole tokens;
+      ``publish_deny`` overrides ``publish``. Platform components only.
     """
 
-    publish: list[str] = Field(min_length=1)
+    roles: list[NatsRole] = Field(default_factory=list)
+    publish: list[str] = Field(default_factory=list)
     publish_deny: list[str] = Field(default_factory=list)
     subscribe: list[str] = Field(default_factory=list)
 
+    @property
+    def raw(self) -> bool:
+        return bool(self.publish or self.publish_deny or self.subscribe)
+
     @model_validator(mode="after")
-    def subjects_are_plain(self) -> NatsClientSpec:
+    def one_form(self) -> NatsClientSpec:
+        if bool(self.roles) == self.raw:
+            raise ValueError(
+                "nats_client declares exactly one of `roles` or raw "
+                "`publish`/`publish_deny`/`subscribe` subjects"
+            )
+        if self.raw and not self.publish:
+            raise ValueError("a raw nats_client needs at least one `publish` subject")
+        if len(set(self.roles)) != len(self.roles):
+            raise ValueError(f"duplicate nats_client roles: {self.roles}")
         for subject in [*self.publish, *self.publish_deny, *self.subscribe]:
             if not subject or any(c.isspace() or c == '"' for c in subject):
                 raise ValueError(f"invalid NATS subject {subject!r}")

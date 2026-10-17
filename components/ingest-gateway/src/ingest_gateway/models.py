@@ -30,6 +30,13 @@ class IngestAction(StrEnum):
     DOCUMENTS_BULK = "documents.bulk"
 
 
+# NATS message header carrying the producer's WIP API key. The gateway
+# forwards each work item with THIS key, so the target service applies the
+# producer's own grants; a message without it is refused, never written with
+# a key of the gateway's.
+INGEST_API_KEY_HEADER = "X-API-Key"
+
+
 # Map NATS subjects to actions
 SUBJECT_TO_ACTION: dict[str, IngestAction] = {
     "wip.ingest.terminologies.create": IngestAction.TERMINOLOGIES_CREATE,

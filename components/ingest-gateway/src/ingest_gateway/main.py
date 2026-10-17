@@ -146,7 +146,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Authentication (reads WIP_AUTH_* env vars, falls back to API_KEY). The
+# Authentication (reads WIP_AUTH_* env vars; MASTER_API_KEY maps to the
+# legacy key). The
 # middleware only IDENTIFIES the caller; the router-level require_api_key
 # below enforces. The health probe and the service root live on the app,
 # outside the router, and the probe is exempted so a stale key on a monitor

@@ -342,10 +342,14 @@ def _nats_env(
             for client, _ in clients
         ]
     if any(client == name for client, _ in clients):
-        return [
+        injected = [
             EnvVar(name="NATS_USER", source=EnvSource(literal=name)),
             EnvVar(name="NATS_PASSWORD", source=EnvSource(from_secret=password_secret(name))),
         ]
+        declared = {v.name for v in [*component.spec.env.required, *component.spec.env.optional]}
+        if "NATS_URL" not in declared:
+            injected.append(EnvVar(name="NATS_URL", source=EnvSource(from_component=NATS_COMPONENT)))
+        return injected
     return []
 
 

@@ -24,13 +24,10 @@ spec:
       - {name: DEF_STORE_URL, source: {from_component: def-store}}
       - {name: TEMPLATE_STORE_URL, source: {from_component: template-store}}
       - {name: DOCUMENT_STORE_URL, source: {from_component: document-store}}
+      # Inbound authentication of the gateway's own HTTP API. Work items are
+      # forwarded with the producer's key (X-API-Key message header), never
+      # with this one, so the gateway has no outbound credential.
       - {name: MASTER_API_KEY, source: {from_secret: api-key}}
-      # Outbound credential for document-store calls.
-      - {name: DOCUMENT_STORE_API_KEY, source: {from_secret: api-key}}
-      # Outbound credential the gateway reads as settings.api_key for ALL
-      # service-to-service calls. Without it the config fell back to the dev
-      # default and every outbound call was refused.
-      - {name: API_KEY, source: {from_secret: api-key}}
       # Inbound authentication (wip-auth): runtime-key sync and any
       # permission lookup ask the Registry.
       - {name: REGISTRY_URL, source: {from_component: registry}}

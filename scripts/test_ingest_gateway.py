@@ -11,6 +11,13 @@ Usage:
 Requirements:
     pip install nats-py httpx
 
+Authentication: every ingest message carries the producer's WIP API key in
+its X-API-Key header (ingest-gateway forwards with that key and refuses items
+without one). NATS requires a user: set NATS_USER / NATS_PASSWORD. The
+results stream is not readable with the app `ingest-producer` role, so the
+result-collection phase needs a NATS user that may consume
+WIP_INGEST_RESULTS.
+
 Test Categories:
     - Valid terminologies (10)
     - Valid terms bulk (varying sizes)
@@ -25,13 +32,13 @@ Test Categories:
 import argparse
 import asyncio
 import json
+import os
 import random
 import string
 import sys
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
 
 try:
     import nats
@@ -63,8 +70,8 @@ class TestResult:
     correlation_id: str
     category: str
     expected_status: str
-    actual_status: Optional[str] = None
-    error: Optional[str] = None
+    actual_status: str | None = None
+    error: str | None = None
     passed: bool = False
 
 
@@ -82,7 +89,7 @@ class TestStats:
 # Phase 1: Create Prerequisites via REST API
 # ============================================================
 
-async def create_test_terminology(client: httpx.AsyncClient, code: str, name: str, namespace: str = "wip") -> Optional[str]:
+async def create_test_terminology(client: httpx.AsyncClient, code: str, name: str, namespace: str = "wip") -> str | None:
     """Create a terminology via REST API, return terminology_id."""
     try:
         response = await client.post(
@@ -109,7 +116,7 @@ async def create_test_terminology(client: httpx.AsyncClient, code: str, name: st
 async def create_test_terms(
     client: httpx.AsyncClient,
     terminology_id: str,
-    terms: List[dict]
+    terms: list[dict]
 ) -> bool:
     """Create terms in a terminology via REST API."""
     try:
@@ -129,7 +136,7 @@ async def create_test_template(
     code: str,
     terminology_id: str,
     namespace: str = "wip"
-) -> Optional[str]:
+) -> str | None:
     """Create a template that references the test terminology."""
     try:
         response = await client.post(
@@ -280,9 +287,9 @@ def generate_duplicate_terminology(original_value: str, index: int) -> dict:
 
 async def publish_and_collect(
     js: JetStreamContext,
-    messages: List[Tuple[str, Union[dict, bytes], str, str]],
+    messages: list[tuple[str, dict | bytes, str, str]],
     timeout_seconds: float = 120.0
-) -> List[TestResult]:
+) -> list[TestResult]:
     """
     Publish all messages and collect results from results stream.
 
@@ -294,7 +301,7 @@ async def publish_and_collect(
     Returns:
         List of TestResult with pass/fail status
     """
-    results_by_correlation: Dict[str, TestResult] = {}
+    results_by_correlation: dict[str, TestResult] = {}
 
     # Create/get consumer for results
     try:
@@ -312,7 +319,7 @@ async def publish_and_collect(
     for subject, msg, category, expected in messages:
         if isinstance(msg, bytes):
             try:
-                await js.publish(subject, msg)
+                await js.publish(subject, msg, headers={"X-API-Key": API_KEY})
             except Exception as e:
                 print(f"  Error publishing malformed message: {e}")
         else:
@@ -323,7 +330,7 @@ async def publish_and_collect(
                 expected_status=expected
             )
             try:
-                await js.publish(subject, json.dumps(msg).encode())
+                await js.publish(subject, json.dumps(msg).encode(), headers={"X-API-Key": API_KEY})
             except Exception as e:
                 print(f"  Error publishing message {correlation_id}: {e}")
 
@@ -355,7 +362,7 @@ async def publish_and_collect(
                 elapsed = time.time() - start
                 print(f"    Received {received}/{expected_count} results ({elapsed:.1f}s)")
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # Check if all results collected
             all_done = all(
                 r.actual_status is not None
@@ -367,7 +374,7 @@ async def publish_and_collect(
     return list(results_by_correlation.values())
 
 
-def aggregate_stats(results: List[TestResult]) -> TestStats:
+def aggregate_stats(results: list[TestResult]) -> TestStats:
     """Aggregate test results into statistics."""
     stats = TestStats()
     stats.total = len(results)
@@ -414,7 +421,12 @@ async def run_stress_test(
     # Connect to NATS
     print("[Phase 0] Connecting to NATS...")
     try:
-        nc = await nats.connect(nats_url)
+        user = os.environ.get("NATS_USER")
+        nc = await nats.connect(
+            nats_url,
+            **({"user": user, "password": os.environ.get("NATS_PASSWORD", ""),
+                "inbox_prefix": f"_INBOX_{user}"} if user else {}),
+        )
         js = nc.jetstream()
         print("  Connected to NATS")
     except Exception as e:
@@ -476,7 +488,7 @@ async def run_stress_test(
 
     # Phase 2: Generate test messages
     print("[Phase 2] Generating test messages...")
-    messages: List[Tuple[str, Union[dict, bytes], str, str]] = []
+    messages: list[tuple[str, dict | bytes, str, str]] = []
 
     # Valid terminologies
     for i in range(terminology_count):
@@ -521,7 +533,7 @@ async def run_stress_test(
     print(f"    Valid documents: {document_count}")
     print(f"    Invalid (missing fields): {invalid_count}")
     print(f"    Invalid (bad refs): {invalid_count}")
-    print(f"    Duplicates: 10")
+    print("    Duplicates: 10")
     print("")
 
     # Phase 3: Publish and collect results

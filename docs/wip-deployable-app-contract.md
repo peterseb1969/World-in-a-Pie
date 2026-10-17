@@ -179,6 +179,20 @@ These are platform-side guarantees the contract assumes. They're invariants toda
 
 - **External CA trust is auto-injected into app containers (Node-stack)** — when an apps-only install carries a `secrets/external-ca.crt` (seeded by `wip-deploy import-bundle`), the deployer automatically bind-mounts it read-only at **`/etc/ssl/certs/external-ca.crt`** in every app container and sets **`NODE_EXTRA_CA_CERTS`** to that path. You declare nothing — there is no manifest field; the behaviour flips on purely from the CA file's presence (the deployer's `install`/`render` auto-detect it). **Node-stack apps** pick the extra CA up transparently (Node reads `NODE_EXTRA_CA_CERTS`); **Python / Go / Rust apps ignore it** and use their own trust stores (`certifi`, the system pool, …) — harmless either way. Two reservations follow: don't unset `NODE_EXTRA_CA_CERTS`, and don't bind your own file at `/etc/ssl/certs/external-ca.crt`. Backend / full-stack installs never see this — it is apps-only. For the operator-side flow that makes the CA file exist in the first place, see `docs/design/bootstrap-bundle.md`.
 
+- **NATS access is a role, declared in the manifest** — NATS requires authentication, and an app gets a NATS user only by declaring roles:
+
+  ```yaml
+  spec:
+    nats_client:
+      roles: [ingest-producer]   # and/or event-subscriber, replay-subscriber
+  ```
+
+  The deployer generates the user's password and injects `NATS_URL`, `NATS_USER` and `NATS_PASSWORD`. Connect with them, and set the reply-inbox prefix `_INBOX_<NATS_USER>`: the server lets each user receive replies only on its own prefix, so JetStream publish acks and pulls need it. Raw NATS subject lists in an app manifest are rejected; they are for platform components.
+
+  - **`ingest-producer`** may publish to `wip.ingest.{terminologies,terms,templates,documents}.<action>`. **Every message carries your WIP API key in its `X-API-Key` NATS header.** ingest-gateway writes the item with exactly that key, so your key's namespace grants apply. A message without the header is refused (a 401 result) and nothing is written. Use a key scoped to your namespace: the message, header included, stays in the ingest stream until the stream's size limits drop it. Reading the results stream is not part of the role, because it carries every producer's outcomes.
+  - **`event-subscriber`** may run one durable consumer on `WIP_EVENTS`, **named after your app**, and use no other stream. It receives change events from **every** namespace, so treat it as an admin-level read.
+  - **`replay-subscriber`** receives replayed events with a plain subscription to `wip.replay.<session>.>`. Subscribe before starting the replay. There is no JetStream access to replay streams, so events published while you are disconnected are missed.
+
 One **non-guarantee** belongs in the same list, because apps have assumed its opposite:
 
 - **Registered reporting views are not archived — apps own them.** WIP backup/restore carries MongoDB state only; registered SQL views (`POST /api/reporting-sync/namespace/{ns}/views`) live in PostgreSQL bookkeeping and come back **missing after every restore, by design**. An app that queries a registered view must tolerate its absence and re-register it idempotently (re-registering an existing name replaces the definition): at bootstrap, at startup, and again when a query fails on a missing relation. Registration validates the SQL against real reporting tables, which exist only after reporting-sync has synced the namespace — so a failure right after bootstrap or restore is a retry, not an error. The bootstrap scaffold ships this pattern as `server/seed/views/` + `ensureRegisteredViews()` / `ensureRegisteredViewsWithRetry()` in `bootstrap.server.ts.template`. Views registered by hand outside any app bootstrap are ephemeral: nothing recreates them after a restore.

@@ -22,6 +22,7 @@ from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 from .config import settings
 from .http_client import IngestHTTPClient
 from .models import (
+    INGEST_API_KEY_HEADER,
     SUBJECT_TO_ACTION,
     IngestAction,
     IngestResult,
@@ -136,9 +137,35 @@ class IngestWorker:
                 f"Processing {action.value} correlation_id={correlation_id}"
             )
 
+            # The write is made with the producer's own key, so the target
+            # service applies the producer's grants. Without one the item is
+            # refused: forwarding it with a key of the gateway's would turn
+            # anything that can publish to NATS into an admin writer.
+            api_key = (msg.headers or {}).get(INGEST_API_KEY_HEADER, "").strip()
+            if not api_key:
+                await self.result_publisher.publish(IngestResult(
+                    correlation_id=correlation_id,
+                    action=action,
+                    status=IngestResultStatus.FAILED,
+                    http_status_code=401,
+                    error=(
+                        f"unauthenticated: an ingest message must carry the "
+                        f"producer's WIP API key in its {INGEST_API_KEY_HEADER} header"
+                    ),
+                    duration_ms=(time.perf_counter() - start_time) * 1000,
+                ))
+                self._messages_processed += 1
+                self._messages_failed += 1
+                logger.warning(
+                    f"Refused {action.value} correlation_id={correlation_id}: "
+                    f"no {INGEST_API_KEY_HEADER} header"
+                )
+                await msg.ack()
+                return
+
             # Forward to appropriate REST API
             result = await self.http_client.forward_request(
-                action, payload, correlation_id
+                action, payload, correlation_id, api_key
             )
 
             # Calculate duration

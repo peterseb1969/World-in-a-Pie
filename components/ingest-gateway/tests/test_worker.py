@@ -4,18 +4,19 @@ Covers message routing, format handling, error handling, and counters.
 """
 
 import json
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from ingest_gateway.models import IngestAction, IngestResult, IngestResultStatus
 
 
-def make_nats_msg(subject: str, data: dict) -> MagicMock:
-    """Create a mock NATS message."""
+def make_nats_msg(subject: str, data: dict, headers: dict | None = None) -> MagicMock:
+    """Create a mock NATS message carrying a producer key header."""
     msg = MagicMock()
     msg.subject = subject
     msg.data = json.dumps(data).encode()
+    msg.headers = {"X-API-Key": "producer-key"} if headers is None else headers
     msg.metadata = MagicMock()
     msg.metadata.sequence.stream = 1
     msg.ack = AsyncMock()
@@ -62,6 +63,7 @@ class TestMessageFormats:
             IngestAction.TERMINOLOGIES_CREATE,
             {"value": "GENDER", "label": "Gender"},
             "c-1",
+            "producer-key",
         )
         msg.ack.assert_awaited_once()
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from wip_deploy.spec._base import WIPModel
 from wip_deploy.spec.component import ComponentMetadata, ComponentSpec
@@ -31,3 +31,16 @@ class App(WIPModel):
     metadata: ComponentMetadata
     spec: ComponentSpec
     app_metadata: AppMetadata
+
+    @model_validator(mode="after")
+    def nats_roles_only(self) -> App:
+        """An app's NATS access is a role, never raw subjects: an app
+        manifest must not be able to grant itself stream administration or
+        another service's subjects."""
+        nc = self.spec.nats_client
+        if nc is not None and nc.raw:
+            raise ValueError(
+                f"app {self.metadata.name!r}: nats_client must declare `roles` "
+                "(ingest-producer, event-subscriber, replay-subscriber), not raw subjects"
+            )
+        return self

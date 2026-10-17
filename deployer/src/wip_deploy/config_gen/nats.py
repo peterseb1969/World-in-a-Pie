@@ -19,6 +19,22 @@ user, named after the component, restricted to the subjects it declares:
   them from its environment, so the config file itself holds no secret
   and is written 0644 / rendered as a plain ConfigMap.
 
+Apps get NATS access only through roles (`nats_client.roles`), which
+`client_permissions` expands to fixed subject sets — an app manifest cannot
+grant itself stream administration or another service's subjects:
+
+- `ingest-producer` — publish ingest work items (`wip.ingest.<entity>.>`).
+  ingest-gateway forwards each with the producer's own WIP API key from the
+  message's X-API-Key header, so the target service applies the producer's
+  grants. Reading the results stream is not part of the role: it carries
+  every producer's outcomes.
+- `event-subscriber` — a durable consumer on `WIP_EVENTS` named after the
+  app. It sees every namespace's change events; grant it like an admin read.
+- `replay-subscriber` — a plain subscription to `wip.replay.>`: replayed
+  events arrive while the replay runs. No JetStream consumer rights — replay
+  streams have per-session names, and a token wildcard broad enough to cover
+  them would also cover `WIP_INGEST`, whose messages carry producers' keys.
+
 Every user may also subscribe to its own reply inbox, `_INBOX_<name>.>`
 (EventBus sets the matching inbox prefix): JetStream acks and pulled
 messages arrive on reply inboxes, so a shared `_INBOX.>` grant would let
@@ -102,6 +118,45 @@ def inbox_prefix(client: str) -> str:
     return f"_INBOX_{client}"
 
 
+def _event_subscriber(owner: str) -> list[str]:
+    durable = f"WIP_EVENTS.{owner}"
+    return [
+        "$JS.API.STREAM.INFO.WIP_EVENTS",
+        f"$JS.API.CONSUMER.INFO.{durable}",
+        f"$JS.API.CONSUMER.CREATE.{durable}",
+        f"$JS.API.CONSUMER.CREATE.{durable}.>",
+        f"$JS.API.CONSUMER.DURABLE.CREATE.{durable}",
+        f"$JS.API.CONSUMER.DELETE.{durable}",
+        f"$JS.API.CONSUMER.MSG.NEXT.{durable}",
+        f"$JS.ACK.{durable}.>",
+    ]
+
+
+_INGEST_PRODUCER = [
+    "wip.ingest.terminologies.>",
+    "wip.ingest.terms.>",
+    "wip.ingest.templates.>",
+    "wip.ingest.documents.>",
+]
+
+
+def client_permissions(
+    name: str, spec: NatsClientSpec
+) -> tuple[list[str], list[str], list[str]]:
+    """(publish allow, publish deny, subscribe allow) of NATS user `name`,
+    with roles expanded and the user's own reply inbox added."""
+    publish = list(spec.publish)
+    subscribe = list(spec.subscribe)
+    for role in spec.roles:
+        if role == "ingest-producer":
+            publish += _INGEST_PRODUCER
+        elif role == "event-subscriber":
+            publish += _event_subscriber(name)
+        elif role == "replay-subscriber":
+            subscribe.append("wip.replay.>")
+    return publish, list(spec.publish_deny), [*subscribe, f"{inbox_prefix(name)}.>"]
+
+
 def render_nats_conf(
     deployment: Deployment, components: list[Component], apps: list[App]
 ) -> str | None:
@@ -122,10 +177,10 @@ def render_nats_conf(
         "  users = [",
     ]
     for name, spec in nats_clients(deployment, components, apps):
-        publish = f"allow: {_list(spec.publish)}"
-        if spec.publish_deny:
-            publish += f", deny: {_list(spec.publish_deny)}"
-        subscribe = [*spec.subscribe, f"{inbox_prefix(name)}.>"]
+        allow, deny, subscribe = client_permissions(name, spec)
+        publish = f"allow: {_list(allow)}"
+        if deny:
+            publish += f", deny: {_list(deny)}"
         lines += [
             f"    {{ user: {_quote(name)}, password: ${server_password_env(name)},",
             "      permissions: {",

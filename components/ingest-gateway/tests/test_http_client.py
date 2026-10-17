@@ -4,16 +4,14 @@ Covers the bulk-first payload wrapping, path parameter extraction,
 BulkResponse status detection, and error handling.
 """
 
-import pytest
 from unittest.mock import AsyncMock
 
 import httpx
+import pytest
 
-from ingest_gateway.http_client import IngestHTTPClient, ACTION_ENDPOINTS
+from ingest_gateway.http_client import ACTION_ENDPOINTS
 from ingest_gateway.models import IngestAction, IngestResultStatus
-
-from tests.conftest import make_mock_response, make_bulk_response
-
+from tests.conftest import make_bulk_response, make_mock_response
 
 # ---- Payload wrapping: single-entity actions ----
 
@@ -31,7 +29,7 @@ class TestSingleEntityWrapping:
 
         payload = {"value": "GENDER", "label": "Gender"}
         result = await http_client.forward_request(
-            IngestAction.TERMINOLOGIES_CREATE, payload, "corr-1"
+            IngestAction.TERMINOLOGIES_CREATE, payload, "corr-1", "producer-key"
         )
 
         sent_body = http_client._client.request.call_args.kwargs["json"]
@@ -49,7 +47,7 @@ class TestSingleEntityWrapping:
 
         payload = {"value": "MY_TPL", "label": "My Template", "fields": []}
         result = await http_client.forward_request(
-            IngestAction.TEMPLATES_CREATE, payload, "corr-2"
+            IngestAction.TEMPLATES_CREATE, payload, "corr-2", "producer-key"
         )
 
         sent_body = http_client._client.request.call_args.kwargs["json"]
@@ -67,7 +65,7 @@ class TestSingleEntityWrapping:
 
         payload = {"template_id": "0190c000-0000-7000-0000-000000000001", "data": {"name": "Test"}}
         result = await http_client.forward_request(
-            IngestAction.DOCUMENTS_CREATE, payload, "corr-3"
+            IngestAction.DOCUMENTS_CREATE, payload, "corr-3", "producer-key"
         )
 
         sent_body = http_client._client.request.call_args.kwargs["json"]
@@ -96,7 +94,7 @@ class TestBulkPayloadExtraction:
 
         payload = {"terminology_id": "TERM-ABC", "terms": terms}
         result = await http_client.forward_request(
-            IngestAction.TERMS_BULK, payload, "corr-4"
+            IngestAction.TERMS_BULK, payload, "corr-4", "producer-key"
         )
 
         sent_body = http_client._client.request.call_args.kwargs["json"]
@@ -118,7 +116,7 @@ class TestBulkPayloadExtraction:
         )
 
         result = await http_client.forward_request(
-            IngestAction.TEMPLATES_BULK, {"templates": templates}, "corr-5"
+            IngestAction.TEMPLATES_BULK, {"templates": templates}, "corr-5", "producer-key"
         )
 
         sent_body = http_client._client.request.call_args.kwargs["json"]
@@ -140,7 +138,7 @@ class TestBulkPayloadExtraction:
         )
 
         result = await http_client.forward_request(
-            IngestAction.DOCUMENTS_BULK, {"documents": docs}, "corr-6"
+            IngestAction.DOCUMENTS_BULK, {"documents": docs}, "corr-6", "producer-key"
         )
 
         sent_body = http_client._client.request.call_args.kwargs["json"]
@@ -156,8 +154,8 @@ class TestBulkPayloadExtraction:
         )
 
         # TEMPLATES_BULK expects "templates" key, but we provide "items"
-        result = await http_client.forward_request(
-            IngestAction.TEMPLATES_BULK, {"items": [{"value": "X"}]}, "corr-7"
+        await http_client.forward_request(
+            IngestAction.TEMPLATES_BULK, {"items": [{"value": "X"}]}, "corr-7", "producer-key"
         )
 
         sent_body = http_client._client.request.call_args.kwargs["json"]
@@ -183,7 +181,7 @@ class TestPathParameters:
             "terms": [{"value": "test", "label": "Test"}],
         }
         await http_client.forward_request(
-            IngestAction.TERMS_BULK, payload, "corr-8"
+            IngestAction.TERMS_BULK, payload, "corr-8", "producer-key"
         )
 
         url = http_client._client.request.call_args.kwargs["url"]
@@ -194,7 +192,7 @@ class TestPathParameters:
         """Missing required path parameter returns FAILED."""
         payload = {"terms": [{"value": "test"}]}
         result = await http_client.forward_request(
-            IngestAction.TERMS_BULK, payload, "corr-9"
+            IngestAction.TERMS_BULK, payload, "corr-9", "producer-key"
         )
 
         assert result.status == IngestResultStatus.FAILED
@@ -216,7 +214,7 @@ class TestPathParameters:
             "terms": [{"value": "a", "label": "A"}],
         }
         await http_client.forward_request(
-            IngestAction.TERMS_BULK, payload, "corr-10"
+            IngestAction.TERMS_BULK, payload, "corr-10", "producer-key"
         )
 
         sent_body = http_client._client.request.call_args.kwargs["json"]
@@ -241,7 +239,7 @@ class TestPathParameters:
         snapshot = original.copy()
 
         await http_client.forward_request(
-            IngestAction.TERMS_BULK, original, "corr-11"
+            IngestAction.TERMS_BULK, original, "corr-11", "producer-key"
         )
 
         assert original == snapshot
@@ -264,7 +262,7 @@ class TestBulkResponseStatus:
         result = await http_client.forward_request(
             IngestAction.TERMINOLOGIES_CREATE,
             {"value": "TEST", "label": "Test"},
-            "corr-20",
+            "corr-20", "producer-key"
         )
         assert result.status == IngestResultStatus.SUCCESS
 
@@ -282,7 +280,7 @@ class TestBulkResponseStatus:
         result = await http_client.forward_request(
             IngestAction.TERMINOLOGIES_CREATE,
             {"value": "DUPE", "label": "Duplicate"},
-            "corr-21",
+            "corr-21", "producer-key"
         )
         assert result.status == IngestResultStatus.FAILED
 
@@ -303,7 +301,7 @@ class TestBulkResponseStatus:
         result = await http_client.forward_request(
             IngestAction.DOCUMENTS_BULK,
             {"documents": [{"data": {}}, {"data": {}}]},
-            "corr-22",
+            "corr-22", "producer-key"
         )
         assert result.status == IngestResultStatus.PARTIAL
 
@@ -325,7 +323,7 @@ class TestBulkResponseStatus:
         result = await http_client.forward_request(
             IngestAction.TERMINOLOGIES_CREATE,
             {"value": "EXISTING", "label": "Exists"},
-            "corr-23",
+            "corr-23", "producer-key"
         )
         assert result.status == IngestResultStatus.FAILED
         assert result.http_status_code == 200  # HTTP was fine, error is per-item
@@ -341,7 +339,7 @@ class TestBulkResponseStatus:
         result = await http_client.forward_request(
             IngestAction.TEMPLATES_BULK,
             {"templates": []},
-            "corr-24",
+            "corr-24", "producer-key"
         )
         assert result.status == IngestResultStatus.SUCCESS
 
@@ -355,7 +353,7 @@ class TestBulkResponseStatus:
         result = await http_client.forward_request(
             IngestAction.TERMINOLOGIES_CREATE,
             {"value": "X", "label": "X"},
-            "corr-25",
+            "corr-25", "producer-key"
         )
         # response_data = {"raw": "OK"} which has no "failed" key
         assert result.status == IngestResultStatus.SUCCESS
@@ -375,7 +373,7 @@ class TestHTTPErrors:
         result = await http_client.forward_request(
             IngestAction.TERMINOLOGIES_CREATE,
             {"label": "Missing Value"},
-            "corr-30",
+            "corr-30", "producer-key"
         )
         assert result.status == IngestResultStatus.FAILED
         assert result.http_status_code == 422
@@ -390,7 +388,7 @@ class TestHTTPErrors:
         result = await http_client.forward_request(
             IngestAction.TERMINOLOGIES_CREATE,
             {"value": "X", "label": "X"},
-            "corr-31",
+            "corr-31", "producer-key"
         )
         assert result.status == IngestResultStatus.FAILED
         assert result.http_status_code == 401
@@ -404,7 +402,7 @@ class TestHTTPErrors:
         result = await http_client.forward_request(
             IngestAction.DOCUMENTS_CREATE,
             {"template_id": "X", "data": {}},
-            "corr-32",
+            "corr-32", "producer-key"
         )
         assert result.status == IngestResultStatus.FAILED
         assert result.http_status_code == 500
@@ -418,7 +416,7 @@ class TestHTTPErrors:
         result = await http_client.forward_request(
             IngestAction.DOCUMENTS_CREATE,
             {"template_id": "X", "data": {}},
-            "corr-33",
+            "corr-33", "producer-key"
         )
         assert result.status == IngestResultStatus.FAILED
         assert "Timeout" in result.error
@@ -433,7 +431,7 @@ class TestHTTPErrors:
         result = await http_client.forward_request(
             IngestAction.DOCUMENTS_CREATE,
             {"template_id": "X", "data": {}},
-            "corr-34",
+            "corr-34", "producer-key"
         )
         assert result.status == IngestResultStatus.FAILED
         assert "Connection error" in result.error
@@ -447,7 +445,7 @@ class TestHTTPErrors:
         result = await http_client.forward_request(
             IngestAction.TERMINOLOGIES_CREATE,
             {"value": "X", "label": "X"},
-            "corr-35",
+            "corr-35", "producer-key"
         )
         assert result.status == IngestResultStatus.FAILED
         assert "something unexpected" in result.error
@@ -469,7 +467,7 @@ class TestResponseData:
         result = await http_client.forward_request(
             IngestAction.TERMINOLOGIES_CREATE,
             {"value": "X", "label": "X"},
-            "corr-40",
+            "corr-40", "producer-key"
         )
         assert result.response == bulk_resp
         assert result.response["results"][0]["id"] == "ABC-123"
@@ -484,7 +482,7 @@ class TestResponseData:
         result = await http_client.forward_request(
             IngestAction.DOCUMENTS_CREATE,
             {"template_id": "X", "data": {}},
-            "corr-41",
+            "corr-41", "producer-key"
         )
         assert result.response == error_data
 

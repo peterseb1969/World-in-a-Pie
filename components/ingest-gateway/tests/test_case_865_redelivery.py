@@ -30,6 +30,7 @@ def _msg(delivery: int) -> MagicMock:
     msg = MagicMock()
     msg.subject = "wip.ingest.documents.create"
     msg.data = json.dumps({"correlation_id": "c-865", "payload": {"x": 1}}).encode()
+    msg.headers = {"X-API-Key": "producer-key"}
     msg.metadata = MagicMock()
     msg.metadata.sequence.stream = 1
     msg.metadata.num_delivered = delivery
@@ -62,7 +63,7 @@ async def test_http_status_classification(http_client, status, retryable):
     http_client._client.request = AsyncMock(
         return_value=make_mock_response(status, {"detail": "x"})
     )
-    result = await http_client.forward_request(IngestAction.DOCUMENTS_CREATE, {"x": 1}, "c")
+    result = await http_client.forward_request(IngestAction.DOCUMENTS_CREATE, {"x": 1}, "c", "producer-key")
     assert result.status == IngestResultStatus.FAILED
     assert result.retryable is retryable
 
@@ -75,7 +76,7 @@ async def test_http_status_classification(http_client, status, retryable):
 ])
 async def test_transport_failures_are_retryable(http_client, exc):
     http_client._client.request = AsyncMock(side_effect=exc)
-    result = await http_client.forward_request(IngestAction.DOCUMENTS_CREATE, {"x": 1}, "c")
+    result = await http_client.forward_request(IngestAction.DOCUMENTS_CREATE, {"x": 1}, "c", "producer-key")
     assert result.retryable is True
 
 
@@ -84,7 +85,7 @@ async def test_per_item_failures_in_a_200_are_definitive(http_client):
     http_client._client.request = AsyncMock(return_value=make_mock_response(
         200, make_bulk_response([{"index": 0, "status": "error", "error": "bad"}], failed=1)
     ))
-    result = await http_client.forward_request(IngestAction.DOCUMENTS_CREATE, {"x": 1}, "c")
+    result = await http_client.forward_request(IngestAction.DOCUMENTS_CREATE, {"x": 1}, "c", "producer-key")
     assert result.status == IngestResultStatus.FAILED
     assert result.retryable is False
 

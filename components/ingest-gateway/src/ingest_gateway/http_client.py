@@ -72,6 +72,7 @@ class IngestHTTPClient:
         action: IngestAction,
         payload: dict[str, Any],
         correlation_id: str,
+        api_key: str,
     ) -> IngestResult:
         """
         Forward a request to the appropriate REST API.
@@ -80,6 +81,8 @@ class IngestHTTPClient:
             action: The ingest action to perform
             payload: The request payload (REST API body)
             correlation_id: Unique ID for tracking
+            api_key: The producer's WIP API key; the target service
+                authorizes the write against its grants
 
         Returns:
             IngestResult with status and response data
@@ -133,7 +136,7 @@ class IngestHTTPClient:
                 url=url,
                 json=request_body,
                 headers={
-                    "X-API-Key": settings.api_key,
+                    "X-API-Key": api_key,
                     "Content-Type": "application/json",
                 },
             )

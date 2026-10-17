@@ -31,6 +31,7 @@ from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY
 from wip_deploy.config_gen.env import Literal, SecretRef
 from wip_deploy.config_gen.nats import (
     NATS_CONFIG_RENDER_PATH,
+    client_permissions,
     nats_clients,
     password_secret,
     render_nats_conf,
@@ -41,6 +42,7 @@ from wip_deploy.renderers import render_compose, render_dev_simple, render_k8s
 from wip_deploy.secrets import collect_required_secrets, ensure_secrets
 from wip_deploy.secrets_backend import FileSecretBackend, ResolvedSecrets
 from wip_deploy.spec import (
+    AppRef,
     AuthSpec,
     ComposePlatform,
     Deployment,
@@ -325,3 +327,74 @@ class TestVerifySecurity:
         root, d = self._install("compose", tmp_path, discovery, modules=[])
         result = check_nats_authentication(root, d)
         assert result.passed and "not applicable" in result.message
+
+
+def _app_with_roles(disc: Discovery, roles: list[str]) -> Discovery:
+    """A copy of `disc` in which react-console holds these NATS roles."""
+    apps = []
+    for a in disc.apps:
+        if a.metadata.name == "react-console":
+            a = a.model_copy(update={"spec": a.spec.model_copy(
+                update={"nats_client": NatsClientSpec(roles=roles)}  # type: ignore[arg-type]
+            )})
+        apps.append(a)
+    return Discovery(components=disc.components, apps=apps, errors=disc.errors)
+
+
+def _with_rc(modules: list[str] | None = None) -> Deployment:
+    d = _deployment(modules=modules)
+    d.spec.apps = [AppRef(name="react-console")]
+    return d
+
+
+class TestRoles:
+    """Apps get NATS access through roles with fixed grants."""
+
+    def test_ingest_producer_publishes_work_items_only(self) -> None:
+        publish, deny, subscribe = client_permissions("app", NatsClientSpec(roles=["ingest-producer"]))
+        assert publish == [
+            "wip.ingest.terminologies.>", "wip.ingest.terms.>",
+            "wip.ingest.templates.>", "wip.ingest.documents.>",
+        ]
+        assert deny == [] and subscribe == ["_INBOX_app.>"]
+
+    def test_event_subscriber_is_confined_to_its_own_durable_on_wip_events(self) -> None:
+        publish, _, _ = client_permissions("app", NatsClientSpec(roles=["event-subscriber"]))
+        assert publish[0] == "$JS.API.STREAM.INFO.WIP_EVENTS"
+        for subject in publish[1:]:
+            assert ".WIP_EVENTS.app" in subject, subject
+        assert not any(".STREAM.CREATE." in s or ".STREAM.DELETE." in s or ".PURGE." in s for s in publish)
+
+    def test_replay_subscriber_has_no_jetstream_api(self) -> None:
+        publish, _, subscribe = client_permissions("app", NatsClientSpec(roles=["replay-subscriber"]))
+        assert publish == []
+        assert subscribe == ["wip.replay.>", "_INBOX_app.>"]
+
+    def test_app_manifest_with_raw_subjects_is_rejected(self, discovery: Discovery) -> None:
+        rc = next(a for a in discovery.apps if a.metadata.name == "react-console")
+        data = rc.model_dump()
+        data["spec"]["nats_client"] = {"publish": ["$JS.API.STREAM.DELETE.WIP_EVENTS"]}
+        with pytest.raises(ValidationError, match="must declare `roles`"):
+            type(rc).model_validate(data)
+
+    def test_app_role_becomes_a_user_with_injected_credentials(self, discovery: Discovery) -> None:
+        disc = _app_with_roles(discovery, ["ingest-producer", "event-subscriber"])
+        d = _with_rc()
+        conf = _conf(d, disc)
+        assert 'user: "react-console"' in conf
+        env = resolve_all_env(d, disc.components, disc.apps, make_spec_context(d, disc.components))
+        merged = env["react-console"].merged()
+        assert merged["NATS_USER"] == Literal(value="react-console")
+        assert merged["NATS_PASSWORD"] == SecretRef(name=password_secret("react-console"))
+        assert "NATS_URL" in merged  # injected: the manifest no longer declares it
+        assert password_secret("react-console") in collect_required_secrets(d, disc.components, disc.apps)
+
+    @pytest.mark.parametrize("kwargs", [
+        {},
+        {"roles": ["ingest-producer"], "publish": ["wip.x"]},
+        {"roles": ["ingest-producer", "ingest-producer"]},
+        {"publish_deny": ["wip.x"]},
+    ])
+    def test_spec_needs_exactly_one_valid_form(self, kwargs: dict) -> None:
+        with pytest.raises(ValidationError):
+            NatsClientSpec(**kwargs)
