@@ -63,8 +63,12 @@ async def import_documents(
     """
     await check_namespace_permission(identity, namespace, "write")
 
-    # Resolve template_id synonym
-    template_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
+    # Resolve template_id synonym. bypass_cache: write door — the import
+    # creates documents against whatever template the Registry names now.
+    template_id = await resolve_or_404(
+        template_id, "template", namespace, param_name="template_id",
+        bypass_cache=True,
+    )
 
     content = await file.read()
     if not content:

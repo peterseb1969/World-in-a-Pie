@@ -285,6 +285,23 @@ vocabulary beyond 100 terms was effectively invisible and alias matches
 were never found. Term results now cover full vocabularies and name
 matches say what matched.
 
+### Document-store write doors resolve against the Registry, not the cache
+
+After an entity was hard-deleted and re-created under the same value,
+document-store kept resolving the value to the dead canonical id from its
+process-local cache (up to 5 minutes), so writes failed with
+"Template '<old-uuid>' not found" until the process was restarted —
+while the Registry answered correctly the whole time. Every document-store
+write door (document create, PATCH, migrate, delete, archive, file
+metadata/delete, CSV import) now resolves identifiers with the cache
+bypassed, matching what def-store and template-store already did. Reads
+keep the cache; its staleness stays bounded by the 5-minute TTL. The
+"restart document-store after recycling same-valued entities" workaround
+is obsolete. (`resolve_or_404` in wip-auth gained the `bypass_cache`
+parameter the single-id doors needed.)
+
+---
+
 ### Terminology deletion checks its template dependencies for real
 
 The guard "a terminology referenced by templates cannot be deleted without

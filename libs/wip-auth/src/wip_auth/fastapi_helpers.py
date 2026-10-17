@@ -90,6 +90,7 @@ async def resolve_or_404(
     *,
     param_name: str | None = None,
     strict: bool = False,
+    bypass_cache: bool = False,
 ) -> str:
     """Resolve any identifier to a canonical ID, raising HTTP 404 on failure.
 
@@ -103,6 +104,12 @@ async def resolve_or_404(
         entity_type: Entity type for resolution (terminology, term, template, document).
         namespace: Namespace for resolution context. If None, derived from identity.
         param_name: Optional parameter name for error messages.
+        bypass_cache: Skip the resolution-cache read and always ask
+            Registry. REQUIRED on write doors: after a hard-delete and
+            re-create under the same value, the cache serves the dead
+            canonical ID for up to its TTL — a write that trusts it
+            either fails on an id that names nothing or pins a stale id
+            into durable state. Reads keep the default (cache on).
         strict: When True, a non-UUID identifier that cannot be resolved for
             lack of namespace context raises HTTP 422 instead of passing the
             raw value through. Use this in **filter contexts** that have no
@@ -143,7 +150,9 @@ async def resolve_or_404(
 
         ns_prefix, _ = split_qualified_value(raw_id)
         try:
-            return await resolve_entity_id(raw_id, entity_type, cast(str, ns_prefix))
+            return await resolve_entity_id(
+                raw_id, entity_type, cast(str, ns_prefix), bypass_cache=bypass_cache
+            )
         except EntityNotFoundError:
             if strict:
                 # Filter context with real (identifier-carried) namespace
@@ -184,7 +193,9 @@ async def resolve_or_404(
         return raw_id
 
     try:
-        return await resolve_entity_id(raw_id, entity_type, namespace)
+        return await resolve_entity_id(
+            raw_id, entity_type, namespace, bypass_cache=bypass_cache
+        )
     except EntityNotFoundError:
         label = param_name or entity_type
         detail = f"Could not resolve {label} '{raw_id}' in namespace '{namespace}'"

@@ -67,8 +67,12 @@ async def create_documents(
 
     # Resolve template_id synonyms to canonical IDs (e.g., "PATIENT" → UUID).
     # namespace=None is correct here — each item carries its own namespace field,
-    # and resolve_bulk_ids reads it per-item.
-    await resolve_bulk_ids(items, "template_id", "template", namespace=None)
+    # and resolve_bulk_ids reads it per-item. bypass_cache: this is a write
+    # door — after a hard-delete + re-create under the same value, the cache
+    # serves the dead template id for up to its TTL.
+    await resolve_bulk_ids(
+        items, "template_id", "template", namespace=None, bypass_cache=True
+    )
 
     service = get_document_service()
 
@@ -152,8 +156,10 @@ async def patch_documents(
     """Apply JSON Merge Patches to documents (bulk-first)."""
     # Resolve document_id synonyms in place. Resolution failures are silently
     # left as-is so the per-item flow returns 'not_found' rather than aborting
-    # the whole batch.
-    await resolve_bulk_ids(items, "document_id", "document", namespace=namespace)
+    # the whole batch. bypass_cache: write door.
+    await resolve_bulk_ids(
+        items, "document_id", "document", namespace=namespace, bypass_cache=True
+    )
 
     # CASE-384 — enforce write permission on each document's actual
     # namespace before mutating. Batched lookup: one find query over all
@@ -232,8 +238,11 @@ async def migrate_documents(
 
     # Resolve template_id synonym → canonical. strict: a non-UUID value with no
     # namespace context fails loud rather than silently matching nothing.
+    # bypass_cache: write door — a migrate must re-pin against the template
+    # the Registry names now, never a cached (possibly dead) id.
     template_id = await resolve_or_404(
         request.template_id, "template", ns, param_name="template_id", strict=True,
+        bypass_cache=True,
     )
 
     service = get_document_service()
@@ -639,7 +648,9 @@ async def delete_documents(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Delete one or more documents."""
-    await resolve_bulk_ids(items, "id", "document", namespace=namespace)
+    await resolve_bulk_ids(
+        items, "id", "document", namespace=namespace, bypass_cache=True
+    )
 
     service = get_document_service()
     results = []
@@ -694,7 +705,9 @@ async def archive_documents(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Archive one or more documents."""
-    await resolve_bulk_ids(items, "id", "document", namespace=namespace)
+    await resolve_bulk_ids(
+        items, "id", "document", namespace=namespace, bypass_cache=True
+    )
 
     service = get_document_service()
     results = []

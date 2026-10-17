@@ -324,7 +324,9 @@ async def update_files_metadata(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Update metadata for one or more files."""
-    await resolve_bulk_ids(items, "file_id", "file", namespace=namespace)
+    await resolve_bulk_ids(
+        items, "file_id", "file", namespace=namespace, bypass_cache=True
+    )
 
     from ..models.file import File as FileModel
     service = get_file_service()
@@ -365,7 +367,9 @@ async def delete_files(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Soft-delete one or more files."""
-    await resolve_bulk_ids(items, "id", "file", namespace=namespace)
+    await resolve_bulk_ids(
+        items, "id", "file", namespace=namespace, bypass_cache=True
+    )
 
     from ..models.file import File as FileModel
     service = get_file_service()

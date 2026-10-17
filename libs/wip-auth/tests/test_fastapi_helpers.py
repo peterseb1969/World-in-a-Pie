@@ -240,3 +240,52 @@ class TestResolveOr404Strict:
 
         result = await resolve_or_404("AA_CHAPTER", "template", None, strict=True)
         assert result == expected_id
+
+
+class TestResolveOr404BypassCache:
+    """resolve_or_404's bypass_cache contract (the write-door rule).
+
+    The scenario is a hard-delete + re-create under the same value: the
+    Registry answers with the NEW canonical id while the process-local
+    resolution cache still serves the DEAD one for up to its TTL. A write
+    door must see the Registry's current answer; a read door keeps the
+    cache. The re-create is simulated by re-pointing the registry entry's
+    entry_id — resolution by value then returns the new id live.
+    """
+
+    async def _repoint_entry(self, old_id: str) -> str:
+        new_id = "019fffff-0000-7000-8000-000000000835"
+        entry = await RegistryEntry.find_one({"entry_id": old_id})
+        assert entry is not None
+        entry.entry_id = new_id
+        await entry.save()
+        return new_id
+
+    @pytest.mark.asyncio
+    async def test_default_serves_the_cache(self, registry):
+        """Baseline (the read contract): without bypass, a warm cache answers
+        — stale for up to the TTL after the entity was re-created."""
+        set_current_identity(_make_identity(namespaces=["aa"]))
+
+        assert await resolve_or_404("AA_CHAPTER", "template", "aa") == registry
+        new_id = await self._repoint_entry(registry)
+
+        stale = await resolve_or_404("AA_CHAPTER", "template", "aa")
+        assert stale == registry  # cached, dead — why write doors must bypass
+        assert stale != new_id
+
+    @pytest.mark.asyncio
+    async def test_bypass_cache_asks_registry(self, registry):
+        """bypass_cache=True skips the cache read and returns the Registry's
+        current answer, and refreshes the cache for subsequent readers."""
+        set_current_identity(_make_identity(namespaces=["aa"]))
+
+        assert await resolve_or_404("AA_CHAPTER", "template", "aa") == registry
+        new_id = await self._repoint_entry(registry)
+
+        fresh = await resolve_or_404(
+            "AA_CHAPTER", "template", "aa", bypass_cache=True
+        )
+        assert fresh == new_id
+        # The bypassed resolution re-primed the cache: readers now see it too.
+        assert await resolve_or_404("AA_CHAPTER", "template", "aa") == new_id
