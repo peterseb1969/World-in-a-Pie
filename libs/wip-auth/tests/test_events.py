@@ -392,9 +392,16 @@ NATS_TEST_URL = os.environ.get("NATS_TEST_URL", "nats://localhost:4223")
 
 
 async def _live_js():
+    # The outer wait_for is load-bearing: connect_timeout alone does not
+    # bound every path inside nats.connect — with no server on the port
+    # this call has been observed to hang indefinitely instead of raising,
+    # stalling the whole suite. Any hang must become the skip.
     try:
-        nc = await nats.connect(NATS_TEST_URL, connect_timeout=1, max_reconnect_attempts=0,
-                                allow_reconnect=False)
+        nc = await asyncio.wait_for(
+            nats.connect(NATS_TEST_URL, connect_timeout=1, max_reconnect_attempts=0,
+                         allow_reconnect=False),
+            timeout=5,
+        )
     except Exception:
         pytest.skip(f"no NATS at {NATS_TEST_URL}")
     return nc, nc.jetstream()

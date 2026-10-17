@@ -96,7 +96,15 @@ _component_deps() {
         reporting-sync)
             echo "postgres nats"
             ;;
-        mcp-server|wip-auth|wip-archive|deployer|agent-scripts|scaffold|auth-gateway)
+        wip-auth)
+            # Mongo: the resolve/fastapi-helpers tests mount the real
+            # Registry in-process against a real MongoDB. NATS: the live
+            # JetStream tests in test_events.py run against test-nats
+            # (they skip when it is absent — but see the wait_for guard
+            # there; without it an absent server hung the suite).
+            echo "mongo nats"
+            ;;
+        mcp-server|wip-archive|deployer|agent-scripts|scaffold|auth-gateway)
             echo ""
             ;;
         *)
