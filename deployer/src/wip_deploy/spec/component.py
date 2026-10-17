@@ -219,7 +219,7 @@ class OidcClientSpec(WIPModel):
     redirect_paths: list[str] = Field(default_factory=lambda: ["/auth/callback"])
 
 
-NatsRole = Literal["ingest-producer", "event-subscriber", "replay-subscriber"]
+NatsRole = Literal["ingest-producer", "event-subscriber", "replay-subscriber", "nats-monitor"]
 
 
 class NatsClientSpec(WIPModel):
@@ -239,7 +239,8 @@ class NatsClientSpec(WIPModel):
       (config_gen/nats.py): ``ingest-producer`` publishes ingest work items,
       ``event-subscriber`` consumes the platform event stream through a
       durable named after the owner, ``replay-subscriber`` receives replayed
-      events. **Apps must use roles.**
+      events, ``nats-monitor`` reads stream and consumer listings (no
+      message contents). **Apps must use roles.**
     - ``publish`` / ``publish_deny`` / ``subscribe`` — raw NATS permission
       subjects, data subjects and the ``$JS.API.*`` / ``$JS.ACK.*``
       JetStream API, where ``*`` and ``>`` only match whole tokens;

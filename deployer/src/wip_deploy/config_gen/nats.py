@@ -34,6 +34,9 @@ grant itself stream administration or another service's subjects:
   events arrive while the replay runs. No JetStream consumer rights — replay
   streams have per-session names, and a token wildcard broad enough to cover
   them would also cover `WIP_INGEST`, whose messages carry producers' keys.
+- `nats-monitor` — read-only JetStream listings: account info, the stream
+  list (configs and state) and every stream's consumer list (names and
+  pending counts). No message contents, no stream or consumer changes.
 
 Every user may also subscribe to its own reply inbox, `_INBOX_<name>.>`
 (EventBus sets the matching inbox prefix): JetStream acks and pulled
@@ -140,6 +143,13 @@ _INGEST_PRODUCER = [
 ]
 
 
+_NATS_MONITOR = [
+    "$JS.API.INFO",
+    "$JS.API.STREAM.LIST",
+    "$JS.API.CONSUMER.LIST.*",
+]
+
+
 def client_permissions(
     name: str, spec: NatsClientSpec
 ) -> tuple[list[str], list[str], list[str]]:
@@ -154,6 +164,8 @@ def client_permissions(
             publish += _event_subscriber(name)
         elif role == "replay-subscriber":
             subscribe.append("wip.replay.>")
+        elif role == "nats-monitor":
+            publish += _NATS_MONITOR
     return publish, list(spec.publish_deny), [*subscribe, f"{inbox_prefix(name)}.>"]
 
 

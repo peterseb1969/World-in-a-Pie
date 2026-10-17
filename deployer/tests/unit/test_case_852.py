@@ -188,11 +188,18 @@ class TestCredentials:
                 name=password_secret(client)
             )
 
-    def test_react_console_has_no_nats_access(self, discovery: Discovery) -> None:
+    def test_react_console_is_a_nats_monitor(self, discovery: Discovery) -> None:
+        """RC's NATS page lists streams and consumers: the read-only role,
+        with NATS_URL and credentials injected rather than declared."""
         rc = next(a for a in discovery.apps if a.metadata.name == "react-console")
-        names = {v.name for v in [*rc.spec.env.required, *rc.spec.env.optional]}
-        assert "NATS_URL" not in names
-        assert rc.spec.nats_client is None
+        assert rc.spec.nats_client is not None
+        assert rc.spec.nats_client.roles == ["nats-monitor"]
+        assert not rc.spec.nats_client.raw
+        d = _with_rc()
+        env = resolve_all_env(d, discovery.components, discovery.apps, make_spec_context(d, discovery.components))
+        merged = env["react-console"].merged()
+        assert merged["NATS_USER"] == Literal(value="react-console")
+        assert "NATS_URL" in merged and "NATS_PASSWORD" in merged
 
 
 def _compose_doc(target: str, tmp_path: Path, disc: Discovery) -> tuple[dict[str, Any], Any]:
@@ -369,6 +376,11 @@ class TestRoles:
         publish, _, subscribe = client_permissions("app", NatsClientSpec(roles=["replay-subscriber"]))
         assert publish == []
         assert subscribe == ["wip.replay.>", "_INBOX_app.>"]
+
+    def test_nats_monitor_reads_listings_only(self) -> None:
+        publish, deny, subscribe = client_permissions("app", NatsClientSpec(roles=["nats-monitor"]))
+        assert publish == ["$JS.API.INFO", "$JS.API.STREAM.LIST", "$JS.API.CONSUMER.LIST.*"]
+        assert deny == [] and subscribe == ["_INBOX_app.>"]
 
     def test_app_manifest_with_raw_subjects_is_rejected(self, discovery: Discovery) -> None:
         rc = next(a for a in discovery.apps if a.metadata.name == "react-console")

@@ -156,11 +156,13 @@ forwarded with the platform's admin key.
 - **Apps get NATS through roles.** An app manifest declares
   `nats_client: {roles: [...]}` with any of `ingest-producer`,
   `event-subscriber` (one durable on `WIP_EVENTS` named after the app, which
-  sees every namespace) and `replay-subscriber` (a plain subscription to
-  `wip.replay.>`). The deployer expands each role to fixed grants and injects
+  sees every namespace), `replay-subscriber` (a plain subscription to
+  `wip.replay.>`) and `nats-monitor` (read-only stream and consumer
+  listings, no message contents). The deployer expands each role to fixed grants and injects
   `NATS_URL` / `NATS_USER` / `NATS_PASSWORD`. Raw subject lists are rejected
-  in app manifests. react-console has no role, and its `NATS_URL` was
-  removed: its NATS page reports NATS as unreachable. See
+  in app manifests. react-console holds `nats-monitor` for its NATS page,
+  which needs RC's credential support (WIP-ReactConsole `3c989bd`). An RC
+  image without it connects anonymously and NATS refuses it. See
   `docs/wip-deployable-app-contract.md` ("NATS access is a role").
 - **Clients outside an app manifest are refused.** Scripts and external
   services have no NATS user.

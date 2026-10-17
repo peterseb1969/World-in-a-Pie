@@ -184,7 +184,7 @@ These are platform-side guarantees the contract assumes. They're invariants toda
   ```yaml
   spec:
     nats_client:
-      roles: [ingest-producer]   # and/or event-subscriber, replay-subscriber
+      roles: [ingest-producer]   # and/or event-subscriber, replay-subscriber, nats-monitor
   ```
 
   The deployer generates the user's password and injects `NATS_URL`, `NATS_USER` and `NATS_PASSWORD`. Connect with them, and set the reply-inbox prefix `_INBOX_<NATS_USER>`: the server lets each user receive replies only on its own prefix, so JetStream publish acks and pulls need it. Raw NATS subject lists in an app manifest are rejected; they are for platform components.
@@ -192,6 +192,7 @@ These are platform-side guarantees the contract assumes. They're invariants toda
   - **`ingest-producer`** may publish to `wip.ingest.{terminologies,terms,templates,documents}.<action>`. **Every message carries your WIP API key in its `X-API-Key` NATS header.** ingest-gateway writes the item with exactly that key, so your key's namespace grants apply. A message without the header is refused (a 401 result) and nothing is written. Use a key scoped to your namespace: the message, header included, stays in the ingest stream until the stream's size limits drop it. Reading the results stream is not part of the role, because it carries every producer's outcomes.
   - **`event-subscriber`** may run one durable consumer on `WIP_EVENTS`, **named after your app**, and use no other stream. It receives change events from **every** namespace, so treat it as an admin-level read.
   - **`replay-subscriber`** receives replayed events with a plain subscription to `wip.replay.<session>.>`. Subscribe before starting the replay. There is no JetStream access to replay streams, so events published while you are disconnected are missed.
+  - **`nats-monitor`** reads JetStream listings for a status page: account info, the stream list (configs and state) and every stream's consumer list (names and pending counts). It cannot read message contents or change any stream or consumer. react-console uses it.
 
 One **non-guarantee** belongs in the same list, because apps have assumed its opposite:
 
