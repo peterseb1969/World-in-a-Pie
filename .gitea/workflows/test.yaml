@@ -103,8 +103,12 @@ jobs:
 
       - name: Start MongoDB
         run: |
+          # Published on loopback only (unauthenticated test services). A container
+          # still bound to all interfaces is recreated once.
+          if docker inspect -f '{{json .HostConfig.PortBindings}}' test-mongo 2>/dev/null \
+              | grep -qE '"HostIp":"(0\.0\.0\.0)?"'; then docker rm -f test-mongo; fi
           docker start test-mongo 2>/dev/null || \
-            docker run -d --name test-mongo -p 27017:27017 mongo:7
+            docker run -d --name test-mongo -p 127.0.0.1:27017:27017 mongo:7
           for i in $(seq 1 10); do
             docker exec test-mongo mongosh --quiet --eval "db.runCommand('ping')" && break
             sleep 1
@@ -141,9 +145,13 @@ jobs:
 
       - name: Start NATS
         run: |
+          # Published on loopback only (unauthenticated test services). A container
+          # still bound to all interfaces is recreated once.
+          if docker inspect -f '{{json .HostConfig.PortBindings}}' test-nats 2>/dev/null \
+              | grep -qE '"HostIp":"(0\.0\.0\.0)?"'; then docker rm -f test-nats; fi
           docker start test-nats 2>/dev/null || \
             docker run -d --name test-nats --restart unless-stopped \
-              -p 4223:4222 -p 8223:8222 nats:2 -js -m 8222
+              -p 127.0.0.1:4223:4222 -p 127.0.0.1:8223:8222 nats:2 -js -m 8222
           for i in $(seq 1 10); do
             curl -s http://localhost:8223/healthz && break
             sleep 1
@@ -180,8 +188,12 @@ jobs:
 
       - name: Start PostgreSQL
         run: |
+          # Published on loopback only (unauthenticated test services). A container
+          # still bound to all interfaces is recreated once.
+          if docker inspect -f '{{json .HostConfig.PortBindings}}' test-postgres 2>/dev/null \
+              | grep -qE '"HostIp":"(0\.0\.0\.0)?"'; then docker rm -f test-postgres; fi
           docker start test-postgres 2>/dev/null || \
-            docker run -d --name test-postgres -p 5433:5432 \
+            docker run -d --name test-postgres -p 127.0.0.1:5433:5432 \
               -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test \
               -e POSTGRES_DB=wip_test postgres:16
           for i in $(seq 1 10); do
@@ -191,9 +203,13 @@ jobs:
 
       - name: Start NATS
         run: |
+          # Published on loopback only (unauthenticated test services). A container
+          # still bound to all interfaces is recreated once.
+          if docker inspect -f '{{json .HostConfig.PortBindings}}' test-nats 2>/dev/null \
+              | grep -qE '"HostIp":"(0\.0\.0\.0)?"'; then docker rm -f test-nats; fi
           docker start test-nats 2>/dev/null || \
             docker run -d --name test-nats --restart unless-stopped \
-              -p 4223:4222 -p 8223:8222 nats:2 -js -m 8222
+              -p 127.0.0.1:4223:4222 -p 127.0.0.1:8223:8222 nats:2 -js -m 8222
           for i in $(seq 1 10); do
             curl -s http://localhost:8223/healthz && break
             sleep 1
@@ -284,8 +300,12 @@ jobs:
 
       - name: Start MongoDB
         run: |
+          # Published on loopback only (unauthenticated test services). A container
+          # still bound to all interfaces is recreated once.
+          if docker inspect -f '{{json .HostConfig.PortBindings}}' test-mongo 2>/dev/null \
+              | grep -qE '"HostIp":"(0\.0\.0\.0)?"'; then docker rm -f test-mongo; fi
           docker start test-mongo 2>/dev/null || \
-            docker run -d --name test-mongo -p 27017:27017 mongo:7
+            docker run -d --name test-mongo -p 127.0.0.1:27017:27017 mongo:7
           for i in $(seq 1 10); do
             docker exec test-mongo mongosh --quiet --eval "db.runCommand('ping')" && break
             sleep 1
@@ -392,8 +412,12 @@ jobs:
       # provisions both.
       - name: Start MongoDB
         run: |
+          # Published on loopback only (unauthenticated test services). A container
+          # still bound to all interfaces is recreated once.
+          if docker inspect -f '{{json .HostConfig.PortBindings}}' test-mongo 2>/dev/null \
+              | grep -qE '"HostIp":"(0\.0\.0\.0)?"'; then docker rm -f test-mongo; fi
           docker start test-mongo 2>/dev/null || \
-            docker run -d --name test-mongo -p 27017:27017 mongo:7
+            docker run -d --name test-mongo -p 127.0.0.1:27017:27017 mongo:7
           for i in $(seq 1 10); do
             docker exec test-mongo mongosh --quiet --eval "db.runCommand('ping')" && break
             sleep 1
