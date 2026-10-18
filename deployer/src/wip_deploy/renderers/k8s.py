@@ -103,7 +103,7 @@ def render_k8s(
         raise ValueError("k8s target requires platform.k8s")
 
     ns = k8s.namespace
-    ctx = make_spec_context(deployment, components)
+    ctx = make_spec_context(deployment, components, apps)
     resolved_env = resolve_all_env(
         deployment, components, apps, ctx,
         collected_secrets=set(secrets.values.keys()),

@@ -471,6 +471,26 @@ keep the cache; its staleness stays bounded by the 5-minute TTL. The
 is obsolete. (`resolve_or_404` in wip-auth gained the `bypass_cache`
 parameter the single-id doors needed.)
 
+### Bearer tokens from Dex authenticate against the backend services
+
+A Dex token sent as `Authorization: Bearer` to any backend service failed
+on every `wip-deploy` install. The JWKS fetch went to a path Dex does not
+serve (`/dex/.well-known/jwks.json`) and surfaced as HTTP 500. Past that,
+the issuer was compared against Dex's internal URL while tokens carry the
+public one, and the audience `wip` matched no Dex client. The deployer now
+renders, from the same sources as Dex's own config:
+- `WIP_AUTH_JWT_ISSUER_URL`: the public issuer (`https://<hostname>/dex`);
+- `WIP_AUTH_JWT_JWKS_URI`: `http://wip-dex:5556/dex/keys`;
+- `WIP_AUTH_JWT_AUDIENCE`: every Dex client the deployment registers
+  (`wip-gateway` plus each app's own client).
+
+wip-auth accepts a comma-separated `WIP_AUTH_JWT_AUDIENCE` (any listed client
+matches) and refuses an empty one. An unreachable key endpoint now answers
+503 instead of 500. The gateway and API-key paths are unchanged.
+**Action:** re-render (`wip-deploy redeploy`). The six backend services'
+environment changes, and image-based installs need images carrying the new
+wip-auth.
+
 ### Edge-type filters resolve in the request's namespace; an unknown value is 404
 
 `GET /documents/{id}/relationships?template=` and `GET /documents/{id}/traverse?types=`

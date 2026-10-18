@@ -105,7 +105,7 @@ def render_compose(
             f"render_compose requires target=compose, got {deployment.spec.target!r}"
         )
 
-    ctx = make_spec_context(deployment, components)
+    ctx = make_spec_context(deployment, components, apps)
     # Passing the set of collected secret names enables activation-skip
     # of optional `from_secret` refs whose secret wasn't generated — for
     # example, an optional MinIO credential when MinIO itself is

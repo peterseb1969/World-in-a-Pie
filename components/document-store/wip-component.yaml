@@ -45,8 +45,11 @@ spec:
       # NATS is optional — only present when reporting or ingest module active.
       # Document-store gracefully skips publish when NATS_URL is empty.
       - {name: NATS_URL, source: {from_component: nats}}
-      # JWT issuer URL — honored in jwt_only / dual; ignored otherwise. CASE-361.
-      - {name: WIP_AUTH_JWT_ISSUER_URL, source: {from_spec: auth.issuer_url_internal}}
+      # JWT validation (issuer, signing keys, accepted audiences) — honored
+      # in jwt_only / dual; ignored otherwise.
+      - {name: WIP_AUTH_JWT_ISSUER_URL, source: {from_spec: auth.issuer_url_public}}
+      - {name: WIP_AUTH_JWT_JWKS_URI, source: {from_spec: auth.jwks_url_internal}}
+      - {name: WIP_AUTH_JWT_AUDIENCE, source: {from_spec: auth.jwt_audience}}
       # File storage — Garage, only present when the garage module is active.
       - {name: WIP_FILE_STORAGE_ENABLED, source: {from_spec: features.files_enabled}}
       - {name: WIP_FILE_STORAGE_ENDPOINT, source: {from_component: garage}}

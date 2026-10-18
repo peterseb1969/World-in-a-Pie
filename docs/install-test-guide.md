@@ -155,7 +155,7 @@ If they fail at any step, the failing step is the source of the install-test fee
 | `No Namespace Access` after login | Use an incognito window. Verify the Dex image version pinned in the deployer is current |
 | Services fail to start with dependency errors | `wip-deploy nuke --remove-data --remove-secrets`, then re-run `wip-deploy install` |
 | Login screen reachable but credentials rejected | Check that you copied the password from the right secrets file (each install has its own backend directory) |
-| 401 errors after a successful login | Three-Value OIDC Rule mismatch. See [WIP Guide §3.1](wip-guide.md). All three of `config/dex/config.yaml` `issuer`, `.env` `WIP_AUTH_JWT_ISSUER_URL`, and `.env` `VITE_OIDC_AUTHORITY` must match exactly. After fixing, recreate containers (`podman-compose down && podman-compose up -d`); restart does not pick up env changes |
+| 401 errors after a successful login | The 401's `detail` names the failed check (`Invalid token issuer`, `Invalid token audience`, `Token has expired`). `wip-deploy` renders the issuer, key URL and audiences from the install's `--hostname` and its Dex clients ([WIP Guide §3.1](wip-guide.md)), so an issuer or audience mismatch means a rendered file was hand-edited: re-apply with `wip-deploy redeploy` |
 
 ---
 

@@ -140,21 +140,22 @@ WIP's architecture is enterprise-grade in design (OIDC, namespace isolation, aud
 
 Networking is where most operator failures happen. The three callouts below prevent the most expensive ones.
 
-### 3.1 Critical: The Three-Value OIDC Rule
+### 3.1 Critical: `--hostname` is the OIDC issuer
 
-> **The JWT issuer URL must be identical in three places. Mismatch causes 401 errors after a successful login.**
+> **The hostname and HTTPS port you install with become Dex's issuer URL, and every token's `iss` claim. Choose them once, as the name browsers will actually use.**
 >
-> | Where | Variable | Example |
+> `wip-deploy` derives all of a service's token-validation settings from that one value, so they cannot drift apart. Never set them by hand: every apply re-renders them.
+>
+> | Setting | Rendered as | Example |
 > |---|---|---|
-> | `config/dex/config.yaml` | `issuer:` | `https://wip-pi.local:8443/dex` |
-> | `.env` | `WIP_AUTH_JWT_ISSUER_URL` | `https://wip-pi.local:8443/dex` |
-> | `.env` | `VITE_OIDC_AUTHORITY` | `https://wip-pi.local:8443/dex` |
+> | Dex `issuer:` (rendered `config/dex/config.yaml`) | `https://<hostname>[:<https_port>]/dex` | `https://wip-pi.local:8443/dex` |
+> | Services' `WIP_AUTH_JWT_ISSUER_URL` | the same public URL; it is compared against the token's `iss` | `https://wip-pi.local:8443/dex` |
+> | Services' `WIP_AUTH_JWT_JWKS_URI` | Dex's internal address, because services fetch signing keys server-to-server | `http://wip-dex:5556/dex/keys` |
+> | Services' `WIP_AUTH_JWT_AUDIENCE` | every Dex client the deployment registers: the gateway's, plus each app that declares its own | `wip-gateway,dnd` |
 >
-> The token's `iss` claim comes from Dex's `issuer`. Backends validate it against `WIP_AUTH_JWT_ISSUER_URL`. The browser uses `VITE_OIDC_AUTHORITY` for OIDC discovery. All three must match exactly — including scheme, port, and path.
+> Dex sets a token's `aud` to the client that requested it. That is why the audience is a list: a token minted for an app's own client is as valid as the gateway's. A key endpoint that can't be reached refuses the request with 503; a token with the wrong issuer or audience gets 401.
 >
-> **One related variable does *not* match the other three.** `WIP_AUTH_JWT_JWKS_URI` uses the container-internal hostname (e.g., `http://wip-dex:5556/dex/keys`) because services fetch signing keys directly, not through the browser.
->
-> **After changing any of these in `.env`, recreate containers** (`podman-compose down && podman-compose up -d`). A `restart` does not pick up new environment variables — they are read at container creation, not start. See §7.2 for the rotation flow.
+> **To change the hostname**, re-install with the new `--hostname`. The issuer is also baked into the TLS certificate and every registered redirect URI, and tokens minted under the old issuer stop validating.
 
 ### 3.2 Critical: Caddy `handle` vs `handle_path`
 
@@ -194,7 +195,7 @@ Networking is where most operator failures happen. The three callouts below prev
 | 3 | Remote + OIDC | `https://<host>:8443/` | via Caddy on `:8443` | `https://<host>:8443/dex` |
 | 4 | Remote − OIDC | `http://<host>:3000/` | direct on `:8001`–`:8006` | n/a |
 
-Choose by what you need. If you want auth, go with 1 or 3 (and accept the Three-Value OIDC Rule discipline). If you want absolute simplicity for local hacking, scenarios 2 and 4 use API keys only and skip Caddy entirely (services bind to their direct ports, console is on `:3000`).
+Choose by what you need. If you want auth, go with 1 or 3 (and pick `--hostname` deliberately — it becomes the OIDC issuer, §3.1). If you want absolute simplicity for local hacking, scenarios 2 and 4 use API keys only and skip Caddy entirely (services bind to their direct ports, console is on `:3000`).
 
 For scenarios 2 and 4 the console's dev server needs proxy rules (Vite `vite.config.ts → server.proxy`) pointing `/api/registry`, `/api/def-store`, etc. at the matching `localhost:800x`.
 
@@ -890,7 +891,7 @@ If using SSH stdio and the connection drops:
 
 | Symptom | Where to look | Likely fix |
 |---|---|---|
-| 401 after a successful Dex login | §3.1 Three-Value OIDC Rule | Match `issuer:` / `WIP_AUTH_JWT_ISSUER_URL` / `VITE_OIDC_AUTHORITY` exactly, recreate containers |
+| 401 after a successful Dex login | The 401's `detail` names the failed check (issuer, audience, expiry); see §3.1 for what each is rendered from | An issuer or audience mismatch means rendered config was hand-edited: `wip-deploy redeploy` |
 | 404 on `/api/<svc>/...` calls | §3.2 Caddy `handle` vs `handle_path` | Use `handle`, not `handle_path` |
 | Health probe says "200" but the service isn't really up | §3.3 Caddy 200-on-unmatched | Validate by content, not just status code |
 | Env change didn't take effect | §7.2 Key rotation | `wip-deploy redeploy --name <install>` (or `podman-compose down && podman-compose up -d`) — a `restart` keeps the old env |

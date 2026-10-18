@@ -53,8 +53,11 @@ spec:
       # worker consumes them to materialize per-template doc_* tables. When
       # NATS_URL is empty the service gracefully skips publish.
       - {name: NATS_URL, source: {from_component: nats}}
-      # JWT issuer URL — honored in jwt_only / dual; ignored otherwise. CASE-361.
-      - {name: WIP_AUTH_JWT_ISSUER_URL, source: {from_spec: auth.issuer_url_internal}}
+      # JWT validation (issuer, signing keys, accepted audiences) — honored
+      # in jwt_only / dual; ignored otherwise.
+      - {name: WIP_AUTH_JWT_ISSUER_URL, source: {from_spec: auth.issuer_url_public}}
+      - {name: WIP_AUTH_JWT_JWKS_URI, source: {from_spec: auth.jwks_url_internal}}
+      - {name: WIP_AUTH_JWT_AUDIENCE, source: {from_spec: auth.jwt_audience}}
 
   # NATS user for this service (config_gen/nats.py). It may publish only the
   # events it emits, plus the stream API that ensures WIP_EVENTS (EventBus

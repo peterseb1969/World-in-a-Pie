@@ -195,13 +195,14 @@ class TestEnvInjection:
             )
             assert value.value == "jwt_only"
 
-    def test_wip_auth_jwt_issuer_url_value_matches_internal_dex(
+    def test_jwt_issuer_is_public_and_keys_are_fetched_internally(
         self,
         maximal_compose_deployment: Deployment,
         real_discovery: Discovery,
     ) -> None:
-        """The issuer URL is the internal Dex endpoint — wip-auth in the
-        service calls Dex server-to-server, not the public URL."""
+        """The issuer is compared against the token's `iss`, which Dex sets
+        to its PUBLIC URL; reaching Dex server-to-server is the key URL's
+        job, and Dex serves its keys at <issuer>/keys."""
         ctx = make_spec_context(
             maximal_compose_deployment, real_discovery.components
         )
@@ -212,9 +213,11 @@ class TestEnvInjection:
             ctx,
         )
         for svc in _AUTH_SERVICES:
-            value = resolved[svc].optional["WIP_AUTH_JWT_ISSUER_URL"]
-            assert isinstance(value, Literal)
-            assert value.value == "http://wip-dex:5556/dex"
+            issuer = resolved[svc].optional["WIP_AUTH_JWT_ISSUER_URL"]
+            keys = resolved[svc].optional["WIP_AUTH_JWT_JWKS_URI"]
+            assert isinstance(issuer, Literal) and isinstance(keys, Literal)
+            assert issuer.value == ctx.auth.issuer_url_public
+            assert keys.value == "http://wip-dex:5556/dex/keys"
 
     def test_api_key_only_install_still_carries_env(
         self,

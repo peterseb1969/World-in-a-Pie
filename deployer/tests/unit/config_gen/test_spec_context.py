@@ -92,6 +92,8 @@ class TestResolveFromSpec:
             auth=SpecContextAuth(
                 issuer_url_public="pub",
                 issuer_url_internal="int",
+                jwks_url_internal="int/keys",
+                jwt_audience="wip-gateway",
                 callback_url="cb",
                 wip_auth_mode="api_key_only",
             ),

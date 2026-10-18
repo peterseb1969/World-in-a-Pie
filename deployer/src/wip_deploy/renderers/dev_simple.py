@@ -233,7 +233,7 @@ def render_dev_simple(
     if dev_plat is None or dev_plat.mode != "simple":
         raise ValueError("render_dev_simple requires platform.dev.mode='simple'")
 
-    ctx = make_spec_context(deployment, components)
+    ctx = make_spec_context(deployment, components, apps)
     resolved_env = resolve_all_env(
         deployment, components, apps, ctx,
         collected_secrets=set(secrets.values.keys()),

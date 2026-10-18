@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
+from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
 
 
@@ -30,17 +31,25 @@ class SpecContextNetwork:
 
 @dataclass(frozen=True)
 class SpecContextAuth:
-    issuer_url_public: str  # URL browsers see
+    # URL browsers see. Dex's own `issuer:` is rendered from the same
+    # `_public_base`, so it is also the `iss` of every token Dex mints and
+    # the value services must compare it against (WIP_AUTH_JWT_ISSUER_URL).
+    issuer_url_public: str
     issuer_url_internal: str  # URL the gateway uses server-to-server
+    # Where services fetch Dex's signing keys (WIP_AUTH_JWT_JWKS_URI). Dex
+    # serves them at <issuer>/keys, not at the .well-known/jwks.json path
+    # wip-auth would otherwise derive, and services reach Dex internally.
+    jwks_url_internal: str
+    # Accepted token audiences (WIP_AUTH_JWT_AUDIENCE), comma-separated:
+    # Dex sets `aud` to the requesting client, so every Dex client this
+    # deployment registers (the gateway's and each app's own) is listed.
+    jwt_audience: str
     callback_url: str
     # WIP_AUTH_MODE for backend services using the wip-auth library.
     # Maps deployment.spec.auth.mode → wip-auth's runtime mode:
     #   "api-key-only" → "api_key_only"
     #   "oidc"         → "jwt_only"
     #   "hybrid"       → "dual"
-    # Backend services in jwt_only/dual additionally need
-    # WIP_AUTH_JWT_ISSUER_URL — already exposed as issuer_url_internal
-    # above; manifests reference it via from_spec. CASE-361.
     wip_auth_mode: str
 
 
@@ -85,11 +94,17 @@ class SpecContext:
 
 
 def make_spec_context(
-    deployment: Deployment, components: list[Component]
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App] | None = None,
 ) -> SpecContext:
-    """Compute all derived values for a Deployment."""
+    """Compute all derived values for a Deployment.
+
+    `apps` feeds the accepted token audiences (an app may register its own
+    Dex client); the renderers always pass it. Omitting it means "no apps".
+    """
     net = _compute_network(deployment)
-    auth = _compute_auth(deployment)
+    auth = _compute_auth(deployment, components, apps or [])
     features = _compute_features(deployment, components)
     from wip_deploy.config_gen.api_keys import API_KEYS_CONTAINER_PATH
 
@@ -192,14 +207,25 @@ _AUTH_MODE_TO_WIP_AUTH_MODE: dict[str, str] = {
 }
 
 
-def _compute_auth(deployment: Deployment) -> SpecContextAuth:
+def _compute_auth(
+    deployment: Deployment, components: list[Component], apps: list[App]
+) -> SpecContextAuth:
+    from wip_deploy.config_gen.dex import generate_dex_config
+
     public_base = _public_base(deployment)
     auth_mode = deployment.spec.auth.mode
+    # Internal Dex is on port 5556 inside the network, in the Dex
+    # component; path prefix is /dex because Dex expects it.
+    issuer_url_internal = "http://wip-dex:5556/dex"
+    dex = generate_dex_config(deployment, components, apps)
+    client_ids = [c.client_id for c in dex.clients] if dex is not None else []
     return SpecContextAuth(
         issuer_url_public=f"{public_base}/dex",
-        # Internal Dex is on port 5556 inside the network, in the Dex
-        # component; path prefix is /dex because Dex expects it.
-        issuer_url_internal="http://wip-dex:5556/dex",
+        issuer_url_internal=issuer_url_internal,
+        jwks_url_internal=f"{issuer_url_internal}/keys",
+        # Without Dex (api-key-only) services build no JWT provider, so the
+        # value is never read; wip-auth's own default keeps it non-empty.
+        jwt_audience=",".join(client_ids) or "wip",
         callback_url=f"{public_base}/auth/callback",
         wip_auth_mode=_AUTH_MODE_TO_WIP_AUTH_MODE[auth_mode],
     )
