@@ -359,6 +359,20 @@ parameter. Until now there was NO way to remove a term's description;
 consumers treating `""` as absent can drop that shim once their data is
 normalized.
 
+### `@wip/client` browser writes over 64 KB work (0.60.1)
+
+Up to 0.60.0 the client sent every request with Fetch's `keepalive` flag,
+mistaking it for HTTP connection reuse. The flag actually lets a request
+outlive the page, and browsers cap the combined body size of in-flight
+keepalive requests at 64 KiB. In a browser, a write above that (a file
+upload, a long text field, or several concurrent writes or `bulkImport`
+batches that together pass it) failed with `TypeError: Failed to fetch`
+before leaving the page, so no server log ever showed it. Node callers were
+unaffected, and connection reuse needs no flag in either runtime. 0.60.1
+drops the flag.
+**Action:** apps that use `@wip/client` in the browser re-vendor
+`wip-client-0.60.1.tgz`.
+
 ### Platform-maintained term closure in reporting
 
 Each namespace schema gains a `term_closure` table: one row per

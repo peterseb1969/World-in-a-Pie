@@ -110,8 +110,6 @@ export class FetchTransport {
     const fetchOptions: RequestInit = {
       method,
       headers,
-      // Enable HTTP keep-alive for connection reuse across batches
-      keepalive: true,
     }
 
     if (options?.body !== undefined) {

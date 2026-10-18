@@ -114,9 +114,7 @@ var FetchTransport = class {
     }
     const fetchOptions = {
       method,
-      headers,
-      // Enable HTTP keep-alive for connection reuse across batches
-      keepalive: true
+      headers
     };
     if (options?.body !== void 0) {
       fetchOptions.body = options.body instanceof FormData ? options.body : JSON.stringify(options.body);

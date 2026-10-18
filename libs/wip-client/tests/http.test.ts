@@ -5,7 +5,6 @@ import {
   WipNotFoundError,
   WipAuthError,
   WipServerError,
-  WipNetworkError,
 } from '../src/errors'
 
 describe('FetchTransport', () => {
@@ -46,6 +45,22 @@ describe('FetchTransport', () => {
     expect(options.method).toBe('POST')
     expect(options.body).toBe('{"name":"test"}')
     expect(options.headers['Content-Type']).toBe('application/json')
+  })
+
+  // Fetch's keepalive flag is not HTTP connection reuse (that is on by
+  // default): it lets a request outlive the page, and browsers then cap the
+  // summed bodies of in-flight keepalive requests at 64 KiB, refusing the
+  // rest client-side with "Failed to fetch". No write may carry it.
+  it.each([
+    ['JSON', { name: 'x'.repeat(100 * 1024) }],
+    ['FormData', (() => { const f = new FormData(); f.append('file', new Blob(['x'.repeat(100 * 1024)])); return f })()],
+  ])('never sets keepalive on a %s write', async (_kind, body) => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ id: '1' }), { status: 200 }))
+
+    await transport.request('POST', '/api/items', { body })
+
+    const [, options] = fetchMock.mock.calls[0]
+    expect(options).not.toHaveProperty('keepalive')
   })
 
   it('appends query params', async () => {
