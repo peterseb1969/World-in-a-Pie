@@ -89,11 +89,17 @@ class TestK8sRenderer:
         return list(yaml.safe_load_all(_render_ingress(ing, "wip")))
 
     def test_flag_sets_upstream_vhost_annotation(self) -> None:
+        # The restored Host must be the FQDN form — the exact string the
+        # env layer hands services as the component URL host on k8s
+        # (config_gen/env.py _component_host). The short service name is
+        # a DIFFERENT host to a SigV4 validator: with it, Garage answered
+        # every presigned download "AccessDenied: Invalid signature"
+        # (observed live on dev-test, 2026-10-18).
         docs = self._docs(host_header=True)
         ing = next(d for d in docs if d["metadata"]["name"] == "blobstore-ingress")
         assert ing["metadata"]["annotations"][
             "nginx.ingress.kubernetes.io/upstream-vhost"
-        ] == "wip-blobstore:3900"
+        ] == "wip-blobstore.wip.svc.cluster.local:3900"
         # strip_prefix semantics are untouched by the new flag.
         assert ing["metadata"]["annotations"][
             "nginx.ingress.kubernetes.io/rewrite-target"
@@ -114,3 +120,24 @@ def test_flag_preserved_across_targets() -> None:
     ing = generate_ingress_config(_deployment(target="k8s"), [comp], [])
     assert next(r for r in caddy.routes if r.path == "/blobstore").upstream_host_header
     assert next(r for r in ing.rules if r.path == "/blobstore").upstream_host_header
+
+
+def test_k8s_upstream_vhost_matches_env_component_host() -> None:
+    """The annotation and the env resolver must render the SAME hostport.
+
+    document-store signs presigned URLs against the endpoint the env layer
+    hands it; the ingress restores Host from this annotation. SigV4 signs
+    the Host, so the two renderings of "the upstream" must be
+    byte-identical — this pin fails if either side changes its host form
+    unilaterally.
+    """
+    from wip_deploy.config_gen.env import _component_host
+
+    d = _deployment(target="k8s")
+    ing = generate_ingress_config(d, [_storage_component(host_header=True)], [])
+    docs = list(yaml.safe_load_all(_render_ingress(ing, "wip")))
+    blob = next(doc for doc in docs if doc["metadata"]["name"] == "blobstore-ingress")
+    vhost = blob["metadata"]["annotations"][
+        "nginx.ingress.kubernetes.io/upstream-vhost"
+    ]
+    assert vhost == f"{_component_host('blobstore', 'k8s', namespace='wip')}:3900"

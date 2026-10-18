@@ -995,9 +995,14 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
             strip_annotations["nginx.ingress.kubernetes.io/rewrite-target"] = "/$2"
         if r.upstream_host_header:
             # The Host the backend sees must equal the Host services sign
-            # presigned URLs against — the internal endpoint host:port.
+            # presigned URLs against — the internal endpoint host:port,
+            # byte for byte. On k8s the env layer hands services the
+            # fully-qualified service DNS (wip-<name>.<ns>.svc.cluster.local,
+            # config_gen/env.py _component_host), so the restored Host must
+            # be that same FQDN form: the short service name validated as a
+            # different host and Garage/MinIO refused the SigV4 signature.
             strip_annotations["nginx.ingress.kubernetes.io/upstream-vhost"] = (
-                f"{r.backend_service}:{r.backend_port}"
+                f"{r.backend_service}.{ns}.svc.cluster.local:{r.backend_port}"
             )
         if cfg.gateway_auth_url and r.auth_protected:
             strip_annotations["nginx.ingress.kubernetes.io/auth-url"] = cfg.gateway_auth_url
