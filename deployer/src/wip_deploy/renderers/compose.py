@@ -34,7 +34,6 @@ from wip_deploy.config_gen import (
     ResolvedEnv,
     SecretRef,
     generate_caddy_config,
-    generate_dex_config,
     make_spec_context,
     resolve_all_env,
 )
@@ -71,7 +70,11 @@ from wip_deploy.config_gen.nats import (
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose_caddy import render_caddyfile
-from wip_deploy.renderers.compose_dex import render_dex_config
+from wip_deploy.renderers.compose_dex import (
+    DEX_COMPONENT,
+    dex_config_hash,
+    render_dex_conf,
+)
 from wip_deploy.renderers.router_caddy import render_router_caddyfile
 from wip_deploy.secrets_backend import ResolvedSecrets
 from wip_deploy.spec import Deployment
@@ -133,12 +136,9 @@ def render_compose(
     tree.add("config/caddy/Caddyfile", render_caddyfile(caddy_cfg))
 
     # Dex config — only when Dex is active
-    dex_cfg = generate_dex_config(deployment, components, apps)
-    if dex_cfg is not None:
-        tree.add(
-            "config/dex/config.yaml",
-            render_dex_config(dex_cfg, secrets),
-        )
+    dex_conf = render_dex_conf(deployment, components, apps, secrets)
+    if dex_conf is not None:
+        tree.add("config/dex/config.yaml", dex_conf)
 
     # Garage config — only when Garage is active. Carries the rpc secret
     # and admin token, so 0600 (same posture as .env).
@@ -270,15 +270,19 @@ def _workload_hash(
     resolved_env: dict[str, ResolvedEnv],
     secrets: ResolvedSecrets,
 ) -> str | None:
-    """The config-hash label value for component `c`. NATS and MongoDB are
-    storage components (no config_hash), but their bind-mounted config must
-    still recreate them when it changes, so they carry the config's hash."""
+    """The config-hash label value for component `c`. NATS, MongoDB and Dex
+    are storage components (no config_hash), but their bind-mounted config
+    must still recreate them when it changes, so they carry the config's
+    hash."""
     if c.metadata.name == NATS_COMPONENT:
         conf = render_nats_conf(deployment, components, apps)
         return nats_config_hash(conf) if conf is not None else None
     if c.metadata.name == MONGODB_COMPONENT:
         script = render_mongodb_entrypoint(deployment, components, apps)
         return mongodb_config_hash(script) if script is not None else None
+    if c.metadata.name == DEX_COMPONENT:
+        dex_conf = render_dex_conf(deployment, components, apps, secrets)
+        return dex_config_hash(dex_conf) if dex_conf is not None else None
     return config_hash(c, deployment, resolved_env[c.metadata.name], secrets)
 
 

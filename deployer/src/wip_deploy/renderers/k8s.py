@@ -33,7 +33,6 @@ import yaml
 from wip_deploy.config_gen import (
     ResolvedEnv,
     SecretRef,
-    generate_dex_config,
     generate_ingress_config,
     make_spec_context,
     resolve_all_env,
@@ -66,7 +65,11 @@ from wip_deploy.config_gen.nats import (
 )
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.base import FileTree
-from wip_deploy.renderers.compose_dex import render_dex_config
+from wip_deploy.renderers.compose_dex import (
+    DEX_COMPONENT,
+    dex_config_hash,
+    render_dex_conf,
+)
 from wip_deploy.renderers.router_caddy import render_router_caddyfile
 from wip_deploy.secrets_backend import ResolvedSecrets
 from wip_deploy.spec import Deployment
@@ -165,6 +168,10 @@ def render_k8s(
             # Same for MongoDB: its start script carries the user set.
             script = render_mongodb_entrypoint(deployment, components, apps)
             workload_hash = mongodb_config_hash(script) if script else None
+        if name == DEX_COMPONENT:
+            # And Dex: it reads its user and client set only at start.
+            dex_conf = render_dex_conf(deployment, components, apps, secrets)
+            workload_hash = dex_config_hash(dex_conf) if dex_conf else None
         content = _render_component(owner, deployment, env, ns, workload_hash)
         # Storage-bearing → infrastructure/, otherwise services/
         if owner.spec.storage:
@@ -448,9 +455,8 @@ def _render_configmaps(
     })
 
     # Dex config
-    dex_cfg = generate_dex_config(deployment, components, apps)
-    if dex_cfg is not None:
-        dex_yaml = render_dex_config(dex_cfg, secrets)
+    dex_yaml = render_dex_conf(deployment, components, apps, secrets)
+    if dex_yaml is not None:
         docs.append({
             "apiVersion": "v1",
             "kind": "ConfigMap",
@@ -727,7 +733,7 @@ def _render_component(
 
     # A changed secret or key file must roll the pods that read it at start;
     # the hash makes that content change a template change (config_hash).
-    # Only NATS and MongoDB reach here with a StatefulSet (their config hash).
+    # Only NATS, MongoDB and Dex reach here with a StatefulSet (their config hash).
     if workload_hash is not None:
         workload["spec"]["template"]["metadata"]["annotations"] = {
             CONFIG_HASH_KEY: workload_hash,

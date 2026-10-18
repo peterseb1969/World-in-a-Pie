@@ -133,7 +133,10 @@ wip-deploy status  --name wip
 wip-deploy stop    --name wip     # halt, keep data + secrets
 wip-deploy start   --name wip
 wip-deploy nuke    --name wip     # tear down (keeps data volumes + secrets by default)
+wip-deploy user add <username> --email <email> --group <group> --name wip   # another Dex login (e.g. for an e2e suite)
 ```
+
+Dex logins (`admin`, `editor`, `viewer` by default) and their passwords are covered in [the WIP guide, §4.7](../../wip-guide.md#47-local-users-dex-static-users).
 
 ---
 

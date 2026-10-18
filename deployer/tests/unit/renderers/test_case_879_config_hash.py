@@ -120,17 +120,18 @@ class TestK8s:
         }
 
     def test_statefulsets_carry_no_hash(self, tmp_path, discovery):
-        """Storage workloads are not rolled by secret changes. NATS and
-        MongoDB are the exceptions: they carry the hash of their rendered
-        config / start script (config_gen/nats.py, mongodb.py), not of
-        their secrets."""
+        """Storage workloads are not rolled by secret changes. NATS, MongoDB
+        and Dex are the exceptions: they carry the hash of their rendered
+        config / start script (config_gen/nats.py, mongodb.py,
+        renderers/compose_dex.py), not of their secrets."""
         d = _deployment("k8s")
         w = _k8s_workloads(d, discovery, _secrets(tmp_path, d, discovery))
         stateful = [n for n, doc in w.items() if doc["kind"] == "StatefulSet"]
         assert stateful, "expected storage-bearing components in the standard set"
-        assert all(_annotation(w[n]) is None for n in stateful if n not in ("wip-nats", "wip-mongodb"))
-        assert _annotation(w["wip-nats"]) is not None
-        assert _annotation(w["wip-mongodb"]) is not None
+        exceptions = ("wip-nats", "wip-mongodb", "wip-dex")
+        assert all(_annotation(w[n]) is None for n in stateful if n not in exceptions)
+        for name in exceptions:
+            assert _annotation(w[name]) is not None, name
 
     def test_master_key_rotation_moves_exactly_its_readers(self, tmp_path, discovery):
         d = _deployment("k8s")
@@ -169,9 +170,9 @@ class TestCompose:
         d = _deployment("compose")
         svc = self._services(d, discovery, _secrets(tmp_path, d, discovery))
         storage = {c.metadata.name for c in discovery.components if c.spec.storage}
-        # NATS and MongoDB are the storage exceptions: labelled with their
-        # rendered config's hash.
-        for name in ((storage - {"nats", "mongodb"}) & set(svc)) | {"caddy"}:
+        # NATS, MongoDB and Dex are the storage exceptions: labelled with
+        # their rendered config's hash.
+        for name in ((storage - {"nats", "mongodb", "dex"}) & set(svc)) | {"caddy"}:
             assert CONFIG_HASH_KEY not in (svc[name].get("labels") or {}), name
 
     def test_master_key_rotation_relabels_its_readers_only(self, tmp_path, discovery):

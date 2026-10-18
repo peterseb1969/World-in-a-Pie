@@ -3055,6 +3055,20 @@ def _dex_password_secret(username: str) -> str:
     return f"dex-password-{username}"
 
 
+def _user_verb_scope(
+    deployment: Deployment, components: list[Component]
+) -> list[str]:
+    """The user set reaches only Dex (its config.yaml), so the apply is
+    scoped to it. Dex's config hash changes with the users, which makes the
+    scoped apply recreate it while every other container keeps running.
+    Without an active Dex (api-key-only) there is nothing to restart: the
+    empty scope is the config-only apply."""
+    dex = next((c for c in components if c.metadata.name == "dex"), None)
+    if dex is not None and is_component_active(dex, deployment):
+        return ["dex"]
+    return []
+
+
 @user_app.command("add")
 def user_add(
     username: Annotated[
@@ -3147,6 +3161,7 @@ def user_add(
         apps_list,
         target_dir,
         f"Added Dex user {username!r} to {resolved_name}",
+        services_scope=_user_verb_scope(deployment, components),
         repo_root=repo_root,
     )
 
@@ -3228,6 +3243,7 @@ def user_remove(
         apps_list,
         target_dir,
         f"Removed Dex user {username!r} from {resolved_name}",
+        services_scope=_user_verb_scope(deployment, components),
         repo_root=repo_root,
     )
 

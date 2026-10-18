@@ -33,7 +33,6 @@ import yaml
 
 from wip_deploy.config_gen import (
     generate_caddy_config,
-    generate_dex_config,
     make_spec_context,
     resolve_all_env,
 )
@@ -45,6 +44,7 @@ from wip_deploy.config_gen.api_keys import (
 )
 from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY
 from wip_deploy.config_gen.garage import garage_component, render_garage_toml
+from wip_deploy.config_gen.images import image_ref as _image_ref
 from wip_deploy.config_gen.mongodb import (
     ENTRYPOINT_CONTAINER_PATH as MONGO_ENTRYPOINT_CONTAINER_PATH,
 )
@@ -74,11 +74,14 @@ from wip_deploy.renderers.compose import (
     _depends_on_block,
     _environment_block,
     _healthcheck_block,
-    _image_ref,
     _render_dotenv,
 )
 from wip_deploy.renderers.compose_caddy import render_caddyfile
-from wip_deploy.renderers.compose_dex import render_dex_config
+from wip_deploy.renderers.compose_dex import (
+    DEX_COMPONENT,
+    dex_config_hash,
+    render_dex_conf,
+)
 from wip_deploy.renderers.router_caddy import render_router_caddyfile
 from wip_deploy.secrets_backend import ResolvedSecrets
 from wip_deploy.spec import Deployment
@@ -237,6 +240,7 @@ def render_dev_simple(
     )
 
     tree = FileTree()
+    dex_conf = render_dex_conf(deployment, components, apps, secrets)
 
     # Materialize a self-contained build context per Python service so
     # wip-auth (and wip-archive for document-store) get baked in the
@@ -257,6 +261,7 @@ def render_dev_simple(
             source_mount=dev_plat.source_mount,
             build_context_paths=build_context_paths,
             app_sources=dev_plat.app_sources,
+            dex_conf=dex_conf,
         ),
     )
 
@@ -271,9 +276,8 @@ def render_dev_simple(
     if api_keys_json is not None:
         tree.add(API_KEYS_RENDER_PATH, api_keys_json, mode=0o600)
 
-    dex_cfg = generate_dex_config(deployment, components, apps)
-    if dex_cfg is not None:
-        tree.add("config/dex/config.yaml", render_dex_config(dex_cfg, secrets))
+    if dex_conf is not None:
+        tree.add("config/dex/config.yaml", dex_conf)
 
     # Garage config — same posture as the compose renderer: the file
     # carries the rpc secret and admin token, so 0600.
@@ -323,6 +327,7 @@ def _render_dev_compose_yaml(
     source_mount: bool,
     build_context_paths: dict[str, str],
     app_sources: dict[str, Path],
+    dex_conf: str | None,
 ) -> str:
     """Same shape as compose's _render_compose_yaml but with build: blocks,
     source mounts, and uvicorn --reload."""
@@ -371,6 +376,11 @@ def _render_dev_compose_yaml(
                 services[c.metadata.name]["labels"] = {
                     CONFIG_HASH_KEY: mongodb_config_hash(script),
                 }
+        if c.metadata.name == DEX_COMPONENT and dex_conf is not None:
+            # And Dex's config.yaml (its user and client set).
+            services[c.metadata.name]["labels"] = {
+                CONFIG_HASH_KEY: dex_config_hash(dex_conf),
+            }
 
     for a in apps:
         if a.metadata.name not in enabled_app_names:

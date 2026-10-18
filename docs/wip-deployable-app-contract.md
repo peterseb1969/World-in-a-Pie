@@ -214,6 +214,14 @@ With `BASE_PATH` defaulting to `/` and `import.meta.env.BASE_URL` defaulting to 
 
 **Net: zero behavior change in standalone-dev.** The contract pays no tax for being wip-deployable; it pays a one-time scaffold tax of 30 minutes and gives you push-button deployment forever after.
 
+**A browser login for your e2e suite.** Don't share `admin` or `editor`. Ask
+the install's owner for a dedicated Dex user. It's one command on their side,
+`wip-deploy user add e2e --email e2e@wip.local --group wip-editors --name <install>`,
+and the suite then reads its password from
+`~/.wip-deploy/<install>/secrets/dex-password-e2e`. Pick `wip-admins` only if
+the suite manages namespaces, grants or API keys. Details, including which
+writes record the user's email as `created_by`, are in `docs/wip-guide.md` §4.7.
+
 ---
 
 ## Companion contract: your data lives in WIP's primitives

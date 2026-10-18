@@ -369,6 +369,63 @@ podman-compose down && podman-compose up -d
 
 The login screen now shows a "Login with Google" option alongside the local-account flow. By default, Google users land in WIP without any group memberships. Mapping Google Workspace groups to WIP groups requires either a custom claims mapper in Dex or post-login group assignment on the WIP side.
 
+### 4.7 Local users (Dex static users)
+
+The local-account logins on the Dex screen are **spec configuration**: the
+install's `auth.users` list, declared once and rendered on every apply,
+the same model as the spec-declared API keys in §4.3. Every install starts
+with three:
+
+| Email | Username | Group |
+|---|---|---|
+| `admin@wip.local` | `admin` | `wip-admins` |
+| `editor@wip.local` | `editor` | `wip-editors` |
+| `viewer@wip.local` | `viewer` | `wip-viewers` |
+
+Each user's password is generated into the install's secret backend as
+`dex-password-<username>` and stays stable across re-applies. On the file
+backend that is `~/.wip-deploy/<name>/secrets/dex-password-<username>`; on
+k8s it is the `dex-password-<username>` key of the `wip-secrets` Secret.
+
+Add, remove and list users with `wip-deploy user`:
+
+```bash
+# Declare a user and apply; the password is printed once and kept in the secret backend
+wip-deploy user add e2e --email e2e@wip.local --group wip-editors --name <install>
+
+# What's declared, and whether each password secret exists yet
+wip-deploy user list --name <install>
+
+# Remove a user: logins stop at apply, and the password secret is deleted
+wip-deploy user remove e2e --name <install>
+```
+
+- `--group` is the user's authorization group: `wip-admins`, `wip-editors`,
+  `wip-viewers`, or a group an app defines.
+- The username names the password secret, so it must start with a letter or
+  digit and use only letters, digits, `.`, `_` and `-`. Emails must be
+  unique on the install, because Dex identifies static users by email.
+- There is no password-rotate verb. To give a user a fresh password,
+  `remove` it and `add` it again.
+- `remove` refuses to delete the last `wip-admins` user. Add another admin
+  first.
+- `user add` and `user remove` re-render the install's files from the
+  current repo but apply only to Dex: Dex is recreated with the new user
+  set, and every other container keeps running.
+
+Don't hand-edit the rendered Dex `config.yaml` to add users: it is output,
+and the next render overwrites it. Don't hand-edit `auth.users` in the
+install's `deployment.deployer-state` either: `user add` makes the same
+change with validation and generates the password in the same apply.
+
+A dedicated user is the clean way to give an automated test suite (e2e,
+Playwright) a browser login. The suite's logins stay separate from real
+users', the user can be removed without touching anyone else, and the suite
+reads its password from the secret file. A write made with the user's own
+OIDC token records its email as `created_by`. A write an app proxies with
+its own API key records `apikey:<key-name>` instead, unless the proxy
+forwards the user's identity and the receiving service trusts proxy headers.
+
 ---
 
 ## 5. Storage and Backup

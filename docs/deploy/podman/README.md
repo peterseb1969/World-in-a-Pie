@@ -193,7 +193,10 @@ wip-deploy status  --name wip     # what's deployed, on which images
 wip-deploy stop    --name wip     # halt without deleting anything (data + secrets kept)
 wip-deploy start   --name wip     # bring it back up
 wip-deploy nuke    --name wip     # tear down (KEEPS data volumes + secrets by default)
+wip-deploy user add <username> --email <email> --group <group> --name wip   # another Dex login
 ```
+
+Dex logins (`admin`, `editor`, `viewer` by default) and their passwords are covered in [the WIP guide, §4.7](../../wip-guide.md#47-local-users-dex-static-users).
 
 **Upgrade to a newer tag** — re-run install with the new tag; volumes and secrets are reused by name.
 

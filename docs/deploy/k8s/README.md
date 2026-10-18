@@ -175,7 +175,10 @@ wip-deploy stop   --name wip            # scale workloads to 0 (keeps objects + 
 wip-deploy start  --name wip            # scale back up
 wip-deploy nuke   --name wip            # tear down (keeps PVCs + secrets by default)
 kubectl -n wip rollout undo deployment/wip-<svc>   # revert a bad image roll
+wip-deploy user add <username> --email <email> --group <group> --name wip   # another Dex login
 ```
+
+Dex logins (`admin`, `editor`, `viewer` by default) and their passwords are covered in [the WIP guide, §4.7](../../wip-guide.md#47-local-users-dex-static-users). `user add` applies the shared ConfigMaps and Secrets plus Dex's own manifest, which rolls the Dex pod; no other workload is touched.
 
 ---
 

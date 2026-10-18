@@ -15,13 +15,43 @@ we write schema that isn't our own.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import yaml
 
-from wip_deploy.config_gen.dex import DexConfig
+from wip_deploy.config_gen.dex import DexConfig, generate_dex_config
 from wip_deploy.secrets import bcrypt_secret_name
 from wip_deploy.secrets_backend import ResolvedSecrets
+from wip_deploy.spec import Deployment
+from wip_deploy.spec.app import App
+from wip_deploy.spec.component import Component
+
+DEX_COMPONENT = "dex"
+
+
+def render_dex_conf(
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+    secrets: ResolvedSecrets,
+) -> str | None:
+    """The rendered config.yaml, or None when Dex is not active."""
+    dex_cfg = generate_dex_config(deployment, components, apps)
+    if dex_cfg is None:
+        return None
+    return render_dex_config(dex_cfg, secrets)
+
+
+def dex_config_hash(conf: str) -> str:
+    """Short digest of the rendered config, stamped on the Dex workload.
+
+    Dex reads config.yaml (its static users and clients) only at start, and
+    as a storage-bearing component it gets no `config_hash`. Without this
+    digest a changed user set leaves the workload definition identical, so
+    the apply would not recreate Dex and logins would keep the old users.
+    """
+    return hashlib.sha256(conf.encode()).hexdigest()[:16]
 
 
 def render_dex_config(dex: DexConfig, secrets: ResolvedSecrets) -> str:
