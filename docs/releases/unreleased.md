@@ -491,6 +491,22 @@ matches) and refuses an empty one. An unreachable key endpoint now answers
 environment changes, and image-based installs need images carrying the new
 wip-auth.
 
+### Install directories are private; mounted secret files stay container-readable
+
+The spec-declared API-keys file (`config/auth/api-keys.json`) was rendered
+0600 and bind-mounted into the backend services. On Linux compose hosts,
+registry and mcp-server run as a non-root user and read it through the
+"other" permission bits. Under rootless podman, and under a root daemon
+whenever the operator's uid differs from the container's, wip-auth failed
+with `PermissionError` at startup. Meanwhile the Dex config, which carries
+the gateway's client secret, was 0644 inside a 0755 install directory,
+readable by every local user. Every apply and render now makes the directory
+it writes 0700, and container-mounted files are 0644 inside it. The
+directory, not the file mode, keeps other host users out, so non-root
+containers can still read their mounts. `.env` and Garage's config stay
+0600: no non-root container reads them.
+**Action:** none. Existing installs become 0700 on their next apply.
+
 ### `wip-deploy render` is a true dry run
 
 `render` shared install's secret handling, so a preview persisted every

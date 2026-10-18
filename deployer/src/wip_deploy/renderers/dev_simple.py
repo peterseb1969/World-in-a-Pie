@@ -271,10 +271,11 @@ def render_dev_simple(
     tree.add("config/caddy/Caddyfile", render_caddyfile(caddy_cfg))
 
     # Spec-declared config-file API keys — same render + posture as the
-    # compose target (0600, mounted where the manifest declares the env).
+    # compose target (0644 inside the 0700 install directory, mounted
+    # where the manifest declares the env).
     api_keys_json = generate_api_keys_json(deployment, secrets)
     if api_keys_json is not None:
-        tree.add(API_KEYS_RENDER_PATH, api_keys_json, mode=0o600)
+        tree.add(API_KEYS_RENDER_PATH, api_keys_json)
 
     if dex_conf is not None:
         tree.add("config/dex/config.yaml", dex_conf)

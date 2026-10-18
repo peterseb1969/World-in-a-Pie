@@ -185,7 +185,7 @@ class TestGeneratedJson:
 
 
 class TestComposeRender:
-    def test_file_rendered_0600_and_mounted_on_consumers(
+    def test_file_rendered_container_readable_and_mounted_on_consumers(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
         d = _compose_deployment(api_keys=[WEB_YAC])
@@ -195,7 +195,9 @@ class TestComposeRender:
         )
 
         entry = tree.files[Path(API_KEYS_RENDER_PATH)]
-        assert entry.mode == 0o600
+        # Readable by registry's non-root user; the 0700 install directory
+        # keeps other host users out (test_install_dir_permissions.py).
+        assert entry.mode == 0o644
         assert "web-yac" in entry.content
 
         compose = yaml.safe_load(
@@ -293,7 +295,9 @@ class TestDevRender:
             secrets,
             repo_root=REPO_ROOT,
         )
-        assert tree.files[Path(API_KEYS_RENDER_PATH)].mode == 0o600
+        # Readable by registry's non-root user; the 0700 install directory
+        # keeps other host users out (test_install_dir_permissions.py).
+        assert tree.files[Path(API_KEYS_RENDER_PATH)].mode == 0o644
         compose = yaml.safe_load(
             tree.files[Path("docker-compose.yaml")].content
         )
