@@ -20,6 +20,7 @@ from wip_deploy.spec.component import (
     EnvVar,
     HealthcheckSpec,
     ImageRef,
+    MongoClientSpec,
     NatsClientSpec,
     ObservabilitySpec,
     OidcClientSpec,
@@ -47,7 +48,9 @@ from wip_deploy.spec.deployment import (
     SecretsSpec,
 )
 
-__all__ = [
+# Grouped by model family for readability rather than alpha-sorted; RUF022
+# would flatten the grouping (same as config_gen/__init__.py).
+__all__ = [  # noqa: RUF022
     # Deployment
     "Deployment",
     "DeploymentMetadata",
@@ -80,6 +83,7 @@ __all__ = [
     "ResourceSpec",
     "OidcClientSpec",
     "NatsClientSpec",
+    "MongoClientSpec",
     "PostInstallHook",
     "ObservabilitySpec",
     # App

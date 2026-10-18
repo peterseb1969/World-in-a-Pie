@@ -72,6 +72,21 @@ spec:
       # silently leaving the objects behind.
       - {name: DOCUMENT_STORE_URL, source: {from_component: document-store}}
 
+  # MongoDB user for this service (config_gen/mongodb.py): its own database,
+  # plus find/remove — never insert or update — on exactly the collections
+  # namespace deletion counts and deletes in (services/namespace_deletion.py
+  # _EXTERNAL_COLLECTIONS; a registry test keeps the two lists equal).
+  mongo_client:
+    databases: [wip_registry]
+    collection_privileges:
+      - {db: wip_document_store, collection: files, actions: [find, remove]}
+      - {db: wip_document_store, collection: documents, actions: [find, remove]}
+      - {db: wip_template_store, collection: templates, actions: [find, remove]}
+      - {db: wip_def_store, collection: terms, actions: [find, remove]}
+      - {db: wip_def_store, collection: term_relations, actions: [find, remove]}
+      - {db: wip_def_store, collection: term_audit_log, actions: [find, remove]}
+      - {db: wip_def_store, collection: terminologies, actions: [find, remove]}
+
   routes:
     - {path: /api/registry, auth_required: false}
 

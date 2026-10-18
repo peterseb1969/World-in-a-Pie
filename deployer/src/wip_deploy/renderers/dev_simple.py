@@ -45,6 +45,17 @@ from wip_deploy.config_gen.api_keys import (
 )
 from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY
 from wip_deploy.config_gen.garage import garage_component, render_garage_toml
+from wip_deploy.config_gen.mongodb import (
+    ENTRYPOINT_CONTAINER_PATH as MONGO_ENTRYPOINT_CONTAINER_PATH,
+)
+from wip_deploy.config_gen.mongodb import (
+    ENTRYPOINT_RENDER_PATH as MONGO_ENTRYPOINT_RENDER_PATH,
+)
+from wip_deploy.config_gen.mongodb import (
+    MONGODB_COMPONENT,
+    mongodb_config_hash,
+    render_mongodb_entrypoint,
+)
 from wip_deploy.config_gen.nats import (
     NATS_COMPONENT,
     NATS_CONFIG_CONTAINER_PATH,
@@ -271,6 +282,11 @@ def render_dev_simple(
             "config/garage/garage.toml", render_garage_toml(secrets), mode=0o600,
         )
 
+    # MongoDB start script — same as the compose renderer (no secrets).
+    mongo_entrypoint = render_mongodb_entrypoint(deployment, components, apps)
+    if mongo_entrypoint is not None:
+        tree.add(MONGO_ENTRYPOINT_RENDER_PATH, mongo_entrypoint)
+
     # NATS config — same as the compose renderer (no secrets: 0644).
     nats_conf = render_nats_conf(deployment, components, apps)
     if nats_conf is not None:
@@ -347,6 +363,13 @@ def _render_dev_compose_yaml(
             if nats_conf is not None:
                 services[c.metadata.name]["labels"] = {
                     CONFIG_HASH_KEY: nats_config_hash(nats_conf),
+                }
+        if c.metadata.name == MONGODB_COMPONENT:
+            # Same for MongoDB's start script (its user set).
+            script = render_mongodb_entrypoint(deployment, components, apps)
+            if script is not None:
+                services[c.metadata.name]["labels"] = {
+                    CONFIG_HASH_KEY: mongodb_config_hash(script),
                 }
 
     for a in apps:
@@ -604,6 +627,8 @@ def _dev_volumes_for(
         volumes.append("./config/garage/garage.toml:/etc/garage.toml:ro")
     elif owner.metadata.name == NATS_COMPONENT:
         volumes.append(f"./{NATS_CONFIG_RENDER_PATH}:{NATS_CONFIG_CONTAINER_PATH}:ro")
+    elif owner.metadata.name == MONGODB_COMPONENT:
+        volumes.append(f"./{MONGO_ENTRYPOINT_RENDER_PATH}:{MONGO_ENTRYPOINT_CONTAINER_PATH}:ro")
 
     # Router config bind mount — same as prod. Without this, wip-router
     # starts with the stock caddy default Caddyfile and all /api/* routing

@@ -43,4 +43,10 @@ class App(WIPModel):
                 f"app {self.metadata.name!r}: nats_client must declare `roles` "
                 "(ingest-producer, event-subscriber, replay-subscriber), not raw subjects"
             )
+        mc = self.spec.mongo_client
+        if mc is not None and mc.raw:
+            raise ValueError(
+                f"app {self.metadata.name!r}: mongo_client must declare `roles` "
+                "(read-all), not databases — apps never write to MongoDB"
+            )
         return self

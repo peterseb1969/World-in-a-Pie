@@ -273,6 +273,53 @@ class NatsClientSpec(WIPModel):
         return self
 
 
+MongoRole = Literal["read-all"]
+MongoAction = Literal["find", "insert", "update", "remove"]
+
+
+class MongoCollectionPrivilege(WIPModel):
+    """Actions on one collection of another component's database."""
+
+    db: str = Field(min_length=1)
+    collection: str = Field(min_length=1)
+    actions: list[MongoAction] = Field(min_length=1)
+
+
+class MongoClientSpec(WIPModel):
+    """Declares this component as a MongoDB client with its own user.
+
+    MongoDB requires authentication; each client connects as a user named
+    after the component (``MONGO_USER`` / ``MONGO_PASSWORD``, injected by
+    the deployer, read by ``wip_auth.mongo``). The MongoDB start step
+    (config_gen/mongodb.py) creates or updates every declared user on
+    each start. Exactly one of two forms:
+
+    - ``databases`` (``readWrite`` on each) plus optional
+      ``collection_privileges`` (narrow actions on single collections of
+      other databases) — platform components only.
+    - ``roles`` — ``read-all`` grants ``read`` on every database a
+      component declares. **Apps must use roles**: an app can never write
+      to MongoDB, so WIP data only changes through WIP's API.
+    """
+
+    roles: list[MongoRole] = Field(default_factory=list)
+    databases: list[str] = Field(default_factory=list)
+    collection_privileges: list[MongoCollectionPrivilege] = Field(default_factory=list)
+
+    @property
+    def raw(self) -> bool:
+        return bool(self.databases or self.collection_privileges)
+
+    @model_validator(mode="after")
+    def one_form(self) -> MongoClientSpec:
+        if bool(self.roles) == self.raw:
+            raise ValueError(
+                "mongo_client declares exactly one of `roles` or "
+                "`databases`/`collection_privileges`"
+            )
+        return self
+
+
 class PostInstallHook(WIPModel):
     """Escape hatch for actions the platform cannot express declaratively
     (e.g., Registry's /initialize-wip API call).
@@ -397,6 +444,7 @@ class ComponentSpec(WIPModel):
     resources: ResourceSpec | None = None
     oidc_client: OidcClientSpec | None = None
     nats_client: NatsClientSpec | None = None
+    mongo_client: MongoClientSpec | None = None
     post_install: list[PostInstallHook] = Field(default_factory=list)
     observability: ObservabilitySpec | None = None
     activation: ActivationSpec | None = None

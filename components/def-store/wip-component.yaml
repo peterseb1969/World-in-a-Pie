@@ -65,6 +65,10 @@ spec:
       - "$JS.API.STREAM.CREATE.WIP_EVENTS"
       - "$JS.API.STREAM.UPDATE.WIP_EVENTS"
 
+  # MongoDB user for this service (config_gen/mongodb.py): its own database.
+  mongo_client:
+    databases: [wip_def_store]
+
   routes:
     - {path: /api/def-store, auth_required: false}
 

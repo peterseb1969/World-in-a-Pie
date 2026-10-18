@@ -32,6 +32,14 @@ from wip_deploy.config_gen.garage import (
     SECRET_RPC,
     garage_component,
 )
+from wip_deploy.config_gen.mongodb import (
+    PASSWORD_SECRET_PREFIX as MONGO_PASSWORD_PREFIX,
+)
+from wip_deploy.config_gen.mongodb import (
+    ROOT_PASSWORD_SECRET as MONGO_ROOT_PASSWORD_SECRET,
+)
+from wip_deploy.config_gen.mongodb import mongo_clients, mongodb_component
+from wip_deploy.config_gen.mongodb import password_secret as mongo_password_secret
 from wip_deploy.config_gen.nats import (
     PASSWORD_SECRET_PREFIX as NATS_PASSWORD_PREFIX,
 )
@@ -69,6 +77,7 @@ def collect_required_secrets(
       - Dex user password secrets (when Dex is active)
       - Dex static client secrets (one per active OIDC-capable component/app)
       - NATS user passwords (one per active `nats_client`, when NATS is active)
+      - MongoDB root + user passwords (one per active `mongo_client`)
     """
     names: set[str] = set()
 
@@ -102,6 +111,13 @@ def collect_required_secrets(
     # its own env, neither of which the manifest scan above can see.
     for client, _ in nats_clients(deployment, components, apps):
         names.add(password_secret(client))
+
+    # MongoDB users (CASE-890): root plus one password per declared
+    # mongo_client, reaching MongoDB and the client through env injection.
+    if mongodb_component(deployment, components) is not None:
+        names.add(MONGO_ROOT_PASSWORD_SECRET)
+        for client, _ in mongo_clients(deployment, components, apps):
+            names.add(mongo_password_secret(client))
 
     dex_cfg = generate_dex_config(deployment, components, apps)
     if dex_cfg is not None:
@@ -167,11 +183,15 @@ _FORMAT_GENERATORS: dict[str, Callable[[], str]] = {
 
 
 def _format_generator(name: str) -> Callable[[], str]:
-    """The generator for a secret name: exact format map, then the NATS
-    password prefix, then the opaque default."""
+    """The generator for a secret name: exact format map, then the NATS and
+    MongoDB password names, then the opaque default."""
     if name in _FORMAT_GENERATORS:
         return _FORMAT_GENERATORS[name]
     if name.startswith(NATS_PASSWORD_PREFIX):
+        return _nats_password_generator
+    if name.startswith(MONGO_PASSWORD_PREFIX) or name == MONGO_ROOT_PASSWORD_SECRET:
+        # Plain alphanumerics travel safely through every place a password
+        # goes (env, mongosh, a URI if anyone builds one).
         return _nats_password_generator
     return default_generator
 

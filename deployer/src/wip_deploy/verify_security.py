@@ -54,28 +54,32 @@ check mutates anything; the whole module is read-only.
      forge or delete platform events) and keep the unauthenticated
      monitoring endpoint on 127.0.0.1.
 
+  8. **MongoDB requires authentication** — MongoDB must start through the
+     rendered start script, which serves with `--auth` and per-client
+     users. An install rendered before that runs MongoDB without
+     authentication: any workload could read and write every database.
+
 ### What's NOT checked
 
   - Live service health — that's `wip-deploy status`.
   - The k8s secret backend and k8s port exposure — file-backend and
     compose-shaped checks report "not applicable" on k8s installs
     rather than guessing at cluster state.
-  - Database authentication config. PostgreSQL credentials are rendered
-    per install; MongoDB currently runs without authentication on every
-    target (CASE-890), which no file check can fix.
+  - PostgreSQL authentication config: its credentials are rendered per
+    install and the service roles are probed live (check 9).
 
 ### Live checks (`--live`, opt-in)
 
   The checks above read files. With `--live` the command also sends
   requests to the running install through its public base URL:
 
-  8. **Anonymous requests refused** — one read-only, credential-less
+  9. **Anonymous requests refused** — one read-only, credential-less
      request per protected route group of every active service must get a
      JSON 401/403/404; each service's health probe must answer 200 without
      a key. An HTML answer is the SPA fallback for an unserved route and
      counts as a failure, not a refusal.
 
-  9. **reporting-sync on unprivileged roles** — with the install's
+  10. **reporting-sync on unprivileged roles** — with the install's
      api-key, reporting-sync's status must report
      postgres_service_roles_ok = true.
 """
@@ -516,6 +520,52 @@ def check_nats_authentication(install_dir: Path, deployment: Deployment) -> Chec
     return CheckResult(name, True, f"{users} authenticated NATS users; monitor on 127.0.0.1")
 
 
+def _rendered_mongodb_entrypoint(install_dir: Path, deployment: Deployment) -> tuple[bool, str | None]:
+    """(MongoDB deployed?, its rendered start script) from the install's files."""
+    if deployment.spec.target == "k8s":
+        if not (install_dir / "infrastructure" / "mongodb.yaml").is_file():
+            return False, None
+        configmaps = install_dir / "configmaps.yaml"
+        if configmaps.is_file():
+            for doc in yaml.safe_load_all(configmaps.read_text()):
+                if doc and doc.get("metadata", {}).get("name") == "wip-mongodb-entrypoint":
+                    return True, (doc.get("data") or {}).get("entrypoint.sh")
+        return True, None
+    compose_yaml = install_dir / "docker-compose.yaml"
+    if not compose_yaml.is_file():
+        return False, None
+    services = (yaml.safe_load(compose_yaml.read_text()) or {}).get("services") or {}
+    if "mongodb" not in services:
+        return False, None
+    script = install_dir / "config" / "mongodb" / "entrypoint.sh"
+    return True, script.read_text() if script.is_file() else None
+
+
+def check_mongodb_authentication(install_dir: Path, deployment: Deployment) -> CheckResult:
+    """MongoDB serves with --auth and per-client users."""
+    name = "MongoDB authentication"
+    try:
+        deployed, script = _rendered_mongodb_entrypoint(install_dir, deployment)
+    except yaml.YAMLError as exc:
+        return CheckResult(name, False, f"could not parse the rendered manifests: {exc}")
+    if not deployed:
+        return CheckResult(name, True, "not applicable (MongoDB not deployed)")
+    if script is None or "exec mongod --auth" not in script:
+        return CheckResult(
+            name,
+            False,
+            "MongoDB accepts anonymous clients (no authenticated start script)",
+            fix_hint=(
+                "This install was rendered before MongoDB required authentication,\n"
+                "so any workload that reaches MongoDB can read and write every\n"
+                "database. Re-render it with the current deployer: `wip-deploy\n"
+                "redeploy --name <install>` (users are created on MongoDB's next start)."
+            ),
+        )
+    users = re.findall(r'"user": "([^"]+)"', script)
+    return CheckResult(name, True, f"{len(users)} MongoDB users ({', '.join(sorted(users))})")
+
+
 # ────────────────────────────────────────────────────────────────────
 # Top-level entry
 # ────────────────────────────────────────────────────────────────────
@@ -532,6 +582,7 @@ def verify_security(install_dir: Path, deployment: Deployment) -> SecurityReport
         check_published_ports(install_dir, deployment),
         check_caddy_security_headers(install_dir, deployment),
         check_nats_authentication(install_dir, deployment),
+        check_mongodb_authentication(install_dir, deployment),
     ]
     return SecurityReport(install_dir=install_dir, results=results)
 
@@ -609,7 +660,7 @@ def check_anonymous_refusal(
         probed += 1
         try:
             resp = client.request(probe.method, f"{base_url}{probe.path}", json=probe.body)
-        except Exception as e:  # noqa: BLE001 — any transport failure is a finding
+        except Exception as e:  # any transport failure is a finding
             problems.append(f"{probe.method} {probe.path}: request failed ({e})")
             continue
         if resp.status_code in _REFUSED and _is_json(resp):
@@ -626,7 +677,7 @@ def check_anonymous_refusal(
         probed += 1
         try:
             resp = client.request(probe.method, f"{base_url}{probe.path}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             problems.append(f"{probe.method} {probe.path}: request failed ({e})")
             continue
         if not (resp.status_code == 200 and _is_json(resp)):
@@ -673,7 +724,7 @@ def check_reporting_roles(
         resp = client.get(
             f"{base_url}/api/reporting-sync/status", headers={"X-API-Key": admin_key}
         )
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return CheckResult(name=name, passed=False, message=f"request failed: {e}")
     if resp.status_code != 200 or not _is_json(resp):
         return CheckResult(

@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 import yaml
 
+from wip_deploy.config_gen.mongodb import password_secret as mongo_password_secret
 from wip_deploy.config_gen.nats import password_secret
 from wip_deploy.discovery import Discovery, discover
 from wip_deploy.renderers import render_compose, render_dev_simple
@@ -95,8 +96,9 @@ def _render(
 
 def _declared_secret_vars(owner: Any, discovery: Discovery) -> set[str]:
     """Secrets the owner's manifest declares: its env's from_secret
-    entries, plus the NATS passwords derived from `nats_client` blocks
-    (its own as a client; every client's when the owner is NATS)."""
+    entries, plus the NATS / MongoDB passwords derived from `nats_client` /
+    `mongo_client` blocks (its own as a client; every client's when the
+    owner is the server)."""
     declared = {
         _secret_to_env_var(v.source.from_secret)
         for v in [*owner.spec.env.required, *owner.spec.env.optional]
@@ -104,6 +106,15 @@ def _declared_secret_vars(owner: Any, discovery: Discovery) -> set[str]:
     }
     if owner.spec.nats_client is not None:
         declared.add(_secret_to_env_var(password_secret(owner.metadata.name)))
+    if owner.spec.mongo_client is not None:
+        declared.add(_secret_to_env_var(mongo_password_secret(owner.metadata.name)))
+    if owner.metadata.name == "mongodb":
+        declared.add("MONGO_ROOT_PASSWORD")
+        declared |= {
+            _secret_to_env_var(mongo_password_secret(o.metadata.name))
+            for o in [*discovery.components, *discovery.apps]
+            if o.spec.mongo_client is not None
+        }
     if owner.metadata.name == "nats":
         declared |= {
             _secret_to_env_var(password_secret(o.metadata.name))

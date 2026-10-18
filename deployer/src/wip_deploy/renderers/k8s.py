@@ -47,6 +47,17 @@ from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY, config_hash
 from wip_deploy.config_gen.env import Literal
 from wip_deploy.config_gen.garage import garage_component, render_garage_toml
 from wip_deploy.config_gen.images import image_ref as _image_ref
+from wip_deploy.config_gen.mongodb import (
+    ENTRYPOINT_CONTAINER_PATH as MONGO_ENTRYPOINT_CONTAINER_PATH,
+)
+from wip_deploy.config_gen.mongodb import (
+    ENTRYPOINT_RENDER_PATH as MONGO_ENTRYPOINT_RENDER_PATH,  # noqa: F401
+)
+from wip_deploy.config_gen.mongodb import (
+    MONGODB_COMPONENT,
+    mongodb_config_hash,
+    render_mongodb_entrypoint,
+)
 from wip_deploy.config_gen.nats import (
     NATS_COMPONENT,
     NATS_CONFIG_CONTAINER_PATH,
@@ -150,6 +161,10 @@ def render_k8s(
             # must still roll it: nothing else restarts the StatefulSet.
             nats_conf = render_nats_conf(deployment, components, apps)
             workload_hash = nats_config_hash(nats_conf) if nats_conf else None
+        if name == MONGODB_COMPONENT:
+            # Same for MongoDB: its start script carries the user set.
+            script = render_mongodb_entrypoint(deployment, components, apps)
+            workload_hash = mongodb_config_hash(script) if script else None
         content = _render_component(owner, deployment, env, ns, workload_hash)
         # Storage-bearing → infrastructure/, otherwise services/
         if owner.spec.storage:
@@ -462,6 +477,20 @@ def _render_configmaps(
             "data": {"garage.toml": render_garage_toml(secrets)},
         })
 
+    # MongoDB start script — no secrets (passwords are env references).
+    mongo_entrypoint = render_mongodb_entrypoint(deployment, components, apps)
+    if mongo_entrypoint is not None:
+        docs.append({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "wip-mongodb-entrypoint",
+                "namespace": ns,
+                "labels": {_LABELS_PART_OF: "wip"},
+            },
+            "data": {PurePosixPath(MONGO_ENTRYPOINT_CONTAINER_PATH).name: mongo_entrypoint},
+        })
+
     # NATS config — no secrets (passwords are env references resolved by
     # nats-server), so a plain ConfigMap.
     nats_conf = render_nats_conf(deployment, components, apps)
@@ -618,6 +647,16 @@ def _render_component(
             "name": "config",
             "configMap": {"name": "wip-garage-config"},
         })
+    elif name == MONGODB_COMPONENT:
+        volume_mounts.append({
+            "name": "config",
+            "mountPath": str(PurePosixPath(MONGO_ENTRYPOINT_CONTAINER_PATH).parent),
+            "readOnly": True,
+        })
+        volumes.append({
+            "name": "config",
+            "configMap": {"name": "wip-mongodb-entrypoint"},
+        })
     elif name == NATS_COMPONENT:
         volume_mounts.append({
             "name": "config",
@@ -688,7 +727,7 @@ def _render_component(
 
     # A changed secret or key file must roll the pods that read it at start;
     # the hash makes that content change a template change (config_hash).
-    # Only NATS reaches here with a StatefulSet (its config hash).
+    # Only NATS and MongoDB reach here with a StatefulSet (their config hash).
     if workload_hash is not None:
         workload["spec"]["template"]["metadata"]["annotations"] = {
             CONFIG_HASH_KEY: workload_hash,

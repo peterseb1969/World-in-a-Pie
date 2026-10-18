@@ -357,7 +357,7 @@ class TestVerifySecurityReport:
         d = _make_deployment(tmp_path)
         report = verify_security(tmp_path, d)
         assert report.ok, [f"{r.name}: {r.message}" for r in report.failures]
-        assert len(report.results) == 7
+        assert len(report.results) == 8
 
     def test_failures_are_collected(self, tmp_path: Path) -> None:
         _make_secrets(tmp_path, api_key="dev_master_key_for_testing")
@@ -365,9 +365,12 @@ class TestVerifySecurityReport:
         d = _make_deployment(tmp_path)
         report = verify_security(tmp_path, d)
         assert not report.ok
+        # The synthetic compose file has a mongodb service but no rendered
+        # start script: MongoDB without authentication, also a failure.
         assert {r.name for r in report.failures} == {
             "API key strength",
             "published host ports",
+            "MongoDB authentication",
         }
 
 
@@ -400,7 +403,7 @@ class TestCli:
             app, ["verify", "--security", "--install-dir", str(tmp_path)]
         )
         assert result.exit_code == 0, result.output
-        assert "7 check(s) passed" in result.output
+        assert "8 check(s) passed" in result.output
 
     def test_failing_install_exits_1_with_hints(self, tmp_path: Path) -> None:
         _make_secrets(tmp_path, api_key="dev_master_key_for_testing")

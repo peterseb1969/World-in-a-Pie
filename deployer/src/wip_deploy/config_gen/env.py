@@ -23,6 +23,14 @@ from dataclasses import dataclass
 from typing import Literal as TypingLiteral
 
 from wip_deploy.config_gen.garage import SECRET_KEY_ID, SECRET_KEY_SECRET
+from wip_deploy.config_gen.mongodb import (
+    MONGODB_COMPONENT,
+    ROOT_PASSWORD_ENV,
+    ROOT_PASSWORD_SECRET,
+    mongo_clients,
+)
+from wip_deploy.config_gen.mongodb import password_secret as mongo_password_secret
+from wip_deploy.config_gen.mongodb import server_password_env as mongo_server_password_env
 from wip_deploy.config_gen.nats import (
     NATS_COMPONENT,
     nats_clients,
@@ -353,6 +361,39 @@ def _nats_env(
     return []
 
 
+def _mongo_env(
+    component: Component | App,
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+) -> list[EnvVar]:
+    """MongoDB credentials, derived from the `mongo_client` declarations.
+
+    A client gets its user name and password (read by wip_auth.mongo);
+    MongoDB gets the root password and every client's, which its start step
+    reads by variable name (see config_gen/mongodb.py).
+    """
+    name = component.metadata.name
+    if name == MONGODB_COMPONENT:
+        clients = mongo_clients(deployment, components, apps)
+        return [
+            EnvVar(name=ROOT_PASSWORD_ENV, source=EnvSource(from_secret=ROOT_PASSWORD_SECRET)),
+            *(
+                EnvVar(
+                    name=mongo_server_password_env(client),
+                    source=EnvSource(from_secret=mongo_password_secret(client)),
+                )
+                for client, _ in clients
+            ),
+        ]
+    if any(client == name for client, _ in mongo_clients(deployment, components, apps)):
+        return [
+            EnvVar(name="MONGO_USER", source=EnvSource(literal=name)),
+            EnvVar(name="MONGO_PASSWORD", source=EnvSource(from_secret=mongo_password_secret(name))),
+        ]
+    return []
+
+
 def resolve_component_env(
     component: Component | App,
     deployment: Deployment,
@@ -417,6 +458,7 @@ def resolve_component_env(
         component, deployment, components
     )
     required_vars += _nats_env(component, deployment, components, apps)
+    required_vars += _mongo_env(component, deployment, components, apps)
 
     return ResolvedEnv(
         required=_resolve(required_vars, skip_inactive=False),

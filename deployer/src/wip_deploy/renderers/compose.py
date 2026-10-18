@@ -50,6 +50,17 @@ from wip_deploy.config_gen.env import (
 )
 from wip_deploy.config_gen.garage import garage_component, render_garage_toml
 from wip_deploy.config_gen.images import image_ref as _image_ref
+from wip_deploy.config_gen.mongodb import (
+    ENTRYPOINT_CONTAINER_PATH as MONGO_ENTRYPOINT_CONTAINER_PATH,
+)
+from wip_deploy.config_gen.mongodb import (
+    ENTRYPOINT_RENDER_PATH as MONGO_ENTRYPOINT_RENDER_PATH,
+)
+from wip_deploy.config_gen.mongodb import (
+    MONGODB_COMPONENT,
+    mongodb_config_hash,
+    render_mongodb_entrypoint,
+)
 from wip_deploy.config_gen.nats import (
     NATS_COMPONENT,
     NATS_CONFIG_CONTAINER_PATH,
@@ -137,6 +148,11 @@ def render_compose(
             render_garage_toml(secrets),
             mode=0o600,
         )
+
+    # MongoDB start script — holds no secrets (passwords are env references).
+    mongo_entrypoint = render_mongodb_entrypoint(deployment, components, apps)
+    if mongo_entrypoint is not None:
+        tree.add(MONGO_ENTRYPOINT_RENDER_PATH, mongo_entrypoint)
 
     # NATS config — only when NATS is active. Holds no secrets (passwords
     # are env references), so the default 0644.
@@ -254,12 +270,15 @@ def _workload_hash(
     resolved_env: dict[str, ResolvedEnv],
     secrets: ResolvedSecrets,
 ) -> str | None:
-    """The config-hash label value for component `c`. NATS is a storage
-    component (no config_hash), but its bind-mounted config must still
-    recreate it when it changes, so it is labelled with the config's hash."""
+    """The config-hash label value for component `c`. NATS and MongoDB are
+    storage components (no config_hash), but their bind-mounted config must
+    still recreate them when it changes, so they carry the config's hash."""
     if c.metadata.name == NATS_COMPONENT:
         conf = render_nats_conf(deployment, components, apps)
         return nats_config_hash(conf) if conf is not None else None
+    if c.metadata.name == MONGODB_COMPONENT:
+        script = render_mongodb_entrypoint(deployment, components, apps)
+        return mongodb_config_hash(script) if script is not None else None
     return config_hash(c, deployment, resolved_env[c.metadata.name], secrets)
 
 
@@ -476,6 +495,8 @@ def _volumes_for(owner: Component | App) -> list[str]:
         volumes.append("./config/garage/garage.toml:/etc/garage.toml:ro")
     elif owner.metadata.name == NATS_COMPONENT:
         volumes.append(f"./{NATS_CONFIG_RENDER_PATH}:{NATS_CONFIG_CONTAINER_PATH}:ro")
+    elif owner.metadata.name == MONGODB_COMPONENT:
+        volumes.append(f"./{MONGO_ENTRYPOINT_RENDER_PATH}:{MONGO_ENTRYPOINT_CONTAINER_PATH}:ro")
     elif owner.metadata.name == "router":
         volumes.append("./config/router/Caddyfile:/etc/caddy/Caddyfile:ro")
 

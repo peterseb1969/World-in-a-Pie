@@ -115,6 +115,54 @@ anonymously. Its outbound key now also falls back to `MASTER_API_KEY`, and the
 component manifest sets `API_KEY`, so it no longer writes with the dev default
 key on deployed installs.
 
+### MongoDB requires authentication; each client is its own MongoDB user
+
+MongoDB accepted anonymous clients on every target. Any workload that could
+reach it could read and write every service's database, bypassing every
+guardrail WIP enforces.
+- **Per-client users.** MongoDB now serves with `--auth`. Each client
+  connects as its own user:
+
+  | Client | Access |
+  |---|---|
+  | def-store, template-store | their own database |
+  | registry | its own database, plus only `find` / `remove` on the seven collections namespace deletion clears in the other databases |
+  | document-store | all four (backup reads them; restore writes raw rows) |
+  | react-console | `read` on all four (admin scope, read-only) |
+
+  Apps can never write to MongoDB: WIP data changes only through WIP's API.
+- **Where it is declared.** Components declare a `mongo_client` block
+  (`databases`, `collection_privileges`); apps declare `roles: [read-all]`.
+  The deployer generates `mongo-password-<client>` and `mongo-root-password`,
+  injects `MONGO_USER` / `MONGO_PASSWORD` into each client and the passwords
+  into MongoDB, and renders MongoDB's start script
+  (`config/mongodb/entrypoint.sh`; k8s ConfigMap `wip-mongodb-entrypoint`),
+  which holds no secrets.
+- **How users get there.** On every start, the script creates or updates
+  root, the users and the custom role through a temporary `mongod` without
+  `--auth` on 127.0.0.1:27018 (unreachable from other containers). It then
+  restarts MongoDB with authentication. Users the step created that are no
+  longer declared are dropped (an app removed).
+
+  A fresh data directory, an existing one and a changed user set take the
+  same path, so **an existing install comes up authenticated on its next
+  start**. No migration step, and no backup → fresh → restore needed.
+- **Credentials stay out of the logs.** The services print `MONGO_URI` at
+  startup. Credentials therefore travel as client arguments (`wip_auth.mongo`),
+  never inside the URI.
+
+**Action:** re-render with `wip-deploy redeploy`.
+- **Images first:** the credentials come from `wip_auth.mongo` and the
+  services' own code, both baked into images. On k8s and compose, re-render
+  together with images built from this release. With older images, MongoDB
+  refuses every service, which leaves the platform down. Dev installs
+  bind-mount the source and are not affected.
+- **react-console** needs its own `MONGO_USER` / `MONGO_PASSWORD` support
+  (WIP-ReactConsole). Until then its MongoDB page connects anonymously and is
+  refused.
+- **Verification:** `wip-deploy verify --security` now fails an install
+  whose MongoDB runs without authentication.
+
 ### NATS requires authentication; each service is its own NATS user
 
 NATS accepted anonymous clients on every target. Any workload that could reach

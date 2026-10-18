@@ -85,6 +85,12 @@ spec:
       - "$JS.API.STREAM.CREATE.WIP_INGEST"
       - "$JS.API.STREAM.CREATE.WIP_INGEST_RESULTS"
 
+  # MongoDB user for this service (config_gen/mongodb.py). readWrite on all
+  # four databases: backup reads them and restore writes raw rows into each
+  # (ids, versions and registry claims exactly as archived).
+  mongo_client:
+    databases: [wip_document_store, wip_registry, wip_def_store, wip_template_store]
+
   routes:
     - {path: /api/document-store, auth_required: false, streaming: true}
 

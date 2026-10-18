@@ -22,6 +22,7 @@ from wip_auth import (
     setup_auth,
     setup_rate_limiting,
 )
+from wip_auth.mongo import mongo_credentials, mongo_identity
 
 from . import __version__
 from .api import api_router
@@ -57,8 +58,8 @@ async def lifespan(app: FastAPI):
     print("Starting WIP Registry Service...")
 
     # Initialize MongoDB connection
-    print(f"Connecting to MongoDB at {settings.MONGO_URI}...")
-    client: AsyncIOMotorClient = AsyncIOMotorClient(settings.MONGO_URI)
+    print(f"Connecting to MongoDB at {settings.MONGO_URI} as {mongo_identity()}...")
+    client: AsyncIOMotorClient = AsyncIOMotorClient(settings.MONGO_URI, **mongo_credentials())
 
     # Initialize Beanie ODM with retry — tolerates MongoDB not being ready
     # yet on fresh k8s boot, node drain, pod reschedule.

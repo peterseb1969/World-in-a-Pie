@@ -256,10 +256,12 @@ Two kinds of API keys exist, and the ritual treats them very differently:
   and every grant, and they cannot be re-registered with the same plaintext
   (the server generates key material and returns it exactly once).
 
-Until keys can be declared in the deploy spec (planned deployer work), plan
-every wipe-restore with a key-re-mint step afterward: recreate the runtime
-keys, re-grant their scopes, and redistribute the new plaintexts to whatever
-holds them (client configs, `*-api-key` files, app env).
+Keys declared in the deploy spec (`--api-key` / `--api-keys-file`, see
+`docs/wip-guide.md` §4.3) are deployment secrets and survive. Every runtime
+key does not: plan every wipe-restore with a key-re-mint step afterward.
+Recreate the runtime keys, re-grant their scopes, and redistribute the new
+plaintexts to whatever holds them (client configs, `*-api-key` files, app
+env).
 
 ---
 
