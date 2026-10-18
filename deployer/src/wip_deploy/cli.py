@@ -2375,6 +2375,21 @@ def add_app(
             ),
         ),
     ] = None,
+    tag: Annotated[
+        str | None,
+        typer.Option(
+            "--tag",
+            "--image-tag",
+            help=(
+                "Image tag override for this app, written to "
+                "`spec.images.tag_overrides` in the same mutation that "
+                "enables it. Name it when the app's image is not published "
+                "at the install's base tag — without it the app renders at "
+                "`spec.images.tag`, and a missing image rides the whole "
+                "health wait in ImagePullBackOff."
+            ),
+        ),
+    ] = None,
     name: Annotated[str | None, _name_opt()] = None,
     install_dir: Annotated[
         Path | None,
@@ -2390,12 +2405,16 @@ def add_app(
     Loads the persisted spec, appends the named app, re-discovers,
     re-renders, re-applies, and overwrites the deployment-state.
     The rest of the install (other apps, optional modules, secrets,
-    network) is preserved untouched (CASE-313).
+    network) is preserved untouched (CASE-313). `--tag` sets the app's
+    image-tag override in the same mutation — one render, one apply —
+    for apps whose images are built on their own cadence and don't
+    exist at the install's base tag.
 
     Examples:
 
       wip-deploy add-app react-console --name wip-dev-local
       wip-deploy add-app kb --app-source /Users/peter/Development/WIP-KB
+      wip-deploy add-app wip-aa --tag 20261018a --name prod-test
     """
     resolved_name, target_dir, deployment, components, apps_list, repo_root = (
         _load_and_discover_for_mutation(name, install_dir, repo_root)
@@ -2411,6 +2430,12 @@ def add_app(
         )
         raise typer.Exit(2)
 
+    if tag is not None:
+        tag = tag.strip()
+        if not tag:
+            typer.echo("error: --tag must be a non-empty image tag", err=True)
+            raise typer.Exit(2)
+
     # source override only makes sense for dev target.
     if source is not None and deployment.spec.target != "dev":
         typer.echo(
@@ -2424,9 +2449,10 @@ def add_app(
         raise typer.Exit(2)
 
     # Already-enabled is a friendly no-op; flipping disabled → enabled
-    # is a real mutation.
+    # is a real mutation — and so is a --tag or --app-source on an app
+    # that is already enabled (the tag path then behaves like app-deploy).
     existing = next((a for a in deployment.spec.apps if a.name == app_name), None)
-    if existing is not None and existing.enabled and source is None:
+    if existing is not None and existing.enabled and source is None and tag is None:
         typer.echo(
             f"⊙ app {app_name!r} is already enabled in this install — no change."
         )
@@ -2435,6 +2461,9 @@ def add_app(
         deployment.spec.apps.append(AppRef(name=app_name, enabled=True))
     else:
         existing.enabled = True
+
+    if tag is not None:
+        deployment.spec.images.tag_overrides[app_name] = tag
 
     if source is not None:
         # Mutate the DevPlatform.app_sources mapping.
@@ -2478,8 +2507,9 @@ def remove_app(
     """Remove an app from an existing install without dropping the rest.
 
     Mutation is the inverse of `add-app`: drops the AppRef from
-    `spec.apps`, drops any `app_sources` entry on the dev platform,
-    re-renders, re-applies, persists. The removed app's container is
+    `spec.apps`, drops any `app_sources` entry on the dev platform and
+    any `images.tag_overrides` entry for the app, re-renders,
+    re-applies, persists. The removed app's container is
     force-removed via `podman rm -f wip-<name>` so it doesn't linger
     as an orphan after the rendered compose stops mentioning it
     (CASE-313).
@@ -2506,6 +2536,11 @@ def remove_app(
 
     if deployment.spec.platform.dev is not None:
         deployment.spec.platform.dev.app_sources.pop(app_name, None)
+
+    # Drop the app's image-tag override with it — a removed app's
+    # override is dead state that warns on every later render and, if
+    # the app returns months later, silently pins it to a stale tag.
+    deployment.spec.images.tag_overrides.pop(app_name, None)
 
     # Stop the orphan container BEFORE re-applying so the operator
     # doesn't see a "running" app that's no longer in the spec.
