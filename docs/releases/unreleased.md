@@ -373,6 +373,24 @@ drops the flag.
 **Action:** apps that use `@wip/client` in the browser re-vendor
 `wip-client-0.60.1.tgz`.
 
+### CSV export: query export takes `namespace`; SQL errors are HTTP errors
+
+- `POST /api/reporting-sync/export/csv` accepts `namespace`, with the same
+  meaning as on `POST /query`: unqualified table names resolve in that
+  namespace's schema. Before, the request model rejected the field with 422,
+  so "export what I just queried" worked only for schema-qualified SQL.
+- Both export routes prepare the SQL before the response starts. An invalid
+  statement or an unknown relation or column is now a **400**, and a missing
+  table on `GET /export/csv` is a **404**. Before, these came back as **200
+  with an empty body**, because the error was raised after streaming had
+  begun. A failure that only appears mid-stream (e.g. a statement timeout on
+  a large export) can still truncate the body.
+- MCP `export_report_csv` gains `namespace`. Table mode requires it; before,
+  table mode always failed with 422 because the route requires a namespace.
+
+**Action:** callers that relied on an empty CSV for a missing table must
+handle the 404.
+
 ### Platform-maintained term closure in reporting
 
 Each namespace schema gains a `term_closure` table: one row per

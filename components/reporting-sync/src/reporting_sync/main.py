@@ -2057,21 +2057,71 @@ class CsvExportQuery(StrictModel):
     params: list[Any] = Field(default_factory=list)
     timeout_seconds: int = Field(default=120, ge=1, le=600)
     filename: str = Field(default="export.csv", pattern=r"^[\w\-. ]+\.csv$")
+    namespace: str | None = Field(
+        default=None,
+        description=(
+            "When set, the query runs with search_path = this namespace's schema, "
+            "so unqualified table names like `doc_patient` resolve there (same as "
+            "POST /query). Omit for cross-namespace queries and schema-qualify instead."
+        ),
+    )
 
 
-async def _stream_csv(conn: asyncpg.Connection, sql: str, params: list[Any]):
+def _search_path_schema(namespace: str | None) -> str | None:
+    """The namespace's schema name, validated as a safe identifier."""
+    if not namespace:
+        return None
+    try:
+        return SchemaManager(state.postgres_pool).schema_for(namespace)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+async def _check_export_sql(
+    sql: str, search_path_schema: str | None, *, missing_relation_status: int = 400,
+) -> None:
+    """Prepare `sql` on a short-lived connection before the response starts.
+
+    Once a StreamingResponse has sent its status line, a failure can only
+    truncate the body — the caller sees 200 and an empty or partial CSV. A
+    statement that does not parse, or names an unknown relation or column,
+    is caught here instead and becomes an HTTP error. The streaming
+    connection prepares again; holding this one across into the generator
+    would leak it if the client disconnects before streaming begins.
+    """
+    assert state.read_pool is not None
+    try:
+        async with state.read_pool.acquire() as conn, conn.transaction(readonly=True):
+            if search_path_schema:
+                await conn.execute(f'SET LOCAL search_path = "{search_path_schema}", public')
+            await conn.prepare(sql)
+    except asyncpg.UndefinedTableError as e:
+        raise HTTPException(status_code=missing_relation_status, detail=f"Query error: {e}") from e
+    except asyncpg.PostgresSyntaxError as e:
+        raise HTTPException(status_code=400, detail=f"SQL syntax error: {e}") from e
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=400, detail=f"Query error: {e}") from e
+
+
+async def _stream_csv(
+    conn: asyncpg.Connection, sql: str, params: list[Any], search_path_schema: str | None = None,
+):
     """Yield CSV rows from a PostgreSQL query using a cursor."""
-    stmt = await conn.prepare(sql)
-    columns = [attr.name for attr in stmt.get_attributes()]
-
-    # Header row
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(columns)
-    yield buf.getvalue()
-
-    # Data rows — fetch in batches to limit memory
+    # One transaction for the whole stream: the cursor needs it, and SET LOCAL
+    # keeps the search_path from leaking back into the pooled connection.
     async with conn.transaction():
+        if search_path_schema:
+            await conn.execute(f'SET LOCAL search_path = "{search_path_schema}", public')
+        stmt = await conn.prepare(sql)
+        columns = [attr.name for attr in stmt.get_attributes()]
+
+        # Header row
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(columns)
+        yield buf.getvalue()
+
+        # Data rows — fetch in batches to limit memory
         async for record in stmt.cursor(*params):
             buf = io.StringIO()
             writer = csv.writer(buf)
@@ -2112,6 +2162,7 @@ async def export_table_csv(
 
     qualified = f'"{schema}"."{table}"'
     download_name = filename or f"{namespace}_{table}.csv"
+    await _check_export_sql(f"SELECT * FROM {qualified}", None, missing_relation_status=404)
 
     async def generate():
         assert state.read_pool is not None
@@ -2141,6 +2192,9 @@ async def export_query_csv(body: CsvExportQuery):
             "INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, and REVOKE are prohibited.",
         )
 
+    search_path_schema = _search_path_schema(body.namespace)
+    await _check_export_sql(body.sql, search_path_schema)
+
     async def generate():
         assert state.read_pool is not None
         async with state.read_pool.acquire() as conn:
@@ -2148,7 +2202,7 @@ async def export_query_csv(body: CsvExportQuery):
                 f"SET statement_timeout = {body.timeout_seconds * 1000}"
             )
             await conn.execute("SET default_transaction_read_only = on")
-            async for chunk in _stream_csv(conn, body.sql, body.params):
+            async for chunk in _stream_csv(conn, body.sql, body.params, search_path_schema):
                 yield chunk
 
     return StreamingResponse(
