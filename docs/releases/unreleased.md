@@ -391,6 +391,15 @@ drops the flag.
 **Action:** callers that relied on an empty CSV for a missing table must
 handle the 404.
 
+### `@wip/client` 0.61.0: parity and CSV export on `client.reporting`
+
+`reporting.getParity(namespace, { includeCounts? })` returns the typed
+`NamespaceParityResult`. `reporting.exportTableCsv(table, namespace, …)` and
+`reporting.exportQueryCsv(sql, { params?, namespace?, … })` return a `Blob`;
+query export requires an admin or service key. Apps that call these
+endpoints with plain `fetch` can switch to the typed methods after
+re-vendoring `wip-client-0.61.0.tgz`.
+
 ### Platform-maintained term closure in reporting
 
 Each namespace schema gains a `term_closure` table: one row per

@@ -11,6 +11,7 @@ import type {
   EntityReferencesResponse,
   IntegrityCheckResult,
   ListViewsResponse,
+  NamespaceParityResult,
   ReferencedByResponse,
   RegisterViewResult,
   ReportEntity,
@@ -341,6 +342,63 @@ export class ReportingSyncService extends BaseService {
     recent_first?: boolean
   }): Promise<IntegrityCheckResult> {
     return this.get('/health/integrity', params)
+  }
+
+  /**
+   * Namespace parity: per sync-enabled template, is the reporting table
+   * present with the expected columns, and (by default) do its row counts
+   * match the active documents? Pass `includeCounts: false` for the cheap
+   * structure-only form.
+   */
+  async getParity(
+    namespace: string,
+    options?: { includeCounts?: boolean },
+  ): Promise<NamespaceParityResult> {
+    const params: Record<string, string> = { namespace }
+    if (options?.includeCounts !== undefined) params.include_counts = String(options.includeCounts)
+    return this.get('/parity', params)
+  }
+
+  // ── CSV Export ──
+
+  /**
+   * Export a whole reporting table (`doc_*` or a metadata table such as
+   * `terminologies`) from the namespace's schema as CSV. A table that does
+   * not exist is a 404. Not to be confused with `documents.exportTableCsv`,
+   * document-store's table-view CSV of one template.
+   */
+  async exportTableCsv(
+    table: string,
+    namespace: string,
+    options?: { filename?: string; timeoutSeconds?: number },
+  ): Promise<Blob> {
+    const params: Record<string, string> = { table, namespace }
+    if (options?.filename) params.filename = options.filename
+    if (options?.timeoutSeconds !== undefined) params.timeout_seconds = String(options.timeoutSeconds)
+    return this.getBlob('/export/csv', params)
+  }
+
+  /**
+   * Export a read-only SQL query's result as CSV. With `namespace`,
+   * unqualified table names resolve in that namespace's schema (as in
+   * `runQuery`); omit it and schema-qualify for cross-namespace SQL. An
+   * invalid statement or unknown relation is a 400, never an empty file.
+   * Requires an admin or service key.
+   */
+  async exportQueryCsv(
+    sql: string,
+    options?: {
+      params?: unknown[]
+      namespace?: string
+      timeoutSeconds?: number
+      filename?: string
+    },
+  ): Promise<Blob> {
+    const body: Record<string, unknown> = { sql, params: options?.params ?? [] }
+    if (options?.namespace) body.namespace = options.namespace
+    if (options?.timeoutSeconds !== undefined) body.timeout_seconds = options.timeoutSeconds
+    if (options?.filename) body.filename = options.filename
+    return this.postBlob('/export/csv', body)
   }
 
   // ── Search & Activity ──

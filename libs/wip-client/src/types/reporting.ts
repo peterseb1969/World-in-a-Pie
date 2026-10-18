@@ -316,6 +316,43 @@ export interface IntegrityCheckResult {
   issues: IntegrityIssue[]
 }
 
+/**
+ * One sync-enabled template's parity row. `table_present` and
+ * `missing_columns` refer to the LATEST version's physical table;
+ * `actual_rows` sums every version table. Count fields are null when
+ * counts were not requested (`includeCounts: false`) or not comparable.
+ */
+export interface TemplateParity {
+  template_value: string
+  sync_enabled: boolean
+  table_present: boolean
+  missing_columns: string[]
+  bookkeeping_row: boolean
+  counts_comparable: boolean
+  expected_documents: number | null
+  actual_rows: number | null
+  counts_match: boolean | null
+  error: string | null
+  version_tables: number[]
+  view_present: boolean
+  legacy_table: boolean
+}
+
+/** Does PostgreSQL reflect what sync should have built for a namespace? */
+export interface NamespaceParityResult {
+  namespace: string
+  schema_name: string
+  schema_present: boolean
+  table_count: number
+  bookkeeping_tables_ok: boolean
+  bookkeeping_error: string | null
+  templates: TemplateParity[]
+  templates_skipped_sync_disabled: number
+  structural_issues: number
+  count_mismatches: number
+  ok: boolean
+}
+
 export interface SearchResult {
   type: 'terminology' | 'term' | 'template' | 'document' | 'file'
   id: string

@@ -1908,6 +1908,55 @@ describe('Service classes via createWipClient', () => {
       expect(body.namespace).toBe('dnd-app')
     })
 
+    it('getParity sends GET /parity with namespace, include_counts only when given', async () => {
+      const parity = {
+        namespace: 'kb', schema_name: 'kb', schema_present: true, table_count: 3,
+        bookkeeping_tables_ok: true, bookkeeping_error: null, templates: [],
+        templates_skipped_sync_disabled: 0, structural_issues: 0, count_mismatches: 0, ok: true,
+      }
+      mockJsonResponse(parity)
+      const result = await client.reporting.getParity('kb')
+      expect(result.ok).toBe(true)
+      const url = new URL(fetchMock.mock.calls[0][0])
+      expect(url.pathname).toBe('/api/reporting-sync/parity')
+      expect(url.searchParams.get('namespace')).toBe('kb')
+      expect(url.searchParams.has('include_counts')).toBe(false)
+
+      mockJsonResponse(parity)
+      await client.reporting.getParity('kb', { includeCounts: false })
+      expect(new URL(fetchMock.mock.calls[1][0]).searchParams.get('include_counts')).toBe('false')
+    })
+
+    it('exportTableCsv sends GET /export/csv with table and namespace, returns a Blob', async () => {
+      fetchMock.mockResolvedValue(new Response('id\r\n1\r\n', { status: 200, headers: { 'Content-Type': 'text/csv' } }))
+
+      const blob = await client.reporting.exportTableCsv('doc_patient', 'clinic-a', { timeoutSeconds: 30 })
+
+      expect(blob).toBeInstanceOf(Blob)
+      expect(await blob.text()).toBe('id\r\n1\r\n')
+      const [rawUrl, options] = fetchMock.mock.calls[0]
+      const url = new URL(rawUrl)
+      expect(options.method).toBe('GET')
+      expect(url.pathname).toBe('/api/reporting-sync/export/csv')
+      expect(url.searchParams.get('table')).toBe('doc_patient')
+      expect(url.searchParams.get('namespace')).toBe('clinic-a')
+      expect(url.searchParams.get('timeout_seconds')).toBe('30')
+    })
+
+    it('exportQueryCsv sends POST /export/csv; namespace only when given', async () => {
+      fetchMock.mockImplementation(async () => new Response('n\r\n1\r\n', { status: 200 }))
+
+      const blob = await client.reporting.exportQueryCsv('SELECT 1 AS n', { namespace: 'clinic-a', params: [7] })
+      await client.reporting.exportQueryCsv('SELECT 1 AS n')
+
+      expect(await blob.text()).toBe('n\r\n1\r\n')
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/reporting-sync/export/csv')
+      expect(options.method).toBe('POST')
+      expect(JSON.parse(options.body)).toEqual({ sql: 'SELECT 1 AS n', params: [7], namespace: 'clinic-a' })
+      expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ sql: 'SELECT 1 AS n', params: [] })
+    })
+
     it('listTables sends GET without filter', async () => {
       mockJsonResponse({ tables: [{ table_name: 'dnd_monster', row_count: 100 }] })
 

@@ -348,6 +348,13 @@ var BaseService = class {
       responseType: "blob"
     });
   }
+  postBlob(path, body, params) {
+    return this.transport.request("POST", `${this.basePath}${path}`, {
+      body,
+      params,
+      responseType: "blob"
+    });
+  }
   postFormData(path, formData, params) {
     return this.transport.request("POST", `${this.basePath}${path}`, {
       body: formData,
@@ -1528,6 +1535,44 @@ var ReportingSyncService = class extends BaseService {
   // ── Integrity ──
   async getIntegrityCheck(params) {
     return this.get("/health/integrity", params);
+  }
+  /**
+   * Namespace parity: per sync-enabled template, is the reporting table
+   * present with the expected columns, and (by default) do its row counts
+   * match the active documents? Pass `includeCounts: false` for the cheap
+   * structure-only form.
+   */
+  async getParity(namespace, options) {
+    const params = { namespace };
+    if (options?.includeCounts !== void 0) params.include_counts = String(options.includeCounts);
+    return this.get("/parity", params);
+  }
+  // ── CSV Export ──
+  /**
+   * Export a whole reporting table (`doc_*` or a metadata table such as
+   * `terminologies`) from the namespace's schema as CSV. A table that does
+   * not exist is a 404. Not to be confused with `documents.exportTableCsv`,
+   * document-store's table-view CSV of one template.
+   */
+  async exportTableCsv(table, namespace, options) {
+    const params = { table, namespace };
+    if (options?.filename) params.filename = options.filename;
+    if (options?.timeoutSeconds !== void 0) params.timeout_seconds = String(options.timeoutSeconds);
+    return this.getBlob("/export/csv", params);
+  }
+  /**
+   * Export a read-only SQL query's result as CSV. With `namespace`,
+   * unqualified table names resolve in that namespace's schema (as in
+   * `runQuery`); omit it and schema-qualify for cross-namespace SQL. An
+   * invalid statement or unknown relation is a 400, never an empty file.
+   * Requires an admin or service key.
+   */
+  async exportQueryCsv(sql, options) {
+    const body = { sql, params: options?.params ?? [] };
+    if (options?.namespace) body.namespace = options.namespace;
+    if (options?.timeoutSeconds !== void 0) body.timeout_seconds = options.timeoutSeconds;
+    if (options?.filename) body.filename = options.filename;
+    return this.postBlob("/export/csv", body);
   }
   // ── Search & Activity ──
   /**

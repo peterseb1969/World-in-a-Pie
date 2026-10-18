@@ -49,6 +49,14 @@ export abstract class BaseService {
     })
   }
 
+  protected postBlob(path: string, body?: unknown, params?: Record<string, unknown> | object): Promise<Blob> {
+    return this.transport.request<Blob>('POST', `${this.basePath}${path}`, {
+      body,
+      params: params as Record<string, unknown>,
+      responseType: 'blob',
+    })
+  }
+
   protected postFormData<T>(path: string, formData: FormData, params?: Record<string, unknown> | object): Promise<T> {
     return this.transport.request<T>('POST', `${this.basePath}${path}`, {
       body: formData,
