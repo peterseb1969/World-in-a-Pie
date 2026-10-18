@@ -32,6 +32,9 @@ spec:
       - {name: PORT, source: {literal: "3011"}}
       - {name: APP_BASE_PATH, source: {literal: /apps/rc}}
       - {name: NODE_ENV, source: {literal: production}}
+      # RC is an admin console: it calls WIP with the platform key, so any
+      # user who reaches it can write everywhere. Only wip-admins may open it.
+      - {name: ALLOWED_GROUPS, source: {literal: wip-admins}}
     optional:
       # askBar / NL-query feature uses Anthropic. Degrades gracefully
       # when the key is unset.
