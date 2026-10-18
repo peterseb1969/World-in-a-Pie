@@ -7,20 +7,25 @@ import { STALE_TIMES } from '../utils/defaults.js'
 
 /**
  * Fetch a template by value and convert it to a framework-agnostic form schema.
+ *
+ * Pass `namespace` whenever the client's key can see more than one namespace
+ * (a template value is unique only within a namespace) — see
+ * `useTemplateByValue`.
  */
 export function useFormSchema(
   templateValue: string,
-  options?: Omit<UseQueryOptions<FormField[]>, 'queryKey' | 'queryFn'>,
+  options?: { namespace?: string } & Omit<UseQueryOptions<FormField[]>, 'queryKey' | 'queryFn'>,
 ) {
   const client = useWipClient()
+  const { namespace, ...queryOptions } = options ?? {}
   return useQuery({
-    queryKey: [...wipKeys.templates.byValue(templateValue), 'form-schema'],
+    queryKey: [...wipKeys.templates.byValue(templateValue, namespace), 'form-schema'],
     queryFn: async () => {
-      const template = await client.templates.getTemplateByValue(templateValue)
+      const template = await client.templates.getTemplateByValue(templateValue, { namespace })
       return templateToFormSchema(template)
     },
     staleTime: STALE_TIMES.templates,
     enabled: !!templateValue,
-    ...options,
+    ...queryOptions,
   })
 }

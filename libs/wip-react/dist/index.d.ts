@@ -52,7 +52,7 @@ declare const wipKeys: {
         readonly all: readonly ["wip", "templates"];
         readonly list: (params?: object) => readonly ["wip", "templates", "list", object | undefined];
         readonly detail: (id: string) => readonly ["wip", "templates", "detail", string];
-        readonly byValue: (value: string) => readonly ["wip", "templates", "by-value", string];
+        readonly byValue: (value: string, namespace?: string) => readonly ["wip", "templates", "by-value", string, string | null];
     };
     readonly documents: {
         readonly all: readonly ["wip", "documents"];
@@ -140,7 +140,18 @@ declare function useTemplates(params?: {
     sort_order?: 'asc' | 'desc';
 }, options?: Omit<UseQueryOptions<TemplateListResponse>, 'queryKey' | 'queryFn'>): _tanstack_react_query.UseQueryResult<TemplateListResponse, Error>;
 declare function useTemplate(id: string, options?: Omit<UseQueryOptions<Template>, 'queryKey' | 'queryFn'>): _tanstack_react_query.UseQueryResult<Template, Error>;
-declare function useTemplateByValue(value: string, options?: Omit<UseQueryOptions<Template>, 'queryKey' | 'queryFn'>): _tanstack_react_query.UseQueryResult<Template, Error>;
+/**
+ * Fetch the latest template with this value.
+ *
+ * A template value is unique only within a namespace: pass `namespace`
+ * whenever the client's key can see more than one, or the lookup returns
+ * whichever namespace's template comes first. A scoped lookup does not fall
+ * back to the `wip` namespace. Omitting `namespace` is right for a
+ * single-namespace key, whose namespace the server derives.
+ */
+declare function useTemplateByValue(value: string, options?: {
+    namespace?: string;
+} & Omit<UseQueryOptions<Template>, 'queryKey' | 'queryFn'>): _tanstack_react_query.UseQueryResult<Template, Error>;
 
 declare function useDocuments(params?: DocumentQueryParams, options?: Omit<UseQueryOptions<DocumentListResponse>, 'queryKey' | 'queryFn'>): _tanstack_react_query.UseQueryResult<DocumentListResponse, Error>;
 declare function useDocument(id: string, options?: Omit<UseQueryOptions<Document>, 'queryKey' | 'queryFn'>): _tanstack_react_query.UseQueryResult<Document, Error>;
@@ -271,6 +282,9 @@ type BatchSyncVars = {
     template_value: string;
     force?: boolean;
     page_size?: number;
+    /** Picks the template when its value exists in several namespaces and
+     * scopes the sync to that namespace's documents. Required with `force`. */
+    namespace?: string;
 };
 /** Trigger a batch sync for a specific template. */
 declare function useTriggerBatchSync(options?: Omit<UseMutationOptions<BatchSyncResponse, Error, BatchSyncVars>, 'mutationFn'>): _tanstack_react_query.UseMutationResult<BatchSyncResponse, Error, BatchSyncVars, unknown>;
@@ -521,8 +535,14 @@ declare function useDeactivateEntry(options?: Omit<UseMutationOptions<{
 
 /**
  * Fetch a template by value and convert it to a framework-agnostic form schema.
+ *
+ * Pass `namespace` whenever the client's key can see more than one namespace
+ * (a template value is unique only within a namespace) — see
+ * `useTemplateByValue`.
  */
-declare function useFormSchema(templateValue: string, options?: Omit<UseQueryOptions<FormField[]>, 'queryKey' | 'queryFn'>): _tanstack_react_query.UseQueryResult<FormField[], Error>;
+declare function useFormSchema(templateValue: string, options?: {
+    namespace?: string;
+} & Omit<UseQueryOptions<FormField[]>, 'queryKey' | 'queryFn'>): _tanstack_react_query.UseQueryResult<FormField[], Error>;
 
 interface UseBulkImportOptions<T> {
     writeFn: (batch: T[]) => Promise<BulkResponse>;

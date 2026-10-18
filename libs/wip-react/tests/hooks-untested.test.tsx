@@ -31,7 +31,7 @@ vi.mock('@wip/client', async () => {
   const actual = await vi.importActual<typeof import('@wip/client')>('@wip/client')
   return {
     ...actual,
-    templateToFormSchema: vi.fn((template: { entity_id?: string }) => [
+    templateToFormSchema: vi.fn((_template: { entity_id?: string }) => [
       { name: 'field_a', type: 'string', mandatory: true },
       { name: 'field_b', type: 'integer', mandatory: false },
     ]),
@@ -57,6 +57,7 @@ vi.mock('@wip/client', async () => {
 
 // Import hooks AFTER the mock setup
 import { useFormSchema } from '../src/hooks/use-form-schema'
+import { wipKeys } from '../src/utils/keys'
 import { useNamespaces, useRegistrySearch } from '../src/hooks/use-registry'
 import { useBulkImport } from '../src/hooks/use-bulk-import'
 import {
@@ -244,7 +245,7 @@ describe('useFormSchema', () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-    expect(mockClient.templates.getTemplateByValue).toHaveBeenCalledWith('SCHEMA_X')
+    expect(mockClient.templates.getTemplateByValue).toHaveBeenCalledWith('SCHEMA_X', { namespace: undefined })
     expect(templateToFormSchema).toHaveBeenCalled()
     expect(result.current.data).toHaveLength(2)
     expect(result.current.data?.[0]).toMatchObject({ name: 'field_a', type: 'string' })
@@ -267,6 +268,23 @@ describe('useFormSchema', () => {
 
     expect(result.current.fetchStatus).toBe('idle')
     expect(mockClient.templates.getTemplateByValue).not.toHaveBeenCalled()
+  })
+
+  it('scopes the lookup and the cache key to the namespace', async () => {
+    const { Wrapper, queryClient } = createWrapper(mockClient)
+    const { result } = renderHook(
+      () => useFormSchema('SCHEMA_X', { namespace: 'ns-a' }),
+      { wrapper: Wrapper },
+    )
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(mockClient.templates.getTemplateByValue).toHaveBeenCalledWith('SCHEMA_X', { namespace: 'ns-a' })
+    expect(
+      queryClient.getQueryData([...wipKeys.templates.byValue('SCHEMA_X', 'ns-a'), 'form-schema']),
+    ).toBeDefined()
+    expect(
+      queryClient.getQueryData([...wipKeys.templates.byValue('SCHEMA_X', 'ns-b'), 'form-schema']),
+    ).toBeUndefined()
   })
 })
 
@@ -581,6 +599,22 @@ describe('useTriggerBatchSync', () => {
     expect(mockClient.reporting.triggerBatchSync).toHaveBeenCalledWith(
       'X',
       { force: false, page_size: 100 },
+    )
+  })
+
+  it('forwards namespace, which the server requires with force', async () => {
+    const mockClient = createMockClient()
+    const { Wrapper } = createWrapper(mockClient)
+    const { result } = renderHook(() => useTriggerBatchSync(), { wrapper: Wrapper })
+
+    await act(async () => {
+      result.current.mutate({ template_value: 'X', force: true, namespace: 'ns-a' })
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(mockClient.reporting.triggerBatchSync).toHaveBeenCalledWith(
+      'X',
+      { force: true, page_size: undefined, namespace: 'ns-a' },
     )
   })
 })

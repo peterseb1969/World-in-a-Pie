@@ -227,7 +227,7 @@ const { data: term } = useTerm('COUNTRY:United States')
 |------|---------|-----------|---------|
 | `useTemplates(params?)` | `TemplateListResponse` | 5min | always |
 | `useTemplate(id)` | `Template` | 5min | when `id` is truthy |
-| `useTemplateByValue(value)` | `Template` | 5min | when `value` is truthy |
+| `useTemplateByValue(value, { namespace? })` | `Template` | 5min | when `value` is truthy |
 
 ```tsx
 // List all active templates (latest versions only)
@@ -236,9 +236,11 @@ const { data } = useTemplates({ latest_only: true, status: 'active' })
 // Get by ID
 const { data: template } = useTemplate('PATIENT_RECORD')
 
-// Get by value code (e.g., 'PATIENT_RECORD')
-const { data: template } = useTemplateByValue('PATIENT_RECORD')
+// Get by value code (e.g., 'PATIENT_RECORD') in a given namespace
+const { data: template } = useTemplateByValue('PATIENT_RECORD', { namespace: 'clinic' })
 ```
+
+**A template value is unique only within a namespace.** Pass `namespace` whenever your key can see more than one namespace (an admin or multi-namespace key): without it the lookup returns whichever namespace's template comes first. A scoped lookup does not fall back to the `wip` namespace. With a single-namespace key, omit it; the server derives it. The namespace is part of the query key, so lookups in different namespaces never share a cache entry.
 
 ### Documents
 
@@ -403,7 +405,7 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 | Hook | Input | Returns | Invalidates |
 |------|-------|---------|-------------|
 | `useTriggerBatchSyncAll()` | `BatchSyncAllVars` | `BatchSyncResponse[]` | `reporting.batchJobs` |
-| `useTriggerBatchSync()` | `BatchSyncVars` | `BatchSyncResponse` | `reporting.batchJobs` |
+| `useTriggerBatchSync()` | `BatchSyncVars` (`template_value`, `force?`, `page_size?`, `namespace?` — required with `force`) | `BatchSyncResponse` | `reporting.batchJobs` |
 | `useTriggerTerminologySync()` | `EntitySyncVars` | `BatchEntitySyncResult` | — (backend sync; no local cache) |
 | `useTriggerTermSync()` | `EntitySyncVars` | `BatchEntitySyncResult` | — (backend sync; no local cache) |
 | `useTriggerTermRelationSync()` | `EntitySyncVars` | `BatchEntitySyncResult` | — (backend sync; no local cache) |
@@ -508,7 +510,8 @@ Fetches a template by value and converts it to framework-agnostic form field des
 import { useFormSchema } from '@wip/react'
 
 function PatientForm() {
-  const { data: fields, isLoading } = useFormSchema('PATIENT_RECORD')
+  // Pass `namespace` when your key can see more than one (see useTemplateByValue)
+  const { data: fields, isLoading } = useFormSchema('PATIENT_RECORD', { namespace: 'clinic' })
 
   if (isLoading || !fields) return <div>Loading form...</div>
 
@@ -543,7 +546,8 @@ function PatientForm() {
 
 - **Stale time:** 5min (template stale time)
 - **Enabled:** only when `templateValue` is truthy
-- **Query key:** `[...wipKeys.templates.byValue(value), 'form-schema']`
+- **Options:** `namespace?` plus the usual query options
+- **Query key:** `[...wipKeys.templates.byValue(value, namespace), 'form-schema']`
 
 ### useBulkImport
 
@@ -640,7 +644,7 @@ wipKeys.terms.detail(id)                       → ['wip', 'terms', 'detail', id
 wipKeys.templates.all                          → ['wip', 'templates']
 wipKeys.templates.list(params?)                → ['wip', 'templates', 'list', params]
 wipKeys.templates.detail(id)                   → ['wip', 'templates', 'detail', id]
-wipKeys.templates.byValue(value)               → ['wip', 'templates', 'by-value', value]
+wipKeys.templates.byValue(value, namespace?)   → ['wip', 'templates', 'by-value', value, namespace ?? null]
 wipKeys.documents.all                          → ['wip', 'documents']
 wipKeys.documents.list(params?)                → ['wip', 'documents', 'list', params]
 wipKeys.documents.detail(id)                   → ['wip', 'documents', 'detail', id]

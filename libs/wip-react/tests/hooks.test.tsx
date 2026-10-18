@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { WipProvider } from '../src/provider'
 import { useTerminologies, useTerminology } from '../src/hooks/use-terminologies'
 import { useTerms, useTerm } from '../src/hooks/use-terms'
-import { useTemplates, useTemplate } from '../src/hooks/use-templates'
+import { useTemplates, useTemplate, useTemplateByValue } from '../src/hooks/use-templates'
 import { useDocuments, useDocument, useTableView } from '../src/hooks/use-documents'
 import { useFiles, useFile } from '../src/hooks/use-files'
 import {
@@ -257,6 +257,44 @@ describe('Query hooks', () => {
     })
   })
 
+  describe('useTemplateByValue', () => {
+    it('passes namespace to the lookup and keeps namespaces in separate cache entries', async () => {
+      mockClient.templates.getTemplateByValue.mockImplementation(
+        async (value: string, opts?: { namespace?: string }) =>
+          ({ entity_id: `tpl-${opts?.namespace}`, value, namespace: opts?.namespace }),
+      )
+      const { Wrapper, queryClient } = createWrapper(mockClient)
+      const a = renderHook(() => useTemplateByValue('CASE_RECORD', { namespace: 'ns-a' }), { wrapper: Wrapper })
+      const b = renderHook(() => useTemplateByValue('CASE_RECORD', { namespace: 'ns-b' }), { wrapper: Wrapper })
+
+      await waitFor(() => expect(a.result.current.isSuccess && b.result.current.isSuccess).toBe(true))
+      expect(mockClient.templates.getTemplateByValue).toHaveBeenCalledWith('CASE_RECORD', { namespace: 'ns-a' })
+      expect(mockClient.templates.getTemplateByValue).toHaveBeenCalledWith('CASE_RECORD', { namespace: 'ns-b' })
+      expect(a.result.current.data?.entity_id).toBe('tpl-ns-a')
+      expect(b.result.current.data?.entity_id).toBe('tpl-ns-b')
+      expect(queryClient.getQueryData(wipKeys.templates.byValue('CASE_RECORD', 'ns-a'))).toMatchObject({ entity_id: 'tpl-ns-a' })
+    })
+
+    it('without namespace sends an unscoped lookup under its own key', async () => {
+      const { Wrapper, queryClient } = createWrapper(mockClient)
+      const { result } = renderHook(() => useTemplateByValue('CASE_RECORD'), { wrapper: Wrapper })
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true))
+      expect(mockClient.templates.getTemplateByValue).toHaveBeenCalledWith('CASE_RECORD', { namespace: undefined })
+      expect(queryClient.getQueryData(wipKeys.templates.byValue('CASE_RECORD'))).toBeDefined()
+    })
+
+    it('still honours query options alongside namespace', () => {
+      const { Wrapper } = createWrapper(mockClient)
+      const { result } = renderHook(
+        () => useTemplateByValue('CASE_RECORD', { namespace: 'ns-a', enabled: false }),
+        { wrapper: Wrapper },
+      )
+      expect(result.current.fetchStatus).toBe('idle')
+      expect(mockClient.templates.getTemplateByValue).not.toHaveBeenCalled()
+    })
+  })
+
   // ---- Documents ----
 
   describe('useDocuments', () => {
@@ -382,11 +420,11 @@ describe('Mutation hooks', () => {
 
   describe('useCreateTerminology', () => {
     it('calls client.defStore.createTerminology', async () => {
-      const { Wrapper, queryClient } = createWrapper(mockClient)
+      const { Wrapper } = createWrapper(mockClient)
       const { result } = renderHook(() => useCreateTerminology(), { wrapper: Wrapper })
 
       const data = { value: 'NewTerminology' }
-      await act(() => result.current.mutateAsync(data as any))
+      await act(() => result.current.mutateAsync(data as never))
 
       expect(mockClient.defStore.createTerminology).toHaveBeenCalledWith(data)
     })
@@ -396,7 +434,7 @@ describe('Mutation hooks', () => {
       const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
       const { result } = renderHook(() => useCreateTerminology(), { wrapper: Wrapper })
 
-      await act(() => result.current.mutateAsync({ value: 'New' } as any))
+      await act(() => result.current.mutateAsync({ value: 'New' } as never))
 
       expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: wipKeys.terminologies.all,
@@ -410,7 +448,7 @@ describe('Mutation hooks', () => {
       const { result } = renderHook(() => useCreateTerm('tid1', 'ns1'), { wrapper: Wrapper })
 
       const data = { value: 'NewTerm' }
-      await act(() => result.current.mutateAsync(data as any))
+      await act(() => result.current.mutateAsync(data as never))
 
       expect(mockClient.defStore.createTerm).toHaveBeenCalledWith('tid1', data, { namespace: 'ns1' })
     })
@@ -420,7 +458,7 @@ describe('Mutation hooks', () => {
       const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
       const { result } = renderHook(() => useCreateTerm('tid1', 'ns1'), { wrapper: Wrapper })
 
-      await act(() => result.current.mutateAsync({ value: 'New' } as any))
+      await act(() => result.current.mutateAsync({ value: 'New' } as never))
 
       expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: wipKeys.terms.all,
@@ -486,7 +524,7 @@ describe('Mutation hooks', () => {
       const { result } = renderHook(() => useCreateDocument(), { wrapper: Wrapper })
 
       const data = { template_id: 'tpl1', data: { name: 'test' } }
-      await act(() => result.current.mutateAsync(data as any))
+      await act(() => result.current.mutateAsync(data as never))
 
       expect(mockClient.documents.createDocument).toHaveBeenCalledWith(data)
     })
@@ -496,7 +534,7 @@ describe('Mutation hooks', () => {
       const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
       const { result } = renderHook(() => useCreateDocument(), { wrapper: Wrapper })
 
-      await act(() => result.current.mutateAsync({ template_id: 'tpl1', data: {} } as any))
+      await act(() => result.current.mutateAsync({ template_id: 'tpl1', data: {} } as never))
 
       expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: wipKeys.documents.all,
@@ -576,7 +614,7 @@ describe('Mutation hooks', () => {
       const file = new Blob(['hello'], { type: 'text/plain' })
       const metadata = { document_id: 'doc1' }
       await act(() =>
-        result.current.mutateAsync({ file, filename: 'test.txt', metadata: metadata as any }),
+        result.current.mutateAsync({ file, filename: 'test.txt', metadata: metadata as never }),
       )
 
       // The hook's mutationFn destructures `{ file, filename, metadata, namespace }`
@@ -615,7 +653,7 @@ describe('Mutation hooks', () => {
 
       const items = [{ source_term_id: 's', target_term_id: 't', relation_type: 'is_a' }]
       await act(() =>
-        result.current.mutateAsync({ items: items as any, namespace: 'wip' }),
+        result.current.mutateAsync({ items: items as never, namespace: 'wip' }),
       )
 
       expect(mockClient.defStore.createTermRelations).toHaveBeenCalledWith(items, 'wip')
@@ -627,7 +665,7 @@ describe('Mutation hooks', () => {
       const { result } = renderHook(() => useCreateTermRelations(), { wrapper: Wrapper })
 
       await act(() =>
-        result.current.mutateAsync({ items: [] as any, namespace: 'wip' }),
+        result.current.mutateAsync({ items: [] as never, namespace: 'wip' }),
       )
 
       expect(invalidateSpy).toHaveBeenCalledWith({
@@ -643,7 +681,7 @@ describe('Mutation hooks', () => {
 
       const items = [{ source_term_id: 's', target_term_id: 't', relation_type: 'is_a' }]
       await act(() =>
-        result.current.mutateAsync({ items: items as any, namespace: 'wip' }),
+        result.current.mutateAsync({ items: items as never, namespace: 'wip' }),
       )
 
       expect(mockClient.defStore.deleteTermRelations).toHaveBeenCalledWith(items, 'wip')
@@ -655,7 +693,7 @@ describe('Mutation hooks', () => {
       const { result } = renderHook(() => useDeleteTermRelations(), { wrapper: Wrapper })
 
       await act(() =>
-        result.current.mutateAsync({ items: [] as any, namespace: 'wip' }),
+        result.current.mutateAsync({ items: [] as never, namespace: 'wip' }),
       )
 
       expect(invalidateSpy).toHaveBeenCalledWith({

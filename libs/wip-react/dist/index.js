@@ -71,7 +71,9 @@ var wipKeys = {
     all: ["wip", "templates"],
     list: (params) => ["wip", "templates", "list", params],
     detail: (id) => ["wip", "templates", "detail", id],
-    byValue: (value) => ["wip", "templates", "by-value", value]
+    // A template value is unique only within a namespace, so the namespace
+    // is part of the key; `null` is the unscoped lookup.
+    byValue: (value, namespace) => ["wip", "templates", "by-value", value, namespace ?? null]
   },
   documents: {
     all: ["wip", "documents"],
@@ -188,12 +190,13 @@ function useTemplate(id, options) {
 }
 function useTemplateByValue(value, options) {
   const client = useWipClient();
+  const { namespace, ...queryOptions } = options ?? {};
   return useQuery({
-    queryKey: wipKeys.templates.byValue(value),
-    queryFn: () => client.templates.getTemplateByValue(value),
+    queryKey: wipKeys.templates.byValue(value, namespace),
+    queryFn: () => client.templates.getTemplateByValue(value, { namespace }),
     staleTime: STALE_TIMES.templates,
     enabled: !!value,
-    ...options
+    ...queryOptions
   });
 }
 function useDocuments(params, options) {
@@ -395,7 +398,7 @@ function useTriggerBatchSync(options) {
   const { onSuccess, ...rest } = options ?? {};
   return useMutation({
     ...rest,
-    mutationFn: ({ template_value, force, page_size }) => client.reporting.triggerBatchSync(template_value, { force, page_size }),
+    mutationFn: ({ template_value, force, page_size, namespace }) => client.reporting.triggerBatchSync(template_value, { force, page_size, namespace }),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.reporting.batchJobs() });
       onSuccess?.(...args);
@@ -913,15 +916,16 @@ function useDeactivateEntry(options) {
 }
 function useFormSchema(templateValue, options) {
   const client = useWipClient();
+  const { namespace, ...queryOptions } = options ?? {};
   return useQuery({
-    queryKey: [...wipKeys.templates.byValue(templateValue), "form-schema"],
+    queryKey: [...wipKeys.templates.byValue(templateValue, namespace), "form-schema"],
     queryFn: async () => {
-      const template = await client.templates.getTemplateByValue(templateValue);
+      const template = await client.templates.getTemplateByValue(templateValue, { namespace });
       return templateToFormSchema(template);
     },
     staleTime: STALE_TIMES.templates,
     enabled: !!templateValue,
-    ...options
+    ...queryOptions
   });
 }
 function useBulkImport(options) {

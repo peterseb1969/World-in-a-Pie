@@ -19,7 +19,10 @@ export const wipKeys = {
     all: ['wip', 'templates'] as const,
     list: (params?: object) => ['wip', 'templates', 'list', params] as const,
     detail: (id: string) => ['wip', 'templates', 'detail', id] as const,
-    byValue: (value: string) => ['wip', 'templates', 'by-value', value] as const,
+    // A template value is unique only within a namespace, so the namespace
+    // is part of the key; `null` is the unscoped lookup.
+    byValue: (value: string, namespace?: string) =>
+      ['wip', 'templates', 'by-value', value, namespace ?? null] as const,
   },
 
   documents: {

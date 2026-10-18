@@ -36,16 +36,26 @@ export function useTemplate(
   })
 }
 
+/**
+ * Fetch the latest template with this value.
+ *
+ * A template value is unique only within a namespace: pass `namespace`
+ * whenever the client's key can see more than one, or the lookup returns
+ * whichever namespace's template comes first. A scoped lookup does not fall
+ * back to the `wip` namespace. Omitting `namespace` is right for a
+ * single-namespace key, whose namespace the server derives.
+ */
 export function useTemplateByValue(
   value: string,
-  options?: Omit<UseQueryOptions<Template>, 'queryKey' | 'queryFn'>,
+  options?: { namespace?: string } & Omit<UseQueryOptions<Template>, 'queryKey' | 'queryFn'>,
 ) {
   const client = useWipClient()
+  const { namespace, ...queryOptions } = options ?? {}
   return useQuery({
-    queryKey: wipKeys.templates.byValue(value),
-    queryFn: () => client.templates.getTemplateByValue(value),
+    queryKey: wipKeys.templates.byValue(value, namespace),
+    queryFn: () => client.templates.getTemplateByValue(value, { namespace }),
     staleTime: STALE_TIMES.templates,
     enabled: !!value,
-    ...options,
+    ...queryOptions,
   })
 }

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { UseMutationOptions, UseQueryOptions, QueryKey } from '@tanstack/react-query'
+import type { UseMutationOptions, UseQueryOptions } from '@tanstack/react-query'
 import type {
   ActivityResponse,
   BatchEntitySyncResult,
@@ -199,6 +199,9 @@ type BatchSyncVars = {
   template_value: string
   force?: boolean
   page_size?: number
+  /** Picks the template when its value exists in several namespaces and
+   * scopes the sync to that namespace's documents. Required with `force`. */
+  namespace?: string
 }
 
 /** Trigger a batch sync for a specific template. */
@@ -210,8 +213,8 @@ export function useTriggerBatchSync(
   const { onSuccess, ...rest } = options ?? {}
   return useMutation({
     ...rest,
-    mutationFn: ({ template_value, force, page_size }) =>
-      client.reporting.triggerBatchSync(template_value, { force, page_size }),
+    mutationFn: ({ template_value, force, page_size, namespace }) =>
+      client.reporting.triggerBatchSync(template_value, { force, page_size, namespace }),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.reporting.batchJobs() })
       onSuccess?.(...args)
