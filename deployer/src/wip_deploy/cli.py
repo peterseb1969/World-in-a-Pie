@@ -867,6 +867,11 @@ def render(
     Useful for inspection: look at the generated docker-compose.yaml,
     Caddyfile, and Dex config before starting the stack.
 
+    A dry run writes only the rendered tree. It reads an existing secret
+    store but never creates or changes one (missing secrets are generated
+    in memory), and it refuses to write into a directory that holds a live
+    install — use `redeploy` to re-render an install.
+
     Examples:
 
       wip-deploy render --preset standard
@@ -912,13 +917,34 @@ def render(
     _validate_or_exit(deployment, components, apps_list)
     install_dir = output_dir or _default_install_dir(name)
 
+    # A render is assembled from flags, not from an install's saved spec, and
+    # `rebuild`/`restart`/`start` act on the rendered files as they stand —
+    # so writing a preview over a live install would silently replace what
+    # those verbs run.
+    if (install_dir / _DEPLOYMENT_STATE_FILENAME).exists():
+        typer.echo(
+            f"error: {install_dir} holds a live install (it has a "
+            f"{_DEPLOYMENT_STATE_FILENAME}); render will not overwrite its "
+            "files. Pass --output-dir <scratch dir> to preview, or use "
+            "`wip-deploy redeploy` to re-render the install itself.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
     # CASE-373 — render mirrors install's auto-detection so the previewed
-    # tree matches what install would produce. Imported-bundle CA already
-    # in the target dir → flag flips, rendered compose gets the mount.
-    if (install_dir / "secrets" / "external-ca.crt").exists():
+    # tree matches what install would produce: an imported-bundle CA in the
+    # install's secret store flips the flag and the compose gets the mount.
+    # Read from the store, not the output dir, which may be anywhere.
+    secrets_location = deployment.spec.secrets.location
+    if secrets_location is not None and (
+        Path(secrets_location) / "external-ca.crt"
+    ).exists():
         deployment.spec.network.external_ca_mount = True
 
-    secrets = _ensure_secrets_via_spec(deployment, components, apps_list)
+    # Read-only: a preview must never create or extend a secret store.
+    secrets = _ensure_secrets_via_spec(
+        deployment, components, apps_list, persist=False,
+    )
     # The same root _assemble discovered from; its success above
     # guarantees the walk resolves.
     render_root = (repo_root or find_repo_root()).resolve()
@@ -941,6 +967,11 @@ def render(
     typer.echo(typer.style(f"✓ Rendered to {install_dir}", fg=typer.colors.GREEN))
     for path in tree.paths():
         typer.echo(f"  {path}")
+    typer.echo(
+        "note: the rendered files contain secret values (.env, the Dex "
+        "config, k8s secrets.yaml); delete the directory when done. No "
+        "secret store was created or changed."
+    )
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -4969,9 +5000,11 @@ def _ensure_secrets_via_spec(
     deployment: Deployment,
     components: list[Component],
     apps_list: list[App],
+    *,
+    persist: bool = True,
 ) -> ResolvedSecrets:
     """Construct the secret backend from `spec.secrets` and run
-    `ensure_secrets`."""
+    `ensure_secrets` (`persist=False`: read-only, for dry runs)."""
     spec = deployment.spec.secrets
     if spec.backend != "file":
         typer.echo(
@@ -4987,7 +5020,7 @@ def _ensure_secrets_via_spec(
         raise typer.Exit(2)
 
     backend = FileSecretBackend(Path(location))
-    return ensure_secrets(deployment, components, apps_list, backend)
+    return ensure_secrets(deployment, components, apps_list, backend, persist=persist)
 
 
 def _render_tree(

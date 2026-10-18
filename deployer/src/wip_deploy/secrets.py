@@ -129,8 +129,8 @@ def collect_required_secrets(
             # design — and `wip-deploy status --diff` reports false drift
             # on the dex-config ConfigMap every time.
             names.add(bcrypt_secret_name(u.password_secret.name))
-        for client in dex_cfg.clients:
-            names.add(client.secret.name)
+        for dex_client in dex_cfg.clients:
+            names.add(dex_client.secret.name)
 
     return names
 
@@ -211,12 +211,16 @@ def ensure_secrets(
     components: list[Component],
     apps: list[App],
     backend: SecretBackend,
+    *,
+    persist: bool = True,
 ) -> ResolvedSecrets:
     """Ensure every required secret exists via the backend.
 
     The backend caches existing values and generates only for missing
     names. Persistence is a separate step (`backend.persist()`); this
-    orchestrator calls it automatically on success.
+    orchestrator calls it automatically on success. `persist=False` is the
+    read-only mode a dry run needs: existing values are read, missing ones
+    are generated in memory only, and nothing is written to the store.
 
     Derived secrets (CASE-295): names ending in `.bcrypt` are paired
     with the same name minus the suffix; the generator hashes the
@@ -246,7 +250,8 @@ def ensure_secrets(
             generator = _format_generator(name)
         resolved[name] = backend.get_or_generate(name, generator)
 
-    backend.persist()
+    if persist:
+        backend.persist()
     return ResolvedSecrets(values=resolved)
 
 

@@ -104,6 +104,9 @@ def _render_apps_only(
         "--target", target,
         "--name", install_dir.name,
         "--output-dir", str(install_dir),
+        # The store the CA is seeded into; without it the store defaults
+        # to ~/.wip-deploy/<name>/secrets in the real home directory.
+        "--secrets-location", str(install_dir / "secrets"),
         "--apps-only",
         "--remote-wip", "https://wip.example",
         "--app", "react-console",

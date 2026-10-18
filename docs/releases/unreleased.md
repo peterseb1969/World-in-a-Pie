@@ -491,6 +491,23 @@ matches) and refuses an empty one. An unreachable key endpoint now answers
 environment changes, and image-based installs need images carrying the new
 wip-auth.
 
+### `wip-deploy render` is a true dry run
+
+`render` shared install's secret handling, so a preview persisted every
+secret it resolved into the install's store (`~/.wip-deploy/<name>/secrets`)
+whatever `--output-dir` said. It created credential directories for names
+that were never installed, and it added missing secrets to a live install's
+store. Without `--output-dir` it also wrote a tree built from command-line
+flags over the install's own rendered files, which `rebuild`, `restart` and
+`start` act on. Now `render` reads an existing store without writing to it
+(missing secrets are generated in memory only), refuses any target directory
+that holds a `deployment.deployer-state`, and looks for an imported CA in the
+secret store rather than the output directory.
+**Action:** to refresh a live install, use `wip-deploy redeploy`; to preview
+one, pass `--output-dir <scratch dir>`. Earlier previews may have left
+secret-only directories under `~/.wip-deploy/` (no `deployment.deployer-state`
+inside). Nothing reads them, and they can be deleted.
+
 ### Edge-type filters resolve in the request's namespace; an unknown value is 404
 
 `GET /documents/{id}/relationships?template=` and `GET /documents/{id}/traverse?types=`
