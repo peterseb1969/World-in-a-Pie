@@ -444,6 +444,26 @@ keep the cache; its staleness stays bounded by the 5-minute TTL. The
 is obsolete. (`resolve_or_404` in wip-auth gained the `bypass_cache`
 parameter the single-id doors needed.)
 
+### Edge-type filters resolve in the request's namespace; an unknown value is 404
+
+`GET /documents/{id}/relationships?template=` and `GET /documents/{id}/traverse?types=`
+resolved a bare edge-type value through template-store without a namespace.
+When the same value existed in more than one namespace, the lookup could
+select another namespace's edge type, and the call returned nothing for
+edges that exist. Both filters now resolve through the Registry, like every
+other identifier on these routes:
+- a bare value names the edge type in the request's namespace (the
+  `namespace` parameter, else the seed document's);
+- `NS:VALUE` names another namespace;
+- a template ID is accepted.
+
+**Behavior change:** a filter value that resolves to nothing used to return
+an empty page (or zero traversal nodes). It now returns **404** naming the
+value, so a misspelled or wrong-namespace edge type can no longer pass for
+"no edges".
+**Action:** callers that filter on an edge type that may not exist yet must
+handle the 404.
+
 ---
 
 ### Terminology deletion checks its template dependencies for real

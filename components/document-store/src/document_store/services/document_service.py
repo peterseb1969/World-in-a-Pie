@@ -1245,37 +1245,12 @@ class DocumentService:
     # PHASE 4 — RELATIONSHIP QUERY APIS
     # =========================================================================
 
-    async def _resolve_relationship_template_ids(
-        self,
-        template_values: list[str],
-        namespace: str,
-    ) -> list[str]:
-        """Resolve a list of template values (or already-resolved IDs) to
-        template IDs via the template-store client. Used by /traverse and
-        /relationships when a `template` / `types` filter is supplied.
-        Unknown values are silently dropped (the resulting IN-filter is
-        the intersection)."""
-        if not template_values:
-            return []
-        client = get_template_store_client()
-        out: list[str] = []
-        for value in template_values:
-            try:
-                tpl = await client.get_template(template_id=value)
-                if tpl is None:
-                    tpl = await client.get_template(template_value=value)
-                if tpl and tpl.get("template_id"):
-                    out.append(tpl["template_id"])
-            except Exception:
-                continue
-        return out
-
     async def find_relationships(
         self,
         document_id: str,
         *,
         direction: str = "both",
-        template_filter: list[str] | None = None,
+        template_ids: list[str] | None = None,
         namespace: str | None = None,
         active_only: bool = True,
         page: int = 1,
@@ -1301,6 +1276,9 @@ class DocumentService:
         Cross-namespace peers respect read permission: an unauthorised
         peer namespace populates peer_error_code='forbidden' on that item
         rather than 403'ing the whole request.
+
+        `template_ids` are edge-type template IDs the caller already
+        resolved through the Registry.
         """
         if direction not in ("incoming", "outgoing", "both"):
             raise ValueError(f"direction must be incoming|outgoing|both (got '{direction}')")
@@ -1321,15 +1299,7 @@ class DocumentService:
                 {"data.target_ref": document_id},
             ]
 
-        if template_filter:
-            template_ids = await self._resolve_relationship_template_ids(
-                template_filter, namespace or "wip",
-            )
-            if not template_ids:
-                # Filter resolved to nothing — return empty page
-                return RelationshipListResponse(
-                    items=[], total=0, page=page, page_size=page_size, pages=0,
-                )
+        if template_ids:
             query["template_id"] = {"$in": template_ids}
 
         total = await Document.find(query).count()
@@ -1541,6 +1511,7 @@ class DocumentService:
         document_id: str,
         *,
         depth: int = 1,
+        type_ids: list[str] | None = None,
         types_filter: list[str] | None = None,
         direction: str = "outgoing",
         namespace: str | None = None,
@@ -1560,6 +1531,10 @@ class DocumentService:
         implicit in `path` and `via_relationship`. Callers wanting the
         edges as well can issue follow-up /relationships queries on the
         seed.
+
+        `type_ids` are edge-type template IDs the caller already resolved
+        through the Registry; `types_filter` is the submitted spelling,
+        echoed back in the response only.
         """
         if direction not in ("incoming", "outgoing", "both"):
             raise ValueError(f"direction must be incoming|outgoing|both (got '{direction}')")
@@ -1571,21 +1546,6 @@ class DocumentService:
         if seed is None:
             raise ValueError(f"Document not found: {document_id}")
         ns = namespace or seed.namespace
-
-        type_filter_ids: list[str] = []
-        if types_filter:
-            type_filter_ids = await self._resolve_relationship_template_ids(types_filter, ns)
-            if not type_filter_ids:
-                # Filter resolved to nothing — empty traversal.
-                return TraverseResponse(
-                    seed_document_id=document_id,
-                    direction=direction,
-                    depth=depth,
-                    types_filter=list(types_filter),
-                    nodes=[],
-                    total_nodes=0,
-                    truncated=False,
-                )
 
         visited: set[str] = {document_id}
         path_by_id: dict[str, list[str]] = {document_id: []}
@@ -1603,8 +1563,8 @@ class DocumentService:
                 "namespace": ns,
                 "status": DocumentStatus.ACTIVE.value,
             }
-            if type_filter_ids:
-                base["template_id"] = {"$in": type_filter_ids}
+            if type_ids:
+                base["template_id"] = {"$in": type_ids}
 
             hop_query: dict[str, Any]
             if direction == "outgoing":

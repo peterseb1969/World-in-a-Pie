@@ -524,6 +524,30 @@ async def get_latest_document(
     return document
 
 
+_EDGE_TYPE_FILTER_RESOLUTION = (
+    " A bare value resolves in the request's namespace (the namespace parameter,"
+    " else the seed document's); NS:VALUE names another namespace; a template ID"
+    " is accepted. A value that resolves to nothing returns 404."
+)
+
+
+async def _resolve_edge_type_filter(
+    raw: str | None, namespace: str, param_name: str,
+) -> list[str] | None:
+    """Resolve a comma-separated edge-type filter to template IDs via the
+    Registry. A bare value names the edge type in `namespace` (never one that
+    merely shares the value elsewhere), `NS:VALUE` names another namespace,
+    and a UUID passes through. A value that resolves to nothing is a 404 —
+    an empty page would read as "no edges" (strict filter-context mode)."""
+    if not raw:
+        return None
+    return [
+        await resolve_or_404(value, "template", namespace, param_name=param_name, strict=True)
+        for value in (v.strip() for v in raw.split(","))
+        if value
+    ]
+
+
 @router.get(
     "/{document_id}/relationships",
     response_model=RelationshipListResponse,
@@ -546,7 +570,10 @@ async def get_document_relationships(
     document_id: str,
     direction: str = Query("both", description="incoming | outgoing | both"),
     template: str | None = Query(
-        None, description="Comma-separated relationship template values to include (default: all)"),
+        None, description=(
+            "Comma-separated relationship template values to include (default: all)."
+            + _EDGE_TYPE_FILTER_RESOLUTION
+        )),
     namespace: str | None = Query(None, description="Namespace; default = the document's namespace"),
     active_only: bool = Query(True, description="Exclude inactive/archived relationship docs"),
     page: int = Query(1, ge=1),
@@ -570,7 +597,8 @@ async def get_document_relationships(
 
     await check_namespace_permission(identity, seed.namespace, "read")
 
-    template_filter = [t.strip() for t in template.split(",")] if template else None
+    ns = namespace or seed.namespace
+    template_ids = await _resolve_edge_type_filter(template, ns, "template")
     include_set = (
         {tok.strip() for tok in include.split(",") if tok.strip()} if include else set()
     )
@@ -578,8 +606,8 @@ async def get_document_relationships(
         return await service.find_relationships(
             document_id=document_id,
             direction=direction,
-            template_filter=template_filter,
-            namespace=namespace or seed.namespace,
+            template_ids=template_ids,
+            namespace=ns,
             active_only=active_only,
             page=page,
             page_size=page_size,
@@ -608,7 +636,10 @@ async def traverse_document_relationships(
     document_id: str,
     depth: int = Query(1, ge=1, le=10, description="Number of relationship hops"),
     types: str | None = Query(
-        None, description="Comma-separated relationship template values to traverse (default: all)"),
+        None, description=(
+            "Comma-separated relationship template values to traverse (default: all)."
+            + _EDGE_TYPE_FILTER_RESOLUTION
+        )),
     direction: str = Query("outgoing", description="outgoing | incoming | both"),
     namespace: str | None = Query(None, description="Namespace; default = the seed document's namespace"),
     identity: UserIdentity = Depends(require_api_key),
@@ -623,14 +654,16 @@ async def traverse_document_relationships(
 
     await check_namespace_permission(identity, seed.namespace, "read")
 
-    types_filter = [t.strip() for t in types.split(",")] if types else None
+    ns = namespace or seed.namespace
+    type_ids = await _resolve_edge_type_filter(types, ns, "types")
     try:
         return await service.traverse_relationships(
             document_id=document_id,
             depth=depth,
-            types_filter=types_filter,
+            type_ids=type_ids,
+            types_filter=[t.strip() for t in types.split(",") if t.strip()] if types else None,
             direction=direction,
-            namespace=namespace or seed.namespace,
+            namespace=ns,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

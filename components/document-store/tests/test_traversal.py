@@ -205,18 +205,18 @@ async def test_traverse_404_for_unknown_seed(
 
 
 @pytest.mark.asyncio
-async def test_traverse_types_filter_unknown_template_returns_empty(
+async def test_traverse_types_filter_unknown_template_is_404(
     client: AsyncClient, auth_headers: dict,
 ):
-    """An unknown template value in `types` resolves to no template_ids,
-    so the traversal returns zero nodes (not 400)."""
+    """An unknown template value in `types` is a caller error: 404 naming
+    the value. Zero nodes would be indistinguishable from "no edges"."""
     exp_ids, _ = await _build_chain(client, auth_headers, n=2)
     resp = await client.get(
         f"{API}/documents/{exp_ids[0]}/traverse?depth=2&types=NO_SUCH_TEMPLATE&namespace=wip",
         headers=auth_headers,
     )
-    assert resp.status_code == 200
-    assert resp.json()["total_nodes"] == 0
+    assert resp.status_code == 404
+    assert "NO_SUCH_TEMPLATE" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio
