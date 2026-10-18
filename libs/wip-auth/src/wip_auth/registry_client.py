@@ -427,34 +427,96 @@ class RegistryClientBase:
         entry_id: str,
         updated_by: str | None = None,
         rollback_uncommitted: bool = False,
+        owner_hard_deleted: bool = False,
     ) -> bool:
-        """Hard-delete a Registry entry. Returns True if deleted.
+        """Hard-delete a Registry entry. Returns True if deleted, False if
+        the entry was already gone; raises RegistryError when the Registry
+        refused (e.g. the namespace's deletion_mode gate).
 
-        rollback_uncommitted (CASE-436): set when aborting a just-allocated
-        entry whose backing object was never committed (e.g. a document create
-        that failed on synonym registration). It bypasses the namespace
-        deletion_mode='full' gate, honored only for privileged (service/admin)
-        callers — see DeleteItem.rollback_uncommitted.
+        The endpoint is bulk-first — a refusal comes back as a per-item
+        error inside HTTP 200 — so the item's own status is checked, never
+        just the HTTP code.
+
+        rollback_uncommitted: abort a just-allocated entry whose backing
+        object was never committed (e.g. a document create that failed on
+        synonym registration). owner_hard_deleted: the owning service has
+        already permanently deleted the backing object under a
+        deletion_mode exemption (terms of a mutable terminology). Both
+        bypass the namespace deletion_mode='full' gate and are honored only
+        for privileged (service/admin) callers — see DeleteItem.
         """
+        item: dict[str, Any] = {
+            "entry_id": entry_id,
+            "hard_delete": True,
+            "rollback_uncommitted": rollback_uncommitted,
+            "updated_by": updated_by,
+        }
+        # Sent only when set: a Registry predating the flag rejects unknown
+        # fields, and services restart at different moments during a rollout.
+        if owner_hard_deleted:
+            item["owner_hard_deleted"] = True
         async with self._make_client() as client:
             response = await client.request(
                 "DELETE",
                 f"{self.base_url}/api/registry/entries",
                 headers=self._get_headers(),
-                json=[{
-                    "entry_id": entry_id,
-                    "hard_delete": True,
-                    "rollback_uncommitted": rollback_uncommitted,
-                    "updated_by": updated_by,
-                }],
+                json=[item],
             )
             if response.status_code != 200:
                 raise RegistryError(
                     f"Failed to hard-delete entry {entry_id}: "
                     f"{response.status_code} - {response.text}"
                 )
-            data = response.json()
-            return cast(bool, data.get("succeeded", 0) > 0)
+            results = response.json().get("results") or [{}]
+            status = results[0].get("status")
+            if status == "deleted":
+                return True
+            if status == "not_found":
+                return False
+            raise RegistryError(
+                f"Registry refused to hard-delete entry {entry_id}: "
+                f"{results[0].get('error') or status}"
+            )
+
+    async def merge_entries(
+        self,
+        preferred_id: str,
+        deprecated_id: str,
+        updated_by: str | None = None,
+        owner_merge: bool = False,
+    ) -> None:
+        """Merge `deprecated_id` into `preferred_id` (its id and synonyms then
+        resolve to the preferred entry). Raises RegistryError unless the
+        Registry reports the item merged — the endpoint is bulk-first, so the
+        item's status decides, not the HTTP code.
+
+        owner_merge: set by the service that owns the objects, merging them
+        as part of its own merge operation (required for term entries;
+        honored only for privileged callers — see MergeItem).
+        """
+        async with self._make_client() as client:
+            response = await client.post(
+                f"{self.base_url}/api/registry/synonyms/merge",
+                headers=self._get_headers(),
+                json=[{
+                    "preferred_id": preferred_id,
+                    "deprecated_id": deprecated_id,
+                    "updated_by": updated_by,
+                    # sent only when set (see hard_delete_entry)
+                    **({"owner_merge": True} if owner_merge else {}),
+                }],
+            )
+            if response.status_code != 200:
+                raise RegistryError(
+                    f"Failed to merge {deprecated_id} into {preferred_id}: "
+                    f"{response.status_code} - {response.text}"
+                )
+            results = response.json().get("results") or [{}]
+            if results[0].get("status") != "merged":
+                raise RegistryError(
+                    f"Registry refused to merge {deprecated_id} into {preferred_id}: "
+                    f"{results[0].get('error') or results[0].get('status')}"
+                )
 
     async def get_namespace_deletion_mode(self, namespace: str) -> str:
         """Fetch namespace deletion_mode from Registry. Returns 'retain' or 'full'."""

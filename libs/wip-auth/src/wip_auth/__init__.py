@@ -90,6 +90,11 @@ from .resolve import (
 )
 from .security import check_production_security
 from .startup import init_beanie_with_retry, retry_async
+from .term_resolution import (
+    TermResolutionError,
+    resolve_term_values,
+    term_resolution_batch,
+)
 
 __version__ = "0.4.0"
 
@@ -113,6 +118,7 @@ __all__ = [
     "NoAuthProvider",
     "OIDCProvider",
     "RejectUnknownQueryParamsMiddleware",
+    "TermResolutionError",
     "TrustedHeaderProvider",
     # Models
     "UserIdentity",
@@ -159,6 +165,7 @@ __all__ = [
     "resolve_or_404",
     "resolve_permission",
     "resolve_term_by_fields_or_404",
+    "resolve_term_values",
     "retry_async",
     "set_auth_config",
     "set_current_identity",
@@ -168,6 +175,7 @@ __all__ = [
     # Rate limiting
     "setup_rate_limiting",
     "split_qualified_value",
+    "term_resolution_batch",
 ]
 
 
