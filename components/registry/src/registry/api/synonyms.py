@@ -275,6 +275,22 @@ async def merge_entries(
                     error="Cannot merge an entry with itself"
                 ))
                 continue
+            # A term's identity lives in two places — this entry and the
+            # def-store term whose value and names drive validation — so only
+            # def-store may merge terms: a Registry-only merge would leave the
+            # absorbed term active and its value still resolving to it.
+            if "terms" in (preferred.entity_type, deprecated.entity_type) and not (
+                item.owner_merge and identity.has_any_group(["wip-admins", "wip-services"])
+            ):
+                results.append(MergeResponse(
+                    index=i, status="error",
+                    error=(
+                        "Terms are merged by def-store (POST /api/def-store/terms/merge), "
+                        "which moves the absorbed term's value and names to the survivor "
+                        "and then merges these entries."
+                    ),
+                ))
+                continue
 
             # Add deprecated entry_id as a synonym (so lookups by old ID resolve)
             entry_id_key = {"entry_id": deprecated.entry_id}

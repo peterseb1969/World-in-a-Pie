@@ -380,6 +380,17 @@ class MergeItem(StrictModel):
     preferred_id: str
     deprecated_id: str
     updated_by: str | None = Field(default=None, description="Updater identifier")
+    owner_merge: bool = Field(
+        default=False,
+        description=(
+            "Set by the service that owns the entries' objects when it merges "
+            "them as part of its own merge operation. Term entries can only be "
+            "merged this way (def-store's POST /api/def-store/terms/merge), "
+            "because a Registry-only merge leaves the absorbed term active in "
+            "def-store and its value still resolving to it. Honored ONLY for "
+            "privileged callers (wip-admins / wip-services)."
+        ),
+    )
 
 
 class MergeResponse(BaseModel):
@@ -642,6 +653,17 @@ class DeleteItem(StrictModel):
             "ONLY for privileged callers (wip-admins / wip-services) — it is a "
             "trusted-service write-rollback primitive, not a way for ordinary "
             "keys to circumvent retain-mode. Implies hard_delete."
+        ),
+    )
+    owner_hard_deleted: bool = Field(
+        default=False,
+        description=(
+            "The owning service has already permanently deleted the backing "
+            "object under a documented exemption from deletion_mode (terms of "
+            "a mutable terminology), so the entry must go too — otherwise its "
+            "synonyms keep resolving to an object that no longer exists. "
+            "BYPASSES the deletion_mode='full' gate. Honored ONLY for "
+            "privileged callers (wip-admins / wip-services). Implies hard_delete."
         ),
     )
     updated_by: str | None = None

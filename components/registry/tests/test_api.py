@@ -377,7 +377,8 @@ class TestUnifiedSearchAPI:
         # Merge
         merge_resp = await client.post(
             "/api/registry/synonyms/merge",
-            json=[{"preferred_id": preferred_id, "deprecated_id": deprecated_id}],
+            # term entries merge only as the owning service (privileged key)
+            json=[{"preferred_id": preferred_id, "deprecated_id": deprecated_id, "owner_merge": True}],
             headers=auth_headers
         )
         assert merge_resp.json()["results"][0]["status"] == "merged"

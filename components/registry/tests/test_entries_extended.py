@@ -7,7 +7,6 @@ and synonym removal -- operations not covered by the existing test_api.py.
 import pytest
 from httpx import AsyncClient
 
-
 # =============================================================================
 # Helper
 # =============================================================================
@@ -689,10 +688,11 @@ class TestLookupById:
         id1 = await _register_entry(client, auth_headers, composite_key={"name": "LookupMerge1"})
         id2 = await _register_entry(client, auth_headers, composite_key={"name": "LookupMerge2"})
 
-        # Merge: id1 is preferred, id2 is deprecated
+        # Merge: id1 is preferred, id2 is deprecated. The helper registers
+        # term entries, which merge only as the owning service.
         await client.post(
             "/api/registry/synonyms/merge",
-            json=[{"preferred_id": id1, "deprecated_id": id2}],
+            json=[{"preferred_id": id1, "deprecated_id": id2, "owner_merge": True}],
             headers=auth_headers,
         )
 
