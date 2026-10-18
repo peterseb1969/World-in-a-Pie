@@ -89,7 +89,7 @@ def require_file_storage():
     description="""
 Upload a file to storage.
 
-The file receives a unique ID from the Registry and is stored in MinIO.
+The file receives a unique ID from the Registry and is stored in the object store.
 Initially the file has status 'orphan' until it's referenced by a document.
 
 Metadata can be provided as form fields:
@@ -299,7 +299,7 @@ async def download_file_content(
     # Check namespace permission
     await check_namespace_permission(identity, file_doc.namespace, "read")
 
-    # Stream chunks directly from MinIO → browser (no full buffering)
+    # Stream chunks directly from the object store → browser (no full buffering)
     storage = get_file_storage_client()
     return StreamingResponse(
         storage.download_stream(file_doc.storage_key),
@@ -661,7 +661,7 @@ Check file storage integrity.
 
 Detects:
 - Orphan files (uploaded but not referenced)
-- Missing storage (file record exists but content missing from MinIO)
+- Missing storage (file record exists but content missing from the object store)
 - Broken references (deleted files still referenced by documents)
     """,
     dependencies=[Depends(require_file_storage)]

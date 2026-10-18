@@ -49,7 +49,7 @@ A deployable application built on top of WIP, using WIP's APIs for document stor
 ## D
 
 ### Deactivate
-The action of marking an entity as [inactive](#inactive-status). In WIP, nothing is ever truly deleted—only deactivated. This preserves audit trails and enables reference resolution. Exception: files support hard-delete to reclaim MinIO storage.
+The action of marking an entity as [inactive](#inactive-status). In WIP, nothing is ever truly deleted—only deactivated. This preserves audit trails and enables reference resolution. Exception: files support hard-delete to reclaim object storage.
 
 ### Def-Store
 The service managing [terminologies](#terminology), [terms](#term), and [ontology relations](#relation). Provides controlled vocabularies that [templates](#template) reference for term-type fields. Supports OBO Graph JSON import for standard ontologies. API: `http://localhost:8002/api/def-store/`.

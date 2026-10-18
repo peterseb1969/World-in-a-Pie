@@ -58,8 +58,8 @@ That's it — the deployer pulls images from the registry at install time, so th
 
 **Hardware notes for Pi targets:**
 
-- Use a Raspberry Pi 5, not a Pi 4. The architecture (MongoDB + PostgreSQL + NATS + MinIO + 6 services + Caddy) is a step beyond what a Pi 4 handles gracefully.
-- Use an SSD, not an SD card. MongoDB writes, NATS JetStream persistence, PostgreSQL, and MinIO compound on slow storage.
+- Use a Raspberry Pi 5, not a Pi 4. The architecture (MongoDB + PostgreSQL + NATS + Garage + 6 services + Caddy) is a step beyond what a Pi 4 handles gracefully.
+- Use an SSD, not an SD card. MongoDB writes, NATS JetStream persistence, PostgreSQL, and Garage compound on slow storage.
 
 ### 0. One-time: configure insecure registry access (HTTP only)
 

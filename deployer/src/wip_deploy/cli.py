@@ -1830,7 +1830,7 @@ def stop(
     StatefulSet to 0 replicas — PVCs, Services, Ingress, and secrets are
     left intact. Scaling both kinds is deliberate: a bare `kubectl scale
     deployment --all` would leave the storage StatefulSets
-    (mongodb/postgres/minio/nats/dex) running. The target + namespace are
+    (mongodb/postgres/garage/nats/dex) running. The target + namespace are
     auto-detected from the saved deployer-state when reached by --name;
     pass --namespace to address a k8s install directly.
 
@@ -3354,7 +3354,7 @@ def remove_module(
 
     Examples:
 
-      wip-deploy remove-module minio --name wip-dev-local
+      wip-deploy remove-module ingest-gateway --name wip-dev-local
     """
     resolved_name, target_dir, deployment, components, apps_list, repo_root = (
         _load_and_discover_for_mutation(name, install_dir, repo_root)

@@ -744,7 +744,7 @@ curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 
 ## 7. Files
 
-Files are binary objects stored in MinIO. Upload first, then reference from documents.
+Files are binary objects stored in Garage. Upload first, then reference from documents.
 
 ### Upload a file
 

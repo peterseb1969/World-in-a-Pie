@@ -30,7 +30,7 @@ STANDARD: dict[str, Any] = {
     "modules": {
         "optional": [
             "reporting-sync",
-            "minio",
+            "garage",
             "mcp-server",
         ]
     },

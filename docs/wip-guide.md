@@ -27,7 +27,7 @@ wip-deploy install --preset standard --target compose --hostname wip.local
 What this gives you:
 
 - The eight WIP services: the four core data services (Registry, Def-Store, Template-Store, Document-Store), Auth-Gateway (sits in front for API-key + JWT validation), Reporting-Sync (PostgreSQL projection), Ingest-Gateway (async bulk via NATS, enabled by preset), and the MCP Server (when included via the preset)
-- The supporting infrastructure: MongoDB, PostgreSQL, NATS, MinIO, Dex, Caddy
+- The supporting infrastructure: MongoDB, PostgreSQL, NATS, Garage, Dex, Caddy
 - HTTPS via Caddy on port 8443 (internal/self-signed by default)
 - A starter API key written to the secrets backend
 
@@ -71,7 +71,7 @@ wip-toolkit status --integrity   # adds the heavy referential-integrity scan
 | `headless` | API services only, no UI |
 | `core` | + console + API keys |
 | `analytics` | + OIDC (Dex) + reporting-sync + Postgres |
-| `standard` (default) | + MinIO + MCP server — fully exercisable platform |
+| `standard` (default) | + Garage + MCP server — fully exercisable platform |
 | `full` | + ingest-gateway (async bulk via NATS JetStream) |
 
 You can amend a preset with `--add <module>` and `--remove <module>`. Apps (e.g., `react-console`, `clintrial`) are enabled per-install with `--app <name>` or, in dev mode, `--app-source <name>=<path>`.
@@ -174,7 +174,7 @@ Networking is where most operator failures happen. The three callouts below prev
 >
 > WIP services mount under `/api/<svc>/` and expect to see the full path. **Use `handle`.**
 >
-> **The MinIO carve-out.** MinIO's S3 API serves at the root of its own URL space, so the deployer routes `/minio/<bucket>/<key>` to MinIO with `handle_path` to *strip* the `/minio/` prefix — but `/minio/health` and `/minio/admin` keep their prefix. This is in the deployer's generated config (`compose_caddy.py`); you generally don't edit it by hand.
+> **The object-store carve-out.** Garage's S3 API serves at the root of its own URL space, so the deployer routes `/garage/<bucket>/<key>` to Garage with `handle_path` to *strip* the `/garage/` prefix, and restores the upstream Host header (SigV4-presigned URLs are signed against the internal endpoint's Host). This is in the deployer's generated config; you generally don't edit it by hand.
 
 ### 3.3 Critical: Caddy returns 200 + empty body on unmatched paths
 
@@ -382,7 +382,7 @@ WIP creates a per-service tree under the data directory:
 ├── mongodb/    # MongoDB data files
 ├── postgres/   # PostgreSQL data files
 ├── nats/       # NATS JetStream persistence
-├── minio/      # MinIO object storage
+├── garage/     # Garage object storage
 ├── dex/        # Dex SQLite + state
 └── caddy/      # TLS certificates + runtime config
 ```
@@ -680,7 +680,7 @@ Recommendation: **host-level full-disk encryption**. It's the best balance of se
 
 If host-level encryption isn't possible, the alternatives are weaker but available:
 
-- **MinIO SSE** — server-side encryption for object storage (SSE-S3 with self-managed keys, or SSE-KMS for an external KMS).
+- **Object-store SSE** — server-side encryption for object storage (store-dependent; Garage encrypts via its own layout or disk-level encryption).
 - **MongoDB Community** does not support encryption at rest. Either upgrade to Enterprise or rely on host-level encryption.
 - **PostgreSQL** has no built-in at-rest encryption. `pgcrypto` does column-level encryption inside the database, with the usual key-management trade-offs.
 
@@ -702,7 +702,7 @@ handles this: every service's rendered definition carries a hash of the
 secrets and key files it reads, so a rotation re-applies the install and
 restarts exactly the services whose key changed — k8s rolls their pods,
 compose recreates their containers, dev recreates everything. Storage
-services (MongoDB, PostgreSQL, NATS, MinIO, Dex) are not restarted this way.
+services (MongoDB, PostgreSQL, NATS, Garage, Dex) are not restarted this way.
 
 **Three kinds of API key, three procedures:**
 
@@ -731,7 +731,7 @@ After rotating:
   declare a second key, apply, move consumers over, then remove the first.
 
 **Not rotatable with `rotate-key`:** MongoDB / PostgreSQL passwords, the
-MinIO password and Dex secrets. These also need a change in the store that
+Garage keys and Dex secrets. These also need a change in the store that
 uses them (the database keeps its own copy of the password), which
 `rotate-key` does not make, so it refuses them. The NATS and MongoDB user
 passwords (`nats-password-<service>`, `mongo-password-<client>`) are refused

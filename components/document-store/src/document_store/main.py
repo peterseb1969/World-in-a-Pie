@@ -66,7 +66,7 @@ class Settings:
     NATS_URL: str = os.getenv("NATS_URL", "")  # Empty = disabled
     CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "https://localhost:8443").split(",")
     MAX_UPLOAD_SIZE: int = int(os.getenv("WIP_MAX_UPLOAD_SIZE", str(100 * 1024 * 1024)))  # 100MB default
-    # File storage settings (MinIO/S3)
+    # File storage settings (S3-compatible object store)
     FILE_STORAGE_ENABLED: bool = os.getenv("WIP_FILE_STORAGE_ENABLED", "false").lower() == "true"
     FILE_STORAGE_ENDPOINT: str = os.getenv("WIP_FILE_STORAGE_ENDPOINT", "http://localhost:9000")
     FILE_STORAGE_ACCESS_KEY: str = os.getenv("WIP_FILE_STORAGE_ACCESS_KEY", "wip-minio-root")
@@ -163,7 +163,7 @@ async def lifespan(app: FastAPI):
         # Check file storage health
         file_storage_client = get_file_storage_client()
         if await file_storage_client.health_check():
-            print("File storage (MinIO) is healthy.")
+            print("File storage (object store) is healthy.")
             # Ensure bucket exists
             try:
                 await file_storage_client.ensure_bucket_exists()
@@ -171,7 +171,7 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 print(f"WARNING: Failed to ensure bucket exists: {e}")
         else:
-            print("WARNING: File storage (MinIO) is not reachable. File uploads will not work.")
+            print("WARNING: File storage (object store) is not reachable. File uploads will not work.")
     else:
         print("File storage not enabled. Set WIP_FILE_STORAGE_ENABLED=true to enable.")
 

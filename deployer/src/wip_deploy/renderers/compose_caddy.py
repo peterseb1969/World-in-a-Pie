@@ -191,12 +191,11 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
         out.write("    }\n\n")
 
     # CASE-248: preserve-prefix subpaths under a strip_prefix route.
-    # MinIO's S3 API at /minio/<bucket>/<key> needs the prefix stripped
-    # (presigned URLs encode the bucket+key path); but its own admin
-    # endpoints under /minio/admin and /minio/health live in MinIO's
-    # URL space and need the prefix preserved. Emit `handle` blocks
-    # for those subpaths first; Caddy's longest-match picks them over
-    # the trailing handle_path block.
+    # An object store's S3 API at /<prefix>/<bucket>/<key> needs the
+    # prefix stripped (presigned URLs encode the bucket+key path), while
+    # any of its own endpoints that live under the public prefix need it
+    # preserved. Emit `handle` blocks for those subpaths first; Caddy's
+    # longest-match picks them over the trailing handle_path block.
     backend = f"wip-{route.backend_component}:{route.backend_port}"
     if route.strip_prefix and route.preserve_prefix_subpaths:
         for sub in route.preserve_prefix_subpaths:
@@ -207,10 +206,10 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
             out.write("    }\n\n")
 
     # `handle_path` strips the route's prefix before forwarding; `handle`
-    # preserves the full request path. MinIO's S3 API is the canonical
+    # preserves the full request path. Garage's S3 API is the canonical
     # strip_prefix case — it serves at the root and doesn't know about
-    # the public /minio prefix, and SigV2 presigned URLs encode the
-    # bucket+key path that must match what MinIO sees.
+    # the public /garage prefix, and presigned URLs encode the bucket+key
+    # path that must match what the store sees.
     directive = "handle_path" if route.strip_prefix else "handle"
 
     def _emit_block(matcher_path: str) -> None:

@@ -75,13 +75,12 @@ def _secrets(tmp_path: Path, d: Deployment, disc: Discovery) -> ResolvedSecrets:
 
 
 class TestStorageModuleResolution:
-    def test_garage_wins_over_minio(self, real_discovery: Discovery) -> None:
+    def test_garage_active_resolves(self, real_discovery: Discovery) -> None:
+        # An unknown module name in the list is ignored by activation —
+        # the retired minio entry in an old saved spec must not break
+        # resolution (garage still wins; it is the only storage module).
         d = _deployment(["garage", "minio"])
         assert active_storage_module(d, real_discovery.components) == "garage"
-
-    def test_minio_alone_stays_minio(self, real_discovery: Discovery) -> None:
-        d = _deployment(["minio"])
-        assert active_storage_module(d, real_discovery.components) == "minio"
 
     def test_neither_means_files_off(self, real_discovery: Discovery) -> None:
         d = _deployment(["mcp-server"])
@@ -96,7 +95,7 @@ class TestSecrets:
             _deployment(["garage"]), real_discovery.components, real_discovery.apps
         )
         off = collect_required_secrets(
-            _deployment(["minio"]), real_discovery.components, real_discovery.apps
+            _deployment(["mcp-server"]), real_discovery.components, real_discovery.apps
         )
         assert set(GARAGE_SECRET_NAMES) <= on
         assert not (set(GARAGE_SECRET_NAMES) & off)
@@ -145,16 +144,6 @@ class TestComposeRender:
         assert env["WIP_FILE_STORAGE_ACCESS_KEY"] == "${GARAGE_KEY_ID}"
         assert env["WIP_FILE_STORAGE_SECRET_KEY"] == "${GARAGE_KEY_SECRET}"
         assert env["WIP_FILE_STORAGE_PUBLIC_ENDPOINT"].endswith("/garage")
-
-    def test_document_store_env_unchanged_under_minio(
-        self, tmp_path: Path, real_discovery: Discovery
-    ) -> None:
-        tree = self._tree(tmp_path, real_discovery, ["minio"])
-        compose = yaml.safe_load(tree.files[Path("docker-compose.yaml")].content)
-        env = compose["services"]["document-store"]["environment"]
-        assert env["WIP_FILE_STORAGE_ENDPOINT"] == "http://wip-minio:9000"
-        assert env["WIP_FILE_STORAGE_ACCESS_KEY"] == "wip-minio-root"
-        assert env["WIP_FILE_STORAGE_PUBLIC_ENDPOINT"].endswith("/minio")
 
     def test_caddy_route_rewrites_upstream_host(
         self, tmp_path: Path, real_discovery: Discovery

@@ -579,7 +579,7 @@ A document is an instance of a template — a filled-in form.
 - Both are also reporting columns, with the same meanings.
 
 ## Files
-Binary files stored in MinIO, referenced by documents.
+Binary files stored in the object store (Garage), referenced by documents.
 - Upload returns a file_id (UUID7 format)
 - Link the file_id to a document's file field
 
@@ -3733,7 +3733,7 @@ async def list_files(
     page: int = 1,
     page_size: int = 20,
 ) -> str:
-    """List files stored in WIP (binary file storage via MinIO)."""
+    """List files stored in WIP (binary file storage via the object store)."""
     try:
         data = await get_client().list_files(
             namespace=namespace, page=page, page_size=page_size
@@ -3818,7 +3818,7 @@ async def delete_file(file_id: str, force: bool = False) -> str:
 
 @mcp.tool()
 async def hard_delete_file(file_id: str) -> str:
-    """Permanently delete a file from MinIO storage.
+    """Permanently delete a file from object storage.
 
     The file must already be soft-deleted (inactive). This is irreversible
     and reclaims storage. Use delete_file first, then hard_delete_file.

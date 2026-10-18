@@ -48,7 +48,7 @@ class SpecContextAuth:
 class SpecContextFeatures:
     files_enabled: str  # "true"/"false" — string for direct env injection
     # Browser-reachable MinIO URL. document-store rewrites presigned URLs
-    # from the internal endpoint (http://wip-minio:9000) to this one
+    # from the internal endpoint (http://wip-garage:3900) to this one
     # before returning them to clients. Routed through Caddy/Ingress with
     # prefix stripping — shared origin with the rest of the API, one cert,
     # no mixed-content issues.
@@ -209,27 +209,25 @@ def active_storage_module(
     deployment: Deployment, components: list[Component]
 ) -> str | None:
     """The object-storage module document-store talks to: garage when
-    active, else minio, else None. Garage wins when both are active —
-    that is the migration posture (stand garage up next to minio, copy
-    the blobs, then remove minio); document-store can only point at one.
+    active, else None. (MinIO was retired after the fleet migration;
+    during the migration this function implemented the garage-wins-over-
+    minio precedence.)
     """
-    for name in ("garage", "minio"):
-        comp = next((c for c in components if c.metadata.name == name), None)
-        if comp is not None and is_component_active(comp, deployment):
-            return name
+    comp = next((c for c in components if c.metadata.name == "garage"), None)
+    if comp is not None and is_component_active(comp, deployment):
+        return "garage"
     return None
 
 
 def _compute_features(
     deployment: Deployment, components: list[Component]
 ) -> SpecContextFeatures:
-    # File storage is "on" iff an object-storage module (garage or
-    # minio) is active. The public presigned-URL prefix follows the
-    # active module's route path.
+    # File storage is "on" iff the garage module is active. The public
+    # presigned-URL prefix follows the module's route path.
     storage = active_storage_module(deployment, components)
     return SpecContextFeatures(
         files_enabled="true" if storage is not None else "false",
         file_storage_public_endpoint=(
-            f"{_public_base(deployment)}/{storage or 'minio'}"
+            f"{_public_base(deployment)}/{storage or 'garage'}"
         ),
     )

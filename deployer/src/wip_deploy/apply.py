@@ -522,7 +522,7 @@ def _k8s_scale_all(namespace: str, replicas: int) -> None:
     (renderers/k8s.py) and selects StatefulSet vs Deployment from
     `owner.spec.storage`. A bare `kubectl scale deployment --all` would
     halt the stateless service tier but silently leave the storage-bearing
-    StatefulSets (mongodb/postgres/minio/nats/dex) running — the exact
+    StatefulSets (mongodb/postgres/garage/nats/dex) running — the exact
     silent half-stop CASE-475 documents. The label selector also scopes
     the scale to wip workloads, so a shared namespace is untouched. A
     selector that matches nothing is a no-op (kubectl exits 0).

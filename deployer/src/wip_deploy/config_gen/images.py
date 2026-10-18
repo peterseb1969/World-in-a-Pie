@@ -15,7 +15,7 @@ Precedence for WIP-built images (short name, no `/`):
      a fallback default, not an override.
   4. `latest`.
 
-Fully-qualified images (contain `/`: mongo, postgres, dex, nats, minio,
+Fully-qualified images (contain `/`: mongo, postgres, dex, nats, garage,
 router) skip step 2 — their manifest pins are upstream version numbers
 (`mongo:7`), and a WIP release tag like `--tag 20260610a` would never
 resolve. An explicit `tag_overrides` entry still wins: the operator

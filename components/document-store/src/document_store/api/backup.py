@@ -43,9 +43,9 @@ Endpoints
 
 Archive storage
 ---------------
-Archives durably live in MinIO (dedicated bucket) when file storage is
+Archives durably live in object storage (dedicated bucket) when file storage is
 enabled; the local ``$WIP_BACKUP_DIR`` is scratch/staging space. Without
-MinIO there is no durable-retention promise: restore inputs are deleted at
+object storage there is no durable-retention promise: restore inputs are deleted at
 the job's terminal state and backup outputs are swept once older than
 ``WIP_BACKUP_RETENTION_HOURS``. See ``services/archive_store.py``.
 

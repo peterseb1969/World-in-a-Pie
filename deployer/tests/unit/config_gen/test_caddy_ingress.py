@@ -184,9 +184,9 @@ class TestCrossTargetInvariants:
         maximal_k8s_deployment: Deployment,
         real_discovery: Discovery,
     ) -> None:
-        """CASE-54: minio has strip_prefix=True on /minio so MinIO sees
-        the request at its root. Both targets must carry that through
-        (minio is an optional module, so we need the maximal deployments
+        """CASE-54: garage has strip_prefix=True on /garage so the store
+        sees the request at its root. Both targets must carry that through
+        (garage is an optional module, so we need the maximal deployments
         to have it active)."""
         caddy = generate_caddy_config(
             maximal_compose_deployment, real_discovery.components, real_discovery.apps
@@ -195,11 +195,11 @@ class TestCrossTargetInvariants:
             maximal_k8s_deployment, real_discovery.components, real_discovery.apps
         )
 
-        caddy_minio = next(r for r in caddy.routes if r.path == "/minio")
-        ing_minio = next(r for r in ing.rules if r.path == "/minio")
+        caddy_garage = next(r for r in caddy.routes if r.path == "/garage")
+        ing_garage = next(r for r in ing.rules if r.path == "/garage")
 
-        assert caddy_minio.strip_prefix is True
-        assert ing_minio.strip_prefix is True
+        assert caddy_garage.strip_prefix is True
+        assert ing_garage.strip_prefix is True
         # Non-strip routes stay non-strip.
         caddy_ds = next(r for r in caddy.routes if r.path == "/api/document-store")
         assert caddy_ds.strip_prefix is False

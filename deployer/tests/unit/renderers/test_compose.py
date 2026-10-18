@@ -193,21 +193,21 @@ class TestComposeYaml:
         assert "minio" not in doc["services"]
         assert "reporting-sync" not in doc["services"]
 
-    def test_minio_active_caddy_emits_handle_path_with_strip_prefix(
+    def test_garage_active_caddy_emits_handle_path_with_strip_prefix(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
-        """CASE-54: MinIO's /minio route has strip_prefix=true so Caddy
+        """CASE-54: Garage's /garage route has strip_prefix=true so Caddy
         must emit `handle_path` (prefix-stripping) instead of `handle`.
         Presigned URL signatures are computed over the bucket+key path
-        at MinIO's root — the /minio public prefix has to be stripped
-        before MinIO verifies the sig."""
-        d = _minimal_compose(modules=["minio"])
+        at the store's root — the /garage public prefix has to be
+        stripped before the store verifies the sig."""
+        d = _minimal_compose(modules=["garage"])
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
         caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
 
-        # The /minio/* block uses handle_path (strip), not handle.
-        assert "handle_path /minio/* {" in caddyfile
+        # The /garage/* block uses handle_path (strip), not handle.
+        assert "handle_path /garage/* {" in caddyfile
         # And non-strip routes still use `handle /path/*`.
         assert "handle /api/document-store/* {" in caddyfile
 
@@ -273,17 +273,17 @@ class TestComposeYaml:
 
         assert "handle / {" not in caddyfile
 
-    def test_minio_active_document_store_gets_public_endpoint_env(
+    def test_garage_active_document_store_gets_public_endpoint_env(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
         """CASE-54: WIP_FILE_STORAGE_PUBLIC_ENDPOINT must be injected
         into document-store's env, pointing at the public Caddy-routed
-        URL for MinIO so presigned-URL rewrites produce a reachable host."""
+        URL for Garage so presigned-URL rewrites produce a reachable host."""
         doc = self._render_compose(
-            tmp_path, real_discovery, modules=["minio"],
+            tmp_path, real_discovery, modules=["garage"],
         )
         env = doc["services"]["document-store"]["environment"]
-        assert env["WIP_FILE_STORAGE_PUBLIC_ENDPOINT"].endswith("/minio"), env
+        assert env["WIP_FILE_STORAGE_PUBLIC_ENDPOINT"].endswith("/garage"), env
         # Not the internal endpoint.
         assert env["WIP_FILE_STORAGE_PUBLIC_ENDPOINT"] != env["WIP_FILE_STORAGE_ENDPOINT"]
 
@@ -317,14 +317,10 @@ class TestComposeYaml:
         assert nats["entrypoint"] == ["nats-server"]
         assert nats["command"] == ["-c", "/etc/nats/nats.conf"]
 
-        # MinIO too (full argv including the binary).
-        doc2 = self._render_compose(
-            tmp_path, real_discovery,
-            modules=["reporting-sync", "minio"],
-        )
-        minio = doc2["services"]["minio"]
-        assert minio["entrypoint"] == ["minio"]
-        assert minio["command"] == ["server", "/data", "--console-address", ":9001"]
+        # Dex too (full argv including the binary, via the dex shim).
+        dex = doc["services"]["dex"]
+        assert dex["entrypoint"] == ["dex"]
+        assert dex["command"] == ["serve", "/etc/dex/config.yaml"]
 
     def test_healthcheck_http_emits_cmd_shell_with_curl(
         self, tmp_path: Path, real_discovery: Discovery

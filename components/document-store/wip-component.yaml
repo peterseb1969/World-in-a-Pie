@@ -47,17 +47,18 @@ spec:
       - {name: NATS_URL, source: {from_component: nats}}
       # JWT issuer URL — honored in jwt_only / dual; ignored otherwise. CASE-361.
       - {name: WIP_AUTH_JWT_ISSUER_URL, source: {from_spec: auth.issuer_url_internal}}
-      # File storage — MinIO only present when files module active.
+      # File storage — Garage, only present when the garage module is active.
       - {name: WIP_FILE_STORAGE_ENABLED, source: {from_spec: features.files_enabled}}
-      - {name: WIP_FILE_STORAGE_ENDPOINT, source: {from_component: minio}}
+      - {name: WIP_FILE_STORAGE_ENDPOINT, source: {from_component: garage}}
       # Browser-facing URL for presigned download links. Internal endpoint
       # above is correct for server-side S3 PUTs; this one is what
       # document-store rewrites into the URL before returning it to the
-      # caller. Resolved via Caddy/Ingress with /minio prefix stripping
-      # (CASE-54).
+      # caller. Resolved via Caddy/Ingress with /garage prefix stripping
+      # and the upstream Host restored to the internal endpoint's, since
+      # SigV4 signs the Host (CASE-54).
       - {name: WIP_FILE_STORAGE_PUBLIC_ENDPOINT, source: {from_spec: features.file_storage_public_endpoint}}
-      - {name: WIP_FILE_STORAGE_ACCESS_KEY, source: {literal: wip-minio-root}}
-      - {name: WIP_FILE_STORAGE_SECRET_KEY, source: {from_secret: minio-password}}
+      - {name: WIP_FILE_STORAGE_ACCESS_KEY, source: {from_secret: garage-key-id}}
+      - {name: WIP_FILE_STORAGE_SECRET_KEY, source: {from_secret: garage-key-secret}}
       - {name: WIP_FILE_STORAGE_BUCKET, source: {literal: wip-attachments}}
       - {name: CORS_ORIGINS, source: {from_spec: network.cors_origins}}
 

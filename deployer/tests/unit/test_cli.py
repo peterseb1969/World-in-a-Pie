@@ -73,8 +73,8 @@ class TestValidateHappyPath:
             "--repo-root", str(REPO_ROOT),
         )
         assert r.exit_code == 0, r.output
-        # Full preset enables files → MinIO active
-        assert "minio" in r.output
+        # Full preset enables files → Garage active
+        assert "garage" in r.output
         assert "postgres" in r.output
         assert "nats" in r.output
 
@@ -581,10 +581,10 @@ class TestRestartVerb:
 class TestStandardPresetShape:
     """CASE-171 #1 — restored v1 semantics."""
 
-    def test_standard_includes_reporting_minio_mcp(self) -> None:
+    def test_standard_includes_reporting_garage_mcp(self) -> None:
         from wip_deploy.presets import PRESETS
         opt = set(PRESETS["standard"]["modules"]["optional"])
-        assert {"reporting-sync", "minio", "mcp-server"} <= opt
+        assert {"reporting-sync", "garage", "mcp-server"} <= opt
 
     def test_standard_does_not_include_ingest_gateway(self) -> None:
         from wip_deploy.presets import PRESETS

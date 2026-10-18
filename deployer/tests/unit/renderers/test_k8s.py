@@ -27,6 +27,7 @@ from wip_deploy.spec import (
     PlatformSpec,
     SecretsSpec,
 )
+from wip_deploy.spec.component import Component
 
 REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent.resolve()
 
@@ -490,16 +491,42 @@ class TestNetworkPolicies:
 
 
 class TestPreservePrefixSubpaths:
+    # MinIO was the primitive's original real user; it is retired, so a
+    # synthetic optional component keeps the preserve_prefix_subpaths
+    # rendering pinned (the primitive stays - any store or service whose
+    # own endpoints live under its public strip prefix needs it).
+    _BLOBSTORE = Component.model_validate({
+        "api_version": "wip.dev/v1",
+        "kind": "Component",
+        "metadata": {
+            "name": "blobstore",
+            "category": "optional",
+            "description": "synthetic strip-prefix store for the test",
+        },
+        "spec": {
+            "image": {"name": "blobstore"},
+            "ports": [{"name": "s3", "container_port": 3900}],
+            "routes": [{
+                "path": "/blobstore",
+                "auth_required": False,
+                "strip_prefix": True,
+                "preserve_prefix_subpaths": [
+                    "/blobstore/health", "/blobstore/admin",
+                ],
+            }],
+        },
+    })
+
     def _ingress_docs(
         self, tmp_path: Path, real_discovery: Discovery,
     ) -> list[dict]:  # type: ignore[type-arg]
-        # `full` preset enables minio + reporting-sync + ingest-gateway.
-        d = _k8s_deployment(modules=["minio", "reporting-sync", "ingest-gateway"])
+        d = _k8s_deployment(modules=["blobstore", "reporting-sync", "ingest-gateway"])
+        components = [*real_discovery.components, self._BLOBSTORE]
         s = _secrets(tmp_path, d, real_discovery)
-        tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
+        tree = render_k8s(d, components, real_discovery.apps, s)
         return list(yaml.safe_load_all(tree.files[Path("ingress.yaml")].content))
 
-    def test_minio_strip_ingress_excludes_admin_subpaths(
+    def test_strip_ingress_excludes_preserved_subpaths(
         self, tmp_path: Path, real_discovery: Discovery,
     ) -> None:
         """When preserve_prefix_subpaths is set, the strip regex uses
@@ -507,7 +534,7 @@ class TestPreservePrefixSubpaths:
         nginx-ingress's cross-Ingress merging lets the strip rule
         absorb requests that should hit the admin Ingress."""
         docs = self._ingress_docs(tmp_path, real_discovery)
-        ing = next(d for d in docs if d["metadata"]["name"] == "minio-ingress")
+        ing = next(d for d in docs if d["metadata"]["name"] == "blobstore-ingress")
         path = ing["spec"]["rules"][0]["http"]["paths"][0]
         # Excludes "health" and "admin" segments via negative lookahead.
         assert "(?!" in path["path"]
@@ -520,16 +547,16 @@ class TestPreservePrefixSubpaths:
             "nginx.ingress.kubernetes.io/rewrite-target"
         ] == "/$1"
 
-    def test_minio_admin_ingress_separate_with_preserve_paths(
+    def test_preserved_subpaths_get_a_separate_ingress(
         self, tmp_path: Path, real_discovery: Discovery,
     ) -> None:
         """Preserve-prefix paths live in a SEPARATE Ingress so the
         rewrite-target annotation on the strip Ingress doesn't apply
-        to them. Otherwise NGINX would rewrite /minio/health/live to
+        to them. Otherwise NGINX would rewrite /blobstore/health/live to
         /$2 (empty) and 404."""
         docs = self._ingress_docs(tmp_path, real_discovery)
         admin = next(
-            d for d in docs if d["metadata"]["name"] == "minio-ingress-admin"
+            d for d in docs if d["metadata"]["name"] == "blobstore-ingress-admin"
         )
         # No rewrite-target annotation on the admin Ingress.
         assert (
@@ -540,8 +567,8 @@ class TestPreservePrefixSubpaths:
         paths = admin["spec"]["rules"][0]["http"]["paths"]
         assert len(paths) == 2
         path_strs = {p["path"] for p in paths}
-        assert "/minio/health" in path_strs
-        assert "/minio/admin" in path_strs
+        assert "/blobstore/health" in path_strs
+        assert "/blobstore/admin" in path_strs
         for p in paths:
             assert p["pathType"] == "Prefix"
 
@@ -556,5 +583,5 @@ class TestPreservePrefixSubpaths:
             d["metadata"]["name"] for d in docs
             if d["metadata"]["name"].endswith("-admin")
         }
-        # Only minio's admin Ingress should be present.
-        assert admin_names == {"minio-ingress-admin"}
+        # Only the blobstore admin Ingress should be present.
+        assert admin_names == {"blobstore-ingress-admin"}

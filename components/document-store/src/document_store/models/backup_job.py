@@ -126,12 +126,13 @@ class BackupJob(BeanieDocument):
         default=None,
         description="Archive locator: a local filesystem path when "
                     "archive_backend is 'local', an object key in the "
-                    "backup bucket when it is 'minio'"
+                    "backup bucket when it is 'minio' (the historical "
+                    "name for the S3 object-store backend; Garage serves it)"
     )
     archive_backend: str = Field(
         default="local",
         description="Where the archive lives: 'local' (scratch filesystem, "
-                    "no durability promise) or 'minio' (dedicated bucket). "
+                    "no durability promise) or 'minio' (dedicated object-store bucket; the value is the backend's historical name — Garage serves it). "
                     "Records predating the field are local by construction, "
                     "which is exactly what the default yields."
     )

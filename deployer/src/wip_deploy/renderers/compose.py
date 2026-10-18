@@ -466,14 +466,6 @@ def _command_for(owner: Component | App) -> list[str] | None:
     # Two image-level conventions that live here for pragmatic reasons.
     if name == "dex":
         return ["dex", "serve", "/etc/dex/config.yaml"]
-    if name == "minio":
-        # Full argv including the binary — k8s `command` replaces the
-        # image ENTRYPOINT (minio), so without the binary name k8s
-        # tries to exec "server" (not found). The caller splits this
-        # into entrypoint + command for compose, where `command:` only
-        # overrides CMD, so full argv would double up with ENTRYPOINT.
-        return ["minio", "server", "/data", "--console-address", ":9001"]
-
     # Everything else relies on the image's default CMD.
     return None
 

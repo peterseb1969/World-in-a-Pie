@@ -853,9 +853,6 @@ def _command_for(owner: Component | App) -> list[str] | None:
     name = owner.metadata.name
     if name == "dex":
         return ["dex", "serve", "/etc/dex/config.yaml"]
-    if name == "minio":
-        # Full argv — k8s `command` replaces ENTRYPOINT (minio).
-        return ["minio", "server", "/data", "--console-address", ":9001"]
     return None
 
 
@@ -1029,15 +1026,15 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
             excluded = []
             for sub in r.preserve_prefix_subpaths:
                 # Strip the route prefix → admin segment name (e.g.
-                # "/minio/health" → "health"). Skip if the subpath
+                # "/garage/health" → "health"). Skip if the subpath
                 # isn't actually under the route prefix.
                 if not sub.startswith(r.path + "/"):
                     continue
                 excluded.append(sub[len(r.path) + 1:])
             if excluded:
                 excl_alt = "|".join(excluded)
-                # /minio/(?!health(/|$)|admin(/|$))(.*) — strip everything
-                # under /minio EXCEPT the listed admin segments.
+                # /garage/(?!health(/|$)|admin(/|$))(.*) — strip everything
+                # under the prefix EXCEPT the listed preserved segments.
                 strip_path = (
                     f"{r.path}/(?!(?:{excl_alt})(?:/|$))(.*)"
                 )
@@ -1089,7 +1086,7 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
         # Preserve-prefix subpaths get their own Ingress (no rewrite
         # annotation). With the strip regex now excluding these
         # segments, the admin Ingress's Prefix paths cleanly own
-        # /minio/health/* and /minio/admin/* — no cross-Ingress fight.
+        # e.g. /<prefix>/health/* and /<prefix>/admin/* — no cross-Ingress fight.
         if r.preserve_prefix_subpaths:
             preserve_annotations = dict(base_annotations)
             if cfg.gateway_auth_url and r.auth_protected:

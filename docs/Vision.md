@@ -26,7 +26,7 @@ This is intentional. WIP provides **primitives**, not solutions:
 | **Terminologies** | Controlled vocabularies (codes, values, aliases) |
 | **Templates** | Document schemas with validation rules |
 | **Documents** | Validated, versioned data storage |
-| **Files** | Binary file storage with reference tracking (MinIO) |
+| **Files** | Binary file storage with reference tracking (Garage) |
 | **Reporting** | SQL-accessible data via PostgreSQL sync |
 
 These primitives are domain-agnostic. WIP doesn't know what a "patient", "invoice", or "sensor reading" is. You define that through terminologies and templates.
@@ -54,7 +54,7 @@ To demonstrate WIP's capabilities, demo applications must be built as **separate
 │  Terminologies │ Templates │ Documents │ Files │ SQL│
 ├─────────────────────────────────────────────┤
 │           WIP Infrastructure                │
-│  MongoDB │ PostgreSQL │ NATS │ MinIO │ Dex/OIDC │
+│  MongoDB │ PostgreSQL │ NATS │ Garage │ Dex/OIDC │
 └─────────────────────────────────────────────┘
 ```
 
@@ -347,7 +347,7 @@ The default behavior: data is never physically deleted. Documents, templates, an
 
 **Accepted deviations:**
 
-- **Binary files** (stored in MinIO) support hard-delete after soft-delete, to reclaim storage.
+- **Binary files** (stored in Garage) support hard-delete after soft-delete, to reclaim storage.
 - **Mutable terminologies** (`mutable: true`) allow hard-deletion of terms. This exists for app-scoped user-defined vocabularies (e.g., custom classifications in a clinical trial app) where users must be able to remove entries entirely, not just deprecate them. The terminology creator opts into mutability explicitly; immutable remains the default.
 - **Namespace deletion** removes all entities in a namespace. This is a development and lifecycle operation — tearing down a test namespace, removing an uninstalled app's data. It is intentionally destructive and requires explicit confirmation.
 - **Per-entity hard-delete in `deletion_mode: "full"` namespaces.** A namespace explicitly flipped to `deletion_mode: "full"` (the `wip` namespace refuses it; `retain` → `full` requires `confirm_enable_deletion=true`) accepts `hard_delete=true` on delete operations across the stores, permanently removing the record. The default (`retain`) preserves the never-delete guarantee; the flip is a deliberate, guarded opt-in for namespaces whose data lifecycle genuinely requires purging.
@@ -383,7 +383,7 @@ Backend selection, auth providers, and sync behavior are configured via environm
 
 ### 6. Standard Infrastructure, Swappable Auth
 
-WIP's infrastructure choices are deliberate and permanent: MongoDB for document storage, PostgreSQL for reporting, NATS for events, MinIO for files. These are not abstracted behind pluggable interfaces — the services use them directly (Beanie ODM, asyncpg, nats-py, boto3). Swapping storage engines was analysed and rejected: the effort-to-value ratio is prohibitive, and it serves neither thesis. WIP runs on a Raspberry Pi 5 with these components; that's small enough.
+WIP's infrastructure choices are deliberate and stable: MongoDB for document storage, PostgreSQL for reporting, NATS for events, Garage for files (it replaced MinIO when MinIO's public image supply ended — possible precisely because the file store is spoken to over plain S3/boto3, the protocol being the stable part). These are not abstracted behind pluggable interfaces — the services use them directly (Beanie ODM, asyncpg, nats-py, boto3). Swapping the database engines was analysed and rejected: the effort-to-value ratio is prohibitive, and it serves neither thesis. WIP runs on a Raspberry Pi 5 with these components; that's small enough.
 
 The exception is authentication: Dex ships as the default OIDC provider, but any OIDC-compliant provider works. This is a genuine abstraction — WIP validates JWT tokens and doesn't care who issued them.
 

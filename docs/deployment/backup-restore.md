@@ -246,7 +246,7 @@ all four tables alongside the document tables.
 Two kinds of API keys exist, and the ritual treats them very differently:
 
 - **Deployment secrets** (`~/.wip-deploy/<install>/secrets/`: the master
-  api-key, Dex passwords, postgres/minio credentials) — survive nukes and
+  api-key, Dex passwords, postgres/garage credentials) — survive nukes and
   redeploys by design. Nothing to do.
 - **Runtime keys** — anything created via `POST /api/registry/api-keys` (the
   Console UI or MCP `create_api_key`), including every namespace-scoped

@@ -214,7 +214,7 @@ WIP has 8 behaviours that violate conventional expectations. Read `wip://ponifs`
 | **Term** | A value within a terminology, with label and aliases | Aliases enable fuzzy matching on import |
 | **Template** | Document schema defining fields, types, validation | Templates are versioned — multiple versions coexist |
 | **Document** | A data record conforming to a template | Versioned via identity hash — same identity = new version |
-| **File** | Binary attachment stored in MinIO | First-class entity with reference tracking and orphan detection |
+| **File** | Binary attachment stored in Garage | First-class entity with reference tracking and orphan detection |
 | **Registry** | Central ID authority with synonym support | Enables cross-system integration without mapping tables |
 | **Namespace** | Logical partition for all entities | Enables backup/restore, multi-tenancy, data isolation |
 | **Reporting Sync** | Real-time MongoDB → PostgreSQL via NATS | Enables SQL queries and BI dashboards over document data |

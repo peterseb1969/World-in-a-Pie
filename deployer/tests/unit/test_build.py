@@ -65,7 +65,7 @@ class TestPresetApplies:
     def test_full_enables_reporting_files_ingest(self) -> None:
         d = build_deployment(_minimal_compose_inputs(preset="full"))
         opt = set(d.spec.modules.optional)
-        assert {"reporting-sync", "ingest-gateway", "minio"} <= opt
+        assert {"reporting-sync", "ingest-gateway", "garage"} <= opt
 
     def test_unknown_preset_raises_keyerror(self) -> None:
         with pytest.raises(KeyError, match="unknown preset"):

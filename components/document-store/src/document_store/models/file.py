@@ -1,6 +1,6 @@
 """File model for the Document Store service.
 
-Files are first-class entities with Registry IDs, stored in MinIO,
+Files are first-class entities with Registry IDs, stored in the object store,
 and referenced by documents like any other reference type.
 """
 
@@ -43,13 +43,13 @@ class FileMetadata(BaseModel):
 
 class File(BeanieDocument):
     """
-    A file entity stored in MinIO.
+    A file entity stored in the object store.
 
     Files are first-class entities with Registry IDs.
     They can be shared across multiple documents and support
     orphan detection for cleanup.
 
-    The storage_key in MinIO is simply the file_id for easy mapping.
+    The storage_key in object storage is simply the file_id for easy mapping.
     """
 
     # Namespace for multi-tenant isolation
@@ -84,7 +84,7 @@ class File(BeanieDocument):
     )
     storage_key: str = Field(
         ...,
-        description="Key in MinIO/S3 (same as file_id)"
+        description="Key in object storage (same as file_id)"
     )
 
     # User-defined metadata

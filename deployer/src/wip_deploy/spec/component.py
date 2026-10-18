@@ -4,7 +4,7 @@ A Component declares everything a renderer needs to know about a single
 service. Manifests live next to the service they describe:
 `components/<name>/wip-component.yaml`.
 
-Infrastructure services (mongodb, postgres, nats, minio, dex) are components
+Infrastructure services (mongodb, postgres, nats, garage, dex) are components
 too — they differ only in having `image.build_context=None` (pre-built
 images only). This keeps the pipeline uniform: no "service vs infrastructure"
 code paths.
@@ -112,7 +112,7 @@ class Route(WIPModel):
     # the public prefix. MinIO is the canonical case: its S3 API at
     # /<bucket>/<key> requires strip_prefix=True (presigned URLs encode
     # the bucket+key path), but its admin/health endpoints live at
-    # /minio/health, /minio/admin under MinIO's own URL space.
+    # an object store's own health/admin endpoints under its URL space.
     # Renderers emit these as preserve-prefix routes that take
     # precedence over the regex/strip rule. Only meaningful when
     # `strip_prefix=True`. CASE-248.

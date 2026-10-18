@@ -432,7 +432,7 @@ class FieldType(str, Enum):
     DATETIME = "datetime"
     TERM = "term"          # Term from a Def-Store terminology
     REFERENCE = "reference"  # Cross-entity reference (document, term, terminology, template)
-    FILE = "file"            # Binary file attachment (MinIO)
+    FILE = "file"            # Binary file attachment (object store)
     OBJECT = "object"        # Nested template
     ARRAY = "array"          # Collection of items
 

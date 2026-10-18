@@ -79,27 +79,36 @@ fails with `relation "…" does not exist`.
 **Action:** pass `namespace` (the search path then points at that namespace's
 schema) or schema-qualify every table, as the API has always documented.
 
-### Object storage: Garage module (new) and SigV4 presigned URLs
+### Object storage: Garage replaces MinIO (now the default; MinIO retired)
 
 MinIO's images are no longer publicly pullable (docker.io resolves to an
-HTML page, quay.io answers 401 anonymously); the platform runs a frozen,
-arm64-only copy. This release adds **`garage`** (`--add garage`,
-dxflrs/garage v2.1.0, arm64+amd64) as the successor object-storage
-module. When garage is active it takes precedence over minio:
-document-store's file storage follows it automatically (endpoint,
-deployer-generated credentials, `/garage` public prefix), and the
-deployer provisions the node at apply time (single-node layout, key
-import, attachments bucket) — idempotently, with secrets on stdin.
-Existing installs keep running MinIO unchanged; blob migration is a
-separate step (CASE-864 Phase 2).
+HTML page, quay.io answers 401 anonymously); the platform ran a frozen,
+arm64-only copy. **Garage** (dxflrs/garage v2.1.0, arm64+amd64) is now
+the platform's object store: the `standard` and `full` presets include
+the `garage` module, document-store's manifest reads the Garage endpoint
+and deployer-generated credentials directly, and the deployer provisions
+the node at apply time (single-node layout, key import, attachments
+bucket) — idempotently, with secrets on stdin.
+
+**The `minio` module no longer exists.** An install whose saved spec
+still lists it renders without an object store (file storage disabled)
+until migrated. The proven migration recipe: full backup → delete the
+file-bearing namespace(s) → `add-module garage` → restore → verify
+checksums → `remove-module minio` (run against a repo state that still
+had the module, or edit the saved spec). All platform installs were
+migrated this way or as zero-blob flips (CASE-864 Phase 2: dev-test, kb,
+prod-test with 207/207 blobs checksum-verified plus an in-app download,
+wip-local). Service images need no change — the storage client is
+S3-generic; images ≥ 20261017a carry the required SigV4 presigning.
 
 Two cross-cutting changes ship with it:
 
 - **Presigned download URLs are now SigV4** (they were legacy V2, which
   Garage rejects as anonymous). V4 signs the Host header, so the storage
-  routes (`/minio`, `/garage`) now forward the upstream Host at the edge
+  route (`/garage`) now forwards the upstream Host at the edge
   (`upstream_host_header` route primitive; Caddy `header_up Host`, NGINX
-  `upstream-vhost`).
+  `upstream-vhost` — restoring the full in-cluster FQDN on k8s, since
+  that is the host services sign against).
   **Action:** presigned downloads require the re-rendered router config —
   one more reason this release upgrades by re-rendering, never by image
   swap alone. A dev install whose document-store hot-reloaded the new

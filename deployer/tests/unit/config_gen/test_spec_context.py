@@ -32,18 +32,18 @@ class TestSpecContextComputation:
         # Internal issuer is used by the auth-gateway server-to-server
         assert ctx.auth.issuer_url_internal == "http://wip-dex:5556/dex"
 
-    def test_files_enabled_reflects_minio_activation(
+    def test_files_enabled_reflects_garage_activation(
         self,
         compose_deployment: Deployment,
         real_discovery: Discovery,
     ) -> None:
-        # minio is not in default modules.optional, so files disabled.
+        # garage is not in default modules.optional, so files disabled.
         ctx = make_spec_context(compose_deployment, real_discovery.components)
         assert ctx.features.files_enabled == "false"
 
-        # Enable minio → files_enabled flips true.
+        # Enable garage → files_enabled flips true.
         d2 = compose_deployment.model_copy(deep=True)
-        d2.spec.modules.optional = ["minio"]
+        d2.spec.modules.optional = ["garage"]
         ctx2 = make_spec_context(d2, real_discovery.components)
         assert ctx2.features.files_enabled == "true"
 
@@ -97,7 +97,7 @@ class TestResolveFromSpec:
             ),
             features=SpecContextFeatures(
                 files_enabled="true",
-                file_storage_public_endpoint="https://h/minio",
+                file_storage_public_endpoint="https://h/garage",
             ),
             security=SpecContextSecurity(variant="dev", api_keys_file=""),
         )

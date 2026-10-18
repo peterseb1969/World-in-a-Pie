@@ -40,7 +40,8 @@ class ResolvedRoute:
     # that validate the signed Host of presigned URLs (object storage).
     upstream_host_header: bool = False
     # Subpaths within `path` to NOT strip when strip_prefix=True.
-    # MinIO admin/health under /minio is the canonical case. CASE-248.
+    # An object store's own admin/health endpoints under its public
+    # prefix are the canonical case. CASE-248.
     preserve_prefix_subpaths: tuple[str, ...] = ()
 
 

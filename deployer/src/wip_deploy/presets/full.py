@@ -12,7 +12,7 @@ FULL: dict[str, Any] = {
         "optional": [
             "reporting-sync",
             "ingest-gateway",
-            "minio",
+            "garage",
             "mcp-server",
         ]
     },
