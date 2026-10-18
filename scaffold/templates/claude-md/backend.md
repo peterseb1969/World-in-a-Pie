@@ -404,7 +404,7 @@ Full rule at `feedback_push_to_gitea.md`.
 ## 14. Critical Gotchas (Technical)
 
 - **OIDC three-value rule** — issuer URL must match in 3 places. See `docs/network-configuration.md`.
-- **Caddy: `handle` vs `handle_path` is deliberate.** `handle` preserves the request path to the backend. `handle_path` strips the matched prefix. Services that mount at a path (most WIP services under `/api/<svc>`) need `handle`. Services that serve at their own root under a public prefix (e.g., MinIO under `/minio/`) need `handle_path`. Picking the wrong one produces silent routing errors.
+- **Caddy: `handle` vs `handle_path` is deliberate.** `handle` preserves the request path to the backend. `handle_path` strips the matched prefix. Services that mount at a path (most WIP services under `/api/<svc>`) need `handle`. Services that serve at their own root under a public prefix (e.g., Garage under `/garage/`) need `handle_path`. Picking the wrong one produces silent routing errors.
 - **Caddy defaults to 200 + empty body on unmatched paths.** This bites health checks: a client probing an unroutable path gets `200 + ""` and parses it as valid JSON. Always ensure health endpoints are explicitly routed, and never treat "got 200" as "service is up" without content validation.
 - **Beanie pinned to `<2.0`.** Beanie 2.0+ changes `init_beanie()` signature and breaks MongoDB initialization. Do not upgrade without testing. Full rule at `feedback_beanie_pin.md`.
 - **Container recreate vs restart** — after changing an install's env/secrets (`~/.wip-deploy/<name>/.env`, `secrets/`): `wip-deploy redeploy` (or compose down && up -d), not `restart` — restart does not re-read env.
