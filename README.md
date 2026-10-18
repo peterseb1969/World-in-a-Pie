@@ -201,7 +201,7 @@ Import from SAP, the FDA, or a legacy database without forcing ID remapping — 
 
 ### MCP Server: AI-Native Development
 
-WIP ships a **Model Context Protocol (MCP) server** exposing the full platform to AI coding assistants — **101 tools + 5 resources** covering CRUD, terminologies, import, backup/restore, and non-obvious-behaviour docs, so an AI can build on WIP through tool calls without reading source. Transports: stdio, SSE, and HTTP streamable (validated on local, SSH-proxy, and Kubernetes deployments). Wire it up with `./scripts/setup-backend-agent.sh`; see [docs/mcp-server.md](docs/mcp-server.md) for transports and configuration.
+WIP ships a **Model Context Protocol (MCP) server** exposing the full platform to AI coding assistants — **104 tools + 5 resources** covering CRUD, terminologies, import, backup/restore, and non-obvious-behaviour docs, so an AI can build on WIP through tool calls without reading source. Transports: stdio, SSE, and HTTP streamable (validated on local, SSH-proxy, and Kubernetes deployments). Wire it up with `./scripts/setup-backend-agent.sh`; see [docs/mcp-server.md](docs/mcp-server.md) for transports and configuration.
 
 > [!CAUTION]
 > **Cloud AI + your data: three channels of exposure.**

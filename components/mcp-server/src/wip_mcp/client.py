@@ -708,6 +708,20 @@ class WipClient:
         )
         return self._unwrap_single(resp)
 
+    async def merge_terms(
+        self, survivor_term_id: str, absorbed_term_id: str, reason: str | None = None,
+        namespace: str | None = None, terminology: str | None = None,
+    ) -> dict:
+        item: dict[str, Any] = {"survivor_term_id": survivor_term_id, "absorbed_term_id": absorbed_term_id}
+        if reason:
+            item["reason"] = reason
+        resp = await self._post(
+            self.def_store_url, "/api/def-store/terms/merge", json=[item],
+            namespace=namespace or self.default_namespace,
+            terminology=terminology,
+        )
+        return self._unwrap_single(resp)
+
     async def validate_term(self, terminology: str, value: str) -> dict:
         # Use terminology_value when it's not a UUID, terminology_id when it is
         import re

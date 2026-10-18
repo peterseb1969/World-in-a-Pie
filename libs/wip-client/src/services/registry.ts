@@ -162,6 +162,12 @@ export class RegistryService extends BaseService {
     return resp.results[0]
   }
 
+  /**
+   * Merge two Registry entries (the deprecated entry's id becomes a synonym
+   * of the preferred one). Term entries are refused — use
+   * `defStore.mergeTerms`, which also moves the absorbed term's value and
+   * names, so they resolve to the survivor in validation too.
+   */
   async mergeEntries(request: MergeRequest): Promise<{ status: string; preferred_id?: string; deprecated_id?: string; error?: string }> {
     const resp = await this.post<{ results: Array<{ status: string; preferred_id?: string; deprecated_id?: string; error?: string }> }>(
       '/synonyms/merge',

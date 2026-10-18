@@ -524,6 +524,63 @@ one, pass `--output-dir <scratch dir>`. Earlier previews may have left
 secret-only directories under `~/.wip-deploy/` (no `deployment.deployer-state`
 inside). Nothing reads them, and they can be deleted.
 
+### Terms: one resolver for document writes, a real merge, hard deletes that stick
+
+**Document writes resolve term values through def-store.** document-store used
+to match term fields against its own cached copy of each terminology. That copy
+included deprecated and inactive terms permanently, and was up to 5 minutes
+stale for deleted terms and edited names. So documents could store a deprecated
+or deleted term's id with no warning, while def-store's own `validate` gave a
+different answer. Document writes now ask def-store, by the same rule as
+`POST /api/def-store/validate`:
+- only active terms match;
+- a term's value beats any term's name;
+- the terminology's case rule applies.
+
+A vocabulary change applies to the very next write. Within one bulk write or CSV
+import, each distinct value is resolved once.
+
+The way to ask is the shared `wip_auth.term_resolution` module
+(`resolve_term_values`, `term_resolution_batch`), the term-value counterpart of
+`wip_auth.resolve`. Any service resolving term values uses it rather than
+matching against a vocabulary of its own. def-store's bulk resolution is
+now one indexed query per terminology per request: two case-insensitive
+indexes on `terms` are built on first start.
+**Action:** a write submitting a deprecated or inactive term's value is now
+rejected (`invalid_term`), unless an active term carries that value as a name.
+
+**Merging terms: `POST /api/def-store/terms/merge`** (MCP `merge_terms`,
+`@wip/client` 0.62.0 `defStore.mergeTerms`). It absorbs one term into another of the
+same terminology:
+1. the absorbed term's value and names become names of the survivor;
+2. it is deprecated with `replaced_by_term_id` = survivor;
+3. its Registry entry is merged, so its id and `ns:terminology:value` key
+   resolve to the survivor.
+
+Existing documents keep the absorbed term's id. A merge that cannot complete
+changes nothing.
+**Action:** the Registry's `merge_entries` (and the MCP tool) now **refuses term
+entries**, because a Registry-only merge left the absorbed term's value still
+resolving to it. Use the term merge.
+
+**Hard-deleting from a mutable terminology removes the Registry entry.** Before,
+the Registry refused the deletion in `retain` namespaces, as a per-item error
+nobody read. The deleted value kept resolving to the dead id, and re-creating it
+reused that id. Now the entry goes too, and re-creating the value mints a new
+id. If the Registry still refuses, the delete reports
+`error_code: registry_entry_not_removed`.
+- Entries left behind by earlier deletes: list them with
+  `POST /api/def-store/maintenance/registry-ghosts?namespace=<ns>` (namespace
+  admin; a dry run by default), and remove them with `dry_run=false`.
+  Entries from mutable or deleted terminologies are removed; a term missing from
+  an immutable terminology is only reported.
+- The shared Registry client's `hard_delete_entry` now raises when the Registry
+  refuses an item, instead of returning quietly.
+- Rollout order: update the Registry before def-store. A def-store that already
+  sends the exemption to an older Registry gets the deletion refused and
+  reports `registry_entry_not_removed`; nothing breaks silently, and the
+  ghost-cleanup endpoint removes those entries afterwards.
+
 ### Edge-type filters resolve in the request's namespace; an unknown value is 404
 
 `GET /documents/{id}/relationships?template=` and `GET /documents/{id}/traverse?types=`

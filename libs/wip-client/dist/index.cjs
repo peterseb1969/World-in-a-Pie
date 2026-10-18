@@ -492,6 +492,22 @@ var DefStoreService = class extends BaseService {
   async deprecateTerm(termId, data, options) {
     return this.bulkWriteOne("/terms/deprecate", { ...data, term_id: termId }, "POST", options);
   }
+  /**
+   * Absorb one term into another of the same terminology. From then on the
+   * absorbed term's value and names resolve to the survivor — in
+   * validation, in new documents and through the Registry. The absorbed
+   * term is deprecated (replaced_by = survivor); existing documents keep
+   * its id. A merge that cannot complete changes nothing. The result's
+   * `details` list `names_added` and any `name_collisions` with a third
+   * term. The terminology option scopes both ids.
+   */
+  async mergeTerms(survivorTermId, absorbedTermId, options) {
+    return this.bulkWriteOne("/terms/merge", {
+      survivor_term_id: survivorTermId,
+      absorbed_term_id: absorbedTermId,
+      reason: options?.reason
+    }, "POST", { namespace: options?.namespace, terminology: options?.terminology });
+  }
   async deleteTerm(termId, options) {
     return this.bulkWriteOne("/terms", {
       id: termId,
@@ -1230,6 +1246,12 @@ var RegistryService = class extends BaseService {
     );
     return resp.results[0];
   }
+  /**
+   * Merge two Registry entries (the deprecated entry's id becomes a synonym
+   * of the preferred one). Term entries are refused — use
+   * `defStore.mergeTerms`, which also moves the absorbed term's value and
+   * names, so they resolve to the survivor in validation too.
+   */
   async mergeEntries(request) {
     const resp = await this.post(
       "/synonyms/merge",

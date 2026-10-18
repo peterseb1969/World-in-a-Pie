@@ -199,6 +199,27 @@ export class DefStoreService extends BaseService {
     return this.bulkWriteOne('/terms/deprecate', { ...data, term_id: termId }, 'POST', options)
   }
 
+  /**
+   * Absorb one term into another of the same terminology. From then on the
+   * absorbed term's value and names resolve to the survivor — in
+   * validation, in new documents and through the Registry. The absorbed
+   * term is deprecated (replaced_by = survivor); existing documents keep
+   * its id. A merge that cannot complete changes nothing. The result's
+   * `details` list `names_added` and any `name_collisions` with a third
+   * term. The terminology option scopes both ids.
+   */
+  async mergeTerms(survivorTermId: string, absorbedTermId: string, options?: {
+    reason?: string
+    namespace?: string
+    terminology?: string
+  }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terms/merge', {
+      survivor_term_id: survivorTermId,
+      absorbed_term_id: absorbedTermId,
+      reason: options?.reason,
+    }, 'POST', { namespace: options?.namespace, terminology: options?.terminology })
+  }
+
   async deleteTerm(termId: string, options?: {
     hardDelete?: boolean
     namespace?: string

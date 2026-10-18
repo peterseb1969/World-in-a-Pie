@@ -455,6 +455,19 @@ A term is an entry in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).
   "Term Addressing Is Strict".
 - Documents store both the original value AND the resolved term_id
 - Inactive terms are rejected in new documents (enforced by validation)
+- One resolver: a document's term field resolves through def-store at
+  write time, by the same rule as POST /api/def-store/validate (active
+  terms only, a term's value before any term's names, the terminology's
+  case rule). A vocabulary change applies to the next write at once.
+- Merging: merge_terms (POST /api/def-store/terms/merge) absorbs one term
+  into another of the same terminology — the absorbed term's value and
+  names become names of the survivor, it is deprecated with
+  replaced_by_term_id = survivor, and its Registry entry is merged, so it
+  resolves to the survivor everywhere. Existing documents keep the
+  absorbed term's id. merge_entries refuses term entries.
+- Hard-deleting a term of a mutable terminology also removes its Registry
+  entry, so the deleted value stops resolving and re-creating it mints a
+  new id.
 
 ## Templates
 A template defines a document schema — like a form definition.
@@ -1528,6 +1541,10 @@ async def merge_entries(preferred_id: str, deprecated_id: str) -> str:
     """Merge two Registry entries. The deprecated entry becomes inactive and its
     entry_id is added as a synonym to the preferred entry (for backward compatibility).
 
+    Term entries are refused: use merge_terms, which also moves the absorbed
+    term's value and names to the survivor — a Registry-only merge would leave
+    the absorbed term's value still resolving to it in validation.
+
     Args:
         preferred_id: The entry ID to keep as canonical.
         deprecated_id: The entry ID to deprecate and merge into the preferred one.
@@ -2099,6 +2116,45 @@ async def deprecate_term(
             term_id=term_id, reason=reason,
             replaced_by_term_id=replaced_by_term_id,
             namespace=namespace, terminology=terminology,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def merge_terms(
+    survivor_term_id: str,
+    absorbed_term_id: str,
+    reason: str | None = None,
+    namespace: str | None = None,
+    terminology: str | None = None,
+) -> str:
+    """Absorb one term into another of the same terminology.
+
+    From then on the absorbed term's value and names resolve to the
+    survivor — in validation, in new documents and through the Registry
+    (its id and 'ns:terminology:value' key). The absorbed term is deprecated
+    with replaced_by = survivor and its value and names become names of the
+    survivor. Existing documents keep the absorbed term's id (history is not
+    rewritten). A merge that cannot complete changes nothing. This is the
+    way to merge terms: merge_entries refuses term entries.
+
+    Args:
+        survivor_term_id: The term that remains. Canonical UUID, fully
+            qualified 'ns:terminology:value', or — with terminology set —
+            the opaque raw term value.
+        absorbed_term_id: The term absorbed into the survivor; same forms.
+        reason: Recorded as the absorbed term's deprecation reason.
+        terminology: Terminology scoping value-form identifiers.
+
+    The result's details list the names the survivor gained, and any name
+    the survivor now shares with a third term (name_collisions).
+    """
+    try:
+        data = await get_client().merge_terms(
+            survivor_term_id=survivor_term_id, absorbed_term_id=absorbed_term_id,
+            reason=reason, namespace=namespace, terminology=terminology,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -4702,6 +4758,7 @@ WRITE_TOOLS = frozenset({
     "update_term",
     "delete_term",
     "deprecate_term",
+    "merge_terms",
     # Relations
     "create_term_relations",
     "delete_term_relations",

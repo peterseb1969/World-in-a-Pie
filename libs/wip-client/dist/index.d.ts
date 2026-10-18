@@ -581,6 +581,20 @@ declare class DefStoreService extends BaseService {
         namespace?: string;
         terminology?: string;
     }): Promise<BulkResultItem>;
+    /**
+     * Absorb one term into another of the same terminology. From then on the
+     * absorbed term's value and names resolve to the survivor — in
+     * validation, in new documents and through the Registry. The absorbed
+     * term is deprecated (replaced_by = survivor); existing documents keep
+     * its id. A merge that cannot complete changes nothing. The result's
+     * `details` list `names_added` and any `name_collisions` with a third
+     * term. The terminology option scopes both ids.
+     */
+    mergeTerms(survivorTermId: string, absorbedTermId: string, options?: {
+        reason?: string;
+        namespace?: string;
+        terminology?: string;
+    }): Promise<BulkResultItem>;
     deleteTerm(termId: string, options?: {
         hardDelete?: boolean;
         namespace?: string;
@@ -2539,6 +2553,12 @@ declare class RegistryService extends BaseService {
         registry_id?: string;
         error?: string;
     }>;
+    /**
+     * Merge two Registry entries (the deprecated entry's id becomes a synonym
+     * of the preferred one). Term entries are refused — use
+     * `defStore.mergeTerms`, which also moves the absorbed term's value and
+     * names, so they resolve to the survivor in validation too.
+     */
     mergeEntries(request: MergeRequest): Promise<{
         status: string;
         preferred_id?: string;

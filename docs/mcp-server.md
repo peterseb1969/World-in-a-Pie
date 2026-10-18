@@ -22,7 +22,7 @@ The server runs in one of two modes, controlled by the `WIP_MCP_MODE` environmen
 
 ### Normal Mode (default)
 
-All 101 tools are available — full read/write access to the WIP data model. This is the mode used during application development (Phases 1–4 below).
+All 104 tools are available — full read/write access to the WIP data model. This is the mode used during application development (Phases 1–4 below).
 
 ```bash
 python -m wip_mcp                  # stdio
@@ -44,12 +44,12 @@ This is a structural safety mechanism — write tools are removed from the MCP t
 - **Shared/multi-tenant deployments** — expose WIP data to agents you don't fully trust
 - **Demo environments** — let users explore without risk of data modification
 
-**Write tools removed (48):**
+**Write tools removed (49):**
 
 | Category | Tools removed |
 |----------|--------------|
 | Terminologies | `create_terminology`, `create_terminologies_bulk`, `update_terminology`, `delete_terminology`, `restore_terminology` |
-| Terms | `create_terms`, `update_term`, `delete_term`, `deprecate_term` |
+| Terms | `create_terms`, `update_term`, `delete_term`, `deprecate_term`, `merge_terms` |
 | Term Relations | `create_term_relations`, `delete_term_relations` |
 | Templates | `create_template`, `create_templates_bulk`, `create_edge_type`, `update_template`, `activate_template`, `deactivate_template`, `reactivate_template`, `add_edge_type_endpoints` |
 | Documents | `create_document`, `create_documents_bulk`, `update_document`, `archive_document`, `delete_document`, `delete_documents_bulk`, `migrate_documents` |
@@ -279,7 +279,7 @@ Five resources provide baseline context to the AI without tool calls:
 | `lookup_entry(entry_id?, namespace?, entity_type?, composite_key?)` | Look up by ID or by composite key. Key lookup also searches synonyms. |
 | `add_synonym(target_id, synonym_namespace, synonym_entity_type, synonym_composite_key)` | Add an alternative composite key that resolves to an existing entry. For cross-namespace linking and external ID mapping. |
 | `remove_synonym(target_id, synonym_namespace, synonym_entity_type, synonym_composite_key)` | Remove a synonym from a Registry entry. |
-| `merge_entries(preferred_id, deprecated_id)` | Merge two entries. Deprecated entry becomes inactive; its ID is added as synonym to the preferred entry. |
+| `merge_entries(preferred_id, deprecated_id)` | Merge two entries. Deprecated entry becomes inactive; its ID is added as synonym to the preferred entry. Refuses term entries — use `merge_terms`. |
 | `search_registry(query)` | Search Registry entries by ID or composite key. |
 
 ### Terminologies (8 tools)
@@ -295,7 +295,7 @@ Five resources provide baseline context to the AI without tool calls:
 | `delete_terminology(id, force?)` | Deactivate (soft-delete). Blocked if terms depend on it unless `force=true`. |
 | `restore_terminology(id, restore_terms?)` | Restore a previously deactivated terminology. Optionally reactivates its terms. |
 
-### Terms (7 tools)
+### Terms (8 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -306,6 +306,7 @@ Five resources provide baseline context to the AI without tool calls:
 | `update_term(id, label?, aliases?, description?, sort_order?)` | Update a term's properties. |
 | `delete_term(id)` | Deactivate (soft-delete) a term. |
 | `deprecate_term(id, reason, replaced_by_term_id?)` | Deprecate with a reason and optional replacement pointer. Term remains queryable but flagged as superseded. |
+| `merge_terms(survivor_term_id, absorbed_term_id, reason?)` | Absorb one term into another of the same terminology: the absorbed term's value and names become names of the survivor, it is deprecated (replaced_by = survivor), and its Registry entry is merged — it resolves to the survivor everywhere. Existing documents keep the absorbed id. |
 
 ### Ontology / Term Relations (4 tools)
 

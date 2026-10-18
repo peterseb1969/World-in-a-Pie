@@ -94,6 +94,25 @@ describe('Service classes via createWipClient', () => {
       expect(JSON.parse(options.body)).toEqual([{ id: '0190b000-0000-7000-0000-000000000001' }])
     })
 
+    it('mergeTerms posts one item to /terms/merge with the terminology scope', async () => {
+      mockJsonResponse({
+        results: [{ index: 0, status: 'updated', id: 'A', details: { names_added: ['BABBAGE'] } }],
+        total: 1,
+        succeeded: 1,
+        failed: 0,
+      })
+
+      const result = await client.defStore.mergeTerms('A', 'B', { reason: 'same person', terminology: 'PEOPLE' })
+
+      expect(result.status).toBe('updated')
+      const [rawUrl, options] = fetchMock.mock.calls[0]
+      const url = new URL(rawUrl)
+      expect(options.method).toBe('POST')
+      expect(url.pathname).toBe('/api/def-store/terms/merge')
+      expect(url.searchParams.get('terminology')).toBe('PEOPLE')
+      expect(JSON.parse(options.body)).toEqual([{ survivor_term_id: 'A', absorbed_term_id: 'B', reason: 'same person' }])
+    })
+
     it('getChildren forwards relation_type and namespace as query params', async () => {
       mockJsonResponse([])
 

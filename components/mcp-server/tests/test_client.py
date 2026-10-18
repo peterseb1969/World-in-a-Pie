@@ -1020,3 +1020,16 @@ async def test_error_responses_carry_the_server_detail(call):
     with patch.object(client, "_get_client", return_value=mock_http), pytest.raises(httpx.HTTPStatusError) as exc:
         await call(client)
     assert detail in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_merge_terms_posts_one_item_to_def_store():
+    mock_http = _mock_http(_mock_response({"results": [{"index": 0, "status": "updated", "id": "A"}], "total": 1, "succeeded": 1, "failed": 0}))
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        result = await client.merge_terms("A", "B", reason="same person", terminology="PEOPLE")
+    assert result["status"] == "updated"
+    call = mock_http.post.call_args
+    assert call.args[0] == "http://test:8002/api/def-store/terms/merge"
+    assert call.kwargs["json"] == [{"survivor_term_id": "A", "absorbed_term_id": "B", "reason": "same person"}]
+    assert call.kwargs["params"]["terminology"] == "PEOPLE"
