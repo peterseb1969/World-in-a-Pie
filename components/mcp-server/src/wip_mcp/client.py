@@ -1338,7 +1338,7 @@ class WipClient:
             f"{self.document_store_url}/api/document-store/table/{template_id}/csv",
             params=params,
         )
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         return resp.text
 
     # ========================================================
@@ -1751,7 +1751,7 @@ class WipClient:
             "DELETE",
             f"{self.document_store_url}/api/document-store/backup/jobs/{job_id}",
         )
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         return {"deleted": job_id}
 
     # ========================================================
@@ -1841,7 +1841,7 @@ class WipClient:
             )
         else:
             raise ValueError("Either table or sql must be provided")
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         return resp.text
 
     async def unified_search(

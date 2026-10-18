@@ -1000,3 +1000,23 @@ async def test_export_report_csv_query_passes_namespace_only_when_given():
     with_ns, without_ns = (c.kwargs["json"] for c in mock_http.post.call_args_list)
     assert with_ns["namespace"] == "clinic-a"
     assert "namespace" not in without_ns
+
+
+@pytest.mark.parametrize("call", [
+    lambda c: c.export_report_csv(sql="SELECT x FROM nowhere", namespace="wip"),
+    lambda c: c.export_report_csv(table="doc_absent", namespace="wip"),
+    lambda c: c.export_table_csv("TPL-1"),
+    lambda c: c.delete_backup_job("job-1"),
+])
+@pytest.mark.asyncio
+async def test_error_responses_carry_the_server_detail(call):
+    """A 4xx surfaces the server's `detail`, not just the status line."""
+    import httpx
+
+    detail = "Query error: relation nowhere does not exist"
+    resp = httpx.Response(400, json={"detail": detail}, request=httpx.Request("GET", "http://test/x"))
+    mock_http = _mock_http(resp)
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http), pytest.raises(httpx.HTTPStatusError) as exc:
+        await call(client)
+    assert detail in str(exc.value)
