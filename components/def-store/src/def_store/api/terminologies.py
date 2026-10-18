@@ -27,6 +27,7 @@ from ..services.registry_client import RegistryError
 from ..services.terminology_service import (
     AmbiguousTerminologyValueError,
     EntityExistsError,
+    RegistryEntryNotRemovedError,
     TerminologyService,
     conflict_result,
 )
@@ -391,6 +392,12 @@ async def delete_terminologies(
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="Terminology not found"))
             else:
                 results.append(BulkResultItem(index=i, status="deleted", id=item.id))
+        except RegistryEntryNotRemovedError as e:
+            # The terminology IS deleted; its Registry entry is not — say so.
+            results.append(BulkResultItem(
+                index=i, status="error", id=item.id, error=str(e),
+                error_code="registry_entry_not_removed",
+            ))
         except ValueError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.id, error=str(e)))
     return BulkResponse(

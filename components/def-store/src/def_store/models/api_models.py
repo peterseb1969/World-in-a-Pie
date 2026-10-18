@@ -348,6 +348,14 @@ class UpdateTermItem(UpdateTermRequest):
     term_id: str = Field(..., description="ID of term to update")
 
 
+class MergeTermsItem(StrictModel):
+    """Absorb one term into another of the same terminology."""
+
+    survivor_term_id: str = Field(..., description="The term that remains (UUID, 'ns:terminology:value', or value with ?terminology=)")
+    absorbed_term_id: str = Field(..., description="The term absorbed into the survivor; it is deprecated, replaced_by the survivor")
+    reason: str | None = Field(default=None, description="Recorded as the absorbed term's deprecation reason")
+
+
 class DeprecateTermItem(DeprecateTermRequest):
     """Item in a bulk term deprecate request — includes the ID."""
 

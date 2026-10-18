@@ -1,7 +1,7 @@
 """API endpoints for term management."""
 
 import math
-from typing import Literal
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
@@ -21,6 +21,7 @@ from ..models.api_models import (
     CreateTermRequest,
     DeleteItem,
     DeprecateTermItem,
+    MergeTermsItem,
     TermListResponse,
     TermMatchCandidate,
     TermResponse,
@@ -28,6 +29,7 @@ from ..models.api_models import (
     ValidateValueRequest,
     ValidateValueResponse,
 )
+from ..models.term import Term
 from ..models.terminology import Terminology
 from ..services.registry_client import RegistryError
 from ..services.term_names import TermNameError
@@ -41,6 +43,7 @@ from ..services.terminology_service import (
     AmbiguousTerminologyValueError,
     EntityExistsError,
     NameCollisionError,
+    RegistryEntryNotRemovedError,
     TerminologyService,
     ValueResolution,
     conflict_result,
@@ -575,6 +578,12 @@ async def delete_terms(
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="Term not found"))
             else:
                 results.append(BulkResultItem(index=i, status="deleted", id=item.id))
+        except RegistryEntryNotRemovedError as e:
+            # The term IS deleted; its Registry entry is not — say so.
+            results.append(BulkResultItem(
+                index=i, status="error", id=item.id, error=str(e),
+                error_code="registry_entry_not_removed",
+            ))
         except ValueError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.id, error=str(e)))
     return BulkResponse(
@@ -582,6 +591,93 @@ async def delete_terms(
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
     )
+
+
+@router.post(
+    "/terms/merge",
+    response_model=BulkResponse,
+    summary="Merge terms (absorb one term into another)",
+)
+async def merge_terms(
+    items: list[MergeTermsItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
+    terminology: str | None = Query(
+        None,
+        description="Terminology scoping value-form term identifiers (both "
+                    "survivor_term_id and absorbed_term_id). Non-UUID "
+                    "identifiers are then OPAQUE raw values, never colon-parsed.",
+    ),
+    identity: UserIdentity = Depends(require_api_key),
+) -> BulkResponse:
+    """Absorb each `absorbed_term_id` into its `survivor_term_id`.
+
+    From then on the absorbed term's value and names resolve to the
+    survivor — in validation, in document writes and through the Registry.
+    The absorbed term is deprecated (replaced_by = survivor), its value and
+    names become names of the survivor, and its Registry entry is merged
+    into the survivor's. Existing documents keep the absorbed term's id. A
+    merge that cannot complete changes nothing.
+    """
+    from wip_auth import resolve_bulk_ids
+    # Write door: both ids are persisted (replaced_by_term_id, merged entry).
+    for field in ("survivor_term_id", "absorbed_term_id"):
+        await resolve_bulk_ids(
+            items, field, "term", namespace=namespace,
+            terminology=terminology, bypass_cache=True,
+        )
+
+    ids = [i for item in items for i in (item.survivor_term_id, item.absorbed_term_id) if i]
+    if ids:
+        for ns in {d.namespace for d in await Term.find({"term_id": {"$in": ids}}).to_list()}:
+            await check_namespace_permission(identity, ns, "write")
+
+    results = []
+    for i, item in enumerate(items):
+        collisions: list[dict[str, Any]] = []
+        try:
+            _survivor, added = await TerminologyService.merge_terms(
+                item.survivor_term_id, item.absorbed_term_id, item.reason, collision_out=collisions,
+            )
+        except NameCollisionError as e:
+            results.append(BulkResultItem(
+                index=i, status="error", id=item.survivor_term_id, error=str(e),
+                error_code="name_collision", details={"name_collisions": e.collisions},
+            ))
+            continue
+        except ValueError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.survivor_term_id, error=str(e)))
+            continue
+        details: dict[str, Any] = {
+            "absorbed_term_id": item.absorbed_term_id,
+            "names_added": [n.value for n in added],
+        }
+        if collisions:
+            details["name_collisions"] = collisions
+        results.append(BulkResultItem(index=i, status="updated", id=item.survivor_term_id, details=details))
+    return BulkResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status != "error"),
+        failed=sum(1 for r in results if r.status == "error"),
+    )
+
+
+@router.post(
+    "/maintenance/registry-ghosts",
+    summary="Find (and remove) Registry entries left behind by hard deletes",
+)
+async def registry_ghosts(
+    namespace: str = Query(..., description="Namespace to check"),
+    dry_run: bool = Query(True, description="Report only (default). false removes the removable ghosts."),
+    identity: UserIdentity = Depends(require_api_key),
+) -> dict[str, Any]:
+    """Registry entries whose terminology or term no longer exists in
+    def-store. Their synonyms still resolve to the deleted ids, and
+    re-creating a value would reuse its dead id. Entries from mutable
+    terminologies (and of deleted terminologies) are removable; a term
+    missing from an immutable terminology is only reported. Requires
+    namespace admin."""
+    await check_namespace_permission(identity, namespace, "admin")
+    return await TerminologyService.registry_ghosts(namespace, remove=not dry_run)
 
 
 def _resolution_to_response(
@@ -694,14 +790,25 @@ async def validate_values_bulk(
     request: BulkValidateRequest,
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkValidateResponse:
-    """Validate multiple values at once."""
-    # CASE-384 — read permission is enforced per-item against the
-    # resolved terminology's namespace. See the per-item check below.
-    results = []
-    valid_count = 0
-    invalid_count = 0
+    """Validate multiple values at once.
 
-    for item in request.items:
+    Values are grouped by terminology and each group resolves with one
+    query (TerminologyService.resolve_values); results keep the order of
+    the request.
+    """
+    # Read permission is enforced per terminology, against its namespace.
+    results: list[ValidateValueResponse | None] = []
+    groups: dict[str, tuple[Any, list[tuple[int, str]]]] = {}
+
+    terminologies: dict[str, Any] = {}
+
+    def _invalid(item, error: str, terminology_id: str = "", terminology_value: str = ""):
+        results.append(ValidateValueResponse(
+            valid=False, terminology_id=terminology_id, terminology_value=terminology_value,
+            value=item.value, error=error,
+        ))
+
+    for index, item in enumerate(request.items):
         # Resolve terminology_id synonym
         if item.terminology_id:
             item.terminology_id = await resolve_or_404(
@@ -711,60 +818,42 @@ async def validate_values_bulk(
         # Get terminology — per-item: an ambiguous unscoped value fails
         # that item, not the request (bulk-first)
         if item.terminology_id:
-            terminology = await Terminology.find_one({"terminology_id": item.terminology_id})
+            if item.terminology_id not in terminologies:
+                terminologies[item.terminology_id] = await Terminology.find_one(
+                    {"terminology_id": item.terminology_id}
+                )
+            terminology = terminologies[item.terminology_id]
         elif item.terminology_value:
             try:
                 terminology = await TerminologyService.find_by_value(item.terminology_value, None)
             except AmbiguousTerminologyValueError as e:
-                results.append(ValidateValueResponse(
-                    valid=False,
-                    terminology_id="",
-                    terminology_value=item.terminology_value,
-                    value=item.value,
-                    error=str(e),
-                ))
-                invalid_count += 1
+                _invalid(item, str(e), terminology_value=item.terminology_value)
                 continue
         else:
-            results.append(ValidateValueResponse(
-                valid=False,
-                terminology_id="",
-                terminology_value="",
-                value=item.value,
-                error="Must provide terminology_id or terminology_value"
-            ))
-            invalid_count += 1
+            _invalid(item, "Must provide terminology_id or terminology_value")
             continue
 
         if not terminology:
-            results.append(ValidateValueResponse(
-                valid=False,
-                terminology_id=item.terminology_id or "",
-                terminology_value=item.terminology_value or "",
-                value=item.value,
-                error="Terminology not found"
-            ))
-            invalid_count += 1
+            _invalid(item, "Terminology not found", item.terminology_id or "", item.terminology_value or "")
             continue
 
-        # CASE-384 — gate per-item by read on the terminology's namespace.
-        await check_namespace_permission(identity, terminology.namespace, "read")
+        if terminology.terminology_id not in groups:
+            await check_namespace_permission(identity, terminology.namespace, "read")
+            groups[terminology.terminology_id] = (terminology, [])
+        groups[terminology.terminology_id][1].append((index, item.value))
+        results.append(None)  # filled in below, once the group resolves
 
-        res = await TerminologyService.validate_value(
-            terminology_id=terminology.terminology_id,
-            value=item.value
-        )
+    for terminology, members in groups.values():
+        resolutions = await TerminologyService.resolve_values(terminology, [v for _, v in members])
+        for (index, value), res in zip(members, resolutions, strict=True):
+            results[index] = _resolution_to_response(res, terminology, value)
 
-        results.append(_resolution_to_response(res, terminology, item.value))
-
-        if res.valid:
-            valid_count += 1
-        else:
-            invalid_count += 1
-
+    # Every slot is filled: one per item above, group slots by the zip.
+    final = cast(list[ValidateValueResponse], results)
+    valid_count = sum(1 for r in final if r.valid)
     return BulkValidateResponse(
-        results=results,
-        total=len(results),
+        results=final,
+        total=len(final),
         valid_count=valid_count,
-        invalid_count=invalid_count
+        invalid_count=len(final) - valid_count,
     )

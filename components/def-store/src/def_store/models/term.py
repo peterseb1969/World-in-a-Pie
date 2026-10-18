@@ -6,6 +6,7 @@ from typing import Any, ClassVar
 from beanie import Document
 from pydantic import BaseModel, Field
 from pymongo import IndexModel
+from pymongo.collation import Collation, CollationStrength
 
 
 class TermTranslation(BaseModel):
@@ -66,6 +67,13 @@ class TermName(BaseModel):
         default=False,
         description="Preferred name within its (type, language) group — at most one per group"
     )
+
+
+# Case-insensitive comparison (ICU secondary strength: case ignored, accents
+# kept) for value resolution in case-insensitive terminologies. Queries that
+# pass it use the collation indexes on Term below; it narrows the candidates
+# and Python's comparison makes the final call.
+CASE_INSENSITIVE_COLLATION = Collation(locale="en", strength=CollationStrength.SECONDARY)
 
 
 class Term(Document):
@@ -178,6 +186,15 @@ class Term(Document):
             IndexModel([("namespace", 1), ("terminology_id", 1), ("value", 1)], unique=True, name="ns_terminology_value_unique_idx"),
             # Name lookup within terminology (multikey over names.value)
             IndexModel([("namespace", 1), ("terminology_id", 1), ("names.value", 1)], name="ns_terminology_name_values_idx"),
+            # Case-insensitive value and name resolution (see CASE_INSENSITIVE_COLLATION)
+            IndexModel(
+                [("namespace", 1), ("terminology_id", 1), ("value", 1)],
+                name="ns_terminology_value_ci_idx", collation=CASE_INSENSITIVE_COLLATION,
+            ),
+            IndexModel(
+                [("namespace", 1), ("terminology_id", 1), ("names.value", 1)],
+                name="ns_terminology_name_values_ci_idx", collation=CASE_INSENSITIVE_COLLATION,
+            ),
             # Sort order within terminology
             IndexModel([("namespace", 1), ("terminology_id", 1), ("sort_order", 1)], name="ns_terminology_sort_idx"),
             # Status filter within terminology

@@ -23,7 +23,7 @@ from ..models.api_models import (
     UpdateTermRequest,
 )
 from ..models.audit_log import TermAuditLog
-from ..models.term import Term, TermName
+from ..models.term import CASE_INSENSITIVE_COLLATION, Term, TermName
 from ..models.term_relation import TermRelation
 from ..models.terminology import Terminology, TerminologyMetadata
 from .nats_client import (
@@ -125,6 +125,13 @@ class NameCollisionError(ValueError):
         super().__init__(
             f"Name collision in a unique_names terminology: {shown}"
         )
+
+
+class RegistryEntryNotRemovedError(Exception):
+    """A hard-deleted term or terminology whose Registry entry could not be
+    removed. The object itself IS gone; until the entry is cleaned up its
+    synonyms (the `ns:terminology:value` key) still resolve to the deleted
+    id, and re-creating the value would reuse it."""
 
 
 class ValueResolution(NamedTuple):
@@ -250,7 +257,6 @@ class TerminologyService:
         via says whether the conflict is with the other term's 'value' or
         one of its 'names'.
         """
-        from pymongo.collation import Collation
 
         submitted = [term_value] + [n.value for n in names]
         query: dict[str, Any] = {
@@ -271,7 +277,7 @@ class TerminologyService:
             projection={"term_id": 1, "value": 1, "names.value": 1},
         )
         if not terminology.case_sensitive:
-            cursor = cursor.collation(Collation(locale="en", strength=2))
+            cursor = cursor.collation(CASE_INSENSITIVE_COLLATION)
 
         def _fold(s: str) -> str:
             return s if terminology.case_sensitive else s.lower()
@@ -696,6 +702,7 @@ class TerminologyService:
                 )
             should_hard_delete = True
 
+        not_removed: list[str] = []
         if should_hard_delete:
             # HARD DELETE: remove terminology, all terms, and all relations
 
@@ -724,14 +731,18 @@ class TerminologyService:
             # 5. Hard-delete the terminology document
             await terminology.delete()
 
-            # 6. Hard-delete Registry entries for terminology and its terms
+            # 6. Hard-delete Registry entries for terminology and its terms.
+            # A mutable terminology is hard-deletable regardless of the
+            # namespace's deletion_mode, so its entries carry that exemption.
             client = get_registry_client()
-            try:
-                await client.hard_delete_entry(terminology_id, updated_by=actor)
-                for tid in term_ids:
-                    await client.hard_delete_entry(tid, updated_by=actor)
-            except Exception as e:
-                logger.warning(f"Failed to hard-delete Registry entries for terminology {terminology_id}: {e}")
+            for entry_id in [terminology_id, *term_ids]:
+                try:
+                    await client.hard_delete_entry(
+                        entry_id, updated_by=actor, owner_hard_deleted=terminology.mutable,
+                    )
+                except RegistryError as e:
+                    logger.error(f"Registry entry {entry_id} not removed after hard delete: {e}")
+                    not_removed.append(entry_id)
         else:
             # SOFT DELETE: deactivate terminology and all terms (existing behavior)
             terminology.status = "inactive"
@@ -756,6 +767,13 @@ class TerminologyService:
             changed_by=actor,
         )
 
+        if not_removed:
+            raise RegistryEntryNotRemovedError(
+                f"Terminology {terminology_id} was deleted, but {len(not_removed)} "
+                f"Registry entr{'y' if len(not_removed) == 1 else 'ies'} could not be "
+                f"removed ({', '.join(not_removed[:5])}{'…' if len(not_removed) > 5 else ''}); "
+                "their values still resolve to the deleted ids until removed."
+            )
         return True
 
     @staticmethod
@@ -998,7 +1016,6 @@ class TerminologyService:
         collisions carry via='batch' and no term_id (the other bearer has
         none yet).
         """
-        from pymongo.collation import Collation
 
         def _fold(s: str) -> str:
             return s if terminology.case_sensitive else s.lower()
@@ -1035,7 +1052,7 @@ class TerminologyService:
             query, projection={"term_id": 1, "value": 1, "names.value": 1}
         )
         if not terminology.case_sensitive:
-            cursor = cursor.collation(Collation(locale="en", strength=2))
+            cursor = cursor.collation(CASE_INSENSITIVE_COLLATION)
 
         owners: dict[str, list[tuple[str, str, str]]] = {}
         async for other in cursor:
@@ -1863,6 +1880,7 @@ class TerminologyService:
         # Check if parent terminology is mutable
         terminology = await Terminology.find_one({"terminology_id": term.terminology_id})
         should_hard_delete = bool(terminology and terminology.mutable)
+        registry_failure: RegistryError | None = None
 
         if hard_delete and not should_hard_delete:
             # Check namespace deletion_mode
@@ -1915,12 +1933,18 @@ class TerminologyService:
             # 3. Hard-delete the term document
             await term.delete()
 
-            # 4. Hard-delete Registry entry
+            # 4. Hard-delete the Registry entry, so the value stops resolving to
+            # the deleted id. A mutable terminology's terms are hard-deletable
+            # regardless of deletion_mode; the entry carries that exemption.
             client = get_registry_client()
             try:
-                await client.hard_delete_entry(term_id, updated_by=actor)
-            except Exception as e:
-                logger.warning(f"Failed to hard-delete Registry entry for term {term_id}: {e}")
+                await client.hard_delete_entry(
+                    term_id, updated_by=actor,
+                    owner_hard_deleted=bool(terminology and terminology.mutable),
+                )
+            except RegistryError as e:
+                logger.error(f"Registry entry for term {term_id} not removed after hard delete: {e}")
+                registry_failure = e
         else:
             # SOFT DELETE: set status to inactive (existing behavior)
             term.status = "inactive"
@@ -1944,7 +1968,170 @@ class TerminologyService:
             changed_by=actor,
         )
 
+        if registry_failure is not None:
+            raise RegistryEntryNotRemovedError(
+                f"Term {term_id} was deleted, but its Registry entry could not be "
+                f"removed ({registry_failure}); its value still resolves to the "
+                "deleted id until the entry is removed."
+            )
         return True
+
+    @staticmethod
+    async def merge_terms(
+        survivor_id: str,
+        absorbed_id: str,
+        reason: str | None = None,
+        collision_out: list[dict[str, Any]] | None = None,
+    ) -> tuple[TermResponse, list[TermName]]:
+        """Absorb one term into another, in one vocabulary.
+
+        From then on the absorbed term's value and names resolve to the
+        survivor: they become names of the survivor; the absorbed term is
+        deprecated with replaced_by_term_id = survivor (deprecated terms
+        never match a new write); and the Registry merges its entry into the
+        survivor's, so its id and `ns:terminology:value` key resolve to the
+        survivor too. Existing documents keep the absorbed term's id —
+        history is not rewritten.
+
+        Writes run in a reversible order — deprecate, add names, then the
+        Registry merge (which has no undo) — and an earlier step is undone
+        when a later one fails, so a failed merge changes nothing.
+
+        Returns the survivor and the names it gained.
+        """
+        survivor = await Term.find_one({"term_id": survivor_id})
+        absorbed = await Term.find_one({"term_id": absorbed_id})
+        if survivor is None or absorbed is None:
+            raise ValueError(f"Term not found: {survivor_id if survivor is None else absorbed_id}")
+        if survivor.term_id == absorbed.term_id:
+            raise ValueError("A term cannot be merged into itself")
+        if survivor.terminology_id != absorbed.terminology_id:
+            raise ValueError("Terms can only be merged within one terminology")
+        for term, role in ((survivor, "survivor"), (absorbed, "absorbed term")):
+            if term.status != "active":
+                raise ValueError(f"The {role} '{term.value}' is {term.status}; only active terms can be merged")
+        terminology = await Terminology.find_one({"terminology_id": survivor.terminology_id})
+        case_sensitive = bool(terminology and terminology.case_sensitive)
+
+        def fold(text: str) -> str:
+            return text if case_sensitive else text.lower()
+
+        borne = {fold(survivor.value), *(fold(n.value) for n in survivor.names)}
+        carried: list[TermName] = []
+        for name in [TermName(value=absorbed.value, source="merge"), *absorbed.names]:
+            if fold(name.value) not in borne:
+                borne.add(fold(name.value))
+                carried.append(name.model_copy(update={"preferred": False}))
+        original_names = list(survivor.names)
+        new_names = [*original_names, *carried]
+        validate_names(new_names, survivor.value, await NameTypeService.get_valid_name_types())
+
+        before = (absorbed.status, absorbed.deprecated_reason, absorbed.replaced_by_term_id)
+        await TerminologyService.deprecate_term(absorbed_id, DeprecateTermRequest(
+            reason=reason or f"Merged into '{survivor.value}'", replaced_by_term_id=survivor_id,
+        ))
+        try:
+            result = await TerminologyService.update_term(
+                survivor_id, UpdateTermRequest(names=new_names), collision_out=collision_out,
+            )
+        except Exception:
+            await TerminologyService._restore_lifecycle(absorbed_id, before)
+            raise
+        if result is None:  # the survivor vanished between the read and the update
+            await TerminologyService._restore_lifecycle(absorbed_id, before)
+            raise ValueError(f"Term not found: {survivor_id}")
+        try:
+            await get_registry_client().merge_entries(
+                survivor_id, absorbed_id, updated_by=get_identity_string(), owner_merge=True,
+            )
+        except RegistryError as e:
+            await TerminologyService.update_term(survivor_id, UpdateTermRequest(names=original_names))
+            await TerminologyService._restore_lifecycle(absorbed_id, before)
+            raise ValueError(f"Merge not applied — the Registry refused to merge the entries: {e}") from e
+        return result, carried
+
+    @staticmethod
+    async def _restore_lifecycle(term_id: str, before: tuple[str, str | None, str | None]) -> None:
+        """Undo a deprecation made by a merge that did not complete."""
+        term = await Term.find_one({"term_id": term_id})
+        if term is None:
+            return
+        term.status, term.deprecated_reason, term.replaced_by_term_id = before
+        term.updated_at = datetime.now(UTC)
+        term.updated_by = get_identity_string()
+        await term.save()
+        terminology = await Terminology.find_one({"terminology_id": term.terminology_id})
+        if terminology:
+            terminology.term_count = await Term.find({
+                "terminology_id": term.terminology_id, "status": "active",
+            }).count()
+            await terminology.save()
+        await publish_term_event(
+            NatsEventType.TERM_UPDATED,
+            TerminologyService._term_to_event_dict(term),
+            changed_by=get_identity_string(),
+        )
+
+    @staticmethod
+    async def registry_ghosts(namespace: str, *, remove: bool) -> dict[str, Any]:
+        """Active Registry entries in `namespace` whose terminology or term no
+        longer exists in def-store — left behind by hard deletes the
+        Registry refused — and, with remove=True, their removal.
+
+        A ghost's synonyms still resolve (`ns:terminology:value` → a deleted
+        id) and re-creating its value would reuse the dead id. Removable: a
+        terminology entry (a terminology is only hard-deleted when mutable or
+        in a 'full' namespace), and a term entry whose terminology is mutable
+        or gone. A term missing from an IMMUTABLE terminology is reported but
+        never removed: nothing should hard-delete those, so it needs a look.
+        """
+        client = get_registry_client()
+        terminologies = {
+            t.terminology_id: t for t in await Terminology.find({"namespace": namespace}).to_list()
+        }
+        existing_terms = set(
+            await Term.get_motor_collection().distinct("term_id", {"namespace": namespace})
+        )
+
+        ghosts: list[dict[str, Any]] = []
+        for entry in await client.list_active_entries(namespace, "terminologies"):
+            if entry["entry_id"] not in terminologies:
+                ghosts.append({
+                    "entry_id": entry["entry_id"], "entity_type": "terminologies",
+                    "composite_key": entry.get("primary_composite_key"),
+                    "removable": True, "reason": "terminology no longer exists",
+                })
+        for entry in await client.list_active_entries(namespace, "terms"):
+            if entry["entry_id"] in existing_terms:
+                continue
+            key = entry.get("primary_composite_key") or {}
+            parent = terminologies.get(str(key.get("terminology_id") or ""))
+            if parent is None:
+                removable, reason = True, "its terminology no longer exists"
+            elif parent.mutable:
+                removable, reason = True, "deleted from a mutable terminology"
+            else:
+                removable, reason = False, "missing from an immutable terminology — not removed, investigate"
+            ghosts.append({
+                "entry_id": entry["entry_id"], "entity_type": "terms",
+                "composite_key": key, "removable": removable, "reason": reason,
+            })
+
+        removed: list[str] = []
+        errors: list[dict[str, str]] = []
+        if remove:
+            for ghost in ghosts:
+                if not ghost["removable"]:
+                    continue
+                try:
+                    await client.hard_delete_entry(
+                        ghost["entry_id"], updated_by=get_identity_string(), owner_hard_deleted=True,
+                    )
+                    removed.append(ghost["entry_id"])
+                except RegistryError as e:
+                    errors.append({"entry_id": ghost["entry_id"], "error": str(e)})
+        return {"namespace": namespace, "dry_run": not remove, "ghosts": ghosts,
+                "removed": removed, "errors": errors}
 
     # =========================================================================
     # VALIDATION
@@ -1990,49 +2177,83 @@ class TerminologyService:
         if not terminology:
             return ValueResolution(False, None, None, None, None, [])
 
-        # Prepare value for comparison
-        compare_value = value if terminology.case_sensitive else value.lower()
+        (resolution,) = await TerminologyService.resolve_values(terminology, [value])
+        return resolution
 
-        # Get all active terms in this terminology
-        terms = await Term.find({
-            "terminology_id": terminology.terminology_id,
-            "status": "active"
-        }).to_list()
+    @staticmethod
+    async def resolve_values(
+        terminology: Terminology, values: list[str]
+    ) -> list["ValueResolution"]:
+        """Resolve several values against one terminology, in order.
 
+        The rule (shared by every caller — document writes resolve term
+        fields through this, never through a copy of the vocabulary):
+        only ACTIVE terms match; every term's canonical value is checked
+        before any term's names, so a name can never shadow another term's
+        value; comparison follows the terminology's `case_sensitive`. A
+        name borne by several terms resolves to the first bearer in
+        creation order, with every bearer listed as a candidate.
+
+        One indexed query fetches the candidate terms for the whole batch
+        — the terms whose value or any name equals a submitted value — so
+        cost tracks the batch, not the vocabulary's size. For
+        case-insensitive terminologies the query uses a case-insensitive
+        collation (matching the collation indexes on Term); the exact
+        comparison below then applies Python's rule to those candidates,
+        so the collation only narrows the search and never decides a match.
+        """
         def _cmp(s: str) -> str:
             return s if terminology.case_sensitive else s.lower()
 
-        # Pass 1: canonical values only
-        for term in terms:
-            if _cmp(term.value) == compare_value:
-                return ValueResolution(True, term, "value", None, None, [])
+        unique = list(dict.fromkeys(values))
+        query: dict[str, Any] = {
+            "namespace": terminology.namespace,
+            "terminology_id": terminology.terminology_id,
+            "status": "active",
+            "$or": [{"value": {"$in": unique}}, {"names.value": {"$in": unique}}],
+        }
+        find_kwargs: dict[str, Any] = (
+            {} if terminology.case_sensitive else {"collation": CASE_INSENSITIVE_COLLATION}
+        )
+        candidates = await Term.find(query, **find_kwargs).sort([("_id", SortDirection.ASCENDING)]).to_list()
 
-        # Pass 2: names — collect every bearer, first one wins the match
-        candidates: list[tuple[Term, TermName]] = []
-        seen_terms: set[str] = set()
-        for term in terms:
-            for name in term.names:
-                if _cmp(name.value) == compare_value:
-                    if term.term_id not in seen_terms:
-                        seen_terms.add(term.term_id)
-                        candidates.append((term, name))
-                    break
-        if candidates:
-            first_term, first_name = candidates[0]
-            return ValueResolution(
-                True, first_term, "alias", None, first_name, candidates
+        resolved: dict[str, ValueResolution] = {}
+        for value in unique:
+            compare_value = _cmp(value)
+            # Pass 1: canonical values only
+            match = next((t for t in candidates if _cmp(t.value) == compare_value), None)
+            if match is not None:
+                resolved[value] = ValueResolution(True, match, "value", None, None, [])
+                continue
+            # Pass 2: names — collect every bearer, first one wins the match
+            bearers: list[tuple[Term, TermName]] = []
+            for term in candidates:
+                name = next((n for n in term.names if _cmp(n.value) == compare_value), None)
+                if name is not None:
+                    bearers.append((term, name))
+            if bearers:
+                first_term, first_name = bearers[0]
+                resolved[value] = ValueResolution(True, first_term, "alias", None, first_name, bearers)
+                continue
+            resolved[value] = ValueResolution(
+                False, None, None, await TerminologyService._suggest(terminology, value), None, []
             )
+        return [resolved[v] for v in values]
 
-        # No exact match - try to find suggestion
-        # Simple approach: find terms that start with the value
-        suggestion = None
-        if len(value) >= 2:
-            for t in terms:
-                if _cmp(t.value).startswith(compare_value):
-                    suggestion = t
-                    break
-
-        return ValueResolution(False, None, None, suggestion, None, [])
+    @staticmethod
+    async def _suggest(terminology: Terminology, value: str) -> Term | None:
+        """An active term whose value starts with `value` (a hint for misses)."""
+        if len(value) < 2:
+            return None
+        flags = "" if terminology.case_sensitive else "i"
+        return await Term.find(
+            {
+                "namespace": terminology.namespace,
+                "terminology_id": terminology.terminology_id,
+                "status": "active",
+                "value": {"$regex": f"^{re.escape(value)}", "$options": flags},
+            }
+        ).sort([("_id", SortDirection.ASCENDING)]).first_or_none()
 
     # =========================================================================
     # HELPERS

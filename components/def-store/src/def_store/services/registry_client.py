@@ -154,6 +154,31 @@ class RegistryClient(RegistryClientBase):
 
         return all_results
 
+    async def list_active_entries(self, namespace: str, entity_type: str) -> list[dict[str, Any]]:
+        """Every active Registry entry of `entity_type` in `namespace`, all pages."""
+        entries: list[dict[str, Any]] = []
+        page = 1
+        async with self._make_client() as client:
+            while True:
+                response = await client.get(
+                    f"{self.base_url}/api/registry/entries",
+                    headers=self._get_headers(),
+                    params={
+                        "namespace": namespace, "entity_type": entity_type,
+                        "status": "active", "page": page, "page_size": 1000,
+                    },
+                )
+                if response.status_code != 200:
+                    raise RegistryError(
+                        f"Failed to list {entity_type} entries in {namespace}: "
+                        f"{response.status_code} - {response.text}"
+                    )
+                data = response.json()
+                entries.extend(data.get("items", []))
+                if page >= (data.get("pages") or 1):
+                    return entries
+                page += 1
+
     async def add_synonym(
         self,
         namespace: str,
