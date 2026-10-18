@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 
 from wip_auth import UserIdentity, check_namespace_permission, require_api_key, resolve_or_404
+from wip_auth.term_resolution import term_resolution_batch
 
 from ..models.api_models import DocumentCreateRequest
 from ..services.document_service import DocumentService
@@ -114,42 +115,45 @@ async def import_documents(
     errors = []
     created_ids = []
 
-    # Process in batches to avoid overwhelming the system
-    batch_size = 50
-    for batch_start in range(0, total, batch_size):
-        batch = documents[batch_start:batch_start + batch_size]
+    # One write batch for the whole file: rows repeating a term value
+    # resolve it once (see wip_auth.term_resolution).
+    with term_resolution_batch():
+        # Process in batches to avoid overwhelming the system
+        batch_size = 50
+        for batch_start in range(0, total, batch_size):
+            batch = documents[batch_start:batch_start + batch_size]
 
-        for i, doc in enumerate(batch):
-            row_num = batch_start + i + 2  # +2 for 1-indexed + header row
-            try:
-                req = DocumentCreateRequest(**doc)
-                result, error_msg = await doc_service.create_document(
-                    req, namespace=namespace
-                )
-                if result is None:
-                    raise ValueError(error_msg or "Validation failed")
-                succeeded += 1
-                created_ids.append({
-                    "row": row_num,
-                    "document_id": result.document_id,
-                    "version": result.version,
-                    "is_new": result.is_new,
-                })
-            except Exception as e:
-                failed += 1
-                error_info = {"row": row_num, "error": str(e)}
-                # Include the data that failed for debugging
-                if doc.get("data"):
-                    error_info["data"] = {k: str(v)[:100] for k, v in doc["data"].items()}
-                errors.append(error_info)
+            for i, doc in enumerate(batch):
+                row_num = batch_start + i + 2  # +2 for 1-indexed + header row
+                try:
+                    req = DocumentCreateRequest(**doc)
+                    result, error_msg = await doc_service.create_document(
+                        req, namespace=namespace
+                    )
+                    if result is None:
+                        raise ValueError(error_msg or "Validation failed")
+                    succeeded += 1
+                    created_ids.append({
+                        "row": row_num,
+                        "document_id": result.document_id,
+                        "version": result.version,
+                        "is_new": result.is_new,
+                    })
+                except Exception as e:
+                    failed += 1
+                    error_info = {"row": row_num, "error": str(e)}
+                    # Include the data that failed for debugging
+                    if doc.get("data"):
+                        error_info["data"] = {k: str(v)[:100] for k, v in doc["data"].items()}
+                    errors.append(error_info)
 
-                if not skip_errors:
-                    # Stop on first error
-                    skipped = total - (succeeded + failed)
-                    break
+                    if not skip_errors:
+                        # Stop on first error
+                        skipped = total - (succeeded + failed)
+                        break
 
-        if not skip_errors and errors:
-            break
+            if not skip_errors and errors:
+                break
 
     return {
         "total_rows": total,

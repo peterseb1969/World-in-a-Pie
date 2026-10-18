@@ -25,6 +25,11 @@ from motor.motor_asyncio import AsyncIOMotorClient
 _registry_src = str(Path(__file__).resolve().parents[2] / "registry" / "src")
 if _registry_src not in sys.path:
     sys.path.insert(0, _registry_src)
+# def-store too: term values resolve in def-store, and the contract tests
+# (test_term_resolution_contract.py) run document writes against the real app
+_def_store_src = str(Path(__file__).resolve().parents[2] / "def-store" / "src")
+if _def_store_src not in sys.path:
+    sys.path.insert(0, _def_store_src)
 
 # Use existing env vars if set, otherwise defaults for local testing
 os.environ.setdefault("MONGO_URI", "mongodb://localhost:27017/")
@@ -85,6 +90,10 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
 
 
 # Models and apps (must be after env var setup; sorted as one block for ruff I001)
+from def_store.models.audit_log import TermAuditLog  # noqa: E402
+from def_store.models.term import Term  # noqa: E402
+from def_store.models.term_relation import TermRelation  # noqa: E402
+from def_store.models.terminology import Terminology  # noqa: E402
 from document_store.main import app  # noqa: E402
 from document_store.models.backup_job import BackupJob  # noqa: E402
 from document_store.models.document import Document  # noqa: E402
@@ -676,6 +685,8 @@ _ALL_TEST_MODELS = [
     CompositeKeyClaim,  # register_keys claims composite keys here
     # Document-Store models — union of every fixture's needs
     Document, BackupJob, File,
+    # Def-Store models (the real def-store app in the term-resolution contract tests)
+    Terminology, Term, TermAuditLog, TermRelation,
 ]
 _beanie_initialized = False
 
@@ -818,7 +829,6 @@ async def client(session_mongo_client) -> AsyncGenerator[AsyncClient, None]:
     with (
         patch('document_store.services.document_service.get_registry_client', return_value=real_registry),
         patch('document_store.services.document_service.get_template_store_client', return_value=mock_template_store),
-        patch('document_store.services.document_service.get_def_store_client', return_value=mock_def_store),
         patch('document_store.services.validation_service.get_template_store_client', return_value=mock_template_store),
         patch('document_store.services.validation_service.get_def_store_client', return_value=mock_def_store),
         patch('document_store.main.get_registry_client', return_value=real_registry),

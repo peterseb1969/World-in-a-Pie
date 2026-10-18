@@ -140,7 +140,6 @@ async def file_client(session_mongo_client):
     with (
         patch('document_store.services.document_service.get_registry_client', return_value=real_registry),
         patch('document_store.services.document_service.get_template_store_client', return_value=mock_template_store),
-        patch('document_store.services.document_service.get_def_store_client', return_value=mock_def_store),
         patch('document_store.services.validation_service.get_template_store_client', return_value=mock_template_store),
         patch('document_store.services.validation_service.get_def_store_client', return_value=mock_def_store),
         patch('document_store.main.get_registry_client', return_value=real_registry),

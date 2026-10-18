@@ -1,4 +1,10 @@
-"""Client for communicating with the WIP Def-Store service."""
+"""Client for communicating with the WIP Def-Store service.
+
+Term values are resolved by def-store, never locally — through the shared
+wip_auth.term_resolution entry point, the one way any service asks which
+term a submitted value names. This client adds document-store's
+terminology-metadata lookups on top.
+"""
 
 import os
 import time
@@ -6,16 +12,21 @@ from typing import Any, cast
 
 import httpx
 
-from wip_auth.resolve import EntityNotFoundError, _looks_like_uuid, resolve_entity_id
+from wip_auth.term_resolution import (
+    TermResolutionError,
+    get_def_store_transport,
+    reset_resolution_stats,
+    resolution_stats,
+    resolve_term_values,
+    set_def_store_transport,  # noqa: F401  (re-exported: the in-process test seam)
+)
 
 
 class TerminologyCache:
     """
-    Cache for complete terminologies with TTL-based refresh.
-
-    Caches entire terminologies (with all terms) for fast local validation.
-    Terminologies are essentially immutable, so a 5-minute TTL is just a
-    safety net to pick up any rare changes.
+    TTL cache for terminology METADATA (status, value, case rules) — never
+    terms. Used by terminology-reference fields and template warm-up; term
+    values always resolve through def-store.
     """
 
     def __init__(self, ttl: int = 300):
@@ -61,11 +72,10 @@ class DefStoreClient:
     """
     Client for the WIP Def-Store service.
 
-    Used to validate term field values against terminologies.
-
-    Caches complete terminologies for fast local validation instead of
-    making HTTP calls for each term. This is much more efficient since
-    terminologies are typically small (< 1000 terms) and change rarely.
+    Term values resolve through wip_auth.term_resolution (one def-store
+    request per document covers all its term fields; inside a
+    term_resolution_batch identical values resolve once). Terminology
+    metadata is fetched here and cached.
     """
 
     DEFAULT_CACHE_TTL = 300  # 5 minutes
@@ -84,7 +94,7 @@ class DefStoreClient:
             base_url: Def-Store API base URL (default from env)
             api_key: API key for authentication (default from env)
             timeout: Request timeout in seconds
-            cache_ttl: Terminology cache TTL in seconds (default 5 minutes)
+            cache_ttl: Terminology metadata cache TTL in seconds (default 5 minutes)
         """
         self.base_url = base_url or os.getenv(
             "DEF_STORE_URL",
@@ -96,12 +106,8 @@ class DefStoreClient:
         ))
         self.timeout = timeout
 
-        # Cache for complete terminologies (refreshed every TTL seconds)
+        # Terminology metadata (no terms), refreshed every TTL seconds
         self._terminology_cache = TerminologyCache(ttl=cache_ttl)
-
-        # Track validation stats
-        self._validations_total = 0
-        self._validations_local = 0
 
     def _get_headers(self) -> dict[str, str]:
         """Get request headers with authentication."""
@@ -118,227 +124,47 @@ class DefStoreClient:
             "terminology_cache_hits": cache_stats["hits"],
             "terminology_cache_misses": cache_stats["misses"],
             "cache_ttl_seconds": cache_stats["ttl_seconds"],
-            "validations_total": self._validations_total,
-            "validations_local": self._validations_local,
-            "validations_local_percent": round(
-                self._validations_local / self._validations_total * 100, 1
-            ) if self._validations_total > 0 else 0,
+            **{f"term_resolution_{k}": v for k, v in resolution_stats().items()},
         }
 
     def clear_cache(self):
-        """Clear the terminology cache."""
+        """Clear the terminology metadata cache and the resolution counters."""
         self._terminology_cache.clear()
-        self._validations_total = 0
-        self._validations_local = 0
+        reset_resolution_stats()
 
-    async def _resolve_terminology_ref(
-        self, terminology_ref: str, namespace: str | None
-    ) -> str | None:
-        """Resolve a terminology ref to its canonical UUID.
-
-        Canonical UUIDs pass through without a Registry round-trip. Value
-        forms resolve through Registry with the validating document's
-        namespace as context — bare value = own namespace, 'ns:VALUE' =
-        cross-namespace, the platform's deterministic resolution contract.
-        A value form with no namespace context, or one Registry cannot
-        resolve, returns None; callers report that as
-        terminology-not-found. Never falls back to an unscoped by-value
-        lookup: with the same value live in several namespaces there is
-        no correct arbitrary pick.
-        """
-        if _looks_like_uuid(terminology_ref):
-            return terminology_ref
-        if not namespace:
-            return None
-        try:
-            return await resolve_entity_id(terminology_ref, "terminology", namespace)
-        except EntityNotFoundError:
-            return None
-
-    async def _fetch_terminology_with_terms(
-        self,
-        terminology_id: str
-    ) -> dict[str, Any] | None:
-        """
-        Fetch a terminology with ALL its terms from Def-Store.
-
-        Makes exactly 1 HTTP connection: fetches the terminology metadata,
-        then paginates through all terms using the same client.
-
-        Args:
-            terminology_id: Canonical terminology UUID (value forms are
-                resolved by _resolve_terminology_ref before this point)
-
-        Returns:
-            Terminology data with terms and _lookup index, or None if not found
-        """
+    async def _fetch_terminology(self, terminology_id: str) -> dict[str, Any] | None:
+        """Fetch a terminology's metadata (no terms) from def-store."""
         url = f"{self.base_url}/api/def-store/terminologies/{terminology_id}"
-
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                headers = self._get_headers()
-
-                response = await client.get(url, headers=headers)
-                if response.status_code == 404:
-                    return None
-
-                if response.status_code != 200:
-                    raise DefStoreError(
-                        f"Failed to get terminology: {response.status_code} - {response.text}"
-                    )
-
-                terminology = response.json()
-                terminology_id = terminology.get("terminology_id")
-
-                # Fetch ALL terms (paginate)
-                all_terms = []
-                terms_url = f"{self.base_url}/api/def-store/terminologies/{terminology_id}/terms"
-                page = 1
-                page_size = 100
-                while True:
-                    terms_response = await client.get(
-                        terms_url,
-                        headers=headers,
-                        params={"page_size": page_size, "page": page},
-                    )
-                    if terms_response.status_code != 200:
-                        break
-                    terms_data = terms_response.json()
-                    items = terms_data.get("items", [])
-                    all_terms.extend(items)
-                    # Stop when we got fewer than page_size (last page)
-                    if len(items) < page_size:
-                        break
-                    page += 1
-
-                terminology["terms"] = all_terms
-                lookup, ambiguous = self._build_term_lookup(all_terms)
-                terminology["_lookup"] = lookup
-                terminology["_ambiguous"] = ambiguous
-
-                return cast(dict[str, Any] | None, terminology)
-
+            async with httpx.AsyncClient(timeout=self.timeout, transport=get_def_store_transport()) as client:
+                response = await client.get(url, headers=self._get_headers())
         except httpx.RequestError as e:
             raise DefStoreError(f"Request failed: {e!s}") from e
-
-    def _build_term_lookup(
-        self, terms: list[dict[str, Any]]
-    ) -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
-        """
-        Build lookup indexes for fast term validation.
-
-        Returns (lookup, ambiguous): lookup maps lowercase values to term
-        data (value and each name/alias), ambiguous maps each contested
-        name key to every term bearing it.
-
-        Built in two passes with value precedence: every term's canonical
-        value is indexed before any term's names, so a name can never
-        shadow another term's value. Among names, the first term in list
-        order wins a contested key (a single-pass build let the LAST
-        writer win, silently rebinding duplicate aliases — and worse,
-        letting an alias overwrite a canonical value).
-        """
-        lookup: dict[str, dict[str, Any]] = {}
-
-        def _term_ref(term: dict[str, Any]) -> dict[str, Any]:
-            return {
-                "term_id": term.get("term_id"),
-                "value": term.get("value"),
-            }
-
-        # Pass 1: canonical values — these keys are never overwritten
-        for term in terms:
-            value = term.get("value", "").lower()
-            if value:
-                lookup[value] = {"term": _term_ref(term), "matched_via": "value"}
-
-        # Pass 2: names (def-store's derived `aliases` covers every name's
-        # value; older def-store versions serve the same field natively).
-        # A name key already claimed by another term's NAME is ambiguous —
-        # the first term keeps the binding (list order), and every bearer
-        # is recorded so validation can make the ambiguity visible instead
-        # of silently resolving it. A key owned by a canonical value is not
-        # ambiguous: value precedence is the rule, not a tie-break.
-        ambiguous: dict[str, list[dict[str, Any]]] = {}
-        for term in terms:
-            ref = _term_ref(term)
-            for alias in term.get("aliases", []):
-                if not alias:
-                    continue
-                key = alias.lower()
-                existing = lookup.get(key)
-                if existing is None:
-                    lookup[key] = {"term": ref, "matched_via": "alias"}
-                elif (
-                    existing["matched_via"] == "alias"
-                    and existing["term"]["term_id"] != ref["term_id"]
-                ):
-                    bearers = ambiguous.setdefault(key, [existing["term"]])
-                    if ref["term_id"] not in {t["term_id"] for t in bearers}:
-                        bearers.append(ref)
-
-        return lookup, ambiguous
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            raise DefStoreError(
+                f"Failed to get terminology: {response.status_code} - {response.text}"
+            )
+        return cast(dict[str, Any], response.json())
 
     async def _get_terminology_cached(
         self, terminology_id: str, force_refresh: bool = False
     ) -> dict[str, Any] | None:
-        """Get a terminology by canonical UUID, using cache if available.
+        """Get terminology metadata by canonical UUID, using the cache.
 
         Cache keys are canonical terminology UUIDs only. Value-form keys
         would let a cache hit cross namespaces: two namespaces sharing a
-        terminology value must never serve each other's cached terms.
+        terminology value must never serve each other's entries.
         """
         if not force_refresh:
             cached = self._terminology_cache.get(terminology_id)
             if cached is not None:
                 return cached
-
-        terminology = await self._fetch_terminology_with_terms(terminology_id)
+        terminology = await self._fetch_terminology(terminology_id)
         if terminology:
             self._terminology_cache.set(terminology_id, terminology)
-
         return terminology
-
-    def _validate_term_locally(
-        self,
-        terminology: dict[str, Any],
-        value: str
-    ) -> dict[str, Any]:
-        """
-        Validate a term value locally using cached terminology.
-
-        Args:
-            terminology: Cached terminology with _lookup index
-            value: Value to validate
-
-        Returns:
-            Validation result dict
-        """
-        lookup = terminology.get("_lookup", {})
-        value_lower = value.lower()
-
-        if value_lower in lookup:
-            match = lookup[value_lower]
-            result = {
-                "valid": True,
-                "matched_term": match["term"],
-                "matched_via": match["matched_via"],
-            }
-            bearers = terminology.get("_ambiguous", {}).get(value_lower)
-            if bearers:
-                # The binding above is merely the first bearer in list
-                # order — the caller decides whether that is acceptable
-                # (warn) or not (reject, for identity fields)
-                result["ambiguous"] = True
-                result["candidates"] = bearers
-            return result
-
-        return {
-            "valid": False,
-            "matched_term": None,
-            "matched_via": None,
-            "suggestion": None,  # Could implement fuzzy matching here
-        }
 
     async def get_terminology(
         self,
@@ -386,9 +212,7 @@ class DefStoreClient:
         namespace: str | None = None
     ) -> dict[str, Any]:
         """
-        Validate a value against a terminology.
-
-        Uses cached terminology for fast local validation.
+        Validate one value against a terminology (see validate_values_bulk).
 
         Args:
             terminology_ref: Terminology ID or value form (bare value =
@@ -401,39 +225,9 @@ class DefStoreClient:
         Returns:
             Validation result with valid, matched_term, matched_via
         """
-        self._validations_total += 1
-
-        canonical_id = await self._resolve_terminology_ref(terminology_ref, namespace)
-        if canonical_id is None:
-            return {
-                "valid": False,
-                "error": f"Terminology '{terminology_ref}' not found",
-            }
-
-        # Get terminology (from cache or fetch)
-        terminology = await self._get_terminology_cached(canonical_id)
-
-        if terminology is None:
-            return {
-                "valid": False,
-                "error": f"Terminology '{terminology_ref}' not found",
-            }
-
-        # Validate locally
-        self._validations_local += 1
-        result = self._validate_term_locally(terminology, value)
-
-        if not result.get("valid"):
-            # Refresh-on-miss: the term might have been created after the
-            # cache was populated. Re-fetch the terminology from def-store
-            # and try once more. At worst this is one extra HTTP call per
-            # terminology per validation batch with a genuinely new term.
-            terminology = await self._get_terminology_cached(
-                canonical_id, force_refresh=True
-            )
-            if terminology is not None:
-                result = self._validate_term_locally(terminology, value)
-
+        (result,) = await self.validate_values_bulk(
+            [{"terminology_ref": terminology_ref, "value": value}], namespace=namespace
+        )
         return result
 
     async def validate_values_bulk(
@@ -442,10 +236,13 @@ class DefStoreClient:
         namespace: str | None = None
     ) -> list[dict[str, Any]]:
         """
-        Validate multiple values against terminologies.
+        Validate several values against terminologies — one def-store call
+        (wip_auth.term_resolution.resolve_term_values).
 
-        Uses cached terminologies for fast local validation.
-        Fetches any missing terminologies first, then validates all locally.
+        Each result has `valid`, `matched_term` ({term_id, value}),
+        `matched_via` ('value' | 'alias'), `ambiguous` + `candidates` when
+        several terms bear the matched name, `suggestion` on a miss, or
+        `error` when the terminology itself does not resolve.
 
         Args:
             items: List of dicts with terminology_ref and value
@@ -454,32 +251,17 @@ class DefStoreClient:
 
         Returns:
             List of validation results (in same order as input)
+
+        Raises:
+            DefStoreError: def-store unreachable or answering an error —
+                the caller decides (identity fields fail closed).
         """
-        if not items:
-            return []
-
-        # Collect unique terminology refs
-        terminology_refs = set(item["terminology_ref"] for item in items)
-
-        # Ensure all terminologies are cached (resolution results are
-        # cached in wip_auth's resolve layer, so the per-item resolve in
-        # validate_value below is a cache hit)
-        for ref in terminology_refs:
-            canonical_id = await self._resolve_terminology_ref(ref, namespace)
-            if canonical_id:
-                await self._get_terminology_cached(canonical_id)
-
-        # Validate all items locally
-        results = []
-        for item in items:
-            result = await self.validate_value(
-                item["terminology_ref"],
-                item["value"],
-                namespace
+        try:
+            return await resolve_term_values(
+                items, namespace, base_url=self.base_url, api_key=self.api_key, timeout=self.timeout,
             )
-            results.append(result)
-
-        return results
+        except TermResolutionError as e:
+            raise DefStoreError(str(e)) from e
 
     async def get_term(self, term_id: str) -> dict[str, Any] | None:
         """
@@ -496,7 +278,7 @@ class DefStoreClient:
         url = f"{self.base_url}/api/def-store/terms/{term_id}"
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, transport=get_def_store_transport()) as client:
                 response = await client.get(url, headers=self._get_headers())
 
                 if response.status_code == 404:
@@ -514,7 +296,7 @@ class DefStoreClient:
     async def health_check(self) -> bool:
         """Check if the Def-Store service is healthy."""
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=5.0, transport=get_def_store_transport()) as client:
                 response = await client.get(f"{self.base_url}/health")
                 return response.status_code == 200
         except Exception:

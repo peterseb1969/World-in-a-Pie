@@ -9,6 +9,8 @@ from typing import Any, ClassVar, NamedTuple, cast
 
 from beanie.odm.enums import SortDirection
 
+from wip_auth.term_resolution import term_resolution_batch
+
 # Import identity helper from wip-auth
 # This returns the authenticated identity, not the client-provided value
 from ..api.auth import get_identity_string
@@ -34,7 +36,6 @@ from ..models.api_models import (
     ValidationResponse,
 )
 from ..models.document import Document, DocumentMetadata, DocumentStatus
-from .def_store_client import get_def_store_client
 from .file_storage_client import is_file_storage_enabled
 from .identity_service import IdentityService
 from .nats_client import EventType, publish_document_event
@@ -2508,11 +2509,23 @@ class DocumentService:
         namespace: str,
         continue_on_error: bool = True,
     ) -> BulkResponse:
+        """Create multiple documents; the batch shares term resolutions
+        (term_resolution_batch)."""
+        with term_resolution_batch():
+            return await self._bulk_create(items, namespace, continue_on_error)
+
+    async def _bulk_create(
+        self,
+        items: list[DocumentCreateRequest],
+        namespace: str,
+        continue_on_error: bool = True,
+    ) -> BulkResponse:
         """
         Create multiple documents with optimized bulk operations.
 
         Optimizations:
-        - All validations run first (using cached templates/terminologies)
+        - All validations run first (cached templates; term values resolved
+          by def-store, shared across the batch)
         - Single bulk Registry call for all document IDs
         - Batch MongoDB operations for existing document checks
         """
@@ -2525,13 +2538,12 @@ class DocumentService:
         unchanged = 0
         failed = 0
 
-        # Stage 0: Pre-warm template and terminology caches for the batch.
-        # Fetch each unique template once (including nested template_refs),
-        # then extract terminology_refs and pre-fetch each unique terminology
-        # once. After this, the validation loop runs entirely from cache.
+        # Stage 0: Pre-warm the template cache for the batch — each unique
+        # template once, including nested template_refs. Term values are not
+        # warmed: they resolve through def-store at validation time, shared
+        # across the batch by bulk_create's term_resolution_batch.
         start = time.perf_counter()
         template_client = get_template_store_client()
-        def_store_client = get_def_store_client()
         unique_template_ids = {item.template_id for item in items}
         warmed_templates: set[str] = set()
 
@@ -2544,10 +2556,6 @@ class DocumentService:
             if not template:
                 return
             for field in template.get("fields", []):
-                for key in ("terminology_ref", "array_terminology_ref"):
-                    ref = field.get(key)
-                    if ref:
-                        await def_store_client._get_terminology_cached(ref)
                 for key in ("template_ref", "array_template_ref"):
                     ref = field.get(key)
                     if ref:
@@ -2856,17 +2864,16 @@ class DocumentService:
     ) -> list[ValidationResponse]:
         """Validate multiple documents against ONE template without saving (CASE-419).
 
-        Single-template batch: warm the template (and its nested term/template
-        refs) into cache once, then validate every item from cache — mirroring
-        bulk_create's Stage-0 warmup. Side-effect-free: identity hashes are
+        Single-template batch: warm the template (and its nested template refs)
+        into cache once, then validate every item, term values resolving
+        through def-store shared across the batch — mirroring bulk_create. Side-effect-free: identity hashes are
         computed locally, no Registry writes. Results are returned in input
         order. The caller (endpoint) has already resolved template_id and
         checked the namespace read permission.
         """
-        # Stage 0: pre-warm the template + its nested refs once so the per-item
-        # validate loop runs entirely from cache (same pattern as bulk_create).
+        # Stage 0: pre-warm the template + its nested template refs once
+        # (same pattern as bulk_create).
         template_client = get_template_store_client()
-        def_store_client = get_def_store_client()
         warmed_templates: set[str] = set()
 
         async def warm_template(tid: str):
@@ -2877,10 +2884,6 @@ class DocumentService:
             if not template:
                 return
             for field in template.get("fields", []):
-                for key in ("terminology_ref", "array_terminology_ref"):
-                    ref = field.get(key)
-                    if ref:
-                        await def_store_client._get_terminology_cached(ref)
                 for key in ("template_ref", "array_template_ref"):
                     ref = field.get(key)
                     if ref:
@@ -2892,15 +2895,16 @@ class DocumentService:
         # _validate_batch) so repeated reference lookups hit cache.
         doc_ref_cache: dict = {}
         responses: list[ValidationResponse] = []
-        for data in items:
-            result = await self.validation_service.validate(
-                template_id,
-                data,
-                namespace=namespace,
-                template_version=template_version,
-                doc_ref_cache=doc_ref_cache,
-            )
-            responses.append(self._result_to_validation_response(result))
+        with term_resolution_batch():
+            for data in items:
+                result = await self.validation_service.validate(
+                    template_id,
+                    data,
+                    namespace=namespace,
+                    template_version=template_version,
+                    doc_ref_cache=doc_ref_cache,
+                )
+                responses.append(self._result_to_validation_response(result))
         return responses
 
     async def _batch_to_responses(self, documents: list[Document]) -> list[DocumentResponse]:

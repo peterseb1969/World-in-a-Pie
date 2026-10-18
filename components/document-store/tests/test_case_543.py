@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import pytest_asyncio
 from httpx import AsyncClient
 
 from document_store.models.backup_job import (
@@ -466,6 +467,14 @@ class TestArchiveMovesDuringDownload:
     at it. Failing there is especially bad because the route has already sent
     Content-Length: the client gets 200 and a short body, not an error.
     """
+
+    @pytest_asyncio.fixture(autouse=True)
+    async def _bind_beanie(self, session_mongo_client):
+        """These tests build BackupJob directly, without the `client` fixture
+        that binds Beanie. Binding here keeps them from depending on which
+        test happened to run earlier in the same xdist worker."""
+        from tests.conftest import _ensure_beanie
+        await _ensure_beanie(session_mongo_client)
 
     @pytest.mark.asyncio
     async def test_stream_follows_the_archive_into_the_bucket(self, monkeypatch, tmp_path):
