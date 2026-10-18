@@ -4049,6 +4049,7 @@ async def export_report_csv(
     table: str | None = None,
     sql: str | None = None,
     params: list | None = None,
+    namespace: str | None = None,
 ) -> str:
     """Export reporting data as CSV (streaming from PostgreSQL).
 
@@ -4060,21 +4061,33 @@ async def export_report_csv(
 
     Args:
         table: Table name to export (e.g., 'doc_patient', 'terminologies').
-            Only doc_* tables and metadata tables are allowed.
+            Only doc_* tables and metadata tables are allowed. Requires
+            `namespace`: each namespace is its own PostgreSQL schema.
         sql: SQL SELECT query. Must be read-only. Use for filtered/joined exports.
+            Requires an admin or service key, like run_report_query.
         params: Optional parameter values for $1, $2, etc. in the SQL query.
+        namespace: The namespace whose schema holds the table (table mode,
+            required). In query mode, sets the search_path so unqualified
+            names like doc_patient resolve there; omit it and schema-qualify
+            for cross-namespace queries.
+
+    An invalid query, an unknown table or column, or a missing table is
+    reported as an error, never as an empty CSV.
 
     Example:
-        export_report_csv(table="doc_patient")
-        export_report_csv(sql="SELECT name FROM doc_patient WHERE country = $1", params=["CH"])
+        export_report_csv(table="doc_patient", namespace="clinic-a")
+        export_report_csv(sql="SELECT name FROM doc_patient WHERE country = $1",
+                          params=["CH"], namespace="clinic-a")
     """
     if not table and not sql:
         return "Error: provide either 'table' or 'sql'"
     if table and sql:
         return "Error: provide either 'table' or 'sql', not both"
+    if table and not namespace:
+        return "Error: table mode requires 'namespace' (the table lives in that namespace's schema)"
     try:
         csv_content = await get_client().export_report_csv(
-            table=table, sql=sql, params=params
+            table=table, sql=sql, params=params, namespace=namespace
         )
         lines = csv_content.split("\n")
         if len(lines) > 102:

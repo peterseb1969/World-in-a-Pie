@@ -1812,22 +1812,32 @@ class WipClient:
         sql: str | None = None,
         params: list | None = None,
         timeout_seconds: int = 120,
+        namespace: str | None = None,
     ) -> str:
-        """Export reporting data as CSV. Either table or sql must be provided."""
+        """Export reporting data as CSV. Either table or sql must be provided.
+
+        Table mode needs `namespace` (the table lives in that namespace's
+        schema); in SQL mode it sets the search_path for unqualified names.
+        """
         client = await self._get_client()
         if table:
+            if not namespace:
+                raise ValueError("namespace is required to export a table")
             resp = await client.get(
                 f"{self.reporting_sync_url}/api/reporting-sync/export/csv",
-                params={"table": table, "timeout_seconds": timeout_seconds},
+                params={"table": table, "namespace": namespace, "timeout_seconds": timeout_seconds},
             )
         elif sql:
+            body: dict = {
+                "sql": sql,
+                "params": params or [],
+                "timeout_seconds": timeout_seconds,
+            }
+            if namespace is not None:
+                body["namespace"] = namespace
             resp = await client.post(
                 f"{self.reporting_sync_url}/api/reporting-sync/export/csv",
-                json={
-                    "sql": sql,
-                    "params": params or [],
-                    "timeout_seconds": timeout_seconds,
-                },
+                json=body,
             )
         else:
             raise ValueError("Either table or sql must be provided")

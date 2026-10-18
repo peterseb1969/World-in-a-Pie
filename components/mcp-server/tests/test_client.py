@@ -951,3 +951,52 @@ async def test_validate_template_candidate_posts_to_validate_candidate():
         "sample_template_id": "PERSON",
     }
     assert "documents" not in call.kwargs["json"]
+
+
+# =========================================================================
+# export_report_csv — GET (table) / POST (query)
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_export_report_csv_table_sends_namespace():
+    """Table mode passes the namespace the table's schema is named after."""
+    resp = _mock_response()
+    resp.text = "id\r\n1\r\n"
+    mock_http = _mock_http(resp)
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        result = await client.export_report_csv(table="doc_patient", namespace="clinic-a")
+
+    assert result == "id\r\n1\r\n"
+    call = mock_http.get.call_args
+    assert call.args[0] == "http://test:8005/api/reporting-sync/export/csv"
+    assert call.kwargs["params"]["table"] == "doc_patient"
+    assert call.kwargs["params"]["namespace"] == "clinic-a"
+
+
+@pytest.mark.asyncio
+async def test_export_report_csv_table_without_namespace_is_refused():
+    mock_http = _mock_http()
+    client = _make_client()
+    with (
+        patch.object(client, "_get_client", return_value=mock_http),
+        pytest.raises(ValueError, match="namespace"),
+    ):
+        await client.export_report_csv(table="doc_patient")
+    mock_http.get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_export_report_csv_query_passes_namespace_only_when_given():
+    resp = _mock_response()
+    resp.text = "n\r\n"
+    mock_http = _mock_http(resp)
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.export_report_csv(sql="SELECT 1 AS n", namespace="clinic-a")
+        await client.export_report_csv(sql="SELECT 1 AS n")
+
+    with_ns, without_ns = (c.kwargs["json"] for c in mock_http.post.call_args_list)
+    assert with_ns["namespace"] == "clinic-a"
+    assert "namespace" not in without_ns

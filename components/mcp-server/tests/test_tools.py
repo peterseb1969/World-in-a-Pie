@@ -18,6 +18,7 @@ sys.modules.setdefault("yaml", MagicMock())
 from wip_mcp.client import WipClient  # noqa: E402
 from wip_mcp.server import (  # noqa: E402
     cancel_replay,
+    export_report_csv,
     get_replay_status,
     get_template_fields,
     import_documents_csv,
@@ -675,3 +676,27 @@ async def test_get_term_hierarchy_forwards_relation_type_to_parents():
 
     call_kwargs = mock.get_term_parents.call_args.kwargs
     assert call_kwargs["relation_type"] == "part_of"
+
+
+# =========================================================================
+# export_report_csv
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_export_report_csv_table_mode_requires_namespace():
+    mock = _mock_client()
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        result = await export_report_csv(table="doc_patient")
+    assert "requires 'namespace'" in result
+    mock.export_report_csv.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_export_report_csv_passes_namespace_through():
+    mock = _mock_client()
+    mock.export_report_csv.return_value = "n\r\n1\r\n"
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        result = await export_report_csv(sql="SELECT 1 AS n", namespace="clinic-a")
+    assert result == "n\r\n1\r\n"
+    assert mock.export_report_csv.await_args.kwargs["namespace"] == "clinic-a"
