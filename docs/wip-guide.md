@@ -326,48 +326,21 @@ API keys carry a `namespaces` field that scopes their access. The rule is:
 - **Every other key** must declare `namespaces` explicitly. Non-privileged keys without a namespace scope receive 403 on every request.
 - **Single-namespace keys** get a convenience: omit the `namespace` query parameter and the server derives it from the key's scope. Multi-namespace keys must always pass `namespace` explicitly.
 
-### 4.6 Connecting an external IdP — Google as worked example
+### 4.6 External identity providers (Google, Okta, …) — not supported yet
 
-Dex acts as an identity-federation layer. Adding a Google connector lets users sign in with their Google account. The general pattern works for any OIDC connector — see Dex's own docs for connector-specific syntax.
+Dex can federate logins from external providers through its *connectors*, but
+`wip-deploy` has no way to declare one yet: it renders Dex's config with an
+empty connector list. Every apply rewrites that file, including `redeploy`,
+`add-app`, `rotate-key` and `user add`. It also rewrites `.env`, which never
+reaches the Dex container anyway. A hand-added connector therefore disappears
+silently on the next apply. Until spec-level support lands, local Dex users
+(§4.7) are the supported way to log in.
 
-**1. Create OAuth credentials in Google Cloud Console.**
-
-- New project (e.g., "WIP Authentication")
-- *APIs & Services → OAuth consent screen* — pick **Internal** if you have a Google Workspace org and want only your org's users; pick **External** otherwise (test users required during dev)
-- *APIs & Services → Credentials → Create credentials → OAuth client ID*, application type **Web application**
-- Authorized redirect URIs: `https://<your-hostname>:8443/dex/callback` (one per environment you'll deploy to)
-- Save the Client ID and Client Secret
-
-**2. Add the connector to `config/dex/config.yaml`:**
-
-```yaml
-connectors:
-  - type: google
-    id: google
-    name: "Google"
-    config:
-      clientID: $GOOGLE_CLIENT_ID
-      clientSecret: $GOOGLE_CLIENT_SECRET
-      redirectURI: https://<your-hostname>:8443/dex/callback
-      # Optional — restrict to specific Workspace domain(s)
-      # hostedDomains:
-      #   - yourcompany.com
-```
-
-**3. Set the credentials in `.env`:**
-
-```bash
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
-```
-
-**4. Recreate Dex** (env vars are read at container creation):
-
-```bash
-podman-compose down && podman-compose up -d
-```
-
-The login screen now shows a "Login with Google" option alongside the local-account flow. By default, Google users land in WIP without any group memberships. Mapping Google Workspace groups to WIP groups requires either a custom claims mapper in Dex or post-login group assignment on the WIP side.
+When support lands, the Google side is unchanged. Create a *Web application*
+OAuth client in Google Cloud Console with the redirect URI
+`https://<your-hostname>:8443/dex/callback`, and pick **Internal** consent for
+Workspace-only users. External users also need a route into WIP groups,
+otherwise per-app group gates keep them out.
 
 ### 4.7 Local users (Dex static users)
 
