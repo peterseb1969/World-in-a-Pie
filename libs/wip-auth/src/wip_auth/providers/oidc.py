@@ -1,5 +1,6 @@
 """OIDC/JWT authentication provider."""
 
+import logging
 import time
 from typing import Any
 
@@ -8,6 +9,8 @@ import jwt
 from fastapi import HTTPException, Request
 
 from ..models import UserIdentity
+
+logger = logging.getLogger(__name__)
 
 
 class JWKSCache:
@@ -117,7 +120,7 @@ class OIDCProvider:
         self,
         issuer_url: str | None = None,
         jwks_url: str | None = None,
-        audience: str = "wip",
+        audience: str | list[str] = "wip",
         algorithms: list[str] | None = None,
         groups_claim: str = "groups",
         default_groups: list[str] | None = None,
@@ -129,7 +132,8 @@ class OIDCProvider:
         Args:
             issuer_url: OIDC issuer URL (used to derive JWKS URL if not provided)
             jwks_url: Explicit JWKS endpoint URL
-            audience: Expected audience claim value
+            audience: Accepted audience claim value, or a list of them (a
+                token is accepted when its aud matches any entry)
             algorithms: Allowed JWT algorithms (default: RS256, ES256)
             groups_claim: Claim name containing user groups
             default_groups: Groups to assign if not in token
@@ -205,7 +209,17 @@ class OIDCProvider:
                 detail="Token missing key ID (kid)",
             )
 
-        key = await self._jwks_cache.get_key(kid)
+        try:
+            key = await self._jwks_cache.get_key(kid)
+        except RuntimeError as e:
+            # The signing keys are unreachable, so the token can be neither
+            # accepted nor called invalid. Refuse it as a service failure,
+            # never fall through to another provider.
+            logger.error("JWT rejected: %s", e)
+            raise HTTPException(
+                status_code=503,
+                detail="Identity provider unavailable: cannot verify token",
+            ) from e
         if not key:
             raise HTTPException(
                 status_code=401,

@@ -62,7 +62,12 @@ class AuthConfig(BaseSettings):
     )
     jwt_audience: str = Field(
         default="wip",
-        description="Expected JWT audience claim"
+        description=(
+            "Accepted JWT audience(s), comma-separated. A token is accepted "
+            "when its aud matches any entry — an OIDC provider sets aud to "
+            "the client that requested the token, so list every client "
+            "whose tokens the service accepts."
+        ),
     )
     jwt_groups_claim: str = Field(
         default="groups",
@@ -134,6 +139,21 @@ class AuthConfig(BaseSettings):
         if isinstance(v, str):
             return [g.strip() for g in v.split(",")]
         return v
+
+    @property
+    def jwt_audiences(self) -> list[str]:
+        """The accepted audiences, parsed from the comma-separated setting.
+
+        Empty is refused: an empty audience would switch audience
+        verification off and accept a token minted for any client.
+        """
+        audiences = [a.strip() for a in self.jwt_audience.split(",") if a.strip()]
+        if not audiences:
+            raise ValueError(
+                "WIP_AUTH_JWT_AUDIENCE is empty — list the OIDC client ids "
+                "whose tokens this service accepts"
+            )
+        return audiences
 
     @property
     def jwks_url(self) -> str | None:

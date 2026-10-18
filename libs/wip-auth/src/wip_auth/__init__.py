@@ -223,7 +223,7 @@ def create_providers_from_config(
         providers.append(OIDCProvider(
             issuer_url=config.jwt_issuer_url,
             jwks_url=config.jwt_jwks_uri,
-            audience=config.jwt_audience,
+            audience=config.jwt_audiences,
             algorithms=config.jwt_algorithms,
             groups_claim=config.jwt_groups_claim,
             default_groups=config.default_groups,
@@ -249,7 +249,7 @@ def create_providers_from_config(
             providers.append(OIDCProvider(
                 issuer_url=config.jwt_issuer_url,
                 jwks_url=config.jwt_jwks_uri,
-                audience=config.jwt_audience,
+                audience=config.jwt_audiences,
                 algorithms=config.jwt_algorithms,
                 groups_claim=config.jwt_groups_claim,
                 default_groups=config.default_groups,
