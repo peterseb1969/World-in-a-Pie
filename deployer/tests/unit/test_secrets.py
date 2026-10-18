@@ -380,3 +380,34 @@ class TestBcryptDerivedSecrets:
         out1 = render_dex_config(dex_cfg, s1)
         out2 = render_dex_config(dex_cfg, s2)
         assert out1 == out2
+
+
+class TestNatsPasswordFormat:
+    """NATS passwords must parse as bare NATS-config words.
+
+    The server config references them as unquoted $NATS_PASSWORD_* tokens;
+    NATS substitutes the value into the config text and re-parses it. A
+    value starting with a digit is read as a number and crashes the server
+    at startup (observed live: a generated password beginning '3' took the
+    whole install down), and quoting the reference would stop substitution
+    entirely — so the constraint belongs on the generated value.
+    """
+
+    def test_generator_is_letter_first_alphanumeric(self):
+        from wip_deploy.secrets import _nats_password_generator
+
+        for _ in range(200):
+            value = _nats_password_generator()
+            assert len(value) == 22
+            assert value[0].isalpha(), f"starts with {value[0]!r}"
+            assert value.isalnum(), f"non-alphanumeric in {value!r}"
+
+    def test_ensure_secrets_uses_it_for_nats_passwords(self, tmp_path: Path):
+        from wip_deploy.secrets import _format_generator, _nats_password_generator
+
+        assert _format_generator("nats-password-def-store") is _nats_password_generator
+        assert _format_generator("nats-password-ingest-gateway") is _nats_password_generator
+        # Non-NATS names keep their existing behavior.
+        from wip_deploy.secrets import default_generator
+
+        assert _format_generator("api-key") is default_generator

@@ -106,9 +106,12 @@ def nats_clients(
     )
 
 
+PASSWORD_SECRET_PREFIX = "nats-password-"
+
+
 def password_secret(client: str) -> str:
     """The secret holding NATS user `client`'s password."""
-    return f"nats-password-{client}"
+    return f"{PASSWORD_SECRET_PREFIX}{client}"
 
 
 def server_password_env(client: str) -> str:

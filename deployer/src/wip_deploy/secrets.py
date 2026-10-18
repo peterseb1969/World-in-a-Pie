@@ -19,6 +19,7 @@ fresh random values for any missing names and returning a
 from __future__ import annotations
 
 import secrets as py_secrets
+import string
 from collections.abc import Callable
 
 import bcrypt
@@ -30,6 +31,9 @@ from wip_deploy.config_gen.garage import (
     SECRET_KEY_SECRET,
     SECRET_RPC,
     garage_component,
+)
+from wip_deploy.config_gen.nats import (
+    PASSWORD_SECRET_PREFIX as NATS_PASSWORD_PREFIX,
 )
 from wip_deploy.config_gen.nats import nats_clients, password_secret
 from wip_deploy.secrets_backend.base import ResolvedSecrets, SecretBackend
@@ -136,13 +140,40 @@ def _garage_key_id_generator() -> str:
     return "GK" + py_secrets.token_hex(12)
 
 
+def _nats_password_generator() -> str:
+    """A NATS user password: letter-first alphanumeric, 22 chars (~130 bits).
+
+    The server config references these as bare `$NATS_PASSWORD_*` tokens —
+    NATS substitutes the env value into the config text and re-parses it,
+    so the value must read as a bare config word. A value starting with a
+    digit is parsed as a number and kills the server at startup, and
+    quoting the reference ("$VAR") would stop substitution entirely.
+    """
+    alphabet = string.ascii_letters + string.digits
+    return py_secrets.choice(string.ascii_letters) + "".join(
+        py_secrets.choice(alphabet) for _ in range(21)
+    )
+
+
 # Secrets whose consumer has a format constraint, keyed by exact name
 # (the documented exception to "opaque random is strictly better").
+# NATS passwords are per-client dynamic names — they match by prefix
+# in _format_generator below.
 _FORMAT_GENERATORS: dict[str, Callable[[], str]] = {
     SECRET_RPC: _hex32_generator,
     SECRET_KEY_SECRET: _hex32_generator,
     SECRET_KEY_ID: _garage_key_id_generator,
 }
+
+
+def _format_generator(name: str) -> Callable[[], str]:
+    """The generator for a secret name: exact format map, then the NATS
+    password prefix, then the opaque default."""
+    if name in _FORMAT_GENERATORS:
+        return _FORMAT_GENERATORS[name]
+    if name.startswith(NATS_PASSWORD_PREFIX):
+        return _nats_password_generator
+    return default_generator
 
 
 def default_generator() -> str:
@@ -192,7 +223,7 @@ def ensure_secrets(
                 )
             generator = _bcrypt_generator(plaintext)
         else:
-            generator = _FORMAT_GENERATORS.get(name, default_generator)
+            generator = _format_generator(name)
         resolved[name] = backend.get_or_generate(name, generator)
 
     backend.persist()
