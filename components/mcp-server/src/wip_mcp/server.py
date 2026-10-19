@@ -4088,8 +4088,8 @@ async def run_report_query(
             'relation does not exist' (the search_path is then public only).
 
     Raw SQL requires an admin or service key; a namespace-scoped key gets 403
-    and should use the document query tools instead. The query runs in a
-    read-only transaction.
+    and should use read_reporting_view (for registered views) or the document
+    query tools instead. The query runs in a read-only transaction.
 
     Example:
         run_report_query("SELECT name, country FROM doc_patient WHERE country = $1",
@@ -4153,6 +4153,137 @@ async def export_report_csv(
         if len(lines) > 102:
             return "\n".join(lines[:102]) + f"\n\n... truncated ({len(lines)} total lines)"
         return csv_content
+    except Exception as e:
+        return _error(e)
+
+
+# ===================================================================
+# Tools — Registered reporting views
+# ===================================================================
+
+
+@mcp.tool()
+async def register_reporting_view(
+    name: str,
+    sql: str,
+    namespace: str | None = None,
+    registered_by: str | None = None,
+) -> str:
+    """Register a named SQL view in a namespace's reporting schema, or replace it.
+
+    A registered view gives apps and agents a stable, named relation over the
+    reporting tables (e.g. a hierarchy-aware search view), recreated after
+    reporting rebuilds. Re-registering a name replaces the definition (the
+    column set may change); the result's `created` is true only the first
+    time, and `schema_qualified` is the view's full SQL name.
+
+    Two rules that bite first:
+    - Write the SQL the way you query it: unqualified names (doc_patient)
+      resolve in the namespace's own schema. Schema-qualify only to reach
+      another namespace.
+    - Register only after the source templates have synced to reporting at
+      least once. Bootstrap order: namespace → templates → first sync →
+      views. Too early fails with 'relation "doc_x" does not exist'.
+
+    Authorization: ADMIN on the namespace registers views that depend only on
+    the namespace's own schema (anything else is rolled back with 403);
+    wip-admins / wip-services keys may register any view.
+
+    Args:
+        name: View name (becomes "<namespace>"."<name>").
+        sql: The SELECT statement the view wraps.
+        namespace: Target namespace. Defaults to WIP_MCP_DEFAULT_NAMESPACE.
+        registered_by: Optional audit label, e.g. "my-app-bootstrap". Defaults to
+            the caller's identity (e.g. apikey:<name>); a replace without it
+            records the replacing caller.
+
+    Example:
+        register_reporting_view("v_active_patients",
+            "SELECT document_id, name FROM doc_patient WHERE status = 'active'",
+            namespace="clinic-a", registered_by="clinic-bootstrap")
+    """
+    try:
+        data = await get_client().register_reporting_view(
+            name=name, sql=sql, namespace=namespace, registered_by=registered_by
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def list_reporting_views(namespace: str | None = None) -> str:
+    """List a namespace's registered reporting views: name, SQL, and who
+    registered them when. Requires READ on the namespace.
+
+    Args:
+        namespace: Namespace to list. Defaults to WIP_MCP_DEFAULT_NAMESPACE.
+    """
+    try:
+        data = await get_client().list_reporting_views(namespace=namespace)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def read_reporting_view(
+    name: str,
+    namespace: str | None = None,
+    filters: list[dict] | None = None,
+    sort: list[dict] | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
+) -> str:
+    """Read a registered view's rows with structured filters — no SQL.
+
+    The read path for namespace-scoped keys: requires only READ on the
+    namespace (raw SQL via run_report_query needs an admin or service key).
+    Only registered views are readable here.
+
+    Args:
+        name: The registered view's name.
+        namespace: Namespace holding the view. Defaults to WIP_MCP_DEFAULT_NAMESPACE.
+        filters: Predicates ANDed together, each {"column", "op", "value"}.
+            op is one of eq, ne, lt, lte, gt, gte, like, ilike, in (value is a
+            list), is_null, not_null (no value). Columns must be the view's
+            own; an unknown column is a 400 naming the valid ones.
+        sort: Each {"column", "direction": "asc" | "desc"}.
+        limit: Rows per page, 1 to 1000 (server default 100).
+        offset: Rows to skip (server default 0).
+
+    Returns columns, rows (objects keyed by column), row_count and truncated.
+
+    Example:
+        read_reporting_view("v_active_patients", namespace="clinic-a",
+            filters=[{"column": "name", "op": "ilike", "value": "%smith%"}],
+            sort=[{"column": "name", "direction": "asc"}], limit=50)
+    """
+    try:
+        data = await get_client().read_reporting_view(
+            name=name, namespace=namespace, filters=filters, sort=sort,
+            limit=limit, offset=offset,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def delete_reporting_view(name: str, namespace: str | None = None) -> str:
+    """Drop a registered reporting view and its registration.
+
+    Same authorization as registering (ADMIN on the namespace, or a
+    wip-admins / wip-services key). Refused with 409 while another
+    registered view depends on it — drop the dependent view first.
+
+    Args:
+        name: The registered view's name.
+        namespace: Namespace holding the view. Defaults to WIP_MCP_DEFAULT_NAMESPACE.
+    """
+    try:
+        data = await get_client().delete_reporting_view(name=name, namespace=namespace)
+        return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
 
@@ -4793,6 +4924,9 @@ WRITE_TOOLS = frozenset({
     # Import
     "import_terminology",
     "import_documents_csv",
+    # Registered reporting views
+    "register_reporting_view",
+    "delete_reporting_view",
     # Replay
     "start_replay",
     "cancel_replay",

@@ -7,6 +7,7 @@ Handles the bulk response envelope so callers get clean results.
 import json
 import os
 from typing import Any, cast
+from urllib.parse import quote
 
 import httpx
 
@@ -1863,6 +1864,61 @@ class WipClient:
             raise ValueError("Either table or sql must be provided")
         _raise_for_status_with_body(resp)
         return resp.text
+
+    # --- Registered reporting views (docs/reporting-views.md) ---
+    # The namespace is a path segment, so the server cannot derive it from
+    # the key: it resolves through _ns (explicit, else
+    # WIP_MCP_DEFAULT_NAMESPACE). Request bodies carry only arguments the
+    # caller set — the endpoints' models are strict.
+
+    def _views_path(self, namespace: str | None, name: str | None = None) -> str:
+        path = f"/api/reporting-sync/namespace/{quote(self._ns(namespace), safe='')}/views"
+        return path if name is None else f"{path}/{quote(name, safe='')}"
+
+    async def register_reporting_view(
+        self,
+        name: str,
+        sql: str,
+        namespace: str | None = None,
+        registered_by: str | None = None,
+    ) -> dict:
+        """Register, or replace by name, a SQL view in the namespace's schema."""
+        body: dict = {"name": name, "sql": sql}
+        if registered_by is not None:
+            body["registered_by"] = registered_by
+        return await self._post(self.reporting_sync_url, self._views_path(namespace), json=body)
+
+    async def list_reporting_views(self, namespace: str | None = None) -> dict:
+        """The namespace's registered views (name, sql, registration audit)."""
+        return await self._get(self.reporting_sync_url, self._views_path(namespace))
+
+    async def read_reporting_view(
+        self,
+        name: str,
+        namespace: str | None = None,
+        filters: list[dict] | None = None,
+        sort: list[dict] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> dict:
+        """A registered view's rows, filtered without SQL (namespace READ)."""
+        body: dict = {}
+        for key, value in (("filters", filters), ("sort", sort), ("limit", limit), ("offset", offset)):
+            if value is not None:
+                body[key] = value
+        return await self._post(
+            self.reporting_sync_url, f"{self._views_path(namespace, name)}/rows", json=body
+        )
+
+    async def delete_reporting_view(self, name: str, namespace: str | None = None) -> dict:
+        """Drop a registered view and its registration."""
+        client = await self._get_client()
+        resp = await client.request(
+            "DELETE", f"{self.reporting_sync_url}{self._views_path(namespace, name)}"
+        )
+        _raise_for_status_with_body(resp)
+        data: dict = resp.json()
+        return data
 
     async def unified_search(
         self,
