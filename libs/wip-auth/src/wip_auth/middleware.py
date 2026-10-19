@@ -21,7 +21,7 @@ from .providers.base import AuthProvider
 # be reachable by external monitors and pre-configured clients with a
 # stale key. Per CASE-60.
 _DEFAULT_PUBLIC_PATHS = frozenset({
-    "/", "/health", "/ready", "/docs", "/redoc", "/openapi.json",
+    "/", "/health", "/ready", "/livez", "/docs", "/redoc", "/openapi.json",
 })
 
 
@@ -40,7 +40,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     For paths in `public_paths`, the middleware skips provider iteration
     entirely — useful for health probes that must be reachable even when
     a caller sends a stale or wrong API key (CASE-60). Universal endpoints
-    (`/health`, `/ready`, `/docs`, ...) are always public; pass
+    (`/health`, `/ready`, `/livez`, `/docs`, ...) are always public; pass
     `public_paths` to add service-specific routes (e.g., the api-prefixed
     `/api/<svc>/health`).
     """

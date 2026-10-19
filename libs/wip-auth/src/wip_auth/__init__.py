@@ -59,6 +59,7 @@ from .identity import (
     set_current_identity,
 )
 from .key_sync import KeySyncService
+from .liveness import install_liveness
 from .middleware import AuthMiddleware, create_auth_middleware
 from .models import APIKeyRecord, AuthResult, UserIdentity
 from .openapi import declare_api_key_security
@@ -142,6 +143,8 @@ __all__ = [
     "hash_api_key",
     # Startup retry helpers
     "init_beanie_with_retry",
+    # Liveness endpoint
+    "install_liveness",
     "optional_identity",
     "permission_sufficient",
     "require_admin",
@@ -293,7 +296,7 @@ def setup_auth(
         config: Optional auth configuration (loads from env if None)
         public_paths: Service-specific paths (exact match) the auth
             middleware should skip provider iteration for. Universal
-            endpoints (`/health`, `/ready`, `/docs`, `/redoc`,
+            endpoints (`/health`, `/ready`, `/livez`, `/docs`, `/redoc`,
             `/openapi.json`, `/`) are always public. Pass the
             api-prefixed health route, e.g., `["/api/registry/health"]`,
             so external monitors and stale-key clients can probe it
