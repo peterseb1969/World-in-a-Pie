@@ -6,11 +6,13 @@ recursive CTEs over `term_relations`, GROUP BY roll-ups — once, at
 bootstrap, so every later `run_report_query` call reads a stable named
 surface instead of repeating the SQL inline.
 
-> **Status.** The endpoints live on reporting-sync and are stable. There
-> are **no MCP tools for registration yet** — register from your app's
-> bootstrap over HTTP (examples below). *Reading* a registered view
-> needs no new tooling: the MCP `run_report_query` tool queries it like
-> any table.
+> **Surfaces.** The endpoints live on reporting-sync. Apps register views
+> from their bootstrap over HTTP (examples below) or with `@wip/client`
+> (`reporting.registerView` / `listViews` / `readViewRows` / `deleteView`).
+> Agents use the MCP tools `register_reporting_view`, `list_reporting_views`,
+> `read_reporting_view` and `delete_reporting_view`. Reading with raw SQL
+> (`run_report_query`) needs an admin or service key; namespace-scoped keys
+> read through `read_reporting_view` (the structured rows endpoint below).
 
 ## The API
 

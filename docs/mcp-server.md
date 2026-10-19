@@ -22,7 +22,7 @@ The server runs in one of two modes, controlled by the `WIP_MCP_MODE` environmen
 
 ### Normal Mode (default)
 
-All 104 tools are available — full read/write access to the WIP data model. This is the mode used during application development (Phases 1–4 below).
+All 108 tools are available — full read/write access to the WIP data model. This is the mode used during application development (Phases 1–4 below).
 
 ```bash
 python -m wip_mcp                  # stdio
@@ -31,7 +31,7 @@ python -m wip_mcp --http           # HTTP streamable
 
 ### Read-Only Mode
 
-Set `WIP_MCP_MODE=readonly` to remove all 48 write tools. The server exposes only 53 read-only tools: queries, searches, exports, and reports. The AI physically cannot create, modify, or delete any entities.
+Set `WIP_MCP_MODE=readonly` to remove all 51 write tools. The server exposes only 57 read-only tools: queries, searches, exports, and reports. The AI physically cannot create, modify, or delete any entities.
 
 ```bash
 WIP_MCP_MODE=readonly python -m wip_mcp
@@ -44,7 +44,7 @@ This is a structural safety mechanism — write tools are removed from the MCP t
 - **Shared/multi-tenant deployments** — expose WIP data to agents you don't fully trust
 - **Demo environments** — let users explore without risk of data modification
 
-**Write tools removed (49):**
+**Write tools removed (51):**
 
 | Category | Tools removed |
 |----------|--------------|
@@ -55,15 +55,16 @@ This is a structural safety mechanism — write tools are removed from the MCP t
 | Documents | `create_document`, `create_documents_bulk`, `update_document`, `archive_document`, `delete_document`, `delete_documents_bulk`, `migrate_documents` |
 | Files | `upload_file`, `delete_file`, `hard_delete_file` |
 | Import | `import_terminology`, `import_documents_csv` |
+| Reporting views | `register_reporting_view`, `delete_reporting_view` |
 | Replay | `start_replay`, `cancel_replay`, `pause_replay`, `resume_replay` |
 | Backup / Restore | `start_backup`, `start_restore`, `delete_backup_job` |
 | Registry | `add_synonym`, `remove_synonym`, `merge_entries` |
 | Namespace | `create_namespace`, `upsert_namespace`, `delete_namespace` |
 | Grants / API keys | `create_grant`, `revoke_grant`, `create_api_key`, `revoke_api_key` |
 
-**Read-only tools available (53):**
+**Read-only tools available (57):**
 
-Discovery, listing, get-by-ID, search, query, export, validation, hierarchy, report tables, SQL queries (`run_report_query` — enforces read-only SQL), sync status, file metadata, template fields, and document versions.
+Discovery, listing, get-by-ID, search, query, export, validation, hierarchy, report tables, SQL queries (`run_report_query` — enforces read-only SQL), registered views (`list_reporting_views`, `read_reporting_view`), sync status, file metadata, template fields, and document versions.
 
 ---
 
@@ -393,6 +394,17 @@ Templates are the schema for entity documents. **Edge types** — schemas for re
 | `list_report_tables()` | List available PostgreSQL reporting tables (doc_* tables + terminologies/terms) with columns, types, and row counts. |
 | `run_report_query(sql, params?, max_rows?)` | Execute a read-only SQL SELECT against the reporting database. Use for cross-template JOINs and aggregations. Table names: `doc_{template_value}`. Use `$1, $2` for parameters. |
 | `get_sync_status()` | Get reporting-sync status: NATS/PostgreSQL connections, events processed/failed, tables managed. |
+
+### Registered Reporting Views (4 tools)
+
+Named SQL views in a namespace's reporting schema, kept across reporting rebuilds. Full manual: [reporting-views.md](reporting-views.md). `namespace` is a URL path segment here, so the server cannot derive it from the key: pass it, or set `WIP_MCP_DEFAULT_NAMESPACE`.
+
+| Tool | Description |
+|------|-------------|
+| `register_reporting_view(name, sql, namespace?, registered_by?)` | Register, or replace by name. Returns `created` (false on replace) and `schema_qualified`. Unqualified names resolve in the namespace's schema; register after the source templates' first sync. ADMIN on the namespace may register views that depend only on its own schema; wip-admins / wip-services may register any. |
+| `list_reporting_views(namespace?)` | The namespace's registered views: name, SQL, registered_at, registered_by. READ on the namespace. |
+| `read_reporting_view(name, namespace?, filters?, sort?, limit?, offset?)` | A registered view's rows, filtered without SQL: `filters` are `{column, op, value}` with op in `eq ne lt lte gt gte like ilike in is_null not_null`. READ on the namespace — the read path for namespace-scoped keys, which cannot use `run_report_query`. |
+| `delete_reporting_view(name, namespace?)` | Drop a view and its registration. 409 while another registered view depends on it. Same authorization as register. |
 
 ### CSV Import (1 tool)
 

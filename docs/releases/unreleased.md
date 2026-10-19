@@ -711,6 +711,26 @@ must run this release's images, since the manifests now probe `/livez`.
 
 ---
 
+### MCP: registered reporting views (108 tools)
+
+Registered reporting views could be managed only over HTTP, and an agent
+with a namespace-scoped key could not read one through MCP at all (raw SQL
+via `run_report_query` needs an admin or service key). Four new tools wrap
+reporting-sync's view endpoints:
+- `register_reporting_view(name, sql, namespace?, registered_by?)` —
+  register or replace; returns `created` and `schema_qualified`;
+- `list_reporting_views(namespace?)`;
+- `read_reporting_view(name, namespace?, filters?, sort?, limit?, offset?)`
+  — rows through structured filters, READ on the namespace;
+- `delete_reporting_view(name, namespace?)`.
+
+`namespace` is a URL path segment on these endpoints, so it is not derived
+from the key: pass it, or set `WIP_MCP_DEFAULT_NAMESPACE`. Register and
+delete are write tools, removed in read-only mode (now 51 write, 57
+read-only tools). `@wip/client` already had the same four methods.
+
+---
+
 ### Terminology deletion checks its template dependencies for real
 
 The guard "a terminology referenced by templates cannot be deleted without
