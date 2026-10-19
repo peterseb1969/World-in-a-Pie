@@ -11,17 +11,33 @@ import time
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
+from nats.js.errors import NotFoundError
 
-from wip_auth import require_api_key, setup_auth, setup_key_sync
+from wip_auth import (
+    APIKeyProvider,
+    UserIdentity,
+    get_auth_config,
+    require_api_key,
+    setup_auth,
+    setup_key_sync,
+)
 from wip_auth.events import EventBus, StreamSpec
 from wip_auth.security import check_production_security
 
 from . import __version__
 from .config import settings
 from .http_client import IngestHTTPClient
-from .models import HealthResponse, MetricsResponse, StatusResponse
-from .result_publisher import ResultPublisher
+from .models import (
+    HealthResponse,
+    MetricsResponse,
+    PublishedIngestResult,
+    ResultLookupItem,
+    ResultLookupRequest,
+    ResultLookupResponse,
+    StatusResponse,
+)
+from .result_publisher import ResultPublisher, results_subject
 from .worker import IngestWorker
 
 # Configure logging
@@ -101,7 +117,10 @@ async def lifespan(app: FastAPI):
 
     # The publisher and worker are bound to a JetStream context per run.
     state.result_publisher = ResultPublisher(None)
-    state.worker = IngestWorker(None, None, state.http_client, state.result_publisher)
+    state.worker = IngestWorker(
+        None, None, state.http_client, state.result_publisher,
+        identify_producer=identify_producer,
+    )
     state.worker_task = state.bus.supervise("ingest-worker", _run_worker)
     logger.info("Ingest worker scheduled (runs while NATS is connected)")
 
@@ -157,6 +176,17 @@ _providers = setup_auth(app, public_paths=["/api/ingest-gateway/health"])
 router = APIRouter(
     prefix="/api/ingest-gateway", dependencies=[Depends(require_api_key)]
 )
+
+
+def identify_producer(api_key: str) -> str | None:
+    """The principal of a producer's API key ("apikey:<name>"), or None when
+    the gateway does not know the key — the same keys, runtime keys included
+    via key sync, that authenticate the gateway's own routes."""
+    for provider in _providers:
+        if isinstance(provider, APIKeyProvider):
+            identity = provider.identify_key(api_key)
+            return identity.identity_string if identity else None
+    return None
 
 
 @app.get("/api/ingest-gateway/health", response_model=HealthResponse)
@@ -230,6 +260,87 @@ async def get_metrics() -> MetricsResponse:
     )
 
 
+def _results_owner(identity: UserIdentity, submitted_by: str | None) -> str:
+    """Whose outcomes the caller reads: their own, or — admins only —
+    the principal named by `submitted_by`."""
+    if submitted_by is None:
+        return identity.identity_string
+    if not identity.has_any_group(get_auth_config().admin_groups):
+        raise HTTPException(
+            status_code=403,
+            detail="submitted_by is for admins: reading another producer's outcomes is not permitted",
+        )
+    return submitted_by
+
+
+async def _lookup_result(owner: str, correlation_id: str) -> PublishedIngestResult | None:
+    """The latest outcome `owner` published under `correlation_id`, or None."""
+    js = state.bus.jetstream
+    if js is None:
+        raise HTTPException(status_code=503, detail="NATS is not connected; results cannot be read")
+    try:
+        msg = await js.get_last_msg(
+            settings.nats_results_stream_name, results_subject(owner, correlation_id)
+        )
+    except NotFoundError:
+        return None
+    except Exception as e:
+        logger.error(f"Reading result for {correlation_id} failed: {e}")
+        raise HTTPException(status_code=503, detail=f"results stream unavailable: {e}") from e
+    return PublishedIngestResult.model_validate_json(msg.data or b"{}")
+
+
+_SUBMITTED_BY = Query(
+    None,
+    description=(
+        "Admins only: read the outcomes of this principal (e.g. 'apikey:<name>') "
+        "instead of the caller's own; an empty value reads the outcomes of items "
+        "that carried no usable key."
+    ),
+)
+
+
+@router.get("/results/{correlation_id}", response_model=PublishedIngestResult)
+async def get_result(
+    correlation_id: str,
+    submitted_by: str | None = _SUBMITTED_BY,
+    identity: UserIdentity = Depends(require_api_key),
+) -> PublishedIngestResult:
+    """The outcome of an ingest item the caller submitted.
+
+    Only items submitted with the caller's own API key are visible. 404 when
+    there is no such outcome: not processed yet, never submitted under this
+    key, or already dropped by the results stream's size limits. A reused
+    correlation_id returns its latest outcome.
+    """
+    result = await _lookup_result(_results_owner(identity, submitted_by), correlation_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"No outcome for correlation_id {correlation_id}")
+    return result
+
+
+@router.post("/results/lookup", response_model=ResultLookupResponse)
+async def lookup_results(
+    request: ResultLookupRequest,
+    submitted_by: str | None = _SUBMITTED_BY,
+    identity: UserIdentity = Depends(require_api_key),
+) -> ResultLookupResponse:
+    """The outcomes of several ingest items the caller submitted, one entry
+    per correlation_id in request order (status 'found' or 'not_found')."""
+    owner = _results_owner(identity, submitted_by)
+    items = []
+    for correlation_id in request.correlation_ids:
+        result = await _lookup_result(owner, correlation_id)
+        items.append(ResultLookupItem(
+            correlation_id=correlation_id,
+            status="found" if result else "not_found",
+            result=result,
+        ))
+    return ResultLookupResponse(
+        results=items, total=len(items), found=sum(1 for i in items if i.result),
+    )
+
+
 # On the app, not the router: a public service-root probe, like the other
 # services' prefixed roots.
 @app.get("/api/ingest-gateway/")
@@ -242,6 +353,7 @@ async def root() -> dict[str, Any]:
         "health": "/api/ingest-gateway/health",
         "status": "/api/ingest-gateway/status",
         "metrics": "/api/ingest-gateway/metrics",
+        "results": "/api/ingest-gateway/results/{correlation_id}",
     }
 
 app.include_router(router)

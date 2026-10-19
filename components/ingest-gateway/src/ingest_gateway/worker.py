@@ -13,6 +13,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from nats.aio.client import Client as NATS
@@ -46,12 +47,17 @@ class IngestWorker:
         jetstream: JetStreamContext | None,
         http_client: IngestHTTPClient,
         result_publisher: ResultPublisher,
+        identify_producer: Callable[[str], str | None] | None = None,
     ):
         # Rebound to the live connection before every supervised run.
         self.nc = nats_client
         self.js = jetstream
         self.http_client = http_client
         self.result_publisher = result_publisher
+        # Maps a producer's API key to its principal ("apikey:<name>"), which
+        # owns the item's outcome. Without it every outcome is unowned
+        # (readable by admins only).
+        self.identify_producer = identify_producer
         self._running = False
         self._messages_processed = 0
         self._messages_failed = 0
@@ -100,6 +106,16 @@ class IngestWorker:
         """Process a single ingest message."""
         start_time = time.perf_counter()
 
+        # The write is made with the producer's own key, so the target
+        # service applies the producer's grants; the key's principal also
+        # owns the outcome, so only the producer can read it back.
+        api_key = (msg.headers or {}).get(INGEST_API_KEY_HEADER, "").strip()
+        submitted_by = (
+            self.identify_producer(api_key)
+            if api_key and self.identify_producer is not None
+            else None
+        )
+
         try:
             # Parse message data
             data = json.loads(msg.data.decode())
@@ -137,11 +153,9 @@ class IngestWorker:
                 f"Processing {action.value} correlation_id={correlation_id}"
             )
 
-            # The write is made with the producer's own key, so the target
-            # service applies the producer's grants. Without one the item is
-            # refused: forwarding it with a key of the gateway's would turn
-            # anything that can publish to NATS into an admin writer.
-            api_key = (msg.headers or {}).get(INGEST_API_KEY_HEADER, "").strip()
+            # Without a key the item is refused: forwarding it with a key of
+            # the gateway's would turn anything that can publish to NATS into
+            # an admin writer.
             if not api_key:
                 await self.result_publisher.publish(IngestResult(
                     correlation_id=correlation_id,
@@ -167,6 +181,7 @@ class IngestWorker:
             result = await self.http_client.forward_request(
                 action, payload, correlation_id, api_key
             )
+            result.submitted_by = submitted_by
 
             # Calculate duration
             duration_ms = (time.perf_counter() - start_time) * 1000
@@ -233,6 +248,7 @@ class IngestWorker:
                     status=IngestResultStatus.FAILED,
                     error=f"Invalid JSON: {e}",
                     duration_ms=(time.perf_counter() - start_time) * 1000,
+                    submitted_by=submitted_by,
                 )
                 await self.result_publisher.publish(error_result)
             except Exception:

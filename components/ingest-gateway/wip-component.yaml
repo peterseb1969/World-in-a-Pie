@@ -61,6 +61,8 @@ spec:
       - "$JS.API.STREAM.INFO.WIP_INGEST_RESULTS"
       - "$JS.API.STREAM.CREATE.WIP_INGEST_RESULTS"
       - "$JS.API.STREAM.UPDATE.WIP_INGEST_RESULTS"
+      # Read one outcome back for the results lookup (last message by subject).
+      - "$JS.API.STREAM.MSG.GET.WIP_INGEST_RESULTS"
       - "$JS.API.CONSUMER.INFO.WIP_INGEST.ingest-gateway-durable"
       - "$JS.API.CONSUMER.CREATE.WIP_INGEST.ingest-gateway-durable"
       - "$JS.API.CONSUMER.CREATE.WIP_INGEST.ingest-gateway-durable.>"

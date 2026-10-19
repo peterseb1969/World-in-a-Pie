@@ -89,6 +89,11 @@ class IngestResult(BaseModel):
         default_factory=lambda: datetime.now(UTC)
     )
     duration_ms: float = 0.0
+    # The principal whose API key the item carried ("apikey:<name>"), or None
+    # when it carried none or one the gateway does not know. Outcomes are
+    # readable only by that principal (and admins), so it decides the
+    # outcome's subject — see result_publisher.results_subject.
+    submitted_by: str | None = None
     # True when the failure is transient (target unreachable, timeout, 5xx,
     # 429), so redelivering the message may succeed. Internal: not published.
     retryable: bool = False
@@ -104,7 +109,45 @@ class IngestResult(BaseModel):
             "error": self.error,
             "processed_at": self.processed_at.isoformat(),
             "duration_ms": self.duration_ms,
+            "submitted_by": self.submitted_by,
         }
+
+
+class PublishedIngestResult(BaseModel):
+    """An ingest outcome as published to the results stream and served by
+    the results lookup."""
+
+    correlation_id: str
+    action: str
+    status: str
+    http_status_code: int | None = None
+    response: dict[str, Any] | None = None
+    error: str | None = None
+    processed_at: str
+    duration_ms: float
+    submitted_by: str | None = None
+
+
+class ResultLookupRequest(StrictModel):
+    """Correlation IDs whose outcomes to look up."""
+
+    correlation_ids: list[str] = Field(..., min_length=1, max_length=1000)
+
+
+class ResultLookupItem(BaseModel):
+    """One correlation ID's lookup: its outcome, or not_found."""
+
+    correlation_id: str
+    status: str = Field(..., description="'found' or 'not_found'")
+    result: PublishedIngestResult | None = None
+
+
+class ResultLookupResponse(BaseModel):
+    """Per-ID lookups, in request order."""
+
+    results: list[ResultLookupItem]
+    total: int
+    found: int
 
 
 class HealthResponse(BaseModel):

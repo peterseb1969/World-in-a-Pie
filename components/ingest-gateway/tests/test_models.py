@@ -1,14 +1,16 @@
 """Tests for ingest gateway data models."""
 
+from datetime import datetime
+
 import pytest
-from datetime import datetime, timezone
+from pydantic import ValidationError
 
 from ingest_gateway.models import (
+    SUBJECT_TO_ACTION,
     IngestAction,
     IngestMessage,
     IngestResult,
     IngestResultStatus,
-    SUBJECT_TO_ACTION,
 )
 
 
@@ -38,7 +40,7 @@ class TestSubjectMapping:
             "wip.ingest.documents.create": IngestAction.DOCUMENTS_CREATE,
             "wip.ingest.documents.bulk": IngestAction.DOCUMENTS_BULK,
         }
-        assert SUBJECT_TO_ACTION == expected
+        assert expected == SUBJECT_TO_ACTION
 
     def test_unknown_subject_returns_none(self):
         assert SUBJECT_TO_ACTION.get("wip.ingest.unknown") is None
@@ -70,11 +72,11 @@ class TestIngestMessage:
         assert msg.metadata == {"source": "csv-upload"}
 
     def test_missing_correlation_id_fails(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             IngestMessage(payload={"key": "value"})
 
     def test_missing_payload_fails(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             IngestMessage(correlation_id="test-789")
 
 

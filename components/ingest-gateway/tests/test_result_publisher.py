@@ -1,12 +1,12 @@
 """Tests for the ResultPublisher that publishes ingest results to NATS."""
 
 import json
-
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from ingest_gateway.models import IngestAction, IngestResult, IngestResultStatus
-from ingest_gateway.result_publisher import ResultPublisher
+from ingest_gateway.result_publisher import ResultPublisher, owner_token, results_subject
 
 
 @pytest.fixture
@@ -195,13 +195,15 @@ class TestCorrelationId:
 
     @pytest.mark.asyncio
     async def test_correlation_id_in_subject(self, publisher, mock_jetstream):
-        """The NATS subject includes the correlation_id for filtering."""
+        """The NATS subject is derived from the correlation_id (hashed, so any
+        producer-chosen ID is one literal token); lookups derive the same."""
         result = _make_result(correlation_id="track-xyz-789")
 
         await publisher.publish(result)
 
         subject = mock_jetstream.publish.call_args.args[0]
-        assert "track-xyz-789" in subject
+        assert subject == results_subject(None, "track-xyz-789")
+        assert subject != results_subject(None, "track-xyz-780")
 
 
 # ---- Duration ----
@@ -282,13 +284,18 @@ class TestSubjectNaming:
 
     @pytest.mark.asyncio
     async def test_subject_format(self, publisher, mock_jetstream):
-        """Subject follows the pattern wip.ingest.results.<correlation_id>."""
+        """Subject is wip.ingest.results.<owner>.<correlation>, both hashed."""
         result = _make_result(correlation_id="abc-def-123")
+        result.submitted_by = "apikey:producer"
 
         await publisher.publish(result)
 
         subject = mock_jetstream.publish.call_args.args[0]
-        assert subject == "wip.ingest.results.abc-def-123"
+        assert subject == results_subject("apikey:producer", "abc-def-123")
+        prefix, owner, correlation = subject.rsplit(".", 2)
+        assert prefix == "wip.ingest.results"
+        assert owner == owner_token("apikey:producer") and len(owner) == 16
+        assert len(correlation) == 32 and "abc" not in correlation
 
     @pytest.mark.asyncio
     async def test_subject_varies_by_correlation_id(self, publisher, mock_jetstream):
@@ -302,8 +309,8 @@ class TestSubjectNaming:
         await publisher.publish(result_b)
         subject_b = mock_jetstream.publish.call_args.args[0]
 
-        assert subject_a == "wip.ingest.results.id-aaa"
-        assert subject_b == "wip.ingest.results.id-bbb"
+        assert subject_a == results_subject(None, "id-aaa")
+        assert subject_b == results_subject(None, "id-bbb")
         assert subject_a != subject_b
 
     @pytest.mark.asyncio
