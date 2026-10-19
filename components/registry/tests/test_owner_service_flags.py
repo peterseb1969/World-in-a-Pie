@@ -8,7 +8,9 @@
   terms), so the entry follows even in a 'retain' namespace.
 
 Both are honored for privileged callers (wip-admins / wip-services) only.
-The master key is privileged; a runtime key with no groups is not.
+The master key is privileged; a runtime key with no groups is not. Entry
+deletion as a whole is privileged-only, so an unprivileged key never
+reaches the owner_hard_deleted flag.
 """
 
 import pytest
@@ -27,7 +29,11 @@ async def _register(client, headers, value, entity_type="terms"):
 
 
 async def _plain_key(client, headers, name):
-    resp = await client.post(KEYS, headers=headers, json={"name": name, "groups": [], "namespaces": ["default"]})
+    # A write grant, so the namespace check passes and only the owner-flag
+    # rule is left to refuse.
+    resp = await client.post(KEYS, headers=headers, json={
+        "name": name, "groups": [], "namespaces": ["default"], "grant_permission": "write",
+    })
     assert resp.status_code in (200, 201), resp.text
     return {"X-API-Key": resp.json()["plaintext_key"]}
 
@@ -85,5 +91,12 @@ async def test_owner_hard_deleted_bypasses_retain_for_privileged_callers(client:
 async def test_owner_hard_deleted_is_ignored_for_unprivileged_keys(client: AsyncClient, auth_headers: dict):
     entry = await _register(client, auth_headers, "OF_J")
     plain = await _plain_key(client, auth_headers, "owner-delete-plain")
-    res = await _delete(client, plain, entry, owner_hard_deleted=True)
-    assert res["status"] != "deleted", res
+    # Entry deletion is privileged-only, so an unprivileged key is refused
+    # before any flag is read, and the entry survives.
+    resp = await client.request("DELETE", "/api/registry/entries", headers=plain, json=[{
+        "entry_id": entry, "hard_delete": True, "owner_hard_deleted": True,
+    }])
+    assert resp.status_code == 403, resp.text
+    found = await client.post("/api/registry/entries/lookup/by-id", headers=auth_headers,
+                              json=[{"entry_id": entry}])
+    assert found.json()["results"][0]["status"] == "found"

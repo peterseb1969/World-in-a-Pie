@@ -770,6 +770,43 @@ no longer reads `MINIO_URL`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` or
 
 ---
 
+### The Registry enforces namespace authorization on entries, synonyms and search
+
+Until now the Registry's entry, synonym and search routes accepted any valid
+API key and never checked the caller's namespaces. A key scoped to one
+namespace could read another namespace's entries, attach synonyms to them,
+and claim a composite key inside it. That namespace's own later
+registration of the same value then silently adopted the foreign entry.
+
+Now:
+- **Entry allocation is privileged-only.** `POST /entries/register`,
+  `/provision`, `/reserve`, `/activate`, `PUT /entries` and `DELETE /entries`
+  answer 403 to any key outside `wip-admins` / `wip-services`, including in
+  the key's own namespace. These are the stores' internal protocol; app keys
+  create terms, templates, documents and files through their store.
+- **Synonym writes need write on every namespace they touch.**
+  `/synonyms/add` and `/synonyms/remove` need write on the entry's namespace
+  and on the synonym's; `/synonyms/merge` needs write on both entries'
+  namespaces. A key with only read gets a per-item `forbidden`.
+- **Reads see only readable namespaces.** `GET /entries/{id}`,
+  `/entries/lookup/by-id`, `/lookup/by-key`, `/resolve` and the three
+  `/search/*` routes report an entry in a namespace the caller cannot read as
+  not found (404 for the single get), so its existence is not leaked.
+  Isolation rules (`open`, `allowed_external_refs`) govern references, not
+  reads, as in the stores: a cross-namespace reference keeps working,
+  because the service validating it resolves it with its own key.
+- **Spec-declared keys keep their write grants at the Registry.** The
+  Registry now honours a config-file key's declared grants, as every other
+  service already did; before, it answered only read for them.
+
+The master key, every store and every deployer-managed app call the Registry
+as privileged callers and are unaffected.
+**Action:** a tool that registered or deleted Registry entries with a
+namespace-scoped key must use the install's service key, or create the
+entity through its store.
+
+---
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

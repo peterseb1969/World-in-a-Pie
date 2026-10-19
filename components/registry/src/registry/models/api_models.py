@@ -346,7 +346,7 @@ class AddSynonymResponse(BaseModel):
     """Response model for adding a synonym."""
 
     index: int
-    status: str  # added, already_exists, target_not_found, error
+    status: str  # added, already_exists, target_not_found, forbidden, error
     registry_id: str | None = None
     error: str | None = None
 
@@ -365,7 +365,7 @@ class RemoveSynonymResponse(BaseModel):
     """Response model for removing a synonym."""
 
     index: int
-    status: str  # removed, not_found, error
+    status: str  # removed, not_found, forbidden, error
     registry_id: str | None = None
     error: str | None = None
 
@@ -397,7 +397,7 @@ class MergeResponse(BaseModel):
     """Response model for a merge operation."""
 
     index: int
-    status: str  # merged, preferred_not_found, deprecated_not_found, error
+    status: str  # merged, preferred_not_found, deprecated_not_found, forbidden, error
     preferred_id: str | None = None
     deprecated_id: str | None = None
     error: str | None = None

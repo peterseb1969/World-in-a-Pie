@@ -125,6 +125,19 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     if _is_superadmin(identity):
         return "admin"
 
+    # A config-file key that declares grants (a spec-declared key) resolves
+    # locally from its own definition, in the same order as wip-auth's
+    # resolve_permission: the declared grant, else read on a namespace in
+    # the key's scope, else none. Without this the Registry would answer
+    # "read" where every other service answers the declared "write".
+    config_grants = (identity.raw_claims or {}).get("grants")
+    if identity.auth_method == "api_key" and isinstance(config_grants, dict):
+        declared = config_grants.get(namespace)
+        if declared is not None:
+            return str(declared)
+        key_namespaces = (identity.raw_claims or {}).get("namespaces") or []
+        return "read" if namespace in key_namespaces else "none"
+
     # Determine subject identifiers to check
     subjects = []
     if identity.auth_method == "api_key":
@@ -207,6 +220,46 @@ async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | N
         for ns in all_ns
         if await _resolve_permission(identity, ns.prefix) != "none"
     ]
+
+
+class NamespaceAccess:
+    """A direct caller's permission per namespace, memoised for one request.
+
+    Privileged callers (wip-admins, wip-services) are unrestricted: they are
+    the platform services calling with the install's key, and they act on
+    every namespace on behalf of their own callers. Everyone else gets
+    exactly what _resolve_permission grants — reading an entry needs read
+    on its namespace, changing one needs write.
+
+    Isolation rules (open mode, allowed_external_refs) decide what a
+    namespace may REFERENCE, never what a caller may READ, so they play no
+    part here; the stores' read checks work the same way. A cross-namespace
+    reference is resolved by the service that validates it, with its own
+    key.
+    """
+
+    def __init__(self, identity: UserIdentity) -> None:
+        self._identity = identity
+        self.unrestricted = identity.has_any_group(list(_PRIVILEGED_GROUPS))
+        self._permissions: dict[str, str] = {}
+
+    async def allows(self, namespace: str, required: str) -> bool:
+        if self.unrestricted:
+            return True
+        if namespace not in self._permissions:
+            self._permissions[namespace] = await _resolve_permission(
+                self._identity, namespace
+            )
+        return (
+            _PERMISSION_LEVELS.get(self._permissions[namespace], 0)
+            >= _PERMISSION_LEVELS[required]
+        )
+
+    async def readable_namespaces(self) -> list[str] | None:
+        """The namespaces this caller may read, or None for no restriction."""
+        if self.unrestricted:
+            return None
+        return await resolve_accessible_namespaces(self._identity)
 
 
 # =============================================================================

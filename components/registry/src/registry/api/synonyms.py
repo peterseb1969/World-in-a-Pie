@@ -24,10 +24,25 @@ from ..models.entry import RegistryEntry, Synonym
 from ..services.auth import require_api_key
 from ..services.claims import resolve_stale_claim
 from ..services.hash import HashService
+from .grants import NamespaceAccess
 
 logger = logging.getLogger("registry.synonyms")
 
 router = APIRouter()
+
+
+async def _write_refusal(
+    access: NamespaceAccess, *namespaces: str
+) -> str | None:
+    """Why the caller may not write a synonym touching these namespaces, or None.
+
+    A synonym change writes the entry's namespace and claims a composite key
+    in the synonym's namespace, so it needs write on both.
+    """
+    for namespace in dict.fromkeys(namespaces):
+        if not await access.allows(namespace, "write"):
+            return f"Requires write permission on namespace '{namespace}'"
+    return None
 
 
 @router.post(
@@ -39,8 +54,14 @@ async def add_synonyms(
     items: list[AddSynonymItem] = Body(...),
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkSynonymAddResponse:
-    """Add one or more synonyms to existing registry entries."""
+    """Add one or more synonyms to existing registry entries.
+
+    Needs write on the entry's namespace and on the synonym's. A target the
+    caller cannot read is reported target_not_found; one it can read but
+    not write is forbidden.
+    """
     results = []
+    access = NamespaceAccess(identity)
 
     for i, item in enumerate(items):
         try:
@@ -50,9 +71,16 @@ async def add_synonyms(
                 "status": "active"
             })
 
-            if not entry:
+            if not entry or not await access.allows(entry.namespace, "read"):
                 results.append(AddSynonymResponse(
                     index=i, status="target_not_found",
+                ))
+                continue
+
+            refusal = await _write_refusal(access, entry.namespace, item.synonym_namespace)
+            if refusal:
+                results.append(AddSynonymResponse(
+                    index=i, status="forbidden", error=refusal,
                 ))
                 continue
 
@@ -151,7 +179,7 @@ async def add_synonyms(
     return BulkSynonymAddResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status == "added"),
-        failed=sum(1 for r in results if r.status in ("target_not_found", "error")),
+        failed=sum(1 for r in results if r.status in ("target_not_found", "forbidden", "error")),
     )
 
 
@@ -164,8 +192,13 @@ async def remove_synonyms(
     items: list[RemoveSynonymItem] = Body(...),
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkSynonymRemoveResponse:
-    """Remove one or more synonyms from registry entries."""
+    """Remove one or more synonyms from registry entries.
+
+    Same permission rule as add: write on the entry's namespace and the
+    synonym's; an unreadable target is not_found.
+    """
     results = []
+    access = NamespaceAccess(identity)
 
     for i, item in enumerate(items):
         try:
@@ -174,9 +207,17 @@ async def remove_synonyms(
                 "status": "active"
             })
 
-            if not entry:
+            if not entry or not await access.allows(entry.namespace, "read"):
                 results.append(RemoveSynonymResponse(
                     index=i, status="not_found", registry_id=item.target_id,
+                ))
+                continue
+
+            refusal = await _write_refusal(access, entry.namespace, item.synonym_namespace)
+            if refusal:
+                results.append(RemoveSynonymResponse(
+                    index=i, status="forbidden", registry_id=entry.entry_id,
+                    error=refusal,
                 ))
                 continue
 
@@ -231,7 +272,7 @@ async def remove_synonyms(
     return BulkSynonymRemoveResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status == "removed"),
-        failed=sum(1 for r in results if r.status in ("not_found", "error")),
+        failed=sum(1 for r in results if r.status in ("not_found", "forbidden", "error")),
     )
 
 
@@ -244,15 +285,20 @@ async def merge_entries(
     items: list[MergeItem] = Body(...),
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkMergeResponse:
-    """Merge two entries, making the deprecated one a synonym of the preferred."""
+    """Merge two entries, making the deprecated one a synonym of the preferred.
+
+    Needs write on both entries' namespaces; an entry the caller cannot read
+    is reported as not found.
+    """
     results = []
+    access = NamespaceAccess(identity)
 
     for i, item in enumerate(items):
         try:
             preferred = await RegistryEntry.find_one({
                 "entry_id": item.preferred_id, "status": "active"
             })
-            if not preferred:
+            if not preferred or not await access.allows(preferred.namespace, "read"):
                 results.append(MergeResponse(
                     index=i, status="preferred_not_found",
                     preferred_id=item.preferred_id,
@@ -262,10 +308,20 @@ async def merge_entries(
             deprecated = await RegistryEntry.find_one({
                 "entry_id": item.deprecated_id, "status": "active"
             })
-            if not deprecated:
+            if not deprecated or not await access.allows(deprecated.namespace, "read"):
                 results.append(MergeResponse(
                     index=i, status="deprecated_not_found",
                     deprecated_id=item.deprecated_id,
+                ))
+                continue
+
+            refusal = await _write_refusal(access, preferred.namespace, deprecated.namespace)
+            if refusal:
+                results.append(MergeResponse(
+                    index=i, status="forbidden",
+                    preferred_id=preferred.entry_id,
+                    deprecated_id=deprecated.entry_id,
+                    error=refusal,
                 ))
                 continue
 
@@ -351,5 +407,7 @@ async def merge_entries(
     return BulkMergeResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status == "merged"),
-        failed=sum(1 for r in results if r.status in ("preferred_not_found", "deprecated_not_found", "error")),
+        failed=sum(1 for r in results if r.status in (
+            "preferred_not_found", "deprecated_not_found", "forbidden", "error",
+        )),
     )

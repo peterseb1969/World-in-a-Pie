@@ -870,7 +870,7 @@ curlk -s -H "X-API-Key: $API_KEY" \
 
 ### Register a composite key
 
-This is the low-level call that services use internally. You can also use it directly:
+This is the low-level call that services use internally. You can also use it directly, with a privileged key (`wip-admins` / `wip-services`, such as the install's master key); a namespace-scoped key gets 403:
 
 ```bash
 curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \

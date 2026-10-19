@@ -53,7 +53,7 @@ from ..models.composite_key_claim import CompositeKeyClaim
 from ..models.entry import RegistryEntry, Synonym
 from ..models.id_algorithm import VALID_ENTITY_TYPES, IdFormatValidator
 from ..models.namespace import Namespace
-from ..services.auth import require_api_key
+from ..services.auth import require_api_key, require_privileged_key
 from ..services.claims import (
     claim_entry_keys_pending,
     confirm_entry_keys,
@@ -61,7 +61,7 @@ from ..services.claims import (
 )
 from ..services.hash import HashService
 from ..services.id_generator import IdGeneratorService
-from .grants import resolve_accessible_namespaces
+from .grants import NamespaceAccess, resolve_accessible_namespaces
 
 logger = logging.getLogger("registry.entries")
 
@@ -315,10 +315,14 @@ async def get_entry_detail(
     entry_id: str,
     identity: UserIdentity = Depends(require_api_key)
 ) -> EntryDetailResponse:
-    """Get full details for a single registry entry by its entry_id."""
+    """Get full details for a single registry entry by its entry_id.
+
+    An entry in a namespace the caller cannot read answers the same 404 as
+    a missing one, so the namespace's contents are not leaked.
+    """
     entry = await RegistryEntry.find_one({"entry_id": entry_id})
 
-    if not entry:
+    if not entry or not await NamespaceAccess(identity).allows(entry.namespace, "read"):
         raise HTTPException(status_code=404, detail=f"Entry not found: {entry_id}")
 
     return EntryDetailResponse(
@@ -346,7 +350,7 @@ async def get_entry_detail(
 )
 async def register_keys(
     items: list[RegisterKeyItem] = Body(...),
-    identity: UserIdentity = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_privileged_key)
 ) -> RegisterBulkResponse:
     """
     Register one or more composite keys. This is sugar for reserve + immediate activate.
@@ -733,7 +737,7 @@ async def rekey_identity(
 )
 async def provision_ids(
     request: ProvisionRequest,
-    identity: UserIdentity = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_privileged_key)
 ) -> ProvisionResponse:
     """
     Provision (generate + reserve) IDs per namespace config.
@@ -827,7 +831,7 @@ async def provision_ids(
 )
 async def reserve_ids(
     items: list[ReserveItem] = Body(...),
-    identity: UserIdentity = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_privileged_key)
 ) -> ReserveBulkResponse:
     """
     Validate and store client-provided IDs as reserved.
@@ -953,7 +957,7 @@ async def reserve_ids(
 )
 async def activate_entries(
     items: list[ActivateItem] = Body(...),
-    identity: UserIdentity = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_privileged_key)
 ) -> ActivateBulkResponse:
     """Activate reserved entries, making them resolvable.
 
@@ -1202,11 +1206,15 @@ async def lookup_by_ids(
     items: list[LookupByIdItem] = Body(...),
     identity: UserIdentity = Depends(require_api_key)
 ) -> LookupBulkResponse:
-    """Look up registry entries by their IDs. Only active entries are resolvable."""
+    """Look up registry entries by their IDs. Only active entries are resolvable.
+
+    An entry in a namespace the caller cannot read is reported not_found.
+    """
     results = []
     found_count = 0
     not_found_count = 0
     error_count = 0
+    access = NamespaceAccess(identity)
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         for i, item in enumerate(items):
@@ -1234,7 +1242,7 @@ async def lookup_by_ids(
                     if entry:
                         matched_via = "composite_key_value"
 
-                if not entry:
+                if not entry or not await access.allows(entry.namespace, "read"):
                     results.append(LookupResponse(index=i, status="not_found"))
                     not_found_count += 1
                     continue
@@ -1274,15 +1282,25 @@ async def lookup_by_keys(
     items: list[LookupByKeyItem] = Body(...),
     identity: UserIdentity = Depends(require_api_key)
 ) -> LookupBulkResponse:
-    """Look up registry entries by their composite keys."""
+    """Look up registry entries by their composite keys.
+
+    A key looked up in a namespace the caller cannot read, or matching an
+    entry that lives in one, is reported not_found.
+    """
     results = []
     found_count = 0
     not_found_count = 0
     error_count = 0
+    access = NamespaceAccess(identity)
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         for i, item in enumerate(items):
             try:
+                if not await access.allows(item.namespace, "read"):
+                    results.append(LookupResponse(index=i, status="not_found"))
+                    not_found_count += 1
+                    continue
+
                 key_hash = HashService.compute_composite_key_hash(item.composite_key)
 
                 if item.search_synonyms:
@@ -1328,7 +1346,7 @@ async def lookup_by_keys(
                     )
                 entry = matches[0] if matches else None
 
-                if not entry:
+                if not entry or not await access.allows(entry.namespace, "read"):
                     results.append(LookupResponse(index=i, status="not_found"))
                     not_found_count += 1
                     continue
@@ -1379,7 +1397,7 @@ async def lookup_by_keys(
 )
 async def update_entries(
     items: list[UpdateEntryItem] = Body(...),
-    identity: UserIdentity = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_privileged_key)
 ) -> BulkUpdateResponse:
     """Update one or more registry entries."""
     results = []
@@ -1429,7 +1447,7 @@ async def update_entries(
 )
 async def delete_entries(
     items: list[DeleteItem] = Body(...),
-    identity: UserIdentity = Depends(require_api_key)
+    identity: UserIdentity = Depends(require_privileged_key)
 ) -> BulkDeleteResponse:
     """Deactivate or hard-delete one or more registry entries.
 
@@ -1450,17 +1468,16 @@ async def delete_entries(
 
             if item.hard_delete or item.rollback_uncommitted or item.owner_hard_deleted:
                 # CASE-436: rollback_uncommitted bypasses the deletion_mode gate
-                # for privileged (service/admin) callers — it aborts a
-                # just-allocated entry whose backing object was never committed
-                # (a document create that failed on synonym registration), which
-                # is a trusted write-rollback, not user-data deletion. Ordinary
-                # keys never get the bypass; their flag falls through to the gate.
-                privileged = identity.has_any_group(["wip-admins", "wip-services"])
-                privileged_rollback = item.rollback_uncommitted and privileged
+                # — it aborts a just-allocated entry whose backing object was
+                # never committed (a document create that failed on synonym
+                # registration), which is a trusted write-rollback, not
+                # user-data deletion. Only privileged callers reach this route
+                # (require_privileged_key), so the flag needs no further check.
+                privileged_rollback = item.rollback_uncommitted
                 # The owning service already removed the backing object under a
                 # deletion_mode exemption (mutable-terminology terms): the entry
                 # follows, or its synonyms resolve to nothing.
-                privileged_owner_delete = item.owner_hard_deleted and privileged
+                privileged_owner_delete = item.owner_hard_deleted
                 if privileged_rollback or privileged_owner_delete:
                     logger.info(
                         "%s hard-delete of entry %s (ns=%s) by %s — bypassing "
@@ -1526,12 +1543,14 @@ async def resolve_synonyms(
     ``composite_key`` (synonym resolution), or both.  When both are
     given, ``entry_id`` is tried first.
 
-    Returns entry_id for each found item, "not_found" otherwise.
+    Returns entry_id for each found item, "not_found" otherwise — including
+    for an entry in a namespace the caller cannot read.
     """
     results = []
     found_count = 0
     not_found_count = 0
     error_count = 0
+    access = NamespaceAccess(identity)
 
     for i, item in enumerate(items):
         try:
@@ -1582,7 +1601,7 @@ async def resolve_synonyms(
                     )
                 entry = matches[0] if matches else None
 
-            if entry:
+            if entry and await access.allows(entry.namespace, "read"):
                 results.append(ResolveResponse(
                     index=i,
                     status="found",

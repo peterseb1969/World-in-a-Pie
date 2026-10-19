@@ -2,6 +2,7 @@
 
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Body, Depends
 
@@ -17,10 +18,23 @@ from ..models.api_models import (
 from ..models.entry import RegistryEntry
 from ..services.auth import require_api_key
 from ..services.search import SearchService
+from .grants import NamespaceAccess
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _within(query: dict[str, Any], readable: list[str] | None) -> dict[str, Any]:
+    """Narrow a search query to entries whose own namespace the caller can read.
+
+    The caller's restrict_to_namespaces also matches entries through a
+    synonym's namespace, so it cannot serve as the authorization filter;
+    this constrains the entry itself. None means no restriction.
+    """
+    if readable is None:
+        return query
+    return {"$and": [query, {"namespace": {"$in": readable}}]}
 
 
 @router.post(
@@ -32,17 +46,21 @@ async def search_by_fields(
     items: list[SearchItem] = Body(...),
     identity: UserIdentity = Depends(require_api_key)
 ) -> SearchBulkResponse:
-    """Search for registry entries by field values in composite keys."""
+    """Search for registry entries by field values in composite keys.
+
+    Only entries in namespaces the caller can read are returned.
+    """
     results = []
+    readable = await NamespaceAccess(identity).readable_namespaces()
 
     for i, item in enumerate(items):
         try:
-            query = SearchService.build_field_query(
+            query = _within(SearchService.build_field_query(
                 field_criteria=item.field_criteria,
                 restrict_to_namespaces=item.restrict_to_namespaces,
                 restrict_to_entity_types=item.restrict_to_entity_types,
                 include_inactive=item.include_inactive
-            )
+            ), readable)
 
             entries = await RegistryEntry.find(query).to_list()
 
@@ -91,8 +109,12 @@ async def search_by_term(
     items: list[SearchByTermItem] = Body(...),
     identity: UserIdentity = Depends(require_api_key)
 ) -> SearchBulkResponse:
-    """Search for a term across any field in any composite key."""
+    """Search for a term across any field in any composite key.
+
+    Only entries in namespaces the caller can read are returned or counted.
+    """
     results = []
+    readable = await NamespaceAccess(identity).readable_namespaces()
 
     for i, item in enumerate(items):
         try:
@@ -100,12 +122,12 @@ async def search_by_term(
             # $text attempt always threw — no text index is declared on
             # RegistryEntry — so every call paid a guaranteed-failing query
             # before this fallback served the actual result.
-            query = SearchService.build_regex_search_query(
+            query = _within(SearchService.build_regex_search_query(
                 term=item.term,
                 restrict_to_namespaces=item.restrict_to_namespaces,
                 restrict_to_entity_types=item.restrict_to_entity_types,
                 include_inactive=item.include_inactive
-            )
+            ), readable)
             # CASE-572: count before limiting so total_matches is the true
             # match count even when the fetch is bounded.
             total = await RegistryEntry.find(query).count()
@@ -177,7 +199,7 @@ async def search_across_namespaces(
     items: list[SearchItem] = Body(...),
     identity: UserIdentity = Depends(require_api_key)
 ) -> SearchBulkResponse:
-    """Search for entries across ALL namespaces."""
+    """Search for entries across every namespace the caller can read."""
     modified_items = []
     for item in items:
         modified_items.append(SearchItem(

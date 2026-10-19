@@ -4,7 +4,7 @@ This module provides authentication using the wip-auth shared library.
 It re-exports the common auth functions for backward compatibility.
 """
 
-from fastapi import Request
+from fastapi import Depends, HTTPException, Request
 
 from wip_auth import (
     AuthConfig,
@@ -47,6 +47,32 @@ async def require_admin_key(request: Request) -> str:
     await require_admin_identity(request)
     return request.headers.get("X-API-Key", "")
 
+
+async def require_privileged_key(
+    identity: UserIdentity = Depends(require_api_key),
+) -> UserIdentity:
+    """Gate for the identity-allocation protocol (register, provision,
+    reserve, activate, entry update and delete).
+
+    Those routes are the stores' internal contract: a store allocates an
+    entity's identity here and commits the entity itself. A caller that
+    allocated directly would create an identity with nothing behind it,
+    could pre-claim a composite key that the store's later create then
+    silently adopts, or could retire an entry the store still holds as
+    active. So only the platform's privileged callers (wip-admins,
+    wip-services) may use them; app keys create entities through the
+    stores.
+    """
+    if not identity.has_any_group(["wip-admins", "wip-services"]):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Registry entry allocation is restricted to wip-admins / "
+                "wip-services; create entities through their store instead"
+            ),
+        )
+    return identity
+
 # Re-export for backward compatibility
 __all__ = [
     "AuthConfig",
@@ -61,6 +87,7 @@ __all__ = [
     "require_api_key",
     "require_groups",
     "require_identity",
+    "require_privileged_key",
     "reset_auth_config",
     "set_auth_config",
 ]

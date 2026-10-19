@@ -44,6 +44,15 @@ podman-compose up -d
 
 All endpoints require API key authentication via the `X-API-Key` header.
 
+Beyond that, entries are authorized by namespace:
+- **Allocation** (`/entries/register`, `/provision`, `/reserve`, `/activate`,
+  `PUT` and `DELETE /entries`) is restricted to `wip-admins` / `wip-services`.
+  It is the stores' internal protocol; apps create entities through their
+  store.
+- **Synonym add/remove and merge** need write on every namespace involved.
+- **Reads** (entry get, lookups, resolve, search) return only entries in
+  namespaces the caller can read; anything else is reported not found.
+
 ### Development API Key
 
 For local development, the default API key is:
