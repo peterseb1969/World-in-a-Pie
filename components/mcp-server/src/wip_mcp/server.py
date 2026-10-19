@@ -257,7 +257,9 @@ term identifier is expected, exactly three forms are accepted:
 - the fully qualified 'ns:terminology:value' string (split on the first
   two colons, so the value keeps any colons it contains)
 - the field form: a `terminology` parameter scoping the raw value, which
-  is then treated as OPAQUE and never colon-parsed
+  is then treated as OPAQUE and never colon-parsed. The terminology may be
+  its id or 'ns:VALUE' (no namespace needed) or its value (read in the
+  request's namespace)
 
 The 2-part 'TERMINOLOGY:VALUE' shorthand is REJECTED with 422 on every
 term endpoint, reads and writes alike: a value that itself contains ':'
@@ -1820,8 +1822,10 @@ async def get_term(
             like GO:0000278) cannot be distinguished from it.
         namespace: Namespace for value/synonym resolution (required with
             multi-namespace or privileged keys; single-namespace keys derive it).
+            Not needed when terminology is given as its id or 'ns:VALUE'.
         terminology: Terminology scoping a value-form identifier — the
-            preferred way to address a term by value.
+            preferred way to address a term by value. Its id, 'ns:VALUE',
+            or its value.
     """
     try:
         data = await get_client().get_term(

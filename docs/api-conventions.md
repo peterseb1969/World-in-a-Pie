@@ -527,6 +527,11 @@ terminology=STATUS + approved  → field form: the identifier is the raw
                                  value, treated as opaque, never colon-parsed
 ```
 
+In the field form, `terminology` may be the terminology's id, `ns:VALUE`,
+or its bare value. A bare value is read in the request's namespace; the id
+and `ns:VALUE` name their own namespace, so they need no `?namespace=`. The
+same holds for `terminology` on `GET /terms/search`.
+
 The 2-part `TERMINOLOGY:VALUE` shorthand (`STATUS:approved`) is
 **rejected with 422** on every term endpoint, reads and writes alike: a
 value that itself contains `:` (OBO ids like `GO:0000278`) is

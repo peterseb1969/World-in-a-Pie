@@ -164,6 +164,11 @@ class TestBulkFieldDoor:
             url=RESOLVE_URL,
             json={"results": [{"status": "not_found"}]},
         )
+        # A bare terminology that misses is tried once as a canonical id.
+        httpx_mock.add_response(
+            url="http://localhost:8001/api/registry/entries/lookup/by-id",
+            json={"results": [{"status": "not_found"}]},
+        )
         items = [{"term_id": "GO:9999999"}]
         await resolve_bulk_ids(
             items, "term_id", "term", "onto2", terminology="GO_SLIM",

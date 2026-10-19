@@ -21,6 +21,7 @@ from fastapi import HTTPException
 from .identity import get_current_identity
 from .resolve import (
     EntityNotFoundError,
+    TermNamespaceRequiredError,
     _looks_like_uuid,
     resolve_entity_id,
     resolve_entity_ids,
@@ -213,23 +214,25 @@ async def resolve_term_by_fields_or_404(
 
     The field-form counterpart to resolve_or_404: the value is an opaque
     scalar (never colon-parsed), so colon-carrying vocabularies resolve
-    like any other. If ``namespace`` is None it is derived from a
-    single-namespace key; field-form resolution has no pass-through
-    fallback, so a missing namespace is a 422, not a silent miss.
+    like any other. The terminology may be its canonical id, ``NS:VALUE``
+    or a bare value. If ``namespace`` is None it is derived from a
+    single-namespace key. Only a bare terminology value needs one: with
+    neither, the answer is 422, not a silent miss.
     """
     if namespace is None:
         namespace = _derive_namespace_from_identity()
-    if namespace is None:
+    try:
+        return await resolve_term_by_fields(value, terminology, namespace)
+    except TermNamespaceRequiredError:
         raise HTTPException(
             status_code=422,
             detail=(
                 f"Cannot resolve {param_name} by terminology+value: no "
-                "namespace context. Pass ?namespace= or use a "
-                "single-namespace API key."
+                f"namespace context for terminology '{terminology}'. Pass "
+                "?namespace=, name the terminology by id or as 'ns:VALUE', "
+                "or use a single-namespace API key."
             ),
-        )
-    try:
-        return await resolve_term_by_fields(value, terminology, namespace)
+        ) from None
     except EntityNotFoundError:
         raise HTTPException(
             status_code=404,

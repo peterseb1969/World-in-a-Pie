@@ -88,6 +88,7 @@ from .resolve import (
     resolve_entity_id,
     resolve_entity_ids,
     split_qualified_value,
+    terminology_coordinates_by_id,
 )
 from .security import check_production_security
 from .startup import init_beanie_with_retry, retry_async
@@ -179,6 +180,7 @@ __all__ = [
     "setup_rate_limiting",
     "split_qualified_value",
     "term_resolution_batch",
+    "terminology_coordinates_by_id",
 ]
 
 

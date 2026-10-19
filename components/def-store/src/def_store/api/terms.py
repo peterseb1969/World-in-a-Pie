@@ -11,6 +11,8 @@ from wip_auth import (
     resolve_namespace_filter,
     resolve_or_404,
     resolve_term_by_fields_or_404,
+    split_qualified_value,
+    terminology_coordinates_by_id,
 )
 
 from ..models.api_models import (
@@ -282,7 +284,9 @@ async def search_terms(
     ),
     namespace: str | None = Query(
         None,
-        description="Namespace to search (derived for single-namespace keys; required otherwise)",
+        description="Namespace to search. Not needed when `terminology` is its id or "
+                    "'ns:VALUE' (the terminology's namespace is used) or for "
+                    "single-namespace keys; required otherwise",
     ),
     mode: Literal["exact", "prefix", "word-start", "substring"] = Query(
         "prefix",
@@ -307,6 +311,17 @@ async def search_terms(
     /validate. Exact mode returns ALL candidates — two terms sharing a
     name both appear, making this the ambiguity-inspection surface.
     """
+    # A terminology named by id or as NS:VALUE names its own namespace, and
+    # the terms it scopes live there, so it needs no ?namespace=. Read
+    # access to that namespace is still checked below.
+    if namespace is None and terminology is not None:
+        if ":" in terminology:
+            namespace = split_qualified_value(terminology)[0]
+        else:
+            coordinates = await terminology_coordinates_by_id(terminology)
+            if coordinates is not None:
+                namespace = coordinates[0]
+
     # Search needs one concrete namespace: ranking spans one vocabulary
     # scope and rollup walks that namespace's relations.
     ns_filter = await resolve_namespace_filter(identity, namespace)
@@ -358,7 +373,8 @@ async def get_term(
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     terminology: str | None = Query(
         None,
-        description="Terminology scoping a value-form term identifier. When "
+        description="Terminology scoping a value-form term identifier: its id, "
+                    "'ns:VALUE', or its value (read in `namespace`). When "
                     "present, the identifier is treated as the OPAQUE raw value "
                     "(never colon-parsed) — required for values that themselves "
                     "contain ':' (OBO ids like GO:0000278).",

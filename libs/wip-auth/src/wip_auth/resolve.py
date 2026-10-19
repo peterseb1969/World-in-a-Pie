@@ -454,10 +454,77 @@ async def _post_lookup_by_id(
     return None
 
 
+class TermNamespaceRequiredError(EntityNotFoundError):
+    """A field-form term lookup named its terminology by a bare value, and
+    there is no namespace to read that value in."""
+
+
+async def terminology_coordinates_by_id(entry_id: str) -> tuple[str, str] | None:
+    """The (namespace, value) of the terminology with this canonical id, or None.
+
+    A term's Registry synonym records its terminology by VALUE, in the
+    terminology's own namespace, so a terminology named by id has to be
+    turned into those two coordinates before a term can be found under it.
+    The id needs no namespace context: the Registry entry carries its own.
+    Only an exact entry_id match counts — the lookup's search_values
+    fallback would also match a bare value in some other namespace.
+    """
+    registry_url = _get_registry_url()
+    api_key = _get_api_key()
+    try:
+        client = _get_resolve_client()
+        response = await client.post(
+            f"{registry_url}/api/registry/entries/lookup/by-id",
+            headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+            json=[{"entry_id": entry_id, "entity_type": "terminologies"}],
+        )
+    except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
+        logger.debug("Registry unreachable for terminology lookup: %s", e)
+        return None
+    if response.status_code != 200:
+        return None
+
+    results = response.json().get("results", [])
+    if not results:
+        return None
+    hit = results[0]
+    if hit.get("status") != "found" or hit.get("matched_via") != "entry_id":
+        return None
+    value = (hit.get("matched_composite_key") or {}).get("value")
+    if value is None:
+        # Older entries keep the value only in the terminology's synonym.
+        for syn in hit.get("synonyms") or []:
+            key = syn.get("composite_key") or {}
+            if key.get("type") == "terminology" and "value" in key:
+                value = key["value"]
+                break
+    if value is None or not hit.get("namespace"):
+        return None
+    return cast(str, hit["namespace"]), cast(str, value)
+
+
+async def _resolve_term_at(
+    namespace: str, terminology_value: str, value: str
+) -> str:
+    """One field-form lookup: the term `value` under the terminology whose
+    value is `terminology_value`, in `namespace`."""
+    payload: dict[str, Any] = {
+        "composite_key": {
+            "ns": namespace,
+            "type": "term",
+            "terminology": terminology_value,
+            "value": value,
+        }
+    }
+    return await _post_resolve(
+        payload, f"{terminology_value}/{value}", "term", namespace
+    )
+
+
 async def resolve_term_by_fields(
     value: str,
     terminology: str,
-    namespace: str,
+    namespace: str | None,
     *,
     bypass_cache: bool = False,
 ) -> str:
@@ -470,15 +537,28 @@ async def resolve_term_by_fields(
     involved. Identity lives in fields; delimiter conventions belong to
     format parsers at import boundaries, not to WIP-internal addressing.
 
+    The terminology may be named any way a terminology can be:
+    - its canonical id — needs no namespace;
+    - ``NS:VALUE`` — names its own namespace;
+    - a bare value — read in ``namespace``.
+
+    A bare value is tried first, as the common case. A colon-carrying
+    terminology is also tried as a literal value, so a terminology whose
+    value contains ':' still resolves. A bare value that misses is looked
+    up once more as a canonical id, which covers prefixed ids such as
+    ``LOV-000042``.
+
     Args:
         value: The term's raw value, uninterpreted.
-        terminology: The terminology's value or ID scoping the term.
-        namespace: Namespace holding the terminology.
+        terminology: The terminology's id, ``NS:VALUE`` or value.
+        namespace: The namespace a bare terminology value is read in.
         bypass_cache: As on resolve_entity_id — write paths must not
             answer from cache.
 
     Raises:
-        EntityNotFoundError: no term matches the tuple.
+        TermNamespaceRequiredError: the terminology is a bare value and
+            there is no namespace to read it in.
+        EntityNotFoundError: no term matches.
     """
     cache_key = f"{namespace}:term-fields:{terminology}:{value}"
     if not bypass_cache:
@@ -486,17 +566,31 @@ async def resolve_term_by_fields(
         if cached:
             return cached
 
-    payload: dict[str, Any] = {
-        "composite_key": {
-            "ns": namespace,
-            "type": "term",
-            "terminology": terminology,
-            "value": value,
-        }
-    }
-    canonical_id = await _post_resolve(
-        payload, f"{terminology}/{value}", "term", namespace
-    )
+    candidates: list[tuple[str, str]] = []
+    if not _looks_like_uuid(terminology):
+        if ":" in terminology:
+            ns_prefix, terminology_value = split_qualified_value(terminology)
+            candidates.append((cast(str, ns_prefix), terminology_value))
+        if namespace is not None:
+            candidates.append((namespace, terminology))
+
+    canonical_id: str | None = None
+    for candidate_ns, terminology_value in candidates:
+        try:
+            canonical_id = await _resolve_term_at(candidate_ns, terminology_value, value)
+            break
+        except EntityNotFoundError:
+            continue
+
+    if canonical_id is None and ":" not in terminology:
+        coordinates = await terminology_coordinates_by_id(terminology)
+        if coordinates is not None:
+            canonical_id = await _resolve_term_at(*coordinates, value)
+        elif not candidates:
+            raise TermNamespaceRequiredError(f"{terminology}/{value}", "term")
+
+    if canonical_id is None:
+        raise EntityNotFoundError(f"{terminology}/{value}", "term", namespace)
     _set_cached(cache_key, canonical_id)
     return canonical_id
 

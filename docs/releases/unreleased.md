@@ -844,6 +844,35 @@ Registry probes fail until the install runs this release's images.
 
 ---
 
+### A term looked up by terminology + value accepts the terminology's id and `ns:VALUE`
+
+Every def-store endpoint that takes a term as `?terminology=` plus a raw
+value worked only when the terminology was given as its bare value:
+- `GET /terms/{term}`
+- bulk term updates
+- the ontology endpoints
+- term audit
+
+The terminology's canonical id, the form templates store, answered 404 for
+a term that exists, and so did `ns:VALUE`. The id also demanded a
+`?namespace=` it does not need.
+
+Now:
+- **Any terminology form works.** The terminology may be its id,
+  `ns:VALUE`, or its bare value.
+- **Only the bare value needs a namespace.** It is still read in the
+  request's namespace, and without one the answer is still 422.
+- **The term value stays opaque** and is never colon-parsed.
+- **Search follows the same rule.** `GET /terms/search` takes its namespace
+  from a terminology given as id or `ns:VALUE`, so it needs no
+  `?namespace=` either.
+
+Read access is still checked on the term's own namespace.
+**No action required.** `@wip/client` `getTerm` and the MCP term tools pass
+the parameter through and pick this up with the new images.
+
+---
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

@@ -67,6 +67,11 @@ class TestResolveTermByFields:
             url=RESOLVE_URL,
             json={"results": [{"status": "not_found"}]},
         )
+        # A bare terminology that misses is tried once as a canonical id.
+        httpx_mock.add_response(
+            url="http://localhost:8001/api/registry/entries/lookup/by-id",
+            json={"results": [{"status": "not_found"}]},
+        )
         with pytest.raises(EntityNotFoundError):
             await resolve_term_by_fields("GO:9999999", "GO_SLIM", "onto2")
 
