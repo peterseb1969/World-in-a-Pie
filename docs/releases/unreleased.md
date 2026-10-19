@@ -632,6 +632,41 @@ handle the 404.
 
 ---
 
+### Ingest producers read their own outcomes over HTTP
+
+A producer holding the `ingest-producer` NATS role could submit work items
+but had no supported way to learn whether they were created, updated or
+rejected. The results stream carries every producer's outcomes, so the role
+cannot read it. ingest-gateway now serves each producer its own outcomes:
+- `GET /api/ingest-gateway/results/{correlation_id}` returns an item's
+  outcome, or 404;
+- `POST /api/ingest-gateway/results/lookup` with `{"correlation_ids": [...]}`
+  returns one `found` / `not_found` entry per ID, in request order.
+
+The caller sees only the outcomes of items submitted with its own API key:
+the gateway resolves the key in each message's `X-API-Key` header to its
+principal and records it as `submitted_by` on the outcome. Admins may pass
+`?submitted_by=apikey:<name>` to read another producer's outcomes, and
+`?submitted_by=` (empty) for items that carried no usable key. Outcomes
+last only as long as the results stream keeps them, so poll soon after
+submitting.
+
+**Behavior change:** outcomes are published on
+`wip.ingest.results.<owner>.<correlation>`, where both tokens are hashes,
+instead of `wip.ingest.results.<correlation_id>`. A subscriber to
+`wip.ingest.results.>` still receives every outcome, and the payload still
+carries `correlation_id` verbatim, now with `submitted_by` alongside.
+A correlation ID containing whitespace used to make its outcome
+unpublishable: NATS refused the subject and dropped the gateway's
+connection, and the outcome was lost. It now publishes normally.
+**Action:** none for producers. A subscriber that filtered on a single
+`wip.ingest.results.<correlation_id>` subject must switch to the HTTP lookup.
+ingest-gateway's NATS user gains read access to its own results stream
+(`$JS.API.STREAM.MSG.GET.WIP_INGEST_RESULTS`), so the install must be
+re-rendered (`wip-deploy redeploy`) for the lookup to work.
+
+---
+
 ### Terminology deletion checks its template dependencies for real
 
 The guard "a terminology referenced by templates cannot be deleted without

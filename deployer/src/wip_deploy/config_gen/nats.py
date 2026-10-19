@@ -27,7 +27,9 @@ grant itself stream administration or another service's subjects:
   ingest-gateway forwards each with the producer's own WIP API key from the
   message's X-API-Key header, so the target service applies the producer's
   grants. Reading the results stream is not part of the role: it carries
-  every producer's outcomes.
+  every producer's outcomes. A producer reads its own over HTTP instead —
+  ingest-gateway's `/results` lookup serves only the outcomes of items
+  submitted with the caller's key.
 - `event-subscriber` — a durable consumer on `WIP_EVENTS` named after the
   app. It sees every namespace's change events; grant it like an admin read.
 - `replay-subscriber` — a plain subscription to `wip.replay.>`: replayed
