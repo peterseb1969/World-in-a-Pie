@@ -28,6 +28,7 @@ from wip_auth import (
     check_namespace_permission,
     declare_api_key_security,
     get_identity_string,
+    install_liveness,
     require_api_key,
     require_groups,
     resolve_accessible_namespaces,
@@ -576,6 +577,9 @@ app = FastAPI(
 # prefixed health route is exempted here so a stale or missing key on a
 # monitor does not turn into a 401.
 _providers = setup_auth(app, public_paths=["/api/reporting-sync/health"])
+# Process-alive probe (no I/O) — the k8s liveness and startup probes' target,
+# kept apart from the dependency-checking health and readiness endpoints.
+install_liveness(app)
 
 # Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
 setup_rate_limiting(app)

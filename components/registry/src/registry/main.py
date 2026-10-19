@@ -19,6 +19,7 @@ from wip_auth import (
     check_production_security,
     declare_api_key_security,
     init_beanie_with_retry,
+    install_liveness,
     setup_auth,
     setup_rate_limiting,
 )
@@ -215,6 +216,9 @@ Admin operations (namespace management) require elevated privileges.
 # external monitors and stale-key clients can probe it without a 401
 # (CASE-60). Root /health is already in the universal default set.
 providers = setup_auth(app, public_paths=["/api/registry/health"])
+# Process-alive probe (no I/O) — the k8s liveness and startup probes' target,
+# kept apart from the dependency-checking health and readiness endpoints.
+install_liveness(app)
 print(f"Auth setup complete. Providers: {[type(p).__name__ for p in providers]}")
 
 # Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)

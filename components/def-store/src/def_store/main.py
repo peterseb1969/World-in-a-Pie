@@ -21,6 +21,7 @@ from wip_auth import (
     check_production_security,
     declare_api_key_security,
     init_beanie_with_retry,
+    install_liveness,
     retry_async,
     setup_auth,
     setup_key_sync,
@@ -227,6 +228,9 @@ unique, system-wide identifiers. IDs are configurable per namespace (default: UU
 # public_paths exempts the api-prefixed /health route from auth so external
 # monitors and stale-key clients can probe it without a 401 (CASE-60).
 _providers = setup_auth(app, public_paths=["/api/def-store/health"])
+# Process-alive probe (no I/O) — the k8s liveness and startup probes' target,
+# kept apart from the dependency-checking health and readiness endpoints.
+install_liveness(app)
 
 # Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
 setup_rate_limiting(app)

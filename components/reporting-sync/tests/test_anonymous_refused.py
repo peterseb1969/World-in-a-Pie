@@ -11,6 +11,7 @@ from wip_auth.testing import assert_anonymous_refused
 
 PUBLIC = {
     "GET /health": "container health probe",
+    "GET /livez": "liveness probe (no I/O): the k8s liveness and startup probes' target",
     "GET /api/reporting-sync/health": "health probe through the ingress",
     "GET /api/reporting-sync/": "service root / build-provenance probe",
 }

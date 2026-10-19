@@ -20,6 +20,7 @@ from wip_auth import (
     check_production_security,
     declare_api_key_security,
     init_beanie_with_retry,
+    install_liveness,
     require_groups,
     setup_auth,
     setup_key_sync,
@@ -290,6 +291,9 @@ All endpoints require API key authentication via the `X-API-Key` header.
 # public_paths exempts the api-prefixed /health route from auth so external
 # monitors and stale-key clients can probe it without a 401 (CASE-60).
 _providers = setup_auth(app, public_paths=["/api/document-store/health"])
+# Process-alive probe (no I/O) — the k8s liveness and startup probes' target,
+# kept apart from the dependency-checking health and readiness endpoints.
+install_liveness(app)
 
 # Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
 setup_rate_limiting(app)
