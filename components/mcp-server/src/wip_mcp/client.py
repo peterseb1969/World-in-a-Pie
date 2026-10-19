@@ -1747,12 +1747,18 @@ class WipClient:
         """Stream a completed backup archive to a local file. Returns size + path."""
         from pathlib import Path as _Path
         dest = _Path(dest_path)
-        dest.parent.mkdir(parents=True, exist_ok=True)
         client = await self._get_client()
         url = f"{self.document_store_url}/api/document-store/backup/jobs/{job_id}/download"
         size = 0
         async with client.stream("GET", url) as resp:
-            resp.raise_for_status()
+            if not resp.is_success:
+                # A streamed body is unread until asked for, and the error
+                # helper reads it to include the server's detail (job not
+                # found, still running, archive gone). Error bodies are small.
+                await resp.aread()
+                _raise_for_status_with_body(resp)
+            # Only now: a failed download leaves no directories behind.
+            dest.parent.mkdir(parents=True, exist_ok=True)
             with dest.open("wb") as fh:
                 async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
                     fh.write(chunk)

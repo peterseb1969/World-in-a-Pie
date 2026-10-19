@@ -707,6 +707,72 @@ async def test_download_backup_archive_streams_to_file(tmp_path):
     assert result["size"] == len(b"PK\x03\x04helloworld")
 
 
+@pytest.fixture
+def archive_server():
+    """A real HTTP server for the download endpoint: a streamed httpx response
+    behaves differently from an in-memory one (its body is unread), which is
+    the case download_backup_archive must handle."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    replies = {
+        "/api/document-store/backup/jobs/missing/download": (404, json.dumps({"detail": "Backup job missing not found"}).encode()),
+        "/api/document-store/backup/jobs/running/download": (409, json.dumps({"detail": "Job running is running, archive not available"}).encode()),
+        "/api/document-store/backup/jobs/done/download": (200, b"PK\x03\x04archive"),
+    }
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            status, body = replies[self.path]
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_port}"
+    server.shutdown()
+
+
+@pytest.mark.parametrize(("job_id", "detail"), [
+    ("missing", "Backup job missing not found"),
+    ("running", "Job running is running, archive not available"),
+])
+@pytest.mark.asyncio
+async def test_download_backup_archive_error_carries_the_server_detail(archive_server, tmp_path, job_id, detail):
+    """A refused download surfaces the server's detail (not just the status
+    line) and creates nothing at dest_path."""
+    import httpx
+
+    client = _make_client()
+    client.document_store_url = archive_server
+    dest = tmp_path / "out" / "archive.zip"
+    async with httpx.AsyncClient() as http:
+        with patch.object(client, "_get_client", return_value=http), pytest.raises(httpx.HTTPStatusError) as exc:
+            await client.download_backup_archive(job_id, str(dest))
+    assert detail in str(exc.value)
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.asyncio
+async def test_download_backup_archive_real_stream_writes_the_file(archive_server, tmp_path):
+    import httpx
+
+    client = _make_client()
+    client.document_store_url = archive_server
+    dest = tmp_path / "out" / "archive.zip"
+    async with httpx.AsyncClient() as http:
+        with patch.object(client, "_get_client", return_value=http):
+            result = await client.download_backup_archive("done", str(dest))
+    assert dest.read_bytes() == b"PK\x03\x04archive"
+    assert result["size"] == len(b"PK\x03\x04archive")
+
+
 @pytest.mark.asyncio
 async def test_delete_backup_job():
     """delete_backup_job sends DELETE and returns a {deleted: ...} envelope."""
