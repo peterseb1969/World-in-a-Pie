@@ -58,8 +58,8 @@ def config_hash(
     for value in env.merged().values():
         if isinstance(value, SecretRef):
             inputs[f"secret:{value.name}"] = secrets.values.get(value.name, "")
-    if deployment.spec.auth.api_keys and declares_api_keys_file(owner):
-        inputs["file:api-keys.json"] = generate_api_keys_json(deployment, secrets) or ""
+    if declares_api_keys_file(owner):
+        inputs["file:api-keys.json"] = generate_api_keys_json(deployment, secrets)
     for name, content in (mounted_files or {}).items():
         inputs[f"file:{name}"] = content
 

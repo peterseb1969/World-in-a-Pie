@@ -150,19 +150,40 @@ class TestCheckSecretPermissions:
         assert not r.passed
         assert ".env" in r.message
 
-    def test_loose_api_keys_file_fails(self, tmp_path: Path) -> None:
-        """The rendered auth.api_keys file carries plaintext keys —
-        group/other-readable is the same finding as a loose secret."""
-        _make_secrets(tmp_path)
-        auth_dir = tmp_path / "config" / "auth"
+    def _api_keys_file(self, install: Path, mode: int) -> None:
+        auth_dir = install / "config" / "auth"
         auth_dir.mkdir(parents=True)
         ak = auth_dir / "api-keys.json"
         ak.write_text('{"keys": []}\n')
-        ak.chmod(0o644)
-        d = _make_deployment(tmp_path)
-        r = check_secret_permissions(tmp_path, d)
+        ak.chmod(mode)
+
+    def test_container_readable_api_keys_file_in_private_install_passes(
+        self, tmp_path: Path
+    ) -> None:
+        """The rendered api-keys.json is 0644 by design: non-root
+        containers read it. The 0700 install directory keeps other host
+        users out."""
+        tmp_path.chmod(0o700)
+        _make_secrets(tmp_path)
+        self._api_keys_file(tmp_path, 0o644)
+        r = check_secret_permissions(tmp_path, _make_deployment(tmp_path))
+        assert r.passed, r.message
+
+    def test_api_keys_file_in_open_install_dir_fails(self, tmp_path: Path) -> None:
+        tmp_path.chmod(0o755)
+        _make_secrets(tmp_path)
+        self._api_keys_file(tmp_path, 0o644)
+        r = check_secret_permissions(tmp_path, _make_deployment(tmp_path))
         assert not r.passed
         assert "api-keys.json" in r.message
+
+    def test_writable_api_keys_file_fails(self, tmp_path: Path) -> None:
+        tmp_path.chmod(0o700)
+        _make_secrets(tmp_path)
+        self._api_keys_file(tmp_path, 0o666)
+        r = check_secret_permissions(tmp_path, _make_deployment(tmp_path))
+        assert not r.passed
+        assert "writable by others" in r.message
 
     def test_missing_dir_fails(self, tmp_path: Path) -> None:
         d = _make_deployment(tmp_path)

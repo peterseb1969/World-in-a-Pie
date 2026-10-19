@@ -32,7 +32,7 @@ done
 
 ## 3. Security
 
-- [ ] `wip-deploy verify --security` passes on the release-candidate install — see WIP Guide §7.3
+- [ ] `wip-deploy verify --security --live` passes on the release-candidate install, run after the candidate is rolled to it — see WIP Guide §7.3. `--live` checks that the running services refuse unauthenticated and unauthorized callers.
 - [ ] No new security warnings from `pip-audit` or `bandit`
 - [ ] Default dev API key (`dev_master_key_for_testing`) not present in any install's secret backend — `verify --security` checks this too (note: the in-service prod-mode rejection gate is armed only on `--variant prod` installs; dev-variant installs rely on this check)
 

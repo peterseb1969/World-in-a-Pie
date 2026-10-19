@@ -15,6 +15,7 @@ import httpx
 from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.verify_security import (
     ANONYMOUS_PROBES,
+    AUTHZ_PROBES,
     PUBLIC_PROBES,
     check_anonymous_refusal,
     check_reporting_roles,
@@ -25,7 +26,9 @@ from wip_deploy.verify_security import (
 BASE = "https://wip.example"
 ALL = {p.component for p in ANONYMOUS_PROBES}
 ADMIN = "admin-key"
+CANARY = "canary-key"
 PUBLIC_PATHS = {p.path for p in PUBLIC_PROBES}
+ADMIN_STATUS = {p.path: p.admin_status for p in AUTHZ_PROBES}
 
 
 def _json(status: int, body: dict | None = None) -> httpx.Response:
@@ -33,11 +36,26 @@ def _json(status: int, body: dict | None = None) -> httpx.Response:
 
 
 def _secure_install(request: httpx.Request) -> httpx.Response:
-    """An install where everything protected refuses and probes answer."""
-    if request.url.path in PUBLIC_PATHS:
+    """An install where everything protected refuses and probes answer:
+    no key gets 401, the canary is authenticated but refused, the admin key
+    reaches every handler."""
+    path = request.url.path
+    target = request.url.raw_path.decode()
+    key = request.headers.get("X-API-Key")
+    if path in PUBLIC_PATHS:
         return _json(200, {"status": "healthy"})
-    if request.url.path == "/api/reporting-sync/status" and request.headers.get("X-API-Key") == ADMIN:
-        return _json(200, {"postgres_service_roles_ok": True})
+    if key == ADMIN:
+        if path == "/api/reporting-sync/status":
+            return _json(200, {"postgres_service_roles_ok": True})
+        if path == "/api/registry/entries":
+            return _json(200, {"items": [{}], "total": 7})
+        return _json(ADMIN_STATUS.get(target, 200), {"ok": True})
+    if key == CANARY:
+        if path == "/api/registry/my/namespaces":
+            return httpx.Response(200, json=[])
+        if path == "/api/registry/entries":
+            return _json(200, {"items": [], "total": 0})
+        return _json(403)
     return _json(401)
 
 
@@ -151,9 +169,9 @@ def test_verify_live_targets_the_public_base_url(tmp_path: Path):
         return _secure_install(request)
 
     results = verify_live(
-        deployment, ALL, ADMIN, transport=httpx.MockTransport(handler)
+        deployment, ALL, ADMIN, canary_key=CANARY, transport=httpx.MockTransport(handler)
     )
-    assert [r.passed for r in results] == [True, True], [r.fix_hint for r in results]
+    assert [r.passed for r in results] == [True, True, True], [r.fix_hint for r in results]
     assert hosts == {f"https://wip.example:{deployment.spec.network.https_port}"}
 
 

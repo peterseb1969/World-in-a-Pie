@@ -807,6 +807,43 @@ entity through its store.
 
 ---
 
+### Every install has a canary key; `verify --live` checks authorization, not only authentication
+
+`wip-deploy verify --security --live` checked that a request **without**
+credentials is refused. Nothing checked that a running install refuses a
+caller who is authenticated but has no permission. Three things that unit
+tests cannot see could open that gap: a misconfigured admin group in an
+install's env, a route made public at the edge, or a roll whose images do
+not carry the fix.
+
+Now:
+- **Every install carries a canary key.** The deployer adds `wip-canary` to
+  every install's config-file keys. It has no groups and no grants, and it
+  is scoped to a namespace that is never created. Its secret
+  `wip-canary-api-key` is generated on first apply, beside the master key.
+  The name is reserved, so a spec may not declare a key called
+  `wip-canary`.
+- **`verify --live` adds a check, "authenticated callers without permission
+  refused".**
+  - The canary must get a JSON 403 or 404 from one privileged and one
+    namespace-scoped route per active service; a 401 fails, because it
+    means a service does not know the canary.
+  - The admin key must pass the same requests.
+  - Write routes are probed with an invalid body, so nothing is written.
+  - The canary must see no namespace and no Registry entry in `wip`.
+- **The release checklist runs `verify --security --live`** on the
+  release-candidate install after the roll.
+
+**Behavior change:** every install now renders `api-keys.json` and mounts
+it into the services that declare `WIP_AUTH_API_KEYS_FILE`, including
+installs whose spec declares no keys. The next redeploy restarts those
+services once.
+**Expect a failure on older images:** before this release, the Registry
+let any valid key call the allocation routes. Against those images the
+Registry probes fail until the install runs this release's images.
+
+---
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

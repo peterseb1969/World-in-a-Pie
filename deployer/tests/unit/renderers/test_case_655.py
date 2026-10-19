@@ -19,6 +19,7 @@ import yaml
 from wip_deploy.config_gen.api_keys import (
     API_KEYS_CONTAINER_PATH,
     API_KEYS_RENDER_PATH,
+    CANARY_NAMESPACE,
     generate_api_keys_json,
 )
 from wip_deploy.discovery import Discovery, discover
@@ -38,7 +39,7 @@ from wip_deploy.spec import (
     PlatformSpec,
     SecretsSpec,
 )
-from wip_deploy.spec.deployment import SpecAPIKey
+from wip_deploy.spec.deployment import CANARY_KEY_NAME, SpecAPIKey
 
 REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent.resolve()
 
@@ -163,20 +164,25 @@ class TestGeneratedJson:
         d = _compose_deployment(api_keys=[WEB_YAC])
         secrets = _secrets(tmp_path, d, real_discovery)
         content = generate_api_keys_json(d, secrets)
-        assert content is not None
         doc = json.loads(content)
-        [entry] = doc["keys"]
+        entry, canary = doc["keys"]
+        assert canary["name"] == CANARY_KEY_NAME
         assert entry["name"] == "web-yac"
         assert entry["key"] == secrets.get("web-yac-api-key")
         assert entry["namespaces"] == ["library", "kb"]
         assert entry["grants"] == {"kb": "write"}
 
-    def test_none_when_no_keys(
+    def test_only_the_canary_when_no_keys_declared(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
         d = _compose_deployment()
         secrets = _secrets(tmp_path, d, real_discovery)
-        assert generate_api_keys_json(d, secrets) is None
+        [canary] = json.loads(generate_api_keys_json(d, secrets))["keys"]
+        assert canary["name"] == CANARY_KEY_NAME
+        assert canary["key"] == secrets.get(f"{CANARY_KEY_NAME}-api-key")
+        assert canary["groups"] == []
+        assert canary["grants"] == {}
+        assert canary["namespaces"] == [CANARY_NAMESPACE]
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -217,7 +223,7 @@ class TestComposeRender:
         # A non-consumer infra service gets neither.
         assert mount not in services["mongodb"].get("volumes", [])
 
-    def test_no_keys_no_file_no_mount_empty_env(
+    def test_no_declared_keys_still_mounts_the_canary(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
         d = _compose_deployment()
@@ -225,15 +231,13 @@ class TestComposeRender:
         tree = render_compose(
             d, real_discovery.components, real_discovery.apps, secrets
         )
-        assert Path(API_KEYS_RENDER_PATH) not in tree.files
+        assert Path(API_KEYS_RENDER_PATH) in tree.files
         compose = yaml.safe_load(
             tree.files[Path("docker-compose.yaml")].content
         )
         registry = compose["services"]["registry"]
-        assert registry["environment"]["WIP_AUTH_API_KEYS_FILE"] == ""
-        assert not any(
-            "api-keys.json" in v for v in registry.get("volumes", [])
-        )
+        assert registry["environment"]["WIP_AUTH_API_KEYS_FILE"] == API_KEYS_CONTAINER_PATH
+        assert any("api-keys.json" in v for v in registry.get("volumes", []))
 
     def test_consumer_set_matches_wip_auth_importers(
         self, real_discovery: Discovery
@@ -359,7 +363,7 @@ class TestK8sRender:
             for m in mounts
         )
 
-    def test_no_keys_no_secret_manifest(
+    def test_no_declared_keys_still_renders_the_canary_secret(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
         d = self._k8s_deployment([])
@@ -367,4 +371,4 @@ class TestK8sRender:
         tree = render_k8s(
             d, real_discovery.components, real_discovery.apps, secrets
         )
-        assert Path("api-keys-secret.yaml") not in tree.files
+        assert Path("api-keys-secret.yaml") in tree.files

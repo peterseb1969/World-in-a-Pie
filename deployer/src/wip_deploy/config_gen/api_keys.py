@@ -18,7 +18,8 @@ from __future__ import annotations
 import json
 
 from wip_deploy.secrets_backend.base import ResolvedSecrets
-from wip_deploy.spec import Deployment
+from wip_deploy.spec import App, Component, Deployment
+from wip_deploy.spec.deployment import CANARY_KEY_NAME, SpecAPIKey
 
 # Where the rendered file appears inside service containers; injected
 # as WIP_AUTH_API_KEYS_FILE via `from_spec: security.api_keys_file`.
@@ -29,13 +30,32 @@ API_KEYS_CONTAINER_PATH = "/etc/wip/api-keys.json"
 # posture as the install's `.env`.
 API_KEYS_RENDER_PATH = "config/auth/api-keys.json"
 
+# The namespace the canary is scoped to. Nothing creates it, so the
+# canary can read nothing; `verify --live` checks that it still sees no
+# namespace at all.
+CANARY_NAMESPACE = "wip-canary-unassigned"
+
+# Every install's canary (CASE-846): a key that authenticates but is
+# authorized for nothing — no groups, no grants, scoped to a namespace
+# that does not exist. `wip-deploy verify --security --live` sends it to
+# each service's privileged and namespace-scoped routes and requires a
+# refusal, so a running install's authorization is checked, not assumed.
+# It is added to every install so the probe can run anywhere; its
+# secret lives beside the master key in the same store.
+CANARY_KEY = SpecAPIKey(name=CANARY_KEY_NAME, namespaces=[CANARY_NAMESPACE])
+
+
+def effective_api_keys(deployment: Deployment) -> list[SpecAPIKey]:
+    """The config-file keys an install carries: its spec's, plus the canary."""
+    return [*deployment.spec.auth.api_keys, CANARY_KEY]
+
 
 def api_key_secret_names(deployment: Deployment) -> list[str]:
-    """Secret-backend names backing the spec-declared keys."""
-    return [k.secret_name for k in deployment.spec.auth.api_keys]
+    """Secret-backend names backing the config-file keys."""
+    return [k.secret_name for k in effective_api_keys(deployment)]
 
 
-def declares_api_keys_file(owner) -> bool:
+def declares_api_keys_file(owner: Component | App) -> bool:
     """Does this component/app manifest consume the rendered key file?
 
     The WIP_AUTH_API_KEYS_FILE env declaration is the opt-in: renderers
@@ -49,20 +69,17 @@ def declares_api_keys_file(owner) -> bool:
 
 def generate_api_keys_json(
     deployment: Deployment, secrets: ResolvedSecrets
-) -> str | None:
-    """The WIP_AUTH_API_KEYS_FILE document, or None when no keys declared.
+) -> str:
+    """The WIP_AUTH_API_KEYS_FILE document. Every install has one: the
+    canary is always in it.
 
     Deterministic for a fixed spec + secret values: plaintext `key`
     entries (hashed by wip-auth on load) keep renders byte-stable —
     rendering bcrypt hashes instead would produce a fresh hash every
     render and false drift in `status --diff`.
     """
-    keys = deployment.spec.auth.api_keys
-    if not keys:
-        return None
-
     entries = []
-    for k in keys:
+    for k in effective_api_keys(deployment):
         entries.append(
             {
                 "name": k.name,
@@ -72,7 +89,10 @@ def generate_api_keys_json(
                 "namespaces": k.namespaces,
                 "grants": k.grants,
                 "description": (
-                    "Spec-declared key (wip-deploy auth.api_keys) — "
+                    "Canary — authenticates, authorized for nothing; used by "
+                    "wip-deploy verify --security --live"
+                    if k.name == CANARY_KEY_NAME
+                    else "Spec-declared key (wip-deploy auth.api_keys) — "
                     "scope and grants resolve locally in wip-auth"
                 ),
             }

@@ -82,6 +82,17 @@ check mutates anything; the whole module is read-only.
   10. **reporting-sync on unprivileged roles** — with the install's
      api-key, reporting-sync's status must report
      postgres_service_roles_ok = true.
+
+  11. **Authenticated callers without permission refused** — the install's
+     canary key (authenticates, authorized for nothing) must be refused
+     by one privileged and one namespace-scoped route per active service,
+     with a JSON 403/404. A 401 means the service does not know the canary,
+     which would make every refusal meaningless, so it is a failure. The
+     admin key sends the same request and must reach the handler, which
+     proves the route exists. Write routes are probed with a body that
+     fails validation: the permission check answers first, so the probe
+     cannot write even where that check is missing. The canary must also
+     see no namespace and no Registry entry in `wip`.
 """
 
 from __future__ import annotations
@@ -249,14 +260,24 @@ def check_secret_permissions(install_dir: Path, deployment: Deployment) -> Check
         if env_mode & 0o077:
             offenders.append(f".env is {env_mode:04o} (want 0600)")
 
-    # Rendered config-file API keys carry plaintext (spec-declared keys,
-    # auth.api_keys) — same exposure class as the secret files.
+    # The rendered config-file API keys carry plaintext, but the file is
+    # bind-mounted into containers that run as non-root users, so it is
+    # 0644 by design (see FileEntry): on Linux 0600 makes it unreadable
+    # inside them. Other host users are kept out by the install
+    # directory, which must therefore be 0700; the file itself must not
+    # be writable by them.
     api_keys_file = install_dir / "config" / "auth" / "api-keys.json"
     if api_keys_file.is_file():
-        ak_mode = _mode_of(api_keys_file)
-        if ak_mode & 0o077:
+        install_mode = _mode_of(install_dir)
+        if install_mode & 0o077:
             offenders.append(
-                f"config/auth/api-keys.json is {ak_mode:04o} (want 0600)"
+                f"{install_dir}/ is {install_mode:04o} (want 0700 — it guards "
+                "config/auth/api-keys.json, which containers must read)"
+            )
+        ak_mode = _mode_of(api_keys_file)
+        if ak_mode & 0o022:
+            offenders.append(
+                f"config/auth/api-keys.json is {ak_mode:04o} (writable by others)"
             )
 
     if offenders:
@@ -406,7 +427,7 @@ def check_published_ports(install_dir: Path, deployment: Deployment) -> CheckRes
                 host_port = parts[-2] if len(parts) >= 2 else "auto"
                 container_port = parts[-1]
             try:
-                container_num = int(container_port)
+                container_num = int(str(container_port))
             except (TypeError, ValueError):
                 continue
             desc = f"{svc_name}: host {host_port} → container {container_num}"
@@ -745,11 +766,159 @@ def check_reporting_roles(
     )
 
 
+@dataclass(frozen=True)
+class AuthzProbe:
+    """A request the canary must be refused and the admin key must pass.
+
+    `admin_status` is what the admin key gets when it reaches the handler:
+    200 for a read, 422 for a write sent with an invalid body.
+    """
+
+    component: str
+    method: str
+    path: str
+    admin_status: int
+    body: Any = None
+
+
+# Not a valid body for any write route: an admin request gets 422 and
+# writes nothing, a canary request must be refused before validation.
+_INVALID_BODY = "canary-probe"
+
+AUTHZ_PROBES: tuple[AuthzProbe, ...] = (
+    # Privileged routes.
+    AuthzProbe("registry", "POST", "/api/registry/entries/register", 422, _INVALID_BODY),
+    AuthzProbe("registry", "POST", "/api/registry/api-keys", 422, _INVALID_BODY),
+    AuthzProbe("registry", "PUT", "/api/registry/namespaces/wip-canary-probe", 422, _INVALID_BODY),
+    AuthzProbe("def-store", "GET", "/api/def-store/health/events", 200),
+    AuthzProbe("template-store", "GET", "/api/template-store/health/events", 200),
+    AuthzProbe("document-store", "GET", "/api/document-store/health/events", 200),
+    AuthzProbe("reporting-sync", "GET", "/api/reporting-sync/metrics", 200),
+    # Namespace-scoped reads of a namespace the canary has no access to.
+    AuthzProbe("def-store", "GET", "/api/def-store/terminologies?namespace=wip", 200),
+    AuthzProbe("template-store", "GET", "/api/template-store/templates?namespace=wip", 200),
+    AuthzProbe("document-store", "GET", "/api/document-store/documents?namespace=wip", 200),
+)
+
+
+def check_authorization_refusal(
+    base_url: str,
+    active: set[str],
+    canary_key: str | None,
+    admin_key: str | None,
+    client: Any,
+) -> CheckResult:
+    """The canary is refused everywhere it has no permission; the admin
+    key passes the same requests.
+
+    A canary answered 401 is not a refusal but an unknown key: the service
+    has not loaded the canary (stale render, key file not mounted), and
+    every probe on it would pass without testing anything.
+    """
+    name = "authenticated callers without permission refused"
+    if not canary_key:
+        return CheckResult(
+            name=name,
+            passed=False,
+            message="could not read the install's canary key",
+            fix_hint=(
+                "Re-render the install (wip-deploy redeploy) so the canary is "
+                "provisioned, or pass --canary-key-file."
+            ),
+        )
+    if not admin_key:
+        return CheckResult(
+            name=name,
+            passed=False,
+            message="could not read the install's api-key for the positive controls",
+            fix_hint="Pass --api-key-file with the install's admin key.",
+        )
+
+    canary = {"X-API-Key": canary_key}
+    admin = {"X-API-Key": admin_key}
+    problems: list[str] = []
+    probed = 0
+
+    def send(method: str, path: str, headers: dict[str, str], body: Any = None) -> Any:
+        kwargs: dict[str, Any] = {"headers": headers}
+        if body is not None:
+            kwargs["json"] = body
+        return client.request(method, f"{base_url}{path}", **kwargs)
+
+    for probe in AUTHZ_PROBES:
+        if probe.component not in active:
+            continue
+        probed += 1
+        label = f"{probe.method} {probe.path}"
+        try:
+            resp = send(probe.method, probe.path, canary, probe.body)
+            control = send(probe.method, probe.path, admin, probe.body)
+        except Exception as e:  # any transport failure is a finding
+            problems.append(f"{label}: request failed ({e})")
+            continue
+        if resp.status_code == 401:
+            problems.append(f"{label}: 401 — the service does not recognise the canary key")
+        elif not (resp.status_code in (403, 404) and _is_json(resp)):
+            problems.append(f"{label}: canary got {resp.status_code} — not a refusal")
+        if control.status_code != probe.admin_status:
+            problems.append(
+                f"{label}: admin key got {control.status_code}, expected "
+                f"{probe.admin_status} — the route did not reach its handler"
+            )
+
+    if "registry" in active:
+        probed += 2
+        try:
+            mine = send("GET", "/api/registry/my/namespaces", canary)
+            if mine.status_code != 200 or not _is_json(mine):
+                problems.append(
+                    f"GET /api/registry/my/namespaces: canary got {mine.status_code}"
+                )
+            elif mine.json():
+                problems.append(
+                    "GET /api/registry/my/namespaces: the canary can access "
+                    f"{[ns.get('prefix') for ns in mine.json()]}"
+                )
+            path = "/api/registry/entries?namespace=wip&page_size=1"
+            seen = send("GET", path, canary)
+            total = send("GET", path, admin)
+            if seen.status_code != 200:
+                problems.append(f"GET {path}: canary got {seen.status_code}")
+            elif seen.json().get("total") != 0:
+                problems.append(f"GET {path}: the canary sees entries in 'wip'")
+            if total.status_code != 200:
+                problems.append(f"GET {path}: admin key got {total.status_code}")
+            elif not total.json().get("total"):
+                problems.append(f"GET {path}: admin key sees no entries in 'wip'")
+        except Exception as e:
+            problems.append(f"registry visibility checks: request failed ({e})")
+
+    if probed == 0:
+        return CheckResult(
+            name=name,
+            passed=False,
+            message="no probes ran — no probed component is active on this install",
+        )
+    if problems:
+        return CheckResult(
+            name=name,
+            passed=False,
+            message=f"{len(problems)} problem(s) across {probed} probes",
+            fix_hint="\n".join(problems),
+        )
+    return CheckResult(
+        name=name,
+        passed=True,
+        message=f"{probed} probes: the canary is refused, the admin key passes",
+    )
+
+
 def verify_live(
     deployment: Deployment,
     active: set[str],
     admin_key: str | None,
     *,
+    canary_key: str | None = None,
     transport: Any = None,
 ) -> list[CheckResult]:
     """Run the live checks against the install's public base URL."""
@@ -770,6 +939,7 @@ def verify_live(
         return [
             check_anonymous_refusal(base_url, active, client),
             check_reporting_roles(base_url, admin_key, active, client),
+            check_authorization_refusal(base_url, active, canary_key, admin_key, client),
         ]
 
 
@@ -832,8 +1002,18 @@ def check_key_rotation(
 
 def read_admin_key(install_dir: Path, deployment: Deployment) -> str | None:
     """The install's api-key from its file secret backend, if readable."""
-    key_file = _secrets_dir(install_dir, deployment) / "api-key"
+    return _read_secret(install_dir, deployment, "api-key")
+
+
+def read_canary_key(install_dir: Path, deployment: Deployment) -> str | None:
+    """The install's canary key from its file secret backend, if readable."""
+    from wip_deploy.config_gen.api_keys import CANARY_KEY
+
+    return _read_secret(install_dir, deployment, CANARY_KEY.secret_name)
+
+
+def _read_secret(install_dir: Path, deployment: Deployment, name: str) -> str | None:
     try:
-        return key_file.read_text().strip() or None
+        return (_secrets_dir(install_dir, deployment) / name).read_text().strip() or None
     except OSError:
         return None

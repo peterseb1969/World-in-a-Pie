@@ -270,12 +270,10 @@ def render_dev_simple(
     caddy_cfg = generate_caddy_config(deployment, components, apps)
     tree.add("config/caddy/Caddyfile", render_caddyfile(caddy_cfg))
 
-    # Spec-declared config-file API keys — same render + posture as the
+    # Config-file API keys (the spec's plus the canary) — same render + posture as the
     # compose target (0644 inside the 0700 install directory, mounted
     # where the manifest declares the env).
-    api_keys_json = generate_api_keys_json(deployment, secrets)
-    if api_keys_json is not None:
-        tree.add(API_KEYS_RENDER_PATH, api_keys_json)
+    tree.add(API_KEYS_RENDER_PATH, generate_api_keys_json(deployment, secrets))
 
     if dex_conf is not None:
         tree.add("config/dex/config.yaml", dex_conf)
@@ -568,7 +566,7 @@ def _dev_service_block(
         volumes.append(
             f"./secrets/external-ca.crt:{_EXTERNAL_CA_CONTAINER_PATH}:ro"
         )
-    if deployment.spec.auth.api_keys and declares_api_keys_file(owner):
+    if declares_api_keys_file(owner):
         volumes.append(f"./{API_KEYS_RENDER_PATH}:{API_KEYS_CONTAINER_PATH}:ro")
     if volumes:
         block["volumes"] = volumes

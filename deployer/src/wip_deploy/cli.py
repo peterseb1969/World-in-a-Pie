@@ -20,7 +20,7 @@ from pydantic import ValidationError
 from wip_deploy import __version__
 from wip_deploy.apply import ApplyError, ApplyResult, apply_compose, apply_k8s
 from wip_deploy.build import BuildInputs, build_deployment
-from wip_deploy.config_gen.api_keys import declares_api_keys_file
+from wip_deploy.config_gen.api_keys import declares_api_keys_file, effective_api_keys
 from wip_deploy.discovery import discover, find_repo_root
 from wip_deploy.export_ca import (
     TRUST_INSTRUCTIONS,
@@ -1461,7 +1461,10 @@ def verify(
                 "every protected route group must refuse a request without "
                 "credentials (JSON 401/403/404) and health probes must answer "
                 "without one; reporting-sync must run on unprivileged "
-                "PostgreSQL roles. Read-only requests only."
+                "PostgreSQL roles; the install's canary key (authenticates, "
+                "authorized for nothing) must be refused by each service's "
+                "privileged and namespace-scoped routes. Writes are probed "
+                "with invalid bodies, so nothing is written."
             ),
         ),
     ] = False,
@@ -1472,6 +1475,17 @@ def verify(
             help=(
                 "File holding the install's admin api-key for the --live "
                 "roles check. Defaults to the install's file secret backend."
+            ),
+        ),
+    ] = None,
+    canary_key_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--canary-key-file",
+            help=(
+                "File holding the install's canary key for the --live "
+                "authorization probes. Defaults to the install's file secret "
+                "backend."
             ),
         ),
     ] = None,
@@ -1526,7 +1540,11 @@ def verify(
     report = verify_security(resolved_dir, previous)
 
     if live:
-        from wip_deploy.verify_security import read_admin_key, verify_live
+        from wip_deploy.verify_security import (
+            read_admin_key,
+            read_canary_key,
+            verify_live,
+        )
 
         root = _load_state_repo_root(resolved_dir) or find_repo_root()
         discovery = discover(root)
@@ -1540,7 +1558,14 @@ def verify(
             if api_key_file is not None
             else read_admin_key(resolved_dir, previous)
         )
-        report.results.extend(verify_live(previous, active, admin_key))
+        canary_key = (
+            canary_key_file.read_text().strip()
+            if canary_key_file is not None
+            else read_canary_key(resolved_dir, previous)
+        )
+        report.results.extend(
+            verify_live(previous, active, admin_key, canary_key=canary_key)
+        )
 
     typer.echo(f"Security verification: {resolved_dir}")
     typer.echo(
@@ -2962,7 +2987,7 @@ def rotate_key(
         secret_name = secret
         label = f"install secret {secret!r}"
     else:
-        keys = deployment.spec.auth.api_keys
+        keys = effective_api_keys(deployment)
         match = next((k for k in keys if k.name == key_name), None)
         if match is None:
             declared = ", ".join(sorted(k.name for k in keys)) or "(none)"

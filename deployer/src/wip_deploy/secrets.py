@@ -24,6 +24,7 @@ from collections.abc import Callable
 
 import bcrypt
 
+from wip_deploy.config_gen.api_keys import api_key_secret_names
 from wip_deploy.config_gen.dex import generate_dex_config
 from wip_deploy.config_gen.garage import (
     GARAGE_SECRET_NAMES,
@@ -97,8 +98,7 @@ def collect_required_secrets(
     # plaintext, generated on first apply and stable thereafter — the
     # config-file key survives Mongo rebuilds because its material
     # lives here, not in the registry's api_keys collection.
-    for k in deployment.spec.auth.api_keys:
-        names.add(k.secret_name)
+    names.update(api_key_secret_names(deployment))
 
     # Garage object storage (CASE-864): its secrets live in the rendered
     # garage.toml and in document-store's env, not in garage's own env

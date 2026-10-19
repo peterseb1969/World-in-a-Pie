@@ -91,6 +91,7 @@ class TestTreeShape:
             "config/dex/config.yaml",
             "config/router/Caddyfile",
             "config/mongodb/entrypoint.sh",
+            "config/auth/api-keys.json",
         }
 
     def test_api_key_only_omits_dex(

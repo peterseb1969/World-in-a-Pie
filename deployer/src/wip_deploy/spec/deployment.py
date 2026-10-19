@@ -102,6 +102,11 @@ def _default_dex_users() -> list[DexUser]:
     ]
 
 
+# The deployer adds a key of this name to every install (the canary, see
+# config_gen/api_keys.py), so a spec may not declare one itself.
+CANARY_KEY_NAME = "wip-canary"
+
+
 class SpecAPIKey(WIPModel):
     """A declaratively provisioned API key (agents, external tools).
 
@@ -158,6 +163,11 @@ class AuthSpec(WIPModel):
         dupes = sorted({n for n in names if names.count(n) > 1})
         if dupes:
             raise ValueError(f"duplicate api key names: {dupes}")
+        if CANARY_KEY_NAME in names:
+            raise ValueError(
+                f"api key name {CANARY_KEY_NAME!r} is reserved: the deployer "
+                "provisions that key on every install"
+            )
         return self
 
     @model_validator(mode="after")

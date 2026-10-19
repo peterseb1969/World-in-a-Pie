@@ -160,13 +160,11 @@ def render_compose(
     if nats_conf is not None:
         tree.add(NATS_CONFIG_RENDER_PATH, nats_conf)
 
-    # Spec-declared config-file API keys, mounted into components whose
+    # Config-file API keys (the spec's plus the canary), mounted into components whose
     # manifest declares WIP_AUTH_API_KEYS_FILE. It carries plaintext, but
     # registry and mcp-server read it as a non-root user, so it is 0644
     # inside the 0700 install directory (see FileEntry).
-    api_keys_json = generate_api_keys_json(deployment, secrets)
-    if api_keys_json is not None:
-        tree.add(API_KEYS_RENDER_PATH, api_keys_json)
+    tree.add(API_KEYS_RENDER_PATH, generate_api_keys_json(deployment, secrets))
 
     # wip-router Caddyfile — emitted whenever the router component is
     # active (it's infrastructure, so effectively always).
@@ -351,7 +349,7 @@ def _service_block(
         volumes.append(
             f"./secrets/external-ca.crt:{_EXTERNAL_CA_CONTAINER_PATH}:ro"
         )
-    if deployment.spec.auth.api_keys and declares_api_keys_file(owner):
+    if declares_api_keys_file(owner):
         volumes.append(f"./{API_KEYS_RENDER_PATH}:{API_KEYS_CONTAINER_PATH}:ro")
     if volumes:
         block["volumes"] = volumes

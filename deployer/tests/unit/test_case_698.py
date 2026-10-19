@@ -76,4 +76,5 @@ class TestRotateKeyGuard:
             ],
         )
         assert result.exit_code == 2
-        assert "(none)" in result.output
+        # Only the deployer's own canary is declared.
+        assert "Declared config keys: wip-canary." in result.output

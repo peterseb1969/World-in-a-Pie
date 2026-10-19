@@ -72,9 +72,8 @@ class SpecContextSecurity:
     # operator asserted prod. String for direct env injection.
     variant: str
     # Container path of the rendered config-file API keys, injected as
-    # WIP_AUTH_API_KEYS_FILE; empty string when the spec declares no
-    # api_keys (wip-auth treats empty as unset, so manifests can
-    # reference it unconditionally).
+    # WIP_AUTH_API_KEYS_FILE. Every install has the file: the canary key
+    # is always in it.
     api_keys_file: str
 
 
@@ -110,9 +109,7 @@ def make_spec_context(
 
     security = SpecContextSecurity(
         variant=deployment.spec.variant,
-        api_keys_file=(
-            API_KEYS_CONTAINER_PATH if deployment.spec.auth.api_keys else ""
-        ),
+        api_keys_file=API_KEYS_CONTAINER_PATH,
     )
     return SpecContext(network=net, auth=auth, features=features, security=security)
 

@@ -117,16 +117,14 @@ def render_k8s(
     # Secrets
     tree.add("secrets.yaml", _render_secrets(ns, secrets), mode=0o600)
 
-    # Spec-declared config-file API keys: a dedicated Secret carrying
-    # the rendered api-keys.json, mounted (subPath) into components
-    # whose manifest declares WIP_AUTH_API_KEYS_FILE.
-    api_keys_json = generate_api_keys_json(deployment, secrets)
-    if api_keys_json is not None:
-        tree.add(
-            "api-keys-secret.yaml",
-            _render_api_keys_secret(ns, api_keys_json),
-            mode=0o600,
-        )
+    # Config-file API keys (the spec's plus the canary): a dedicated
+    # Secret carrying the rendered api-keys.json, mounted (subPath) into
+    # components whose manifest declares WIP_AUTH_API_KEYS_FILE.
+    tree.add(
+        "api-keys-secret.yaml",
+        _render_api_keys_secret(ns, generate_api_keys_json(deployment, secrets)),
+        mode=0o600,
+    )
 
     # ConfigMaps
     configmaps = _render_configmaps(deployment, components, apps, resolved_env, ns, secrets)
@@ -616,9 +614,9 @@ def _render_component(
             "persistentVolumeClaim": {"claimName": pvc_name},
         })
 
-    # Spec-declared API keys file — mounted for exactly the manifests
+    # Config-file API keys — mounted for exactly the manifests
     # that declare WIP_AUTH_API_KEYS_FILE (the env is the opt-in).
-    if deployment.spec.auth.api_keys and declares_api_keys_file(owner):
+    if declares_api_keys_file(owner):
         volume_mounts.append({
             "name": "api-keys-config",
             "mountPath": API_KEYS_CONTAINER_PATH,
