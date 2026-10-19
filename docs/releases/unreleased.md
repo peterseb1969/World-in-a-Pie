@@ -275,8 +275,9 @@ reporting silently diverged.
   `reconnecting` or `not_configured` (was `connected` / `disabled`).
   `GET /api/<service>/health/events` (wip-admins / wip-services) returns the
   connection state, published / queued / dropped-by-reason counters and the
-  supervised consumers' restarts. `/health` stays HTTP 200 regardless:
-  readiness and liveness probe the same endpoint.
+  supervised consumers' restarts. `/health` stays HTTP 200 regardless: the
+  event pipeline's state is for observability, not routing (a store with
+  NATS down still accepts writes and queues their events).
 
 ### Terms carry typed names; aliases and translations are now projections
 
@@ -664,6 +665,49 @@ connection, and the outcome was lost. It now publishes normally.
 ingest-gateway's NATS user gains read access to its own results stream
 (`$JS.API.STREAM.MSG.GET.WIP_INGEST_RESULTS`), so the install must be
 re-rendered (`wip-deploy redeploy`) for the lookup to work.
+
+---
+
+### Readiness can report a down dependency; liveness and startup never kill a waiting pod
+
+On k8s, readiness and liveness probed the same endpoint, and there was no
+startup probe. Two consequences:
+- A store still retrying MongoDB at startup (up to 120 s, during which
+  uvicorn serves nothing) was killed by liveness after about 80 s
+  (registry) or 95 s (the other stores): three failed checks 30 s apart,
+  starting at `start_period_seconds + 5`. The restart reset its retry, so a
+  MongoDB that stayed down that long kept the stores in a restart loop.
+- No endpoint could report a down dependency without turning it into a
+  restart, so a store whose MongoDB was unreachable stayed `Ready`.
+  reporting-sync's `/health`, which already answered 503 on unusable
+  PostgreSQL service roles, crash-looped its pod instead.
+
+Now:
+- `healthcheck.liveness_endpoint` (new, optional) is what the k8s
+  livenessProbe and a new startupProbe check; `endpoint` stays the
+  readiness check and compose's healthcheck. Without it, every probe uses
+  `endpoint`, as before.
+- The startupProbe checks every 5 s for `start_period_seconds + 150` s.
+  k8s runs no other probe until it first succeeds, so a pod waiting for a
+  dependency at startup is no longer killed.
+- `healthcheck.retries` becomes every probe's `failureThreshold` (the
+  default, 3, is the k8s default).
+- Services serve `GET /livez`: 200, no I/O, no credentials (wip-auth
+  `install_liveness`).
+- registry, def-store, template-store and document-store use `/ready`
+  (pings MongoDB, 503 while it is unreachable) for readiness and `/livez`
+  for liveness. reporting-sync keeps `/health` for readiness and uses
+  `/livez` for liveness.
+
+**Behavior change:** on k8s, a store whose MongoDB is unreachable is taken
+out of its Service's endpoints until MongoDB answers, instead of staying
+`Ready` and failing requests. Every Deployment has one replica, so for that
+time callers reach no pod at all rather than the store's own errors. On compose, the
+stores' container health now reflects MongoDB, so `wip-deploy`'s wait for
+"all healthy" also waits for MongoDB. `/health` keeps its always-200
+contract, and `wip-deploy verify --security --live` is unaffected.
+**Action:** re-render the install (`wip-deploy redeploy`); the services
+must run this release's images, since the manifests now probe `/livez`.
 
 ---
 

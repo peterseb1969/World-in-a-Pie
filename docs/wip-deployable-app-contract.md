@@ -63,6 +63,8 @@ spec:
     - {path: /apps/<name>, auth_required: true}
   healthcheck:
     endpoint: /apps/<name>/api/health   # MUST be locally answerable, must not require WIP reachable
+    # liveness_endpoint: /apps/<name>/api/livez  # optional, k8s only: set it if `endpoint` checks a
+    #   dependency, so an outage stops routing (readiness) instead of restarting the pod (liveness)
 ```
 
 Port choice: pick one Express port and one Vite port from the `apps/` directory's existing range. RC = 3001/5173, CT = 3002/5174, KB = 3012/5173 (KB collides with RC on Vite; pick fresh), AA = 3014/5180. Coordinate via case-helper if the range gets crowded.

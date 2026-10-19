@@ -358,7 +358,8 @@ class StorageSpec(BaseModel):
 class HealthcheckSpec(BaseModel):
     # Exactly one of endpoint (HTTP GET 2xx) or command (exit 0) must be set.
     # WIP services use endpoint; infra like mongodb/postgres use command.
-    endpoint: str | None = None            # e.g., "/health"
+    endpoint: str | None = None            # e.g., "/health"; readiness (k8s) and compose health
+    liveness_endpoint: str | None = None   # k8s liveness + startup probes; falls back to endpoint
     port: str | None = None                # port name for HTTP check; default "http"→"monitor"→first
     command: list[str] | None = None       # e.g., ["mongosh", "--eval", "db.runCommand('ping')"]
     interval_seconds: int = 10
