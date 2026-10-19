@@ -400,6 +400,35 @@ query export requires an admin or service key. Apps that call these
 endpoints with plain `fetch` can switch to the typed methods after
 re-vendoring `wip-client-0.61.0.tgz`.
 
+### `@wip/react` 0.21.0: template hooks take a namespace
+
+A template value is unique only within a namespace, but the hooks looked
+templates up by value alone. With a key that can see more than one namespace
+(an admin or multi-namespace key), `useTemplateByValue` and `useFormSchema`
+returned whichever namespace's template came first. 0.21.0 adds the option:
+
+- `useTemplateByValue(value, { namespace? })` and
+  `useFormSchema(value, { namespace? })`. Pass `namespace` whenever the key
+  can see more than one namespace. A scoped lookup does not fall back to the
+  `wip` namespace. Omitting `namespace` stays right for a single-namespace key,
+  whose namespace the server derives.
+- `useTriggerBatchSync` variables gain `namespace?`. It picks the template when
+  its value exists in several namespaces and scopes the sync to that
+  namespace's documents. The hook documents it as required together with
+  `force`.
+- **Query-key shape.** `wipKeys.templates.byValue(value, namespace?)` now
+  returns `['wip', 'templates', 'by-value', value, namespace ?? null]`; the
+  unscoped lookup carries `null`. Code that builds this key by hand with the
+  old four-element form must append the namespace (or `null`); use the
+  `wipKeys` helper instead of a hand-built array.
+
+No newer `@wip/client` is needed: the client methods behind these hooks
+(`templates.getTemplateByValue`, `reporting.triggerBatchSync`) already accepted
+`namespace` in 0.60.0.
+**Action:** apps that read templates by value through these hooks, or force a
+batch sync, with a key that can see more than one namespace pass `namespace`.
+Re-vendor `wip-react-0.21.0.tgz`.
+
 ### Platform-maintained term closure in reporting
 
 Each namespace schema gains a `term_closure` table: one row per
