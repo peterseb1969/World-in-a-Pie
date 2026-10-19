@@ -85,5 +85,8 @@ spec:
   depends_on: [nats, postgres, registry, def-store, template-store, document-store]
 
   healthcheck:
+    # /health answers 503 while the PostgreSQL service roles are unusable;
+    # liveness does no I/O, so that stops routing instead of restarting the pod.
     endpoint: /health
+    liveness_endpoint: /livez
     start_period_seconds: 20

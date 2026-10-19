@@ -164,9 +164,17 @@ class HealthcheckSpec(WIPModel):
     named "monitor", else the first declared port. Explicit `port` is
     required only when both ambiguity and multiple HTTP-ish ports exist
     (e.g., NATS with data on :4222 and monitoring on :8222).
+
+    `endpoint` answers "can this serve traffic?" — compose's healthcheck and
+    the k8s readinessProbe use it, so it may fail while a dependency is down.
+    `liveness_endpoint` answers "is the process alive?" — the k8s
+    livenessProbe and startupProbe use it, falling back to `endpoint`. Set it
+    whenever `endpoint` checks a dependency: a liveness failure restarts the
+    pod, and a restart cannot bring a dependency back.
     """
 
     endpoint: str | None = Field(default=None, pattern=r"^/.*")
+    liveness_endpoint: str | None = Field(default=None, pattern=r"^/.*")
     port: str | None = None
     command: list[str] | None = None
     # Probe tool for HTTP endpoint checks. `auto` emits a shell-chained
@@ -193,6 +201,8 @@ class HealthcheckSpec(WIPModel):
             raise ValueError("HealthcheckSpec.command must not be empty")
         if self.port is not None and self.endpoint is None:
             raise ValueError("HealthcheckSpec.port only valid with endpoint check")
+        if self.liveness_endpoint is not None and self.endpoint is None:
+            raise ValueError("HealthcheckSpec.liveness_endpoint only valid with endpoint check")
         return self
 
 

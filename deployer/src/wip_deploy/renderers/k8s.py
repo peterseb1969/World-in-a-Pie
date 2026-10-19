@@ -800,31 +800,7 @@ def _container_spec(
     if env_entries:
         container["env"] = env_entries
 
-    # Probes
-    hc = owner.spec.healthcheck
-    if hc is not None:
-        if hc.endpoint is not None:
-            port = _resolve_check_port(owner, hc.port)
-            probe = {
-                "httpGet": {"path": hc.endpoint, "port": port},
-            }
-        elif hc.command is not None:
-            probe = {"exec": {"command": list(hc.command)}}
-        else:
-            probe = {}
-
-        container["readinessProbe"] = {
-            **probe,
-            "initialDelaySeconds": hc.start_period_seconds,
-            "periodSeconds": hc.interval_seconds,
-            "timeoutSeconds": hc.timeout_seconds,
-        }
-        container["livenessProbe"] = {
-            **probe,
-            "initialDelaySeconds": hc.start_period_seconds + 5,
-            "periodSeconds": max(hc.interval_seconds * 3, 30),
-            "timeoutSeconds": hc.timeout_seconds,
-        }
+    container.update(_probes(owner))
 
     # Resources
     res = owner.spec.resources
@@ -860,6 +836,64 @@ def _command_for(owner: Component | App) -> list[str] | None:
     if name == "dex":
         return ["dex", "serve", "/etc/dex/config.yaml"]
     return None
+
+
+# How long a WIP service may retry its dependencies before it serves HTTP:
+# wip_auth's startup retry waits up to 120 s for MongoDB, PostgreSQL or the
+# Registry inside the FastAPI lifespan, and uvicorn opens no socket until the
+# lifespan finishes. The startup probe's budget must outlast that, with margin.
+_STARTUP_RETRY_SECONDS = 150
+_STARTUP_PERIOD_SECONDS = 5
+
+
+def _probes(owner: Component | App) -> dict[str, Any]:
+    """The container's probes, from the owner's healthcheck.
+
+    - readinessProbe checks `endpoint`. It may fail while a dependency is
+      down; k8s then only stops routing to the pod.
+    - livenessProbe checks `liveness_endpoint`, else `endpoint`. A failure
+      restarts the pod, which cannot bring a dependency back, so a service
+      whose `endpoint` checks one sets a dependency-free `liveness_endpoint`.
+    - startupProbe runs the liveness check every 5 s for `start_period +
+      150` s. k8s runs neither of the others until it first succeeds, so a
+      pod still retrying a dependency at startup is not killed mid-retry.
+
+    `retries` is each probe's failureThreshold.
+    """
+    hc = owner.spec.healthcheck
+    if hc is None:
+        return {}
+
+    def check(path: str | None) -> dict[str, Any]:
+        # A fresh dict per probe: a shared one would be dumped as a YAML alias.
+        if hc.command is not None:
+            return {"exec": {"command": list(hc.command)}}
+        return {"httpGet": {"path": path, "port": _resolve_check_port(owner, hc.port)}}
+
+    liveness_path = hc.liveness_endpoint or hc.endpoint
+    startup_budget = hc.start_period_seconds + _STARTUP_RETRY_SECONDS
+    return {
+        "readinessProbe": {
+            **check(hc.endpoint),
+            "initialDelaySeconds": hc.start_period_seconds,
+            "periodSeconds": hc.interval_seconds,
+            "timeoutSeconds": hc.timeout_seconds,
+            "failureThreshold": hc.retries,
+        },
+        "livenessProbe": {
+            **check(liveness_path),
+            "initialDelaySeconds": hc.start_period_seconds + 5,
+            "periodSeconds": max(hc.interval_seconds * 3, 30),
+            "timeoutSeconds": hc.timeout_seconds,
+            "failureThreshold": hc.retries,
+        },
+        "startupProbe": {
+            **check(liveness_path),
+            "periodSeconds": _STARTUP_PERIOD_SECONDS,
+            "timeoutSeconds": hc.timeout_seconds,
+            "failureThreshold": -(-startup_budget // _STARTUP_PERIOD_SECONDS),
+        },
+    }
 
 
 def _resolve_check_port(owner: Component | App, explicit: str | None) -> int:

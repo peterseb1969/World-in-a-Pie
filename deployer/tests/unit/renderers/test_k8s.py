@@ -223,7 +223,9 @@ class TestComponents:
         container = deployment["spec"]["template"]["spec"]["containers"][0]
         assert "readinessProbe" in container
         assert "livenessProbe" in container
-        assert container["readinessProbe"]["httpGet"]["path"] == "/health"
+        assert "startupProbe" in container
+        assert container["readinessProbe"]["httpGet"]["path"] == "/ready"
+        assert container["livenessProbe"]["httpGet"]["path"] == "/livez"
 
     def test_explicit_command_rendered(
         self, tmp_path: Path, real_discovery: Discovery

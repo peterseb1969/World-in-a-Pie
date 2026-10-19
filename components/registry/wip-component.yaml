@@ -97,7 +97,10 @@ spec:
   depends_on: [mongodb]
 
   healthcheck:
-    endpoint: /health
+    # Readiness pings MongoDB (503 while it is unreachable); liveness does no
+    # I/O, so a MongoDB outage stops routing instead of restarting the pod.
+    endpoint: /ready
+    liveness_endpoint: /livez
     start_period_seconds: 15
 
   post_install:

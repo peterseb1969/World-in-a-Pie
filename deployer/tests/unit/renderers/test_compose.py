@@ -336,7 +336,7 @@ class TestComposeYaml:
         # Default `auto` probe: curl preferred, wget fallback.
         assert "curl -fsS" in test[1]
         assert "wget -qO-" in test[1]
-        assert "http://localhost:8001/health" in test[1]
+        assert "http://localhost:8001/ready" in test[1]
 
     def test_healthcheck_probe_curl_forces_curl_only(
         self, tmp_path: Path, real_discovery: Discovery
