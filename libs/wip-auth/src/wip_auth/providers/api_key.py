@@ -216,7 +216,23 @@ class APIKeyProvider:
             request.url.path,
         )
 
-        # Build identity from key record
+        return self._identity(key_record)
+
+    def identify_key(self, api_key: str) -> UserIdentity | None:
+        """The identity of a raw API key, or None when it is unknown or expired.
+
+        For a service that receives a key outside an HTTP request: the
+        ingest gateway reads a producer's key from a NATS message header and
+        needs to know whose it is. Neither logs nor raises — an unusable key
+        is simply no identity.
+        """
+        key_record, error = self._validate_key(api_key)
+        if error is not None or key_record is None:
+            return None
+        return self._identity(key_record)
+
+    def _identity(self, key_record: APIKeyRecord) -> UserIdentity:
+        """The identity an API key authenticates as."""
         groups = key_record.groups if key_record.groups else self.default_groups
 
         return UserIdentity(

@@ -187,6 +187,28 @@ class TestAPIKeyProvider:
         identity = await provider.authenticate(request)
         assert identity.identity_string == "apikey:test-key"
 
+    @pytest.mark.asyncio
+    async def test_identify_key_matches_authenticate(self, provider):
+        """A raw key identifies as exactly what a request with it authenticates as."""
+        via_request = await provider.authenticate(make_request({"X-API-Key": "service456"}))
+        assert provider.identify_key("service456") == via_request
+
+    def test_identify_key_unusable_keys_are_no_identity(self):
+        """Unknown, disabled and expired keys identify as None, without raising."""
+        from datetime import UTC, datetime, timedelta
+
+        provider = APIKeyProvider([
+            APIKeyRecord(name="off", key_hash=hash_api_key("off-secret"), enabled=False),
+            APIKeyRecord(
+                name="old",
+                key_hash=hash_api_key("old-secret"),
+                expires_at=datetime.now(UTC) - timedelta(days=1),
+            ),
+        ])
+        assert provider.identify_key("unknown-secret") is None
+        assert provider.identify_key("off-secret") is None
+        assert provider.identify_key("old-secret") is None
+
     def test_add_key(self, provider):
         """Should be able to add keys at runtime."""
         new_key = APIKeyRecord(
