@@ -2529,7 +2529,7 @@ Events go to a separate NATS stream with metadata.replay=true.
 Use get_replay_status to track progress, cancel_replay to stop.""",
     'upload_file': """Upload a file to WIP from a local path.
 
-Reads a file from disk and uploads it to WIP's MinIO-backed file storage.
+Reads a file from disk and uploads it to WIP's file storage.
 Supports any file type. Returns file_id for use in document file fields.
 Tags are comma-separated (e.g., "receipt,2024,tax").""",
     'validate_documents': """Validate many documents against one template without saving. Returns per-item results.

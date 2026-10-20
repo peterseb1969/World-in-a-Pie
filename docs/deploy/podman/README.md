@@ -19,7 +19,7 @@ Stand up World-In-a-Pie on **one machine**, using the **published container imag
 The install below brings up the backend **plus the React Console admin UI**, so you have something to click on immediately:
 
 - The 7 WIP backend services (Registry, Def-Store, Template-Store, Document-Store, Auth-Gateway, Reporting-Sync, MCP Server) from `ghcr.io/peterseb1969/*`
-- Supporting infrastructure (MongoDB, PostgreSQL, NATS, MinIO, Dex for OIDC, Caddy) from their upstream public images
+- Supporting infrastructure (MongoDB, PostgreSQL, NATS, Garage, Dex for OIDC, Caddy) from their upstream public images
 - The **React Console** at `https://localhost:8443/apps/rc/`
 - HTTPS via Caddy on port **8443** (self-signed by default)
 - A starter **API key** (for API/MCP access), written to disk
@@ -103,7 +103,7 @@ wip-deploy install \
   --app react-console --image-tag react-console=20260629a
 ```
 
-- `--preset standard` — core services + Dex (OIDC) + reporting + MinIO + MCP. Lighter: `core`, `analytics`; heavier: `full` (adds the async ingest-gateway).
+- `--preset standard` — core services + Dex (OIDC) + reporting + Garage + MCP. Lighter: `core`, `analytics`; heavier: `full` (adds the async ingest-gateway).
 - `--app react-console` — enables the admin UI; `--image-tag react-console=20260629a` pins the current multi-arch RC build. **An `--image-tag` only takes effect for an app you also `--app`-enable — otherwise it's silently ignored** (so keep the `--app` and its `--image-tag` together).
 - `--name wip` — names the install; its files live in `~/.wip-deploy/wip/` (rendered compose, config, **secrets**, saved spec).
 - `--hostname localhost` — simplest and always works *on the host itself*. See the note below for reaching it by a real hostname.
@@ -243,7 +243,7 @@ If you are an AI agent setting WIP up for a user on a single host with podman, f
 - **macOS (16 GB+)** — fine for development and small production loads. Most operations run within the default 2 GB Podman machine; bump to 4 GB for sustained work (NL queries, bulk runs, multiple apps).
 - **Linux VM (~8 GB+)** — with **real local disk**, not network-attached. NAS-backed volumes pay heavily on MongoDB writes and NATS JetStream persistence; a 16 GB VM with an SSD-class block device is comfortable for production.
 
-**Pi: SSD is mandatory.** SD-card storage is the single biggest performance variable — MongoDB, NATS, PostgreSQL, and MinIO all compound on slow storage. The 200+ docs/second tested throughput is an SSD figure.
+**Pi: SSD is mandatory.** SD-card storage is the single biggest performance variable — MongoDB, NATS, PostgreSQL, and Garage all compound on slow storage. The 200+ docs/second tested throughput is an SSD figure.
 
 ```bash
 lsblk                                    # identify the device

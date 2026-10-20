@@ -4383,7 +4383,7 @@ PRESETS — pick one, then tweak with --add NAME / --remove NAME / --app NAME
   headless   same as core, no UI surface
   standard   core + OIDC + auth-gateway (most common)
   analytics  standard + reporting (Postgres + reporting-sync)
-  full       analytics + files (MinIO) + ingest (NATS streaming)
+  full       analytics + files (Garage) + ingest (NATS streaming)
 
 TARGETS
   compose   production-style podman-compose / docker-compose deployment

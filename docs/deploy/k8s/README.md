@@ -26,7 +26,7 @@ Deploy WIP to a Kubernetes cluster with `wip-deploy --target k8s` — the same s
 | Requirement | Notes |
 |---|---|
 | A **working cluster** + `kubectl` **context pointed at it** | `wip-deploy` applies to the **active context** — check `kubectl config current-context` before every install. |
-| A **StorageClass** (RWO PVCs) | For MongoDB / PostgreSQL / MinIO / NATS. Get the name from `kubectl get storageclass`. |
+| A **StorageClass** (RWO PVCs) | For MongoDB / PostgreSQL / Garage / NATS. Get the name from `kubectl get storageclass`. |
 | An **IngressClass** + a working ingress controller | e.g. `nginx`. Get the name from `kubectl get ingressclass`. |
 | An **FQDN that resolves to the ingress** | Point DNS at the ingress controller's external IP / load balancer (see the hostname note in step 5). |
 | **git** + **Python 3.11+** | For the repo and the `wip-deploy` CLI. |

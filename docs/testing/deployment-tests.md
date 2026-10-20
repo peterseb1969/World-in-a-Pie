@@ -22,7 +22,7 @@ Tests are selected for Mac compatibility (all use `--hostname localhost --tls in
 | # | Name | Preset | Key Features |
 |---|------|--------|--------------|
 | 1 | core | core | API-key only, no OIDC, minimal |
-| 2 | standard | standard | OIDC, console, MinIO, MCP server |
+| 2 | standard | standard | OIDC, console, Garage, MCP server |
 | 3 | analytics | analytics | OIDC + PostgreSQL reporting |
 | 4 | full | full | All features including ingest-gateway |
 

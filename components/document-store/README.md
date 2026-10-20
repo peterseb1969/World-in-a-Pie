@@ -36,7 +36,7 @@ The Document Store service manages documents that conform to templates defined i
 
 ### File Storage
 
-Document Store manages binary files via MinIO (when the `files` module is enabled).
+Document Store manages binary files in the platform's S3-compatible object store, Garage (when the `garage` module is enabled).
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|

@@ -155,7 +155,7 @@ tools:
     openapi_schema: null
     param_name: null
     notes: |
-      Reads a file from disk and uploads it to WIP's MinIO-backed file storage.
+      Reads a file from disk and uploads it to WIP's file storage.
       Supports any file type. Returns file_id for use in document file fields.
       Tags are comma-separated (e.g., "receipt,2024,tax").
 

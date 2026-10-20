@@ -32,7 +32,7 @@ and is worth reading once in full.
 One **install** = preset × target × name:
 
 - **preset** (`-p`): which optional modules ride along. `full` =
-  reporting-sync + ingest-gateway + minio + mcp-server on top of core.
+  reporting-sync + ingest-gateway + garage + mcp-server on top of core.
   Others: `core`, `standard`, `analytics`, `headless` (see `--preset` help).
 - **target** (`-t`): `compose` (production-style containers), `dev`
   (hot-reload: bind-mounted source, local app builds), `k8s` (manifests).

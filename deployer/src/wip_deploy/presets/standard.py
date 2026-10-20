@@ -1,7 +1,7 @@
 """Standard — Recommended for most users. Everything except ingest-gateway.
 
 Use when: default choice. OIDC via Dex, auth-gateway on. Reporting
-(Postgres + reporting-sync), file storage (MinIO), and the MCP server
+(Postgres + reporting-sync), file storage (Garage), and the MCP server
 are all included so the platform is fully exercisable out of the box.
 The only optional module not included is `ingest-gateway` — that's
 async bulk ingestion via NATS JetStream, opt-in for installs that

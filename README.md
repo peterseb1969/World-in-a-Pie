@@ -84,7 +84,7 @@ Three principles:
 │   Reporting-Sync · Ingest-Gateway · MCP Server                 │
 └───────────────────────────────┬───────────────────────────────┘
                                  ▼
-    MongoDB   ·   PostgreSQL   ·   NATS JetStream   ·   MinIO   ·   Dex (OIDC)
+    MongoDB   ·   PostgreSQL   ·   NATS JetStream   ·   Garage   ·   Dex (OIDC)
 ```
 
 Eight WIP services (Auth-Gateway + the seven above), fronted by Caddy, over standard infrastructure. The admin UI is the **React Console**, deployed as an app on top of the platform — not baked into the backend.
@@ -134,7 +134,7 @@ See the [Development Guide](docs/development-guide.md) for both modes.
 
 ## Hardware
 
-WIP runs anywhere from a Raspberry Pi to a cloud VM. Rough floor: **Raspberry Pi 5 (8 GB+)** — Pi 4 is not supported; **macOS 16 GB+** (a 4 GB Podman machine is comfortable); **Linux VM ~8 GB+** with real local disk. On a Pi, an **SSD is mandatory** — SD-card storage guts MongoDB/NATS/PostgreSQL/MinIO throughput.
+WIP runs anywhere from a Raspberry Pi to a cloud VM. Rough floor: **Raspberry Pi 5 (8 GB+)** — Pi 4 is not supported; **macOS 16 GB+** (a 4 GB Podman machine is comfortable); **Linux VM ~8 GB+** with real local disk. On a Pi, an **SSD is mandatory** — SD-card storage guts MongoDB/NATS/PostgreSQL/Garage throughput.
 
 Host-prep specifics (Pi SSD + `fstab`, Podman-machine sizing, VM sizing) live in the **[quickstart's Host prep appendix](docs/deploy/podman/README.md#appendix-host-prep-pi-ssd-podman-sizing)** and the [WIP Guide](docs/wip-guide.md) (storage & backup).
 
@@ -149,7 +149,7 @@ Host-prep specifics (Pi SSD + `fstab`, Podman-machine sizing, VM sizing) live in
 | Auth | Dex OIDC (pluggable — any OIDC provider) + API keys |
 | Document Store | MongoDB |
 | Reporting Store | PostgreSQL |
-| Object Storage | MinIO (S3-compatible) |
+| Object Storage | Garage (S3-compatible) |
 | Message Queue | NATS JetStream |
 | Deployment | Podman Compose (primary) / Kubernetes |
 
@@ -162,7 +162,7 @@ Host-prep specifics (Pi SSD + `fstab`, Podman-machine sizing, VM sizing) live in
 - OIDC authentication (Dex) + API-key dual mode
 - Bulk-first API convention across all write endpoints
 - PostgreSQL reporting sync via NATS JetStream, with per-template-version tables under stable entity views
-- Binary file storage (MinIO) with reference tracking
+- Binary file storage (Garage) with reference tracking
 - Semantic types (email, URL, geo_point, duration, …)
 - Template draft mode with cascading activation; inheritance with version pinning; registered template identity with upsert semantics, impact analysis, and validated document migration across versions
 - Document relationships — edge-type templates with graph traversal queries

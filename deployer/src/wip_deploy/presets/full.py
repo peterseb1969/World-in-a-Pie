@@ -1,7 +1,7 @@
 """Full — Everything: OIDC, gateway, reporting, files, ingest.
 
 Use when: production-like deployment with all surfaces enabled. Biggest
-footprint (Postgres + MinIO + NATS all active). Apps (react-console,
+footprint (Postgres + Garage + NATS all active). Apps (react-console,
 etc.) are enabled per-install via `--app`.
 """
 
