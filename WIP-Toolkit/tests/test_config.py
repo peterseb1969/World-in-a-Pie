@@ -29,9 +29,10 @@ class TestWIPConfigDefaults:
         config = WIPConfig()
         assert config.verbose is False
 
-    def test_default_api_key_falls_back_to_dev_key(self, monkeypatch):
+    def test_default_api_key_falls_back_to_dev_key(self, monkeypatch, tmp_path):
         """With no env var and no .env file, falls back to dev key."""
         monkeypatch.delenv("WIP_AUTH_LEGACY_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
         config = WIPConfig()
         assert config.api_key == DEFAULT_DEV_API_KEY
 
@@ -141,8 +142,9 @@ class TestWIPConfigApiKey:
         config = WIPConfig(api_key="explicit_key")
         assert config.api_key == "explicit_key"
 
-    def test_api_key_fallback_to_dev_key(self, monkeypatch):
+    def test_api_key_fallback_to_dev_key(self, monkeypatch, tmp_path):
         monkeypatch.delenv("WIP_AUTH_LEGACY_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
         config = WIPConfig()
         assert config.api_key == DEFAULT_DEV_API_KEY
 
