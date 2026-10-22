@@ -790,6 +790,31 @@ no longer reads `MINIO_URL`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` or
 
 ---
 
+### reporting-sync's startup backfill retries until it is complete
+
+At startup reporting-sync backfills terminologies, terms, term relations and
+template metadata into PostgreSQL. It waited for def-store only and ran each
+step once: template-store was never waited for, and a listing that failed (a
+service still starting, or answering 500 while its database restarted) was
+logged as `synced: 0` and never retried. The tables then stayed empty until
+each entity's next write. This was seen after redeploys, Podman VM restarts
+and image rollouts.
+
+Each step now waits for its own source and retries, every 5 s doubling to
+every 60 s with no deadline, until its listing completes. It logs WARNING
+while incomplete and INFO once complete. The def-store steps and the
+template-store step run independently, so one source being down does not hold
+back the other.
+
+The batch-sync endpoints (`POST /api/reporting-sync/sync/batch/terminologies`,
+`…/terms`, `…/term_relations`, `…/templates`) now also return
+`"complete": true|false`: `false` means a listing failed, so a `synced: 0`
+can be told apart from an empty namespace.
+
+**No action required.**
+
+---
+
 ### Writes resolve names against the Registry, never the cache
 
 Services cache name-to-id resolutions for 5 minutes. A namespace deleted and

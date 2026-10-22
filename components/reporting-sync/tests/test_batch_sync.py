@@ -938,7 +938,9 @@ class TestInitialMetadataSync:
         batch_service.batch_sync_term_relations = AsyncMock(return_value={"synced": 1})
         batch_service.batch_sync_templates = AsyncMock(return_value={"synced": 1})
 
-        with patch("reporting_sync.main.retry_async", new=AsyncMock()):
+        # Every source healthy; the AsyncMock results carry no "complete"
+        # key, which counts as complete, so each step runs exactly once.
+        with patch("reporting_sync.main._source_healthy", new=AsyncMock(return_value=True)):
             await _initial_metadata_sync(batch_service)
 
         batch_service.batch_sync_terminologies.assert_awaited_once()

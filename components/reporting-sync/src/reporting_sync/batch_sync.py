@@ -786,6 +786,9 @@ class BatchSyncService:
         ns_tables: dict[str, str] = {}
         synced = 0
         failed = 0
+        # False when a listing failed: a sync that never listed cannot be
+        # told apart from an empty namespace by its counts alone.
+        complete = True
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -802,6 +805,7 @@ class BatchSyncService:
                     )
                     if resp.status_code != 200:
                         logger.error(f"Failed to list terminologies: {resp.status_code}")
+                        complete = False
                         break
 
                     data = resp.json()
@@ -870,9 +874,10 @@ class BatchSyncService:
 
         except Exception as e:
             logger.error(f"Batch terminology sync error: {e}", exc_info=True)
+            complete = False
 
         logger.info(f"Terminology batch sync: {synced} synced, {failed} failed")
-        return {"synced": synced, "failed": failed, "total": synced + failed}
+        return {"synced": synced, "failed": failed, "total": synced + failed, "complete": complete}
 
     async def batch_sync_templates(
         self,
@@ -889,6 +894,9 @@ class BatchSyncService:
         ns_tables: dict[str, str] = {}
         synced = 0
         failed = 0
+        # False when a listing failed: a sync that never listed cannot be
+        # told apart from an empty namespace by its counts alone.
+        complete = True
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -913,6 +921,7 @@ class BatchSyncService:
                     )
                     if resp.status_code != 200:
                         logger.error(f"Failed to list templates: {resp.status_code}")
+                        complete = False
                         break
 
                     data = resp.json()
@@ -977,9 +986,10 @@ class BatchSyncService:
 
         except Exception as e:
             logger.error(f"Batch template sync error: {e}", exc_info=True)
+            complete = False
 
         logger.info(f"Template batch sync: {synced} synced, {failed} failed")
-        return {"synced": synced, "failed": failed, "total": synced + failed}
+        return {"synced": synced, "failed": failed, "total": synced + failed, "complete": complete}
 
     async def batch_sync_terms(
         self,
@@ -999,6 +1009,9 @@ class BatchSyncService:
         ns_names_tables: dict[str, str] = {}
         synced = 0
         failed = 0
+        # False when a listing failed: a sync that never listed cannot be
+        # told apart from an empty namespace by its counts alone.
+        complete = True
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -1015,6 +1028,8 @@ class BatchSyncService:
                         headers={"X-API-Key": settings.api_key},
                     )
                     if resp.status_code != 200:
+                        logger.error(f"Failed to list terminologies for terms: {resp.status_code}")
+                        complete = False
                         break
                     data = resp.json()
                     for t in data.get("items", []):
@@ -1039,6 +1054,7 @@ class BatchSyncService:
                         )
                         if resp.status_code != 200:
                             logger.error(f"Failed to list terms for {tid}: {resp.status_code}")
+                            complete = False
                             break
 
                         data = resp.json()
@@ -1146,6 +1162,7 @@ class BatchSyncService:
 
         except Exception as e:
             logger.error(f"Batch term sync error: {e}", exc_info=True)
+            complete = False
 
         if synced:
             for ns in ns_tables:
@@ -1155,7 +1172,7 @@ class BatchSyncService:
                     logger.error(f"term_closure rebuild failed for {ns}: {e}")
 
         logger.info(f"Term batch sync: {synced} synced, {failed} failed")
-        return {"synced": synced, "failed": failed, "total": synced + failed}
+        return {"synced": synced, "failed": failed, "total": synced + failed, "complete": complete}
 
     async def batch_sync_term_relations(
         self,
@@ -1186,6 +1203,9 @@ class BatchSyncService:
             )
         synced = 0
         failed = 0
+        # False when a listing failed: a sync that never listed cannot be
+        # told apart from an empty namespace by its counts alone.
+        complete = True
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -1202,6 +1222,7 @@ class BatchSyncService:
                     )
                     if resp.status_code != 200:
                         logger.error(f"Failed to list term_relations: {resp.status_code}")
+                        complete = False
                         break
 
                     data = resp.json()
@@ -1260,6 +1281,7 @@ class BatchSyncService:
 
         except Exception as e:
             logger.error(f"Batch term_relation sync error: {e}", exc_info=True)
+            complete = False
 
         # A batch is one burst by definition — rebuild each touched
         # namespace's closure once, immediately. A batch that wrote
@@ -1272,7 +1294,7 @@ class BatchSyncService:
                     logger.error(f"term_closure rebuild failed for {ns}: {e}")
 
         logger.info(f"TermRelation batch sync: {synced} synced, {failed} failed")
-        return {"synced": synced, "failed": failed, "total": synced + failed}
+        return {"synced": synced, "failed": failed, "total": synced + failed, "complete": complete}
 
     def clear_completed_jobs(self) -> int:
         """Clear completed/failed/cancelled jobs from memory."""

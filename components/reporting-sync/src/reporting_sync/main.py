@@ -12,6 +12,7 @@ import dataclasses
 import io
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -380,64 +381,87 @@ async def _recreate_registered_views(pool: asyncpg.Pool) -> None:
         )
 
 
-async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
-    """Background: wait for def-store to be healthy, then batch-sync metadata.
+# Backoff between attempts of one backfill step: 5 s doubling to 60 s, with no
+# overall deadline — a step that cannot complete keeps trying until it does.
+_BACKFILL_FIRST_DELAY = 5.0
+_BACKFILL_MAX_DELAY = 60.0
+_backfill_sleep = asyncio.sleep  # replaced in tests
 
-    The batch syncs (`batch_sync_terminologies`, `batch_sync_terms`,
-    `batch_sync_term_relations`) swallow connection errors internally and
-    return empty results — a single attempt against a not-yet-ready
-    def-store silently yields 0-row tables. Polling def-store's /health
-    first and only then calling the batch syncs makes them succeed on the
-    first attempt rather than silently fail.
-    """
-    async def _verify_def_store_ready() -> None:
+
+async def _source_healthy(base_url: str) -> bool:
+    """Whether a source service answers /health with 200."""
+    try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.def_store_url}/health")
-            resp.raise_for_status()
+            return (await client.get(f"{base_url}/health")).status_code == 200
+    except httpx.HTTPError:
+        return False
 
-    try:
-        await retry_async(
-            _verify_def_store_ready,
-            retry_on=(
-                httpx.ConnectError,
-                httpx.ConnectTimeout,
-                httpx.ReadTimeout,
-                httpx.HTTPStatusError,
-            ),
-            description="Def-Store health check (initial metadata sync)",
-        )
-        logger.info("Def-Store healthy, running initial metadata sync...")
-    except TimeoutError as e:
-        logger.error(f"Def-Store never became healthy: {e}")
-        logger.error(
-            "Initial metadata sync skipped; trigger "
-            "POST /api/reporting-sync/sync/batch/terminologies?namespace=<ns>, "
-            "POST /api/reporting-sync/sync/batch/terms?namespace=<ns>, "
-            "POST /api/reporting-sync/sync/batch/term_relations?namespace=<ns>, and "
-            "POST /api/reporting-sync/sync/batch/templates?namespace=<ns> "
-            "manually once the services are reachable."
-        )
-        return
 
-    try:
-        t_result = await batch_sync_service.batch_sync_terminologies()
-        logger.info(f"Initial terminology sync: {t_result}")
-        t_result = await batch_sync_service.batch_sync_terms()
-        logger.info(f"Initial term sync: {t_result}")
-        # Term relations must be part of the startup backfill: they only
-        # otherwise sync on live NATS events, so a rebuilt reporting database
-        # (fresh Postgres + re-sync) would silently lose all historical
-        # relations until the next relation write.
-        t_result = await batch_sync_service.batch_sync_term_relations()
-        logger.info(f"Initial term-relation sync: {t_result}")
-        # Templates metadata has the same rebuild-loss shape as term
-        # relations: live sync happens only on template events, so a rebuilt
-        # reporting database holds no template metadata until each
-        # template's next write. Backfill it here too.
-        t_result = await batch_sync_service.batch_sync_templates()
-        logger.info(f"Initial template metadata sync: {t_result}")
-    except Exception as e:
-        logger.error(f"Initial metadata sync failed: {e}")
+async def _backfill_until_complete(
+    label: str, source_url: str, sync: Callable[[], Awaitable[dict[str, Any]]]
+) -> None:
+    """Run one backfill step until its sync reports a complete listing.
+
+    A health check alone is not enough: a source can answer /health 200 while
+    its listing still fails (a database not yet usable behind it). So the
+    step retries until the batch sync itself says `complete`, not merely
+    until the source looks up. Batch syncs are idempotent upserts, so a
+    repeat is harmless.
+    """
+    delay = _BACKFILL_FIRST_DELAY
+    attempt = 0
+    while True:
+        attempt += 1
+        if not await _source_healthy(source_url):
+            outcome = f"{source_url} not healthy"
+        else:
+            try:
+                result = await sync()
+            except Exception as e:  # a step must never kill the backfill
+                result = {"complete": False, "error": str(e)}
+            if result.get("complete", True):
+                logger.info(f"Initial {label} sync complete (attempt {attempt}): {result}")
+                return
+            outcome = f"listing incomplete: {result}"
+        logger.warning(
+            f"Initial {label} sync not complete (attempt {attempt}, {outcome}); "
+            f"retrying in {delay:.0f}s"
+        )
+        await _backfill_sleep(delay)
+        delay = min(delay * 2, _BACKFILL_MAX_DELAY)
+
+
+async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
+    """Background: backfill reporting metadata until every step is complete.
+
+    Terminologies, terms, term relations and template metadata reach
+    PostgreSQL live only through events, so a rebuilt or freshly started
+    reporting database holds none of what existed before until this backfill
+    runs. Each step waits on its OWN source — template metadata comes from
+    template-store, not def-store — and retries until its listing completes:
+    services start in parallel, and a source can be up yet unable to list for
+    a while (a database restarting behind it). The def-store steps run in
+    order, as terms and relations build on terminologies; the template-store
+    step runs alongside, so either source being down never blocks the other.
+    """
+    async def def_store_chain() -> None:
+        await _backfill_until_complete(
+            "terminology", settings.def_store_url, batch_sync_service.batch_sync_terminologies
+        )
+        await _backfill_until_complete(
+            "term", settings.def_store_url, batch_sync_service.batch_sync_terms
+        )
+        await _backfill_until_complete(
+            "term-relation", settings.def_store_url, batch_sync_service.batch_sync_term_relations
+        )
+
+    await asyncio.gather(
+        def_store_chain(),
+        _backfill_until_complete(
+            "template metadata", settings.template_store_url,
+            batch_sync_service.batch_sync_templates,
+        ),
+    )
 
 
 @asynccontextmanager
@@ -484,12 +508,10 @@ async def lifespan(app: FastAPI):
         state.batch_sync_service = BatchSyncService(state.postgres_pool)
         logger.info("Batch sync service initialized")
 
-        # Initial metadata sync runs as a background task. Waits for
-        # def-store to be healthy before firing batch_sync_terminologies/
-        # batch_sync_terms, because those methods swallow connection
-        # errors internally — a single attempt against a not-yet-ready
-        # def-store silently yields empty tables. Backgrounded so it
-        # doesn't block the HTTP listener either.
+        # Initial metadata sync runs as a background task: each step waits
+        # on its own source and retries until its listing completes (see
+        # _initial_metadata_sync). Backgrounded so it never blocks the HTTP
+        # listener; shutdown cancels it.
         state.initial_sync_task = asyncio.create_task(
             _initial_metadata_sync(state.batch_sync_service)
         )
