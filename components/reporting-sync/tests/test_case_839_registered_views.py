@@ -127,8 +127,8 @@ async def test_register_rejects_occupied_unregistered_name(http_client, mock_sta
     """A relation that exists but is not in the bookkeeping is not ours to
     replace — registering over it must 409, not hijack it."""
     _pool, conn = mock_state
-    # 1st fetchval: not in _wip_views; 2nd: pg_class says the name exists.
-    conn.fetchval = AsyncMock(side_effect=[None, True])
+    # fetchvals: the namespace schema exists; not in _wip_views; pg_class has the name.
+    conn.fetchval = AsyncMock(side_effect=[True, None, True])
     async with http_client:
         resp = await http_client.post(
             "/api/reporting-sync/namespace/clintrial/views",
@@ -140,7 +140,7 @@ async def test_register_rejects_occupied_unregistered_name(http_client, mock_sta
 @pytest.mark.asyncio
 async def test_register_invalid_sql_is_400_and_creates_nothing(http_client, mock_state):
     _pool, conn = mock_state
-    conn.fetchval = AsyncMock(side_effect=[None, None])
+    conn.fetchval = AsyncMock(side_effect=[True, None, None])
     conn.fetch = AsyncMock(side_effect=asyncpg.PostgresError("relation does not exist"))
     async with http_client:
         resp = await http_client.post(
@@ -160,7 +160,7 @@ async def test_register_invalid_sql_is_400_and_creates_nothing(http_client, mock
 @pytest.mark.asyncio
 async def test_register_new_view(http_client, mock_state):
     _pool, conn = mock_state
-    conn.fetchval = AsyncMock(side_effect=[None, None])  # not registered, name free
+    conn.fetchval = AsyncMock(side_effect=[True, None, None])  # not registered, name free
     async with http_client:
         resp = await http_client.post(
             "/api/reporting-sync/namespace/clintrial/views",
@@ -193,7 +193,7 @@ async def test_register_new_view(http_client, mock_state):
 @pytest.mark.asyncio
 async def test_reregister_replaces_via_drop_create(http_client, mock_state):
     _pool, conn = mock_state
-    conn.fetchval = AsyncMock(side_effect=[True])  # already registered
+    conn.fetchval = AsyncMock(side_effect=[True, True])  # already registered
     async with http_client:
         resp = await http_client.post(
             "/api/reporting-sync/namespace/clintrial/views",
@@ -214,7 +214,7 @@ async def test_reregister_replaces_via_drop_create(http_client, mock_state):
 @pytest.mark.asyncio
 async def test_register_dependency_failure_is_409(http_client, mock_state):
     _pool, conn = mock_state
-    conn.fetchval = AsyncMock(side_effect=[True])
+    conn.fetchval = AsyncMock(side_effect=[True, True])
     # The DROP of the replaced view hits a dependent (2BP01).
     async def _execute(sql, *args):
         if sql.startswith("DROP VIEW"):
@@ -457,8 +457,10 @@ async def test_pg_recreation_after_schema_reset(http_client, real_state):
         )
         assert resp.status_code == 201
 
+    # The schema is lost (not the namespace deleted — that would tombstone
+    # it); its bookkeeping survives in public.
+    await real_state.execute('DROP SCHEMA "clintrial" CASCADE')
     sm = SchemaManager(real_state)
-    await sm.drop_namespace_schema("clintrial")
     # Tables come back (restore / batch sync), then recreation runs.
     await _seed_version_table(real_state)
     present, failed = await sm.recreate_registered_views("clintrial")

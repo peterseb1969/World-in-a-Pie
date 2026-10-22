@@ -37,6 +37,7 @@ from wip_auth import (
 )
 from wip_auth.events import WIP_EVENTS_STREAM, EventBus, StreamSpec
 from wip_auth.ratelimit import setup_rate_limiting
+from wip_auth.registry_client import RegistryError
 from wip_auth.security import check_production_security
 from wip_auth.startup import retry_async
 
@@ -59,7 +60,7 @@ from .models import (
 )
 from .parity import NamespaceParityResult, check_namespace_parity
 from .pg_roles import RoleSpec, is_privileged, provision_roles
-from .schema_manager import SchemaManager
+from .schema_manager import NamespaceDeletedError, SchemaManager, registry_namespace_status
 from .search_service import (
     ActivityResponse,
     EntityReferencesResponse,
@@ -2246,26 +2247,101 @@ async def delete_namespace(prefix: str):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    # total_deleted MUST be a real integer: Registry records it as the
-    # deletion journal's `postgres_rows` audit field, which is int-typed —
-    # a null here poisoned the journal and turned every otherwise-successful
-    # namespace DELETE into a validation error. drop_namespace_schema counts
-    # the schema's rows before dropping it.
-    total_deleted = await sm.drop_namespace_schema(prefix)
+    total_deleted = await _drop_namespace_reporting(sm, prefix)
+    logger.info(f"Namespace {prefix} reporting schema dropped ({schema})")
+    return {"namespace": prefix, "dropped_schema": schema, "total_deleted": total_deleted}
 
+
+async def _drop_namespace_reporting(sm: SchemaManager, prefix: str) -> int:
+    """Drop the namespace's schema (leaving its tombstone) and clear its rows
+    from the shared bookkeeping tables. Returns the number of rows removed.
+
+    The total MUST be a real integer: Registry records it as the deletion
+    journal's `postgres_rows` audit field, which is int-typed — a null here
+    poisoned the journal and turned every otherwise-successful namespace
+    DELETE into a validation error. drop_namespace_schema counts the schema's
+    rows before dropping it.
+    """
+    assert state.postgres_pool is not None
+    total_deleted = await sm.drop_namespace_schema(prefix)
     async with state.postgres_pool.acquire() as conn:
-        # Clear the namespace's rows from the shared bookkeeping tables (all
-        # in public, keyed by namespace — see init_postgres_schema).
-        # asyncpg returns a "DELETE <n>" status string; fold those rows into
-        # the audit total.
+        # The bookkeeping tables all live in public, keyed by namespace (see
+        # init_postgres_schema). asyncpg returns a "DELETE <n>" status string;
+        # fold those rows into the audit total.
         for table in ("_wip_schema_migrations", "_wip_sync_status", "_wip_views"):
             status = await conn.execute(
                 f"DELETE FROM public.{table} WHERE namespace = $1", prefix
             )
             total_deleted += int(status.rsplit(" ", 1)[-1])
+    return total_deleted
 
-    logger.info(f"Namespace {prefix} reporting schema dropped ({schema})")
-    return {"namespace": prefix, "dropped_schema": schema, "total_deleted": total_deleted}
+
+# Base tables reporting-sync creates in a namespace schema besides doc_*.
+_NAMESPACE_METADATA_TABLES = frozenset({
+    "templates", "terminologies", "terms", "term_names", "term_relations", "term_closure",
+})
+
+
+@router.post("/maintenance/orphan-schemas", dependencies=[_PRIVILEGED])
+async def clean_orphan_schemas(dry_run: bool = True):
+    """Find, and unless dry_run drop, reporting schemas of deleted namespaces.
+
+    Events that arrived after a namespace deletion could re-create its schema
+    before reporting-sync recorded deleted namespaces. A schema is an orphan
+    when the Registry has no namespace of that name and every base table in
+    it is one reporting-sync creates; a schema holding anything else is
+    reported under `skipped`, never dropped. If the Registry cannot answer for
+    any schema, nothing is dropped. Dropping writes the namespace's tombstone,
+    as a namespace deletion does.
+    """
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+
+    async with state.postgres_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT n.nspname AS schema,
+                   array_remove(array_agg(t.table_name::text), NULL) AS tables
+            FROM pg_namespace n
+            LEFT JOIN information_schema.tables t
+              ON t.table_schema = n.nspname AND t.table_type = 'BASE TABLE'
+            WHERE n.nspname NOT IN ('public', 'information_schema')
+              AND n.nspname NOT LIKE 'pg\\_%'
+            GROUP BY n.nspname
+            ORDER BY n.nspname
+            """
+        )
+
+    orphans: list[str] = []
+    skipped: dict[str, str] = {}
+    for row in rows:
+        schema = row["schema"]
+        try:
+            exists = await registry_namespace_status(schema) is not None
+        except RegistryError as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Registry could not answer for {schema!r}; nothing was dropped: {e}",
+            ) from e
+        if exists:
+            continue
+        foreign = sorted(
+            t for t in row["tables"]
+            if not t.startswith("doc_") and t not in _NAMESPACE_METADATA_TABLES
+        )
+        if foreign:
+            skipped[schema] = f"holds tables reporting-sync does not create: {', '.join(foreign)}"
+        else:
+            orphans.append(schema)
+
+    rows_dropped: dict[str, int] = {}
+    if not dry_run:
+        sm = SchemaManager(state.postgres_pool)
+        for schema in orphans:
+            rows_dropped[schema] = await _drop_namespace_reporting(sm, schema)
+            logger.info(f"Dropped orphan reporting schema {schema!r}")
+
+    return {"dry_run": dry_run, "orphans": orphans, "skipped": skipped, "rows_dropped": rows_dropped}
 
 
 # =============================================================================
@@ -2400,10 +2476,12 @@ async def register_view(
     try:
         # The schema may not exist yet when an app bootstraps views before
         # its first sync; creating it is harmless and namespace deletion
-        # cleans it up.
+        # cleans it up. A deleted namespace gets no schema back.
         schema = await sm.ensure_schema(prefix)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except NamespaceDeletedError as e:
+        raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}") from e
 
     async with state.postgres_pool.acquire() as conn:
         already_registered = bool(await conn.fetchval(

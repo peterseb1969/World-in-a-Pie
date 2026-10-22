@@ -26,7 +26,7 @@ from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 from .config import settings
 from .metrics import metrics
 from .models import DroppedEvent, EventType, ReportingConfig, SyncStatus
-from .schema_manager import SchemaManager
+from .schema_manager import NamespaceDeletedError, SchemaManager
 from .term_closure import TermClosureMaintainer
 from .transformer import DocumentTransformer, _parse_datetime, term_name_rows
 
@@ -758,6 +758,13 @@ class SyncWorker:
             logger.error(f"Invalid JSON in message: {e}")
             await msg.ack()  # Don't retry invalid messages
             self.status.events_failed += 1
+
+        except NamespaceDeletedError as e:
+            # The namespace was deleted after this event was published; its
+            # data is gone everywhere, and a retry would meet the same answer.
+            logger.info(f"Skipping event for deleted namespace {e.namespace!r}")
+            await msg.ack()
+            self.status.events_skipped_deleted_namespace += 1
 
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)

@@ -264,7 +264,7 @@ async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | N
     cache_key = identity.user_id
 
     # Use sentinel to distinguish "not cached" from "cached None"
-    cached: list[str] | None | object = _accessible_cache.get(cache_key, _SENTINEL)
+    cached: list[str] | object | None = _accessible_cache.get(cache_key, _SENTINEL)
     if cached is not _SENTINEL:
         return cached  # type: ignore[return-value]
 

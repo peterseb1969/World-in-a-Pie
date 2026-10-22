@@ -790,6 +790,36 @@ no longer reads `MINIO_URL`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` or
 
 ---
 
+### A deleted namespace's reporting schema stays deleted
+
+Deleting a namespace dropped its PostgreSQL reporting schema, but an event
+still in flight could create it again: a document or term event processed
+after the drop, a retry, or the term-closure rebuild that runs a few seconds
+after term changes. The result was an orphan schema holding only the late
+rows, left behind for good (dozens on long-lived dev installs). A namespace
+later re-created under the same prefix would start next to that stale data.
+
+reporting-sync now records every namespace it drops in
+`public._wip_deleted_namespaces`, in the same transaction as the drop. A
+missing schema is created only when no such record exists, or when the
+Registry says the namespace is `active` again (re-created under the same
+prefix), in which case the record is cleared. Events for a deleted namespace
+are acknowledged and counted in the sync status as
+`events_skipped_deleted_namespace`, not retried and not reported as drops.
+Registering a view in a deleted namespace answers 404. If the Registry
+cannot be reached when a deleted namespace's schema would be created, the
+event is retried rather than the schema created.
+
+**Action:** remove the orphans earlier versions left, once per install.
+`POST /api/reporting-sync/maintenance/orphan-schemas` (wip-admins /
+wip-services) lists schemas whose namespace the Registry does not know
+(`dry_run=true`, the default) and drops them with `dry_run=false`. Only
+schemas holding nothing but tables reporting-sync creates are dropped; any
+other schema is listed under `skipped`. If the Registry cannot answer for a
+schema, nothing is dropped.
+
+---
+
 ### The Registry enforces namespace authorization on entries, synonyms and search
 
 Until now the Registry's entry, synonym and search routes accepted any valid

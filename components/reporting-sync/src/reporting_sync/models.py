@@ -199,6 +199,9 @@ class SyncStatus(BaseModel):
     events_failed: int = 0
     events_dropped: int = 0
     recent_drops: list[DroppedEvent] = Field(default_factory=list)
+    # Events for a namespace deleted while they were in flight. Expected
+    # after any deletion, not a failure: their data is gone everywhere.
+    events_skipped_deleted_namespace: int = 0
     tables_managed: int = 0
 
 

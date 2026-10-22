@@ -82,6 +82,7 @@ ROUTES = [
      f"{P}/export/csv?namespace={{ns}}&table=doc_patient"),
     ("POST", f"{P}/export/csv", "privileged", None),
     ("DELETE", f"{P}/namespace/{{prefix}}", "privileged", None),
+    ("POST", f"{P}/maintenance/orphan-schemas", "privileged", None),
     ("POST", f"{P}/namespace/{{prefix}}/views", "ns_admin", f"{P}/namespace/{{ns}}/views"),
     ("GET", f"{P}/namespace/{{prefix}}/views", "ns_read", f"{P}/namespace/{{ns}}/views"),
     ("POST", f"{P}/namespace/{{prefix}}/views/{{view_name}}/rows", "ns_read",

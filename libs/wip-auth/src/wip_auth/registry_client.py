@@ -532,6 +532,30 @@ class RegistryClientBase:
                 return "retain"
             return cast(str, response.json().get("deletion_mode", "retain"))
 
+    async def get_namespace(self, namespace: str) -> dict[str, Any] | None:
+        """The namespace's Registry record, or None when it does not exist.
+
+        Raises RegistryError for any other answer, including an unreachable
+        Registry: callers that act on "this namespace is gone" must never
+        conclude it from a failed lookup.
+        """
+        try:
+            async with self._make_client() as client:
+                response = await client.get(
+                    f"{self.base_url}/api/registry/namespaces/{namespace}",
+                    headers=self._get_headers(),
+                )
+        except httpx.HTTPError as e:
+            raise RegistryError(f"Registry unreachable looking up namespace {namespace}: {e}") from e
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            raise RegistryError(
+                f"Failed to fetch namespace {namespace}: "
+                f"{response.status_code} - {response.text}"
+            )
+        return cast(dict[str, Any], response.json())
+
     async def health_check(self) -> bool:
         """Check if the Registry service is healthy."""
         try:

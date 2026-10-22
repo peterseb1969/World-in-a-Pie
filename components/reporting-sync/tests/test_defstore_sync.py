@@ -636,11 +636,14 @@ class TestSchemaManagerTables:
         pool, conn = mock_pool
         conn.fetchval = AsyncMock(return_value=False)  # table doesn't exist
         sm = SchemaManager(pool)
+        # Schema creation (and its deleted-namespace guard) is covered against
+        # real PostgreSQL in test_case_916; these tests pin the table DDL.
+        sm.ensure_schema = AsyncMock(return_value="wip")
 
         result = await sm.ensure_terminologies_table("wip")
 
         assert result == '"wip"."terminologies"'
-        assert conn.execute.await_count == 2  # CREATE SCHEMA + CREATE TABLE
+        assert conn.execute.await_count == 1  # CREATE TABLE
         ddl = conn.execute.call_args[0][0]
         assert "CREATE TABLE" in ddl
         assert '"terminology_id"' in ddl
@@ -653,13 +656,16 @@ class TestSchemaManagerTables:
         from reporting_sync.schema_manager import SchemaManager
 
         pool, conn = mock_pool
-        conn.fetchval = AsyncMock(return_value=False)
+        conn.fetchval = AsyncMock(return_value=False)  # table doesn't exist
         sm = SchemaManager(pool)
+        # Schema creation (and its deleted-namespace guard) is covered against
+        # real PostgreSQL in test_case_916; these tests pin the table DDL.
+        sm.ensure_schema = AsyncMock(return_value="wip")
 
         result = await sm.ensure_terms_table("wip")
 
         assert result == '"wip"."terms"'
-        assert conn.execute.await_count == 2  # CREATE SCHEMA + CREATE TABLE
+        assert conn.execute.await_count == 1  # CREATE TABLE
         ddl = conn.execute.call_args[0][0]
         assert "CREATE TABLE" in ddl
         assert '"term_id"' in ddl
@@ -672,13 +678,16 @@ class TestSchemaManagerTables:
         from reporting_sync.schema_manager import SchemaManager
 
         pool, conn = mock_pool
-        conn.fetchval = AsyncMock(return_value=False)
+        conn.fetchval = AsyncMock(return_value=False)  # table doesn't exist
         sm = SchemaManager(pool)
+        # Schema creation (and its deleted-namespace guard) is covered against
+        # real PostgreSQL in test_case_916; these tests pin the table DDL.
+        sm.ensure_schema = AsyncMock(return_value="wip")
 
         result = await sm.ensure_term_relations_table("wip")
 
         assert result == '"wip"."term_relations"'
-        assert conn.execute.await_count == 2  # CREATE SCHEMA + CREATE TABLE
+        assert conn.execute.await_count == 1  # CREATE TABLE
         ddl = conn.execute.call_args[0][0]
         assert "CREATE TABLE" in ddl
         assert '"source_term_id"' in ddl

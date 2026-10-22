@@ -10,6 +10,7 @@ Responsibilities:
 import contextlib
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, cast
 
 import asyncpg
@@ -17,6 +18,43 @@ import asyncpg
 from .models import FieldType, FileFieldConfig, ReportingConfig, SemanticType, SyncStrategy, TemplateField
 
 logger = logging.getLogger(__name__)
+
+
+class NamespaceDeletedError(Exception):
+    """The namespace was deleted, so its reporting schema must not be created.
+
+    Raised instead of re-creating the schema of a deleted namespace. An event
+    still in flight when the namespace was deleted carries data that no longer
+    exists anywhere else; callers drop it.
+    """
+
+    def __init__(self, namespace: str):
+        super().__init__(f"Namespace {namespace!r} was deleted; not re-creating its reporting schema")
+        self.namespace = namespace
+
+
+# Answers a namespace's Registry status ("active", "locked", ...) or None when
+# the Registry has no such namespace. Raises when the Registry cannot answer.
+NamespaceStatusLookup = Callable[[str], Awaitable[str | None]]
+
+
+async def registry_namespace_status(namespace: str) -> str | None:
+    """The namespace's status from the Registry, or None if it has none."""
+    from wip_auth.registry_client import RegistryClientBase
+
+    record = await RegistryClientBase().get_namespace(namespace)
+    return None if record is None else cast(str | None, record.get("status"))
+
+
+# Deleted namespaces, written in the same transaction that drops their schema.
+# A schema is only ever created after checking this table, so an event that
+# arrives after a deletion cannot bring the schema back.
+_TOMBSTONES_DDL = """
+CREATE TABLE IF NOT EXISTS public._wip_deleted_namespaces (
+    namespace TEXT PRIMARY KEY,
+    deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+"""
 
 
 # Map WIP field types to PostgreSQL types
@@ -58,8 +96,14 @@ class SchemaManager:
     silently sharing one. Namespace deletion is ``DROP SCHEMA CASCADE``.
     """
 
-    def __init__(self, pool: asyncpg.Pool):
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        namespace_status: NamespaceStatusLookup = registry_namespace_status,
+    ):
         self.pool = pool
+        self._namespace_status = namespace_status
+        self._tombstones_ready = False
         # (schema, table) pairs of identity-less tables already checked for
         # the legacy unique-identity index. create_table never emits that
         # index without identity_fields, and identity_fields cannot change
@@ -542,14 +586,67 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
         namespace schema at once; losing that race must mean "someone else
         just created it", never a failed sync (it halted a live kb restore
         at the structure gate: three templates lost, three tables missing).
+
+        A deleted namespace's schema is never re-created. Events, retries and
+        replays can still arrive after a namespace deletion dropped the schema;
+        creating it again would leave an orphan schema holding only that late
+        row. A missing schema is created only when no tombstone names the
+        namespace, or the Registry says the namespace is active again (it was
+        re-created under the same prefix). Otherwise NamespaceDeletedError is
+        raised. The tombstone check runs under the same advisory lock as
+        drop_namespace_schema, so a create cannot slip in behind a drop.
         """
         schema = self.schema_for(namespace)
         async with self.pool.acquire() as conn:
-            # A concurrent caller can create it between the existence check
-            # and the create — the desired state holds either way.
-            with contextlib.suppress(asyncpg.UniqueViolationError):
-                await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+            # Fast path: an existing schema costs one catalog read, as the
+            # plain CREATE SCHEMA IF NOT EXISTS did. If a drop lands right
+            # after this, the caller's next statement fails on the missing
+            # schema and the retry comes back through the guarded path.
+            if await conn.fetchval("SELECT 1 FROM pg_namespace WHERE nspname = $1", schema):
+                return schema
+
+            await self._ensure_tombstone_table(conn)
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))", f"wip-ns:{schema}"
+                )
+                if await conn.fetchval("SELECT 1 FROM pg_namespace WHERE nspname = $1", schema):
+                    return schema
+                tombstoned = await conn.fetchval(
+                    "SELECT 1 FROM public._wip_deleted_namespaces WHERE namespace = $1",
+                    namespace,
+                )
+                if tombstoned:
+                    # Deletion keeps the namespace 'locked' until its record is
+                    # removed, so only 'active' means it exists again. An
+                    # unreachable Registry raises: never create on doubt.
+                    if await self._namespace_status(namespace) != "active":
+                        raise NamespaceDeletedError(namespace)
+                    await conn.execute(
+                        "DELETE FROM public._wip_deleted_namespaces WHERE namespace = $1",
+                        namespace,
+                    )
+                    logger.info(f"Namespace {namespace!r} was re-created; clearing its tombstone")
+                # A caller outside this guard can still create it concurrently
+                # — the desired state holds either way.
+                with contextlib.suppress(asyncpg.UniqueViolationError):
+                    async with conn.transaction():
+                        await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
         return schema
+
+    async def _ensure_tombstone_table(self, conn: asyncpg.Connection) -> None:
+        """Create the tombstone table once per process.
+
+        Concurrent first creators can collide on the catalog even with IF NOT
+        EXISTS; the loser's table exists all the same. The savepoint keeps a
+        surrounding transaction usable after that collision.
+        """
+        if self._tombstones_ready:
+            return
+        with contextlib.suppress(asyncpg.UniqueViolationError, asyncpg.DuplicateTableError):
+            async with conn.transaction():
+                await conn.execute(_TOMBSTONES_DDL)
+        self._tombstones_ready = True
 
     async def drop_namespace_schema(self, namespace: str) -> int:
         """Drop the namespace's schema and return how many rows went with it.
@@ -561,10 +658,25 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
         int-typed journal and made every namespace DELETE return a validation
         error while the deletion itself succeeded). Counting first is cheap at
         namespace-deletion frequency. Returns 0 when the schema doesn't exist.
+
+        Records a tombstone for the namespace in the same transaction, under
+        the advisory lock ensure_schema takes, even when no schema exists: a
+        late event must not create one afterwards.
         """
         schema = self.schema_for(namespace)
         total = 0
-        async with self.pool.acquire() as conn:
+        async with self.pool.acquire() as conn, conn.transaction():
+            await self._ensure_tombstone_table(conn)
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))", f"wip-ns:{schema}"
+            )
+            await conn.execute(
+                """
+                INSERT INTO public._wip_deleted_namespaces (namespace) VALUES ($1)
+                ON CONFLICT (namespace) DO UPDATE SET deleted_at = NOW()
+                """,
+                namespace,
+            )
             tables = await conn.fetch(
                 """
                 SELECT table_name FROM information_schema.tables

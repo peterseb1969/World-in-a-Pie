@@ -38,6 +38,8 @@ import asyncio
 import logging
 import time
 
+from .schema_manager import NamespaceDeletedError
+
 logger = logging.getLogger(__name__)
 
 # One lap more than def-store's ontology traversal allows, so anything
@@ -77,6 +79,11 @@ class TermClosureMaintainer:
             self._dirty.discard(namespace)
             try:
                 await self.rebuild(namespace)
+            except NamespaceDeletedError:
+                # Deleted between the term event and this debounced rebuild:
+                # there is nothing left to rebuild.
+                logger.info("term_closure rebuild skipped: namespace %s was deleted", namespace)
+                return
             except Exception as e:
                 logger.error(
                     "term_closure rebuild failed for %s: %s", namespace, e
