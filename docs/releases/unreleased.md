@@ -891,6 +891,27 @@ Read access is still checked on the term's own namespace.
 **No action required.** `@wip/client` `getTerm` and the MCP term tools pass
 the parameter through and pick this up with the new images.
 
+### `wip-toolkit` 0.6.0 and `wip-archive` 0.2.0: the wheels were behind their sources
+
+Both packages changed after 0.5.1 and 0.1.1 were set (2026-07-23) without a
+version bump, so one version name covered two different sets of bytes. An app
+that scaffolded in that window holds the old build; `pip` treats the old
+version as satisfied. The scaffold refresh guard noticed and aborted: a
+refresh built the 0.5.1 wheel from this repo and found it differed from the
+copy the app vendors. Both are minor bumps because both gained features:
+- **Archives declare format 3.1**, and restore remaps resolved edge-endpoint
+  halves and qualified cross-namespace references through a fresh restore.
+- **`inspect` runs on a shared archive analysis core.**
+- **A default export says what it drops.** Its manifest is honest about the
+  omission and the toolkit warns loudly.
+- **The toolkit health check probes the prefixed route.** In proxy mode it
+  answered 404 for every service behind an ingress.
+
+**Action:** apps vendoring the wheels re-run the scaffold refresh to pick up
+`wip_toolkit-0.6.0` and `wip_archive-0.2.0`. A refresh that aborted on the
+wheel mismatch no longer trips that guard. Install both wheels together;
+`wip-toolkit` depends on `wip-archive`.
+
 ---
 
 ## What happens on first start after the upgrade
