@@ -53,13 +53,13 @@ def _count(queries: list[str], catalog: str) -> int:
 
 @requires_postgres
 @pytest.mark.asyncio
-async def test_an_existing_table_is_looked_up_once_per_event(pg_pool, catalog_queries):
+async def test_an_existing_table_is_looked_up_once_per_uncached_ensure(pg_pool, catalog_queries):
     await init_postgres_schema(pg_pool)
     sm = SchemaManager(pg_pool)
     await sm.ensure_table_for_template(NS, _template("keyed", ["title"]))
 
     catalog_queries.clear()
-    await sm.ensure_table_for_template(NS, _template("keyed", ["title"]))
+    await sm.ensure_table_for_template(NS, _template("keyed", ["title"]), cached=False)
 
     assert _count(catalog_queries, "information_schema.tables") == 1
     assert _count(catalog_queries, "information_schema.columns") == 1
@@ -75,7 +75,7 @@ async def test_the_legacy_index_check_runs_once_per_table(pg_pool, catalog_queri
 
     catalog_queries.clear()
     for _ in range(3):
-        await sm.ensure_table_for_template(NS, _template("append_only", []))
+        await sm.ensure_table_for_template(NS, _template("append_only", []), cached=False)
 
     # The first ensure above created the table, so the first re-ensure is
     # the table's first migration pass and checks for the index once.

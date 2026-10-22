@@ -498,8 +498,10 @@ class BatchSyncService:
                         eager_version = int(eager_template.get("version", 1))
                         version_templates[eager_version] = eager_template
                 if eager_template is not None:
+                    # Uncached: batch sync is the repair path, and runs the
+                    # catalog checks once per job, not per document.
                     tpl_table = await self.schema_manager.ensure_table_for_template(
-                        tpl_ns, eager_template
+                        tpl_ns, eager_template, cached=False
                     )
                     if tpl_table:
                         ns_tables[(tpl_ns, eager_version)] = tpl_table
@@ -573,7 +575,7 @@ class BatchSyncService:
                         version_template = await _template_for_version(doc_tv)
                         ns_tables[(ns, doc_tv)] = (
                             await self.schema_manager.ensure_table_for_template(
-                                ns, version_template
+                                ns, version_template, cached=False
                             )
                         )
                         touched_namespaces.add(ns)

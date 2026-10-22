@@ -57,6 +57,15 @@ CREATE TABLE IF NOT EXISTS public._wip_deleted_namespaces (
 """
 
 
+# Tables ensure_table_for_template has already ensured, per connection pool:
+# (namespace, template_id, template_version) -> schema-qualified table name.
+# Shared across SchemaManager instances on the same pool, because the worker,
+# batch sync and HTTP handlers each build their own SchemaManager, and an
+# eviction by one (a namespace deletion, a force rebuild) must reach the
+# others. Each entry holds its pool, so a recycled id() cannot alias it.
+_ENSURED_TABLES: dict[int, tuple[asyncpg.Pool, dict[tuple[str, str, int], str]]] = {}
+
+
 # Map WIP field types to PostgreSQL types
 TYPE_MAPPING: dict[FieldType, str] = {
     FieldType.STRING: "TEXT",
@@ -691,6 +700,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
                 )
                 total += int(count or 0)
             await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        self._forget_ensured(namespace)
         return total
 
     async def table_exists(self, schema: str, table_name: str) -> bool:
@@ -1245,6 +1255,8 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
         self,
         namespace: str,
         template: dict[str, Any],
+        *,
+        cached: bool = True,
     ) -> str:
         """
         Ensure a table exists for a template in a namespace's schema.
@@ -1253,9 +1265,20 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
         not the template's — a template shared from another namespace still
         materialises one reporting table per namespace whose documents use it.
 
+        A template version's table shape never changes (a template change is a
+        new version, so a new table), so once a version's table is ensured the
+        catalog checks are skipped for the rest of the process: they were about
+        40% of a document event's handling time. With cached=False the checks
+        always run and refresh the entry — for rare paths (batch sync, template
+        events) that should also repair tables changed outside reporting-sync.
+        Changes made by reporting-sync itself evict entries (namespace
+        deletion, force rebuild); a write that fails on a missing table or
+        column should call forget_ensured_table and retry.
+
         Args:
             namespace: The document's namespace (→ its PostgreSQL schema).
             template: Full template definition from Template Store
+            cached: Use (and fill) the per-process ensured-table cache.
 
         Returns:
             The schema-qualified table reference ('"<ns>"."doc_<value>"'),
@@ -1263,6 +1286,10 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
         """
         template_value = template["value"]
         template_version = template.get("version", 1)
+        key = self._ensured_key(namespace, template)
+        ensured = self._ensured_tables()
+        if cached and key in ensured:
+            return ensured[key]
         fields_data = template.get("fields", [])
 
         # Parse fields
@@ -1309,7 +1336,43 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
         # Return the schema-qualified reference to this VERSION's table
         # ("<ns>"."doc_<value>__v<N>") so callers build SQL against it
         # directly, without re-deriving the schema.
-        return self.qualified_name(namespace, template_value, config, template_version)
+        qualified = self.qualified_name(namespace, template_value, config, template_version)
+        ensured[key] = qualified
+        return qualified
+
+    @staticmethod
+    def _ensured_key(namespace: str, template: dict[str, Any]) -> tuple[str, str, int]:
+        # template_id, not value: two same-valued templates (one shared from
+        # another namespace) can feed one table, and each must be ensured.
+        return (
+            namespace,
+            str(template.get("template_id") or template["value"]),
+            int(template.get("version", 1)),
+        )
+
+    def _ensured_tables(self) -> dict[tuple[str, str, int], str]:
+        entry = _ENSURED_TABLES.get(id(self.pool))
+        if entry is None or entry[0] is not self.pool:
+            entry = (self.pool, {})
+            _ENSURED_TABLES[id(self.pool)] = entry
+        return entry[1]
+
+    def forget_ensured_table(self, namespace: str, template: dict[str, Any]) -> None:
+        """Drop one template version's cache entry, so its next ensure checks
+        the catalog again."""
+        self._ensured_tables().pop(self._ensured_key(namespace, template), None)
+
+    def _forget_ensured(self, namespace: str, base_table: str | None = None) -> None:
+        """Drop the namespace's cache entries — all, or only one template's
+        (its bare table name and its <base>__v<N> version tables)."""
+        ensured = self._ensured_tables()
+        schema_prefix = f'"{self.schema_for(namespace)}".'
+        for key, qualified in list(ensured.items()):
+            if key[0] != namespace:
+                continue
+            table = qualified.removeprefix(schema_prefix).strip('"')
+            if base_table is None or table == base_table or table.startswith(f"{base_table}__v"):
+                del ensured[key]
 
     async def list_version_tables(
         self, namespace: str, template_value: str,
@@ -1739,6 +1802,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
                 table = version_tables[version]
                 await conn.execute(f'DROP TABLE IF EXISTS "{schema}"."{table}"')
                 dropped.append(f"{schema}.{table}")
+        self._forget_ensured(namespace, base)
         if dropped:
             logger.info(
                 f'Dropped {len(dropped)} relation(s) for "{schema}"."{base}": '

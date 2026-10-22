@@ -32,6 +32,14 @@ from .transformer import DocumentTransformer, _parse_datetime, term_name_rows
 
 logger = logging.getLogger(__name__)
 
+# A write naming a table, column or schema that no longer exists: the
+# ensured-table cache is stale for it.
+_MISSING_RELATION_ERRORS = (
+    asyncpg.exceptions.UndefinedTableError,
+    asyncpg.exceptions.UndefinedColumnError,
+    asyncpg.exceptions.InvalidSchemaNameError,
+)
+
 # Consecutive failed fetches (timeouts excluded) after which the consumer loop
 # gives up and lets its supervisor re-subscribe.
 MAX_CONSECUTIVE_FETCH_ERRORS = 30
@@ -220,21 +228,17 @@ class SyncWorker:
 
         # Insert/update rows
         try:
-            async with self.pool.acquire() as conn:
-                for row in rows:
-                    sql, values = transformer.generate_upsert_sql(table_name, row, strategy)
-                    try:
-                        await conn.execute(sql, *values)
-                    except Exception as e:
-                        logger.error(f"Error inserting row for {document_id}: {e}")
-                        logger.debug(f"SQL: {sql}")
-                        # Truncate values to avoid logging sensitive document content (L4)
-                        truncated = [
-                            (str(v)[:100] + "..." if len(str(v)) > 100 else v)
-                            for v in values
-                        ]
-                        logger.debug(f"Values (truncated): {truncated}")
-                        raise
+            try:
+                await self._write_rows(table_name, rows, strategy, transformer, document_id)
+            except _MISSING_RELATION_ERRORS as e:
+                # The ensured-table cache said the table was there, but it was
+                # changed outside reporting-sync. Ensure it for real (the
+                # deleted-namespace guard applies) and retry once; the rows
+                # are upserts, so re-writing any that landed is harmless.
+                logger.warning(f"{table_name} changed behind the table cache ({e}); re-ensuring")
+                self.schema_manager.forget_ensured_table(namespace, template)
+                table_name = await self.schema_manager.ensure_table_for_template(namespace, template)
+                await self._write_rows(table_name, rows, strategy, transformer, document_id)
 
             # Pin-to-what-validated means an update can move a document to a
             # newer version's table; under latest_only the sibling tables
@@ -262,6 +266,30 @@ class SyncWorker:
         except Exception as e:
             metrics.record_event_failed(template_value, table_name, "insert_error", str(e))
             raise
+
+    async def _write_rows(
+        self,
+        table_name: str,
+        rows: list[dict[str, Any]],
+        strategy: str,
+        transformer: DocumentTransformer,
+        document_id: str,
+    ) -> None:
+        async with self.pool.acquire() as conn:
+            for row in rows:
+                sql, values = transformer.generate_upsert_sql(table_name, row, strategy)
+                try:
+                    await conn.execute(sql, *values)
+                except Exception as e:
+                    logger.error(f"Error inserting row for {document_id}: {e}")
+                    logger.debug(f"SQL: {sql}")
+                    # Truncate values to avoid logging sensitive document content (L4)
+                    truncated = [
+                        (str(v)[:100] + "..." if len(str(v)) > 100 else v)
+                        for v in values
+                    ]
+                    logger.debug(f"Values (truncated): {truncated}")
+                    raise
 
     async def _process_template_event(self, event_data: dict[str, Any]) -> bool:
         """
@@ -297,7 +325,11 @@ class SyncWorker:
             # Still sync template metadata even if doc sync is disabled
         else:
             # Create or update document table
-            table_name = await self.schema_manager.ensure_table_for_template(namespace, template)
+            # Uncached: a template event is rare, and a natural point to
+            # re-check a table that may have been changed outside the service.
+            table_name = await self.schema_manager.ensure_table_for_template(
+                namespace, template, cached=False
+            )
             if table_name and table_name not in self._managed_tables:
                 self._managed_tables.add(table_name)
                 self.status.tables_managed = len(self._managed_tables)

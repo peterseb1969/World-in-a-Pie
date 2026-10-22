@@ -61,7 +61,7 @@ def svc():
     service = BatchSyncService(pool)
     service._resolve_template_fields = AsyncMock(side_effect=lambda t: t)
     service.schema_manager.ensure_table_for_template = AsyncMock(
-        side_effect=lambda ns, t: f"doc_case_record__v{t.get('version')}"
+        side_effect=lambda ns, t, **_: f"doc_case_record__v{t.get('version')}"
     )
     service.schema_manager.ensure_views_for_template = AsyncMock(return_value=None)
     service.schema_manager.delete_from_sibling_version_tables = AsyncMock(return_value=0)
