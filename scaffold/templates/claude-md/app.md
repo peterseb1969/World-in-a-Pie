@@ -199,11 +199,13 @@ The WIP libs are tarballs in `libs/`. `@tanstack/react-query` is the peer depend
 
 ## WIP Toolkit
 
-`wip-toolkit` is a CLI for backup, export, import, and data migration. Install from the wheel in `libs/`:
+`wip-toolkit` is a CLI for backup, export, import, and data migration. Install it together with the `wip-archive` wheel it depends on, both from `libs/`, in one command:
 
 ```bash
-pip install libs/wip_toolkit-*.whl
+pip install libs/wip_archive-*.whl libs/wip_toolkit-*.whl
 ```
+
+`wip-archive` is not on PyPI, so the toolkit wheel alone cannot resolve its dependency — and naming both local files keeps pip from ever looking for that name elsewhere.
 
 Key commands:
 - `wip-toolkit export <namespace> <output.zip>` — Export namespace to archive

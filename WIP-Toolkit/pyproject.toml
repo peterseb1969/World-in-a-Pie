@@ -1,6 +1,6 @@
 [project]
 name = "wip-toolkit"
-version = "0.6.0"
+version = "0.6.1"
 description = "Backup, migration, and data management toolkit for World In a Pie (WIP)"
 requires-python = ">=3.11"
 dependencies = [
@@ -11,7 +11,9 @@ dependencies = [
     # The archive format contract + id remapping live in libs/wip-archive
     # (a path-dep sibling of wip-auth, not on PyPI): repo installs get it
     # via `-e ../libs/wip-archive`; wheel consumers install both wheels.
-    "wip-archive",
+    # The floor is the oldest archive this toolkit's imports exist in
+    # (wip_archive.model); without it pip accepts any installed archive.
+    "wip-archive>=0.2.0",
 ]
 
 [project.scripts]

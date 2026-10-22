@@ -312,10 +312,23 @@ else
     # support modern pyproject.toml build backends
     pip install --upgrade pip setuptools -q 2>/dev/null || true
 
-    # Install test dependencies
-    pip install pytest ruff mypy build -q 2>/dev/null || true
-
     echo "   Venv created"
+fi
+
+# Idempotent test-tool install, for the same reason as wip_mcp below: a
+# pre-existing .venv skips the create branch above. Without pytest,
+# scripts/wip-test.sh fails with "pytest: command not found" well after setup
+# reported success — so a failed install here is reported, not swallowed.
+if ! "$VENV_PYTHON" -c "import pytest, ruff, mypy, build" 2>/dev/null; then
+    echo "   Installing test tools (pytest, ruff, mypy, build)..."
+    if "$VENV_PYTHON" -m pip install pytest ruff mypy build -q 2>&1; then
+        echo "   Test tools installed"
+    else
+        echo ""
+        echo "   WARNING: test tool install failed — scripts/wip-test.sh will not run."
+        echo "   Fix manually: .venv/bin/pip install pytest ruff mypy build"
+        echo ""
+    fi
 fi
 
 # Idempotent wip_mcp install. A pre-existing .venv may be incomplete — a

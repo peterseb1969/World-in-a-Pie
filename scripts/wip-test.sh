@@ -288,6 +288,26 @@ _ensure_component_test_deps() {
         _pip_check_tripwire "$name"
         return 0
     fi
+    # wip-toolkit: CI's toolkit job recipe. wip-archive goes first — it is
+    # the toolkit's dependency and lives in this repo, not on PyPI. The
+    # integration suite mounts the four services in-process, so their
+    # requirements come too, each installed from its own directory (the
+    # files carry a relative -e path).
+    if [[ "$name" == "wip-toolkit" ]]; then
+        echo "  Provisioning wip-toolkit test deps (CI recipe, one-time)..."
+        local ok=1 c
+        pip install -q -e "$REPO_ROOT/libs/wip-archive" -e "$REPO_ROOT/WIP-Toolkit" || ok=0
+        for c in registry def-store template-store document-store; do
+            (cd "$REPO_ROOT/components/$c" && pip install -q -r requirements.txt) || ok=0
+        done
+        if (( ok )); then
+            touch "$marker"
+        else
+            echo "  WARNING: wip-toolkit test-dep provisioning failed — imports may error below." >&2
+        fi
+        _pip_check_tripwire "$name"
+        return 0
+    fi
     [[ "$dir" == "$REPO_ROOT/components/"* ]] || return 0
     echo "  Provisioning $name test deps (CI recipe, one-time)..."
     if (cd "$dir" && pip install -q -r requirements.txt) \

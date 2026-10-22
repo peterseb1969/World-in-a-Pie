@@ -891,7 +891,7 @@ Read access is still checked on the term's own namespace.
 **No action required.** `@wip/client` `getTerm` and the MCP term tools pass
 the parameter through and pick this up with the new images.
 
-### `wip-toolkit` 0.6.0 and `wip-archive` 0.2.0: the wheels were behind their sources
+### `wip-toolkit` 0.6.1 and `wip-archive` 0.2.0: the wheels were behind their sources
 
 Both packages changed after 0.5.1 and 0.1.1 were set (2026-07-23) without a
 version bump, so one version name covered two different sets of bytes. An app
@@ -907,10 +907,17 @@ copy the app vendors. Both are minor bumps because both gained features:
 - **The toolkit health check probes the prefixed route.** In proxy mode it
   answered 404 for every service behind an ingress.
 
+- **The toolkit requires `wip-archive>=0.2.0`.** It imports archive modules
+  that 0.1.1 does not have. 0.6.0, briefly on `develop`, declared the
+  dependency without a floor: installed over an existing 0.1.1 it was accepted
+  and then failed at startup with `No module named 'wip_archive.model'`.
+
 **Action:** apps vendoring the wheels re-run the scaffold refresh to pick up
-`wip_toolkit-0.6.0` and `wip_archive-0.2.0`. A refresh that aborted on the
-wheel mismatch no longer trips that guard. Install both wheels together;
-`wip-toolkit` depends on `wip-archive`.
+`wip_toolkit-0.6.1` and `wip_archive-0.2.0`. A refresh that aborted on the
+wheel mismatch no longer trips that guard. Install both wheels in one command,
+`pip install libs/wip_archive-*.whl libs/wip_toolkit-*.whl`: `wip-archive` is
+not on PyPI, so the toolkit wheel alone fails to resolve its dependency. The
+regenerated app CLAUDE.md says the same.
 
 ---
 
