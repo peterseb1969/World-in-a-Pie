@@ -4,7 +4,7 @@ k8s used to render readinessProbe and livenessProbe from one endpoint with
 no startupProbe. A liveness failure restarts the pod, and a restart cannot
 bring a dependency back, so no health endpoint could ever report a down
 dependency; and a store still retrying MongoDB at startup (up to 120 s,
-before uvicorn serves anything) was killed by liveness after ~80–95 s.
+before uvicorn serves anything) was killed by liveness after ~80 to 95 s.
 
 Now:
 - readinessProbe checks `endpoint`; livenessProbe and startupProbe check

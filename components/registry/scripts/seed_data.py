@@ -14,8 +14,8 @@ Examples:
 """
 
 import argparse
+
 import requests
-from typing import Optional
 
 
 def create_namespaces(base_url: str, api_key: str) -> None:
@@ -325,7 +325,7 @@ def main():
     print("DONE! You can now explore the data at:")
     print(f"  Swagger UI: {args.base_url}/docs")
     print(f"  ReDoc:      {args.base_url}/redoc")
-    print(f"  MongoDB:    http://localhost:8081 (mongo-express)")
+    print("  MongoDB:    http://localhost:8081 (mongo-express)")
     print("="*60)
 
 

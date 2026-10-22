@@ -22,10 +22,10 @@ Usage:
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from .document_generator import DocumentGenerator, generate_document as _generate
-
+from .document_generator import DocumentGenerator
 
 # Singleton generator instance
 _generator: DocumentGenerator | None = None

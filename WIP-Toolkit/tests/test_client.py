@@ -1,10 +1,9 @@
 """Tests for WIPClient HTTP wrapper."""
 
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
-
 from wip_toolkit.client import WIPClient, WIPClientError
 from wip_toolkit.config import WIPConfig
 
@@ -373,7 +372,7 @@ class TestCheckAllServices:
         results = client.check_all_services()
 
         assert len(results) == 4
-        for service, (healthy, msg) in results.items():
+        for healthy, _msg in results.values():
             assert healthy is True
 
     def test_mixed_health(self, config, mock_httpx_client):

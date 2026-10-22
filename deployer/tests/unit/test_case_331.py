@@ -91,11 +91,11 @@ def _make_deployment(
 
 class TestUpCompose:
     def test_missing_install_dir_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(ApplyError, match="no docker-compose.yaml"):
+        with pytest.raises(ApplyError, match=r"no docker-compose\.yaml"):
             up_compose_install(install_dir=tmp_path / "missing", wait=False)
 
     def test_missing_compose_file_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(ApplyError, match="no docker-compose.yaml"):
+        with pytest.raises(ApplyError, match=r"no docker-compose\.yaml"):
             up_compose_install(install_dir=tmp_path, wait=False)
 
     def test_runs_compose_up_dash_d_no_build(self, tmp_path: Path) -> None:

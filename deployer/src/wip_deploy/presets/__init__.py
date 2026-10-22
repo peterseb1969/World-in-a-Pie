@@ -37,4 +37,4 @@ def get_preset(name: str) -> dict[str, Any]:
         ) from e
 
 
-__all__ = ["PRESETS", "get_preset", "HEADLESS", "CORE", "STANDARD", "ANALYTICS", "FULL"]
+__all__ = ["ANALYTICS", "CORE", "FULL", "HEADLESS", "PRESETS", "STANDARD", "get_preset"]

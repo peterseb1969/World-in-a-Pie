@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
-import pytest
-
-from wip_toolkit.backfill import _fetch_all, _register_batch, backfill_synonyms
+from wip_toolkit.backfill import _register_batch, backfill_synonyms
 
 
 class TestRegisterBatch:
@@ -119,7 +117,8 @@ class TestBackfillSynonyms:
         ]
 
         summary = backfill_synonyms(client, "wip", dry_run=True)
-        # No POST calls should have been made
+        # No POST calls should have been made, and nothing counts as added
         client.post.assert_not_called()
+        assert summary["terminologies"] == {"total": 1, "added": 0, "existing": 0, "failed": 0}
 
 

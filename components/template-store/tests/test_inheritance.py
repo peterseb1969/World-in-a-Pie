@@ -214,7 +214,7 @@ async def test_field_override(client: AsyncClient, auth_headers: dict):
     # Child's field should override parent's
     assert len(data["fields"]) == 1
     assert data["fields"][0]["label"] == "Child Label"
-    assert data["fields"][0]["mandatory"] == True
+    assert data["fields"][0]["mandatory"] is True
 
 
 @pytest.mark.asyncio

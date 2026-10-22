@@ -36,7 +36,7 @@ async def test_validate_template_valid(client: AsyncClient, auth_headers: dict):
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["valid"] == True
+    assert data["valid"] is True
     assert len(data["errors"]) == 0
 
 
@@ -72,7 +72,7 @@ async def test_validate_template_invalid_terminology(client: AsyncClient, auth_h
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["valid"] == False
+    assert data["valid"] is False
     assert len(data["errors"]) > 0
     assert any("terminology" in e["message"].lower() or "not found" in e["message"].lower()
                for e in data["errors"])
@@ -87,7 +87,7 @@ async def test_validate_template_invalid_extends(client: AsyncClient, auth_heade
         headers=auth_headers,
         json=[{"namespace": "wip", "value": "ORPHAN", "label": "Orphan Template"}]
     )
-    template_id = create_response.json()["results"][0]["id"]
+    assert create_response.json()["results"][0]["status"] == "created"
 
     # Manually corrupt the extends (simulating data corruption or external modification)
     # Since we can't do this easily via API, we'll create a template with extends
@@ -124,7 +124,7 @@ async def test_validate_template_invalid_extends(client: AsyncClient, auth_heade
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["valid"] == False
+    assert data["valid"] is False
     assert any("template" in e["message"].lower() or "not found" in e["message"].lower()
                for e in data["errors"])
 
@@ -161,7 +161,7 @@ async def test_validate_template_array_terminology_ref(client: AsyncClient, auth
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["valid"] == True
+    assert data["valid"] is True
 
 
 @pytest.mark.asyncio
@@ -214,7 +214,7 @@ async def test_validate_template_array_template_ref(client: AsyncClient, auth_he
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["valid"] == True
+    assert data["valid"] is True
 
 
 @pytest.mark.asyncio
@@ -254,7 +254,7 @@ async def test_validate_draft_template_reports_invalid_refs(client: AsyncClient,
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["valid"] == False
+    assert data["valid"] is False
     assert len(data["errors"]) > 0
 
 
@@ -268,7 +268,7 @@ async def test_validate_nonexistent_template(client: AsyncClient, auth_headers: 
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["valid"] == False
+    assert data["valid"] is False
     assert any("not found" in e["message"].lower() for e in data["errors"])
 
 
@@ -321,7 +321,7 @@ async def test_validate_template_nested_object(client: AsyncClient, auth_headers
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["valid"] == True
+    assert data["valid"] is True
 
 
 @pytest.mark.asyncio
@@ -363,7 +363,7 @@ async def test_validate_template_with_extends(client: AsyncClient, auth_headers:
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["valid"] == True
+    assert data["valid"] is True
 
 
 @pytest.mark.asyncio
@@ -411,6 +411,6 @@ async def test_validate_template_multiple_errors(client: AsyncClient, auth_heade
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["valid"] == False
+    assert data["valid"] is False
     # Should have errors for each invalid reference
     assert len(data["errors"]) >= 3

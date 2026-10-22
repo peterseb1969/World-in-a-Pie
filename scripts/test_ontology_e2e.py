@@ -396,7 +396,7 @@ def test_mini_ontology():
                     "namespace": NAMESPACE,
                     "data": {"name": "John Doe", "date_of_birth": "1985-03-15"},
                 }])
-    patient_doc = bulk_ok(resp)
+    bulk_ok(resp)
 
     # Diagnosis referencing ontology terms
     resp = req("post", f"{DOCUMENT_STORE}/documents",
@@ -460,7 +460,7 @@ def test_mini_ontology():
     check("After deletion: Disease still reachable via Pneumonia path",
           "Disease" in new_ancestors)
 
-    print(f"\n  Mini ontology test complete.")
+    print("\n  Mini ontology test complete.")
 
 
 # ===========================================================================
@@ -522,11 +522,8 @@ def test_icd10_import():
         for line in f:
             parts = line.strip().split(";")
             if len(parts) >= 9:
-                level = parts[0]
                 code = parts[5]        # e.g., "A00.0" or "A00.-"
                 label = parts[8]       # description
-                chapter = parts[3]
-                group_start = parts[4]
 
                 # Skip category headers (level 3, codes ending with .-)
                 if code.endswith(".-"):
@@ -1021,7 +1018,7 @@ def test_hpo_import():
     # Find a term with synonyms to test search
     test_synonym_term = None
     test_synonym = None
-    for uri, info in nodes_by_uri.items():
+    for info in nodes_by_uri.values():
         if info["synonyms"] and info["value"] in value_to_term_id:
             test_synonym_term = info
             test_synonym = info["synonyms"][0]
@@ -1064,7 +1061,7 @@ def main():
 
     configure_urls(args.host, args.via_proxy)
 
-    print(f"WIP Ontology End-to-End Test")
+    print("WIP Ontology End-to-End Test")
     print(f"Def-Store:      {DEF_STORE}")
     print(f"Template-Store: {TEMPLATE_STORE}")
     print(f"Document-Store: {DOCUMENT_STORE}")

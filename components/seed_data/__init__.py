@@ -25,9 +25,13 @@ Usage:
 
 __version__ = "1.0.0"
 
-from . import terminologies
-from . import templates
-from . import documents
-from . import generators
-from . import document_generator
-from . import performance
+from . import document_generator, documents, generators, performance, templates, terminologies
+
+__all__ = [
+    "document_generator",
+    "documents",
+    "generators",
+    "performance",
+    "templates",
+    "terminologies",
+]

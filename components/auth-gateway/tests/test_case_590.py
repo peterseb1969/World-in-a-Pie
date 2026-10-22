@@ -23,7 +23,7 @@ os.environ.setdefault("API_KEY", "test-api-key")
 os.environ.setdefault("WIP_HOSTNAME", "wip.local")
 os.environ.setdefault("CALLBACK_URL", "https://wip.local/auth/callback")
 
-from auth_gateway.config import (  # noqa: E402
+from auth_gateway.config import (
     DEFAULT_SESSION_SECRET,
     check_production_security,
 )

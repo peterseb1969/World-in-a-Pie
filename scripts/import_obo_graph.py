@@ -521,7 +521,7 @@ def main():
     print(f"  Version:  {meta.get('version', 'Unknown')}")
     print(f"  Prefix:   {parsed['prefix']}")
     print(f"  Parse time: {t_parse:.1f}s")
-    print(f"\n  Nodes:")
+    print("\n  Nodes:")
     print(f"    Raw:              {stats['raw_nodes']}")
     print(f"    Non-CLASS:        {stats['filtered_non_class']} (skipped)")
     print(f"    Wrong prefix:     {stats['filtered_prefix']} (skipped)")
@@ -529,17 +529,17 @@ def main():
     print(f"    Imported:         {stats['nodes_imported']}")
     print(f"    With synonyms:    {stats['nodes_with_synonyms']}")
     print(f"    Total synonyms:   {stats['total_synonyms']}")
-    print(f"\n  Edges:")
+    print("\n  Edges:")
     print(f"    Raw:              {stats['raw_edges']}")
     print(f"    Missing endpoint: {stats['filtered_edges_missing_endpoint']} (skipped)")
     print(f"    Skipped pred:     {stats['filtered_edges_skipped_pred']} (skipped)")
     print(f"    Imported:         {stats['edges_imported']}")
-    print(f"\n  Relation types:")
+    print("\n  Relation types:")
     for pred, count in stats["predicate_distribution"].items():
         print(f"    {pred}: {count}")
 
     if args.dry_run:
-        print(f"\n  DRY RUN — no data imported")
+        print("\n  DRY RUN — no data imported")
         sys.exit(0)
 
     # --- Resolve terminology name ---

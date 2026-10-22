@@ -95,12 +95,11 @@ async def test_cached_404_negative_expires_too():
     _seed(v, "appns", {"isolation_mode": "open"}, age_offset=_STALE)
     strict = {"isolation_mode": "strict", "allowed_external_refs": []}
     factory = _FakeClientFactory(_FakeResponse(200, strict))
-    with patch("httpx.AsyncClient", factory):
-        with pytest.raises(ReferenceValidationError):
-            await v.validate_template_references(
-                template_namespace="appns",
-                extends_template_namespace="parentns",
-            )
+    with patch("httpx.AsyncClient", factory), pytest.raises(ReferenceValidationError):
+        await v.validate_template_references(
+            template_namespace="appns",
+            extends_template_namespace="parentns",
+        )
 
 
 def test_ttl_matches_platform_convention():

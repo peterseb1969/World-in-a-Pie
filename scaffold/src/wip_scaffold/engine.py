@@ -30,14 +30,15 @@ by venv drift or a dependency pin.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import stat
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Callable
 
 
 class Policy(Enum):
@@ -89,10 +90,8 @@ def _atomic_write(dest: Path, data: bytes, executable: bool) -> None:
             os.chmod(tmp, os.stat(tmp).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         os.replace(tmp, dest)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 

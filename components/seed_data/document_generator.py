@@ -11,19 +11,16 @@ Usage:
 from __future__ import annotations
 
 import random
-import string
-import re
-from datetime import datetime, timedelta, date
+from datetime import datetime
 from typing import Any
 
 try:
     from faker import Faker
-except ImportError:
-    raise ImportError("Faker is required. Install with: pip install faker")
+except ImportError as err:
+    raise ImportError("Faker is required. Install with: pip install faker") from err
 
-from . import terminologies as term_module
 from . import templates as tmpl_module
-
+from . import terminologies as term_module
 
 # Initialize Faker
 fake = Faker(['en_US', 'en_GB', 'de_DE', 'fr_FR'])
@@ -403,9 +400,7 @@ class DocumentGenerator:
 
         if "created" in field_name.lower():
             return fake.date_time_between(start_date="-1y", end_date="now").isoformat()
-        elif "updated" in field_name.lower():
-            return fake.date_time_between(start_date="-30d", end_date="now").isoformat()
-        elif "resolved" in field_name.lower():
+        elif "updated" in field_name.lower() or "resolved" in field_name.lower():
             return fake.date_time_between(start_date="-30d", end_date="now").isoformat()
         else:
             return datetime.now().isoformat()
@@ -641,9 +636,8 @@ class DocumentGenerator:
             elif operator == "exists":
                 if actual is None:
                     return False
-            elif operator == "not_exists":
-                if actual is not None:
-                    return False
+            elif operator == "not_exists" and actual is not None:
+                return False
 
         return True
 
@@ -652,13 +646,14 @@ class DocumentGenerator:
         conditions = rule.get("conditions", [])
         target_field = rule.get("target_field")
 
-        if self._check_conditions(doc, conditions):
-            # Conditions met, target field is required
-            if target_field not in doc or doc[target_field] is None:
-                # Generate the missing field
-                if target_field in field_map:
-                    field = field_map[target_field]
-                    doc[target_field] = self._generate_field_value(field, 0, "")
+        # Conditions met: the target field is required, so generate it when missing.
+        if (
+            self._check_conditions(doc, conditions)
+            and (target_field not in doc or doc[target_field] is None)
+            and target_field in field_map
+        ):
+            field = field_map[target_field]
+            doc[target_field] = self._generate_field_value(field, 0, "")
 
     def _apply_conditional_value(self, doc: dict, rule: dict, field_map: dict):
         """Apply conditional_value rule: if conditions met, target must be in allowed values."""
@@ -708,18 +703,19 @@ class DocumentGenerator:
         target_field = rule.get("target_field")
         conditions = rule.get("conditions", [])
 
-        # If target field is set, check conditions
-        if target_field in doc and doc[target_field] is not None:
-            if not self._check_conditions(doc, conditions):
-                # Conditions not met - either add required fields or remove target
-                # Try to add required fields first
-                for condition in conditions:
-                    if condition.get("operator") == "exists":
-                        req_field = condition.get("field")
-                        if req_field not in doc and req_field in field_map:
-                            doc[req_field] = self._generate_field_value(
-                                field_map[req_field], 0, ""
-                            )
+        # Target field set but conditions not met: add the required fields.
+        if (
+            target_field in doc
+            and doc[target_field] is not None
+            and not self._check_conditions(doc, conditions)
+        ):
+            for condition in conditions:
+                if condition.get("operator") == "exists":
+                    req_field = condition.get("field")
+                    if req_field not in doc and req_field in field_map:
+                        doc[req_field] = self._generate_field_value(
+                            field_map[req_field], 0, ""
+                        )
 
 
 # Singleton instance

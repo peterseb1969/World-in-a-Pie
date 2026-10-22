@@ -41,7 +41,7 @@ def _write_compose(install_dir: Path, services: dict[str, dict]) -> None:
 
 class TestRebuildErrors:
     def test_missing_install_dir_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(ApplyError, match="no docker-compose.yaml"):
+        with pytest.raises(ApplyError, match=r"no docker-compose\.yaml"):
             rebuild_compose_services(
                 install_dir=tmp_path / "does-not-exist",
                 services=["mcp-server"],
@@ -49,7 +49,7 @@ class TestRebuildErrors:
 
     def test_missing_compose_file_raises(self, tmp_path: Path) -> None:
         # install_dir exists but no compose file
-        with pytest.raises(ApplyError, match="no docker-compose.yaml"):
+        with pytest.raises(ApplyError, match=r"no docker-compose\.yaml"):
             rebuild_compose_services(
                 install_dir=tmp_path,
                 services=["mcp-server"],
@@ -73,7 +73,7 @@ class TestRebuildErrors:
 
     def test_partial_unknown_services_listed(self, tmp_path: Path) -> None:
         _write_compose(tmp_path, {"mcp-server": {"image": "x"}})
-        with pytest.raises(ApplyError, match="unknown service.*bogus.*missing"):
+        with pytest.raises(ApplyError, match=r"unknown service.*bogus.*missing"):
             rebuild_compose_services(
                 install_dir=tmp_path,
                 services=["mcp-server", "bogus", "missing"],

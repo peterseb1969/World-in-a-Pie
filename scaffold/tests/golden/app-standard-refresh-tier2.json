@@ -60,7 +60,7 @@
     "libs/wip-react-0.21.0.tgz",
     "libs/wip-react-README.md",
     "libs/wip_archive-0.2.0-py3-none-any.whl",
-    "libs/wip_toolkit-0.6.1-py3-none-any.whl",
+    "libs/wip_toolkit-0.6.2-py3-none-any.whl",
     "templates/bootstrap/BootstrapGate.tsx.template",
     "templates/bootstrap/bootstrap.routes.ts.template",
     "templates/bootstrap/bootstrap.server.ts.template"

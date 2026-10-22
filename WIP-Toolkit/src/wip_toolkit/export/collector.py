@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, BinaryIO, Iterator
+from collections.abc import Iterator
+from typing import Any, BinaryIO
 
 from rich.console import Console
 

@@ -57,7 +57,7 @@ def _k8s_deployment(pull_policy: str = "if-not-present") -> Deployment:
     )
 
 
-def _pull_policy_of(tree, container_name: str) -> str | None | str:
+def _pull_policy_of(tree, container_name: str) -> str | None:
     """imagePullPolicy of the named container across the rendered tree,
     or the sentinel 'NOT_FOUND' if no such container was rendered."""
     for f in tree.files.values():

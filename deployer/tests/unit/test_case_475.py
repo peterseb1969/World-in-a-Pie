@@ -47,11 +47,11 @@ def _write_compose(install_dir: Path, services: dict[str, dict]) -> None:
 
 class TestComposeStopStart:
     def test_stop_missing_compose_file_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(ApplyError, match="no docker-compose.yaml"):
+        with pytest.raises(ApplyError, match=r"no docker-compose\.yaml"):
             stop_install(install_dir=tmp_path, target="compose")
 
     def test_start_missing_compose_file_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(ApplyError, match="no docker-compose.yaml"):
+        with pytest.raises(ApplyError, match=r"no docker-compose\.yaml"):
             start_install(install_dir=tmp_path, target="compose")
 
     def test_stop_runs_compose_stop_not_down(self, tmp_path: Path) -> None:

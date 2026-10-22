@@ -13,7 +13,6 @@ Usage:
 import argparse
 import json
 import sys
-import textwrap
 from pathlib import Path
 
 import httpx
@@ -75,7 +74,7 @@ def fetch_specs(base_url: str = "http://localhost") -> dict[str, dict]:
                     specs[name] = json.loads(cache_file.read_text())
                     break
             else:
-                print(f"    No cache available, skipping")
+                print("    No cache available, skipping")
 
     return specs
 
@@ -249,7 +248,7 @@ def _format_type(prop: dict) -> str:
         items = prop.get("items", {})
         item_type = items.get("type", "object")
         if "enum" in items:
-            return f"array of enum"
+            return "array of enum"
         return f"array of {item_type}"
     if "anyOf" in prop:
         types = [_format_type(s) for s in prop["anyOf"]]
@@ -278,7 +277,6 @@ def compose_description(
     # Generated field reference from OpenAPI
     schema_ref = tool_config.get("openapi_schema")
     if schema_ref and "#" in schema_ref:
-        service, model = schema_ref.split("#", 1)
         schema = schemas.get(schema_ref)
         if schema:
             field_docs = schema_to_field_docs(schema, indent=0, max_depth=2)
@@ -382,7 +380,7 @@ def main():
     resolved_schemas: dict[str, dict] = {}
     schema_refs: set[str] = set()
 
-    for tool_name, tc in tools.items():
+    for tc in tools.values():
         ref = tc.get("openapi_schema")
         if ref:
             schema_refs.add(ref)

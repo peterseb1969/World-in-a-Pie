@@ -6,7 +6,6 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 # Default service ports (direct access)
 SERVICE_PORTS = {
     "registry": 8001,

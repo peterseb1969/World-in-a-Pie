@@ -105,7 +105,7 @@ class TestPlatformMatchesTarget:
 
     def test_compose_without_compose_block_rejected(self) -> None:
         with pytest.raises(
-            PydanticValidationError, match="requires platform.compose"
+            PydanticValidationError, match=r"requires platform\.compose"
         ):
             self._build("compose", PlatformSpec(k8s=K8sPlatform()))
 
@@ -127,7 +127,7 @@ class TestPlatformMatchesTarget:
         self._build("dev", PlatformSpec(dev=DevPlatform()))
 
     def test_dev_without_dev_block_rejected(self) -> None:
-        with pytest.raises(PydanticValidationError, match="requires platform.dev"):
+        with pytest.raises(PydanticValidationError, match=r"requires platform\.dev"):
             self._build("dev", PlatformSpec(compose=ComposePlatform(data_dir="/tmp/d")))
 
 
@@ -139,7 +139,7 @@ class TestPlatformMatchesTarget:
 class TestSecretsBackendVsTarget:
     def test_k8s_secret_with_compose_rejected(self) -> None:
         with pytest.raises(
-            PydanticValidationError, match="k8s-secret.*requires target='k8s'"
+            PydanticValidationError, match=r"k8s-secret.*requires target='k8s'"
         ):
             Deployment(
                 metadata=DeploymentMetadata(name="t"),

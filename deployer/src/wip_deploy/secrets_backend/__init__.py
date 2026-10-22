@@ -7,4 +7,4 @@ backends arrive in later steps alongside the renderers that need them.
 from wip_deploy.secrets_backend.base import ResolvedSecrets, SecretBackend
 from wip_deploy.secrets_backend.file import FileSecretBackend
 
-__all__ = ["ResolvedSecrets", "SecretBackend", "FileSecretBackend"]
+__all__ = ["FileSecretBackend", "ResolvedSecrets", "SecretBackend"]

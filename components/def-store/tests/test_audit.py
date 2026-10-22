@@ -436,7 +436,7 @@ async def test_audit_entry_has_complete_structure(
     assert "comment" in entry
 
     # For a "created" entry, new_values should have the term value
-    created_entry = [e for e in data["items"] if e["action"] == "created"][0]
+    created_entry = next(e for e in data["items"] if e["action"] == "created")
     assert created_entry["new_values"].get("value") == "struct_term"
     assert created_entry["term_id"] == term_id
     assert created_entry["terminology_id"] == terminology_id

@@ -290,7 +290,7 @@ class TestGetNamespaceStats:
         assert data["status"] == "active"
         assert isinstance(data["entity_counts"], dict)
         # All counts should be 0 since no entries exist yet
-        for entity_type, count in data["entity_counts"].items():
+        for count in data["entity_counts"].values():
             assert count == 0
 
     @pytest.mark.asyncio

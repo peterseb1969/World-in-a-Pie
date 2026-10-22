@@ -11,7 +11,6 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from rich.console import Console
-
 from wip_archive.models import ProgressEvent
 
 ProgressCallback = Callable[[ProgressEvent], None]

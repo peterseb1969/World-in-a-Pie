@@ -1,9 +1,7 @@
 """Tests for WIPConfig configuration resolution."""
 
-import os
 import pytest
-
-from wip_toolkit.config import WIPConfig, DEFAULT_DEV_API_KEY, SERVICE_PORTS, SERVICE_PREFIXES, _read_env_var
+from wip_toolkit.config import DEFAULT_DEV_API_KEY, SERVICE_PORTS, SERVICE_PREFIXES, WIPConfig, _read_env_var
 
 
 class TestWIPConfigDefaults:

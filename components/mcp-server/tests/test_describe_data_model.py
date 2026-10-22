@@ -1,6 +1,5 @@
 """Tests for describe_data_model tool and wip://query-assistant-prompt resource."""
 
-import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 

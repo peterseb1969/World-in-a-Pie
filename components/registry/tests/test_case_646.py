@@ -28,7 +28,6 @@ from registry.services.namespace_deletion import (
     NamespaceDeletionService,
 )
 
-
 # ---------------------------------------------------------------------------
 # Finding 1 — degraded best-effort steps are visible in the journal status
 # ---------------------------------------------------------------------------

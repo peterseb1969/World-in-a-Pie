@@ -12,7 +12,6 @@ import logging
 from typing import Any
 
 import httpx
-from authlib.integrations.starlette_client import OAuth
 from starlette.requests import Request
 
 from .config import settings
@@ -71,9 +70,9 @@ def _rewrite_to_internal(url: str) -> str:
 
 async def get_auth_url(request: Request) -> str:
     """Build the Dex authorization URL with PKCE."""
+    import base64
     import hashlib
     import secrets
-    import base64
 
     metadata = await _discover_metadata()
     authorization_endpoint = metadata["authorization_endpoint"]
@@ -158,8 +157,8 @@ async def exchange_code(request: Request) -> dict[str, Any]:
 
     # Decode ID token to extract claims (skip signature verification — we just
     # got this from Dex over a trusted connection within the container network).
-    import json
     import base64
+    import json
 
     id_token = tokens.get("id_token", "")
     if not id_token:

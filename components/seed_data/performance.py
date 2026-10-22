@@ -6,12 +6,14 @@ benchmark reports.
 """
 from __future__ import annotations
 
-import time
+import contextlib
+import json
 import statistics
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable
-import json
+from typing import Any
 
 
 @dataclass
@@ -185,10 +187,8 @@ def measure_operation(
 
     # Warmup
     for _ in range(warmup):
-        try:
+        with contextlib.suppress(Exception):
             operation()
-        except Exception:
-            pass
 
     # Measured runs
     for _ in range(count):

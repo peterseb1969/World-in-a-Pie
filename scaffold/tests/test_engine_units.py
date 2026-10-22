@@ -14,7 +14,6 @@ import stat
 from pathlib import Path
 
 import pytest
-
 from wip_scaffold.engine import Context, Policy, Surface, run_surfaces
 from wip_scaffold.render import render, substitute, tier_filter
 from wip_scaffold.surfaces import APP_REFERENCE_DOCS, app_surfaces, backend_surfaces
@@ -85,8 +84,8 @@ def test_dry_run_touches_nothing(tmp_path):
     log = run_surfaces([s], _ctx(tmp_path, dry_run=True))
     assert (tmp_path / "old.md").exists(), "dry-run removed a file"
     assert not (tmp_path / "new.txt").exists(), "dry-run wrote a file"
-    assert any("would remove" in l for l in log)
-    assert any("would write" in l for l in log)
+    assert any("would remove" in line for line in log)
+    assert any("would write" in line for line in log)
 
 
 def test_idempotent_second_run_identical(tmp_path):
