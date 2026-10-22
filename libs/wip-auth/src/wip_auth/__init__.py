@@ -211,21 +211,25 @@ def create_providers_from_config(
         # API key only - load keys and create provider
         keys = config.load_api_keys()
 
-        # Trusted header provider runs first (checks X-WIP-User + API key)
+        api_key_provider = APIKeyProvider(
+            keys=keys,
+            header_name=config.api_key_header,
+            hash_salt=config.api_key_hash_salt,
+            default_groups=config.default_groups,
+        )
+
+        # Trusted header provider runs first (checks X-WIP-User + API key),
+        # matching keys through the API-key provider's caches.
         if config.trust_proxy_headers and keys:
             providers.append(TrustedHeaderProvider(
                 keys=keys,
                 header_name=config.api_key_header,
                 hash_salt=config.api_key_hash_salt,
                 default_groups=config.default_groups,
+                key_provider=api_key_provider,
             ))
 
-        providers.append(APIKeyProvider(
-            keys=keys,
-            header_name=config.api_key_header,
-            hash_salt=config.api_key_hash_salt,
-            default_groups=config.default_groups,
-        ))
+        providers.append(api_key_provider)
 
     elif config.mode == "jwt_only":
         # JWT only - create OIDC provider
@@ -248,13 +252,22 @@ def create_providers_from_config(
         # Dual mode - try trusted headers first, then JWT, then API key
         keys = config.load_api_keys()
 
-        # Trusted header provider runs first (checks X-WIP-User + API key)
+        api_key_provider = APIKeyProvider(
+            keys=keys,
+            header_name=config.api_key_header,
+            hash_salt=config.api_key_hash_salt,
+            default_groups=config.default_groups,
+        ) if keys else None
+
+        # Trusted header provider runs first (checks X-WIP-User + API key),
+        # matching keys through the API-key provider's caches.
         if config.trust_proxy_headers and keys:
             providers.append(TrustedHeaderProvider(
                 keys=keys,
                 header_name=config.api_key_header,
                 hash_salt=config.api_key_hash_salt,
                 default_groups=config.default_groups,
+                key_provider=api_key_provider,
             ))
 
         # JWT is checked next because Bearer token is more explicit
@@ -270,13 +283,8 @@ def create_providers_from_config(
                 leeway=config.jwt_leeway_seconds,
             ))
 
-        if keys:
-            providers.append(APIKeyProvider(
-                keys=keys,
-                header_name=config.api_key_header,
-                hash_salt=config.api_key_hash_salt,
-                default_groups=config.default_groups,
-            ))
+        if api_key_provider is not None:
+            providers.append(api_key_provider)
 
     return providers
 

@@ -14,7 +14,7 @@ import logging
 from fastapi import Request
 
 from ..models import APIKeyRecord, UserIdentity
-from .api_key import verify_api_key
+from .api_key import APIKeyProvider, verify_api_key
 
 logger = logging.getLogger("wip_auth.trusted_header")
 
@@ -41,20 +41,32 @@ class TrustedHeaderProvider:
         header_name: str = "X-API-Key",
         hash_salt: str = "wip_auth_salt",
         default_groups: list[str] | None = None,
+        key_provider: APIKeyProvider | None = None,
     ):
         self._keys = [k for k in keys if k.enabled]
         self.header_name = header_name
         self.hash_salt = hash_salt
         self.default_groups = default_groups or ["wip-users"]
+        # When given, keys are matched through the API-key provider's caches
+        # (bcrypt costs ~170 ms per stored hash; every request with identity
+        # headers checks its key). Without one, the key list is walked.
+        self._key_provider = key_provider
 
     def _proxy_key(self, api_key: str) -> APIKeyRecord | None:
         """The matching, unexpired key record if it may assert identities."""
-        for record in self._keys:
-            if verify_api_key(
-                api_key, record.key_hash, self.hash_salt
-            ) and not record.is_expired():
-                return record if PROXY_KEY_GROUPS.intersection(record.groups) else None
-        return None
+        if self._key_provider is not None:
+            record = self._key_provider.lookup(api_key)
+        else:
+            record = next(
+                (
+                    r for r in self._keys
+                    if verify_api_key(api_key, r.key_hash, self.hash_salt) and not r.is_expired()
+                ),
+                None,
+            )
+        if record is None or not PROXY_KEY_GROUPS.intersection(record.groups):
+            return None
+        return record
 
     async def authenticate(self, request: Request) -> UserIdentity | None:
         """Authenticate via trusted proxy headers + API key.

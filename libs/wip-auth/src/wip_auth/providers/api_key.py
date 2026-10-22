@@ -1,12 +1,17 @@
 """API key authentication provider.
 
-Uses bcrypt for key hashing (GPU-resistant, ~1ms per verification).
+Uses bcrypt for key hashing (GPU-resistant). Verification is deliberately
+slow — about 170 ms per check at bcrypt's default cost (12), measured on a dev
+machine — so a key is matched against the stored hashes once and the result is
+cached, and recently rejected keys are cached too.
 Legacy SHA-256 hashes are detected and verified with a deprecation warning.
 """
 
 import hashlib
 import hmac
 import logging
+import time
+from collections import OrderedDict
 from datetime import UTC, datetime
 
 import bcrypt
@@ -15,6 +20,13 @@ from fastapi import HTTPException, Request
 from ..models import APIKeyRecord, UserIdentity
 
 logger = logging.getLogger("wip_auth.api_key")
+
+# Recently rejected keys, so a repeated wrong key costs one dictionary lookup
+# instead of a bcrypt check against every stored hash. Bounded and short-lived;
+# cleared whenever a key is added, since a rejected key may have just become
+# valid.
+_REJECTED_MAX = 1024
+_REJECTED_TTL_SECONDS = 60.0
 
 
 def _is_bcrypt_hash(h: str) -> bool:
@@ -108,8 +120,10 @@ class APIKeyProvider:
         self._keys: list[APIKeyRecord] = [k for k in keys if k.enabled]
 
         # Cache: SHA-256(plaintext_key) → APIKeyRecord after first bcrypt verify.
-        # Avoids re-running bcrypt (~3ms) on every request for the same key.
+        # Avoids re-running bcrypt (~170 ms per stored hash) on every request.
         self._verified_cache: dict[str, APIKeyRecord] = {}
+        # SHA-256(plaintext_key) → monotonic expiry, for keys matching nothing.
+        self._rejected: OrderedDict[str, float] = OrderedDict()
 
         # Warn about legacy SHA-256 hashes
         for key in self._keys:
@@ -122,27 +136,45 @@ class APIKeyProvider:
                 )
 
     def add_key(self, key: APIKeyRecord) -> None:
-        """Add a new API key at runtime."""
+        """Add a new API key at runtime.
+
+        Verified entries stay valid — another key's arrival changes nothing
+        about them. Rejections are forgotten: one may be this new key.
+        """
         if key.enabled:
             self._keys.append(key)
-            self._verified_cache.clear()
+            self._rejected.clear()
 
     def remove_key(self, key_hash: str) -> bool:
-        """Remove an API key by its hash."""
+        """Remove an API key by its hash, evicting only that key's cache entry."""
         for i, key in enumerate(self._keys):
             if key.key_hash == key_hash:
                 self._keys.pop(i)
-                self._verified_cache.clear()
+                self._verified_cache = {
+                    fp: rec for fp, rec in self._verified_cache.items() if rec.key_hash != key_hash
+                }
                 return True
         return False
 
     def replace_runtime_keys(
         self, runtime_keys: list["APIKeyRecord"], config_key_names: set[str]
     ) -> None:
-        """Replace all runtime keys atomically. Config keys are untouched."""
+        """Replace all runtime keys atomically. Config keys are untouched.
+
+        Runs on every key-sync poll (every 30 s in every service), so it keeps
+        the verified entries of keys that still exist — re-pointed at the
+        fresh records, whose groups or grants may have changed — and drops
+        only those of keys that were removed or disabled.
+        """
         config_keys = [k for k in self._keys if k.name in config_key_names]
         self._keys = config_keys + [k for k in runtime_keys if k.enabled]
-        self._verified_cache.clear()
+        current = {k.key_hash: k for k in self._keys}
+        self._verified_cache = {
+            fp: current[rec.key_hash]
+            for fp, rec in self._verified_cache.items()
+            if rec.key_hash in current
+        }
+        self._rejected.clear()
 
     def iter_keys(self) -> tuple[APIKeyRecord, ...]:
         """Read-only snapshot of the registered keys.
@@ -172,6 +204,9 @@ class APIKeyProvider:
                 return None, "API key has expired"
             return cached, None
 
+        if self._recently_rejected(fingerprint):
+            return None, "Invalid API key"
+
         # Slow path: bcrypt verify against all registered keys
         for record in self._keys:
             if verify_api_key(api_key, record.key_hash, self.hash_salt):
@@ -180,7 +215,29 @@ class APIKeyProvider:
                 self._verified_cache[fingerprint] = record
                 return record, None
 
+        self._reject(fingerprint)
         return None, "Invalid API key"
+
+    def _recently_rejected(self, fingerprint: str) -> bool:
+        expiry = self._rejected.get(fingerprint)
+        if expiry is None:
+            return False
+        if expiry < time.monotonic():
+            del self._rejected[fingerprint]
+            return False
+        return True
+
+    def _reject(self, fingerprint: str) -> None:
+        self._rejected[fingerprint] = time.monotonic() + _REJECTED_TTL_SECONDS
+        self._rejected.move_to_end(fingerprint)
+        while len(self._rejected) > _REJECTED_MAX:
+            self._rejected.popitem(last=False)
+
+    def lookup(self, api_key: str) -> APIKeyRecord | None:
+        """The registered, unexpired key matching api_key, or None — through
+        the same caches as authentication."""
+        record, error = self._validate_key(api_key)
+        return None if error is not None else record
 
     async def authenticate(self, request: Request) -> UserIdentity | None:
         """Authenticate the request using API key.

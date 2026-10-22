@@ -52,16 +52,22 @@ class TestReplaceRuntimeKeys:
         assert "enabled-app" in names
         assert "disabled-app" not in names
 
-    def test_replace_clears_cache(self):
+    def test_replace_keeps_valid_cache_entries_and_drops_removed_ones(self):
+        """Sync runs every 30 s: it must not force every key back through
+        bcrypt, only forget keys that are gone."""
         config_key = APIKeyRecord(
             name="config", key_hash=hash_api_key("c"), groups=["wip-admins"]
         )
-        provider = self._make_provider([config_key])
-        # Simulate a cached verification
-        provider._verified_cache["somefingerprint"] = config_key
+        runtime_key = APIKeyRecord(
+            name="runtime", key_hash=hash_api_key("r"), groups=["wip-users"]
+        )
+        provider = self._make_provider([config_key, runtime_key])
+        # Simulate cached verifications
+        provider._verified_cache["config-fp"] = config_key
+        provider._verified_cache["runtime-fp"] = runtime_key
 
         provider.replace_runtime_keys([], config_key_names={"config"})
-        assert len(provider._verified_cache) == 0
+        assert provider._verified_cache == {"config-fp": config_key}
 
 
 class TestKeySyncService:
