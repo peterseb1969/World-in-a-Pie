@@ -84,6 +84,7 @@ from .query_validation import RejectUnknownQueryParamsMiddleware
 from .ratelimit import setup_rate_limiting
 from .resolve import (
     EntityNotFoundError,
+    WriteRequestMiddleware,
     clear_resolution_cache,
     resolve_entity_id,
     resolve_entity_ids,
@@ -124,6 +125,7 @@ __all__ = [
     "TrustedHeaderProvider",
     # Models
     "UserIdentity",
+    "WriteRequestMiddleware",
     "build_metadata",
     # Permissions
     "check_namespace_permission",
@@ -334,6 +336,11 @@ def setup_auth(
             providers, public_paths=public_paths,
         )
         app.add_middleware(middleware_class)
+
+    # Added last, so it is outermost: the write flag is set before the auth
+    # middleware runs the handler, and resolution in any non-GET request
+    # skips the cache (see resolve._write_request).
+    app.add_middleware(WriteRequestMiddleware)
 
     return providers
 

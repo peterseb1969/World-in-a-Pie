@@ -24,6 +24,7 @@ Usage:
 """
 
 import asyncio
+import contextvars
 import logging
 import os
 import re
@@ -43,6 +44,47 @@ _UUID_PATTERN = re.compile(
 # TTL cache: {cache_key: (canonical_id, expire_time)}
 _resolution_cache: dict[str, tuple[str, float]] = {}
 _CACHE_TTL = 300  # 5 minutes
+
+# True while handling a request that may write (any method but GET, HEAD,
+# OPTIONS); set per request by WriteRequestMiddleware, which setup_auth
+# installs in every service. Writes must hit the Registry: a cached mapping
+# can outlive the entity it names by up to _CACHE_TTL (a namespace deleted
+# and re-created under the same name keeps resolving to the deleted ids), so
+# answering a write from it acts on — or persists — an id that no longer
+# exists. Enforced here rather than left to each route's bypass_cache flag,
+# which routes forgot. Outside a request (workers) the cache is used as
+# before.
+_write_request: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "wip_write_request", default=False
+)
+
+
+def _cache_readable(bypass_cache: bool) -> bool:
+    """Whether a resolution may be answered from the cache."""
+    return not (bypass_cache or _write_request.get())
+
+
+class WriteRequestMiddleware:
+    """Marks the request as a write for resolution (see _write_request).
+
+    Pure ASGI, so the flag is set in the context the rest of the stack —
+    including BaseHTTPMiddleware's handler tasks — inherits.
+    """
+
+    _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        token = _write_request.set(scope.get("method", "GET") not in self._READ_METHODS)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _write_request.reset(token)
 
 # Transport injection for in-process testing.
 # When set, httpx.AsyncClient uses this transport instead of real HTTP.
@@ -322,7 +364,7 @@ async def resolve_entity_id(
         EntityNotFoundError: If the identifier is not found in Registry
     """
     cache_key = f"{namespace}:{entity_type}:{raw_id}"
-    if not bypass_cache:
+    if _cache_readable(bypass_cache):
         cached = _get_cached(cache_key)
         if cached:
             return cached
@@ -561,7 +603,7 @@ async def resolve_term_by_fields(
         EntityNotFoundError: no term matches.
     """
     cache_key = f"{namespace}:term-fields:{terminology}:{value}"
-    if not bypass_cache:
+    if _cache_readable(bypass_cache):
         cached = _get_cached(cache_key)
         if cached:
             return cached
@@ -651,7 +693,7 @@ async def resolve_entity_ids(
         if raw_id in seen:
             continue
         seen.add(raw_id)
-        if not bypass_cache:
+        if _cache_readable(bypass_cache):
             cache_key = f"{namespace}:{entity_type}:{raw_id}"
             cached = _get_cached(cache_key)
             if cached:

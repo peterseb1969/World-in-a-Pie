@@ -790,6 +790,25 @@ no longer reads `MINIO_URL`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` or
 
 ---
 
+### Writes resolve names against the Registry, never the cache
+
+Services cache name-to-id resolutions for 5 minutes. A namespace deleted and
+re-created under the same name kept resolving `ns:VALUE` to the deleted
+entities for those minutes, so writes failed with "<deleted id> not found"
+(for example creating a term in a re-created terminology). The rule that
+writes bypass the cache was opt-in per route, and about a dozen write routes
+had not opted in.
+
+wip-auth now marks every request other than GET, HEAD and OPTIONS as a write,
+and resolution in a write always asks the Registry (the fresh answer also
+replaces the stale cache entry, so reads heal with it). Reads still use the
+cache and can lag a re-created namespace by up to 5 minutes until the next
+write refreshes the entry.
+
+**No action required** beyond running images with this wip-auth.
+
+---
+
 ### App routes can name the groups allowed through the gateway
 
 Behind the auth-gateway, any logged-in user could open any app. The in-app
