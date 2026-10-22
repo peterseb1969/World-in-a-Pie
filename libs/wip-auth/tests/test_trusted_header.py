@@ -223,3 +223,38 @@ class TestTrustProxyHeadersConfig:
 
         provider_types = [type(p).__name__ for p in providers]
         assert "TrustedHeaderProvider" not in provider_types
+
+
+class TestOnlyPrivilegedKeysAssertIdentity:
+    """A key may assert X-WIP-User / X-WIP-Groups only if it is itself
+    privileged. A namespace-scoped key falls through and authenticates as
+    itself, whatever groups the headers claim."""
+
+    @pytest.fixture
+    def provider(self):
+        def key(name, secret, groups):
+            return APIKeyRecord(name=name, key_hash=hash_api_key(secret), owner=f"system:{name}", groups=groups)
+
+        return TrustedHeaderProvider(keys=[
+            key("admin-proxy", "admin_secret", ["wip-admins"]),
+            key("service", "service_secret", ["wip-services"]),
+            key("scoped-app", "scoped_secret", []),
+            key("editor", "editor_secret", ["wip-editors"]),
+        ])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("secret", ["admin_secret", "service_secret"])
+    async def test_privileged_keys_assert_identity(self, provider, secret):
+        identity = await provider.authenticate(make_request({
+            "X-WIP-User": "viewer@wip.local", "X-WIP-Groups": "wip-viewers", "X-API-Key": secret,
+        }))
+        assert identity is not None
+        assert identity.groups == ["wip-viewers"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("secret", ["scoped_secret", "editor_secret"])
+    async def test_unprivileged_keys_cannot_claim_groups(self, provider, secret):
+        identity = await provider.authenticate(make_request({
+            "X-WIP-User": "someone@example.com", "X-WIP-Groups": "wip-admins", "X-API-Key": secret,
+        }))
+        assert identity is None

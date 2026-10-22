@@ -1,8 +1,12 @@
 """Trusted header authentication provider.
 
 Accepts user identity from gateway/proxy headers (X-WIP-User, X-WIP-Groups).
-Requires a valid X-API-Key alongside the identity headers to prevent spoofing —
-the API key proves the request came through a trusted proxy, not a direct client.
+Requires a privileged X-API-Key alongside the identity headers: the key proves
+the request came through a trusted proxy, not a direct client. Only keys in a
+privileged group (the gateway's and services' platform key) may assert an
+identity. A namespace-scoped key is any app or agent's credential, not a
+proxy's, and the groups an asserted identity carries are taken as given — so
+accepting it would let its holder claim any group, wip-admins included.
 """
 
 import logging
@@ -13,6 +17,9 @@ from ..models import APIKeyRecord, UserIdentity
 from .api_key import verify_api_key
 
 logger = logging.getLogger("wip_auth.trusted_header")
+
+# Groups whose keys may assert a user identity on a request.
+PROXY_KEY_GROUPS = frozenset({"wip-admins", "wip-services"})
 
 
 class TrustedHeaderProvider:
@@ -40,14 +47,14 @@ class TrustedHeaderProvider:
         self.hash_salt = hash_salt
         self.default_groups = default_groups or ["wip-users"]
 
-    def _validate_api_key(self, api_key: str) -> bool:
-        """Check if the API key matches any registered key."""
+    def _proxy_key(self, api_key: str) -> APIKeyRecord | None:
+        """The matching, unexpired key record if it may assert identities."""
         for record in self._keys:
             if verify_api_key(
                 api_key, record.key_hash, self.hash_salt
             ) and not record.is_expired():
-                return True
-        return False
+                return record if PROXY_KEY_GROUPS.intersection(record.groups) else None
+        return None
 
     async def authenticate(self, request: Request) -> UserIdentity | None:
         """Authenticate via trusted proxy headers + API key.
@@ -59,11 +66,12 @@ class TrustedHeaderProvider:
         if not user:
             return None
 
-        # X-WIP-User is present — require a valid API key to trust it
+        # X-WIP-User is present — require a privileged key to trust it. Any
+        # other key falls through and authenticates as itself.
         api_key = request.headers.get(self.header_name.lower())
-        if not api_key or not self._validate_api_key(api_key):
+        if not api_key or self._proxy_key(api_key) is None:
             logger.warning(
-                "X-WIP-User header present but API key missing/invalid — "
+                "X-WIP-User header present without a privileged API key — "
                 "ignoring identity headers (possible spoofing attempt)"
             )
             return None
