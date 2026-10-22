@@ -60,6 +60,12 @@ class SchemaManager:
 
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
+        # (schema, table) pairs of identity-less tables already checked for
+        # the legacy unique-identity index. create_table never emits that
+        # index without identity_fields, and identity_fields cannot change
+        # on an existing template, so one check per table per process is
+        # enough — update_table_schema runs on every synced document event.
+        self._legacy_identity_index_checked: set[tuple[str, str]] = set()
 
     @staticmethod
     def _safe_ident(name: str) -> str:
@@ -675,6 +681,8 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
         config: ReportingConfig | None = None,
         usage: str = "entity",
         identity_fields: list[str] | None = None,
+        *,
+        table_known_to_exist: bool = False,
     ) -> list[str]:
         """
         Update table schema if template has new fields.
@@ -686,12 +694,16 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
         previous schema-manager version (when the unique-identity index
         was always emitted), drop the now-broken index so identity-less
         sync can land docs.
+
+        A caller that has just confirmed the table exists passes
+        table_known_to_exist=True to skip a second catalog lookup; without
+        it, a missing table is created.
         """
         schema = self.schema_for(namespace)
         table_name = self.get_table_name(template_value, config, template_version)
         qualified = self.qualified_name(namespace, template_value, config, template_version)
 
-        if not await self.table_exists(schema, table_name):
+        if not table_known_to_exist and not await self.table_exists(schema, table_name):
             await self.create_table(
                 namespace, template_value, template_version, fields, config,
                 usage=usage, identity_fields=identity_fields,
@@ -715,7 +727,10 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
             # Drop it. The index was created when this schema-manager
             # always emitted it; identity_hash="" makes it collide on
             # every doc beyond the first.
-            if not identity_fields:
+            if (
+                not identity_fields
+                and (schema, table_name) not in self._legacy_identity_index_checked
+            ):
                 idx_name = f"{table_name}_ns_active_identity_idx"
                 idx_exists = await conn.fetchval(
                     """
@@ -738,6 +753,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
                         f"Dropped legacy unique-identity index {idx_name} "
                         f"(template {template_value} has no identity_fields)"
                     )
+                self._legacy_identity_index_checked.add((schema, table_name))
             # Phase 7 — relationship templates need source_ref_id / target_ref_id
             # columns + indexes. Add them lazily when missing so legacy
             # relationship templates that pre-date Phase 7 catch up on next
@@ -1160,6 +1176,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
             migrations = await self.update_table_schema(
                 namespace, template_value, template_version, fields, config,
                 usage=usage, identity_fields=identity_fields,
+                table_known_to_exist=True,
             )
             if migrations:
                 columns = sum("ADD COLUMN" in m for m in migrations)
