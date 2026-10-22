@@ -24,9 +24,9 @@ from wip_deploy.spec.component import Component, Port, Route
 class ResolvedRoute:
     """A routing rule the renderer will emit.
 
-    `auth_protected` is the only route-level auth signal the renderer
-    needs: it already encodes the two-part decision (route declared
-    auth_required AND deployment enables the gateway).
+    `auth_protected` encodes the two-part decision (route declared
+    auth_required AND deployment enables the gateway); `allowed_groups`
+    narrows who the gateway lets through, rendered via verify_path().
     """
 
     path: str
@@ -43,6 +43,9 @@ class ResolvedRoute:
     # An object store's own admin/health endpoints under its public
     # prefix are the canonical case. CASE-248.
     preserve_prefix_subpaths: tuple[str, ...] = ()
+    # Groups the gateway lets through on this route (empty = any logged-in
+    # user). Only meaningful when auth_protected.
+    allowed_groups: tuple[str, ...] = ()
 
 
 def resolve_routes(
@@ -160,4 +163,23 @@ def _resolve_one(
         redirect_bare_path=route.redirect_bare_path,
         preserve_prefix_subpaths=tuple(route.preserve_prefix_subpaths),
         upstream_host_header=route.upstream_host_header,
+        allowed_groups=tuple(route.allowed_groups),
     )
+
+
+def verify_query(allowed_groups: tuple[str, ...]) -> str:
+    """The query string that carries a route's allowed groups to the
+    gateway's verify endpoint ("" when any logged-in user may pass).
+
+    The one definition every renderer uses, so the group list reaches the
+    gateway the same way on every target. Names are URL-safe by spec
+    validation.
+    """
+    if not allowed_groups:
+        return ""
+    return f"?allowed_groups={','.join(allowed_groups)}"
+
+
+def verify_path(route: ResolvedRoute) -> str:
+    """The gateway verify path (with query) for an auth-protected route."""
+    return f"/auth/verify{verify_query(route.allowed_groups)}"

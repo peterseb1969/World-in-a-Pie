@@ -53,7 +53,10 @@ spec:
     roles: [read-all]
 
   routes:
-    - {path: /apps/rc, auth_required: true}
+    # The gateway refuses everyone outside wip-admins at the door (403),
+    # before any app code runs. ALLOWED_GROUPS above stays as the app-side
+    # check for when RC runs its own OIDC client instead of the gateway.
+    - {path: /apps/rc, auth_required: true, allowed_groups: [wip-admins]}
 
   # reporting-sync is a SOFT dependency — react-console functions with
   # reporting unavailable, just greys out the reporting tab. Only

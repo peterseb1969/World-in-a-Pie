@@ -242,7 +242,37 @@ if (ALLOWED_GROUPS.length > 0 && !user.groups.some(g => ALLOWED_GROUPS.includes(
 
 - App access is denied at the door — no misleading UI
 - One env var per app — no service-side changes, no database, no new APIs
-- Works on every scaffold-based app immediately
+- Works on every scaffold-based app immediately — **that runs its own OIDC
+  client**
+
+### Gateway-mode apps: the route's `allowed_groups`
+
+`ALLOWED_GROUPS` lives in the app's OIDC middleware. An app behind the
+auth-gateway runs no OIDC client, so that middleware returns early and the
+check never executes: any logged-in user could open any gateway-mode app.
+
+For those apps the gate is a manifest route field, enforced by the gateway
+for every app without app code:
+
+```yaml
+routes:
+  - {path: /apps/rc, auth_required: true, allowed_groups: [wip-admins]}
+```
+
+- The deployer renders the list into that route's verify URL —
+  `/auth/verify?allowed_groups=wip-admins` — in Caddy's `forward_auth`
+  (compose, dev) and NGINX's `auth-url` (k8s). The URL is fixed in proxy
+  configuration, so a browser cannot change it.
+- A logged-in user in none of the groups gets **403** from `/auth/verify`:
+  a short "no access" page for browsers, JSON for API callers. Behind NGINX
+  only the status reaches the browser (NGINX serves its own 403 page).
+- No session is still 401 (the login redirect). An empty or absent list keeps
+  the old behaviour: any logged-in user.
+- Group names are limited to letters, digits, `.`, `_` and `-`, and the field
+  requires `auth_required: true`.
+- Federated users carry only the groups their identity provider sends
+  (see the Dex-connector work): a gate like `[wip-admins]` refuses them until
+  their groups are mapped.
 - Namespace auth (Phase 2) becomes defense-in-depth, not the primary UX gate
 
 ---
@@ -575,7 +605,7 @@ This replaces Dex entirely. WIP's Registry (which already manages namespaces and
 | Phase | Goal | Prerequisite | Status |
 |-------|------|-------------|--------|
 | **1** | **No anonymous app access** | None | **Done** (2026-03-31) — app-side OIDC, wip-auth 0.4.0, @wip/proxy 0.2.0 |
-| **1.5** | **App-level access control** | Phase 1 | **Done** (2026-04-01) — `ALLOWED_GROUPS` env var in scaffold middleware |
+| **1.5** | **App-level access control** | Phase 1 | **Done** — apps with their own OIDC client: `ALLOWED_GROUPS` in scaffold middleware (2026-04-01). Gateway-mode apps: route `allowed_groups`, enforced by the auth-gateway (2026-10-23); before that, nothing gated them |
 | **2** | Per-namespace permissions | Phase 1 | **Backend done in document-store, template-store, def-store** (0e548f3), Console UX polish remaining |
 | **2b** | Complete service-side enforcement (reporting-sync, ingest-gateway) | Phase 2 | **Implemented and rolled out** (2026-10-12, C0–C9): wip-local, dev-test, prod-test, kb.internal — AWS pending |
 | **3** | Per-user audit trail | Phase 1 | **Verified** — code review confirmed full chain |

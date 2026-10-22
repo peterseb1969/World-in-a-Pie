@@ -32,6 +32,9 @@ class IngressRule:
     # exact/Prefix paths precedence over ImplementationSpecific (regex),
     # so these win for matching requests. CASE-248 — MinIO admin/health.
     preserve_prefix_subpaths: tuple[str, ...] = ()
+    # Groups the gateway lets through (empty = any logged-in user); appended
+    # to the auth-url as routing.verify_query().
+    allowed_groups: tuple[str, ...] = ()
     # Set the proxied Host to the upstream's host:port (upstream-vhost
     # annotation) — backends that validate the signed Host of presigned
     # URLs (object storage). Forces a per-rule Ingress.
@@ -101,6 +104,7 @@ def generate_ingress_config(
             strip_prefix=r.strip_prefix,
             upstream_host_header=r.upstream_host_header,
             preserve_prefix_subpaths=r.preserve_prefix_subpaths,
+            allowed_groups=r.allowed_groups,
         )
         for r in resolve_routes(deployment, components, apps)
     ]

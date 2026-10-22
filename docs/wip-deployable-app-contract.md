@@ -193,6 +193,15 @@ These are platform-side guarantees the contract assumes. They're invariants toda
 
 - **External CA trust is auto-injected into app containers (Node-stack)** — when an apps-only install carries a `secrets/external-ca.crt` (seeded by `wip-deploy import-bundle`), the deployer automatically bind-mounts it read-only at **`/etc/ssl/certs/external-ca.crt`** in every app container and sets **`NODE_EXTRA_CA_CERTS`** to that path. You declare nothing — there is no manifest field; the behaviour flips on purely from the CA file's presence (the deployer's `install`/`render` auto-detect it). **Node-stack apps** pick the extra CA up transparently (Node reads `NODE_EXTRA_CA_CERTS`); **Python / Go / Rust apps ignore it** and use their own trust stores (`certifi`, the system pool, …) — harmless either way. Two reservations follow: don't unset `NODE_EXTRA_CA_CERTS`, and don't bind your own file at `/etc/ssl/certs/external-ca.crt`. Backend / full-stack installs never see this — it is apps-only. For the operator-side flow that makes the CA file exist in the first place, see `docs/design/bootstrap-bundle.md`.
 
+- **Who may open your app is a route field, enforced by the gateway** — behind the auth-gateway your app runs no OIDC client, so an in-app `ALLOWED_GROUPS` check never executes. Declare the groups on the route instead:
+
+  ```yaml
+  routes:
+    - {path: /apps/<name>, auth_required: true, allowed_groups: [wip-admins]}
+  ```
+
+  The gateway answers 403 to a logged-in user in none of the groups, before any request reaches your app: a short "no access" page for browsers, JSON for API callers. Behind NGINX (k8s) only the status reaches the browser. No session is still a login redirect, and an empty or absent list lets any logged-in user in. Group names may use letters, digits, `.`, `_` and `-`; the field requires `auth_required: true`. Keep `ALLOWED_GROUPS` only if your app also runs its own OIDC client.
+
 - **NATS access is a role, declared in the manifest** — NATS requires authentication, and an app gets a NATS user only by declaring roles:
 
   ```yaml

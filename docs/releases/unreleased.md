@@ -790,6 +790,34 @@ no longer reads `MINIO_URL`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` or
 
 ---
 
+### App routes can name the groups allowed through the gateway
+
+Behind the auth-gateway, any logged-in user could open any app. The in-app
+`ALLOWED_GROUPS` check runs only in apps that have their own OIDC client, and
+gateway-mode apps have none, so nothing enforced it.
+
+A manifest route can now declare `allowed_groups`:
+
+```yaml
+routes:
+  - {path: /apps/rc, auth_required: true, allowed_groups: [wip-admins]}
+```
+
+The deployer renders the list into that route's verify URL (Caddy
+`forward_auth` on compose and dev, NGINX `auth-url` on k8s). The gateway
+answers 403 to a logged-in user in none of the groups: a short "no access"
+page for browsers, JSON for API callers. Behind NGINX only the status reaches
+the browser. No session is still the login redirect, and an empty or absent
+list keeps today's behaviour. React Console's route now allows `wip-admins`
+only.
+
+**Action:** re-render the install (`wip-deploy redeploy --name <install>`) so
+the proxy configuration carries the groups, and run an auth-gateway image with
+this change. Apps that relied on `ALLOWED_GROUPS` while running behind the
+gateway can move the list to their route.
+
+---
+
 ### A deleted namespace's reporting schema stays deleted
 
 Deleting a namespace dropped its PostgreSQL reporting schema, but an event

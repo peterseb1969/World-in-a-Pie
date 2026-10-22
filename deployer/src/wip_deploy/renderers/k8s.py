@@ -918,6 +918,7 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
     The auth gateway itself gets a direct Ingress (no auth-url — it IS the auth).
     """
     from wip_deploy.config_gen.nginx_ingress import IngressConfig
+    from wip_deploy.config_gen.routing import verify_query
 
     cfg: IngressConfig = ingress_cfg
     docs: list[dict[str, Any]] = []
@@ -987,7 +988,9 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
     for r in app_rules:
         app_annotations = dict(base_annotations)
         if cfg.gateway_auth_url:
-            app_annotations["nginx.ingress.kubernetes.io/auth-url"] = cfg.gateway_auth_url
+            app_annotations["nginx.ingress.kubernetes.io/auth-url"] = (
+                cfg.gateway_auth_url + verify_query(r.allowed_groups)
+            )
             app_annotations["nginx.ingress.kubernetes.io/auth-signin"] = (
                 f"https://{cfg.hostname}/auth/login?return_to=$escaped_request_uri"
             )
@@ -1040,7 +1043,9 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
                 f"{r.backend_service}.{ns}.svc.cluster.local:{r.backend_port}"
             )
         if cfg.gateway_auth_url and r.auth_protected:
-            strip_annotations["nginx.ingress.kubernetes.io/auth-url"] = cfg.gateway_auth_url
+            strip_annotations["nginx.ingress.kubernetes.io/auth-url"] = (
+                cfg.gateway_auth_url + verify_query(r.allowed_groups)
+            )
             strip_annotations["nginx.ingress.kubernetes.io/auth-signin"] = (
                 f"https://{cfg.hostname}/auth/login?return_to=$escaped_request_uri"
             )
@@ -1128,7 +1133,9 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
         if r.preserve_prefix_subpaths:
             preserve_annotations = dict(base_annotations)
             if cfg.gateway_auth_url and r.auth_protected:
-                preserve_annotations["nginx.ingress.kubernetes.io/auth-url"] = cfg.gateway_auth_url
+                preserve_annotations["nginx.ingress.kubernetes.io/auth-url"] = (
+                    cfg.gateway_auth_url + verify_query(r.allowed_groups)
+                )
                 preserve_annotations["nginx.ingress.kubernetes.io/auth-signin"] = (
                     f"https://{cfg.hostname}/auth/login?return_to=$escaped_request_uri"
                 )

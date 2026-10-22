@@ -28,7 +28,7 @@ import logging
 import time
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 
 from .config import check_production_security, check_redirect_mode, settings
@@ -96,12 +96,21 @@ async def verify(request: Request):
     exp = session.get("exp", 0)
 
     if email and time.time() < exp:
-        groups = ",".join(session.get("groups", []))
+        user_groups = session.get("groups", [])
+        # The route's allowed groups arrive in the verify URL the deployer
+        # renders (Caddy forward_auth `uri`, NGINX `auth-url`); the client
+        # cannot set them. A logged-in user outside them is refused with
+        # 403 — never 401, which would send them back through a login they
+        # already completed.
+        allowed = [g for g in request.query_params.get("allowed_groups", "").split(",") if g]
+        if allowed and not set(allowed).intersection(user_groups):
+            logger.info("Access refused: %s (groups %s) not in %s", email, user_groups, allowed)
+            return _forbidden(request)
         return Response(
             status_code=200,
             headers={
                 "X-WIP-User": email,
-                "X-WIP-Groups": groups,
+                "X-WIP-Groups": ",".join(user_groups),
                 "X-API-Key": settings.api_key,
             },
         )
@@ -133,6 +142,32 @@ async def verify(request: Request):
     return Response(
         status_code=401,
         headers={"X-Auth-Redirect": login_path},
+    )
+
+
+_FORBIDDEN_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>No access</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem">
+<h1>You don't have access to this app</h1>
+<p>You are signed in, but your account is not in a group this app allows.
+Ask an administrator to add you, or <a href="/auth/logout">sign in as someone else</a>.</p>
+</body></html>
+"""
+
+
+def _forbidden(request: Request) -> Response:
+    """403 for a logged-in user outside a route's allowed groups.
+
+    A readable page for browsers, JSON for API callers. Behind Caddy the
+    body reaches the client; behind NGINX auth_request only the status
+    does (NGINX serves its own 403 page).
+    """
+    if "text/html" in request.headers.get("Accept", ""):
+        return HTMLResponse(_FORBIDDEN_PAGE, status_code=403)
+    return JSONResponse(
+        status_code=403,
+        content={"error": "forbidden", "detail": "You don't have access to this app"},
     )
 
 

@@ -137,6 +137,34 @@ class Route(WIPModel):
     # path and redirects /mcp/ → /mcp, which loops with Caddy's
     # redirect in the other direction.
     redirect_bare_path: bool = True
+    # Groups allowed through this route when it is auth-protected behind
+    # the gateway. Empty = any logged-in user. A logged-in user outside
+    # these groups gets 403 from the gateway's verify — the app-level gate
+    # for gateway-mode apps, which run no OIDC client of their own. The
+    # list travels in the route's verify URL (Caddy forward_auth `uri`,
+    # NGINX `auth-url`), so names are restricted to URL- and
+    # Caddyfile-safe characters.
+    allowed_groups: list[str] = Field(default_factory=list)
+
+    @field_validator("allowed_groups")
+    @classmethod
+    def _group_names_are_safe(cls, groups: list[str]) -> list[str]:
+        for g in groups:
+            if not g or not all(ch.isalnum() or ch in "._-" for ch in g):
+                raise ValueError(
+                    f"allowed_groups entry {g!r}: use letters, digits, '.', '_' or '-'"
+                )
+        return groups
+
+    @model_validator(mode="after")
+    def _groups_need_auth(self) -> Route:
+        # A group list on an unauthenticated route would look like
+        # protection and be none.
+        if self.allowed_groups and not self.auth_required:
+            raise ValueError(
+                f"route {self.path}: allowed_groups requires auth_required: true"
+            )
+        return self
 
 
 # ────────────────────────────────────────────────────────────────────

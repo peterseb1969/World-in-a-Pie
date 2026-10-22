@@ -14,6 +14,7 @@ from __future__ import annotations
 from io import StringIO
 
 from wip_deploy.config_gen.caddy import CaddyConfig
+from wip_deploy.config_gen.routing import ResolvedRoute, verify_path
 from wip_deploy.renderers.caddy_common import write_api_fallthrough_404
 
 
@@ -118,7 +119,7 @@ def _write_tls(out: StringIO, cfg: CaddyConfig) -> None:
         out.write("    tls off\n")
 
 
-def _write_forward_auth(out: StringIO, cfg: CaddyConfig) -> None:
+def _write_forward_auth(out: StringIO, cfg: CaddyConfig, route: ResolvedRoute) -> None:
     """Emit the forward_auth block shared by routes and the catch-all.
 
     The `@unauth status 401` + `handle_response` pair converts the
@@ -136,7 +137,9 @@ def _write_forward_auth(out: StringIO, cfg: CaddyConfig) -> None:
     bare-path redirect in _write_route below.
     """
     out.write(f"        forward_auth {cfg.gateway_service}:{cfg.gateway_port} {{\n")
-    out.write("            uri /auth/verify\n")
+    # The route's allowed groups ride in the verify URI (verify_path), so
+    # the gateway can answer 403 for a logged-in user outside them.
+    out.write(f"            uri {verify_path(route)}\n")
     out.write("            copy_headers X-WIP-User X-WIP-Groups X-API-Key\n")
     out.write("            @unauth status 401\n")
     out.write("            handle_response @unauth {\n")
@@ -201,7 +204,7 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
         for sub in route.preserve_prefix_subpaths:
             out.write(f"    handle {sub}/* {{\n")
             if route.auth_protected:
-                _write_forward_auth(out, cfg)
+                _write_forward_auth(out, cfg, route)
             _write_reverse_proxy(out, backend, route)
             out.write("    }\n\n")
 
@@ -215,7 +218,7 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
     def _emit_block(matcher_path: str) -> None:
         out.write(f"    {directive} {matcher_path} {{\n")
         if route.auth_protected:
-            _write_forward_auth(out, cfg)
+            _write_forward_auth(out, cfg, route)
         _write_reverse_proxy(out, backend, route)
         out.write("    }\n\n")
 
@@ -236,7 +239,7 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
 def _write_catchall(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyped-def]
     out.write("    handle {\n")
     if route.auth_protected:
-        _write_forward_auth(out, cfg)
+        _write_forward_auth(out, cfg, route)
     out.write(
         f"        reverse_proxy wip-{route.backend_component}:{route.backend_port}\n"
     )
