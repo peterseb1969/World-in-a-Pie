@@ -1,8 +1,12 @@
 # CI on the development Mac — per-job service containers
 
-**Status:** plan, not implemented. Branch `ci/local-runner`.
+**Status:** implemented 2026-10-24. The Mac runner (`mac-ci`, gitea-runner
+v5.2.2, `~/gitea-runner/`, launchd agent `local.gitea-runner`) holds
+`ubuntu-latest`. The Pi runner stays registered with only `pi-host:host` (its
+config backup: `~/act_runner/config.yaml.bak-20261024`). First real run on
+the Mac (all 16 jobs, green): about 1 min 45 s; the Pi took about 10 min.
 **Goal:** run the Gitea Actions CI (triggered by pushes to `gitea`) on the
-development Mac instead of `act_runner` on `wip-pi.local`, without CI and local
+development Mac instead of `act_runner` on `wip-pi.internal`, without CI and local
 development interfering with each other.
 
 ## What was checked (2026-10-24)
