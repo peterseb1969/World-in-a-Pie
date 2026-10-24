@@ -2627,6 +2627,33 @@ class DocumentService:
                 # (CASE-795 F21). Idempotent and per-template-cached, so the cost
                 # is one call per distinct template in the batch.
                 await self._ensure_relationship_indexes(req.template_id, namespace)
+            # Namespace isolation, exactly as create_document checks it and in
+            # the same order (after the relationship constraints, so an edge's
+            # cross-namespace endpoint reports cross_namespace_relationship).
+            # Without it a strict namespace's allow-list held for one-item
+            # writes and not for batches. The validator caches each
+            # namespace's settings, so a batch costs one lookup per namespace.
+            try:
+                await get_reference_validator().validate_document_references(
+                    document_namespace=namespace,
+                    template_namespace=vr.template_namespace or namespace,
+                    term_references=vr.term_references,
+                    file_references=vr.file_references,
+                    document_references=vr.references,
+                )
+            except ReferenceValidationError as e:
+                failed += 1
+                results.append(BulkResultItem(
+                    index=idx, status="error",
+                    error=f"Cross-namespace reference violation: {e.violations}",
+                ))
+                continue
+            except RegistryUnavailableError as e:
+                # Isolation cannot be checked, so the item is refused rather
+                # than written unchecked.
+                failed += 1
+                results.append(BulkResultItem(index=idx, status="error", error=str(e)))
+                continue
             rel_checked.append(entry)
         validation_results = rel_checked
 

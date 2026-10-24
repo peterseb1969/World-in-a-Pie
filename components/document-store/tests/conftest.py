@@ -361,6 +361,21 @@ _TEMPLATE_DEFS = [
         "fields": [{"name": "title", "label": "Title", "type": "string", "mandatory": True}],
         "rules": [],
     },
+    # A plain (non-edge) document reference, for namespace-isolation tests.
+    {
+        "legacy_key": "TPL-HOLDER-Q",
+        "value": "HOLDER_Q",
+        "label": "Holder (isolation tests)",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["name"],
+        "fields": [
+            {"name": "name", "label": "Name", "type": "string", "mandatory": True},
+            {"name": "ref", "label": "Ref", "type": "reference",
+             "reference_type": "document", "target_templates": ["TPL-CHAPTER-Q"]},
+        ],
+        "rules": [],
+    },
     # --- CASE-343 relationship-edge fixture for CASE_RECORD ---
     # An edge connecting two CASE_RECORD docs so the peer-projection path
     # is exercised against the CASE-343 fixture.
@@ -543,7 +558,16 @@ def _build_sample_templates(id_map: dict[str, str]) -> dict[str, dict]:
             # omitted so legacy fixtures (which don't declare it) fall
             # through to the identity_fields fallback in projection logic.
             "header_fields": tdef.get("header_fields", []),
-            "fields": tdef["fields"],
+            # A target_templates entry naming a fixture's legacy key becomes
+            # that template's canonical id: a bare value resolves only in the
+            # document's own namespace, so a document outside "wip" must name
+            # a "wip" template by id. Copied, never mutated in place — the
+            # defs are rebuilt per test with fresh ids.
+            "fields": [
+                {**f, "target_templates": [id_map.get(t, t) for t in f["target_templates"]]}
+                if f.get("target_templates") else f
+                for f in tdef["fields"]
+            ],
             "rules": tdef["rules"],
             # Phase-1 fields — pass through with sensible defaults so legacy
             # template defs (which omit them) still produce valid mock data.
