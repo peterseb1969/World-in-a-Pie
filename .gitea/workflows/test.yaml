@@ -1,13 +1,13 @@
 name: Tests
 on:
   push:
-    branches: [main, develop, ci/local-runner]  # TEMPORARY: cutover test, revert before merge
+    branches: [main, develop]
   pull_request:
 
 jobs:
   # Fast lint checks (parallel with tests)
   lint:
-    runs-on: mac-ci
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,7 +56,7 @@ jobs:
 
   # Vendored client-lib tarball version consistency (CASE-500)
   vendored-tarballs:
-    runs-on: mac-ci
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -69,7 +69,7 @@ jobs:
 
   # Dependency vulnerability check
   security-audit:
-    runs-on: mac-ci
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -93,7 +93,7 @@ jobs:
   # (wip-test.sh), a WIP install or another CI job on the same machine. The
   # runner holds each job until its services report healthy.
   test-services:
-    runs-on: mac-ci
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -133,7 +133,7 @@ jobs:
 
   # Ingest gateway (NATS with JetStream)
   test-ingest-gateway:
-    runs-on: mac-ci
+    runs-on: ubuntu-latest
     services:
       nats:
         image: nats:2
@@ -179,7 +179,7 @@ jobs:
 
   # Reporting-sync (unit tests + PostgreSQL integration tests)
   test-reporting-sync:
-    runs-on: mac-ci
+    runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:16
@@ -234,7 +234,7 @@ jobs:
 
   # MCP server (no DB needed)
   test-mcp-server:
-    runs-on: mac-ci
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -260,7 +260,7 @@ jobs:
 
   # Auth gateway (no DB needed)
   test-auth-gateway:
-    runs-on: mac-ci
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -289,7 +289,7 @@ jobs:
 
   # wip-auth library
   test-wip-auth:
-    runs-on: mac-ci
+    runs-on: ubuntu-latest
     services:
       mongo:
         image: mongo:7
@@ -323,7 +323,7 @@ jobs:
 
   # wip-archive library (archive format + id remap) — pure unit tests
   test-wip-archive:
-    runs-on: mac-ci
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -344,7 +344,7 @@ jobs:
 
   # Deployer (wip-deploy CLI) — pure unit tests, no DB or NATS needed
   test-deployer:
-    runs-on: mac-ci
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -368,7 +368,7 @@ jobs:
   # tests are opt-in (WIP_GOLDEN=1, need podman + a running install +
   # BSD sed) and skip themselves here.
   test-scaffold:
-    runs-on: mac-ci
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -389,7 +389,7 @@ jobs:
 
   # WIP-Toolkit
   test-wip-toolkit:
-    runs-on: mac-ci
+    runs-on: ubuntu-latest
     services:
       mongo:
         image: mongo:7
