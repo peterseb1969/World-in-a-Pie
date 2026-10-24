@@ -134,19 +134,23 @@ class RegisterKeyItem(StrictModel):
     identity_values: dict[str, Any] | None = Field(
         default=None,
         description="The identity-hash feed. Registry computes identity_hash "
-                    "from these values, injects it into composite_key, and "
-                    "(absent synonym_values) creates a synonym with them. "
-                    "Under resolved-referent identity the caller sends resolved "
-                    "referent IDs here, never submitted spellings."
+                    "from these values and injects it into composite_key. No "
+                    "synonym is created from them. Under resolved-referent "
+                    "identity the caller sends resolved referent IDs here, never "
+                    "submitted spellings."
     )
     synonym_values: dict[str, Any] | None = Field(
         default=None,
-        description="The values to mint the raw-values synonym from, in place "
-                    "of identity_values. Document-store sends the submitted "
-                    "identity spellings here so business-key lookup stays "
-                    "human-readable while identity_values carries the resolved "
-                    "referent IDs that feed the hash. Ignored without "
-                    "identity_values; ignored when skip_identity_value_synonym."
+        description="The qualified key-value pairs to mint the raw-values "
+                    "synonym from. Document-store sends the submitted identity "
+                    "spellings qualified by the template ('@template': <template "
+                    "value>), so business-key lookup stays human-readable and the "
+                    "same spelling under two templates is two synonyms, while "
+                    "identity_values carries the resolved referent IDs that feed "
+                    "the hash. Absent = no raw-values synonym. Ignored without "
+                    "identity_values; ignored when skip_identity_value_synonym. "
+                    "Keys starting with '@' are reserved for system-generated "
+                    "synonyms."
     )
     skip_identity_value_synonym: bool = Field(
         default=False,

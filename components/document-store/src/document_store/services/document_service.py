@@ -40,7 +40,7 @@ from .file_storage_client import is_file_storage_enabled
 from .identity_service import IdentityService
 from .nats_client import EventType, publish_document_event
 from .reference_validator import ReferenceValidationError, get_reference_validator
-from .registry_client import RegistryError, get_registry_client
+from .registry_client import RegistryError, get_registry_client, qualified_synonym_values
 from .template_store_client import get_template_store_client
 from .validation_service import ValidationService
 
@@ -460,8 +460,13 @@ class DocumentService:
                 skip_identity_value_synonym=is_relationship,
                 # The raw-values synonym keeps the submitted spellings so
                 # business-key references resolve by human value; the hash
-                # feed above carries resolved referent IDs instead.
-                synonym_values=validation_result.submitted_identity_values or None,
+                # feed above carries resolved referent IDs instead. It is
+                # qualified by the template, so the same spelling under
+                # another template is a different synonym.
+                synonym_values=qualified_synonym_values(
+                    validation_result.template_value,
+                    validation_result.submitted_identity_values,
+                ),
             )
         except RegistryError as e:
             return None, f"Failed to generate document ID: {e!s}"
@@ -2640,9 +2645,12 @@ class DocumentService:
         for vr in validation_results:
             reg_item: dict[str, Any] = {
                 "identity_values": vr[2].identity_values or None,
-                # Submitted spellings mint the raw-values synonym; the hash
-                # feed (identity_values) carries resolved referent IDs.
-                "synonym_values": vr[2].submitted_identity_values or None,
+                # Submitted spellings, qualified by the template, mint the
+                # raw-values synonym; the hash feed (identity_values) carries
+                # resolved referent IDs.
+                "synonym_values": qualified_synonym_values(
+                    vr[2].template_value, vr[2].submitted_identity_values,
+                ),
                 "template_id": vr[1].template_id,
                 "has_identity_fields": bool(vr[2].identity_fields),
                 "skip_identity_value_synonym": await _is_relationship(vr[1].template_id),

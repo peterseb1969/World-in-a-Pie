@@ -50,16 +50,18 @@ class TestSkipIdentityValueSynonym:
     @pytest.mark.asyncio
     async def test_default_still_creates_synonym(self, client: AsyncClient, auth_headers: dict):
         # Regression guard: without the flag, the identity-values synonym is
-        # created and resolves (normal-document behavior, unchanged).
+        # created from the (template-qualified) synonym_values and resolves.
         idv = {"case_number": "777"}
+        qualified = {"@template": "CASE_RECORD", "case_number": "777"}
         res = await _register(client, auth_headers, {
             "namespace": "default",
             "entity_type": "documents",
             "composite_key": {"ns": "default", "template_id": "CASE_RECORD"},
             "identity_values": idv,
+            "synonym_values": qualified,
         })
         assert res["status"] == "created"
-        looked = await _lookup_by_key(client, auth_headers, "default", "documents", idv)
+        looked = await _lookup_by_key(client, auth_headers, "default", "documents", qualified)
         assert looked["status"] == "found"
         assert looked["entry_id"] == res["registry_id"]
 

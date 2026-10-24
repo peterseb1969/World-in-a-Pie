@@ -11,6 +11,7 @@ import pytest
 from httpx import AsyncClient
 
 from template_store.models.field import FieldDefinition
+from template_store.services.errors import TemplateError
 from template_store.services.template_service import TemplateService
 
 TEMPLATES = "/api/template-store/templates"
@@ -75,3 +76,16 @@ async def test_new_version_rejects_per_item(client: AsyncClient, auth_headers: d
     assert "double quote or NUL" in item["error"]
     assert item["error_code"] == "validation_failed"
     assert item["details"] == {"rule": "field_name_unquotable"}
+
+
+def test_write_seam_rejects_the_reserved_qualifier_name():
+    # "@template" qualifies the synonym minted from a document's identity
+    # values; a field of that name would collide with it.
+    with pytest.raises(TemplateError) as exc:
+        TemplateService.validate_fields_for_write([_field("@template")])
+    assert exc.value.code == "validation_failed"
+    assert exc.value.details == {"rule": "field_name_reserved"}
+
+
+def test_other_at_names_stay_allowed():
+    TemplateService.validate_fields_for_write([_field("@context")])  # no raise

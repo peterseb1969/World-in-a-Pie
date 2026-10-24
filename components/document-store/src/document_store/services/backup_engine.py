@@ -49,6 +49,7 @@ from .remap_restore import (
     plan_multi,
 )
 from .reporting_client import ReportingSyncClient
+from .synonym_migration import requalify_identity_synonyms
 
 logger = logging.getLogger("document_store.backup_engine")
 
@@ -941,6 +942,18 @@ class DirectRestoreEngine:
             # fresh-restored entity would resolve only by canonical id, not by
             # value. Carry them over now that every entity is active.
             await self._restore_synonyms(reader, mapping, plans)
+            # Archives taken before identity-values synonyms were qualified by
+            # template carry them in the bare form, which claims the spelling
+            # for every template in the namespace. Re-key them, so a restore
+            # always ends in the current form whatever the archive's age.
+            for target in mapping.values():
+                requalified = await requalify_identity_synonyms(target, dry_run=False)
+                if requalified.errors:
+                    logger.warning(
+                        "Restore into %s: %d identity-values synonym(s) could not be "
+                        "re-qualified; run /maintenance/requalify-identity-synonyms",
+                        target, requalified.errors,
+                    )
             for src, target in mapping.items():
                 await self._record_provenance(target, src, manifest)
 

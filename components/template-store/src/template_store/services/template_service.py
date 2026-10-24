@@ -347,6 +347,15 @@ class TemplateService:
             # database. A double quote would close that quoting and a NUL
             # truncates the name, so neither can be quoted safely. Every other
             # character stays allowed.
+            # "@template" qualifies the synonym document-store mints from a
+            # document's identity spellings; a field of that name would
+            # collide with the qualifier inside that synonym.
+            if f.name == "@template":
+                raise TemplateError(
+                    "field name '@template' is reserved: it qualifies the "
+                    "synonym minted from a document's identity values",
+                    "validation_failed", rule="field_name_reserved",
+                )
             if '"' in f.name or "\x00" in f.name:
                 raise TemplateError(
                     f"field name {f.name!r} contains a double quote or NUL "

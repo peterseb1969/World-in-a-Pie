@@ -615,6 +615,19 @@ Key operations:
 
 This enables cross-system integration without mapping tables.
 
+Every synonym is a qualified key-value pair, never a bare string, and a
+synonym resolves to exactly one entity: registering one that another entity
+already holds is refused. That refusal is a signal for the app — a real
+duplicate, or a qualifier too weak to tell two meanings apart. Choose
+qualifiers that name the meaning: {"chapter_title": "X"} and
+{"scene_title": "X"} are two synonyms; {"title": "X"} for both is one.
+- A document's identity values are registered automatically as a synonym
+  qualified by its template: {"@template": "<template value>", <identity
+  field>: <submitted value>, …}. The same values under two templates are two
+  synonyms, matching the identity rule (identity is scoped to the template).
+- Keys starting with "@" are reserved for these system-generated synonyms;
+  only system callers may register them.
+
 ## Ontology Relations
 Terms can be connected via typed relations:
 - Types (seeded defaults, not a fixed set): is_a, has_subtype, part_of, has_part, maps_to, mapped_from, related_to, finding_site, causative_agent, regulates, positively_regulates, negatively_regulates

@@ -493,7 +493,8 @@ class TestIdentityValuesRegistration:
 
     @pytest.mark.asyncio
     async def test_register_with_identity_values_creates_synonym(self, client: AsyncClient, auth_headers: dict):
-        """Test that identity_values creates a synonym with raw values."""
+        """identity_values feed the hash; the qualified synonym_values become the synonym."""
+        qualified = {"@template": "PERSON", "email": "john@example.com", "name": "John Doe"}
         response = await client.post(
             "/api/registry/entries/register",
             json=[{
@@ -501,6 +502,7 @@ class TestIdentityValuesRegistration:
                 "entity_type": "documents",
                 "composite_key": {"namespace": "default", "template_id": "0190c000-0000-7000-0000-000000000001"},
                 "identity_values": {"email": "john@example.com", "name": "John Doe"},
+                "synonym_values": qualified,
             }],
             headers=auth_headers
         )
@@ -513,7 +515,7 @@ class TestIdentityValuesRegistration:
         entry_id = result["registry_id"]
         identity_hash = result["identity_hash"]
 
-        # Verify the entry has a synonym with raw identity values
+        # Verify the entry has the qualified synonym
         detail = await client.get(
             f"/api/registry/entries/{entry_id}",
             headers=auth_headers
@@ -522,7 +524,7 @@ class TestIdentityValuesRegistration:
         entry = detail.json()
         assert len(entry["synonyms"]) == 1
         syn = entry["synonyms"][0]
-        assert syn["composite_key"] == {"email": "john@example.com", "name": "John Doe"}
+        assert syn["composite_key"] == qualified
 
         # Verify identity_hash was injected into primary composite key
         assert entry["primary_composite_key"]["identity_hash"] == identity_hash
@@ -609,6 +611,7 @@ class TestIdentityValuesRegistration:
                 "entity_type": "documents",
                 "composite_key": {"namespace": "default", "template_id": "0190c000-0000-7000-0000-000000000001"},
                 "identity_values": {"employee_id": "EMP-SEARCHTEST-42"},
+                "synonym_values": {"@template": "EMPLOYEE", "employee_id": "EMP-SEARCHTEST-42"},
             }],
             headers=auth_headers
         )

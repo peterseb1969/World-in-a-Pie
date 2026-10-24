@@ -84,6 +84,20 @@ async def add_synonyms(
                 ))
                 continue
 
+            # Keys starting with "@" qualify system-generated synonyms (a
+            # document's "@template"). Only system callers may write them, so
+            # an explicit synonym cannot claim the key a document will need.
+            reserved = sorted(k for k in item.synonym_composite_key if k.startswith("@"))
+            if reserved and not identity.has_any_group(["wip-admins", "wip-services"]):
+                results.append(AddSynonymResponse(
+                    index=i, status="forbidden",
+                    error=(
+                        f"Synonym keys {reserved} are reserved for system-generated "
+                        "synonyms (keys starting with '@')"
+                    ),
+                ))
+                continue
+
             # Compute hash for the new synonym
             synonym_hash = HashService.compute_composite_key_hash(item.synonym_composite_key)
 

@@ -338,6 +338,29 @@ _TEMPLATE_DEFS = [
         ],
         "rules": [],
     },
+    # Two templates whose identity field shares a name: the same title under
+    # each must be two documents, and their identity-values synonyms must not
+    # collide (they are qualified by template).
+    {
+        "legacy_key": "TPL-CHAPTER-Q",
+        "value": "CHAPTER_Q",
+        "label": "Chapter (qualifier tests)",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["title"],
+        "fields": [{"name": "title", "label": "Title", "type": "string", "mandatory": True}],
+        "rules": [],
+    },
+    {
+        "legacy_key": "TPL-SCENE-Q",
+        "value": "SCENE_Q",
+        "label": "Scene (qualifier tests)",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["title"],
+        "fields": [{"name": "title", "label": "Title", "type": "string", "mandatory": True}],
+        "rules": [],
+    },
     # --- CASE-343 relationship-edge fixture for CASE_RECORD ---
     # An edge connecting two CASE_RECORD docs so the peer-projection path
     # is exercised against the CASE-343 fixture.
@@ -836,6 +859,7 @@ async def client(session_mongo_client) -> AsyncGenerator[AsyncClient, None]:
         patch('document_store.main.get_def_store_client', return_value=mock_def_store),
         patch('document_store.api.table_view.get_template_store_client', return_value=mock_template_store),
         patch('document_store.services.identity_migration.get_template_store_client', return_value=mock_template_store),
+        patch('document_store.services.synonym_migration.get_template_store_client', return_value=mock_template_store),
         patch('document_store.services.identity_migration.get_registry_client', return_value=real_registry),
     ):
         transport = ASGITransport(app=app)

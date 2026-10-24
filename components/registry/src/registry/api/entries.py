@@ -536,14 +536,19 @@ async def register_keys(
             # not created. identity_hash is still computed + injected above, so
             # the primary key and edge dedup/versioning are unaffected.
             synonyms = []
-            if item.identity_values and id_hash and not item.skip_identity_value_synonym:
+            if (
+                item.identity_values and id_hash and item.synonym_values
+                and not item.skip_identity_value_synonym
+            ):
                 # The synonym carries the human-readable spellings: under
                 # resolved-referent identity the hash feed (identity_values)
                 # holds resolved referent IDs, while synonym_values keeps the
-                # submitted business-key values lookups resolve by. Without
-                # synonym_values the two coincide and the computed hash
-                # equals id_hash, as before.
-                synonym_key = item.synonym_values or item.identity_values
+                # submitted business-key values lookups resolve by. The caller
+                # qualifies them (document-store adds the template under
+                # "@template"). There is deliberately no fallback to
+                # identity_values: an unqualified synonym claims the bare
+                # values for every template in the namespace.
+                synonym_key = item.synonym_values
                 synonyms.append(Synonym(
                     namespace=item.namespace,
                     entity_type=item.entity_type,

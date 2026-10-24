@@ -3,9 +3,10 @@
 Under resolved-referent identity, document-store sends resolved referent IDs
 as identity_values (the hash feed) and the submitted spellings as
 synonym_values (the business-key lookup surface). The registry mints the
-raw-values synonym from synonym_values when present, from identity_values
-otherwise — so human-readable lookups keep resolving while the hash
-converges on referents.
+raw-values synonym from synonym_values only — so human-readable lookups keep
+resolving while the hash converges on referents. Without synonym_values no
+synonym is minted: identity_values alone would be an unqualified synonym,
+claiming the bare values for every template in the namespace.
 """
 
 import pytest
@@ -59,7 +60,7 @@ class TestSynonymValuesSplit:
         assert looked_resolved["status"] == "not_found"
 
     @pytest.mark.asyncio
-    async def test_without_synonym_values_identity_values_still_mint_the_synonym(
+    async def test_without_synonym_values_no_synonym_is_minted(
         self, client: AsyncClient, auth_headers: dict,
     ):
         idv = {"email": "alice@example.com"}
@@ -70,9 +71,9 @@ class TestSynonymValuesSplit:
             "identity_values": idv,
         })
         assert res["status"] == "created"
+        assert res.get("identity_hash")  # dedup still keys on the identity
         looked = await _lookup_by_key(client, auth_headers, "default", "documents", idv)
-        assert looked["status"] == "found"
-        assert looked["entry_id"] == res["registry_id"]
+        assert looked["status"] == "not_found"
 
     @pytest.mark.asyncio
     async def test_skip_flag_suppresses_the_synonym_values_synonym_too(

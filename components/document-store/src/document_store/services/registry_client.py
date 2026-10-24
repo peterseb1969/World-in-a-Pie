@@ -23,13 +23,42 @@ from wip_auth.registry_client import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "SYSTEM_QUALIFIER_KEY",
     "RegistryClient",
     "RegistryError",
     "clear_registry_transport",
     "configure_registry_client",
     "get_registry_client",
+    "qualified_synonym_values",
     "set_registry_transport",
 ]
+
+# The key that qualifies a system-generated synonym. Every synonym is a
+# qualified key-value pair: a document's raw-values synonym carries its
+# template's value under this key, so the same spelling under two templates
+# is two synonyms ("@template": "CHAPTER", "title": "X" vs "@template":
+# "SCENE", "title": "X"). Keys starting with "@" are reserved for the
+# system: the Registry refuses them in caller-supplied keys and synonyms, and
+# template-store refuses a field with this name.
+SYSTEM_QUALIFIER_KEY = "@template"
+
+
+def qualified_synonym_values(
+    template_value: str | None, submitted_values: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """The raw-values synonym for a document: its submitted identity
+    spellings, qualified by its template's value. None when there is
+    nothing to register, or no template value to qualify it with (an
+    unqualified synonym would claim the spelling for every template)."""
+    if not submitted_values:
+        return None
+    if not template_value:
+        logger.warning(
+            "No template value to qualify the identity-values synonym %r; not registering it",
+            submitted_values,
+        )
+        return None
+    return {SYSTEM_QUALIFIER_KEY: template_value, **submitted_values}
 
 
 class RegistryClient(RegistryClientBase):
@@ -147,6 +176,33 @@ class RegistryClient(RegistryClientBase):
                 )
             data = response.json()
             return cast(list[dict[str, Any]], data["results"])
+
+    async def get_entry_synonyms(
+        self, entry_ids: list[str], namespace: str,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Each found entry's synonyms, as ``{entry_id: [synonym, ...]}``.
+
+        Entries the Registry does not return as found are left out."""
+        found: dict[str, list[dict[str, Any]]] = {}
+        async with self._make_client() as client:
+            for start in range(0, len(entry_ids), 500):
+                chunk = entry_ids[start:start + 500]
+                response = await client.post(
+                    f"{self.base_url}/api/registry/entries/lookup/by-id",
+                    headers=self._get_headers(),
+                    json=[
+                        {"entry_id": eid, "namespace": namespace, "entity_type": "documents"}
+                        for eid in chunk
+                    ],
+                )
+                if response.status_code != 200:
+                    raise RegistryError(
+                        f"Failed to look up entries: {response.status_code} - {response.text}"
+                    )
+                for eid, result in zip(chunk, response.json()["results"], strict=True):
+                    if result.get("status") == "found" and result.get("entry_id") == eid:
+                        found[eid] = list(result.get("synonyms") or [])
+        return found
 
     async def rekey_identity(
         self,
