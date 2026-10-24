@@ -130,7 +130,7 @@ async def repair_bookkeeping_location(conn: asyncpg.Connection) -> list[str]:
                 result = await conn.execute(
                     f"INSERT INTO public.\"{table}\" ({cols}) "
                     f"SELECT {cols} FROM {shadow} "
-                    f"ON CONFLICT ({conflict}) DO UPDATE SET {updates}"
+                    f"ON CONFLICT ({conflict}) DO UPDATE SET {updates}"  # nosec B608  # internal table names and their catalog columns, values bound
                 )
                 await conn.execute(f"DROP TABLE {shadow}")
                 actions.append(

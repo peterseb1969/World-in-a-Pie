@@ -250,7 +250,7 @@ async def check_namespace_parity(
                     async with pool.acquire() as conn:
                         for _v, vt in version_tables.items():
                             total_rows += int(await conn.fetchval(
-                                f'SELECT count(*) FROM "{schema}"."{vt}"'
+                                f'SELECT count(*) FROM "{schema}"."{vt}"'  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                             ) or 0)
                     row.actual_rows = total_rows
                     row.counts_match = row.expected_documents == row.actual_rows

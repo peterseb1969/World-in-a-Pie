@@ -39,7 +39,7 @@ async def _discover_metadata() -> dict[str, Any]:
     discovery_url = f"{settings.oidc_internal_issuer}/.well-known/openid-configuration"
     logger.info("Fetching OIDC metadata from %s", discovery_url)
 
-    async with httpx.AsyncClient(verify=False) as client:
+    async with httpx.AsyncClient() as client:
         resp = await client.get(discovery_url)
         resp.raise_for_status()
         _oidc_metadata = resp.json()
@@ -146,7 +146,7 @@ async def exchange_code(request: Request) -> dict[str, Any]:
         "code_verifier": code_verifier,
     }
 
-    async with httpx.AsyncClient(verify=False) as client:
+    async with httpx.AsyncClient() as client:
         resp = await client.post(
             token_endpoint,
             data=token_data,

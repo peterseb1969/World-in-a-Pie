@@ -200,12 +200,12 @@ class SyncWorker:
                     for target in targets:
                         if target_version is not None:
                             await conn.execute(
-                                f'DELETE FROM {target} WHERE document_id = $1 AND version = $2',
+                                f'DELETE FROM {target} WHERE document_id = $1 AND version = $2',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                 document_id, target_version,
                             )
                         else:
                             await conn.execute(
-                                f'DELETE FROM {target} WHERE document_id = $1',
+                                f'DELETE FROM {target} WHERE document_id = $1',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                 document_id,
                             )
                 latency_ms = (time.perf_counter() - start_time) * 1000
@@ -217,7 +217,7 @@ class SyncWorker:
             async with self.pool.acquire() as conn:
                 for target in targets:
                     await conn.execute(
-                        f'UPDATE {target} SET status = $1 WHERE document_id = $2',
+                        f'UPDATE {target} SET status = $1 WHERE document_id = $2',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                         new_status,
                         document_id,
                     )
@@ -347,12 +347,12 @@ class SyncWorker:
                             target_version = template.get("version")
                             if target_version is not None:
                                 await conn.execute(
-                                    f'DELETE FROM {meta_table} WHERE "namespace" = $1 AND "template_id" = $2 AND "version" = $3',
+                                    f'DELETE FROM {meta_table} WHERE "namespace" = $1 AND "template_id" = $2 AND "version" = $3',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                     namespace, template_id, target_version,
                                 )
                             else:
                                 await conn.execute(
-                                    f'DELETE FROM {meta_table} WHERE "namespace" = $1 AND "template_id" = $2',
+                                    f'DELETE FROM {meta_table} WHERE "namespace" = $1 AND "template_id" = $2',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                     namespace, template_id,
                                 )
                         else:
@@ -364,7 +364,7 @@ class SyncWorker:
                                     "updated_by" = $3
                                 WHERE "namespace" = $1
                                   AND "template_id" = $2
-                                """,
+                                """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                 namespace, template_id, event_data.get("changed_by"),
                             )
                     else:
@@ -387,7 +387,7 @@ class SyncWorker:
                                 "extends_version" = EXCLUDED."extends_version",
                                 "updated_at" = EXCLUDED."updated_at",
                                 "updated_by" = EXCLUDED."updated_by"
-                            """,
+                            """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                             template_id,
                             namespace,
                             template_value,
@@ -439,7 +439,7 @@ class SyncWorker:
                     if term_data.get("hard_delete"):
                         # Hard delete: remove from terminologies table
                         await conn.execute(
-                            f'DELETE FROM {table_name} WHERE "namespace" = $1 AND "terminology_id" = $2',
+                            f'DELETE FROM {table_name} WHERE "namespace" = $1 AND "terminology_id" = $2',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                             namespace, terminology_id,
                         )
                     else:
@@ -452,7 +452,7 @@ class SyncWorker:
                                 "updated_by" = $3
                             WHERE "namespace" = $1
                               AND "terminology_id" = $2
-                            """,
+                            """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                             namespace, terminology_id, event_data.get("changed_by"),
                         )
                 else:
@@ -477,7 +477,7 @@ class SyncWorker:
                             "term_count" = EXCLUDED."term_count",
                             "updated_at" = EXCLUDED."updated_at",
                             "updated_by" = EXCLUDED."updated_by"
-                        """,
+                        """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                         terminology_id,
                         namespace,
                         term_data.get("value"),
@@ -534,15 +534,15 @@ class SyncWorker:
                         rel_table = await self.schema_manager.ensure_term_relations_table(namespace)
                         names_table = await self.schema_manager.ensure_term_names_table(namespace)
                         await conn.execute(
-                            f'DELETE FROM {rel_table} WHERE "namespace" = $1 AND ("source_term_id" = $2 OR "target_term_id" = $2)',
+                            f'DELETE FROM {rel_table} WHERE "namespace" = $1 AND ("source_term_id" = $2 OR "target_term_id" = $2)',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                             namespace, term_id,
                         )
                         await conn.execute(
-                            f'DELETE FROM {names_table} WHERE "namespace" = $1 AND "term_id" = $2',
+                            f'DELETE FROM {names_table} WHERE "namespace" = $1 AND "term_id" = $2',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                             namespace, term_id,
                         )
                         await conn.execute(
-                            f'DELETE FROM {table_name} WHERE "namespace" = $1 AND "term_id" = $2',
+                            f'DELETE FROM {table_name} WHERE "namespace" = $1 AND "term_id" = $2',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                             namespace, term_id,
                         )
                     else:
@@ -555,7 +555,7 @@ class SyncWorker:
                                 "updated_by" = $3
                             WHERE "namespace" = $1
                               AND "term_id" = $2
-                            """,
+                            """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                             namespace, term_id, event_data.get("changed_by"),
                         )
                 elif event_type == "term.deprecated":
@@ -569,7 +569,7 @@ class SyncWorker:
                             "updated_by" = $5
                         WHERE "namespace" = $1
                           AND "term_id" = $2
-                        """,
+                        """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                         namespace,
                         term_id,
                         term_data.get("deprecated_reason"),
@@ -600,7 +600,7 @@ class SyncWorker:
                             "status" = EXCLUDED."status",
                             "updated_at" = EXCLUDED."updated_at",
                             "updated_by" = EXCLUDED."updated_by"
-                        """,
+                        """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                         term_id,
                         namespace,
                         term_data.get("terminology_id"),
@@ -624,7 +624,7 @@ class SyncWorker:
                     # names are a set, replaced as one
                     names_table = await self.schema_manager.ensure_term_names_table(namespace)
                     await conn.execute(
-                        f'DELETE FROM {names_table} WHERE "namespace" = $1 AND "term_id" = $2',
+                        f'DELETE FROM {names_table} WHERE "namespace" = $1 AND "term_id" = $2',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                         namespace, term_id,
                     )
                     rows = term_name_rows(term_data)
@@ -635,7 +635,7 @@ class SyncWorker:
                                 "namespace", "term_id", "terminology_id",
                                 "value", "type", "language", "source", "preferred"
                             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                            """,
+                            """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                             [
                                 (
                                     namespace, term_id,
@@ -695,7 +695,7 @@ class SyncWorker:
                               AND "source_term_id" = $2
                               AND "target_term_id" = $3
                               AND "relation_type" = $4
-                            """,
+                            """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                             namespace, source_term_id, target_term_id, relation_type,
                         )
                     else:
@@ -708,7 +708,7 @@ class SyncWorker:
                               AND "source_term_id" = $2
                               AND "target_term_id" = $3
                               AND "relation_type" = $4
-                            """,
+                            """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                             namespace, source_term_id, target_term_id, relation_type,
                         )
                 else:
@@ -728,7 +728,7 @@ class SyncWorker:
                             "target_term_value" = EXCLUDED."target_term_value",
                             "metadata" = EXCLUDED."metadata",
                             "created_by" = EXCLUDED."created_by"
-                        """,
+                        """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                         namespace,
                         source_term_id,
                         target_term_id,

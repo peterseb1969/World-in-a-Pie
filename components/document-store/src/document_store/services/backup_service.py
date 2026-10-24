@@ -367,7 +367,7 @@ def make_direct_backup_runner(
     and treated as a single-element list."""
     ns_list = [namespaces] if isinstance(namespaces, str) else list(namespaces)
     opts = dict(options or {})
-    backup_dir = os.getenv("WIP_BACKUP_DIR", "/tmp/wip-backups")
+    backup_dir = os.getenv("WIP_BACKUP_DIR", "/tmp/wip-backups")  # nosec B108  # the container's private /tmp; WIP_BACKUP_DIR overrides it
     Path(backup_dir).mkdir(parents=True, exist_ok=True)
 
     async def runner(progress_callback: Callable[[ProgressEvent], None]) -> Any:

@@ -364,7 +364,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         "ingest_gateway.main:app",
-        host="0.0.0.0",
+        host="0.0.0.0",  # nosec B104  # a container must listen on every interface to be reachable
         port=8006,
         reload=settings.debug,
     )

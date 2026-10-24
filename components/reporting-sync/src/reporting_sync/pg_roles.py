@@ -131,7 +131,7 @@ async def provision_roles(conn: asyncpg.Connection, spec: RoleSpec) -> Provision
         FROM pg_namespace n
         WHERE {_SYSTEM_SCHEMA_FILTER}
         ORDER BY n.nspname
-        """
+        """  # nosec B608  # SQL fragments are code constants, values bound
     )
     for row in schemas:
         schema = row["nspname"]
@@ -171,7 +171,7 @@ async def provision_roles(conn: asyncpg.Connection, spec: RoleSpec) -> Provision
             SELECT n.nspname FROM pg_namespace n
             WHERE {_SYSTEM_SCHEMA_FILTER}
               AND (pg_get_userbyid(n.nspowner) = $1 OR n.nspname = 'public')
-            """,
+            """,  # nosec B608  # SQL fragments are code constants, values bound
             spec.owner,
         )
         for row in owned:

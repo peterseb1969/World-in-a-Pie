@@ -5098,7 +5098,7 @@ def main():
 
         # Allow port override via env var (default: FastMCP's 8000)
         port = int(os.getenv("MCP_PORT", mcp.settings.port))
-        host = os.getenv("MCP_HOST", "0.0.0.0")
+        host = os.getenv("MCP_HOST", "0.0.0.0")  # nosec B104  # a container must listen on every interface to be reachable
 
         config = uvicorn.Config(
             starlette_app,

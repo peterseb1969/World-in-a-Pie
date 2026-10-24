@@ -1021,7 +1021,7 @@ async def get_schema(
 
         # Get row count
         row_count = await conn.fetchval(
-            f'SELECT COUNT(*) FROM "{schema}"."{table_name}"'
+            f'SELECT COUNT(*) FROM "{schema}"."{table_name}"'  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
         )
 
         return {
@@ -1838,7 +1838,7 @@ async def list_tables(
             WHERE table_schema NOT IN {_SYSTEM_SCHEMAS}
               AND table_type IN ('BASE TABLE', 'VIEW')
             ORDER BY table_schema, table_name
-            """
+            """  # nosec B608  # SQL fragments are code constants, values bound
         )
 
         tables = []
@@ -1883,7 +1883,7 @@ async def list_tables(
                 tname,
             )
 
-            count = await conn.fetchval(f'SELECT COUNT(*) FROM "{schema}"."{tname}"')
+            count = await conn.fetchval(f'SELECT COUNT(*) FROM "{schema}"."{tname}"')  # nosec B608  # identifiers read from the PostgreSQL catalog, values bound
 
             entry: dict = {
                 "namespace": schema,
@@ -1990,7 +1990,7 @@ async def execute_query(body: ReportQuery):
             raise HTTPException(status_code=400, detail=str(e)) from e
 
     # Build wrapped query with row limit
-    wrapped_sql = f"SELECT * FROM ({body.sql}) _q LIMIT {body.max_rows + 1}"
+    wrapped_sql = f"SELECT * FROM ({body.sql}) _q LIMIT {body.max_rows + 1}"  # nosec B608  # privileged caller SQL, run read-only as the reader role
 
     # Build positional parameter references
     params = body.params
@@ -2189,14 +2189,14 @@ async def export_table_csv(
 
     qualified = f'"{schema}"."{table}"'
     download_name = filename or f"{namespace}_{table}.csv"
-    await _check_export_sql(f"SELECT * FROM {qualified}", None, missing_relation_status=404)
+    await _check_export_sql(f"SELECT * FROM {qualified}", None, missing_relation_status=404)  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
 
     async def generate():
         assert state.read_pool is not None
         async with state.read_pool.acquire() as conn:
             await conn.execute(f"SET statement_timeout = {timeout_seconds * 1000}")
             await conn.execute("SET default_transaction_read_only = on")
-            async for chunk in _stream_csv(conn, f'SELECT * FROM {qualified}', []):
+            async for chunk in _stream_csv(conn, f'SELECT * FROM {qualified}', []):  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                 yield chunk
 
     return StreamingResponse(
@@ -2292,7 +2292,7 @@ async def _drop_namespace_reporting(sm: SchemaManager, prefix: str) -> int:
         # fold those rows into the audit total.
         for table in ("_wip_schema_migrations", "_wip_sync_status", "_wip_views"):
             status = await conn.execute(
-                f"DELETE FROM public.{table} WHERE namespace = $1", prefix
+                f"DELETE FROM public.{table} WHERE namespace = $1", prefix  # nosec B608  # table names are a fixed tuple of internal tables, values bound
             )
             total_deleted += int(status.rsplit(" ", 1)[-1])
     return total_deleted
@@ -2543,7 +2543,7 @@ async def register_view(
             ):
                 await read_conn.execute(f'SET LOCAL search_path = "{schema}", public')
                 await read_conn.fetch(
-                    f"EXPLAIN SELECT * FROM ({view_sql}) _wip_view_check"
+                    f"EXPLAIN SELECT * FROM ({view_sql}) _wip_view_check"  # nosec B608  # privileged caller SQL, run read-only as the reader role
                 )
         except asyncpg.PostgresError as e:
             raise HTTPException(
@@ -2723,7 +2723,7 @@ async def read_view_rows(
         # view's own result description supplies the columns — also for the
         # column validation below — and a replace (DROP + CREATE) between
         # requests cannot leave a stale cached plan.
-        base = f'SELECT * FROM "{schema}"."{safe_name}"'
+        base = f'SELECT * FROM "{schema}"."{safe_name}"'  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
         probe = await conn.prepare(base)
         columns = [a.name for a in probe.get_attributes()]
         valid = set(columns)
@@ -2902,7 +2902,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         "reporting_sync.main:app",
-        host="0.0.0.0",
+        host="0.0.0.0",  # nosec B104  # a container must listen on every interface to be reachable
         port=8005,
         reload=settings.debug,
     )

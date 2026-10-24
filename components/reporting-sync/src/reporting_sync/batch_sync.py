@@ -845,7 +845,7 @@ class BatchSyncService:
                                         "term_count" = EXCLUDED."term_count",
                                         "updated_at" = EXCLUDED."updated_at",
                                         "updated_by" = EXCLUDED."updated_by"
-                                    """,
+                                    """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                     t["terminology_id"],
                                     t.get("namespace", namespace),
                                     t["value"],
@@ -959,7 +959,7 @@ class BatchSyncService:
                                         "extends_version" = EXCLUDED."extends_version",
                                         "updated_at" = EXCLUDED."updated_at",
                                         "updated_by" = EXCLUDED."updated_by"
-                                    """,
+                                    """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                     t["template_id"],
                                     t.get("namespace", namespace),
                                     t["value"],
@@ -1099,7 +1099,7 @@ class BatchSyncService:
                                             "status" = EXCLUDED."status",
                                             "updated_at" = EXCLUDED."updated_at",
                                             "updated_by" = EXCLUDED."updated_by"
-                                        """,
+                                        """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                         t["term_id"],
                                         t.get("namespace", namespace),
                                         t.get("terminology_id"),
@@ -1122,7 +1122,7 @@ class BatchSyncService:
                                     t_ns = t.get("namespace") or namespace or "wip"
                                     names_table = ns_names_tables[t_ns]
                                     await conn.execute(
-                                        f'DELETE FROM {names_table} WHERE "namespace" = $1 AND "term_id" = $2',
+                                        f'DELETE FROM {names_table} WHERE "namespace" = $1 AND "term_id" = $2',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                         t_ns, t["term_id"],
                                     )
                                     name_rows = term_name_rows(t)
@@ -1133,7 +1133,7 @@ class BatchSyncService:
                                                 "namespace", "term_id", "terminology_id",
                                                 "value", "type", "language", "source", "preferred"
                                             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                                            """,
+                                            """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                             [
                                                 (
                                                     t_ns, t["term_id"],
@@ -1255,7 +1255,7 @@ class BatchSyncService:
                                         "source_term_value" = EXCLUDED."source_term_value",
                                         "target_term_value" = EXCLUDED."target_term_value",
                                         "metadata" = EXCLUDED."metadata"
-                                    """,
+                                    """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                     ns,
                                     rel["source_term_id"],
                                     rel["target_term_id"],

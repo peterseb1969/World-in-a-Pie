@@ -272,32 +272,38 @@ class WipClient:
         self.def_store = f"{self.base}:8002/api/def-store" if not via_proxy else f"{self.base}/api/def-store"
         self.verify = False
 
-    def get(self, path: str, **kwargs) -> requests.Response:
+    def get(self, path: str, *, json=None, params=None, timeout: float = 60) -> requests.Response:
         resp = requests.get(
             f"{self.def_store}{path}",
             headers=self.headers,
             verify=self.verify,
-            **kwargs,
+            json=json,
+            params=params,
+            timeout=timeout,
         )
         resp.raise_for_status()
         return resp
 
-    def post(self, path: str, **kwargs) -> requests.Response:
+    def post(self, path: str, *, json=None, params=None, timeout: float = 60) -> requests.Response:
         resp = requests.post(
             f"{self.def_store}{path}",
             headers=self.headers,
             verify=self.verify,
-            **kwargs,
+            json=json,
+            params=params,
+            timeout=timeout,
         )
         resp.raise_for_status()
         return resp
 
-    def delete(self, path: str, **kwargs) -> requests.Response:
+    def delete(self, path: str, *, json=None, params=None, timeout: float = 60) -> requests.Response:
         resp = requests.delete(
             f"{self.def_store}{path}",
             headers=self.headers,
             verify=self.verify,
-            **kwargs,
+            json=json,
+            params=params,
+            timeout=timeout,
         )
         resp.raise_for_status()
         return resp

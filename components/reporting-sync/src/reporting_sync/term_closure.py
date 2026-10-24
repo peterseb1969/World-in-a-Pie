@@ -152,11 +152,11 @@ LEFT JOIN {terms} td
        ON td."namespace" = $1 AND td."term_id" = p.descendant
 GROUP BY p.relation_type, p.ancestor, p.descendant,
          ta."terminology_id", td."terminology_id"
-"""
+"""  # nosec B608  # tables from ensure_*, MAX_DEPTH a code constant, values bound
 
         async with self.pool.acquire() as conn, conn.transaction():
             await conn.execute(
-                f'DELETE FROM {closure} WHERE "namespace" = $1', namespace
+                f'DELETE FROM {closure} WHERE "namespace" = $1', namespace  # nosec B608  # tables from ensure_*, MAX_DEPTH a code constant, values bound
             )
             result = await conn.execute(sql, namespace)
 

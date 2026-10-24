@@ -714,7 +714,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
             for row in tables:
                 table = self._safe_ident(row["table_name"])
                 count = await conn.fetchval(
-                    f'SELECT COUNT(*) FROM "{schema}"."{table}"'
+                    f'SELECT COUNT(*) FROM "{schema}"."{table}"'  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                 )
                 total += int(count or 0)
             await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
@@ -1652,7 +1652,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
         col_list = ", ".join(f'"{c}"' for c, _t in shared)
 
         selects = [
-            f'SELECT {col_list} FROM "{schema}"."{t}"' for t in tables
+            f'SELECT {col_list} FROM "{schema}"."{t}"' for t in tables  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
         ]
         entities_view = f"{base}__entities"
         union_sql = "\nUNION ALL\n".join(selects)
@@ -1711,7 +1711,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
                         else:
                             extra.append(f'NULL::{dtype} AS "{target}"')
                     cols = shared_cols_sql + (", " + ", ".join(extra) if extra else "")
-                    sel_selects.append(f'SELECT {cols} FROM "{schema}"."{t}"')
+                    sel_selects.append(f'SELECT {cols} FROM "{schema}"."{t}"')  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                 bare_sql = "\nUNION ALL\n".join(sel_selects)
 
         async with self.pool.acquire() as conn, conn.transaction():
@@ -1759,7 +1759,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
                 if version == keep_version:
                     continue
                 result = await conn.execute(
-                    f'DELETE FROM "{schema}"."{table}" WHERE document_id = $1',
+                    f'DELETE FROM "{schema}"."{table}" WHERE document_id = $1',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                     document_id,
                 )
                 with contextlib.suppress(ValueError, IndexError):

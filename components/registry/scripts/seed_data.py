@@ -64,7 +64,8 @@ def create_namespaces(base_url: str, api_key: str) -> None:
         response = requests.post(
             f"{base_url}/api/registry/namespaces",
             json=ns,
-            headers={"X-API-Key": api_key}
+            headers={"X-API-Key": api_key},
+            timeout=30,
         )
         if response.status_code == 200:
             data = response.json()
@@ -88,7 +89,8 @@ def create_product_entries(base_url: str, api_key: str) -> list[str]:
     response = requests.post(
         f"{base_url}/api/registry/entries/register",
         json=products,
-        headers={"X-API-Key": api_key}
+        headers={"X-API-Key": api_key},
+        timeout=30,
     )
 
     registry_ids = []
@@ -119,7 +121,8 @@ def create_customer_entries(base_url: str, api_key: str) -> list[str]:
     response = requests.post(
         f"{base_url}/api/registry/entries/register",
         json=customers,
-        headers={"X-API-Key": api_key}
+        headers={"X-API-Key": api_key},
+        timeout=30,
     )
 
     registry_ids = []
@@ -177,7 +180,8 @@ def add_vendor_synonyms(base_url: str, api_key: str, product_ids: list[str]) -> 
     response = requests.post(
         f"{base_url}/api/registry/synonyms/add",
         json=synonyms,
-        headers={"X-API-Key": api_key}
+        headers={"X-API-Key": api_key},
+        timeout=30,
     )
 
     if response.status_code == 200:
@@ -232,7 +236,8 @@ def create_order_entries(base_url: str, api_key: str, customer_ids: list[str], p
     response = requests.post(
         f"{base_url}/api/registry/entries/register",
         json=orders,
-        headers={"X-API-Key": api_key}
+        headers={"X-API-Key": api_key},
+        timeout=30,
     )
 
     if response.status_code == 200:
@@ -257,7 +262,8 @@ def demo_searches(base_url: str, api_key: str) -> None:
     response = requests.post(
         f"{base_url}/api/registry/search/by-fields",
         json=[{"field_criteria": {"category": "electronics"}}],
-        headers={"X-API-Key": api_key}
+        headers={"X-API-Key": api_key},
+        timeout=30,
     )
     if response.status_code == 200:
         results = response.json()["results"][0]["results"]
@@ -269,7 +275,8 @@ def demo_searches(base_url: str, api_key: str) -> None:
     response = requests.post(
         f"{base_url}/api/registry/search/across-namespaces",
         json=[{"field_criteria": {"acme_code": "ACM-WGT-001"}}],
-        headers={"X-API-Key": api_key}
+        headers={"X-API-Key": api_key},
+        timeout=30,
     )
     if response.status_code == 200:
         results = response.json()["results"][0]["results"]
@@ -281,7 +288,8 @@ def demo_searches(base_url: str, api_key: str) -> None:
     response = requests.post(
         f"{base_url}/api/registry/search/by-term",
         json=[{"term": "widget"}],
-        headers={"X-API-Key": api_key}
+        headers={"X-API-Key": api_key},
+        timeout=30,
     )
     if response.status_code == 200:
         results = response.json()["results"][0]["results"]

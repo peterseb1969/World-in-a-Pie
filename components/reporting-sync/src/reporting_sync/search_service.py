@@ -490,7 +490,7 @@ class SearchService:
         async with self.postgres_pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT table_name FROM information_schema.tables "
-                f"WHERE {' AND '.join(filters)}",
+                f"WHERE {' AND '.join(filters)}",  # nosec B608  # SQL fragments are code constants, values bound
                 *params,
             )
         return any(entity_base(r["table_name"]) == want for r in rows)
@@ -752,7 +752,7 @@ class SearchService:
                 tables = await conn.fetch(
                     "SELECT table_schema, table_name FROM information_schema.tables "
                     f"WHERE {' AND '.join(filters)} "
-                    "ORDER BY table_schema, table_name",
+                    "ORDER BY table_schema, table_name",  # nosec B608  # SQL fragments are code constants, values bound
                     *disc_params,
                 )
 
@@ -927,7 +927,7 @@ class SearchService:
             WHERE ({or_clause}){status_clause}{ns_clause}
             ORDER BY score DESC
             LIMIT {limit_param}
-        """
+        """  # nosec B608  # catalog identifiers and code-built fragments, values bound
         rows = await conn.fetch(sql, *params)
         return [dict(r) for r in rows]
 
@@ -973,7 +973,7 @@ class SearchService:
             FROM "{schema}"."{tname}"
             WHERE ({or_clauses}){status_clause}{ns_clause}
             LIMIT {limit_param}
-        """
+        """  # nosec B608  # catalog identifiers and code-built fragments, values bound
         rows = await conn.fetch(sql, *params)
         return [dict(r) for r in rows]
 
@@ -1335,7 +1335,7 @@ class SearchService:
                         FROM "{schema}"."{table_name}"
                         WHERE term_references_json::text LIKE $1
                         LIMIT $2
-                    """, f'%"{term_id}"%', limit - len(documents))
+                    """, f'%"{term_id}"%', limit - len(documents))  # nosec B608  # identifiers read from the PostgreSQL catalog, values bound
 
                     # Extract template_value from table name
                     template_value = table_name[4:].upper()  # Remove 'doc_' prefix
@@ -2340,7 +2340,7 @@ class SearchService:
                                     FROM "{schema}"."{table_name}"
                                     WHERE term_references_json::text LIKE $1
                                     LIMIT $2
-                                """, f'%"{term_id}"%', limit)
+                                """, f'%"{term_id}"%', limit)  # nosec B608  # identifiers read from the PostgreSQL catalog, values bound
 
                                 for row in rows:
                                     references.append(IncomingReference(

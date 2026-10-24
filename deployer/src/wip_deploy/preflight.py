@@ -36,7 +36,7 @@ class PreflightWarning:
 # ────────────────────────────────────────────────────────────────────
 
 
-def check_port_free(port: int, *, host: str = "0.0.0.0") -> None:
+def check_port_free(port: int, *, host: str = "0.0.0.0") -> None:  # nosec B104  # probes the address the real listener will bind
     """Raise PreflightError if a TCP listener is already bound to `port`.
 
     Uses SO_REUSEADDR when probing so we don't leave TIME_WAIT sockets
@@ -60,7 +60,7 @@ def check_port_free(port: int, *, host: str = "0.0.0.0") -> None:
 def check_ports_free(
     ports: list[int],
     *,
-    host: str = "0.0.0.0",
+    host: str = "0.0.0.0",  # nosec B104  # probes the address the real listener will bind
     install_dir: Path | None = None,
 ) -> None:
     """Probe every port. Raises on the first conflict — if there are

@@ -620,13 +620,13 @@ class DocumentTransformer:
                 ON CONFLICT (document_id)
                 DO UPDATE SET {update_clause}
                 WHERE {table_name}.version < EXCLUDED.version
-            """
+            """  # nosec B608  # table from ensure_*, columns checked by _safe_column, values bound
         else:
             # INSERT for all_versions strategy — composite PK (document_id, version)
             sql = f"""
                 INSERT INTO {table_name} ({', '.join(quoted_columns)})
                 VALUES ({', '.join(placeholders)})
                 ON CONFLICT (document_id, version) DO NOTHING
-            """
+            """  # nosec B608  # table from ensure_*, columns checked by _safe_column, values bound
 
         return sql.strip(), values

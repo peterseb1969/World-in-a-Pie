@@ -56,7 +56,7 @@ BACKEND_MINIO = "minio"
 
 def scratch_dir() -> Path:
     """The local scratch/staging directory, created on first use."""
-    path = Path(os.getenv("WIP_BACKUP_DIR", "/tmp/wip-backups"))
+    path = Path(os.getenv("WIP_BACKUP_DIR", "/tmp/wip-backups"))  # nosec B108  # the container's private /tmp; WIP_BACKUP_DIR overrides it
     path.mkdir(parents=True, exist_ok=True)
     return path
 

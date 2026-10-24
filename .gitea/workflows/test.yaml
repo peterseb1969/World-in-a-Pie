@@ -49,7 +49,9 @@ jobs:
           pip install bandit
           CHANGED_PY=$(git diff --name-only --diff-filter=d HEAD~1 -- '*.py')
           if [ -n "$CHANGED_PY" ]; then
-            echo "$CHANGED_PY" | xargs bandit -c pyproject.toml --severity-level medium -f txt || true
+            # Fails on any medium+ finding. Accepted ones are marked in place
+            # with "# nosec <test-id>" and the reason they are safe.
+            echo "$CHANGED_PY" | xargs bandit -c pyproject.toml --severity-level medium -f txt
           else
             echo "No Python files changed"
           fi
@@ -78,12 +80,31 @@ jobs:
           python3 -m venv .venv
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
-      - name: Audit wip-auth dependencies
+      - name: Audit every shipped component's dependencies
         run: |
           . .venv/bin/activate
           pip install pip-audit
-          pip install -e libs/wip-auth
-          pip-audit --desc --fix --dry-run || true
+          # The in-repo libraries are not on PyPI. They are audited as
+          # projects; the requirements files are audited without their
+          # editable lines, which point at those libraries.
+          status=0
+          for p in libs/wip-auth libs/wip-archive deployer; do
+            echo "== $p"
+            pip-audit --desc on "$p" || status=1
+          done
+          for c in registry def-store template-store document-store \
+                   reporting-sync ingest-gateway mcp-server auth-gateway; do
+            echo "== components/$c"
+            grep -v '^-e' "components/$c/requirements.txt" > "/tmp/req-$c.txt"
+            pip-audit --desc on -r "/tmp/req-$c.txt" || status=1
+          done
+          # The toolkit depends on wip-archive, so install that first and
+          # audit the toolkit's environment.
+          echo "== WIP-Toolkit"
+          python3 -m venv /tmp/toolkit-venv
+          /tmp/toolkit-venv/bin/pip install -q ./libs/wip-archive ./WIP-Toolkit
+          pip-audit --desc on --path "$(/tmp/toolkit-venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" || status=1
+          exit $status
 
   # Components that need MongoDB.
   #
