@@ -24,8 +24,13 @@ development interfering with each other.
   | test-reporting-sync | `test-postgres`, `test-nats` | 5433, 4223 | `POSTGRES_TEST_URI`, `NATS_TEST_URL` |
   | test-ingest-gateway | `test-nats` | 4223 | `NATS_TEST_URL` |
 
-  No test hard-codes these addresses; the toolkit mentions `localhost:27017`
-  only in an error message.
+  The test defaults can all be overridden from the environment. One test
+  helper did ignore it: the toolkit integration conftest's MongoDB
+  reachability probe hard-coded `("localhost", 27017)`, so with MongoDB as a
+  job service all 10 integration tests skipped silently. An earlier version
+  of this plan said no test hard-codes these addresses; that grep only
+  matched the `host:port` string form. Fixed: the probe now reads
+  `MONGO_URI`.
 - **The conflict.** `scripts/wip-test.sh` provisions containers with **the same
   names and ports** (`test-mongo:27017`, `test-postgres:5433`,
   `test-nats:4223`). It serializes local runs with a machine-wide lock
@@ -57,7 +62,7 @@ per-job network, reached by service name. Nothing is published on host ports.
 - **Stays portable:** it is the standard Actions pattern, so the workflow works
   on any runner in container mode (the Pi included) as a side benefit.
 
-**act_runner runs in container mode** on the Mac: each job runs in a Linux
+**gitea-runner runs in container mode** on the Mac: each job runs in a Linux
 image inside the Podman VM, so jobs see the same environment as on the Pi.
 Host mode is rejected: jobs would run on macOS (not what the Pi runs), and it
 would need a `docker` CLI and Node installed on the host.
@@ -76,7 +81,7 @@ For each job in the table above:
        env: {POSTGRES_USER: test, POSTGRES_PASSWORD: test, POSTGRES_DB: wip_test}
      nats:
        image: nats:2
-       # needs "-js -m 8222" — see Open question 1
+       cmd: ["-js", "-m", "8222"]   # Gitea-specific key, see Decided
    ```
 2. Point the variables at the service names: `MONGO_URI: mongodb://mongo:27017/`,
    `POSTGRES_TEST_URI: postgresql://test:test@postgres:5432/wip_test`,
@@ -92,17 +97,41 @@ it. `wip-test.sh` is unaffected; local runs keep their own containers and lock.
 
 ## Runner setup on the Mac
 
-1. **Install `act_runner`** (Gitea's runner; a darwin-arm64 build exists).
+1. **Install `gitea-runner`** (Gitea's runner, formerly `act_runner`; the
+   project moved to `gitea.com/gitea/runner`, and v5.2.2 ships a
+   darwin-arm64 binary).
    Register it against `http://gitea.internal:3000` with a registration token
    from the repository's (or the user's) Actions → Runners page.
 2. **Configure it** (a generated `config.yaml`; key names to check against the
    installed version):
-   - **labels:** `ubuntu-latest:docker://<job image>` (Open question 2);
+   - **labels:** `ubuntu-latest:docker://localhost/wip-ci:py3.13-trixie`, with
+     `container.force_pull: false` so the locally built image is used;
    - **socket:** `container.docker_host` pointing at the Podman machine socket,
      with `DOCKER_HOST=unix://…/podman-machine-default-api.sock` in the
      runner's environment;
-   - **concurrency:** `runner.capacity` (start at 4, the same as test-services'
-     `max-parallel`).
+   - **DNS:** `container.options: --dns-search .`. Required: this Mac's DNS
+     configuration adds the search domain `local`, so every lookup of a name
+     that does not exist also tries `<name>.local`, which macOS resolves by
+     multicast DNS and abandons after ~3 s. The service tests point at names
+     that do not exist in CI (`http://registry`, the other services), so the
+     wait repeats in every test: template-store ran at about one test per
+     20 s. Measured in a job container (2026-10-24): `registry` 3.0 s and
+     `def-store` 10.0 s with the search domain, 4–6 ms without, and service
+     names (`mongo`) still resolve;
+   - **pip cache:** add `-v wip-ci-pip-cache:/root/.cache/pip` to
+     `container.options` (and list the volume in `container.valid_volumes`),
+     so job containers share one pip cache instead of downloading from
+     scratch;
+   - **concurrency:** `runner.capacity: 16`, one slot per job in
+     `test.yaml`. No job `needs:` another, so a push runs all of them at
+     once.
+
+   **Measured (2026-10-24, `gitea-runner exec` of the whole `test.yaml`
+   with these options, while the WIP dev stack was stopped):** all 16 jobs
+   passed (5,199 tests) in 82 s with a partly warm pip cache, and in 79 s
+   with a fully warm one (0 downloads). The longest job is def-store
+   (55 s of tests). The 8 database jobs at once used about 1 GB of the VM's
+   8 GB.
 3. **Run it as a launchd user agent**, so it starts at login and restarts if it
    dies.
 4. **Release builds** (`build.yaml`) call `podman` inside the job. Either keep
@@ -119,22 +148,69 @@ it. `wip-test.sh` is unaffected; local runs keep their own containers and lock.
    jobs at random.
 3. **Merge to `develop`.** Watch the first runs on `develop`.
 
-**Rollback:** re-enable the Pi runner's label. The `services:` workflow also
-runs on the Pi in container mode, so no revert is needed.
+**Rollback:** not a label flip. The Pi's runner (`act_runner` v1.0.8,
+`~/act_runner/config.yaml` on `wip-pi.internal`) runs in **host mode**
+(`labels: ["ubuntu-latest:host"]`): jobs run directly on the Pi's Debian, and
+host mode does not run service containers. To roll back, either revert
+`test.yaml` to the pre-cutover commit, or switch the Pi to container mode
+(`ubuntu-latest:docker://<job image>`), which also needs a runner that honours
+the services `cmd:` key (Open question 4).
 
 ## Open questions
 
-1. **NATS arguments.** The NATS service needs `-js -m 8222`. GitHub's
-   `services:` syntax has no command override. Does Gitea's runner support one
-   (a `cmd:` key)? If not: a custom entrypoint via `options:`, or a tiny image
-   with a config file that enables JetStream.
-2. **Job image.** It needs `git`, Node (for `actions/checkout`), Python ≥ 3.11
-   with `venv`, and `curl`. Candidates: an act-compatible Ubuntu image (has
-   Node and Python), or `node:20-bookworm` plus `python3-venv`. Pick one, pin
-   it, and check its Python version.
+1. *(Resolved; see Decided.)*
+2. **Job image.** *(Decided 2026-10-24, Peter: the last row below, at
+   `ci/runner-image/Dockerfile`.)* Today's jobs
+   run on the Pi host, so they use the Pi's Python 3.13.5, Node 20.19.2,
+   npm 9.2.0 and git 2.47.3; the local `.venv` is Python 3.13 too. The image
+   needs `git`, Node (for `actions/checkout`), npm (the tarball check),
+   Python 3.13 with a working `venv`, `curl`, `bash` and `tar`. Probed on
+   2026-10-24:
+
+   | Image | Python | venv | Node / npm |
+   |---|---|---|---|
+   | `node:22-trixie` | 3.13.5 | missing | 22 / 10.9 |
+   | `python:3.13-trixie` | 3.13.17 | ok | missing |
+   | `docker.gitea.com/runner-images:ubuntu-latest` | 3.12.3 | ok | 24 / 11.19 |
+   | `python:3.13-trixie` + Debian `nodejs npm` | 3.13.17 | ok | 20.19.2 / 9.2.0 |
+
+   **Recommended: the last row**, a two-line image built on the Mac:
+
+   ```dockerfile
+   FROM docker.io/library/python:3.13-trixie
+   RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+   ```
+
+   - It is Debian trixie, like the Pi, so Node, npm and git are the exact
+     versions CI uses today, and Python differs only in the patch release.
+   - It is built locally (`podman build -t localhost/wip-ci:py3.13-trixie`)
+     and the runner label points at it with `force_pull: false`, so no
+     registry is needed. Pin the base by digest when it is committed.
+   - Size: 1.3 GB, pulled once.
 3. **Release builds:** keep them on the Pi, or move them too?
+4. **Pi runner and rollback.** The Pi runs `act_runner` v1.0.8 in host mode.
+   Only relevant if the rollback path should switch the Pi to container mode:
+   does v1.0.8 honour services `cmd:`? Not tested.
 
 ## Decided
+
+- **NATS arguments: the services `cmd:` key (2026-10-24, tested).** Gitea's
+  runner adds a Gitea-specific `cmd` list to service containers (GitHub's
+  syntax has none). It replaces the image's default command. Tested with
+  `gitea-runner` v5.2.2 `exec` against the Podman machine socket, using two
+  jobs on `nats:2` and checking `http://nats:8222/jsz` from the job
+  container:
+  - with `cmd: ["-js", "-m", "8222"]`: JetStream enabled (`config.store_dir`
+    set, `/healthz?js-enabled-only=true` returns `ok`);
+  - without `cmd:`: `"disabled": true`. The image's default command
+    enables monitoring but not JetStream.
+
+  The same run showed the rest of the design working on this Mac:
+  - job containers on the Podman socket;
+  - a per-job network;
+  - service containers reached by name.
 
 - **Availability (2026-10-24, Peter):** CI running only while the Mac is
   awake and the Podman machine is up is acceptable. The Pi does not need to

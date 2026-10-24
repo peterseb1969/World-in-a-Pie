@@ -85,7 +85,13 @@ jobs:
           pip install -e libs/wip-auth
           pip-audit --desc --fix --dry-run || true
 
-  # Components that need MongoDB
+  # Components that need MongoDB.
+  #
+  # Database jobs get their own databases as job services: on a per-job
+  # network, reached by service name, published on no host port, and
+  # discarded with the job. CI therefore cannot collide with local test runs
+  # (wip-test.sh), a WIP install or another CI job on the same machine. The
+  # runner holds each job until its services report healthy.
   test-services:
     runs-on: ubuntu-latest
     strategy:
@@ -93,6 +99,12 @@ jobs:
       max-parallel: 4
       matrix:
         component: [registry, def-store, template-store, document-store]
+    services:
+      mongo:
+        image: mongo:7
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping: 1})'"
+          --health-interval 2s --health-timeout 5s --health-retries 30
     steps:
       - uses: actions/checkout@v4
 
@@ -100,16 +112,6 @@ jobs:
         run: |
           python3 -m venv .venv
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
-
-      - name: Start MongoDB
-        run: |
-          # Ports on loopback only; recreates a container still bound to all
-          # interfaces and tolerates parallel jobs doing the same.
-          scripts/ci-test-container.sh test-mongo -p 127.0.0.1:27017:27017 mongo:7
-          for i in $(seq 1 10); do
-            docker exec test-mongo mongosh --quiet --eval "db.runCommand('ping')" && break
-            sleep 1
-          done
 
       - name: Install dependencies
         working-directory: components/${{ matrix.component }}
@@ -123,15 +125,21 @@ jobs:
       - name: Run tests
         working-directory: components/${{ matrix.component }}
         env:
-          MONGO_URI: mongodb://localhost:27017/
+          MONGO_URI: mongodb://mongo:27017/
           PYTHONPATH: src:../registry/src
         run: |
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pytest tests/ -v --tb=short
 
-  # Ingest gateway (no DB needed)
+  # Ingest gateway (NATS with JetStream)
   test-ingest-gateway:
     runs-on: ubuntu-latest
+    services:
+      nats:
+        image: nats:2
+        # cmd is Gitea-specific. It replaces the image's default command,
+        # which enables monitoring but not JetStream.
+        cmd: ["-js", "-m", "8222"]
     steps:
       - uses: actions/checkout@v4
 
@@ -140,16 +148,16 @@ jobs:
           python3 -m venv .venv
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
-      - name: Start NATS
+      - name: Wait for NATS
         run: |
-          # Ports on loopback only; recreates a container still bound to all
-          # interfaces and tolerates parallel jobs doing the same.
-          scripts/ci-test-container.sh test-nats --restart unless-stopped \
-            -p 127.0.0.1:4223:4222 -p 127.0.0.1:8223:8222 nats:2 -js -m 8222
-          for i in $(seq 1 10); do
-            curl -s http://localhost:8223/healthz && break
+          # The nats image has no shell for a container health check, so
+          # wait on JetStream's health endpoint from the job instead.
+          for i in $(seq 1 30); do
+            curl -sf 'http://nats:8222/healthz?js-enabled-only=true' && exit 0
             sleep 1
           done
+          echo "NATS JetStream not healthy after 30 s" >&2
+          exit 1
 
       - name: Install dependencies
         working-directory: components/ingest-gateway
@@ -164,7 +172,7 @@ jobs:
         working-directory: components/ingest-gateway
         env:
           PYTHONPATH: src:tests
-          NATS_TEST_URL: nats://localhost:4223
+          NATS_TEST_URL: nats://nats:4222
         run: |
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pytest tests/ -v --tb=short
@@ -172,6 +180,21 @@ jobs:
   # Reporting-sync (unit tests + PostgreSQL integration tests)
   test-reporting-sync:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: wip_test
+        options: >-
+          --health-cmd "pg_isready -U test -d wip_test"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+      nats:
+        image: nats:2
+        # cmd is Gitea-specific. It replaces the image's default command,
+        # which enables monitoring but not JetStream.
+        cmd: ["-js", "-m", "8222"]
     steps:
       - uses: actions/checkout@v4
 
@@ -180,28 +203,16 @@ jobs:
           python3 -m venv .venv
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
-      - name: Start PostgreSQL
+      - name: Wait for NATS
         run: |
-          # Ports on loopback only; recreates a container still bound to all
-          # interfaces and tolerates parallel jobs doing the same.
-          scripts/ci-test-container.sh test-postgres -p 127.0.0.1:5433:5432 \
-            -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test \
-            -e POSTGRES_DB=wip_test postgres:16
-          for i in $(seq 1 10); do
-            docker exec test-postgres pg_isready -U test && break
+          # The nats image has no shell for a container health check, so
+          # wait on JetStream's health endpoint from the job instead.
+          for i in $(seq 1 30); do
+            curl -sf 'http://nats:8222/healthz?js-enabled-only=true' && exit 0
             sleep 1
           done
-
-      - name: Start NATS
-        run: |
-          # Ports on loopback only; recreates a container still bound to all
-          # interfaces and tolerates parallel jobs doing the same.
-          scripts/ci-test-container.sh test-nats --restart unless-stopped \
-            -p 127.0.0.1:4223:4222 -p 127.0.0.1:8223:8222 nats:2 -js -m 8222
-          for i in $(seq 1 10); do
-            curl -s http://localhost:8223/healthz && break
-            sleep 1
-          done
+          echo "NATS JetStream not healthy after 30 s" >&2
+          exit 1
 
       - name: Install dependencies
         working-directory: components/reporting-sync
@@ -215,8 +226,8 @@ jobs:
         working-directory: components/reporting-sync
         env:
           PYTHONPATH: src
-          POSTGRES_TEST_URI: postgresql://test:test@localhost:5433/wip_test
-          NATS_TEST_URL: nats://localhost:4223
+          POSTGRES_TEST_URI: postgresql://test:test@postgres:5432/wip_test
+          NATS_TEST_URL: nats://nats:4222
         run: |
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pytest tests/ -v --tb=short
@@ -279,6 +290,12 @@ jobs:
   # wip-auth library
   test-wip-auth:
     runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping: 1})'"
+          --health-interval 2s --health-timeout 5s --health-retries 30
     steps:
       - uses: actions/checkout@v4
 
@@ -286,16 +303,6 @@ jobs:
         run: |
           python3 -m venv .venv
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
-
-      - name: Start MongoDB
-        run: |
-          # Ports on loopback only; recreates a container still bound to all
-          # interfaces and tolerates parallel jobs doing the same.
-          scripts/ci-test-container.sh test-mongo -p 127.0.0.1:27017:27017 mongo:7
-          for i in $(seq 1 10); do
-            docker exec test-mongo mongosh --quiet --eval "db.runCommand('ping')" && break
-            sleep 1
-          done
 
       - name: Install dependencies
         run: |
@@ -308,7 +315,7 @@ jobs:
 
       - name: Run tests
         env:
-          MONGO_URI: mongodb://localhost:27017/
+          MONGO_URI: mongodb://mongo:27017/
           PYTHONPATH: components/registry/src
         run: |
           . .venv/bin/activate
@@ -383,6 +390,12 @@ jobs:
   # WIP-Toolkit
   test-wip-toolkit:
     runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping: 1})'"
+          --health-interval 2s --health-timeout 5s --health-retries 30
     steps:
       - uses: actions/checkout@v4
 
@@ -395,17 +408,7 @@ jobs:
       # document-store in-process against a real MongoDB. Without mongo +
       # the services' requirements the integration tests SKIP — which
       # would silently turn the round-trip guard back into theater, so CI
-      # provisions both.
-      - name: Start MongoDB
-        run: |
-          # Ports on loopback only; recreates a container still bound to all
-          # interfaces and tolerates parallel jobs doing the same.
-          scripts/ci-test-container.sh test-mongo -p 127.0.0.1:27017:27017 mongo:7
-          for i in $(seq 1 10); do
-            docker exec test-mongo mongosh --quiet --eval "db.runCommand('ping')" && break
-            sleep 1
-          done
-
+      # provisions both (MongoDB as the job's mongo service).
       - name: Install dependencies
         run: |
           . .venv/bin/activate
@@ -428,7 +431,7 @@ jobs:
 
       - name: Run tests
         env:
-          MONGO_URI: mongodb://localhost:27017/
+          MONGO_URI: mongodb://mongo:27017/
         run: |
           . .venv/bin/activate
           pytest WIP-Toolkit/tests/ -v --tb=short
