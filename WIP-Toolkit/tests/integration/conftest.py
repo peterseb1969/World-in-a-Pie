@@ -43,6 +43,7 @@ import os
 import socket
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -107,8 +108,11 @@ SERVICE_HOSTS = ("registry", "def-store", "template-store", "document-store")
 
 
 def _mongo_reachable() -> bool:
+    # Probe the server MONGO_URI names: in CI MongoDB is a job service
+    # reached by name, not localhost.
+    uri = urlsplit(os.environ["MONGO_URI"])
     try:
-        with socket.create_connection(("localhost", 27017), timeout=1):
+        with socket.create_connection((uri.hostname, uri.port or 27017), timeout=1):
             return True
     except OSError:
         return False
@@ -233,7 +237,7 @@ class IntegrationStack:
 def stack():
     if not _mongo_reachable():
         pytest.skip(
-            "MongoDB not reachable on localhost:27017 — run via "
+            f"MongoDB not reachable at {os.environ['MONGO_URI']} — run via "
             "scripts/wip-test.sh wip-toolkit (auto-provisions test-mongo) "
             "or start one: podman run -d --name test-mongo -p 27017:27017 mongo:7"
         )
