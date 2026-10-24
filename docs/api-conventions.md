@@ -156,6 +156,23 @@ Codes defined by `PATCH /documents`:
 | `reference_violation` | Cross-namespace reference validation failed |
 | `internal_error` | Unexpected exception (logged with stack trace) |
 
+Codes defined by template-store (`POST`, `PUT` and `DELETE /templates`). Where one code covers several rules, `details.rule` names the one that failed:
+
+| `error_code` | When | `details.rule` (examples) |
+|--------------|------|---------------------------|
+| `validation_failed` | The template definition breaks an authoring rule | `field_name_unquotable`, `template_ref_version_required`, `reference_type_required`, `relationship_shape`, `full_text_indexed`, `metadata_in_declarative_slot`, `versioned_requires_identity`, `invalid_rename`, `extends_version_required`, `invalid_status` |
+| `not_found` | The template (or version) named by the request does not exist | — |
+| `already_exists` | The value is already taken: a concurrent create won the race (retry as an upsert), or a restore targets a value another template owns | `restore_conflict` |
+| `reference_violation` | A reference in the definition does not resolve | `parent_not_found`, `pinned_version_missing`, `unresolved_reference` |
+| `cross_namespace_reference` | A reference crosses into a namespace the template's namespace may not reference | — |
+| `identity_fields_immutable` | `identity_fields` differ from the existing template's | — |
+| `immutable_property` | `value`, `usage`, `versioned` or the edge endpoint lists differ | `value` |
+| `invalid_state` | The template's state forbids the operation | `not_draft`, `not_inactive`, `not_relationship`, `has_children`, `has_documents`, `documents_unverifiable`, `circular_inheritance`, `deletion_mode_retain` |
+| `invalid_request` | A request parameter is missing or invalid; also any otherwise uncategorised refusal | `version_required`, `sort_order`, `namespace_required` |
+| `registry_error` | The Registry refused the item | — |
+
+Messages are unchanged and stay human-oriented; branch on the code.
+
 **New services adopting PATCH** should reuse the same set of codes where they apply and extend it with entity-specific codes only when necessary. Client libraries (`@wip/client`, MCP, WIP-Toolkit) expose `error_code` through their bulk-error types so callers can `instanceof`-check or switch on it.
 
 ### Key Rules (PATCH-specific)

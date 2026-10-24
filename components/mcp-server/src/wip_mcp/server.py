@@ -82,6 +82,10 @@ CRITICAL: When using bulk tools, always check results[i].status — a 200 OK
 response can contain per-item errors. Statuses: created, updated, unchanged,
 error, skipped. Error items carry a machine-readable `error_code` in addition
 to a human `error` message — branch on the code, not the message string.
+Template writes use: validation_failed, not_found, already_exists,
+reference_violation, cross_namespace_reference, identity_fields_immutable,
+immutable_property, invalid_state, invalid_request, registry_error; where one
+code covers several rules, details.rule names the one that failed.
 
 ## Partial Updates: update_document (PATCH)
 The update_document tool applies an RFC 7396 JSON Merge Patch to an existing
@@ -2531,7 +2535,8 @@ async def create_template(template: dict, namespace: str | None = None) -> str:
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         err = str(e)
-        if "already exists" in err:
+        # The code, from servers that send one; the message for older ones.
+        if getattr(e, "error_code", None) == "already_exists" or "already exists" in err:
             return f"WIP error: {err}\n\nTo add or modify fields on an existing template, use update_template(template_id, {{\"fields\": [...]}}) instead. This creates a new version."
         return _error(e)
 
@@ -2714,7 +2719,8 @@ async def create_edge_type(
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         err = str(e)
-        if "already exists" in err:
+        # The code, from servers that send one; the message for older ones.
+        if getattr(e, "error_code", None) == "already_exists" or "already exists" in err:
             return (
                 f"WIP error: {err}\n\nTo evolve an existing edge type, use "
                 f"update_template — it creates a new version. Note that "

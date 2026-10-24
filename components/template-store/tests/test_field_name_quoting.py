@@ -55,6 +55,8 @@ async def test_create_rejects_per_item(client: AsyncClient, auth_headers: dict):
     item = resp.json()["results"][0]
     assert item["status"] == "error", item
     assert "double quote or NUL" in item["error"]
+    assert item["error_code"] == "validation_failed"
+    assert item["details"] == {"rule": "field_name_unquotable"}
 
 
 @pytest.mark.asyncio
@@ -71,3 +73,5 @@ async def test_new_version_rejects_per_item(client: AsyncClient, auth_headers: d
     item = resp.json()["results"][0]
     assert item["status"] == "error", item
     assert "double quote or NUL" in item["error"]
+    assert item["error_code"] == "validation_failed"
+    assert item["details"] == {"rule": "field_name_unquotable"}

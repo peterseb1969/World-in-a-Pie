@@ -41,14 +41,17 @@ class BulkResultItemBase(BaseModel):
             "concurrency_conflict, validation_failed, reference_violation, "
             "internal_error, incompatible_schema, already_exists, "
             "incompatible_config, force_unsupported, invalid_names, "
-            "name_collision."
+            "name_collision, identity_fields_immutable, immutable_property, "
+            "cross_namespace_reference, invalid_state, invalid_request, "
+            "registry_error."
         ),
     )
     details: dict[str, Any] | None = Field(
         default=None,
         description=(
-            "Structured details for non-error statuses (e.g. compatibility "
-            "diff for on_conflict=validate)."
+            "Structured details, e.g. the compatibility diff for "
+            "on_conflict=validate or, on an error, the rule that failed "
+            "(details.rule)."
         ),
     )
 

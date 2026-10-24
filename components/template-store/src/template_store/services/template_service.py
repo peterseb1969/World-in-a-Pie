@@ -38,6 +38,7 @@ from ..models.template import (
 )
 from .def_store_client import DefStoreError, get_def_store_client
 from .document_store_client import get_document_store_client
+from .errors import TemplateError, error_fields
 from .inheritance_service import InheritanceError, InheritanceService
 from .nats_client import EventType, publish_template_event
 from .reference_validator import ReferenceValidationError, get_reference_validator
@@ -54,10 +55,10 @@ def _build_template_sort(
     field = (sort_by or "value").strip() or "value"
     order = (sort_order or "asc").strip().lower() or "asc"
     if order not in ("asc", "desc"):
-        raise ValueError(f"Invalid sort_order '{sort_order}'. Must be 'asc' or 'desc'.")
+        raise TemplateError(f"Invalid sort_order '{sort_order}'. Must be 'asc' or 'desc'.", "invalid_request", rule="sort_order")
     if field not in _TEMPLATE_SORT_FIELDS:
-        raise ValueError(
-            f"Unknown sort field '{field}'. Supported: {', '.join(sorted(_TEMPLATE_SORT_FIELDS))}."
+        raise TemplateError(
+            f"Unknown sort field '{field}'. Supported: {', '.join(sorted(_TEMPLATE_SORT_FIELDS))}.", "invalid_request", rule="sort_field"
         )
     direction = SortDirection.ASCENDING if order == "asc" else SortDirection.DESCENDING
     return [(field, direction), ("template_id", SortDirection.ASCENDING)]
@@ -97,20 +98,20 @@ class TemplateService:
 
         if usage != TemplateUsage.RELATIONSHIP:
             if request.source_templates or request.target_templates:
-                raise ValueError(
+                raise TemplateError(
                     "source_templates and target_templates may only be set "
-                    f"when usage='relationship' (got usage='{usage.value}')"
+                    f"when usage='relationship' (got usage='{usage.value}')", "validation_failed", rule="relationship_shape"
                 )
             return
 
         # usage == relationship from here on.
         if not request.source_templates:
-            raise ValueError(
-                "Relationship templates require a non-empty source_templates list"
+            raise TemplateError(
+                "Relationship templates require a non-empty source_templates list", "validation_failed", rule="relationship_shape"
             )
         if not request.target_templates:
-            raise ValueError(
-                "Relationship templates require a non-empty target_templates list"
+            raise TemplateError(
+                "Relationship templates require a non-empty target_templates list", "validation_failed", rule="relationship_shape"
             )
 
         fields_by_name = {f.name: f for f in request.fields}
@@ -125,14 +126,14 @@ class TemplateService:
         for endpoint in ("source_ref", "target_ref"):
             field = fields_by_name.get(endpoint)
             if field is None:
-                raise ValueError(
+                raise TemplateError(
                     f"Relationship templates require a '{endpoint}' reference field "
-                    f"(missing in fields list)"
+                    f"(missing in fields list)", "validation_failed", rule="relationship_shape"
                 )
             if field.reference_type != ReferenceType.DOCUMENT:
-                raise ValueError(
+                raise TemplateError(
                     f"Relationship template field '{endpoint}' must have "
-                    f"reference_type='document' (got '{field.reference_type}')"
+                    f"reference_type='document' (got '{field.reference_type}')", "validation_failed", rule="relationship_shape"
                 )
 
     # =========================================================================
@@ -168,12 +169,12 @@ class TemplateService:
         if identity_fields:
             bad_identity = [f for f in identity_fields if f.startswith("metadata.")]
             if bad_identity:
-                raise ValueError(
+                raise TemplateError(
                     f"identity_fields must reference structural data fields, "
                     f"not metadata paths. Got {bad_identity}. metadata.* is "
                     f"caller-attached context with no schema commitments and "
                     f"cannot carry structural identity. Hoist the field(s) to "
-                    f"top-level data fields and reference them by name."
+                    f"top-level data fields and reference them by name.", "validation_failed", rule="metadata_in_declarative_slot"
                 )
 
         fts_metadata = [
@@ -183,10 +184,10 @@ class TemplateService:
         ]
         if fts_metadata:
             names = ", ".join(f.name for f in fts_metadata)
-            raise ValueError(
+            raise TemplateError(
                 f"full_text_indexed cannot be applied to metadata.* paths. "
                 f"Got: {names}. metadata.* is not part of the template "
-                f"schema and is not indexed by reporting-sync."
+                f"schema and is not indexed by reporting-sync.", "validation_failed", rule="metadata_in_declarative_slot"
             )
 
     # =========================================================================
@@ -226,18 +227,18 @@ class TemplateService:
             names_and_types = ", ".join(
                 f"{f.name}(type={f.type.value})" for f in non_string
             )
-            raise ValueError(
+            raise TemplateError(
                 f"full_text_indexed is only valid on type=string fields; "
-                f"got {names_and_types}"
+                f"got {names_and_types}", "validation_failed", rule="full_text_indexed"
             )
 
         # Default ReportingConfig has sync_enabled=True — only an explicit
         # False conflicts. (reporting may be None; that means defaults.)
         if reporting is not None and not reporting.sync_enabled:
             indexed_names = ", ".join(f.name for f in indexed_fields)
-            raise ValueError(
+            raise TemplateError(
                 f"full_text_indexed requires reporting.sync_enabled=true; "
-                f"field(s) {indexed_names} cannot be indexed without sync"
+                f"field(s) {indexed_names} cannot be indexed without sync", "validation_failed", rule="full_text_indexed"
             )
 
     @staticmethod
@@ -259,11 +260,11 @@ class TemplateService:
         Raises ValueError on violation (purely declarative — no DB calls).
         """
         if versioned is False and not identity_fields:
-            raise ValueError(
+            raise TemplateError(
                 "versioned:false requires identity_fields: an overwrite-in-place "
                 "template must declare an identity to address the document being "
                 "updated. Set identity_fields, or use versioned:true (the default). "
-                "Append-only templates (empty identity_fields) are versioned:true."
+                "Append-only templates (empty identity_fields) are versioned:true.", "validation_failed", rule="versioned_requires_identity"
             )
 
     @staticmethod
@@ -290,35 +291,35 @@ class TemplateService:
         idf = set(identity_fields or [])
         for new_name, old_name in renames.items():
             if old_name not in prev:
-                raise ValueError(
+                raise TemplateError(
                     f"rename '{new_name}' <- '{old_name}': '{old_name}' does not "
-                    f"exist in the previous version"
+                    f"exist in the previous version", "validation_failed", rule="invalid_rename"
                 )
             if new_name not in new:
-                raise ValueError(
+                raise TemplateError(
                     f"rename '{new_name}' <- '{old_name}': '{new_name}' is not "
-                    f"declared in this version's fields"
+                    f"declared in this version's fields", "validation_failed", rule="invalid_rename"
                 )
             if new_name in prev:
-                raise ValueError(
+                raise TemplateError(
                     f"rename '{new_name}' <- '{old_name}': '{new_name}' already "
-                    f"existed in the previous version — that is not a rename"
+                    f"existed in the previous version — that is not a rename", "validation_failed", rule="invalid_rename"
                 )
             if old_name in new:
-                raise ValueError(
+                raise TemplateError(
                     f"rename '{new_name}' <- '{old_name}': '{old_name}' is still "
-                    f"declared in this version — that is not a rename"
+                    f"declared in this version — that is not a rename", "validation_failed", rule="invalid_rename"
                 )
             if prev[old_name].type != new[new_name].type:
-                raise ValueError(
+                raise TemplateError(
                     f"rename '{new_name}' <- '{old_name}': types differ "
                     f"({prev[old_name].type} -> {new[new_name].type}); a rename "
-                    f"carries the same data, so the type must match"
+                    f"carries the same data, so the type must match", "validation_failed", rule="invalid_rename"
                 )
             if old_name in idf or new_name in idf:
-                raise ValueError(
+                raise TemplateError(
                     f"rename '{new_name}' <- '{old_name}': identity fields cannot "
-                    f"be renamed (identity is immutable across versions)"
+                    f"be renamed (identity is immutable across versions)", "identity_fields_immutable"
                 )
 
     @staticmethod
@@ -347,24 +348,24 @@ class TemplateService:
             # truncates the name, so neither can be quoted safely. Every other
             # character stays allowed.
             if '"' in f.name or "\x00" in f.name:
-                raise ValueError(
+                raise TemplateError(
                     f"field name {f.name!r} contains a double quote or NUL "
-                    "character, which reporting cannot store as a column name"
+                    "character, which reporting cannot store as a column name", "validation_failed", rule="field_name_unquotable"
                 )
             # A nested template reference must pin an explicit version: schema
             # refs never resolve to "latest", so a parent validated against a
             # floating nested schema strands when that schema ships an
             # incompatible version (CASE-493).
             if f.template_ref and f.template_ref_version is None:
-                raise ValueError(
+                raise TemplateError(
                     f"template_ref_version is required for field '{f.name}': a "
-                    "nested template reference must pin an explicit version (CASE-493)"
+                    "nested template reference must pin an explicit version (CASE-493)", "validation_failed", rule="template_ref_version_required"
                 )
             if f.array_template_ref and f.array_template_ref_version is None:
-                raise ValueError(
+                raise TemplateError(
                     f"array_template_ref_version is required for field '{f.name}': "
                     "an array-item template reference must pin an explicit version "
-                    "(CASE-493)"
+                    "(CASE-493)", "validation_failed", rule="template_ref_version_required"
                 )
             # An array of references must declare what it references. Without it,
             # each item is queued for resolution carrying reference_type=None,
@@ -374,11 +375,11 @@ class TemplateService:
                 f.array_item_type == FieldType.REFERENCE
                 and f.reference_type is None
             ):
-                raise ValueError(
+                raise TemplateError(
                     f"reference_type is required for field '{f.name}': an array "
                     "of references (array_item_type='reference') must declare which "
                     "entity type it references, otherwise its items are never "
-                    "existence-checked (CASE-550)"
+                    "existence-checked (CASE-550)", "validation_failed", rule="reference_type_required"
                 )
 
     # =========================================================================
@@ -411,7 +412,7 @@ class TemplateService:
         # Validate status value
         is_draft = request.status == "draft"
         if request.status is not None and request.status not in ("active", "draft"):
-            raise ValueError(f"Invalid status '{request.status}': must be 'active' or 'draft'")
+            raise TemplateError(f"Invalid status '{request.status}': must be 'active' or 'draft'", "validation_failed", rule="invalid_status")
 
         # Structural validation for relationship templates. Runs in draft
         # mode too, and now purely structural: with the endpoint constraint
@@ -449,15 +450,15 @@ class TemplateService:
         # path; restore trusts the archive (the declaration was validated
         # when the version was originally created).
         if request.renames and not is_restore:
-            raise ValueError(
+            raise TemplateError(
                 "renames require a previous version to rename from — a first "
                 "version has none. Declare renames on the version that "
-                "introduces the new field names."
+                "introduces the new field names.", "validation_failed", rule="invalid_rename"
             )
         if not is_restore:
             existing = await Template.find_one({"namespace": namespace, "value": request.value})
             if existing:
-                raise ValueError(f"Template with value '{request.value}' already exists in namespace '{namespace}'")
+                raise TemplateError(f"Template with value '{request.value}' already exists in namespace '{namespace}'", "already_exists")
 
         # Validate extends if provided
         parent_namespace: str | None = None
@@ -482,7 +483,7 @@ class TemplateService:
                     request.extends = parent.template_id
                 else:
                     if not is_draft:
-                        raise ValueError(f"Parent template '{request.extends}' not found")
+                        raise TemplateError(f"Parent template '{request.extends}' not found", "reference_violation", rule="parent_not_found")
                     # Draft mode: store raw extends value even if parent doesn't exist yet
             if parent:
                 parent_namespace = parent.namespace
@@ -509,7 +510,7 @@ class TemplateService:
                     )
                 )
             except EntityNotFoundError as e:
-                raise ValueError(str(e)) from e
+                raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
         else:
             # Drafts skip Registry resolution (their referents may not exist
             # yet); the declaration is stored lookup-only and the resolved
@@ -578,11 +579,11 @@ class TemplateService:
                 # target that already owns this value under a different
                 # identity is a dirty-target restore — fail loudly rather
                 # than silently re-parenting the archive's versions.
-                raise ValueError(
+                raise TemplateError(
                     f"Restore conflict: value '{request.value}' in namespace "
                     f"'{namespace}' is already registered as '{template_id}', "
                     f"but the archive carries '{request.template_id}'. "
-                    f"Restore requires a clean target."
+                    f"Restore requires a clean target.", "already_exists", rule="restore_conflict"
                 )
             # Non-restore create of an existing value: the upsert decision
             # (unchanged / new version / fork rejection) is made one level up
@@ -591,8 +592,8 @@ class TemplateService:
             # means a concurrent create won the race — surface the same
             # error the pre-check raises, so the caller can retry as an
             # upsert.
-            raise ValueError(
-                f"Template with value '{request.value}' already exists in namespace '{namespace}'"
+            raise TemplateError(
+                f"Template with value '{request.value}' already exists in namespace '{namespace}'", "already_exists"
             )
         version = request.version if is_restore else 1
 
@@ -699,7 +700,7 @@ class TemplateService:
         elif value:
             # Value lookups require namespace — no silent fallback to "wip"
             if not namespace:
-                raise ValueError("Namespace is required for value-based template lookup")
+                raise TemplateError("Namespace is required for value-based template lookup", "invalid_request", rule="namespace_required")
             query = {"namespace": namespace, "value": value}
             if version is not None:
                 query["version"] = version
@@ -1357,10 +1358,10 @@ class TemplateService:
         # sharing one ID would break name-based resolution and the
         # registered {ns, type, value} identity key.
         if request.value is not None and request.value != original.value:
-            raise ValueError(
+            raise TemplateError(
                 f"value is immutable: renaming '{original.value}' to "
                 f"'{request.value}' is a fork, not a version — create a new "
-                f"template with the new value instead."
+                f"template with the new value instead.", "immutable_property", rule="value"
             )
         new_value = original.value
 
@@ -1374,11 +1375,11 @@ class TemplateService:
             request.identity_fields is not None
             and list(request.identity_fields) != list(original.identity_fields or [])
         ):
-            raise ValueError(
+            raise TemplateError(
                 f"identity_fields are immutable across versions of "
                 f"'{original.value}' (existing: {list(original.identity_fields or [])}, "
                 f"requested: {list(request.identity_fields)}). Changing identity "
-                f"is a fork — create a new template with a new value instead."
+                f"is a fork — create a new template with a new value instead.", "identity_fields_immutable"
             )
 
         # Calculate new version number (max version for this value + 1),
@@ -1405,13 +1406,13 @@ class TemplateService:
                 if parent:
                     extends_value = parent.template_id
                 else:
-                    raise ValueError(f"Parent template '{extends_value}' not found")
+                    raise TemplateError(f"Parent template '{extends_value}' not found", "reference_violation", rule="parent_not_found")
 
             # Check for circular inheritance
             if await InheritanceService.check_circular_inheritance(
                 template_id, extends_value
             ):
-                raise ValueError("Setting this parent would create circular inheritance")
+                raise TemplateError("Setting this parent would create circular inheritance", "invalid_state", rule="circular_inheritance")
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -1426,7 +1427,7 @@ class TemplateService:
                     await TemplateService._normalize_field_references(new_fields, original.namespace)
                 )
             except EntityNotFoundError as e:
-                raise ValueError(str(e)) from e
+                raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
 
         # Isolation check over the updated refs + the (possibly unchanged)
         # parent — same boundary as create; extends_value is canonical here
@@ -1559,8 +1560,8 @@ class TemplateService:
         # Check if any templates extend this one (blocks both soft and hard delete)
         children = await InheritanceService.get_children(template_id)
         if children:
-            raise ValueError(
-                f"Cannot delete template: {len(children)} template(s) extend it"
+            raise TemplateError(
+                f"Cannot delete template: {len(children)} template(s) extend it", "invalid_state", rule="has_children"
             )
 
         # Get authenticated identity (not client-provided)
@@ -1576,8 +1577,8 @@ class TemplateService:
             client = get_registry_client()
             deletion_mode = await client.get_namespace_deletion_mode(any_version.namespace)
             if deletion_mode != "full":
-                raise ValueError(
-                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')"
+                raise TemplateError(
+                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')", "invalid_state", rule="deletion_mode_retain"
                 )
 
             if version is not None:
@@ -1669,15 +1670,15 @@ class TemplateService:
             {"template_id": template_id, "version": version}
         )
         if not template:
-            raise ValueError(
-                f"Template '{template_id}' version {version} not found"
+            raise TemplateError(
+                f"Template '{template_id}' version {version} not found", "not_found"
             )
 
         if template.status == "draft":
-            raise ValueError(
+            raise TemplateError(
                 f"Template '{template_id}' version {version} is 'draft', not "
                 "'inactive'. Use activate_template for drafts; reactivate only "
-                "restores a soft-deleted (inactive) version."
+                "restores a soft-deleted (inactive) version.", "invalid_state", rule="not_inactive"
             )
 
         if template.status == "active":
@@ -1734,9 +1735,9 @@ class TemplateService:
         add_source = endpoint_lookups(add_source_templates)
         add_target = endpoint_lookups(add_target_templates)
         if not add_source and not add_target:
-            raise ValueError(
+            raise TemplateError(
                 "add_edge_type_endpoints requires add_source_templates and/or "
-                "add_target_templates"
+                "add_target_templates", "invalid_request", rule="no_endpoints"
             )
 
         # Resolve the edge type to its latest ACTIVE version — that is the version
@@ -1756,14 +1757,14 @@ class TemplateService:
             ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             template = by_value[0] if by_value else None
         if not template:
-            raise ValueError(
-                f"No active template found for '{template_id}'"
+            raise TemplateError(
+                f"No active template found for '{template_id}'", "not_found"
             )
 
         if template.usage != TemplateUsage.RELATIONSHIP:
-            raise ValueError(
+            raise TemplateError(
                 f"Template '{template.value}' is usage='{template.usage.value}', "
-                "not 'relationship'. Endpoint widening only applies to edge types."
+                "not 'relationship'. Endpoint widening only applies to edge types.", "invalid_state", rule="not_relationship"
             )
 
         # Resolve the new endpoints to canonical IDs (existence-checked). This is a
@@ -1780,7 +1781,7 @@ class TemplateService:
                 if add_target else {}
             )
         except EntityNotFoundError as e:
-            raise ValueError(str(e)) from e
+            raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
 
         # Union into the existing entry lists, order-stable, deduplicated by
         # canonical identity (CASE-515: comparing a resolved addition against
@@ -2086,7 +2087,7 @@ class TemplateService:
                             index=i,
                             status="error",
                             value=item.value,
-                            error=str(e),
+                            **error_fields(e),
                         ))
                     continue
 
@@ -2283,7 +2284,7 @@ class TemplateService:
                     index=i,
                     status="error",
                     value=item.value,
-                    error=str(e),
+                    **error_fields(e),
                 ))
             except RegistryError as e:
                 # Bulk-first contract: a Registry rejection for one item
@@ -2294,6 +2295,7 @@ class TemplateService:
                     status="error",
                     value=item.value,
                     error=f"Registry error: {e!s}",
+                    error_code="registry_error",
                 ))
 
         return results
@@ -2529,7 +2531,7 @@ class TemplateService:
         parent_results = await Template.find({"template_id": template_id}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         parent = parent_results[0] if parent_results else None
         if not parent:
-            raise ValueError(f"Template '{template_id}' not found")
+            raise TemplateError(f"Template '{template_id}' not found", "not_found")
 
         # Find all versions of this template's value to get ALL possible old template_ids
         all_parent_versions = await Template.find({"value": parent.value}).to_list()
@@ -3017,11 +3019,11 @@ class TemplateService:
         results = await Template.find(query).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         template = results[0] if results else None
         if not template:
-            raise ValueError(f"Template '{template_id}' not found")
+            raise TemplateError(f"Template '{template_id}' not found", "not_found")
         if template.status != "draft":
-            raise ValueError(
+            raise TemplateError(
                 f"Template '{template_id}' is '{template.status}', not 'draft'. "
-                f"Only draft templates can be activated."
+                f"Only draft templates can be activated.", "invalid_state", rule="not_draft"
             )
 
         # Build the full activation set (all reachable drafts)
@@ -3105,7 +3107,7 @@ class TemplateService:
                     extends_template_id=t.extends,
                 )
         except EntityNotFoundError as e:
-            raise ValueError(str(e)) from e
+            raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
 
         # Activate all templates in the set
         actor = get_identity_string()
@@ -3481,7 +3483,7 @@ class TemplateService:
                 template_ref_namespaces=[ns_map[i] for i in template_ids if i in ns_map],
             )
         except ReferenceValidationError as e:
-            raise ValueError(f"Cross-namespace reference violation: {e.violations}") from e
+            raise TemplateError(f"Cross-namespace reference violation: {e.violations}", "cross_namespace_reference") from e
 
     @staticmethod
     async def _validate_pinned_versions(
@@ -3515,9 +3517,9 @@ class TemplateService:
         # Presence — extends_version (nested-ref presence is enforced on the
         # FieldDefinition model itself).
         if extends and extends_version is None:
-            raise ValueError(
+            raise TemplateError(
                 "extends_version is required when a template declares 'extends': "
-                "schema inheritance must pin an explicit parent version (CASE-493)"
+                "schema inheritance must pin an explicit parent version (CASE-493)", "validation_failed", rule="extends_version_required"
             )
 
         if not check_existence:
@@ -3529,9 +3531,9 @@ class TemplateService:
             ) is not None
 
         if extends and extends_version is not None and not await _pinned_exists(extends, extends_version):
-            raise ValueError(
+            raise TemplateError(
                 f"Parent template '{extends}' has no version {extends_version} "
-                "(extends_version must pin an existing parent version — CASE-493)"
+                "(extends_version must pin an existing parent version — CASE-493)", "reference_violation", rule="pinned_version_missing"
             )
 
         for field in fields:
@@ -3539,18 +3541,18 @@ class TemplateService:
                 field.template_ref and field.template_ref_version is not None
                 and not await _pinned_exists(field.template_ref, field.template_ref_version)
             ):
-                raise ValueError(
+                raise TemplateError(
                     f"Field '{field.name}': nested template '{field.template_ref}' "
-                    f"has no version {field.template_ref_version} (CASE-493)"
+                    f"has no version {field.template_ref_version} (CASE-493)", "reference_violation", rule="pinned_version_missing"
                 )
             if (
                 field.array_template_ref and field.array_template_ref_version is not None
                 and not await _pinned_exists(field.array_template_ref, field.array_template_ref_version)
             ):
-                raise ValueError(
+                raise TemplateError(
                     f"Field '{field.name}': array-item template "
                     f"'{field.array_template_ref}' has no version "
-                    f"{field.array_template_ref_version} (CASE-493)"
+                    f"{field.array_template_ref_version} (CASE-493)", "reference_violation", rule="pinned_version_missing"
                 )
 
     @staticmethod

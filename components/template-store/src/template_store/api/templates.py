@@ -29,6 +29,7 @@ from ..models.api_models import (
 )
 from ..models.template import Template
 from ..services.dependency_service import DependencyService, TemplateDependencies
+from ..services.errors import error_fields
 from ..services.inheritance_service import InheritanceService
 from ..services.portable import template_with_portable_refs
 from ..services.registry_client import RegistryError
@@ -407,7 +408,7 @@ async def update_templates(
         try:
             result = await TemplateService.update_template(item.template_id, item)
             if not result:
-                results.append(BulkResultItem(index=i, status="error", id=item.template_id, error="Template not found"))
+                results.append(BulkResultItem(index=i, status="error", id=item.template_id, error="Template not found", error_code="not_found"))
             else:
                 # A version event carries its consequences on this path too,
                 # not only on create-as-upsert: same schema diff, same live
@@ -426,9 +427,12 @@ async def update_templates(
                     details=details,
                 ))
         except ValueError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.template_id, error=str(e)))
+            results.append(BulkResultItem(index=i, status="error", id=item.template_id, **error_fields(e)))
         except RegistryError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.template_id, error=f"Registry error: {e!s}"))
+            results.append(BulkResultItem(
+                index=i, status="error", id=item.template_id,
+                error=f"Registry error: {e!s}", error_code="registry_error",
+            ))
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
@@ -526,6 +530,7 @@ async def delete_templates(
                             "Pass the version to retire. (hard_delete=true without "
                             "a version still means: remove all versions.)"
                         ),
+                        error_code="invalid_request", details={"rule": "version_required"},
                     ))
                     continue
 
@@ -536,7 +541,8 @@ async def delete_templates(
             if deps.child_template_count > 0:
                 results.append(BulkResultItem(
                     index=i, status="error", id=item.id,
-                    error=f"Cannot deactivate: {deps.child_template_count} template(s) extend this template"
+                    error=f"Cannot deactivate: {deps.child_template_count} template(s) extend this template",
+                    error_code="invalid_state", details={"rule": "has_children"},
                 ))
                 continue
 
@@ -557,6 +563,7 @@ async def delete_templates(
                             "Hard-delete refused: cannot verify that no documents use this "
                             f"template ({e}).{force_note}"
                         ),
+                        error_code="invalid_state", details={"rule": "documents_unverifiable"},
                     ))
                     continue
                 if rows > 0:
@@ -567,13 +574,15 @@ async def delete_templates(
                             "across all versions, reference this template. Delete them first "
                             f"(hard_delete=true per document in this namespace).{force_note}"
                         ),
+                        error_code="invalid_state", details={"rule": "has_documents"},
                     ))
                     continue
             # Soft-delete: warn if active documents exist (unless force)
             elif deps.document_count > 0 and not item.force:
                 results.append(BulkResultItem(
                     index=i, status="error", id=item.id,
-                    error=f"Template has {deps.document_count} dependent document(s). Use force=true to deactivate anyway."
+                    error=f"Template has {deps.document_count} dependent document(s). Use force=true to deactivate anyway.",
+                    error_code="invalid_state", details={"rule": "has_documents"},
                 ))
                 continue
 
@@ -582,11 +591,11 @@ async def delete_templates(
                 hard_delete=item.hard_delete,
             )
             if not deleted:
-                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Template not found"))
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Template not found", error_code="not_found"))
             else:
                 results.append(BulkResultItem(index=i, status="deleted", id=item.id))
         except ValueError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.id, error=str(e)))
+            results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
