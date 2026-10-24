@@ -807,23 +807,31 @@ if ! $REFRESH_MODE; then
     # non-200 on collision, hence the old 'may already exist' guesswork.)
     # ACTIVE_KEY is the admin key content from the wip-deploy secrets
     # file; empty/missing degrades to the non-fatal HTTP branches.
+    # Same URL and key the generated .mcp.json is written with, so the
+    # namespace lands on the instance the app will talk to — and a key that
+    # fails here will fail in the app's MCP server too.
     if [ "${WIP_SCAFFOLD_SKIP_DEV_NAMESPACE:-}" = "1" ]; then
         echo "   Skipped (WIP_SCAFFOLD_SKIP_DEV_NAMESPACE=1) — APP-YAC will create the namespace on first run"
     else
         ACTIVE_KEY=$(cat "$WIP_API_KEY_FILE" 2>/dev/null || true)
         NS_RESPONSE=$(curl -k -s -o /dev/null -w "%{http_code}" \
-            -X PUT "https://localhost:8443/api/registry/namespaces/$DEV_NAMESPACE" \
+            -X PUT "${WIP_BASE_URL%/}/api/registry/namespaces/$DEV_NAMESPACE" \
             -H "X-API-Key: $ACTIVE_KEY" \
             -H "Content-Type: application/json" \
             -d "{\"description\": \"$APP_NAME (dev)\"}" \
-            2>/dev/null || echo "000")
+            2>/dev/null || true)
+        # curl's -w already prints 000 when it cannot connect; an `|| echo`
+        # fallback appended a second 000, so an unreachable WIP read as an
+        # unexpected status. Default only for a missing curl / empty output.
+        NS_RESPONSE="${NS_RESPONSE:-000}"
 
         if [ "$NS_RESPONSE" = "200" ]; then
-            echo "   Namespace upserted: $DEV_NAMESPACE"
+            echo "   Namespace upserted: $DEV_NAMESPACE on $WIP_BASE_URL"
         elif [ "$NS_RESPONSE" = "000" ]; then
-            echo "   WIP not reachable — APP-YAC will create the namespace on first run"
+            echo "   WIP not reachable at $WIP_BASE_URL — APP-YAC will create the namespace on first run"
         else
-            echo "   HTTP $NS_RESPONSE — unexpected for an idempotent upsert; check the key/instance"
+            echo "   HTTP $NS_RESPONSE from $WIP_BASE_URL — unexpected for an idempotent upsert; the generated"
+            echo "   .mcp.json uses the same URL and key, so check both (WIP_API_KEY_FILE_OVERRIDE for a non-local instance)"
         fi
     fi
 
