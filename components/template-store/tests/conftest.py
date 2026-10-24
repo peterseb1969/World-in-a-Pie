@@ -29,6 +29,12 @@ if _registry_src not in sys.path:
 # Use existing env vars if set, otherwise defaults for local testing
 os.environ.setdefault("MONGO_URI", "mongodb://localhost:27017/")
 os.environ.setdefault("DATABASE_NAME", "wip_template_store_test")
+# Under pytest-xdist every worker gets its own database — without it,
+# workers wipe each other's fixtures mid-flight. Dropped at session end
+# (_drop_worker_database).
+_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
+if _XDIST_WORKER:
+    os.environ["DATABASE_NAME"] = f"{os.environ['DATABASE_NAME']}_{_XDIST_WORKER}"
 os.environ.setdefault("API_KEY", "test_api_key")
 os.environ.setdefault("REGISTRY_URL", "http://registry")
 os.environ.setdefault("REGISTRY_API_KEY", "test_api_key")
@@ -256,3 +262,18 @@ def api_key() -> str:
 def auth_headers(api_key: str) -> dict:
     """Return headers with API key for authenticated requests."""
     return {"X-API-Key": api_key}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _drop_worker_database():
+    """Drop this xdist worker's suffixed database when its session ends,
+    so per-worker databases don't accumulate on the test MongoDB."""
+    yield
+    if _XDIST_WORKER:
+        from pymongo import MongoClient
+
+        mongo_client = MongoClient(os.environ["MONGO_URI"], serverSelectionTimeoutMS=5000)
+        try:
+            mongo_client.drop_database(os.environ["DATABASE_NAME"])
+        finally:
+            mongo_client.close()

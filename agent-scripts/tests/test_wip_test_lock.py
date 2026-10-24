@@ -1,11 +1,13 @@
-"""CASE-742 — the machine-wide test-infrastructure lock in wip-test.sh.
+"""CASE-742 — the per-clone test-infrastructure lock in wip-test.sh.
 
-The test containers are one set per machine with fixed database names; two
-concurrent suite runs wipe each other's fixtures mid-flight and manufacture
+A clone's test containers use fixed database names; two concurrent suite
+runs in one clone wipe each other's fixtures mid-flight and manufacture
 phantom regressions (measured: four runs of one untouched suite scoring 82,
-8, 2 and 104 failures). The lock serializes runs that touch the shared
-containers and ONLY those — no-dep suites (this one included, which is what
-lets these tests run under the lock without deadlocking on themselves).
+8, 2 and 104 failures). The lock serializes runs that touch the containers
+and ONLY those — no-dep suites (this one included, which is what lets these
+tests run under the lock without deadlocking on themselves). Since CASE-912
+both the containers and the lock are per clone, so different clones never
+wait on each other.
 
 Exercised via the script's WIP_TEST_LOCK_PROBE hook: acquire per the normal
 gating, report LOCK_ACQUIRED / LOCK_SKIPPED, release, exit — the same
@@ -85,7 +87,7 @@ class TestContention:
         assert "another test run holds" in res.stderr
         assert "clone=/some/other/clone" in res.stderr
         assert "component=document-store" in res.stderr
-        assert "CASE-742" in res.stderr
+        assert "WIP_TEST_WAIT=1" in res.stderr
         # The holder's lock survives the refused attempt.
         assert (tmp_path / "infra.lock").exists()
 
@@ -135,3 +137,46 @@ class TestContention:
 
         assert res.returncode == 0, res.stderr
         assert "LOCK_ACQUIRED" in res.stdout
+
+
+class TestPerCloneLock:
+    """The default lock path derives from the clone, so agents in separate
+    clones on one machine never queue behind each other."""
+
+    @staticmethod
+    def _fake_clone(root: Path) -> Path:
+        # The script needs only its own path and a venv activate file to
+        # reach the probe; the probe exits before any suite runs.
+        (root / "scripts").mkdir(parents=True)
+        (root / ".venv" / "bin").mkdir(parents=True)
+        (root / ".venv" / "bin" / "activate").write_text("")
+        script = root / "scripts" / "wip-test.sh"
+        script.write_text(SCRIPT.read_text())
+        return script
+
+    @staticmethod
+    def _default_lock_dir(script: Path) -> str:
+        env = dict(os.environ)
+        env.pop("WIP_TEST_LOCK_HELD", None)
+        env.pop("WIP_TEST_LOCK_DIR", None)
+        env["WIP_TEST_LOCK_PROBE"] = "1"
+        # A no-dep target: reports the path without acquiring the real lock.
+        res = subprocess.run(
+            ["bash", str(script), "deployer"], capture_output=True, text=True, env=env,
+        )
+        assert res.returncode == 0, res.stderr
+        assert "LOCK_SKIPPED" in res.stdout
+        (line,) = [l for l in res.stdout.splitlines() if l.startswith("lock_dir=")]
+        return line.removeprefix("lock_dir=")
+
+    def test_two_clones_get_different_locks(self, tmp_path):
+        a = self._default_lock_dir(self._fake_clone(tmp_path / "clone-a"))
+        b = self._default_lock_dir(self._fake_clone(tmp_path / "clone-b"))
+        assert a != b
+        for path in (a, b):
+            assert path.startswith("/tmp/wip-test-infra-")
+            assert path != "/tmp/wip-test-infra.lock"
+
+    def test_one_clone_keeps_its_lock(self, tmp_path):
+        script = self._fake_clone(tmp_path / "clone")
+        assert self._default_lock_dir(script) == self._default_lock_dir(script)

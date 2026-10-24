@@ -13,24 +13,30 @@
 #   ./scripts/wip-test.sh template-store tests/test_x.py             # one file
 #   ./scripts/wip-test.sh template-store tests/test_x.py::test_a     # one test
 #   ./scripts/wip-test.sh all                    # run everything
+#   ./scripts/wip-test.sh --down                 # remove this clone's test containers
 #
-# Test-container provisioning (CASE-320):
+# Test-container provisioning (CASE-320, per clone since CASE-912):
 #   The component conftests connect to dedicated test-only services
-#   (test-mongo on host:27017, test-postgres on host:5433, test-nats
-#   on host:4223). These are NOT the wip-deploy install — they're
-#   throwaway containers managed by this script that mirror what CI
-#   does. The script auto-starts them on demand.
+#   (MongoDB, PostgreSQL, NATS). These are NOT the wip-deploy install —
+#   they're throwaway containers managed by this script that mirror what
+#   CI does. Each clone gets its own set (test-mongo-<key>, …, where
+#   <key> derives from the clone path), published on loopback ports the
+#   container runtime picks; the script reads the ports back and exports
+#   MONGO_URI / POSTGRES_TEST_URI / NATS_TEST_URL. A value already set in
+#   the caller's environment wins. Containers stay running between runs;
+#   --down removes them.
 #
 #   Override the container CLI:
 #     WIP_TEST_CONTAINER_CLI=docker ./scripts/wip-test.sh registry
 #   Skip provisioning entirely (e.g. for unit-only runs):
 #     WIP_TEST_SKIP_CONTAINERS=1 ./scripts/wip-test.sh registry tests/test_unit.py
 #
-# Cross-run lock (CASE-742): the test containers are one set per machine
-# with fixed database names, so runs that touch them are serialized via
-# /tmp/wip-test-infra.lock. A concurrent run fails fast naming the holder;
+# Cross-run lock (CASE-742): a clone's runs share its databases, so runs
+# that touch them are serialized per clone via /tmp/wip-test-infra-<key>.lock.
+# A concurrent run in the same clone fails fast naming the holder;
 # WIP_TEST_WAIT=1 queues instead (WIP_TEST_WAIT_TIMEOUT seconds, default
-# 900). Components with no container deps are never serialized.
+# 900). Different clones never wait on each other. Components with no
+# container deps are never serialized.
 #
 # Exits with pytest's exit code (or combined exit code for "all").
 #
@@ -54,14 +60,26 @@ source "$REPO_ROOT/.venv/bin/activate"
 
 # --- Test-container provisioning (CASE-320) ---
 #
-# Component conftests connect to test-only services on standard host
-# ports (mongo:27017, postgres:5433->5432, nats:4223->4222). These
-# are SEPARATE from any wip-deploy install — wip-deploy only host-maps
-# the router (8443) to reduce production surface area, so the
-# wip-mongodb / wip-postgres / wip-nats containers it provisions are
-# not host-reachable. CI provisions throwaway test-mongo / test-postgres
-# / test-nats containers per .gitea/workflows/test.yaml. This block
-# mirrors that locally so wip-test.sh can run identical tests.
+# Component conftests connect to test-only services. These are SEPARATE
+# from any wip-deploy install — wip-deploy only host-maps the router
+# (8443) to reduce production surface area, so the wip-mongodb /
+# wip-postgres / wip-nats containers it provisions are not
+# host-reachable. CI gives each job its own databases as job services
+# (.gitea/workflows/test.yaml). This block mirrors that locally so
+# wip-test.sh can run identical tests.
+#
+# One container set per CLONE, not per machine: several agents work in
+# separate clones on one machine, and a shared set with fixed database
+# names forced every clone's runs to queue behind one machine-wide lock.
+# Container names carry a key derived from the clone path, and host
+# ports are left to the runtime (`-p 127.0.0.1::<port>`) and read back
+# on every run, so two clones never collide and no port range needs
+# managing. The clone path is also stored as a label
+# (wip.test.clone=<path>), so the sets of deleted clones can be found:
+#   podman ps -a --filter label=wip.test.clone --format '{{.Names}} {{.Labels}}'
+# The un-suffixed test-mongo / test-postgres / test-nats containers of
+# earlier versions of this script are left alone; clones still on those
+# versions keep using them.
 #
 # Container CLI: WIP_TEST_CONTAINER_CLI overrides; defaults to podman
 # (matches the rest of the WIP toolchain) with docker as fallback.
@@ -115,74 +133,108 @@ _component_deps() {
     esac
 }
 
+# The key: cksum of the clone path (POSIX — present wherever bash is),
+# as 8 hex digits.
+CLONE_KEY="$(printf '%08x' "$(printf '%s' "$REPO_ROOT" | cksum | cut -d' ' -f1)")"
+TEST_MONGO="test-mongo-$CLONE_KEY"
+TEST_POSTGRES="test-postgres-$CLONE_KEY"
+TEST_NATS="test-nats-$CLONE_KEY"
+
 _container_running() {
     local name="$1"
     "$CONTAINER_CLI" ps --format '{{.Names}}' 2>/dev/null | grep -qx "$name"
 }
 
-# The test containers publish their ports on loopback only: test-mongo and
-# test-nats accept unauthenticated clients, and a 0.0.0.0 binding put them
-# on the LAN for as long as they ran. A container created before that (bound
-# to all interfaces — podman reports 0.0.0.0, docker an empty HostIp) is
-# removed so the run below recreates it on 127.0.0.1; it holds test data only.
-_drop_if_exposed() {
+# Prints the host port a running container publishes for container port $2.
+# Read on every run rather than remembered: whether a restarted container
+# keeps its ephemeral port is the runtime's business.
+_host_port() {
+    local out
+    out="$("$CONTAINER_CLI" port "$1" "$2" 2>/dev/null | head -n1)"
+    [[ -n "$out" ]] || return 1
+    echo "${out##*:}"
+}
+
+# Starts container $1, creating it from the remaining `run` arguments if it
+# does not exist. Ports are published on loopback only: MongoDB and NATS
+# accept unauthenticated clients, and a 0.0.0.0 binding would put them on
+# the LAN for as long as they run.
+_start_container() {
     local name="$1"
-    if "$CONTAINER_CLI" inspect -f '{{json .HostConfig.PortBindings}}' "$name" 2>/dev/null \
-        | grep -qE '"HostIp":"(0\.0\.0\.0)?"'; then
-        echo "  Recreating $name on 127.0.0.1 (it was published on all interfaces)..."
-        "$CONTAINER_CLI" rm -f "$name" >/dev/null
-    fi
+    shift
+    echo "  Starting $name..."
+    "$CONTAINER_CLI" start "$name" >/dev/null 2>&1 || \
+        "$CONTAINER_CLI" run -d --name "$name" --label "wip.test.clone=$REPO_ROOT" "$@" >/dev/null
 }
 
 _ensure_mongo() {
-    _drop_if_exposed test-mongo
-    if _container_running test-mongo; then return 0; fi
-    echo "  Starting test-mongo on host port 27017..."
-    "$CONTAINER_CLI" start test-mongo >/dev/null 2>&1 || \
-        "$CONTAINER_CLI" run -d --name test-mongo -p 127.0.0.1:27017:27017 mongo:7 >/dev/null
+    if _container_running "$TEST_MONGO"; then return 0; fi
+    _start_container "$TEST_MONGO" -p 127.0.0.1::27017 mongo:7
     for _ in $(seq 1 15); do
-        if "$CONTAINER_CLI" exec test-mongo mongosh --quiet --eval "db.runCommand('ping')" >/dev/null 2>&1; then
+        if "$CONTAINER_CLI" exec "$TEST_MONGO" mongosh --quiet --eval "db.runCommand('ping')" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
     done
-    echo "ERROR: test-mongo did not become ready within 15s" >&2
+    echo "ERROR: $TEST_MONGO did not become ready within 15s" >&2
     return 1
 }
 
 _ensure_postgres() {
-    _drop_if_exposed test-postgres
-    if _container_running test-postgres; then return 0; fi
-    echo "  Starting test-postgres on host port 5433..."
-    "$CONTAINER_CLI" start test-postgres >/dev/null 2>&1 || \
-        "$CONTAINER_CLI" run -d --name test-postgres -p 127.0.0.1:5433:5432 \
-            -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test \
-            -e POSTGRES_DB=wip_test postgres:16 >/dev/null
+    if _container_running "$TEST_POSTGRES"; then return 0; fi
+    _start_container "$TEST_POSTGRES" -p 127.0.0.1::5432 \
+        -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test \
+        -e POSTGRES_DB=wip_test postgres:16
     for _ in $(seq 1 15); do
-        if "$CONTAINER_CLI" exec test-postgres pg_isready -U test >/dev/null 2>&1; then
+        if "$CONTAINER_CLI" exec "$TEST_POSTGRES" pg_isready -U test >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
     done
-    echo "ERROR: test-postgres did not become ready within 15s" >&2
+    echo "ERROR: $TEST_POSTGRES did not become ready within 15s" >&2
     return 1
 }
 
 _ensure_nats() {
-    _drop_if_exposed test-nats
-    if _container_running test-nats; then return 0; fi
-    echo "  Starting test-nats on host ports 4223/8223..."
-    "$CONTAINER_CLI" start test-nats >/dev/null 2>&1 || \
-        "$CONTAINER_CLI" run -d --name test-nats -p 127.0.0.1:4223:4222 -p 127.0.0.1:8223:8222 \
-            nats:2 -js -m 8222 >/dev/null
+    if _container_running "$TEST_NATS"; then return 0; fi
+    _start_container "$TEST_NATS" -p 127.0.0.1::4222 -p 127.0.0.1::8222 nats:2 -js -m 8222
+    local monitor
     for _ in $(seq 1 15); do
-        if curl -fsS http://localhost:8223/healthz >/dev/null 2>&1; then
+        if monitor="$(_host_port "$TEST_NATS" 8222)" \
+            && curl -fsS "http://127.0.0.1:$monitor/healthz" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
     done
-    echo "ERROR: test-nats did not become ready within 15s" >&2
+    echo "ERROR: $TEST_NATS did not become ready within 15s" >&2
     return 1
+}
+
+# Exports the address of this clone's container for dep $1, unless the
+# caller's environment already names one. Returns 1 when the container
+# publishes no port (not running).
+_export_endpoint() {
+    local var container port url
+    case "$1" in
+        mongo)    var=MONGO_URI;         container="$TEST_MONGO";    port=27017 ;;
+        postgres) var=POSTGRES_TEST_URI; container="$TEST_POSTGRES"; port=5432 ;;
+        nats)     var=NATS_TEST_URL;     container="$TEST_NATS";     port=4222 ;;
+    esac
+    if [[ -n "${!var:-}" ]]; then
+        echo "  $var=${!var} (from the environment)"
+        return 0
+    fi
+    port="$(_host_port "$container" "$port")" || return 1
+    case "$1" in
+        mongo)    url="mongodb://127.0.0.1:$port/" ;;
+        # The conftest's skip-marker treats POSTGRES_TEST_URI as the opt-in
+        # signal: unset env var → integration tests skip even if the
+        # default URI would work.
+        postgres) url="postgresql://test:test@127.0.0.1:$port/wip_test" ;;
+        nats)     url="nats://127.0.0.1:$port" ;;
+    esac
+    export "$var=$url"
+    echo "  $var=$url"
 }
 
 ensure_test_containers() {
@@ -194,6 +246,15 @@ ensure_test_containers() {
     fi
     if [[ "${WIP_TEST_SKIP_CONTAINERS:-}" == "1" ]]; then
         echo "  WIP_TEST_SKIP_CONTAINERS=1 — skipping container provisioning"
+        # Still point the suite at this clone's containers when they are
+        # up: falling through to the conftest defaults (localhost:27017,
+        # …) would reach whatever another clone or an older version of
+        # this script runs there, which this clone's lock does not guard.
+        if [[ -n "$CONTAINER_CLI" ]]; then
+            for dep in $deps; do
+                _export_endpoint "$dep" || true
+            done
+        fi
         return 0
     fi
     if [[ -z "$CONTAINER_CLI" ]]; then
@@ -204,32 +265,39 @@ ensure_test_containers() {
     fi
     for dep in $deps; do
         case "$dep" in
-            mongo)
-                _ensure_mongo    || return 1
-                ;;
-            postgres)
-                _ensure_postgres || return 1
-                # The conftest's skip-marker treats POSTGRES_TEST_URI
-                # as the opt-in signal: unset env var → integration
-                # tests skip even if the default URI would work.
-                # Export here so pytest's subprocess inherits it.
-                export POSTGRES_TEST_URI="postgresql://test:test@localhost:5433/wip_test"
-                ;;
-            nats)
-                _ensure_nats     || return 1
-                export NATS_TEST_URL="nats://localhost:4223"
-                ;;
+            mongo)    _ensure_mongo    || return 1 ;;
+            postgres) _ensure_postgres || return 1 ;;
+            nats)     _ensure_nats     || return 1 ;;
             *)
                 echo "ERROR: unknown test-container dep '$dep' for $component" >&2
                 return 1
                 ;;
         esac
+        if ! _export_endpoint "$dep"; then
+            echo "ERROR: could not read the host port of this clone's $dep container" >&2
+            return 1
+        fi
+    done
+}
+
+# Removes this clone's test containers (and with them their data).
+remove_test_containers() {
+    if [[ -z "$CONTAINER_CLI" ]]; then
+        echo "ERROR: no container CLI found (podman or docker)." >&2
+        return 1
+    fi
+    local name
+    for name in "$TEST_MONGO" "$TEST_POSTGRES" "$TEST_NATS"; do
+        "$CONTAINER_CLI" container inspect "$name" >/dev/null 2>&1 || continue
+        "$CONTAINER_CLI" rm -f "$name" >/dev/null
+        echo "  Removed $name"
     done
 }
 
 # --- Argument parsing ---
 if [[ $# -lt 1 ]]; then
     echo "Usage: $0 <component|all> [pytest-args...]" >&2
+    echo "       $0 --down   (remove this clone's test containers)" >&2
     echo "" >&2
     echo "Components: registry, def-store, template-store, document-store," >&2
     echo "            reporting-sync, ingest-gateway, mcp-server" >&2
@@ -375,15 +443,20 @@ run_python_tests() {
         esac
     done
 
-    # Intra-run parallelism, opt-in per component: document-store's
-    # conftest gives every xdist worker its own set of databases, so its
-    # suite runs -n auto by default. Other suites join this list only
-    # after getting the same per-worker isolation — without it, workers
-    # wipe each other's fixtures (the corruption class the machine lock
-    # serializes at run granularity). WIP_TEST_XDIST=0 disables; a
-    # caller-supplied -n/--numprocesses wins.
-    local xdist_args=()
-    if [[ "$name" == "document-store" && "${WIP_TEST_XDIST:-1}" != "0" ]]; then
+    # Intra-run parallelism, opt-in per component: these suites' conftests
+    # give every xdist worker its own databases, so they run -n auto by
+    # default. Other suites join this list only after getting the same
+    # per-worker isolation — without it, workers wipe each other's
+    # fixtures (the corruption class the clone lock serializes at run
+    # granularity). WIP_TEST_XDIST=0 disables; a caller-supplied
+    # -n/--numprocesses wins. template-store's conftest isolates workers
+    # too, but the suite runs ~3x SLOWER under xdist (25 s serial, ~75 s
+    # -n auto) for a reason not yet found, so it stays serial.
+    local xdist_args=() xdist_suite=0
+    case "$name" in
+        document-store|def-store|registry) xdist_suite=1 ;;
+    esac
+    if (( xdist_suite )) && [[ "${WIP_TEST_XDIST:-1}" != "0" ]]; then
         local caller_n=0
         for arg in "$@"; do
             case "$arg" in
@@ -406,21 +479,22 @@ run_python_tests() {
 
 # --- Cross-run test-infrastructure lock (CASE-742) ---
 #
-# The test containers (test-mongo/test-postgres/test-nats) are one set per
-# MACHINE, and every conftest connects under a fixed database name — so two
-# concurrent suite runs (a second clone's agent, or a backgrounded run in
-# this one) share databases and wipe each other's fixtures mid-flight. The
-# observed symptom is mass failures with rollback / not-found signatures and
-# a failure count that changes on every run: phantom regressions in both
-# directions. Serialize instead: one run of the shared infrastructure at a
-# time, machine-wide.
+# A clone's test containers are shared by every run in that clone, and every
+# conftest connects under a fixed database name — so two concurrent suite
+# runs in one clone (a backgrounded run next to a foreground one) share
+# databases and wipe each other's fixtures mid-flight. The observed symptom
+# is mass failures with rollback / not-found signatures and a failure count
+# that changes on every run: phantom regressions in both directions.
+# Serialize instead: one run of a clone's infrastructure at a time. The lock
+# is per clone, like the containers — other clones have their own of both.
 #
 # Scoped, not global: components whose _component_deps is empty (deployer,
-# scaffold, agent-scripts, mcp-server, wip-auth, auth-gateway) never touch
-# the shared containers and are not serialized. `all` locks once up front
-# (it includes mongo components; the loop runs inline in this process).
+# scaffold, agent-scripts, mcp-server, wip-archive, auth-gateway) never touch
+# the containers and are not serialized. `all` locks once up front (it
+# includes mongo components; the loop runs inline in this process). --down
+# locks so it cannot remove containers from under a running suite.
 # WIP_TEST_SKIP_CONTAINERS still locks: it skips PROVISIONING, but the
-# conftests connect to whatever is on the ports regardless.
+# conftests still connect to this clone's containers when they are up.
 #
 # mkdir-based (atomic; bash-3.2- and Darwin-safe — macOS has no flock(1)),
 # with the owner recorded inside. Stale locks are broken by PID liveness,
@@ -434,7 +508,7 @@ run_python_tests() {
 # because queueing blindly on a wedged holder is the same class of mistake
 # as the corruption this lock prevents.
 
-WIP_TEST_LOCK_DIR="${WIP_TEST_LOCK_DIR:-/tmp/wip-test-infra.lock}"
+WIP_TEST_LOCK_DIR="${WIP_TEST_LOCK_DIR:-/tmp/wip-test-infra-$CLONE_KEY.lock}"
 
 _lock_owner_summary() {
     if [[ -f "$WIP_TEST_LOCK_DIR/owner" ]]; then
@@ -489,16 +563,16 @@ acquire_test_lock() {
         return 1
     fi
 
-    echo "ERROR: another test run holds the shared test infrastructure:" >&2
+    echo "ERROR: another test run holds this clone's test infrastructure:" >&2
     _lock_owner_summary >&2
-    echo "       Concurrent runs share databases and corrupt each other" >&2
-    echo "       (CASE-742). Re-run when it finishes, or WIP_TEST_WAIT=1" >&2
-    echo "       to queue (WIP_TEST_WAIT_TIMEOUT bounds the wait)." >&2
+    echo "       Concurrent runs in one clone share its databases and" >&2
+    echo "       corrupt each other. Re-run when it finishes, or" >&2
+    echo "       WIP_TEST_WAIT=1 to queue (WIP_TEST_WAIT_TIMEOUT bounds the wait)." >&2
     return 1
 }
 
 _needs_lock() {
-    [[ "$TARGET" == "all" ]] && return 0
+    [[ "$TARGET" == "all" || "$TARGET" == "--down" ]] && return 0
     [[ -n "$(_component_deps "$TARGET")" ]]
 }
 
@@ -509,9 +583,10 @@ fi
 
 # Test hook: prove lock behaviour without running a suite. Prints the
 # outcome and exits — LOCK_ACQUIRED (this run holds it), or LOCK_SKIPPED
-# (no-dep target / already held by a parent). Contention exits above with
-# the owner message before reaching this line.
+# (no-dep target / already held by a parent), plus the lock path in use.
+# Contention exits above with the owner message before reaching this line.
 if [[ "${WIP_TEST_LOCK_PROBE:-}" == "1" ]]; then
+    echo "lock_dir=$WIP_TEST_LOCK_DIR"
     if [[ -f "$WIP_TEST_LOCK_DIR/owner" ]] && grep -q "^pid=$$\$" "$WIP_TEST_LOCK_DIR/owner"; then
         echo "LOCK_ACQUIRED"
     else
@@ -521,6 +596,11 @@ if [[ "${WIP_TEST_LOCK_PROBE:-}" == "1" ]]; then
 fi
 
 # --- Execute ---
+
+if [[ "$TARGET" == "--down" ]]; then
+    remove_test_containers
+    exit $?
+fi
 
 if [[ "$TARGET" == "all" ]]; then
     FAILED=()
