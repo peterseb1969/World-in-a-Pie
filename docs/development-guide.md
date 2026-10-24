@@ -19,7 +19,7 @@ cd libs/wip-client && npm test
 cd libs/wip-react && npm test
 ```
 
-If you need to run pytest directly (debugging a single test, attaching a debugger), the wrapper's source shows the equivalent invocation; do not hand-roll `cd && PYTHONPATH=src pytest` — that's the form CLAUDE.md §10 explicitly rejects.
+If you need to run pytest directly (debugging a single test, attaching a debugger), the wrapper's source shows the equivalent invocation; do not hand-roll `cd && PYTHONPATH=src pytest` — that's the form the backend CLAUDE.md §10 (source: `scaffold/templates/claude-md/backend.md`) explicitly rejects.
 
 For tests against a running container:
 

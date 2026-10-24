@@ -39,12 +39,12 @@ Not every change touches every layer — use judgement. But review the full list
 ## Scripts
 
 - [ ] **`scripts/seed_comprehensive.py`** — seed data should exercise new features
-- [ ] **`deployer/`** — if new infrastructure, env vars, routes, or component manifests are needed (canonical deployer per CLAUDE.md §6; replaces the retired `setup.sh` / `setup-wip.sh` paths)
+- [ ] **`deployer/`** — if new infrastructure, env vars, routes, or component manifests are needed (canonical deployer per the backend CLAUDE.md §6, source `scaffold/templates/claude-md/backend.md`; replaces the retired `setup.sh` / `setup-wip.sh` paths)
 - [ ] **Other scripts** — `import_testdata.py`, `import_obo_graph.py`, etc. if relevant
 
 ## Tests
 
-- [ ] **Component tests** — `./scripts/wip-test.sh <component>` (the canonical wrapper handles venv, `PYTHONPATH`, exit codes per CLAUDE.md §10)
+- [ ] **Component tests** — `./scripts/wip-test.sh <component>` (the canonical wrapper handles venv, `PYTHONPATH`, exit codes per the backend CLAUDE.md §10, source `scaffold/templates/claude-md/backend.md`)
 - [ ] **Reporting-sync tests** — if event handling or PG schema changed
 - [ ] **Client lib tests** — type compilation, hook tests
 - [ ] **E2E** — manual or scripted verification through the full stack
