@@ -100,20 +100,17 @@ def test_app_refresh_keeps_recorded_preset(tmp: Path):
     app_dir = tmp / "preset-refresh"
     script = str(G.REPO_ROOT / "scripts/create-app-project.sh")
     base = [script, str(app_dir), "--name", "Golden preset-refresh", "--prefix", "APP-GLD"]
-    try:
-        for cmd in (
-            ["bash", *base, "--preset", "query"],   # create
-            ["bash", *base],                        # refresh, no --preset
-        ):
-            r = G._run(cmd, cwd=G.REPO_ROOT)
-            assert r.returncode == 0, r.stdout + r.stderr
-        assert _app_meta_preset(app_dir) == "query"
-
-        r = G._run(["bash", *base, "--preset", "standard"], cwd=G.REPO_ROOT)
+    for cmd in (
+        ["bash", *base, "--preset", "query"],   # create
+        ["bash", *base],                        # refresh, no --preset
+    ):
+        r = G._run(cmd, cwd=G.REPO_ROOT)
         assert r.returncode == 0, r.stdout + r.stderr
-        assert _app_meta_preset(app_dir) == "standard"
-    finally:
-        G._cleanup_namespace("dev-golden-preset-refresh")
+    assert _app_meta_preset(app_dir) == "query"
+
+    r = G._run(["bash", *base, "--preset", "standard"], cwd=G.REPO_ROOT)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _app_meta_preset(app_dir) == "standard"
 
 
 def test_app_force_claude_md(tmp: Path):
@@ -132,7 +129,6 @@ def test_app_force_claude_md(tmp: Path):
     claude.write_text(claude.read_text() + "\n## App-authored section\n")
     r2 = G._run([*base, "--force-claude-md"], cwd=G.REPO_ROOT)
     assert r2.returncode == 0, r2.stdout + r2.stderr
-    G._cleanup_namespace("dev-golden-force")
 
     assert not (app_dir / "CLAUDE.md.refresh").exists(), (
         "--force-claude-md must overwrite in place, not write the sidecar"
@@ -175,7 +171,6 @@ def test_app_with_bootstrap_retrofit(tmp: Path):
     assert (app_dir / "templates/bootstrap").is_dir(), (
         "--with-bootstrap must retrofit when the dir is absent"
     )
-    G._cleanup_namespace("dev-golden-boot")
 
     snap = G.snapshot_tree(app_dir, G._norm_roots(__APP_DIR__=str(app_dir)))
     _check("app-modifier-with-bootstrap", snap)

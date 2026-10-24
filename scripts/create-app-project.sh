@@ -796,6 +796,9 @@ if ! $REFRESH_MODE; then
     echo "$STEP_NUM. Creating dev namespace '$DEV_NAMESPACE'..."
     STEP_OFFSET=$((STEP_OFFSET + 1))
 
+    # WIP_SCAFFOLD_SKIP_DEV_NAMESPACE=1 skips the upsert: for runs that must not
+    # write to the live install (the golden harness sets it). The APP-YAC then
+    # creates the namespace on first run, as when WIP is unreachable.
     # Best-effort — WIP may not be running. Non-fatal.
     # PUT is the platform's documented idempotent upsert: creates on
     # missing with platform defaults, updates supplied fields when
@@ -804,20 +807,24 @@ if ! $REFRESH_MODE; then
     # non-200 on collision, hence the old 'may already exist' guesswork.)
     # ACTIVE_KEY is the admin key content from the wip-deploy secrets
     # file; empty/missing degrades to the non-fatal HTTP branches.
-    ACTIVE_KEY=$(cat "$WIP_API_KEY_FILE" 2>/dev/null || true)
-    NS_RESPONSE=$(curl -k -s -o /dev/null -w "%{http_code}" \
-        -X PUT "https://localhost:8443/api/registry/namespaces/$DEV_NAMESPACE" \
-        -H "X-API-Key: $ACTIVE_KEY" \
-        -H "Content-Type: application/json" \
-        -d "{\"description\": \"$APP_NAME (dev)\"}" \
-        2>/dev/null || echo "000")
-
-    if [ "$NS_RESPONSE" = "200" ]; then
-        echo "   Namespace upserted: $DEV_NAMESPACE"
-    elif [ "$NS_RESPONSE" = "000" ]; then
-        echo "   WIP not reachable — APP-YAC will create the namespace on first run"
+    if [ "${WIP_SCAFFOLD_SKIP_DEV_NAMESPACE:-}" = "1" ]; then
+        echo "   Skipped (WIP_SCAFFOLD_SKIP_DEV_NAMESPACE=1) — APP-YAC will create the namespace on first run"
     else
-        echo "   HTTP $NS_RESPONSE — unexpected for an idempotent upsert; check the key/instance"
+        ACTIVE_KEY=$(cat "$WIP_API_KEY_FILE" 2>/dev/null || true)
+        NS_RESPONSE=$(curl -k -s -o /dev/null -w "%{http_code}" \
+            -X PUT "https://localhost:8443/api/registry/namespaces/$DEV_NAMESPACE" \
+            -H "X-API-Key: $ACTIVE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"description\": \"$APP_NAME (dev)\"}" \
+            2>/dev/null || echo "000")
+
+        if [ "$NS_RESPONSE" = "200" ]; then
+            echo "   Namespace upserted: $DEV_NAMESPACE"
+        elif [ "$NS_RESPONSE" = "000" ]; then
+            echo "   WIP not reachable — APP-YAC will create the namespace on first run"
+        else
+            echo "   HTTP $NS_RESPONSE — unexpected for an idempotent upsert; check the key/instance"
+        fi
     fi
 
     # (.env.example's WIP_NAMESPACE is substituted by the engine's

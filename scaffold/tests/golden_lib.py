@@ -20,11 +20,11 @@ Determinism notes:
 - Tier-3 scenarios pass --kb https://kb.invalid — enable_kb writes kb.json,
   the served-client curl fails (000 → warning path), the /wip-case stub is
   copied. No network mutation, stable output.
-- App create POSTs the dev namespace to the live install (best-effort in
-  the script). The harness deletes `dev-<slug>` afterwards, best-effort —
-  a `retain`-mode namespace may refuse deletion; that leaves an empty
-  dev-golden-* namespace behind, which is harmless and idempotent across
-  re-captures (the script treats non-200 as "may already exist (ok)").
+- The scaffolds are isolated from the host's WIP install (`_run`): the API
+  key path is pinned through WIP_API_KEY_FILE_OVERRIDE, so the output does
+  not depend on what the running install is called, and the app create's
+  dev-namespace upsert is switched off (WIP_SCAFFOLD_SKIP_DEV_NAMESPACE=1),
+  so no run writes to the live install.
 - Machine-specific values are normalized: WIP_ROOT, $HOME, the app target
   dir, and the genesis-banner SHA/date stamps.
 """
@@ -62,10 +62,21 @@ TEXT_SNAPSHOT_PATTERNS = (
 EXCLUDE_PARTS = {".git", "node_modules", ".venv", "__pycache__"}
 
 
+# Pinned rather than detected: the fixtures record this path (as
+# __HOME__/.wip-deploy/wip-local/...), and both scaffolds honour the
+# override. The file need not exist — local mode only writes the path into
+# .mcp.json / .env, and with the namespace upsert off nothing reads the key.
+HOST_ISOLATION_ENV = {
+    "WIP_API_KEY_FILE_OVERRIDE": str(Path.home() / ".wip-deploy/wip-local/secrets/api-key"),
+    "WIP_SCAFFOLD_SKIP_DEV_NAMESPACE": "1",
+}
+
+
 def _run(cmd: list[str], cwd: Path, env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     import os
 
     env = dict(os.environ)
+    env.update(HOST_ISOLATION_ENV)
     if env_extra:
         env.update(env_extra)
     return subprocess.run(
@@ -212,8 +223,6 @@ def run_app_scenario(
                 f"stdout:\n{last.stdout}\nstderr:\n{last.stderr}"
             )
 
-    _cleanup_namespace(f"dev-golden-{slug}")
-
     roots = _norm_roots(__APP_DIR__=str(app_dir))
     snap = snapshot_tree(app_dir, roots)
     assert last is not None
@@ -222,48 +231,6 @@ def run_app_scenario(
         f"expected mode '{snap['mode_line']}' in output:\n{last.stdout}"
     )
     return snap
-
-
-def _cleanup_namespace(prefix: str) -> None:
-    """Best-effort: delete the dev namespace the app create POSTed to the
-    live install. A retain-mode namespace may refuse — acceptable (empty
-    dev-golden-* namespaces are harmless and reused on re-capture)."""
-    key_file = _detect_key_file()
-    if not key_file:
-        return
-    try:
-        key = Path(key_file).read_text().strip()
-        subprocess.run(
-            [
-                "curl", "-ks", "-X", "DELETE",
-                f"https://localhost:8443/api/registry/namespaces/{prefix}",
-                "-H", f"X-API-Key: {key}",
-            ],
-            capture_output=True, timeout=15,
-        )
-    except Exception:
-        pass
-
-
-def _detect_key_file() -> str | None:
-    """Same detection the scripts use: the single running install's
-    compose working_dir label (container names are service-named, so a
-    name guess is unreliable; the label is the install path itself)."""
-    try:
-        out = subprocess.run(
-            ["podman", "ps", "--format", "{{.Labels}}"],
-            capture_output=True, text=True, timeout=15,
-        ).stdout
-    except Exception:
-        return None
-    dirs = set(
-        re.findall(r"com\.docker\.compose\.project\.working_dir=([^,]*\.wip-deploy[^,]*)", out)
-    )
-    if len(dirs) == 1:
-        kf = Path(next(iter(dirs))) / "secrets/api-key"
-        if kf.is_file():
-            return str(kf)
-    return None
 
 
 # --- Fixture I/O -------------------------------------------------------------

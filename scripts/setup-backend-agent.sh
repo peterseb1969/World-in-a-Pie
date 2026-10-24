@@ -372,6 +372,21 @@ API_KEY=""
 API_KEY_FILE=""
 API_KEY_SOURCE=""
 if [[ "$TARGET" == "local" ]]; then
+    # 0. WIP_API_KEY_FILE_OVERRIDE — explicit escape hatch, same name and
+    #    semantics as create-app-project.sh: pick the install on a multi-install
+    #    box, or pin a canonical path (the golden harness does, so its output
+    #    does not depend on the host's install name). Local mode needs only the
+    #    PATH (.mcp.json references the file), so a file that does not exist
+    #    yet is accepted with a warning rather than refused.
+    if [ -n "${WIP_API_KEY_FILE_OVERRIDE:-}" ]; then
+        API_KEY_FILE="$WIP_API_KEY_FILE_OVERRIDE"
+        API_KEY_SOURCE="$API_KEY_FILE (WIP_API_KEY_FILE_OVERRIDE)"
+        if [ -f "$API_KEY_FILE" ]; then
+            API_KEY=$(tr -d '[:space:]' < "$API_KEY_FILE" 2>/dev/null)
+        else
+            echo "   Warning: $API_KEY_FILE does not exist yet (override accepted as-is)."
+        fi
+    fi
     # 1. Prefer the RUNNING wip-deploy install (CASE-521): detect it from a live
     #    WIP container's compose working_dir label — the install path itself.
     #    Container names are service-named, not install-named, so a name guess is
@@ -383,7 +398,7 @@ if [[ "$TARGET" == "local" ]]; then
     #    old `{{index .Labels "…"}}` returned empty for every container — silently
     #    defeating this detection (and `|| true` is required: under `set -euo
     #    pipefail` the empty-grep exit 1 would otherwise abort the whole script).
-    if command -v podman >/dev/null 2>&1; then
+    if [ -z "$API_KEY_FILE" ] && command -v podman >/dev/null 2>&1; then
         _wip_dirs="$(podman ps --format '{{.Labels}}' 2>/dev/null | grep -o 'com\.docker\.compose\.project\.working_dir=[^,]*' | cut -d= -f2- | grep '/\.wip-deploy/' | sort -u || true)"
         if [ "$(printf '%s\n' "$_wip_dirs" | grep -c .)" -eq 1 ] && [ -f "$_wip_dirs/secrets/api-key" ]; then
             API_KEY=$(tr -d '[:space:]' < "$_wip_dirs/secrets/api-key" 2>/dev/null)
@@ -400,7 +415,7 @@ if [[ "$TARGET" == "local" ]]; then
     fi
     # 2. Else any wip-deploy v2 secrets/api-key — first match (alphabetical).
     #    Last resort among installs when none is detectably running.
-    if [ -z "$API_KEY" ]; then
+    if [ -z "$API_KEY_FILE" ]; then
         for secrets_file in "$HOME/.wip-deploy"/*/secrets/api-key; do
             if [ -f "$secrets_file" ]; then
                 API_KEY=$(tr -d '[:space:]' < "$secrets_file" 2>/dev/null)
@@ -417,12 +432,13 @@ if [[ "$TARGET" == "local" ]]; then
     #    real install — it passed generation only to 401 at connect time,
     #    the exact stale-config failure the app scaffold already fails
     #    loud on. A key baked here must be one that can work.
-    if [ -z "$API_KEY" ]; then
+    if [ -z "$API_KEY_FILE" ]; then
         echo "Error: could not resolve a WIP API key — no running install detected and no ~/.wip-deploy/*/secrets/api-key found." >&2
         echo "  A generated .mcp.json would look fine and 401 at connect time." >&2
         echo "  Fix (either):" >&2
         echo "    deploy a WIP install first (wip-deploy install ... ), then re-run" >&2
         echo "    or place a valid key at ~/.wip-deploy/<name>/secrets/api-key" >&2
+        echo "    or WIP_API_KEY_FILE_OVERRIDE=\$HOME/.wip-deploy/<name>/secrets/api-key $0 ..." >&2
         exit 1
     fi
     echo "   API key: sourced from $API_KEY_SOURCE (${#API_KEY} chars)"
