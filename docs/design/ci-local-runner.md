@@ -96,8 +96,9 @@ For each job in the table above:
 4. Leave the other jobs (lint, tarballs, security audit, wip-archive, deployer,
    scaffold, mcp-server, auth-gateway) unchanged: they use no database.
 
-After the cutover: delete `scripts/ci-test-container.sh` once no workflow uses
-it. `wip-test.sh` is unaffected; local runs keep their own containers and lock.
+`scripts/ci-test-container.sh` was deleted after the cutover (no workflow used
+it any more). `wip-test.sh` is unaffected; local runs keep their own
+containers and lock.
 
 ## Runner setup on the Mac
 
@@ -138,9 +139,13 @@ it. `wip-test.sh` is unaffected; local runs keep their own containers and lock.
    8 GB.
 3. **Run it as a launchd user agent**, so it starts at login and restarts if it
    dies.
-4. **Release builds** (`build.yaml`) call `podman` inside the job. Either keep
-   them on the Pi, or give the release job an image with `podman` and the
-   socket mounted. Decide at cutover (Open question 3).
+4. **Release builds** (`build.yaml`) call `podman`, which a job container
+   cannot reach. They run in **host mode** on the same runner, under a second
+   label `macos-host:host`, using the Mac's own podman (native arm64 builds,
+   as on the Pi) and its layer cache. The launchd agent sets `PATH` to
+   include `/opt/homebrew/bin` (Node for the actions, podman). The job's
+   `podman login` stores the registry login in the Mac user's podman auth
+   file.
 
 ## Cutover
 
@@ -193,12 +198,26 @@ the services `cmd:` key (Open question 4).
      and the runner label points at it with `force_pull: false`, so no
      registry is needed. Pin the base by digest when it is committed.
    - Size: 1.3 GB, pulled once.
-3. **Release builds:** keep them on the Pi, or move them too?
+3. *(Resolved; see Runner setup step 4.)*
 4. **Pi runner and rollback.** The Pi runs `act_runner` v1.0.8 in host mode.
    Only relevant if the rollback path should switch the Pi to container mode:
    does v1.0.8 honour services `cmd:`? Not tested.
 
 ## Decided
+
+- **Release builds move to the Mac, host mode (2026-10-24, Peter).** Tested
+  before the switch: `build-release.sh` built all 8 images natively on the
+  Mac in 257 s, and a host-mode job in the launchd agent's environment found
+  Node 26 and podman 6.1.4. The workflow's "Generate production compose" and
+  artifact-upload steps were removed with `build-release.sh
+  --generate-compose`: the option edited `docker-compose.production.yml`,
+  which was deleted in the v1 retirement (2026-04-30) because wip-deploy now
+  renders production compose, so the step had been failing since then.
+- **Quality audit** (`quality-audit.yaml`, `v*` tags) runs in a job
+  container like the tests and works there. It currently fails against its
+  baseline (pinned 2026-07-27, at v2.1.0): mypy 66 vs 0, radon-cc-c-plus 215
+  vs 142, vulture 2 vs 1. That is drift since the baseline, not the runner
+  move.
 
 - **NATS arguments: the services `cmd:` key (2026-10-24, tested).** Gitea's
   runner adds a Gitea-specific `cmd` list to service containers (GitHub's

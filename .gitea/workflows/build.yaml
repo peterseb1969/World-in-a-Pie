@@ -5,8 +5,10 @@ on:
     tags: ['v*']
 
 jobs:
+  # Runs in host mode on the development Mac (runner label macos-host): the
+  # images are built by the Mac's podman, which a job container cannot reach.
   build-and-push:
-    runs-on: ubuntu-latest
+    runs-on: macos-host
     steps:
       - uses: actions/checkout@v4
 
@@ -27,18 +29,3 @@ jobs:
             --push \
             --insecure \
             --builder podman
-
-      - name: Generate production compose
-        run: |
-          bash scripts/build-release.sh \
-            --registry gitea.internal:3000/peter \
-            --tag "${{ steps.tag.outputs.version }}" \
-            --generate-compose
-
-      - name: Upload production compose as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: production-compose-${{ steps.tag.outputs.version }}
-          path: |
-            docker-compose.production.yml
-            .env.production.example

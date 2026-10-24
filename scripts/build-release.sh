@@ -9,7 +9,6 @@
 #   scripts/build-release.sh --registry gitea.internal:3000/peter --tag 1.0.0
 #   scripts/build-release.sh --registry gitea.internal:3000/peter --tag 1.0.0 --push --insecure
 #   scripts/build-release.sh --service document-store           # Build one service
-#   scripts/build-release.sh --generate-compose                 # Also emit docker-compose.production.yml
 #   scripts/build-release.sh --platforms linux/amd64,linux/arm64 --push  # Multi-arch
 #
 # Image naming:
@@ -34,7 +33,6 @@ TAG="latest"
 PUSH=false
 INSECURE=false
 ONLY_SERVICE=""
-GENERATE_COMPOSE=false
 BUILDER="${BUILDER:-podman}"
 PLATFORMS=""  # empty = native only (fast path). Set via --platforms to go multi-arch.
 
@@ -63,7 +61,6 @@ Options:
   --push               Push images after building
   --insecure           Use --tls-verify=false for push (needed for HTTP registries)
   --service NAME       Build only one service
-  --generate-compose   Generate docker-compose.production.yml after building
   --platforms LIST     Comma-separated platforms (e.g. linux/amd64,linux/arm64).
                        Enables multi-arch manifest builds via QEMU emulation.
                        Default: native only (fast).
@@ -80,9 +77,6 @@ Examples:
   # Build one service locally
   $(basename "$0") --service document-store
 
-  # Build all + generate production compose
-  $(basename "$0") --registry gitea.internal:3000/peter --tag 1.0.0 --push --insecure --generate-compose
-
   # Multi-arch build for GHCR (amd64 + arm64)
   $(basename "$0") --registry ghcr.io/peterseb1969 --tag v1.0 \\
                    --platforms linux/amd64,linux/arm64 --push
@@ -97,7 +91,6 @@ while [[ $# -gt 0 ]]; do
         --push)              PUSH=true; shift ;;
         --insecure)          INSECURE=true; shift ;;
         --service)           ONLY_SERVICE="$2"; shift 2 ;;
-        --generate-compose)  GENERATE_COMPOSE=true; shift ;;
         --platforms)         PLATFORMS="$2"; shift 2 ;;
         --builder)           BUILDER="$2"; shift 2 ;;
         -h|--help)           usage ;;
@@ -314,43 +307,6 @@ build_python_plain() {
 ### Vue Console removed — replaced by React Console app chunk.
 ### Root URL redirects to /apps/rc/ via Caddyfile.
 
-# ── Production compose generation ────────────────────────────────
-#
-# The source of truth is docker-compose.production.yml in the repo root.
-# This function updates the image tags in that file to match the current
-# registry and tag, rather than maintaining a separate heredoc template.
-
-generate_production_compose() {
-    if [[ -z "$REGISTRY" ]]; then
-        log_error "--generate-compose requires --registry"
-        return 1
-    fi
-
-    local out="${PROJECT_ROOT}/docker-compose.production.yml"
-
-    if [[ ! -f "$out" ]]; then
-        log_error "docker-compose.production.yml not found at ${out}"
-        log_error "This file is the source of truth — it should be in the repo."
-        return 1
-    fi
-
-    log_step "Updating image tags in ${out}"
-
-    # Replace any existing registry/tag references with the current ones.
-    # Matches patterns like: image: <anything>/<service>:<anything>
-    # for the 7 WIP core service names.
-    local tmp="${out}.tmp"
-    sed -E "s|image: [^ ]+/(registry\|def-store\|template-store\|document-store\|reporting-sync\|ingest-gateway\|mcp-server\|auth-gateway):[^ ]+|image: ${REGISTRY}/\1:${TAG}|g" \
-        "$out" > "$tmp" && mv "$tmp" "$out"
-
-    log_info "Updated image tags to ${REGISTRY}/<service>:${TAG}"
-    log_info "File: ${out}"
-}
-
-# Old heredoc template removed — docker-compose.production.yml is the source of truth.
-# generate_production_compose() now does an in-place sed on that file.
-
-
 # ── Main ─────────────────────────────────────────────────────────
 
 echo ""
@@ -382,10 +338,6 @@ else
     for svc in "${PLAIN_SERVICES[@]}"; do
         build_python_plain "$svc"
     done
-fi
-
-if $GENERATE_COMPOSE; then
-    generate_production_compose
 fi
 
 END_TIME=$(date +%s)
