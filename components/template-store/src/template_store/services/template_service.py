@@ -342,6 +342,15 @@ class TemplateService:
         Raises ValueError on the first offending field.
         """
         for f in fields:
+            # Field names become double-quoted column names in the reporting
+            # database. A double quote would close that quoting and a NUL
+            # truncates the name, so neither can be quoted safely. Every other
+            # character stays allowed.
+            if '"' in f.name or "\x00" in f.name:
+                raise ValueError(
+                    f"field name {f.name!r} contains a double quote or NUL "
+                    "character, which reporting cannot store as a column name"
+                )
             # A nested template reference must pin an explicit version: schema
             # refs never resolve to "latest", so a parent validated against a
             # floating nested schema strands when that schema ships an

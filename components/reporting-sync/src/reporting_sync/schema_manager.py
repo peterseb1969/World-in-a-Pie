@@ -141,6 +141,22 @@ class SchemaManager:
             )
         return name
 
+    @staticmethod
+    def _safe_column(name: str) -> str:
+        """Validate a value destined for a quoted SQL column name.
+
+        Column names come from template field names, and through the
+        transformer from document data keys; both are otherwise
+        unconstrained and are interpolated into DDL and DML inside double
+        quotes. As in ``_safe_ident``, quote rather than restrict, and reject
+        the one class that quoting can't contain. There is no length check:
+        PostgreSQL truncates long column names, and rejecting them would stop
+        templates that sync today.
+        """
+        if '"' in name or "\x00" in name:
+            raise ValueError(f"Unsafe SQL column name: {name!r}")
+        return name
+
     def schema_for(self, namespace: str) -> str:
         """The PostgreSQL schema name for a WIP namespace (validated)."""
         return self._safe_ident(namespace)
@@ -240,7 +256,9 @@ class SchemaManager:
         For nested objects, flattens with prefix.
         """
         columns = []
-        col_name = f"{prefix}{field.name}" if prefix else field.name
+        # Every column, index and full-text name for this field derives from
+        # its name, so validating it here covers all of them.
+        col_name = self._safe_column(f"{prefix}{field.name}" if prefix else field.name)
 
         # Check for semantic types first - they may override base type handling
         if field.semantic_type:

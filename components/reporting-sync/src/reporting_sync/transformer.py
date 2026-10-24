@@ -17,6 +17,7 @@ from datetime import date, datetime
 from typing import Any, ClassVar
 
 from .models import ReportingConfig, SemanticType
+from .schema_manager import SchemaManager
 
 logger = logging.getLogger(__name__)
 
@@ -595,7 +596,9 @@ class DocumentTransformer:
         Returns:
             Tuple of (sql_string, parameter_values)
         """
-        columns = list(row.keys())
+        # Row keys come from template field names and document data keys:
+        # validate each before it is quoted into the statement.
+        columns = [SchemaManager._safe_column(col) for col in row]
         placeholders = [f"${i+1}" for i in range(len(columns))]
         values = list(row.values())
 
