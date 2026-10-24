@@ -169,7 +169,9 @@ _start_container() {
 
 _ensure_mongo() {
     if _container_running "$TEST_MONGO"; then return 0; fi
-    _start_container "$TEST_MONGO" -p 127.0.0.1::27017 mongo:7
+    # MongoDB sizes its cache from the VM's memory; capped (as CI caps its
+    # test MongoDB) so several clones' sets fit beside a dev stack.
+    _start_container "$TEST_MONGO" -p 127.0.0.1::27017 mongo:7 --wiredTigerCacheSizeGB 0.5
     for _ in $(seq 1 15); do
         if "$CONTAINER_CLI" exec "$TEST_MONGO" mongosh --quiet --eval "db.runCommand('ping')" >/dev/null 2>&1; then
             return 0
