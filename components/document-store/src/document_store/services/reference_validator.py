@@ -7,11 +7,10 @@ all references in a document comply with the isolation rules.
 """
 
 import logging
-import os
 import time
-from typing import Any, cast
+from typing import Any
 
-import httpx
+from .registry_client import RegistryClient, RegistryError, get_registry_client
 
 logger = logging.getLogger(__name__)
 
@@ -32,39 +31,49 @@ class ReferenceValidationError(Exception):
         self.violations = violations
 
 
+class RegistryUnavailableError(Exception):
+    """The namespace's isolation settings could not be read from the Registry.
+
+    Isolation is then unknown, so the reference check refuses rather than
+    passing: a check that is skipped whenever the Registry is slow or down
+    lets a strict namespace accept references it forbids.
+    """
+
+
 class ReferenceValidator:
     """Validates cross-namespace references based on isolation mode."""
 
     def __init__(self, registry_url: str | None = None, api_key: str | None = None):
-        self.registry_url = registry_url or os.getenv("REGISTRY_URL", "http://localhost:8001")
-        self.api_key = cast(str, api_key or os.getenv("WIP_AUTH_LEGACY_API_KEY", ""))
+        # The service's shared Registry client unless a URL or key is given;
+        # it honours set_registry_transport, so tests reach the in-process
+        # Registry instead of the network.
+        self._registry: RegistryClient | None = (
+            RegistryClient(base_url=registry_url, api_key=api_key)
+            if registry_url or api_key else None
+        )
         self._namespace_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
-    async def _get_namespace(self, namespace: str) -> dict[str, Any] | None:
-        """Get namespace info by namespace prefix (cached, TTL-bounded)."""
+    async def _get_namespace(self, namespace: str) -> dict[str, Any]:
+        """Get namespace info by namespace prefix (cached, TTL-bounded).
+
+        A namespace the Registry does not know is treated as open. Raises
+        RegistryUnavailableError when the Registry cannot be asked.
+        """
         cached = self._namespace_cache.get(namespace)
         if cached is not None and (time.monotonic() - cached[0]) < NAMESPACE_CACHE_TTL_SECONDS:
             return cached[1]
 
+        registry = self._registry or get_registry_client()
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{self.registry_url}/api/registry/namespaces/{namespace}",
-                    headers={"X-API-Key": self.api_key},
-                )
-                if response.status_code == 200:
-                    ns_data = response.json()
-                    self._namespace_cache[namespace] = (time.monotonic(), ns_data)
-                    return cast(dict[str, Any] | None, ns_data)
-                elif response.status_code == 404:
-                    # No namespace found - allow all references (open by default)
-                    ns_data = {"isolation_mode": "open"}
-                    self._namespace_cache[namespace] = (time.monotonic(), ns_data)
-                    return ns_data
-        except Exception as e:
-            logger.warning(f"Failed to fetch namespace '{namespace}': {e}")
-
-        return None
+            ns_data = await registry.get_namespace(namespace)
+        except RegistryError as e:
+            raise RegistryUnavailableError(
+                f"Cannot check namespace isolation for '{namespace}': {e}"
+            ) from e
+        if ns_data is None:
+            ns_data = {"isolation_mode": "open"}
+        self._namespace_cache[namespace] = (time.monotonic(), ns_data)
+        return ns_data
 
     async def validate_document_references(
         self,
@@ -89,13 +98,10 @@ class ReferenceValidator:
 
         Raises:
             ReferenceValidationError: If any references violate isolation rules
+            RegistryUnavailableError: If the namespace's settings cannot be read
         """
         # Get the document's namespace info
         namespace_info = await self._get_namespace(document_namespace)
-
-        if not namespace_info:
-            # No namespace info - allow all
-            return
 
         is_strict = namespace_info.get("isolation_mode") == "strict"
         violations = []
@@ -224,11 +230,9 @@ class ReferenceValidator:
 
         Raises:
             ReferenceValidationError: If any references violate isolation rules
+            RegistryUnavailableError: If the namespace's settings cannot be read
         """
         namespace_info = await self._get_namespace(template_namespace)
-
-        if not namespace_info:
-            return
 
         is_strict = namespace_info.get("isolation_mode") == "strict"
         violations = []

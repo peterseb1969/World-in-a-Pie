@@ -451,12 +451,10 @@ run_python_tests() {
     # per-worker isolation — without it, workers wipe each other's
     # fixtures (the corruption class the clone lock serializes at run
     # granularity). WIP_TEST_XDIST=0 disables; a caller-supplied
-    # -n/--numprocesses wins. template-store's conftest isolates workers
-    # too, but the suite runs ~3x SLOWER under xdist (25 s serial, ~75 s
-    # -n auto) for a reason not yet found, so it stays serial.
+    # -n/--numprocesses wins.
     local xdist_args=() xdist_suite=0
     case "$name" in
-        document-store|def-store|registry) xdist_suite=1 ;;
+        document-store|def-store|registry|template-store) xdist_suite=1 ;;
     esac
     if (( xdist_suite )) && [[ "${WIP_TEST_XDIST:-1}" != "0" ]]; then
         local caller_n=0

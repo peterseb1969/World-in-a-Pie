@@ -39,7 +39,11 @@ from ..models.document import Document, DocumentMetadata, DocumentStatus
 from .file_storage_client import is_file_storage_enabled
 from .identity_service import IdentityService
 from .nats_client import EventType, publish_document_event
-from .reference_validator import ReferenceValidationError, get_reference_validator
+from .reference_validator import (
+    ReferenceValidationError,
+    RegistryUnavailableError,
+    get_reference_validator,
+)
 from .registry_client import RegistryError, get_registry_client, qualified_synonym_values
 from .template_store_client import get_template_store_client
 from .validation_service import ValidationService
@@ -387,26 +391,6 @@ class DocumentService:
         if not validation_result.valid:
             return None, self._format_validation_errors(validation_result.errors)
 
-        # Validate cross-namespace references (isolation mode check). The
-        # template's REAL namespace arms the template-isolation branch — a
-        # document may be based on a shared or foreign template, and that use
-        # follows the same isolation rules as term references (own + wip +
-        # allowed_external_refs under open; own + list under strict). Passing
-        # the document's namespace here made the branch constant-false for its
-        # whole life. Falls back to the document's namespace (= skip the
-        # template branch) when the template dict carries no namespace.
-        try:
-            validator = get_reference_validator()
-            await validator.validate_document_references(
-                document_namespace=namespace,
-                template_namespace=validation_result.template_namespace or namespace,
-                term_references=validation_result.term_references,
-                file_references=validation_result.file_references,
-                document_references=validation_result.references,
-            )
-        except ReferenceValidationError as e:
-            return None, f"Cross-namespace reference violation: {e.violations}"
-
         # Phase-2 relationship-template constraints. The standard
         # validation_service already verified source_ref / target_ref
         # resolve and point at allowed templates; here we enforce the
@@ -428,6 +412,33 @@ class DocumentService:
             if rel_error:
                 return None, rel_error
             await self._ensure_relationship_indexes(request.template_id, namespace)
+
+        # Validate cross-namespace references (isolation mode check). Runs
+        # after the relationship constraints, so an edge whose endpoint lies in
+        # another namespace reports cross_namespace_relationship whatever the
+        # isolation config. The
+        # template's REAL namespace arms the template-isolation branch — a
+        # document may be based on a shared or foreign template, and that use
+        # follows the same isolation rules as term references (own + wip +
+        # allowed_external_refs under open; own + list under strict). Passing
+        # the document's namespace here made the branch constant-false for its
+        # whole life. Falls back to the document's namespace (= skip the
+        # template branch) when the template dict carries no namespace.
+        try:
+            validator = get_reference_validator()
+            await validator.validate_document_references(
+                document_namespace=namespace,
+                template_namespace=validation_result.template_namespace or namespace,
+                term_references=validation_result.term_references,
+                file_references=validation_result.file_references,
+                document_references=validation_result.references,
+            )
+        except ReferenceValidationError as e:
+            return None, f"Cross-namespace reference violation: {e.violations}"
+        except RegistryUnavailableError as e:
+            # Isolation cannot be checked, so the write is refused rather
+            # than let through unchecked.
+            return None, str(e)
 
         # Determine if template has identity fields
         has_identity_fields = bool(validation_result.identity_fields)
@@ -3555,6 +3566,8 @@ class DocumentService:
                     "reference_violation",
                     f"Cross-namespace reference violation: {exc.violations}",
                 ) from exc
+            except RegistryUnavailableError as exc:
+                raise PatchError("registry_error", str(exc)) from exc
 
             # 9. Write. Phase-3 branch: templates with versioned=False
             #    overwrite the existing document in place. Same

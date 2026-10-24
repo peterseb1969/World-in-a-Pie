@@ -154,6 +154,7 @@ Codes defined by `PATCH /documents`:
 | `concurrency_conflict` | `if_match` mismatch, or internal version race lost after retries |
 | `validation_failed` | Merged document fails template validation |
 | `reference_violation` | Cross-namespace reference validation failed |
+| `registry_error` | The Registry could not be reached to check namespace isolation — the patch is refused rather than applied unchecked |
 | `internal_error` | Unexpected exception (logged with stack trace) |
 
 Codes defined by template-store (`POST`, `PUT` and `DELETE /templates`). Where one code covers several rules, `details.rule` names the one that failed:
@@ -169,7 +170,7 @@ Codes defined by template-store (`POST`, `PUT` and `DELETE /templates`). Where o
 | `immutable_property` | `value`, `usage`, `versioned` or the edge endpoint lists differ | `value` |
 | `invalid_state` | The template's state forbids the operation | `not_draft`, `not_inactive`, `not_relationship`, `has_children`, `has_documents`, `documents_unverifiable`, `circular_inheritance`, `deletion_mode_retain` |
 | `invalid_request` | A request parameter is missing or invalid; also any otherwise uncategorised refusal | `version_required`, `sort_order`, `namespace_required` |
-| `registry_error` | The Registry refused the item | — |
+| `registry_error` | The Registry refused the item, or could not be reached to check namespace isolation (the write is refused rather than let through unchecked) | `unreachable` |
 
 Messages are unchanged and stay human-oriented; branch on the code.
 

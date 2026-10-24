@@ -41,7 +41,11 @@ from .document_store_client import get_document_store_client
 from .errors import TemplateError, error_fields
 from .inheritance_service import InheritanceError, InheritanceService
 from .nats_client import EventType, publish_template_event
-from .reference_validator import ReferenceValidationError, get_reference_validator
+from .reference_validator import (
+    ReferenceValidationError,
+    RegistryUnavailableError,
+    get_reference_validator,
+)
 from .registry_client import RegistryError, get_registry_client
 
 logger = logging.getLogger(__name__)
@@ -3493,6 +3497,10 @@ class TemplateService:
             )
         except ReferenceValidationError as e:
             raise TemplateError(f"Cross-namespace reference violation: {e.violations}", "cross_namespace_reference") from e
+        except RegistryUnavailableError as e:
+            # Isolation cannot be checked, so the write is refused rather
+            # than let through unchecked.
+            raise TemplateError(str(e), "registry_error", rule="unreachable") from e
 
     @staticmethod
     async def _validate_pinned_versions(
