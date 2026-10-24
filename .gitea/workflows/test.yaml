@@ -208,7 +208,8 @@ jobs:
         run: |
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio httpx
+          # pytest-httpx: the startup-backfill tests mock the services' HTTP calls.
+          pip install pytest pytest-asyncio httpx pytest-httpx
 
       - name: Run tests
         working-directory: components/reporting-sync
