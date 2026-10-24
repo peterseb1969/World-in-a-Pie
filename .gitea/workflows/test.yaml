@@ -123,6 +123,9 @@ jobs:
     services:
       mongo:
         image: mongo:7
+        # MongoDB sizes its cache from the VM's memory; capped so a full
+        # CI run fits beside a dev stack on the runner machine.
+        cmd: ["--wiredTigerCacheSizeGB", "0.5"]
         options: >-
           --health-cmd "mongosh --quiet --eval 'db.runCommand({ping: 1})'"
           --health-interval 2s --health-timeout 5s --health-retries 30
@@ -314,6 +317,9 @@ jobs:
     services:
       mongo:
         image: mongo:7
+        # MongoDB sizes its cache from the VM's memory; capped so a full
+        # CI run fits beside a dev stack on the runner machine.
+        cmd: ["--wiredTigerCacheSizeGB", "0.5"]
         options: >-
           --health-cmd "mongosh --quiet --eval 'db.runCommand({ping: 1})'"
           --health-interval 2s --health-timeout 5s --health-retries 30
@@ -414,6 +420,9 @@ jobs:
     services:
       mongo:
         image: mongo:7
+        # MongoDB sizes its cache from the VM's memory; capped so a full
+        # CI run fits beside a dev stack on the runner machine.
+        cmd: ["--wiredTigerCacheSizeGB", "0.5"]
         options: >-
           --health-cmd "mongosh --quiet --eval 'db.runCommand({ping: 1})'"
           --health-interval 2s --health-timeout 5s --health-retries 30
