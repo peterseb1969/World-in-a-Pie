@@ -138,8 +138,7 @@ async def test_identical_edge_type_put_mints_no_version(client, auth_headers, en
     )
     assert resp.status_code == 200, resp.text
     result = resp.json()["results"][0]
-    # The PUT route reports every successful item as "updated"; whether a
-    # version was minted is what is_new_version says.
+    assert result["status"] == "unchanged", result
     assert result["is_new_version"] is False, result
     assert result["version"] == first["version"]
     assert await Template.find({"namespace": "wip", "value": "REPOST_STEP_OF_PUT"}).count() == 1

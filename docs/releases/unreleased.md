@@ -345,6 +345,22 @@ storage order served first. Three changes make the ambiguity loud:
 except ambiguous names on identity fields, which were producing
 storage-order-dependent identities and should be corrected, not relied on.
 
+### Template writes that change nothing report `unchanged`
+
+- **`PUT /templates`** reports `status: "unchanged"` (with the current
+  `version` and `is_new_version: false`) when the update mints no version. It
+  used to report `"updated"` for every successful item, so a caller acting on
+  `updated`, for example by deactivating the previous version, acted on a
+  no-op.
+- **An identical edge-type re-post** (create-as-upsert) returns `unchanged`.
+  An edge type's `source_ref` / `target_ref` constraint is derived from its
+  endpoint declaration when the template is served, so the copy a caller
+  sends on those fields is neither compared nor stored. A bootstrap that
+  re-posts the served shape used to mint a new version on every run.
+
+**Action:** none. Installs where a bootstrap already minted duplicate
+edge-type versions keep them; deactivate the extras by hand if wanted.
+
 ### Conditional rules and nested fields are validated on write
 
 Two declarative checks that passed silently now apply to every document
