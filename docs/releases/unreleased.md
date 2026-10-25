@@ -1120,6 +1120,18 @@ sync afterwards.
 
 ## Deployment changes
 
+- **External identity providers (Dex connectors).** `wip-deploy connector
+  add|set-secret|remove|list` declares Google, GitHub, a corporate OIDC or
+  LDAP provider in the spec (`auth.connectors`), rendered into Dex on every
+  target. The redirect URI is derived (`<issuer>/callback`); the client
+  secret is operator-supplied into the secret backend (`dex-connector-<id>`)
+  and never generated, so an apply with a missing one stops with
+  instructions. `wip-deploy group-map add|remove|list` grants WIP groups to
+  federated users by verified email or domain (`auth.group_mappings`).
+  `wip-admins` and `wip-services` are never granted to a federated login,
+  neither by mapping nor by the provider's own groups: every token-validating
+  service and the auth-gateway drop them (`WIP_AUTH_FEDERATED_GROUPS`, set
+  only when a connector is declared). See wip-guide §4.6.
 - **The MCP server's network transports authenticate on every install.**
   They enabled their key check only when `API_KEY` or
   `WIP_AUTH_LEGACY_API_KEY` was set; the deployer provides the key as

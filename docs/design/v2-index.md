@@ -146,7 +146,7 @@ Already implemented in v1.0 (the direct-Mongo cursor approach). Listed here beca
 
 These topics will likely surface as future forensic design docs as v1.0 sees more use:
 
-1. **External user authentication.** Current v1.0 only supports WIP-managed users. The colleague demo or external deployment will surface "I want to log in with my Google account / SSO." Federation via Dex connectors is sketched in pluggable-apps (Option C) but undocumented.
+1. **External user authentication.** Current v1.0 only supports WIP-managed users. The colleague demo or external deployment will surface "I want to log in with my Google account / SSO." Federation via Dex connectors is sketched in pluggable-apps (Option C) but undocumented. *Since implemented: Dex connectors and federated group mappings are spec configuration (`wip-deploy connector`, `wip-deploy group-map`; wip-guide §4.6).*
 
 2. **Multi-tenancy.** Can two instances of the same app run in different namespaces? (e.g., ClinTrial for Roche data in `roche-ct`, ClinTrial for public data in `public-ct`.) Open question #4 in pluggable-apps.
 

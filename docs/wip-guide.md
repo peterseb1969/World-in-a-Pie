@@ -327,21 +327,61 @@ API keys carry a `namespaces` field that scopes their access. The rule is:
 - **Every other key** must declare `namespaces` explicitly. Non-privileged keys without a namespace scope receive 403 on every request.
 - **Single-namespace keys** get a convenience: omit the `namespace` query parameter and the server derives it from the key's scope. Multi-namespace keys must always pass `namespace` explicitly.
 
-### 4.6 External identity providers (Google, Okta, …) — not supported yet
+### 4.6 External identity providers (Google, Okta, …)
 
-Dex can federate logins from external providers through its *connectors*, but
-`wip-deploy` has no way to declare one yet: it renders Dex's config with an
-empty connector list. Every apply rewrites that file, including `redeploy`,
-`add-app`, `rotate-key` and `user add`. It also rewrites `.env`, which never
-reaches the Dex container anyway. A hand-added connector therefore disappears
-silently on the next apply. Until spec-level support lands, local Dex users
-(§4.7) are the supported way to log in.
+Dex federates logins from external providers through its *connectors*. They
+are spec configuration, like the local users in §4.7: declared once with
+`wip-deploy connector`, rendered into Dex's config on every apply, on every
+target.
 
-When support lands, the Google side is unchanged. Create a *Web application*
-OAuth client in Google Cloud Console with the redirect URI
-`https://<your-hostname>:8443/dex/callback`, and pick **Internal** consent for
-Workspace-only users. External users also need a route into WIP groups,
-otherwise per-app group gates keep them out.
+**Add a provider.** Google, as a generic OIDC provider:
+
+```bash
+wip-deploy connector add google --type oidc --display-name "Google" \
+  --config issuer=https://accounts.google.com \
+  --config clientID=<client-id>.apps.googleusercontent.com \
+  --secret-file ./google-client-secret       # or --secret-file - to read stdin
+```
+
+- `--config KEY=VALUE` is Dex's own connector schema
+  (<https://dexidp.io/docs/connectors/>), passed through. Values are read as
+  YAML scalars, so `true` is a boolean and `[a, b]` a list; `--config-file`
+  takes a whole mapping.
+- **The redirect URI is derived**, not configured: `<issuer>/callback`, e.g.
+  `https://<your-hostname>:8443/dex/callback`. The command prints it; register
+  exactly that URL with the provider. In Google Cloud Console: a *Web
+  application* OAuth client, with **Internal** consent for Workspace-only users.
+- **The client secret is yours to supply.** It is stored in the install's
+  secret backend as `dex-connector-<id>`, never in the spec and never on the
+  command line. The deployer never generates it: an apply with a declared
+  connector whose secret is missing stops and says how to supply it. Rotate it
+  with `wip-deploy connector set-secret <id> --secret-file …`.
+- `--secret-key` names the config key Dex reads the secret from: `clientSecret`
+  (the default) for OAuth and OIDC providers, `bindPW` for LDAP, or `none` for
+  a connector without a secret.
+
+`wip-deploy connector list` shows the declared connectors, and
+`connector remove <id>` removes one together with its secret.
+
+**Groups.** A federated user's groups are whatever their provider sends, with
+two rules applied by every service and by the gateway:
+
+- **`wip-admins` and `wip-services` are never granted to a federated login.**
+  Administrators are always local users (§4.7). If a provider sends either
+  group, it is dropped.
+- **Group mappings** grant WIP groups by verified email or by domain, since
+  most providers send no groups WIP knows. Per-app group gates (route
+  `allowed_groups`) depend on them:
+
+```bash
+wip-deploy group-map add --email-domain example.com --group wip-editors
+wip-deploy group-map add --email ana@partner.org --group wip-viewers
+wip-deploy group-map list
+```
+
+A mapping trusts the email the provider asserts, so declare connectors only
+for providers you trust to verify it. A token that marks the email unverified
+gets no mapped groups.
 
 ### 4.7 Local users (Dex static users)
 
