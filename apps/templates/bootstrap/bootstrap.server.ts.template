@@ -15,7 +15,12 @@
  *      clean. The one exception is a bootstrap that never finished: the
  *      namespace exists but holds no BOOTSTRAP_RECORD (rule 3 writes it
  *      last). checkStatus() reports that as 'incomplete', and the gate
- *      OFFERS to resume. Every step is idempotent, so resuming is safe.
+ *      OFFERS to resume — but only while the namespace holds no documents
+ *      ('resume_blocked' otherwise). A resume re-runs every step: namespace
+ *      and terminology creates are no-ops when unchanged, but template
+ *      create is an upsert, so a seed template that differs from the live
+ *      one becomes its new latest version. That is harmless on a namespace
+ *      nobody uses yet and wrong on one in use, hence the guard.
  *      Nothing is ever re-bootstrapped without the user asking.
  *   3. On user-initiated bootstrap, the app writes one BOOTSTRAP_RECORD
  *      audit doc capturing app version, timestamp, what was created,
@@ -183,7 +188,19 @@ function assertBulkSuccess(response: unknown, context: string): void {
   }
 }
 
-export type BootstrapStatus = 'unknown' | 'wip_unreachable' | 'needs_bootstrap' | 'incomplete' | 'ready'
+export type BootstrapStatus =
+  | 'unknown'
+  | 'wip_unreachable'
+  | 'needs_bootstrap'
+  | 'incomplete'
+  | 'resume_blocked'
+  | 'ready'
+
+/** The status plus, for 'resume_blocked', the sentence the gate shows. */
+export interface BootstrapStatusDetail {
+  status: BootstrapStatus
+  message?: string
+}
 
 export interface BootstrapProgress {
   step: string
@@ -370,9 +387,10 @@ function loadSeeds(): SeedSet[] {
 /**
  * Check whether WIP is reachable and the app's namespaces are bootstrapped.
  *
- * - none of the app's namespaces exists      → 'needs_bootstrap'
- * - all exist and the BOOTSTRAP_RECORD exists → 'ready'
- * - anything in between                      → 'incomplete'
+ * - none of the app's namespaces exists                 → 'needs_bootstrap'
+ * - all exist and the BOOTSTRAP_RECORD exists            → 'ready'
+ * - no record, but a namespace already holds documents   → 'resume_blocked'
+ * - anything else in between                             → 'incomplete'
  *
  * The BOOTSTRAP_RECORD is written last, so its presence means the bootstrap
  * finished. A namespace that exists without it (a bootstrap that died
@@ -380,27 +398,92 @@ function loadSeeds(): SeedSet[] {
  * 'incomplete', not 'ready' — treating it as ready would leave the app on a
  * half-built namespace for good. We still do NOT check "has the expected
  * templates": that's schema reconciliation, a YAC or migration-tool concern.
+ *
+ * A resume is only safe on a namespace nobody uses yet. The bootstrap writes
+ * no documents except its own record, so a bootstrap that died partway
+ * leaves none; documents without a record mean the namespace is in use (data
+ * written by the app or by tooling, a restore, a record that was lost).
+ * Resuming there re-posts the seed templates over live data — template
+ * create is an upsert, so a seed that differs from a live template becomes
+ * its new latest version — and that is refused, not offered.
  */
 export async function checkStatus(): Promise<BootstrapStatus> {
+  return (await checkStatusDetail()).status
+}
+
+/** checkStatus() plus the message the gate shows for 'resume_blocked'. */
+export async function checkStatusDetail(): Promise<BootstrapStatusDetail> {
   // Use namespace listing as health probe — no dedicated /health endpoint
   let namespaces: Array<{ prefix: string }>
   try {
     namespaces = (await wipGet('/api/registry/namespaces')) as Array<{ prefix: string }>
   } catch {
-    return 'wip_unreachable'
+    return { status: 'wip_unreachable' }
   }
   const existing = new Set(namespaces.map((ns) => ns.prefix))
   const { roles } = loadRoles()
   const present = roles.filter((r) => existing.has(r.namespace))
-  if (!present.length) return 'needs_bootstrap'
-  if (present.length < roles.length) return 'incomplete'
-  return (await hasBootstrapRecord()) ? 'ready' : 'incomplete'
+  if (!present.length) return { status: 'needs_bootstrap' }
+  if (present.length === roles.length && (await hasBootstrapRecord())) return { status: 'ready' }
+
+  const populated: string[] = []
+  for (const r of present) {
+    const n = await countDocuments(r.namespace)
+    if (n === null) {
+      // Fail closed: a resume is only offered when emptiness is confirmed.
+      return {
+        status: 'resume_blocked',
+        message:
+          `Cannot resume bootstrap: could not check whether '${r.namespace}' already holds ` +
+          `documents (the document listing failed). Check that WIP is healthy and reload.`,
+      }
+    }
+    if (n > 0) populated.push(`'${r.namespace}' (${n} document${n === 1 ? '' : 's'})`)
+  }
+  if (populated.length) {
+    return {
+      status: 'resume_blocked',
+      message:
+        `Cannot resume bootstrap: ${populated.join(', ')} already ` +
+        `${populated.length === 1 ? 'holds' : 'hold'} data but no bootstrap record, so this ` +
+        `namespace is in use, not half-built. Resuming would re-post the app's templates ` +
+        `over that data. Delete all documents first, or repair the namespace from the ` +
+        `console (restore a backup, or write the missing bootstrap record).`,
+    }
+  }
+  return { status: 'incomplete' }
 }
 
+/** Number of documents in a namespace, or null when the listing fails. */
+async function countDocuments(namespace: string): Promise<number | null> {
+  try {
+    const docs = (await wipGet(
+      `/api/document-store/documents?namespace=${namespace}&page_size=1`,
+    )) as { total?: number; items?: unknown[] }
+    return docs.total ?? docs.items?.length ?? 0
+  } catch {
+    return null
+  }
+}
+
+// Namespaces bootstrapped before the record value was namespace-prefixed
+// carry the literal BOOTSTRAP_RECORD. A template's value is its identity, so
+// those namespaces keep it (renaming would fork the template); accept it as
+// this app's record. The lookup is scoped to NAMESPACE, so an unprefixed
+// record found there was written into this app's own namespace.
+const LEGACY_BOOTSTRAP_RECORD_VALUE = 'BOOTSTRAP_RECORD'
+
 async function hasBootstrapRecord(): Promise<boolean> {
+  for (const value of [BOOTSTRAP_RECORD_VALUE, LEGACY_BOOTSTRAP_RECORD_VALUE]) {
+    if (await hasRecordDocument(value)) return true
+  }
+  return false
+}
+
+async function hasRecordDocument(value: string): Promise<boolean> {
   try {
     const tmpl = (await wipGet(
-      `/api/template-store/templates/by-value/${BOOTSTRAP_RECORD_VALUE}?namespace=${NAMESPACE}`,
+      `/api/template-store/templates/by-value/${value}?namespace=${NAMESPACE}`,
     )) as { template_id: string }
     const docs = (await wipGet(
       `/api/document-store/documents?namespace=${NAMESPACE}&template_id=${tmpl.template_id}&page_size=1`,
@@ -430,6 +513,18 @@ export async function runBootstrap(
 ): Promise<void> {
   const progress = (step: string, detail: string) =>
     onProgress({ step, detail, done: false })
+
+  // The gate only offers a run for 'needs_bootstrap' and 'incomplete'; refuse
+  // the rest here too, so a direct POST cannot re-post the seed templates over
+  // a namespace that is in use.
+  const current = await checkStatusDetail()
+  if (current.status === 'resume_blocked') throw new Error(current.message)
+  if (current.status === 'ready') {
+    throw new Error(
+      `Bootstrap already complete: '${NAMESPACE}' holds its bootstrap record. ` +
+        `Nothing to run; re-bootstrapping a namespace in use is a console action.`,
+    )
+  }
 
   const startedAt = new Date().toISOString()
   const created: CreatedLists = { templates: [], edgeTypes: [], terminologies: [] }

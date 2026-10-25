@@ -9,8 +9,12 @@
  *     options: "Bootstrap" (proceeds) or "Check Again" (re-poll, in case
  *     the user is restoring from a backup via the console — see §3.4).
  *   - If 'incomplete' → the namespace exists but an earlier bootstrap never
- *     finished (no BOOTSTRAP_RECORD). Offers "Resume Bootstrap" (every step
- *     is idempotent) or "Check Again"; starting over is a console action.
+ *     finished (no BOOTSTRAP_RECORD, no documents). Offers "Resume Bootstrap"
+ *     or "Check Again"; starting over is a console action.
+ *   - If 'resume_blocked' → no BOOTSTRAP_RECORD, but the namespace already
+ *     holds documents: it is in use, not half-built. Shows the server's
+ *     message (which namespace, how many documents) and offers no resume —
+ *     re-posting the seed templates there would version live templates.
  *   - During bootstrap → shows live SSE progress.
  *   - On error → shows the message + retry buttons.
  *
@@ -48,7 +52,9 @@ const NAMESPACE_LABEL = 'TODO_APP_NAMESPACE'
 // TODO: your app's display name
 const APP_TITLE = 'TODO_APP_NAME'
 
-type AppStatus = 'checking' | 'wip_unreachable' | 'needs_bootstrap' | 'incomplete' | 'bootstrapping' | 'ready' | 'error'
+type AppStatus =
+  | 'checking' | 'wip_unreachable' | 'needs_bootstrap' | 'incomplete' | 'resume_blocked'
+  | 'bootstrapping' | 'ready' | 'error'
 
 interface BootstrapProgress {
   step: string
@@ -61,14 +67,19 @@ export function BootstrapGate({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<AppStatus>('checking')
   const [progress, setProgress] = useState<BootstrapProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // The server's explanation for 'resume_blocked' (which namespace, how many
+  // documents) — shown verbatim, since it says exactly what was found.
+  const [statusMessage, setStatusMessage] = useState<string | null>(null)
 
   const checkStatus = useCallback(async () => {
     setStatus('checking')
     setError(null)
+    setStatusMessage(null)
     try {
       const res = await fetch(serverApiUrl('/bootstrap/status'))
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
+      setStatusMessage(data.message ?? null)
       setStatus(data.status as AppStatus)
     } catch {
       setStatus('wip_unreachable')
@@ -202,9 +213,11 @@ export function BootstrapGate({ children }: { children: React.ReactNode }) {
                 <p className="font-medium text-amber-800">Bootstrap incomplete</p>
                 <p className="mt-1 text-sm text-amber-600">
                   The <code className="rounded bg-amber-100 px-1">{NAMESPACE_LABEL}</code> namespace
-                  exists, but an earlier bootstrap never finished. Resuming re-runs every step and
-                  keeps what is already there. To start over instead, delete the namespace or
-                  restore a backup via the WIP console / <code className="rounded bg-amber-100 px-1">wip-deploy</code>.
+                  exists, but an earlier bootstrap never finished and it holds no documents yet.
+                  Resuming re-runs every step: what the earlier run created is kept where it matches
+                  the app's seed files, and anything that differs is updated to them. To start over
+                  instead, delete the namespace or restore a backup via the WIP console /{' '}
+                  <code className="rounded bg-amber-100 px-1">wip-deploy</code>.
                 </p>
               </div>
             </div>
@@ -222,6 +235,27 @@ export function BootstrapGate({ children }: { children: React.ReactNode }) {
                 <RefreshCw className="h-4 w-4" /> Check Again
               </button>
             </div>
+          </div>
+        )}
+
+        {status === 'resume_blocked' && (
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 rounded-md border border-red-200 bg-red-50 p-4">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+              <div>
+                <p className="font-medium text-red-800">Cannot resume bootstrap</p>
+                <p className="mt-1 text-sm text-red-700">
+                  {statusMessage ??
+                    'The namespace already holds documents but no bootstrap record. Delete all documents first.'}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={checkStatus}
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium hover:bg-gray-200"
+            >
+              <RefreshCw className="h-4 w-4" /> Check Again
+            </button>
           </div>
         )}
 
