@@ -1285,6 +1285,14 @@ sync afterwards.
   user verb or re-render writes `groups` into `deployment.deployer-state`,
   which an older `wip-deploy` then refuses to load: upgrade the deployer on
   every machine that drives the install.
+- **A failed dev-target build no longer takes the stack down.** A full dev
+  apply removed every `wip-*` container and then built the images inside
+  `compose up --build`, so a failed build left nothing running. The apply
+  now builds first and touches containers only after the build succeeded.
+  podman-compose also runs with `--parallel 4`: unbounded, a dozen
+  simultaneous builds each opened an SSH session into the macOS podman
+  machine, and sshd's MaxStartups limit (10) dropped the surplus builds
+  with `ssh: handshake failed: EOF`.
 - **The MCP server's network transports authenticate on every install.**
   They enabled their key check only when `API_KEY` or
   `WIP_AUTH_LEGACY_API_KEY` was set; the deployer provides the key as

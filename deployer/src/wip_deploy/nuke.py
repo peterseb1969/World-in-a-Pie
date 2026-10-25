@@ -24,6 +24,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from wip_deploy.apply import PODMAN_COMPOSE_PARALLEL
+
 
 class NukeError(Exception):
     pass
@@ -404,7 +406,7 @@ def nuke_purge_all(
 
 def _detect_compose_cmd() -> list[str]:
     if shutil.which("podman-compose"):
-        return ["podman-compose"]
+        return ["podman-compose", "--parallel", str(PODMAN_COMPOSE_PARALLEL)]
     if shutil.which("docker"):
         return ["docker", "compose"]
     raise NukeError("neither podman-compose nor docker is available on PATH")

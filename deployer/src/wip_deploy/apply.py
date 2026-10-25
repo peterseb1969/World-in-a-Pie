@@ -145,6 +145,13 @@ def apply_compose(
     # even if the image was rebuilt. Both are footguns in dev mode.
     force_build = deployment.spec.target == "dev"
 
+    # Build before anything is torn down. A build that fails (a broken
+    # Dockerfile, a dropped connection to the container engine) must leave
+    # the running stack as it was — after the wipe below it would leave no
+    # containers at all. The up then only recreates onto the fresh images.
+    if force_build and services_scope != []:
+        _run_build(install_dir, compose_cmd, services=services_scope)
+
     # CASE-282: dev installs must guarantee every service ends up on
     # the freshly-built image. `--force-recreate` alone isn't enough —
     # cross-project container name conflicts (e.g. wip-* containers
@@ -162,12 +169,12 @@ def apply_compose(
     # "last-known-good" that no longer describes reality.
     try:
         if services_scope is None:
-            _run_up(install_dir, compose_cmd, force_build=force_build)
+            _run_up(install_dir, compose_cmd, force_recreate=force_build)
         elif services_scope:
             _run_up(
                 install_dir,
                 compose_cmd,
-                force_build=force_build,
+                force_recreate=force_build,
                 services=services_scope,
             )
         # else: empty scope — config-only mutation (e.g. remove-app, whose
@@ -248,10 +255,18 @@ def apply_compose(
 # ────────────────────────────────────────────────────────────────────
 
 
+# podman-compose otherwise runs every podman call of a step at once — a dev
+# install's dozen image builds open a dozen connections together. On macOS
+# each is an SSH session into the podman machine, whose sshd refuses new
+# sessions beyond its MaxStartups limit (10 by default): the surplus builds
+# fail with "ssh: handshake failed: EOF".
+PODMAN_COMPOSE_PARALLEL = 4
+
+
 def _detect_compose_cmd() -> list[str]:
     """Prefer podman-compose; fall back to `docker compose`."""
     if shutil.which("podman-compose"):
-        return ["podman-compose"]
+        return ["podman-compose", "--parallel", str(PODMAN_COMPOSE_PARALLEL)]
     if shutil.which("docker"):
         return ["docker", "compose"]
     raise ApplyError(
@@ -310,11 +325,34 @@ def _remove_stale_wip_containers() -> None:
 # ────────────────────────────────────────────────────────────────────
 
 
+def _run_build(
+    install_dir: Path,
+    compose_cmd: list[str],
+    *,
+    services: list[str] | None = None,
+) -> None:
+    cmd = [
+        *compose_cmd,
+        "--env-file", ".env",
+        "-f", "docker-compose.yaml",
+        "build",
+        *(services or []),
+    ]
+    try:
+        subprocess.run(cmd, cwd=install_dir, check=True)
+    except subprocess.CalledProcessError as e:
+        raise ApplyError(
+            f"{compose_cmd[0]} build failed (exit {e.returncode}) — the "
+            "running containers were left untouched"
+        ) from e
+
+
 def _run_up(
     install_dir: Path,
     compose_cmd: list[str],
     *,
     force_build: bool = False,
+    force_recreate: bool = False,
     services: list[str] | None = None,
 ) -> None:
     cmd = [
@@ -324,7 +362,9 @@ def _run_up(
         "up", "-d",
     ]
     if force_build:
-        cmd.extend(["--build", "--force-recreate"])
+        cmd.append("--build")
+    if force_build or force_recreate:
+        cmd.append("--force-recreate")
     if services:
         cmd.extend(services)
     try:

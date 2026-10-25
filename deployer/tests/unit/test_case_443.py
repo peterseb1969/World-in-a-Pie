@@ -64,6 +64,7 @@ def _apply(tmp_path: Path, *, deployment, tree, services_scope):
     """Run apply_compose with every subprocess-touching helper patched."""
     with (
         patch("wip_deploy.apply._detect_compose_cmd", return_value=["podman-compose"]),
+        patch("wip_deploy.apply._run_build"),
         patch("wip_deploy.apply._run_up") as run_up,
         patch("wip_deploy.apply._remove_stale_wip_containers") as wipe,
         patch("wip_deploy.apply._reload_proxy") as reload_proxy,
