@@ -1,0 +1,56 @@
+api_version: wip.dev/v1
+kind: App
+metadata:
+  name: wip-cooking
+  category: optional
+  description: |
+    WIP-Cooking — personal recipe collection (phase 1 of a cooking app:
+    meal planning, grocery scaling, and tutorial tracking to follow).
+    Vite SPA + Express server (tsx). Identity delivered by the auth-gateway
+    via X-WIP-User headers; no per-app OIDC client in the deployed shape.
+    Owns the wip-cooking namespace (dev: dev-wip-cooking); bootstraps its
+    model from vendored seed files on empty namespaces.
+
+spec:
+  image:
+    name: wip-cooking
+    # App lives in its own repo (WIP-Cooking). First manifest — dev installs
+    # build from source via --app-source; tag bump on containerized rebuilds.
+    tag: 20261025a
+
+  ports:
+    - {name: http, container_port: 3017}
+    # Vite dev-server, used only with --app-source. 3017/5182 chosen free:
+    # http 3001/3010/3011/3012/3014/3015/3016 and vite 5173/5174/5180/5181
+    # are taken by sibling apps on this install.
+    - {name: dev, container_port: 5182}
+
+  env:
+    required:
+      - {name: WIP_BASE_URL,   source: {from_component: router}}
+      - {name: WIP_API_KEY,    source: {from_secret: api-key}}
+      - {name: PORT,           source: {literal: "3017"}}
+      - {name: APP_BASE_PATH,  source: {literal: /apps/wip-cooking}}
+      - {name: WIP_NAMESPACE,  source: {literal: wip-cooking}}
+      - {name: NODE_ENV,       source: {literal: production}}
+    optional:
+      # AskBar is hidden in v1; wiring kept. Both degrade gracefully unset.
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+      - {name: MCP_URL,           source: {literal: "http://wip-mcp-server:8007/mcp"}}
+
+  routes:
+    - {path: /apps/wip-cooking, auth_required: true}
+
+  # Recipes/steps write through the WIP API proxy; document-store is the
+  # hard start-order requirement.
+  depends_on: [document-store]
+
+  healthcheck:
+    endpoint: /apps/wip-cooking/api/health   # locally answerable; no WIP dependency
+    probe: auto
+    start_period_seconds: 15
+
+app_metadata:
+  display_name: WIP-Cooking
+  route_prefix: /apps/wip-cooking
+  ui_only: false
