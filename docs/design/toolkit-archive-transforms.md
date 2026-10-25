@@ -286,7 +286,7 @@ restore writes nothing (byte-faithful by design); `BackupJob` records
 are the instance-level log. Gaps: not machine-readable, no transform
 chain, silent id-preserving mode.
 
-Direction (to be specified with the door team / a follow-up case):
+Direction (tracked as CASE-942):
 **namespace-granular, structured, written by all three modes** —
 restore job id, mode, archive manifest digest, and the full
 `derived_from` chain with per-hop verify verdicts. Per-document
@@ -297,11 +297,9 @@ mixed namespaces), it goes in a sidecar collection keyed
 
 ## 9. Open questions
 
-1. `derived_from` hop schema (transform name, parameters, verify
-   verdict, input manifest digest) — freeze before M3 writes the
-   first hop; the door already tolerantly surfaces the key (v2.1.0).
+1. ~~`derived_from` hop schema~~ — **settled 2026-10-25, frozen in §9.1.**
 2. The structured provenance record's home and schema (§8) —
-   engine-side work, likely its own case.
+   engine-side work, tracked as CASE-942.
 3. Migration mapping-file format (M4): constants + copy-from-field +
    simple templates, escape hatch as jq-style/Python hook; no bespoke
    expression language.
@@ -309,6 +307,83 @@ mixed namespaces), it goes in a sidecar collection keyed
    mode for composed archives, or offline compose-validation plus
    post-restore integrity remains the contract.
 5. `--json` schema versioning policy (frozen fields vs additive).
+
+### 9.1 Settled: the `derived_from` marker (frozen 2026-10-25)
+
+Every archive a transform writes carries a `derived_from` key in its
+`manifest.json`. An archive without the key is a full engine backup.
+Decided with Peter on CASE-827: the digest covers the whole input
+file, parameters are recorded verbatim, and a failed verify still
+writes the archive.
+
+```json
+"derived_from": [
+  {
+    "transform": "filter",
+    "toolkit_version": "0.7.0",
+    "at": "2026-10-25T14:03:11Z",
+    "params": {"templates": ["MONSTER"], "boundary": "drop"},
+    "params_redacted": false,
+    "input": {
+      "sha256": "9f2c…",
+      "format_version": "3.1",
+      "derived": false
+    },
+    "verify": {
+      "verdict": "pass",
+      "findings": {"error": 0, "warning": 2, "info": 5}
+    },
+    "summary": {"documents_kept": 412, "documents_dropped": 9188}
+  }
+]
+```
+
+**The chain.**
+
+- `derived_from` is a **list of hops, oldest first**.
+- Transforming an archive that is already derived **appends** a hop;
+  earlier hops are copied unchanged, never rewritten.
+- Producers always write the list. Readers keep accepting a single
+  object as a one-hop chain; `inspect` already does.
+
+**The fields of a hop.**
+
+| Field | Required | Meaning |
+|---|---|---|
+| `transform` | yes | Transform name, as the CLI verb names it. |
+| `toolkit_version` | yes | Version of the toolkit that wrote the hop. |
+| `at` | yes | UTC timestamp, ISO 8601 with `Z`. |
+| `params` | yes | The transform's parameters, verbatim. |
+| `params_redacted` | yes | `true` when a surgery transform whose parameters would reveal what it removed (redaction) records a redacted form instead. |
+| `input.sha256` | yes | SHA-256 of the **whole input archive file** — definitive, at the cost of one extra streaming read of the input. |
+| `input.format_version` | yes | The input manifest's `format_version`. |
+| `input.derived` | yes | Whether the input itself carried a `derived_from` chain. |
+| `verify.verdict` | yes | `pass` (no findings above `info`), `warn` (warnings but no errors) or `fail` (at least one error). |
+| `verify.findings` | yes | Count of findings per severity (`error` / `warning` / `info`) — the same severities as `inspect`'s findings. |
+| `summary` | no | Per-transform counts of what was kept, dropped or changed. |
+
+**A failed verify.**
+
+- Every transform verifies its own output (§6).
+- On `fail`, the archive is **still written**, the hop records
+  `verdict: "fail"`, and the command exits non-zero.
+- The archive thereby declares itself broken. Whether the restore door
+  refuses such an archive is left to the door's policy; it already
+  warns on any derived archive.
+- Repairing a broken archive is a separate function, defined later,
+  outside the transforms.
+
+**Evolution.**
+
+- The fields above are frozen.
+- Additions are allowed only as new optional fields. Readers must
+  tolerate keys they do not know: the restore door only checks that the
+  marker is present, and `inspect` displays every hop key it finds.
+- Changing a frozen field's meaning would need a new key, not a
+  reinterpretation.
+- The engine's restore copies the chain into the namespace's
+  provenance record (CASE-942), so lineage survives a restore and
+  travels into later backups.
 
 ## 10. Non-goals
 
