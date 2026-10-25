@@ -36,7 +36,7 @@ check mutates anything; the whole module is read-only.
      disarmed — exactly the mismatch a pre-exposure check must catch.
 
   5. **Published host ports** — datastore and admin ports (MongoDB,
-     PostgreSQL, NATS client/monitor, MinIO console) published to the
+     PostgreSQL, NATS client/monitor, Garage RPC/admin) published to the
      host bypass Caddy and its auth entirely. The rendered compose file
      is the ground truth for what is actually published.
 
@@ -128,7 +128,8 @@ _SENSITIVE_CONTAINER_PORTS = {
     5432: "PostgreSQL",
     4222: "NATS client",
     8222: "NATS monitor",
-    9001: "MinIO console",
+    3901: "Garage RPC",
+    3903: "Garage admin",
 }
 
 # Hostname shapes that mean "not reachable from the internet": mDNS,

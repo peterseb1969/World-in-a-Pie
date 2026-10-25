@@ -6,9 +6,9 @@ metadata:
   description: |
     S3-compatible object storage for document file attachments — the
     MinIO successor (MinIO stopped publishing pullable images; the
-    interim ghcr copy is arm64-only and frozen). Document-Store's file
-    storage follows the active storage module: when garage is active it
-    takes precedence over minio. Toggle via `--add garage`.
+    interim ghcr copy was arm64-only and frozen; the minio module has
+    since been retired). Included in the standard and full presets;
+    toggle via `--add garage`.
 
 spec:
   image:

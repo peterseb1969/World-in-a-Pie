@@ -39,7 +39,7 @@ async def delete_namespace(
     """Delete a namespace and all its data.
 
     Requires deletion_mode='full' on the namespace. Creates a persistent
-    journal for crash-safe execution across MongoDB, MinIO, and PostgreSQL.
+    journal for crash-safe execution across MongoDB, the object store, and PostgreSQL.
 
     - dry_run=true: Returns impact report (entity counts, inbound references)
     - force=true: Proceeds even if other namespaces reference this one
@@ -76,7 +76,7 @@ async def delete_namespace(
         raise HTTPException(400, str(e)) from None
 
     # Both terminal-success states carry the summary; completed_with_warnings
-    # additionally means a best-effort MinIO/PostgreSQL step degraded — the
+    # additionally means a best-effort object-store/PostgreSQL step degraded — the
     # per-step errors are in the deletion-status journal view.
     if journal.status in ("completed", "completed_with_warnings"):
         return {

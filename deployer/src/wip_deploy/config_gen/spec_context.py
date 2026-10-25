@@ -56,7 +56,7 @@ class SpecContextAuth:
 @dataclass(frozen=True)
 class SpecContextFeatures:
     files_enabled: str  # "true"/"false" — string for direct env injection
-    # Browser-reachable MinIO URL. document-store rewrites presigned URLs
+    # Browser-reachable object-store URL. document-store rewrites presigned URLs
     # from the internal endpoint (http://wip-garage:3900) to this one
     # before returning them to clients. Routed through Caddy/Ingress with
     # prefix stripping — shared origin with the rest of the API, one cert,

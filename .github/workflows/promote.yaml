@@ -13,7 +13,7 @@ name: Promote Image Set
 #
 # Scope: the WIP-built services only — components whose manifest carries
 # `spec.image.build_context`. Upstream infra (dex, mongodb, postgres, nats,
-# minio, router) is never stamped; those pin upstream tags.
+# garage, router) is never stamped; those pin upstream tags.
 #
 # Label discipline: set labels should be IMMUTABLE (release-20260612,
 # stable-3) — a floating label is the `latest` failure mode: any pod restart

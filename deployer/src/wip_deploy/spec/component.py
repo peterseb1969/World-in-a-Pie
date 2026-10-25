@@ -105,14 +105,14 @@ class Route(WIPModel):
     # Strip the route's path prefix before forwarding to the backend.
     # Caddy: `handle_path` (vs `handle`). NGINX Ingress: `rewrite-target: /`.
     # Needed for backends that serve at the root and don't know about the
-    # public prefix — MinIO's S3 API is the canonical case.
+    # public prefix — an S3 object store (Garage) is the canonical case.
     strip_prefix: bool = False
     # Subpaths within `path` that should NOT be stripped — useful when
     # the same backend exposes both root-level and prefixed APIs under
-    # the public prefix. MinIO is the canonical case: its S3 API at
+    # the public prefix. MinIO was the canonical case: its S3 API at
     # /<bucket>/<key> requires strip_prefix=True (presigned URLs encode
-    # the bucket+key path), but its admin/health endpoints live at
-    # an object store's own health/admin endpoints under its URL space.
+    # the bucket+key path), but its admin/health endpoints lived at
+    # /minio/health and /minio/admin under its own URL space.
     # Renderers emit these as preserve-prefix routes that take
     # precedence over the regex/strip rule. Only meaningful when
     # `strip_prefix=True`. CASE-248.
@@ -123,7 +123,7 @@ class Route(WIPModel):
     # Host of the INTERNAL endpoint (what services sign against, e.g.
     # wip-garage:3900), while the browser presents the public host —
     # without this rewrite the two differ and the store rejects the
-    # signature. Object storage (Garage; MinIO under SigV4) is the
+    # signature. Object storage (Garage) is the
     # canonical case. Caddy: `header_up Host {upstream_hostport}`.
     # NGINX Ingress: the `upstream-vhost` annotation (forces a
     # per-rule Ingress, same as strip_prefix).

@@ -1,4 +1,4 @@
-"""S3-compatible storage client for file operations with MinIO."""
+"""S3-compatible storage client for file operations (Garage, or any S3 store)."""
 
 import os
 from contextlib import asynccontextmanager
@@ -10,7 +10,7 @@ from botocore.exceptions import ClientError
 
 # Storage was the only outbound dependency in this service with no timeout of
 # its own: botocore defaults to 60s connect AND 60s read, with retry_mode
-# resolving to `legacy` and max_attempts unset, so a MinIO that accepts
+# resolving to `legacy` and max_attempts unset, so a store that accepts
 # connections but stops answering stalls a caller for minutes. Every other
 # client here (registry, def-store, template-store) passes an explicit
 # timeout; these two configs bring storage in line.
@@ -50,7 +50,7 @@ _DATA_CONFIG = Config(
 #     connect_timeout=3 -> 6.42s     i.e. wall ~= 2 * connect_timeout + 0.9
 #
 # So 2 would land at 4.6s against a 5s probe budget — inside it, but with no
-# usable margin. 1 lands at ~2.8s. A healthy MinIO answers in 6-41ms, so a 1s
+# usable margin. 1 lands at ~2.8s. A healthy store answered in 6-41ms (measured on MinIO), so a 1s
 # connect ceiling is ~25x the observed p99 and will not cause false negatives.
 _HEALTH_CONFIG = Config(
     connect_timeout=1,
@@ -61,7 +61,7 @@ _HEALTH_CONFIG = Config(
 
 class FileStorageClient:
     """
-    S3-compatible storage client for MinIO/AWS S3.
+    S3-compatible storage client for Garage or any S3-compatible store.
 
     Handles low-level storage operations:
     - Upload files to storage
@@ -88,11 +88,11 @@ class FileStorageClient:
             access_key: Access key (default from env WIP_FILE_STORAGE_ACCESS_KEY)
             secret_key: Secret key (default from env WIP_FILE_STORAGE_SECRET_KEY)
             bucket: Bucket name (default from env WIP_FILE_STORAGE_BUCKET)
-            region: AWS region (only used for signature, not relevant for MinIO)
+            region: Region the SigV4 signature covers (the deployer pins Garage to us-east-1)
             public_endpoint_url: Browser-accessible endpoint for pre-signed URLs
                 (default from env WIP_FILE_STORAGE_PUBLIC_ENDPOINT, falls back to
                 http://localhost:9000). Required when the internal endpoint uses a
-                container hostname (e.g. http://wip-minio:9000) that browsers cannot resolve.
+                container hostname (e.g. http://wip-garage:3900) that browsers cannot resolve.
         """
         self.endpoint_url = endpoint_url or os.getenv(
             "WIP_FILE_STORAGE_ENDPOINT",
@@ -104,11 +104,11 @@ class FileStorageClient:
         )
         self.access_key = access_key or os.getenv(
             "WIP_FILE_STORAGE_ACCESS_KEY",
-            "wip-minio-root"
+            ""
         )
         self.secret_key = secret_key or os.getenv(
             "WIP_FILE_STORAGE_SECRET_KEY",
-            "wip-minio-password"
+            ""
         )
         self.bucket = bucket or os.getenv(
             "WIP_FILE_STORAGE_BUCKET",
@@ -410,7 +410,7 @@ class FileStorageClient:
 
                 # Rewrite internal endpoint to public endpoint for browser access.
                 # The S3 client generates URLs using the internal endpoint (e.g.
-                # http://wip-minio:9000) which browsers cannot resolve.
+                # http://wip-garage:3900) which browsers cannot resolve.
                 if self.public_endpoint_url and self.public_endpoint_url != self.endpoint_url:
                     url = url.replace(self.endpoint_url, self.public_endpoint_url, 1)
 

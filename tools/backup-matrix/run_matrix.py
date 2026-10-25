@@ -991,7 +991,7 @@ def cell_r14_blobs(
     Files were the one entity class the matrix carried through backup counts
     but never through a restore: the merge suite uploads blobs for *inserted*
     files only, and the CLI round-trip excludes files entirely because it has
-    no MinIO. So the bytes themselves — as opposed to the file *record* — had
+    no object store. So the bytes themselves — as opposed to the file *record* — had
     never made the trip.
 
     The byte-level compare is the point. A file row that restores with the
@@ -1486,13 +1486,13 @@ def cell_r04_cli_export_engine_restore(
     against the live install, then feeds its archive to the live engine's
     id-preserving restore door. What only L can see: the CLI's HTTP
     collection against real services (pagination, auth, blob download from
-    MinIO) and the engine reading an archive a different writer process
+    the object store) and the engine reading an archive a different writer process
     produced.
 
     Export shape: --include-inactive (the CASE-666 shape — the fixture's
     deactivated MATRIX_SPECIMEN v3 and the docs pinned to it must make the
     trip), --include-files (the blob half the C round-trip cannot cover —
-    its harness has no MinIO), --skip-closure (the archive stays
+    its harness has no object store), --skip-closure (the archive stays
     namespace-self-contained; cross-namespace refs resolve against the
     intact live NS-B and wip, exactly as they would in a same-instance DR).
     """

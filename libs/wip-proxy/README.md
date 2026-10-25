@@ -28,7 +28,7 @@ app.use('/wip', wipProxy({
 ## What It Does
 
 - **API proxy:** `GET|POST|PUT|DELETE /api/{service}/*` forwarded to WIP with API key injected
-- **File proxy:** `GET /files/:fileId/content` proxies file downloads (resolves MinIO URLs server-side, following redirects so internal storage URLs never reach the browser)
+- **File proxy:** `GET /files/:fileId/content` proxies file downloads (resolves object-storage URLs server-side, following redirects so internal storage URLs never reach the browser)
 - **Streaming both directions:** request bodies pipe into the upstream and upstream responses pipe back out, with backpressure — proxy memory is O(1) in payload size, so multi-GB archive uploads/downloads pass through flat. Built on `node:http` deliberately: a `fetch`-based streamed request body still buffers whole inside undici (its backpressure never reaches the source socket)
 - **Header forwarding:** Propagates `content-type`, `content-disposition`, `content-length` from upstream
 - **Error handling:** WIP's own responses — including 4xx/5xx — are forwarded verbatim (status, headers, body). Proxy-level failures to reach WIP return `502` with structured error JSON when nothing has been sent yet; a failure mid-stream destroys the connection (a truncated transfer is the honest signal once bytes have flowed). API-route redirects are forwarded to the client, not followed — a streamed request body cannot be replayed on a 307

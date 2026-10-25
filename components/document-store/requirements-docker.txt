@@ -15,7 +15,7 @@ httpx>=0.26.0,<0.28.0
 # NATS client for event publishing (reporting sync)
 nats-py>=2.6.0,<3.0.0
 
-# S3/MinIO client for file storage
+# S3 client for file storage (Garage)
 aiobotocore>=2.9.0,<3.0.0
 
 # Multipart form data support (file uploads)

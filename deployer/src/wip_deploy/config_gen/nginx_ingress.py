@@ -30,7 +30,8 @@ class IngressRule:
     # Subpaths within `path` to expose with prefix preserved (no rewrite)
     # alongside the strip rule. NGINX Ingress's path matching gives
     # exact/Prefix paths precedence over ImplementationSpecific (regex),
-    # so these win for matching requests. CASE-248 — MinIO admin/health.
+    # so these win for matching requests. CASE-248 — an object store's admin/health
+    # endpoints (MinIO's, originally).
     preserve_prefix_subpaths: tuple[str, ...] = ()
     # Groups the gateway lets through (empty = any logged-in user); appended
     # to the auth-url as routing.verify_query().

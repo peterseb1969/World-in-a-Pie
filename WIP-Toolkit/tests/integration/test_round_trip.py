@@ -9,7 +9,7 @@ pre-assigned-ID creates (CASE-660), value resolution at activation
 (CASE-665), template-class flag fidelity (CASE-659), and relation restore.
 
 The seed deliberately covers every entity class the archive format carries
-except binary files (MinIO isn't mounted; files are exercised by the
+except binary files (object storage isn't mounted; files are exercised by the
 document-store's own backup-engine tests): a terminology, terms with
 aliases, an ontology relation, two entity templates (identity fields,
 header fields, full-text flag), an edge type (usage=relationship,

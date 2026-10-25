@@ -310,11 +310,11 @@ class TestCheckPublishedPorts:
     def test_bare_container_port_is_published(self, tmp_path: Path) -> None:
         """Compose publishes a bare port to an ephemeral host port —
         still host-reachable, still a finding."""
-        _write_compose(tmp_path, {"minio": ["9001"]})
+        _write_compose(tmp_path, {"garage": ["3903"]})
         d = _make_deployment(tmp_path)
         r = check_published_ports(tmp_path, d)
         assert not r.passed
-        assert "MinIO console" in r.message
+        assert "Garage admin" in r.message
 
     def test_no_compose_file_not_applicable(self, tmp_path: Path) -> None:
         d = _make_deployment(tmp_path)

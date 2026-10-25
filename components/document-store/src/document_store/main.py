@@ -70,8 +70,8 @@ class Settings:
     # File storage settings (S3-compatible object store)
     FILE_STORAGE_ENABLED: bool = os.getenv("WIP_FILE_STORAGE_ENABLED", "false").lower() == "true"
     FILE_STORAGE_ENDPOINT: str = os.getenv("WIP_FILE_STORAGE_ENDPOINT", "http://localhost:9000")
-    FILE_STORAGE_ACCESS_KEY: str = os.getenv("WIP_FILE_STORAGE_ACCESS_KEY", "wip-minio-root")
-    FILE_STORAGE_SECRET_KEY: str = os.getenv("WIP_FILE_STORAGE_SECRET_KEY", "wip-minio-password")
+    FILE_STORAGE_ACCESS_KEY: str = os.getenv("WIP_FILE_STORAGE_ACCESS_KEY", "")
+    FILE_STORAGE_SECRET_KEY: str = os.getenv("WIP_FILE_STORAGE_SECRET_KEY", "")
     FILE_STORAGE_BUCKET: str = os.getenv("WIP_FILE_STORAGE_BUCKET", "wip-attachments")
 
 

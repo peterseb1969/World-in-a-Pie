@@ -326,7 +326,7 @@ class DirectBackupEngine:
         processed: int,
         total_entities: int,
     ) -> None:
-        """Stream file blobs from MinIO into the archive."""
+        """Stream file blobs from the object store into the archive."""
         assert self._storage is not None
         self._emit(
             "phase_blobs",
@@ -3144,7 +3144,7 @@ class DirectRestoreEngine:
         *,
         only: set[str] | None = None,
     ) -> None:
-        """Upload file blobs from the archive to MinIO.
+        """Upload file blobs from the archive to the object store.
 
         ``only`` narrows the upload to specific file ids — a merge uploads
         bytes for the files it inserted and leaves the ones the target already

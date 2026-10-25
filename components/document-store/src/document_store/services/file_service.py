@@ -49,7 +49,7 @@ class FileService:
     Service for file entity management.
 
     Handles:
-    - File upload (Registry ID generation + MinIO storage + MongoDB metadata)
+    - File upload (Registry ID generation + object storage + MongoDB metadata)
     - File retrieval and pre-signed download URLs
     - File deletion (soft-delete)
     - Reference count tracking
@@ -71,7 +71,7 @@ class FileService:
 
         1. Generate file ID from Registry
         2. Compute checksum
-        3. Upload to MinIO
+        3. Upload to the object store
         4. Create File document in MongoDB
 
         Args:
@@ -122,7 +122,7 @@ class FileService:
             # a partial failure or data loss). Fall through and re-create the
             # File doc + storage object with the existing file_id.
 
-        # Upload to MinIO (storage_key = file_id)
+        # Upload to the object store (storage_key = file_id)
         try:
             storage = get_file_storage_client()
             await storage.upload(
@@ -373,7 +373,7 @@ class FileService:
         if file_doc.status != FileStatus.INACTIVE:
             raise FileServiceError("Only inactive files can be hard-deleted", "invalid_state", rule="not_inactive")
 
-        # Delete from MinIO
+        # Delete from the object store
         if is_file_storage_enabled():
             try:
                 storage = get_file_storage_client()

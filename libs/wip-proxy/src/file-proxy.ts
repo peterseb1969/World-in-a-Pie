@@ -23,7 +23,7 @@ export interface FileProxyOptions {
  *
  * The WIP document-store file content endpoint returns the actual file
  * bytes. This proxy forwards the request with auth, follows any redirect
- * server-side (the endpoint may redirect to internal MinIO URLs — the
+ * server-side (the endpoint may redirect to internal object-storage URLs — the
  * browser must never see them), and pipes the response through, so file
  * downloads are O(1) in proxy memory regardless of file size. GET-only,
  * so following redirects is safe — there is no request body to replay.

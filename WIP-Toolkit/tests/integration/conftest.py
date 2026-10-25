@@ -13,7 +13,7 @@ How the wiring works:
 
 - Service apps are imported with test env vars set (same recipe as each
   component's own conftest). Their FastAPI lifespans never run (ASGI
-  transport doesn't run lifespan), so NATS/MinIO/key-sync stay off —
+  transport doesn't run lifespan), so NATS/object-storage/key-sync stay off —
   exactly like the component test suites. Mongo is initialized manually
   with ONE init_beanie over all four services' models on one test DB
   (the components' sanctioned pattern: repeated init_beanie calls rebind
@@ -88,7 +88,7 @@ os.environ["TEMPLATE_STORE_URL"] = "http://template-store"
 os.environ["TEMPLATE_STORE_API_KEY"] = TEST_API_KEY
 # File METADATA listing is pure Mongo — the exporter always lists files
 # (even to record zero), and a disabled feature gate 503s the whole export.
-# Blob I/O (MinIO) is never exercised here: the seed uploads no binaries.
+# Blob I/O (object storage) is never exercised here: the seed uploads no binaries.
 os.environ["WIP_FILE_STORAGE_ENABLED"] = "true"
 os.environ["WIP_AUTH_LEGACY_API_KEY"] = ""
 # Unscoped admin key — the same semantics as a deployed master key.

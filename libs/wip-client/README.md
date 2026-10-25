@@ -65,7 +65,7 @@ const docs = await client.documents.listDocuments({
 
 ### Soft Delete: Nothing Is Really Deleted
 
-All delete operations default to setting `status: "inactive"` — records remain in the database. The exceptions are opt-in: `files.hardDeleteFile()` permanently removes the file from MinIO storage, and `deleteDocument` / `deleteTemplate` / `deleteTerminology` / `deleteTerm` accept a `hardDelete` option (subject to the namespace's `deletion_mode` and, for terms, the terminology's `mutable` flag).
+All delete operations default to setting `status: "inactive"` — records remain in the database. The exceptions are opt-in: `files.hardDeleteFile()` permanently removes the file from object storage, and `deleteDocument` / `deleteTemplate` / `deleteTerminology` / `deleteTerm` accept a `hardDelete` option (subject to the namespace's `deletion_mode` and, for terms, the terminology's `mutable` flag).
 
 ### Retry Behavior
 
@@ -167,7 +167,7 @@ API key auth headers are cached internally for performance (the key is static; t
 | Def-Store | `client.defStore` | `DefStoreService` | 8002 | Terminologies, terms, validation, ontology, import/export |
 | Template-Store | `client.templates` | `TemplateStoreService` | 8003 | Document schemas, versioning, draft mode, inheritance |
 | Document-Store | `client.documents` | `DocumentStoreService` | 8004 | Documents, versions, table view, CSV export, query |
-| File-Store | `client.files` | `FileStoreService` | 8004 | File upload/download (MinIO), orphan detection, integrity |
+| File-Store | `client.files` | `FileStoreService` | 8004 | File upload/download (object storage), orphan detection, integrity |
 | Registry | `client.registry` | `RegistryService` | 8001 | Namespaces, ID management, synonyms, merge |
 | Reporting-Sync | `client.reporting` | `ReportingSyncService` | 8005 | Cross-service search, integrity checks, activity feed |
 
@@ -595,7 +595,7 @@ if (preview.failed === 0) {
 
 ## File-Store (Binary Files)
 
-Files are stored in MinIO (S3-compatible) and tracked in MongoDB. The File-Store is part of the Document-Store service (same port 8004).
+Files are stored in an S3-compatible object store (Garage) and tracked in MongoDB. The File-Store is part of the Document-Store service (same port 8004).
 
 ```typescript
 // Upload a file (accepts File or Blob)
@@ -630,7 +630,7 @@ await client.files.updateMetadata('FILE-001', {
 
 // Delete
 await client.files.deleteFile('FILE-001')           // soft-delete (sets inactive)
-await client.files.hardDeleteFile('FILE-001')        // permanent: removes from MinIO
+await client.files.hardDeleteFile('FILE-001')        // permanent: removes from object storage
 
 // Bulk delete
 await client.files.deleteFiles(['FILE-001', 'FILE-002'])

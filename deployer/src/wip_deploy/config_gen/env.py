@@ -127,7 +127,7 @@ def _default_port(component: Component) -> Port:
     Preference order: port named "http", then the first declared port.
     Components with multiple ports put the primary (data-path) port
     first; secondary ports (monitoring, console, etc.) come after. This
-    matches how MinIO (`[s3:9000, console:9001]`) declares.
+    matches how Garage (`[s3:3900, rpc:3901, admin:3903]`) declares.
     """
     by_name = {p.name: p for p in component.spec.ports}
     if "http" in by_name:

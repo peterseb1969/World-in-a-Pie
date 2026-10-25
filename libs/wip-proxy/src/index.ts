@@ -55,7 +55,7 @@ export interface WipProxyOptions {
  *
  * This creates:
  * - `GET|POST|PUT|DELETE /wip/api/{service}/*` — proxied to WIP with API key
- * - `GET /wip/files/:fileId/content` — proxied file download (resolves MinIO URLs server-side)
+ * - `GET /wip/files/:fileId/content` — proxied file download (resolves object-storage URLs server-side)
  *
  * Both directions STREAM — proxy memory is O(1) in payload size, so large
  * archive uploads/downloads pass through without buffering. Consequence:

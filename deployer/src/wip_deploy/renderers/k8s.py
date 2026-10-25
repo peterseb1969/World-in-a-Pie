@@ -825,7 +825,7 @@ def _container_spec(
 
 
 def _command_for(owner: Component | App) -> list[str] | None:
-    """Same as compose: explicit command, Dex/MinIO overrides, or None."""
+    """Same as compose: explicit command, the Dex override, or None."""
     if owner.spec.command is not None:
         return list(owner.spec.command)
     if isinstance(owner, App):
@@ -1024,7 +1024,7 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
     # Per-rule ingresses for strip_prefix routes. Uses nginx-ingress's
     # regex-path idiom (`/prefix(/|$)(.*)` → `rewrite-target: /$2`) so
     # the backend sees the request as if it had hit the service at its
-    # root — needed for backends like MinIO whose SigV2 presigned URLs
+    # root — needed for object stores (Garage) whose presigned URLs
     # are computed over a path that doesn't include the public prefix.
     for r in strip_rules:
         strip_annotations = dict(base_annotations)

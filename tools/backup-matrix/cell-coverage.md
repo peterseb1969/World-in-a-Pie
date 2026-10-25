@@ -211,7 +211,7 @@ caches, CASE-665/756). L: the real `wip-toolkit export` binary over the
 network (`--include-inactive --include-files --skip-closure`), fed to the live
 engine's id-preserving restore door — ids verbatim, conserved counts,
 deactivated template version stays inactive, value-form resolution, blobs
-byte-identical (the half the C harness cannot cover: no MinIO). Building it
+byte-identical (the half the C harness cannot cover: no object store). Building it
 caught a real toolkit defect: `check_health` probed the bare root `/health`,
 so in proxy mode every service hit the same unroutable ingress path and 404ed,
 aborting every export against a k8s install — fixed to probe

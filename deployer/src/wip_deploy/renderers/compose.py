@@ -108,7 +108,7 @@ def render_compose(
     ctx = make_spec_context(deployment, components, apps)
     # Passing the set of collected secret names enables activation-skip
     # of optional `from_secret` refs whose secret wasn't generated — for
-    # example, an optional MinIO credential when MinIO itself is
+    # example, an optional object-store credential when the store itself is
     # inactive. Without this, the render would emit `${VAR}` which
     # compose then interpolates to empty string.
     resolved_env = resolve_all_env(
@@ -447,9 +447,9 @@ def _command_for(owner: Component | App) -> list[str] | None:
          Every Python-service component manifest specifies its own
          uvicorn invocation; mcp-server pins `python -m wip_mcp --http`;
          apps rely on the image's default CMD.
-      2. Image-specific overrides for Dex and MinIO — their upstream
-         images need custom CMDs that aren't naturally a manifest
-         concern (config-file path, console-address flag).
+      2. An image-specific override for Dex — its upstream image needs
+         a custom CMD that isn't naturally a manifest concern (the
+         config-file path).
       3. None — use the image's default CMD.
 
     This is deliberately thin. The old uvicorn heuristic

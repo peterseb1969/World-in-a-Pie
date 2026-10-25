@@ -476,7 +476,7 @@ class NamespaceDeletionService:
 
             try:
                 deleted = await self._execute_step(step, journal.namespace)
-                # Best-effort executors (MinIO/PostgreSQL) record a swallowed
+                # Best-effort executors (object store/PostgreSQL) record a swallowed
                 # failure on step.error instead of raising — surface it as a
                 # degraded outcome rather than a clean completion.
                 step.status = "completed_with_errors" if step.error else "completed"

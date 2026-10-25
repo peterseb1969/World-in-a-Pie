@@ -1,9 +1,9 @@
-"""Archive storage for backup/restore jobs — MinIO-backed when available.
+"""Archive storage for backup/restore jobs — object-store-backed when available.
 
 Backup/restore archives used to live only on the local filesystem at
 ``$WIP_BACKUP_DIR/{job_id}.zip`` — invisible to any blob store, unreachable
 after a container reschedule, and swept by nothing. This module makes the
-archive's durable home MinIO (a dedicated bucket, default ``wip-backups``)
+archive's durable home the object store (a dedicated bucket, default ``wip-backups``)
 whenever file storage is enabled, and demotes the local directory to what it
 always really was: scratch space.
 
@@ -16,18 +16,18 @@ Two architectural constraints drive the design:
   live under raw ``{job_id}.zip`` keys in their own bucket; the only
   metadata is on the ``BackupJob`` record.
 
-* **Without MinIO there is no durable-retention promise.** Restore inputs
+* **Without an object store there is no durable-retention promise.** Restore inputs
   are consumed and deleted at the job's terminal state. Backup outputs must
   outlive the async job contract (start → poll → download), so they stay in
   scratch and are swept opportunistically once older than
   ``WIP_BACKUP_RETENTION_HOURS`` (default 24; <= 0 disables the sweep).
-  With MinIO the same sweep still runs — it catches scratch orphaned by a
+  With an object store the same sweep still runs — it catches scratch orphaned by a
   crash mid-job — but the archives themselves live in the bucket, where
   nothing expires them automatically (backups are precious; operators can
   attach bucket lifecycle rules if they want time-based retention).
 
 The engines always read and write local files (a ZIP must be seekable), so
-every MinIO interaction is upload-after-write or download-before-read with
+every object-store interaction is upload-after-write or download-before-read with
 the scratch path as the meeting point.
 """
 
@@ -51,6 +51,8 @@ from .file_storage_client import (
 logger = logging.getLogger("document_store.archive_store")
 
 BACKEND_LOCAL = "local"
+# "minio" is the object-store backend's historical name. It is persisted on
+# BackupJob.archive_backend, so the value stays whatever the store is (Garage).
 BACKEND_MINIO = "minio"
 
 
@@ -186,7 +188,7 @@ class ArchiveStore:
         that vanished for any OTHER reason (the TTL sweep on a local-only
         install) still reports honestly as gone. Deterministic, not a second
         race: finalize_backup flips the record BEFORE unlinking, so any job
-        whose scratch file has disappeared under it already reads as MinIO.
+        whose scratch file has disappeared under it already records the object-store backend.
         """
         if self.backend != BACKEND_MINIO:
             return None
@@ -200,7 +202,7 @@ class ArchiveStore:
 
         The new job must never share the source job's archive: DELETE on
         either job removes that job's archive, and a shared file/object
-        would be pulled out from under the survivor. MinIO gets a
+        would be pulled out from under the survivor. The object store gets a
         server-side object copy (near-free) plus a scratch download for the
         engine to read; local mode gets a hardlink (same bytes, independent
         directory entry) with a plain copy as fallback.
@@ -235,7 +237,7 @@ class ArchiveStore:
     async def finalize_backup(self, job: BackupJob) -> None:
         """A backup reached COMPLETE: move its archive to the durable home.
 
-        MinIO mode uploads the scratch file to the bucket and deletes the
+        Object-store mode uploads the scratch file to the bucket and deletes the
         scratch copy; if the upload fails, the archive stays local and the
         job record says so — a reachable local archive beats a recorded-but-
         absent object. Local mode leaves the file where the contract puts it
@@ -274,10 +276,10 @@ class ArchiveStore:
         """A restore reached a terminal state: settle its input archive.
 
         The input is fully consumed either way, so the scratch copy always
-        goes. With MinIO the archive is preserved in the bucket first —
+        goes. With an object store the archive is preserved in the bucket first —
         regardless of job outcome, since a FAILED restore's input is the
         most useful one to re-download — unless it is already there (the
-        restore-from-job path pre-copies the object). Without MinIO the
+        restore-from-job path pre-copies the object). Without one the
         input is simply deleted: no durable-retention promise.
         """
         if not job.archive_path:
