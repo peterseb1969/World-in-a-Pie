@@ -199,7 +199,11 @@ Two primary query tools:
   per template is the entity view "<namespace>"."doc_<value>"; physical rows
   live in per-version tables doc_<value>__v<N> (one per template version, each
   shaped by its version's own fields — a NULL means "submitted empty", never
-  "field not in this schema version"). Pass namespace so unqualified names like
+  "field not in this schema version"). The entity view carries only the columns
+  shared by every version (their typed intersection): a field added in a later
+  template version is absent from doc_<value> unless the template declares it in
+  reporting.cross_version_view — query the version table doc_<value>__v<N> or
+  data_json for it. Pass namespace so unqualified names like
   doc_patient resolve in that schema, or schema-qualify for cross-namespace
   queries. Use for cross-template JOINs, aggregations, and complex analytics;
   list_report_tables shows each entity's versions and views.
@@ -4057,7 +4061,11 @@ async def list_report_tables(table_name: str | None = None) -> str:
     One template ("entity") owns several relations: physical per-version
     tables doc_<value>__v<N> (one per template version, shaped by that
     version's own fields), the identity-core view doc_<value>__entities,
-    and the bare-name view doc_<value> — the DEFAULT query surface. Query
+    and the bare-name view doc_<value> — the DEFAULT query surface. Both
+    views carry only the columns shared by every version, so a field added
+    in a later version is in its doc_<value>__v<N> table (and data_json) but
+    not in the views, unless the template declares it in
+    reporting.cross_version_view. Query
     the bare name unless you need one version's exact shape; the response's
     `entities` grouping lists every sibling version table so SQL never
     silently misses rows that live in another version's table.
