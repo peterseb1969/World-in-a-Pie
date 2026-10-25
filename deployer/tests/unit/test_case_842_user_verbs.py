@@ -113,7 +113,7 @@ class TestUserAddHappyPath:
         added = [u for u in deployment.spec.auth.users if u.username == "peter"]
         assert len(added) == 1
         assert added[0].email == "peter@example.com"
-        assert added[0].group == "wip-admins"
+        assert added[0].groups == ["wip-admins"]
         # The three defaults are still there — add is additive.
         assert len(deployment.spec.auth.users) == 4
         assert "Added Dex user 'peter'" in mutate.call_args.args[4]

@@ -1277,6 +1277,14 @@ sync afterwards.
   neither by mapping nor by the provider's own groups: every token-validating
   service and the auth-gateway drop them (`WIP_AUTH_FEDERATED_GROUPS`, set
   only when a connector is declared). See wip-guide §4.6.
+- **Dex static users hold several groups.** A spec user carries `groups`
+  (a list) instead of `group`; `wip-deploy user add --group` takes a
+  comma-separated list, and the new `wip-deploy user set-groups <user>
+  --group a,b` replaces a user's groups in place, keeping the password.
+  Saved installs whose users still say `group` load unchanged. The first
+  user verb or re-render writes `groups` into `deployment.deployer-state`,
+  which an older `wip-deploy` then refuses to load: upgrade the deployer on
+  every machine that drives the install.
 - **The MCP server's network transports authenticate on every install.**
   They enabled their key check only when `API_KEY` or
   `WIP_AUTH_LEGACY_API_KEY` was set; the deployer provides the key as

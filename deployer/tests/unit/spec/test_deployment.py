@@ -48,7 +48,7 @@ class TestAuthSpec:
 
     def test_default_users_are_admin_editor_viewer(self) -> None:
         auth = AuthSpec(mode="oidc", gateway=True)
-        groups = {u.group for u in auth.users}
+        groups = {g for u in auth.users for g in u.groups}
         assert groups == {"wip-admins", "wip-editors", "wip-viewers"}
 
 

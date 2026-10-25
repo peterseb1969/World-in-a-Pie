@@ -3119,6 +3119,19 @@ def _dex_password_secret(username: str) -> str:
     return f"dex-password-{username}"
 
 
+def _parse_groups(value: str) -> list[str]:
+    """`--group` takes one group or a comma-separated list."""
+    groups = [g.strip() for g in value.split(",") if g.strip()]
+    if not groups:
+        typer.echo("error: --group needs at least one group name.", err=True)
+        raise typer.Exit(2)
+    return groups
+
+
+def _admin_count(users: list[DexUser]) -> int:
+    return sum(1 for u in users if "wip-admins" in u.groups)
+
+
 def _user_verb_scope(
     deployment: Deployment, components: list[Component]
 ) -> list[str]:
@@ -3154,8 +3167,9 @@ def user_add(
         str,
         typer.Option(
             "--group",
-            help="Authorization group (e.g. wip-admins, wip-editors, "
-            "wip-viewers, or an app-defined group).",
+            help="Authorization group, or a comma-separated list of groups "
+            "(e.g. wip-admins, wip-editors, wip-viewers, or an app-defined "
+            "group).",
         ),
     ],
     name: Annotated[str | None, _name_opt()] = None,
@@ -3183,6 +3197,7 @@ def user_add(
             err=True,
         )
         raise typer.Exit(2)
+    groups = _parse_groups(group)
 
     resolved_name, target_dir, deployment, components, apps_list, repo_root = (
         _load_and_discover_for_mutation(name, install_dir, repo_root)
@@ -3192,7 +3207,8 @@ def user_add(
     if any(u.username == username for u in users):
         typer.echo(
             f"error: user {username!r} is already declared on this install "
-            f"— remove it first to re-create it with a fresh password.",
+            f"— change its groups with `wip-deploy user set-groups`, or "
+            f"remove it first to re-create it with a fresh password.",
             err=True,
         )
         raise typer.Exit(2)
@@ -3207,7 +3223,7 @@ def user_add(
         raise typer.Exit(2)
 
     try:
-        new_user = DexUser(email=email, username=username, group=group)
+        new_user = DexUser(email=email, username=username, groups=groups)
     except ValidationError as e:
         first = e.errors()[0]
         typer.echo(
@@ -3237,7 +3253,8 @@ def user_add(
         plaintext = secret_path.read_text().rstrip("\n")
         typer.echo(
             typer.style(
-                f"Password for {username!r} ({email}, group {group}) — "
+                f"Password for {username!r} ({email}, groups "
+                f"{','.join(new_user.groups)}) — "
                 "shown once:",
                 bold=True,
             )
@@ -3287,10 +3304,7 @@ def user_remove(
             err=True,
         )
         raise typer.Exit(2)
-    if (
-        match.group == "wip-admins"
-        and sum(1 for u in users if u.group == "wip-admins") == 1
-    ):
+    if "wip-admins" in match.groups and _admin_count(users) == 1:
         typer.echo(
             f"error: {username!r} is the last wip-admins user — removing it "
             "would lock the install out of administration. Add another "
@@ -3330,6 +3344,87 @@ def user_remove(
     )
 
 
+@user_app.command("set-groups")
+def user_set_groups(
+    username: Annotated[
+        str, typer.Argument(help="Username of the spec-declared user to change.")
+    ],
+    group: Annotated[
+        str,
+        typer.Option(
+            "--group",
+            help="The user's complete group set, comma-separated "
+            "(e.g. wip-editors,wip-admins). Replaces the current groups.",
+        ),
+    ],
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Replace a Dex static user's groups and apply.
+
+    The password is kept. Tokens issued before the apply carry the old
+    groups; a fresh login picks up the new ones. Refuses to take wip-admins away
+    from the last wip-admins user.
+    """
+    groups = _parse_groups(group)
+
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+
+    users = deployment.spec.auth.users
+    match = next((u for u in users if u.username == username), None)
+    if match is None:
+        declared = ", ".join(sorted(u.username for u in users)) or "(none)"
+        typer.echo(
+            f"error: {username!r} is not a spec-declared user on this "
+            f"install. Declared users: {declared}.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if (
+        "wip-admins" in match.groups
+        and "wip-admins" not in groups
+        and _admin_count(users) == 1
+    ):
+        typer.echo(
+            f"error: {username!r} is the last wip-admins user — taking "
+            "wip-admins away would lock the install out of administration. "
+            "Add another wip-admins user first (wip-deploy user add).",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    try:
+        match.groups = groups
+    except ValidationError as e:
+        typer.echo(f"error: invalid groups: {e.errors()[0]['msg']}", err=True)
+        raise typer.Exit(2) from e
+
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Set groups of Dex user {username!r} on {resolved_name} to "
+        f"{','.join(match.groups)}",
+        services_scope=_user_verb_scope(deployment, components),
+        repo_root=repo_root,
+    )
+    typer.echo(
+        f"{username!r} now holds {','.join(match.groups)}. Tokens issued "
+        "before this apply carry the old groups; a fresh login picks up the "
+        "new ones."
+    )
+
+
 @user_app.command("list")
 def user_list(
     name: Annotated[str | None, _name_opt()] = None,
@@ -3360,10 +3455,10 @@ def user_list(
 
     width_user = max(len("USERNAME"), *(len(u.username) for u in users))
     width_email = max(len("EMAIL"), *(len(u.email) for u in users))
-    width_group = max(len("GROUP"), *(len(u.group) for u in users))
+    width_group = max(len("GROUPS"), *(len(",".join(u.groups)) for u in users))
     typer.echo(
         f"{'USERNAME':<{width_user}}  {'EMAIL':<{width_email}}  "
-        f"{'GROUP':<{width_group}}  PASSWORD SECRET"
+        f"{'GROUPS':<{width_group}}  PASSWORD SECRET"
     )
     for u in sorted(users, key=lambda u: u.username):
         secret_name = _dex_password_secret(u.username)
@@ -3375,7 +3470,7 @@ def user_list(
             state = f"{secret_name} (not yet generated — apply pending)"
         typer.echo(
             f"{u.username:<{width_user}}  {u.email:<{width_email}}  "
-            f"{u.group:<{width_group}}  {state}"
+            f"{','.join(u.groups):<{width_group}}  {state}"
         )
 
 

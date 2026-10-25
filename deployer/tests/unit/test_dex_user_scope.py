@@ -63,7 +63,7 @@ def _deployment(target: str, *, extra_user: bool = False, mode: str = "oidc") ->
     }[target]
     auth = AuthSpec(mode=mode, gateway=mode != "api-key-only")  # type: ignore[arg-type]
     if extra_user:
-        auth.users.append(DexUser(email="e2e@wip.local", username="e2e", group="wip-admins"))
+        auth.users.append(DexUser(email="e2e@wip.local", username="e2e", groups=["wip-admins"]))
     return Deployment(
         metadata=DeploymentMetadata(name="dexscope"),
         spec=DeploymentSpec(
@@ -144,6 +144,7 @@ def _invoke(install: Path, *args: str) -> Any:
     [
         ("user", "add", "e2e", "--email", "e2e@wip.local", "--group", "wip-admins"),
         ("user", "remove", "viewer"),
+        ("user", "set-groups", "editor", "--group", "wip-editors,wip-admins"),
     ],
 )
 def test_user_verbs_scope_the_apply_to_dex(args: tuple[str, ...], tmp_path: Path) -> None:

@@ -89,16 +89,42 @@ class AppRef(WIPModel):
 
 
 class DexUser(WIPModel):
+    """A Dex static user. `groups` becomes the token's groups claim, so a
+    user can hold several authorization groups at once."""
+
     email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     username: str = Field(min_length=1)
-    group: str = Field(min_length=1)
+    groups: list[str] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _single_group_spelling(cls, data: Any) -> Any:
+        # Specs saved before users could hold several groups carry a single
+        # `group` string; they load as a one-element `groups` list.
+        if isinstance(data, dict) and "group" in data:
+            if "groups" in data:
+                raise ValueError("declare either 'group' or 'groups', not both")
+            data = dict(data)
+            data["groups"] = [data.pop("group")]
+        return data
+
+    @field_validator("groups")
+    @classmethod
+    def _groups(cls, groups: list[str]) -> list[str]:
+        out: list[str] = []
+        for group in groups:
+            if not group.strip():
+                raise ValueError("group names must be non-empty")
+            if group not in out:
+                out.append(group)
+        return out
 
 
 def _default_dex_users() -> list[DexUser]:
     return [
-        DexUser(email="admin@wip.local", username="admin", group="wip-admins"),
-        DexUser(email="editor@wip.local", username="editor", group="wip-editors"),
-        DexUser(email="viewer@wip.local", username="viewer", group="wip-viewers"),
+        DexUser(email="admin@wip.local", username="admin", groups=["wip-admins"]),
+        DexUser(email="editor@wip.local", username="editor", groups=["wip-editors"]),
+        DexUser(email="viewer@wip.local", username="viewer", groups=["wip-viewers"]),
     ]
 
 

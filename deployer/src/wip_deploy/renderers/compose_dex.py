@@ -128,7 +128,7 @@ def _render_static_passwords(
                 "hash": hashed,
                 "username": user.username,
                 "userID": user.user_id,
-                "groups": [user.group],
+                "groups": list(user.groups),
             }
         )
     return out

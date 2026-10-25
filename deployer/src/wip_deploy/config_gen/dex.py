@@ -24,7 +24,7 @@ from wip_deploy.spec.component import Component
 class DexUserEntry:
     email: str
     username: str
-    group: str
+    groups: list[str]
     password_secret: SecretRef  # the plain-text password; renderer bcrypts
     user_id: str  # stable ID; derived from username
 
@@ -140,7 +140,7 @@ def _dex_users(deployment: Deployment) -> list[DexUserEntry]:
             DexUserEntry(
                 email=u.email,
                 username=u.username,
-                group=u.group,
+                groups=list(u.groups),
                 password_secret=SecretRef(secret_name),
                 user_id=_user_id(u.username),
             )

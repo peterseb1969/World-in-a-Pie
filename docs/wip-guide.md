@@ -407,6 +407,9 @@ Add, remove and list users with `wip-deploy user`:
 # Declare a user and apply; the password is printed once and kept in the secret backend
 wip-deploy user add e2e --email e2e@wip.local --group wip-editors --name <install>
 
+# Change a user's groups in place; the password is kept
+wip-deploy user set-groups e2e --group wip-editors,wip-admins --name <install>
+
 # What's declared, and whether each password secret exists yet
 wip-deploy user list --name <install>
 
@@ -414,16 +417,19 @@ wip-deploy user list --name <install>
 wip-deploy user remove e2e --name <install>
 ```
 
-- `--group` is the user's authorization group: `wip-admins`, `wip-editors`,
-  `wip-viewers`, or a group an app defines.
+- `--group` is the user's authorization group, or a comma-separated list
+  of groups: `wip-admins`, `wip-editors`, `wip-viewers`, or groups an app
+  defines. Dex puts every group into the login's token.
+- `set-groups` replaces the user's whole group set. Tokens issued before
+  the apply carry the old groups; a fresh login picks up the new ones.
 - The username names the password secret, so it must start with a letter or
   digit and use only letters, digits, `.`, `_` and `-`. Emails must be
   unique on the install, because Dex identifies static users by email.
 - There is no password-rotate verb. To give a user a fresh password,
   `remove` it and `add` it again.
-- `remove` refuses to delete the last `wip-admins` user. Add another admin
-  first.
-- `user add` and `user remove` re-render the install's files from the
+- `remove` refuses to delete the last `wip-admins` user, and `set-groups`
+  refuses to take `wip-admins` away from it. Add another admin first.
+- `user add`, `user set-groups` and `user remove` re-render the install's files from the
   current repo but apply only to Dex: Dex is recreated with the new user
   set, and every other container keeps running.
 
