@@ -45,6 +45,11 @@ def _wake_rollover(ctx: Context) -> dict[str, bytes]:
     return {".claude/scripts/wake-rollover.py": src.read_bytes()}
 
 
+def _yac_status(ctx: Context) -> dict[str, bytes]:
+    src = ctx.wip_root / "agent-scripts/src/yac_status.py"
+    return {".claude/scripts/yac-status.py": src.read_bytes()}
+
+
 def _session_role(ctx: Context) -> dict[str, bytes]:
     dest = ctx.target_root / ".claude/.session-role"
     if ctx.role_prefix:
@@ -412,6 +417,13 @@ def backend_surfaces() -> list[Surface]:
             produce=_wake_rollover,
         ),
         Surface(
+            name="yac-status",
+            policy=Policy.REGENERATE,
+            rationale="the status line shows the case a YAC is working on; hooks record it, so it does not depend on the model remembering to",
+            executable=True,
+            produce=_yac_status,
+        ),
+        Surface(
             name="settings",
             policy=Policy.MERGE_JSON_BASELINE,
             rationale="ONE baseline for both roles — the old per-role pair drifted apart; merged, not regenerated, so baseline changes still reach every repo while app-added hooks and permissions survive; settings.local.json is operator-owned and never touched",
@@ -526,6 +538,13 @@ def app_surfaces(app_meta: dict[str, str]) -> list[Surface]:
             policy=Policy.REGENERATE,
             rationale="session rollover must be a vendored script, not prose an agent may skip",
             produce=_wake_rollover,
+        ),
+        Surface(
+            name="yac-status",
+            policy=Policy.REGENERATE,
+            rationale="the status line shows the case a YAC is working on; hooks record it, so it does not depend on the model remembering to",
+            executable=True,
+            produce=_yac_status,
         ),
         Surface(
             name="session-role",
