@@ -171,3 +171,16 @@ def test_bad_input_never_fails(tmp_path):
     result = run(root, "line", "not json")
     assert result.returncode == 0
     assert result.stdout.strip() == ""
+
+
+def test_context_turns_red_from_80_percent(tmp_path):
+    root = make_project(tmp_path)
+    window = {"total_input_tokens": 160000, "context_window_size": 200000}
+    assert line(root, {"context_window": {**window, "used_percentage": 80.0}}) == (
+        "\033[31mctx 80% (160k/200k)\033[0m"
+    )
+    assert line(root, {"context_window": {**window, "used_percentage": 79.4}}) == (
+        "ctx 79% (160k/200k)"
+    )
+    # Shown as 80%, so colored as 80%.
+    assert line(root, {"context_window": {**window, "used_percentage": 79.6}}).startswith("\033[31m")

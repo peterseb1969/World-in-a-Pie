@@ -39,6 +39,12 @@ from pathlib import Path
 
 ACTIVITY_FILE = ".yac-activity"
 
+# From this share of the context window on, the context part shows in red:
+# time to wrap up the session before compaction does it.
+CONTEXT_WARN_PERCENT = 80
+RED = "\033[31m"
+RESET = "\033[0m"
+
 # /wip-case verbs that act on one case -> how the status line names them.
 # Any other /wip-* command shows as itself.
 VERB_LABELS = {
@@ -153,6 +159,8 @@ def context_part(payload: dict) -> str:
     part = f"ctx {used:.0f}%"
     if tokens and size:
         part += f" ({tokens // 1000}k/{size // 1000}k)"
+    if int(f"{used:.0f}") >= CONTEXT_WARN_PERCENT:  # the number shown decides
+        part = f"{RED}{part}{RESET}"
     return part
 
 
