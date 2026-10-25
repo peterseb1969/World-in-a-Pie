@@ -345,6 +345,36 @@ storage order served first. Three changes make the ambiguity loud:
 except ambiguous names on identity fields, which were producing
 storage-order-dependent identities and should be corrected, not relied on.
 
+### Conditional rules and nested fields are validated on write
+
+Two declarative checks that passed silently now apply to every document
+write and to `/validate`:
+
+- **`conditional_required` rules fire.** Template-store serves every
+  optional rule key, an unset `required` as `null`, and document-store read
+  that null as "not required", so the rule never applied. Unset now means
+  required; only an explicit `required: false` turns a rule off. Rules with
+  a null `allowed_values` (`conditional_value`) or `target_fields`
+  (`mutual_exclusion`) no longer raise.
+- **Fields inside nested templates are resolved like top-level ones.** Term,
+  reference and file fields of an object field's `template_ref` or an object
+  array's `array_template_ref` used to be type-checked only: an unknown term
+  was accepted, a reference was never existence-checked, and nothing was
+  recorded. They now go through the same checks as top-level fields, and
+  their resolutions are stored under the nested path
+  (`ingredients[0].ingredient`, `address.country`) in `term_references`,
+  `references` and `file_references`. Reporting keeps them in
+  `term_references_json`; nested fields get no per-field `_term_id` column.
+  Identity hashing is unchanged: a dotted identity path into an object field
+  still hashes its submitted value.
+
+**Action:** documents already stored with a value these checks reject (an
+unknown nested term, a dangling nested reference, an imported document
+missing a conditionally required field) stay as they are, but their next
+update is rejected until the value is corrected. To find them first, run
+`POST /api/document-store/validation/validate` over the existing documents
+of each namespace that uses nested templates or conditional rules.
+
 ### Explicit null clears optional term and terminology fields
 
 Term updates align with the platform's RFC 7396 vocabulary: an EXPLICITLY

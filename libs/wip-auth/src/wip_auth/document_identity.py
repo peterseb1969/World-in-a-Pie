@@ -183,9 +183,11 @@ def referent_identity_fields(
     """The identity fields whose values are referents (term / reference typed).
 
     These fields fall under the resolved-referent feed rule. Lookup is by the
-    identity path's top-level segment; term and reference fields are only
-    collected at the top level of a template, so a dotted identity path can
-    only name plain data inside an object field and never matches here.
+    identity path's top-level segment, so a dotted identity path into an
+    object field never matches here and keeps feeding its submitted value,
+    even when it names a term or reference field of the nested template that
+    validation resolves. Feeding those resolutions instead would re-hash every
+    existing document whose identity uses such a path.
     """
     fields_by_name = {f.get("name"): f for f in template_fields}
     referent: set[str] = set()

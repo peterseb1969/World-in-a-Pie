@@ -136,7 +136,7 @@ class TestArrayReferenceResolution:
         vs = get_document_service().validation_service
         fields = [_doc_ref_array_field()]
         data = {"kb_refs": ["id-a", "id-b"]}
-        collected = vs._collect_reference_values(data, fields, "")
+        collected = await vs._collect_reference_values(data, fields, "")
         assert [c["field_path"] for c in collected] == ["kb_refs[0]", "kb_refs[1]"]
         assert all(c["reference_type"] == "document" for c in collected)
         assert all(c["target_templates"] == ["ARTICLE"] for c in collected)

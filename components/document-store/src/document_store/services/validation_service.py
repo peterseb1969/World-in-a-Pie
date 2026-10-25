@@ -1191,7 +1191,7 @@ class ValidationService:
         terminology refs.
         """
         # Collect all term values to validate
-        term_validations = self._collect_term_values(data, template.get("fields", []), "")
+        term_validations = await self._collect_term_values(data, template.get("fields", []), "")
 
         if not term_validations:
             return
@@ -1269,14 +1269,25 @@ class ValidationService:
             # If Def-Store is unavailable, add a warning but don't fail
             result.add_warning(f"Could not validate terminology values: {e!s}")
 
-    def _collect_term_values(
+    async def _typed_leaves(
         self,
         data: dict[str, Any],
         fields: list[dict[str, Any]],
-        prefix: str
-    ) -> list[dict[str, str]]:
-        """Recursively collect term field values for validation."""
-        term_values = []
+        prefix: str = ""
+    ) -> list[tuple[str, dict[str, Any], Any]]:
+        """Every present field of a document with its definition, nested ones included.
+
+        Returns (path, field definition, value) for each field of `fields`
+        that `data` carries with a non-null value, then descends into object
+        fields with a template_ref and into the items of object arrays with
+        an array_template_ref, so the term, reference and file stages see
+        nested fields exactly as they see top-level ones. Nested templates
+        are read at their pinned versions, the same ones Stage 3 validated
+        against, from the client's permanent version cache. A nested
+        template that cannot be fetched is skipped here; Stage 3 has already
+        reported it. Paths follow Stage 3's: `field.sub`, `field[i].sub`.
+        """
+        leaves: list[tuple[str, dict[str, Any], Any]] = []
 
         for field in fields:
             field_name = field["name"]
@@ -1289,6 +1300,55 @@ class ValidationService:
             if value is None:
                 continue
 
+            leaves.append((full_path, field, value))
+
+            field_type = field.get("type", "string")
+            if field_type == "object" and field.get("template_ref") and isinstance(value, dict):
+                nested = await self._nested_template_fields(
+                    field["template_ref"], field.get("template_ref_version")
+                )
+                if nested:
+                    leaves.extend(await self._typed_leaves(value, nested, f"{full_path}."))
+            elif (
+                field_type == "array"
+                and field.get("array_item_type") == "object"
+                and field.get("array_template_ref")
+                and isinstance(value, list)
+            ):
+                nested = await self._nested_template_fields(
+                    field["array_template_ref"], field.get("array_template_ref_version")
+                )
+                if nested:
+                    for i, item in enumerate(value):
+                        if isinstance(item, dict):
+                            leaves.extend(
+                                await self._typed_leaves(item, nested, f"{full_path}[{i}].")
+                            )
+
+        return leaves
+
+    async def _nested_template_fields(
+        self, template_ref: str, version: int | None
+    ) -> list[dict[str, Any]] | None:
+        """The fields of a nested template, or None when it cannot be fetched."""
+        try:
+            nested = await get_template_store_client().get_template_resolved(
+                template_ref, version=version
+            )
+        except TemplateStoreError:
+            return None
+        return (nested or {}).get("fields") or None
+
+    async def _collect_term_values(
+        self,
+        data: dict[str, Any],
+        fields: list[dict[str, Any]],
+        prefix: str
+    ) -> list[dict[str, str]]:
+        """Collect every term value for validation, nested templates included."""
+        term_values = []
+
+        for full_path, field, value in await self._typed_leaves(data, fields, prefix):
             field_type = field.get("type", "string")
 
             if field_type == "term" and field.get("terminology_ref"):
@@ -1327,7 +1387,7 @@ class ValidationService:
         """
 
         # Collect all reference values to validate
-        ref_validations = self._collect_reference_values(data, template.get("fields", []), "")
+        ref_validations = await self._collect_reference_values(data, template.get("fields", []), "")
 
         # Cache for expanded target_templates (to avoid repeated lookups)
         expanded_templates_cache: dict[str, list[str]] = {}
@@ -1466,7 +1526,7 @@ class ValidationService:
         from .file_storage_client import is_file_storage_enabled
 
         # Collect all file values to validate
-        file_validations = self._collect_file_values(data, template.get("fields", []), "")
+        file_validations = await self._collect_file_values(data, template.get("fields", []), "")
 
         if not file_validations:
             return
@@ -1519,26 +1579,16 @@ class ValidationService:
                     field=field_path
                 )
 
-    def _collect_file_values(
+    async def _collect_file_values(
         self,
         data: dict[str, Any],
         fields: list[dict[str, Any]],
         prefix: str
     ) -> list[dict[str, Any]]:
-        """Recursively collect file field values for validation."""
+        """Collect every file value for validation, nested templates included."""
         file_values = []
 
-        for field in fields:
-            field_name = field["name"]
-            full_path = f"{prefix}{field_name}" if prefix else field_name
-
-            if field_name not in data:
-                continue
-
-            value = data[field_name]
-            if value is None:
-                continue
-
+        for full_path, field, value in await self._typed_leaves(data, fields, prefix):
             field_type = field.get("type", "string")
             file_config = field.get("file_config") or {}
 
@@ -2022,26 +2072,16 @@ class ValidationService:
         uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
         return bool(re.match(uuid_pattern, value.lower()))
 
-    def _collect_reference_values(
+    async def _collect_reference_values(
         self,
         data: dict[str, Any],
         fields: list[dict[str, Any]],
         prefix: str
     ) -> list[dict[str, Any]]:
-        """Recursively collect reference field values for resolution."""
+        """Collect every reference value for resolution, nested templates included."""
         ref_values = []
 
-        for field in fields:
-            field_name = field["name"]
-            full_path = f"{prefix}{field_name}" if prefix else field_name
-
-            if field_name not in data:
-                continue
-
-            value = data[field_name]
-            if value is None:
-                continue
-
+        for full_path, field, value in await self._typed_leaves(data, fields, prefix):
             field_type = field.get("type", "string")
 
             if field_type == "reference":
@@ -2085,7 +2125,7 @@ class ValidationService:
 
         Evaluates cross-field validation rules.
         """
-        rules = template.get("rules", [])
+        rules = template.get("rules") or []
 
         for rule in rules:
             rule_type = rule.get("type")
@@ -2161,9 +2201,13 @@ class ValidationService:
         result: ValidationResult
     ):
         """Evaluate conditional_required rule."""
-        conditions = rule.get("conditions", [])
+        conditions = rule.get("conditions") or []
         target_field = rule.get("target_field")
-        is_required = rule.get("required", True)
+        # Template-store serves every optional rule key, unset ones as null,
+        # so `required` is unset (null or absent) on most rules. Unset means
+        # required: that is what the rule type exists for. Only an explicit
+        # false turns it off.
+        is_required = rule.get("required") is not False
 
         if not self._check_conditions(data, conditions):
             return
@@ -2184,9 +2228,9 @@ class ValidationService:
         result: ValidationResult
     ):
         """Evaluate conditional_value rule."""
-        conditions = rule.get("conditions", [])
+        conditions = rule.get("conditions") or []
         target_field = rule.get("target_field")
-        allowed_values = rule.get("allowed_values", [])
+        allowed_values = rule.get("allowed_values") or []
 
         if not self._check_conditions(data, conditions):
             return
@@ -2207,7 +2251,7 @@ class ValidationService:
         result: ValidationResult
     ):
         """Evaluate mutual_exclusion rule."""
-        target_fields = rule.get("target_fields", [])
+        target_fields = rule.get("target_fields") or []
 
         fields_with_values = [
             f for f in target_fields
@@ -2228,7 +2272,7 @@ class ValidationService:
         result: ValidationResult
     ):
         """Evaluate dependency rule."""
-        conditions = rule.get("conditions", [])
+        conditions = rule.get("conditions") or []
         target_field = rule.get("target_field")
 
         target_value = IdentityService._get_nested_value(data, cast(str, target_field))
