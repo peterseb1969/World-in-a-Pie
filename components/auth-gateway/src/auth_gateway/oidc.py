@@ -15,6 +15,7 @@ import httpx
 from starlette.requests import Request
 
 from .config import settings
+from .federation import FederatedGroupPolicy
 
 logger = logging.getLogger("auth_gateway.oidc")
 
@@ -170,11 +171,16 @@ async def exchange_code(request: Request) -> dict[str, Any]:
     payload_b64 += "=" * (4 - len(payload_b64) % 4)
     claims = json.loads(base64.urlsafe_b64decode(payload_b64))
 
+    groups = claims.get("groups", [])
+    policy = FederatedGroupPolicy.from_json(settings.federated_groups)
+    if policy is not None:
+        groups = policy.apply(claims, groups)
+
     user_info = {
         "email": claims.get("email", ""),
         "name": claims.get("name", claims.get("preferred_username", "")),
         "sub": claims.get("sub", ""),
-        "groups": claims.get("groups", []),
+        "groups": groups,
         "refresh_token": tokens.get("refresh_token"),
     }
 

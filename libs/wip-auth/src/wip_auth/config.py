@@ -73,6 +73,15 @@ class AuthConfig(BaseSettings):
         default="groups",
         description="JWT claim containing user groups"
     )
+    federated_groups: str = Field(
+        default="",
+        description=(
+            "Group policy for logins federated through a Dex connector, as "
+            "JSON (see wip_auth.federation): reserved groups stripped, "
+            "email/domain mappings applied. Rendered by the deployer when "
+            "the install declares a connector; empty leaves groups as issued."
+        ),
+    )
     jwt_algorithms: list[str] = Field(
         default=["RS256", "ES256"],
         description="Allowed JWT signing algorithms"

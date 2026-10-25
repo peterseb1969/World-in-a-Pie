@@ -47,6 +47,7 @@ from .fastapi_helpers import (
     resolve_or_404,
     resolve_term_by_fields_or_404,
 )
+from .federation import FederatedGroupPolicy
 from .health_cache import DEFAULT_TTL_SECONDS, HealthCache
 from .identity import (
     clear_current_identity,
@@ -248,6 +249,7 @@ def create_providers_from_config(
             default_groups=config.default_groups,
             verify_exp=config.jwt_verify_exp,
             leeway=config.jwt_leeway_seconds,
+            federated_groups=FederatedGroupPolicy.from_json(config.federated_groups),
         ))
 
     elif config.mode == "dual":
@@ -283,6 +285,7 @@ def create_providers_from_config(
                 default_groups=config.default_groups,
                 verify_exp=config.jwt_verify_exp,
                 leeway=config.jwt_leeway_seconds,
+                federated_groups=FederatedGroupPolicy.from_json(config.federated_groups),
             ))
 
         if dual_key_provider is not None:

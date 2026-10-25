@@ -70,6 +70,12 @@ class Settings:
     # Default redirect after login if no return_to was provided.
     default_redirect: str = os.getenv("DEFAULT_REDIRECT", "/apps/rc/")
 
+    # Group policy for logins federated through a Dex connector (JSON,
+    # rendered by the deployer when the install declares a connector):
+    # reserved groups stripped, email/domain mappings applied. Empty leaves
+    # every login's groups as Dex issued them.
+    federated_groups: str = os.getenv("WIP_AUTH_FEDERATED_GROUPS", "")
+
     # Scopes to request from Dex.
     oidc_scopes: str = os.getenv("OIDC_SCOPES", "openid email profile groups offline_access")
 

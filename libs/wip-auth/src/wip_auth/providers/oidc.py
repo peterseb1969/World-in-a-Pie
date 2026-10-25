@@ -8,6 +8,7 @@ import httpx
 import jwt
 from fastapi import HTTPException, Request
 
+from ..federation import FederatedGroupPolicy
 from ..models import UserIdentity
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,7 @@ class OIDCProvider:
         default_groups: list[str] | None = None,
         verify_exp: bool = True,
         leeway: int = 30,
+        federated_groups: FederatedGroupPolicy | None = None,
     ):
         """Initialize the OIDC provider.
 
@@ -139,6 +141,9 @@ class OIDCProvider:
             default_groups: Groups to assign if not in token
             verify_exp: Whether to verify token expiration
             leeway: Clock skew tolerance in seconds
+            federated_groups: Group policy for logins federated through a
+                Dex connector (see wip_auth.federation); None leaves every
+                token's groups as issued
         """
         # Determine JWKS URL
         if jwks_url:
@@ -155,6 +160,7 @@ class OIDCProvider:
         self.default_groups = default_groups or []
         self.verify_exp = verify_exp
         self.leeway = leeway
+        self.federated_groups = federated_groups
 
         self._jwks_cache = JWKSCache(self._jwks_url)
 
@@ -250,6 +256,8 @@ class OIDCProvider:
             groups = self.default_groups
         if isinstance(groups, str):
             groups = [groups]
+        if self.federated_groups is not None:
+            groups = self.federated_groups.apply(claims, groups)
 
 
         return UserIdentity(
