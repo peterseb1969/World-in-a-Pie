@@ -1178,45 +1178,50 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
                 },
             })
 
-    # Bare-host redirect (CASE-368): a standalone Ingress that 301s `/` to
-    # the resolved target via nginx's permanent-redirect annotation. The
-    # annotation fires before proxying, so the backend is never contacted —
-    # but the Ingress schema still requires one, so we point it at the
-    # service that owns the redirect target (longest path-prefix match).
-    if cfg.root_redirect_target:
+    # The host's root Ingress (CASE-368, CASE-944). Two jobs:
+    #  - Redirect bare `/` to the resolved target. `app-root` redirects `/`
+    #    only; the earlier `permanent-redirect` annotation on an Exact `/`
+    #    rule made nginx redirect EVERY unrouted path, so an unknown API
+    #    path answered 301 text/html and ended at the login page.
+    #  - Catch every path no other rule takes (Prefix `/`, the least
+    #    specific rule) and send it to the router, whose terminal guards
+    #    answer unrouted /api with the apps' JSON 404 and anything else with
+    #    a 404. Without a safe router (see catch_all_backend) it stays an
+    #    Exact `/` rule on the service that owns the redirect target.
+    backend = cfg.catch_all_backend
+    if backend is None and cfg.root_redirect_target:
         backend = _root_redirect_backend(cfg.root_redirect_target, cfg.rules)
-        if backend is not None:
-            redirect_annotations = dict(base_annotations)
-            redirect_annotations["nginx.ingress.kubernetes.io/permanent-redirect"] = (
-                f"https://{cfg.hostname}{cfg.root_redirect_target}"
-            )
-            docs.append({
-                "apiVersion": "networking.k8s.io/v1",
-                "kind": "Ingress",
-                "metadata": {
-                    "name": "wip-root-redirect",
-                    "namespace": ns,
-                    "labels": {_LABELS_PART_OF: "wip"},
-                    "annotations": redirect_annotations,
-                },
-                "spec": {
-                    "ingressClassName": cfg.ingress_class,
-                    "tls": tls_block,
-                    "rules": [{
-                        "host": cfg.hostname,
-                        "http": {"paths": [{
-                            "path": "/",
-                            "pathType": "Exact",
-                            "backend": {
-                                "service": {
-                                    "name": backend[0],
-                                    "port": {"number": backend[1]},
-                                },
+    if backend is not None:
+        root_annotations = dict(base_annotations)
+        if cfg.root_redirect_target:
+            root_annotations["nginx.ingress.kubernetes.io/app-root"] = cfg.root_redirect_target
+        docs.append({
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "Ingress",
+            "metadata": {
+                "name": "wip-root",
+                "namespace": ns,
+                "labels": {_LABELS_PART_OF: "wip"},
+                "annotations": root_annotations,
+            },
+            "spec": {
+                "ingressClassName": cfg.ingress_class,
+                "tls": tls_block,
+                "rules": [{
+                    "host": cfg.hostname,
+                    "http": {"paths": [{
+                        "path": "/",
+                        "pathType": "Prefix" if cfg.catch_all_backend else "Exact",
+                        "backend": {
+                            "service": {
+                                "name": backend[0],
+                                "port": {"number": backend[1]},
                             },
-                        }]},
-                    }],
-                },
-            })
+                        },
+                    }]},
+                }],
+            },
+        })
 
     return _dump_multi(docs)
 

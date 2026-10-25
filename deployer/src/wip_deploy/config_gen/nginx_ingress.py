@@ -55,6 +55,11 @@ class IngressConfig:
     # unhandled (nginx returns its default-backend 404). Resolved in the
     # shared layer so compose and k8s agree on the destination.
     root_redirect_target: str | None = None
+    # Backend of the host's catch-all `/` Ingress: every path no other rule
+    # takes lands here. The router when it can safely own them (its terminal
+    # guards answer unrouted /api with the apps' JSON 404 and anything else
+    # with a 404); None keeps the catch-all on the redirect target's service.
+    catch_all_backend: tuple[str, int] | None = None
     # No body-size limit by default. nginx-ingress treats "0" as
     # unlimited, matching Caddy's (compose) default. Real backups run
     # into the multi-GB range; capping here would just surface a 413
@@ -118,4 +123,33 @@ def generate_ingress_config(
         rules=rules,
         gateway_auth_url=gateway_auth_url,
         root_redirect_target=resolve_root_redirect(deployment, apps),
+        catch_all_backend=catch_all_backend(deployment, components, apps, rules),
     )
+
+
+def catch_all_backend(
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+    rules: list[IngressRule],
+) -> tuple[str, int] | None:
+    """The router as the public catch-all's backend, when that is safe.
+
+    The router reaches services without the gateway in front, so it may
+    take the public catch-all only while every route it serves also has
+    its own public rule: those rules are more specific than the catch-all,
+    so the router then only ever sees paths nothing else matched. If a
+    route ever exists on the router alone, the catch-all would expose it
+    without the gateway, so the router is not used.
+    """
+    from wip_deploy.config_gen.router import ROUTER_LISTEN_PORT, generate_router_config
+    from wip_deploy.spec.activation import is_component_active
+
+    router = next((c for c in components if c.metadata.name == "router"), None)
+    if router is None or not is_component_active(router, deployment):
+        return None
+    public = {r.path for r in rules}
+    router_paths = {r.path for r in generate_router_config(deployment, components, apps).routes}
+    if not router_paths <= public:
+        return None
+    return "wip-router", ROUTER_LISTEN_PORT

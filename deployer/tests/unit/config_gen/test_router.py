@@ -181,15 +181,19 @@ class TestRouterCaddyfile:
     def test_api_fallthrough_404_guard_emitted(
         self, compose_deployment: Deployment, real_discovery: Discovery
     ) -> None:
-        """CASE-513: the router has no catch-all and serves raw X-API-Key
-        callers, so an unmatched /api/* path would hit Caddy's default
-        empty-200. The terminal guard 404s it, sitting after the per-route
-        service handles (longest-match keeps /api/<svc>/* winning)."""
+        """CASE-513, CASE-944: the router has no catch-all and serves raw
+        X-API-Key callers (and, on k8s, the public catch-all), so unrouted
+        /api paths, bare /api included, get the apps' JSON 404 and every
+        other unrouted path a 404 — never Caddy's default empty-200. The
+        guards sit after the per-route service handles."""
         caddyfile = self._render(compose_deployment, real_discovery)
-        assert "handle /api/* {" in caddyfile
-        guard_at = caddyfile.index("handle /api/* {")
-        assert "respond 404" in caddyfile[guard_at : guard_at + 80]
+        assert "@api_unrouted path /api /api/*" in caddyfile
+        guard_at = caddyfile.index("handle @api_unrouted {")
+        block = caddyfile[guard_at : guard_at + 160]
+        assert "header Content-Type application/json" in block
+        assert 'respond `{"error":"not_found"}` 404' in block
         assert guard_at > caddyfile.index("handle /api/registry/*")
+        assert "    handle {\n        respond 404\n    }" in caddyfile[guard_at:]
 
     def test_api_routes_emit_only_trailing_handle(
         self, compose_deployment: Deployment, real_discovery: Discovery

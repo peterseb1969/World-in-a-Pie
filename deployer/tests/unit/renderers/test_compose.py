@@ -225,11 +225,14 @@ class TestComposeYaml:
         tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
         caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
 
-        assert "handle /api/* {" in caddyfile
-        guard_at = caddyfile.index("handle /api/* {")
-        assert "respond 404" in caddyfile[guard_at : guard_at + 80]
+        assert "@api_unrouted path /api /api/*" in caddyfile
+        guard_at = caddyfile.index("handle @api_unrouted {")
+        assert 'respond `{"error":"not_found"}` 404' in caddyfile[guard_at : guard_at + 160]
         # Less specific than the service handles — must be emitted after them.
         assert guard_at > caddyfile.index("handle /api/document-store/* {")
+        # No `/` catch-all route here, so every other unrouted path 404s
+        # instead of getting Caddy's empty 200 (CASE-944).
+        assert "    handle {\n        respond 404\n    }" in caddyfile[guard_at:]
 
     def test_root_redirect_block_emitted_with_app(
         self, tmp_path: Path, real_discovery: Discovery

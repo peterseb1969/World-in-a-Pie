@@ -15,7 +15,7 @@ from __future__ import annotations
 from io import StringIO
 
 from wip_deploy.config_gen.router import RouterConfig
-from wip_deploy.renderers.caddy_common import write_api_fallthrough_404
+from wip_deploy.renderers.caddy_common import write_api_fallthrough_404, write_unrouted_404
 
 
 def render_router_caddyfile(cfg: RouterConfig) -> str:
@@ -55,10 +55,13 @@ def render_router_caddyfile(cfg: RouterConfig) -> str:
                 out.write(f"        reverse_proxy {backend}\n")
             out.write("    }\n")
 
-    # Terminal /api/* guard (CASE-513): the router has no catch-all and serves
-    # raw X-API-Key callers, so an unmatched /api/* path would otherwise hit
-    # Caddy's default empty-200. 404 it instead. See caddy_common.
+    # Terminal guards (CASE-513, CASE-944): the router has no catch-all and
+    # serves raw X-API-Key callers, so an unmatched path would otherwise hit
+    # Caddy's default empty-200. Unrouted /api paths get the apps' JSON 404,
+    # everything else a plain 404. On k8s the public ingress's catch-all
+    # also lands here. See caddy_common.
     write_api_fallthrough_404(out)
+    write_unrouted_404(out)
 
     out.write("}\n")
 

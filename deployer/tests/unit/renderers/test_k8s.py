@@ -355,24 +355,22 @@ class TestIngress:
     def test_root_redirect_ingress_emitted_with_app(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
-        """CASE-368: with an app enabled, a wip-root-redirect Ingress 301s
-        `/` to the app's prefix via nginx's permanent-redirect annotation."""
+        """CASE-368, CASE-944: the root Ingress redirects only `/` to the
+        app's prefix (app-root; permanent-redirect on it redirected every
+        unrouted path) and catches every unrouted path (Prefix `/`) for the
+        router, whose guards answer them with 404s."""
         docs = self._render_ingress(
             tmp_path, real_discovery, apps=["react-console"]
         )
-        redirect = next(
-            d for d in docs if d["metadata"]["name"] == "wip-root-redirect"
-        )
-        ann = redirect["metadata"]["annotations"]
-        assert (
-            ann["nginx.ingress.kubernetes.io/permanent-redirect"]
-            == "https://wip-kubi.local/apps/rc/"
-        )
-        path = redirect["spec"]["rules"][0]["http"]["paths"][0]
+        assert not any(d["metadata"]["name"] == "wip-root-redirect" for d in docs)
+        root = next(d for d in docs if d["metadata"]["name"] == "wip-root")
+        ann = root["metadata"]["annotations"]
+        assert ann["nginx.ingress.kubernetes.io/app-root"] == "/apps/rc/"
+        assert "nginx.ingress.kubernetes.io/permanent-redirect" not in ann
+        path = root["spec"]["rules"][0]["http"]["paths"][0]
         assert path["path"] == "/"
-        assert path["pathType"] == "Exact"
-        # Placeholder backend (never hit) points at the app's own service.
-        assert path["backend"]["service"]["name"] == "wip-react-console"
+        assert path["pathType"] == "Prefix"
+        assert path["backend"]["service"] == {"name": "wip-router", "port": {"number": 8080}}
 
     def test_no_root_redirect_without_apps(
         self, tmp_path: Path, real_discovery: Discovery
@@ -380,16 +378,33 @@ class TestIngress:
         """No apps + gateway on → redirect to /auth/login (gateway always
         contributes the /auth rule that backs the placeholder)."""
         docs = self._render_ingress(tmp_path, real_discovery)
-        redirect = next(
-            (d for d in docs if d["metadata"]["name"] == "wip-root-redirect"),
-            None,
+        root = next((d for d in docs if d["metadata"]["name"] == "wip-root"), None)
+        assert root is not None
+        ann = root["metadata"]["annotations"]
+        assert ann["nginx.ingress.kubernetes.io/app-root"] == "/auth/login"
+
+    def test_router_owns_the_catch_all_only_while_it_has_no_private_route(
+        self, real_discovery: Discovery
+    ) -> None:
+        """The router reaches services without the gateway, so the public
+        catch-all may point at it only while each router route also has a
+        public rule (more specific, so it wins). A router-only route makes
+        the catch-all fall back to the redirect target's service."""
+        from wip_deploy.config_gen import nginx_ingress
+        from wip_deploy.config_gen.nginx_ingress import IngressRule, catch_all_backend
+
+        d = _k8s_deployment(apps=["react-console"])
+        rules = nginx_ingress.generate_ingress_config(
+            d, real_discovery.components, real_discovery.apps
+        ).rules
+        assert catch_all_backend(d, real_discovery.components, real_discovery.apps, rules) == (
+            "wip-router", 8080,
         )
-        assert redirect is not None
-        ann = redirect["metadata"]["annotations"]
-        assert (
-            ann["nginx.ingress.kubernetes.io/permanent-redirect"]
-            == "https://wip-kubi.local/auth/login"
-        )
+        without_registry = [r for r in rules if r.path != "/api/registry"]
+        assert isinstance(without_registry[0], IngressRule)
+        assert catch_all_backend(
+            d, real_discovery.components, real_discovery.apps, without_registry
+        ) is None
 
 
 # ────────────────────────────────────────────────────────────────────

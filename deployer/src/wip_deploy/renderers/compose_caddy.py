@@ -15,7 +15,7 @@ from io import StringIO
 
 from wip_deploy.config_gen.caddy import CaddyConfig
 from wip_deploy.config_gen.routing import ResolvedRoute, verify_path
-from wip_deploy.renderers.caddy_common import write_api_fallthrough_404
+from wip_deploy.renderers.caddy_common import write_api_fallthrough_404, write_unrouted_404
 
 
 def render_caddyfile(cfg: CaddyConfig) -> str:
@@ -88,11 +88,15 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
     # catch-all so /api paths never reach an SPA catch-all either.
     write_api_fallthrough_404(out)
 
-    # Catch-all route (path "/") goes last.
-    for route in sorted_routes:
-        if route.path == "/":
-            _write_catchall(out, route, cfg)
-            break
+    # Catch-all route (path "/") goes last. Without one, a terminal 404 so an
+    # unrouted path is not answered with Caddy's empty 200 (CASE-944).
+    if has_root_route:
+        for route in sorted_routes:
+            if route.path == "/":
+                _write_catchall(out, route, cfg)
+                break
+    else:
+        write_unrouted_404(out)
 
     out.write("}\n")
 
