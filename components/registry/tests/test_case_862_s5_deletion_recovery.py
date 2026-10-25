@@ -20,6 +20,16 @@ from registry.services.namespace_deletion import NamespaceDeletionService
 UNREACHABLE = "http://127.0.0.1:9"
 
 
+def _manual(svc: NamespaceDeletionService, monkeypatch) -> NamespaceDeletionService:
+    """Drive recovery by hand: a deferral must not also start the real loop.
+
+    Otherwise that background loop races the test's own recovery call, and
+    can outlive the test and run inside the next one.
+    """
+    monkeypatch.setattr(svc, "start_recovery", lambda: None)
+    return svc
+
+
 async def _journal(prefix: str) -> DeletionJournal:
     journal = DeletionJournal(
         namespace=prefix,
@@ -35,7 +45,7 @@ async def _journal(prefix: str) -> DeletionJournal:
 
 @pytest.mark.asyncio
 async def test_unreachable_reporting_sync_defers_the_step(client, monkeypatch):
-    svc = NamespaceDeletionService()
+    svc = _manual(NamespaceDeletionService(), monkeypatch)
     svc._postgres_url = UNREACHABLE
     monkeypatch.setattr(mod, "_service_api_key", lambda: "k")
     journal = await _journal("c862-s5-defer")
@@ -52,7 +62,7 @@ async def test_unreachable_reporting_sync_defers_the_step(client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_recovery_finishes_the_journal_once_the_service_answers(client, monkeypatch):
-    svc = NamespaceDeletionService()
+    svc = _manual(NamespaceDeletionService(), monkeypatch)
     svc._postgres_url = UNREACHABLE
     monkeypatch.setattr(mod, "_service_api_key", lambda: "k")
     journal = await _journal("c862-s5-recover")
@@ -79,7 +89,7 @@ async def test_recovery_finishes_the_journal_once_the_service_answers(client, mo
 async def test_a_recreated_namespace_keeps_its_reporting_data(client, monkeypatch):
     """A deferred cleanup must never delete the rows of a namespace that was
     created again under the same prefix after the deletion."""
-    svc = NamespaceDeletionService()
+    svc = _manual(NamespaceDeletionService(), monkeypatch)
     svc._postgres_url = UNREACHABLE
     monkeypatch.setattr(mod, "_service_api_key", lambda: "k")
     prefix = "c862-s5-reborn"
