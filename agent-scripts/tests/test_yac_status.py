@@ -59,19 +59,71 @@ def test_case_prefix_in_number_is_accepted(tmp_path):
     assert "responding CASE-456" in line(root)
 
 
-def test_read_and_list_leave_activity_alone(tmp_path):
+def test_read_shows_the_case_being_read(tmp_path):
     root = make_project(tmp_path)
     prompt(root, "/wip-case implement 345")
     prompt(root, "/wip-case read 12")
-    prompt(root, "/wip-case list")
-    assert "implementing CASE-345" in line(root)
+    assert "reading CASE-12" in line(root)
 
 
-def test_other_wip_command_keeps_activity(tmp_path):
+def test_case_command_without_a_case_shows_its_verb(tmp_path):
     root = make_project(tmp_path)
     prompt(root, "/wip-case implement 345")
+    prompt(root, "/wip-case list --status open")
+    assert "BE-YAC · wip-case list · " in line(root)
+
+
+def test_every_wip_command_replaces_the_activity(tmp_path):
+    """A finished case must not linger: after "implemented CASE-721", the
+    next /wip-* command takes the line over."""
+    root = make_project(tmp_path)
+    prompt(root, "/wip-case implement 721")
+    cmd = "kbc kb-write.py CASE_RECORD --patch status=implemented --match case_number=721"
+    run(root, "hook", {"hook_event_name": "PostToolUse", "tool_name": "Bash",
+                       "tool_input": {"command": cmd}})
+    assert "implemented CASE-721" in line(root)
     prompt(root, "/wip-status")
+    assert "BE-YAC · wip-status · " in line(root)
+
+
+def test_wip_command_shows_a_short_first_argument_only(tmp_path):
+    root = make_project(tmp_path)
+    prompt(root, "/wip-report session-end")
+    assert "wip-report session-end" in line(root)
+    prompt(root, "/wip-report update-session found the scaffold gap")
+    assert "wip-report update-session" in line(root)
+    prompt(root, "/wip-lesson \"never trust a cached resolve\"")
+    assert " wip-lesson · " in line(root)
+
+
+def test_non_wip_slash_command_clears_activity(tmp_path):
+    root = make_project(tmp_path)
+    prompt(root, "/wip-status")
+    prompt(root, "/compact")
+    assert line(root) == "ctx 42% (84k/200k)"
+
+
+def test_model_invoked_wip_skill_sets_activity(tmp_path):
+    root = make_project(tmp_path)
+    run(root, "hook", {"hook_event_name": "PreToolUse", "tool_name": "Skill",
+                       "tool_input": {"skill": "wip-test", "args": "registry"}})
+    assert "wip-test registry" in line(root)
+
+
+def test_non_wip_skill_leaves_activity_alone(tmp_path):
+    root = make_project(tmp_path)
+    prompt(root, "/wip-case implement 345")
+    run(root, "hook", {"hook_event_name": "PreToolUse", "tool_name": "Skill",
+                       "tool_input": {"skill": "simplify", "args": ""}})
     assert "implementing CASE-345" in line(root)
+
+
+def test_record_from_the_previous_script_still_renders(tmp_path):
+    root = make_project(tmp_path)
+    (root / ".claude" / ".yac-activity").write_text(json.dumps(
+        {"label": "implemented", "case": "CASE-721", "since": 0, "session_id": SESSION}
+    ))
+    assert "implemented CASE-721" in line(root)
 
 
 def test_non_wip_prompt_clears_activity(tmp_path):

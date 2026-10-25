@@ -166,7 +166,7 @@ class TestPerCloneLock:
         )
         assert res.returncode == 0, res.stderr
         assert "LOCK_SKIPPED" in res.stdout
-        (line,) = [l for l in res.stdout.splitlines() if l.startswith("lock_dir=")]
+        (line,) = [ln for ln in res.stdout.splitlines() if ln.startswith("lock_dir=")]
         return line.removeprefix("lock_dir=")
 
     def test_two_clones_get_different_locks(self, tmp_path):
