@@ -6,6 +6,8 @@
 
 Stand up World-In-a-Pie on **one machine**, using the **published container images from GHCR**, orchestrated with **podman**. This is the production-style path (`--target compose`): real images, no source checkout of the services, no hot-reload.
 
+> **⚠ This path is currently broken.** Its standard install includes MinIO, whose image can no longer be downloaded. Run WIP from the `develop` branch instead, with **[its dev deployment guide](https://github.com/peterseb1969/World-in-a-Pie/blob/develop/docs/deploy/dev/README.md)**. Details: [the notice in the README](../../README.md#-installing-from-main--v210-is-currently-broken).
+
 > **🤖 AI agent?** Skip to [**Agent instructions**](#agent-instructions) — it walks you through asking the user what they want and bringing it up for them.
 
 > **Other deployment styles have their own guides:**
