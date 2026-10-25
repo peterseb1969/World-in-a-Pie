@@ -110,12 +110,11 @@ async def lifespan(app: FastAPI):
             ).create()
             print(f"  Created grant: {subject} ({permission}) on 'wip'")
 
-    # Recover any incomplete namespace deletions
+    # Resume incomplete namespace deletions in the background: off the
+    # startup path (they call document-store and reporting-sync, which may not
+    # be up yet), and retried until steps waiting on those services have run.
     from .api.namespace_deletion import get_deletion_service
-    try:
-        await get_deletion_service().recover_incomplete_deletions()
-    except Exception as e:
-        print(f"WARNING: Failed to recover incomplete deletions: {e}")
+    get_deletion_service().start_recovery()
 
     # Resolve stale pending composite-key claims (two-phase protocol):
     # pending older than the grace window are confirmed when their entry
@@ -174,6 +173,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     print("Shutting down WIP Registry Service...")
+    await get_deletion_service().stop_recovery()
     app.state.mongodb_client.close()
     print("MongoDB connection closed.")
 

@@ -36,6 +36,14 @@ _accessible_cache: TTLCache = TTLCache(maxsize=256, ttl=GRANT_CACHE_TTL)
 # Permission hierarchy
 PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2, "admin": 3}
 
+# The Registry could not be asked (unreachable, timed out, or 5xx). Not a
+# permission level — permission_sufficient treats it as nothing, so every
+# check still fails closed — and never cached, so access returns as soon as
+# the Registry does instead of staying denied for the cache lifetime.
+PERMISSION_UNAVAILABLE = "unavailable"
+
+_UNAVAILABLE_DETAIL = "Authorization service unavailable — the Registry could not be reached; retry shortly"
+
 
 def _get_registry_url() -> str:
     """Get the Registry service URL for permission checks."""
@@ -99,9 +107,10 @@ async def resolve_permission(identity: UserIdentity, namespace: str) -> str:
     if cached is not None:
         return cached
 
-    # Fetch from Registry
+    # Fetch from Registry; cache only a definitive answer.
     permission = await _fetch_permission_from_registry(identity, namespace)
-    _grant_cache[cache_key] = permission
+    if permission != PERMISSION_UNAVAILABLE:
+        _grant_cache[cache_key] = permission
     return permission
 
 
@@ -161,10 +170,13 @@ async def _fetch_permission_from_registry(
                 data = resp.json()
                 permission: str = data.get("permission", "none")
                 return permission
+            if resp.status_code >= 500:
+                return PERMISSION_UNAVAILABLE
             return "none"
     except Exception:
-        # If Registry is unreachable, deny access (fail closed)
-        return "none"
+        # Registry unreachable: no answer, not a "none" answer. Callers
+        # still deny (fail closed), but nothing caches it.
+        return PERMISSION_UNAVAILABLE
 
 
 async def check_namespace_permission(
@@ -177,10 +189,14 @@ async def check_namespace_permission(
     Raises HTTP 403 if insufficient permissions.
     Raises HTTP 404 if namespace is invisible (permission == none) to avoid
     leaking namespace names.
+    Raises HTTP 503 if the Registry could not be asked — an outage must not
+    look like a missing namespace.
     """
     permission = await resolve_permission(identity, namespace)
 
     if not permission_sufficient(permission, required):
+        if permission == PERMISSION_UNAVAILABLE:
+            raise HTTPException(503, _UNAVAILABLE_DETAIL)
         if permission == "none":
             raise HTTPException(404, "Namespace not found")
         raise HTTPException(
@@ -248,7 +264,10 @@ async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | N
 
     Returns None for superadmin (meaning: no filter needed, all namespaces).
     Returns a list of namespace prefixes for regular users.
-    Uses a 30-second in-process cache.
+    Uses a 30-second in-process cache for definitive answers.
+
+    Raises HTTP 503 if the Registry could not be asked, rather than treating
+    the outage as "no namespaces" (which would read as 403 or empty results).
     """
     if _is_superadmin(identity):
         return None
@@ -269,11 +288,16 @@ async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | N
         return cached  # type: ignore[return-value]
 
     namespaces = await _fetch_accessible_from_registry(identity)
+    if namespaces is _UNAVAILABLE_LIST:
+        raise HTTPException(503, _UNAVAILABLE_DETAIL)
     _accessible_cache[cache_key] = namespaces
     return namespaces
 
 
 _SENTINEL = object()
+# Returned by _fetch_accessible_from_registry when the Registry could not be
+# asked; distinct from [] (a definitive "no namespaces").
+_UNAVAILABLE_LIST: list[str] = []
 
 
 async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str] | None:
@@ -318,9 +342,11 @@ async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str] |
                     return None
                 namespaces: list[str] = data.get("namespaces", [])
                 return namespaces
+            if resp.status_code >= 500:
+                return _UNAVAILABLE_LIST
             return []
     except Exception:
-        return []
+        return _UNAVAILABLE_LIST
 
 
 def clear_permission_cache() -> None:

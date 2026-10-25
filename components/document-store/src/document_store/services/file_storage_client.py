@@ -116,6 +116,10 @@ class FileStorageClient:
         )
         self.region = region
         self._session = get_session()
+        # Set once the bucket is known to exist. Writes check it lazily, so a
+        # store that was unreachable when the service started is still
+        # provisioned on first use instead of failing until a restart.
+        self._bucket_ensured = False
 
     @asynccontextmanager
     async def _get_client(self, config: Config | None = None):
@@ -153,6 +157,7 @@ class FileStorageClient:
         Raises:
             FileStorageError: If upload fails
         """
+        await self._ensure_bucket_once()
         try:
             async with self._get_client() as client:
                 extra_args: dict[str, Any] = {
@@ -259,6 +264,7 @@ class FileStorageClient:
         Raises:
             FileStorageError: If upload fails
         """
+        await self._ensure_bucket_once()
         try:
             async with self._get_client() as client:
                 with open(file_path, "rb") as fh:
@@ -318,6 +324,7 @@ class FileStorageClient:
         Raises:
             FileStorageError: If the copy fails or the source is missing
         """
+        await self._ensure_bucket_once()
         try:
             async with self._get_client() as client:
                 await client.copy_object(
@@ -473,16 +480,21 @@ class FileStorageClient:
             async with self._get_client() as client:
                 try:
                     await client.head_bucket(Bucket=self.bucket)
-                    return True
                 except ClientError as e:
                     error_code = e.response.get("Error", {}).get("Code", "")
-                    if error_code == "404":
-                        # Bucket doesn't exist, create it
-                        await client.create_bucket(Bucket=self.bucket)
-                        return True
-                    raise
+                    if error_code != "404":
+                        raise
+                    # Bucket doesn't exist, create it
+                    await client.create_bucket(Bucket=self.bucket)
         except ClientError as e:
             raise FileStorageError(f"Failed to ensure bucket exists: {e}") from e
+        self._bucket_ensured = True
+        return True
+
+    async def _ensure_bucket_once(self) -> None:
+        """Ensure the bucket before the first write of this process."""
+        if not self._bucket_ensured:
+            await self.ensure_bucket_exists()
 
 
 class FileStorageError(Exception):

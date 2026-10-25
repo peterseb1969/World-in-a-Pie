@@ -7,14 +7,23 @@ best-effort by design — a dead secondary store must not make a namespace undel
 but a degraded step records its error and the journal terminates as
 "completed_with_warnings" instead of a bare "completed", so the outcome
 is visible in the journal itself, not only in service logs.
+
+A best-effort step whose service could not be REACHED (connection refused,
+timeout, 5xx) is different from one that was refused: the service may simply
+be starting. Such a step stays "pending" with its error noted, the journal
+stays "in_progress", and a background recovery loop retries it until it runs.
 """
 
+import asyncio
+import contextlib
 import logging
 import os
 from datetime import UTC, datetime
 from typing import Any, cast
 
 import httpx
+
+from wip_auth.startup import retry_until_done
 
 from ..models.deletion_journal import (
     DeletionJournal,
@@ -25,6 +34,13 @@ from ..models.entry import RegistryEntry
 from ..models.namespace import Namespace
 
 logger = logging.getLogger("registry.namespace_deletion")
+
+
+_recovery_sleep = asyncio.sleep  # replaced in tests
+
+
+class _Unreachable(Exception):
+    """A best-effort step's service could not be reached; retry later."""
 
 # The install's service credential for calls from the Registry to other WIP
 # services, in the order the registry manifest provides it: the legacy and
@@ -93,6 +109,10 @@ class NamespaceDeletionService:
         # the install runs; the registry only sends it the journal's keys.
         self._document_store_url = os.getenv("DOCUMENT_STORE_URL")
         self._postgres_url = os.getenv("REPORTING_SYNC_URL")
+        # Journals this process is executing right now. The background
+        # recovery loop skips them, so it never runs a journal twice at once.
+        self._running: set[str] = set()
+        self._recovery_task: asyncio.Task | None = None
 
     async def dry_run(self, prefix: str) -> dict[str, Any]:
         """Return an impact report without making any changes."""
@@ -193,21 +213,62 @@ class NamespaceDeletionService:
             sort=[("requested_at", -1)],
         )
 
-    async def recover_incomplete_deletions(self):
-        """On startup, resume any in-progress deletions."""
+    async def recover_incomplete_deletions(self) -> int:
+        """Resume every in-progress deletion this process is not running.
+
+        Returns how many journals are still in progress afterwards: those
+        whose steps are deferred because a service is still unreachable.
+        """
         incomplete = await DeletionJournal.find({"status": "in_progress"}).to_list()
+        remaining = 0
         for journal in incomplete:
+            if str(journal.id) in self._running:
+                continue
             logger.warning(
                 "Found incomplete deletion for namespace '%s', resuming...",
                 journal.namespace,
             )
             try:
                 await self._execute_journal(journal)
-                logger.info("Recovered deletion of namespace '%s'", journal.namespace)
             except Exception:
                 logger.exception(
                     "Failed to recover deletion of namespace '%s'", journal.namespace
                 )
+                continue
+            if journal.status == "in_progress":
+                remaining += 1
+            else:
+                logger.info("Recovered deletion of namespace '%s'", journal.namespace)
+        return remaining
+
+    def start_recovery(self) -> None:
+        """Run the recovery loop in the background, unless it is running.
+
+        Called at startup and whenever a deletion defers a step, so a step
+        deferred long after startup is still retried.
+        """
+        if self._recovery_task is None or self._recovery_task.done():
+            self._recovery_task = asyncio.create_task(self.recover_until_done())
+
+    async def stop_recovery(self) -> None:
+        """Cancel the recovery loop (service shutdown)."""
+        if self._recovery_task is not None and not self._recovery_task.done():
+            self._recovery_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._recovery_task
+
+    async def recover_until_done(self) -> None:
+        """Resume in-progress deletions until none is left.
+
+        A journal whose steps wait on an unreachable service is retried with
+        backoff until the service answers. Run through start_recovery.
+        """
+        async def attempt() -> bool:
+            return await self.recover_incomplete_deletions() == 0
+
+        await retry_until_done(
+            attempt, description="Namespace deletion recovery", sleep=_recovery_sleep
+        )
 
     # -------------------------------------------------------------------------
     # Internal: counting and reference checking
@@ -453,7 +514,16 @@ class NamespaceDeletionService:
 
     async def _execute_journal(self, journal: DeletionJournal):
         """Execute all pending steps in the journal."""
+        journal_id = str(journal.id)
+        self._running.add(journal_id)
+        try:
+            await self._run_steps(journal)
+        finally:
+            self._running.discard(journal_id)
+
+    async def _run_steps(self, journal: DeletionJournal):
         summary: dict[str, int] = {}
+        deferred = 0
 
         # Index-based iteration is load-bearing: Beanie's save() re-syncs the
         # in-memory document from the DB afterwards, REBUILDING journal.steps
@@ -474,6 +544,21 @@ class NamespaceDeletionService:
                     summary["postgres_rows"] = step.deleted_count
                 continue
 
+            # A re-run must not inherit the error of an earlier attempt.
+            step.error = None
+            if step.store == "postgresql" and await self._namespace_recreated(journal.namespace):
+                # A deferred cleanup can run long after the namespace record
+                # is gone. If the prefix was created again meanwhile, its
+                # reporting data is the NEW namespace's: never delete it on
+                # behalf of the old one.
+                step.status = "completed_with_errors"
+                step.error = (
+                    f"namespace '{journal.namespace}' exists again (re-created after "
+                    "this deletion); its reporting data was left alone to protect it"
+                )
+                step.completed_at = datetime.now(UTC)
+                await journal.save()
+                continue
             try:
                 deleted = await self._execute_step(step, journal.namespace)
                 # Best-effort executors (object store/PostgreSQL) record a swallowed
@@ -494,6 +579,16 @@ class NamespaceDeletionService:
                     "Step %d/%d completed: %s (%d deleted)",
                     step.order, len(journal.steps), step.detail, deleted,
                 )
+            except _Unreachable as e:
+                # The service may just be starting: keep the step pending so
+                # the recovery loop runs it later, instead of closing the
+                # journal with the data left behind for good.
+                step.status = "pending"
+                step.error = f"{e}; will retry"
+                deferred += 1
+                await journal.save()
+                logger.warning("Step %d deferred: %s — %s", step.order, step.detail, e)
+                continue
             except Exception as e:
                 step.status = "failed"
                 step.error = str(e)
@@ -504,6 +599,18 @@ class NamespaceDeletionService:
 
             # Save progress after each step
             await journal.save()
+
+        if deferred:
+            # Not finished: the recovery loop picks the journal up again.
+            journal.summary = summary
+            await journal.save()
+            self.start_recovery()
+            logger.warning(
+                "Namespace '%s' deletion waiting on %d deferred step(s); it stays "
+                "in progress and is retried in the background",
+                journal.namespace, deferred,
+            )
+            return
 
         # All steps executed. Roll degraded best-effort steps up into the
         # terminal status so a journal reader sees the outcome without
@@ -521,6 +628,11 @@ class NamespaceDeletionService:
             )
         else:
             logger.info("Namespace '%s' deletion completed: %s", journal.namespace, summary)
+
+    async def _namespace_recreated(self, prefix: str) -> bool:
+        """Whether a live namespace holds this prefix again (not the one being deleted)."""
+        live = await Namespace.find_one({"prefix": prefix})
+        return live is not None and live.status != "locked"
 
     async def _execute_step(self, step: DeletionStep, namespace: str) -> int:
         """Execute a single journal step. Returns count of deleted items."""
@@ -581,6 +693,11 @@ class NamespaceDeletionService:
                         json={"namespace": namespace, "storage_keys": batch},
                         headers={"X-API-Key": api_key},
                     )
+                    if resp.status_code >= 500:
+                        # Deletes are idempotent: the retry re-sends every key.
+                        raise _Unreachable(
+                            f"document-store answered {resp.status_code}: {resp.text[:200]}"
+                        )
                     if resp.status_code != 200:
                         problems.append(
                             f"document-store answered {resp.status_code} for "
@@ -596,9 +713,11 @@ class NamespaceDeletionService:
                         )
                     if data.get("failed"):
                         problems.append(f"{len(data['failed'])} keys failed to delete")
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            raise _Unreachable(f"could not reach document-store: {e}") from e
         except httpx.HTTPError as e:
-            logger.warning("Could not reach document-store for file-storage cleanup: %s", e)
-            problems.append(f"could not reach document-store: {e}")
+            logger.warning("File-storage cleanup through document-store failed: %s", e)
+            problems.append(f"document-store request failed: {e}")
 
         if problems:
             step.error = (
@@ -612,6 +731,8 @@ class NamespaceDeletionService:
         """Delete namespace rows from PostgreSQL via reporting-sync API."""
         if not self._postgres_url:
             return 0
+        # A re-run must not inherit the error of an earlier attempt.
+        step.error = None
 
         api_key = _service_api_key()
         if not api_key:
@@ -661,6 +782,10 @@ class NamespaceDeletionService:
                         "(404); PostgreSQL rows may remain"
                     )
                     return 0
+                elif resp.status_code >= 500:
+                    raise _Unreachable(
+                        f"reporting-sync answered {resp.status_code}: {resp.text[:200]}"
+                    )
                 else:
                     logger.warning(
                         "PostgreSQL cleanup returned %d: %s",
@@ -671,12 +796,10 @@ class NamespaceDeletionService:
                         "rows may remain"
                     )
                     return 0
-        except httpx.ConnectError:
-            logger.warning("Could not connect to reporting-sync for PostgreSQL cleanup")
-            step.error = (
-                "could not connect to reporting-sync; PostgreSQL rows may remain"
-            )
-            return 0
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            raise _Unreachable(f"could not reach reporting-sync: {e}") from e
+        except _Unreachable:
+            raise
         except Exception as e:
             logger.error("PostgreSQL deletion failed: %s", e)
             step.error = f"PostgreSQL cleanup failed: {e}; rows may remain"

@@ -22,7 +22,7 @@ from wip_auth import (
     declare_api_key_security,
     init_beanie_with_retry,
     install_liveness,
-    retry_async,
+    retry_until_done,
     setup_auth,
     setup_key_sync,
     setup_rate_limiting,
@@ -61,46 +61,35 @@ settings = Settings()
 async def _bootstrap_system_terminologies() -> None:
     """Background bootstrap of system terminologies.
 
-    Runs as a background task — waits for Registry to be healthy, then
-    creates the built-in system terminologies (_TIME_UNITS,
-    _ONTOLOGY_RELATIONSHIP_TYPES). Off the critical path so def-store's
-    HTTP listener doesn't block on Registry startup. If Registry never
-    becomes healthy, logs a warning and gives up; the terminologies can
-    be recreated by restarting def-store or hitting ensure_system_terminologies
-    via a future admin endpoint.
+    Runs as a background task: once Registry is healthy, creates the built-in
+    system terminologies (_TIME_UNITS, _ONTOLOGY_RELATIONSHIP_TYPES, …). Off
+    the critical path so def-store's HTTP listener doesn't block on Registry
+    startup. It never gives up: Registry may come up minutes after def-store,
+    and terminologies left uncreated would otherwise stay missing until a
+    restart. An attempt with errors counts as not done; ensure_system_terminologies
+    only creates what is missing, so a repeat is harmless.
     """
     registry_client = get_registry_client()
 
-    async def _verify_registry_ready() -> None:
+    async def attempt() -> bool:
         if not await registry_client.health_check():
-            raise ConnectionError("Registry health check returned non-200")
-
-    try:
-        await retry_async(
-            _verify_registry_ready,
-            retry_on=(ConnectionError,),
-            description="Registry health check (bootstrap)",
-        )
-        print("[bootstrap] Registry service is healthy.")
-    except TimeoutError as e:
-        print(f"[bootstrap] WARNING: Registry never became healthy: {e}")
-        print("[bootstrap] System terminologies not bootstrapped.")
-        return
-
-    print("[bootstrap] Ensuring system terminologies exist...")
-    try:
+            print("[bootstrap] Registry not healthy yet.")
+            return False
         result = await ensure_system_terminologies()
-        if result["errors"]:
-            for err in result["errors"]:
-                print(f"[bootstrap]   WARNING: {err}")
+        for err in result["errors"]:
+            print(f"[bootstrap]   WARNING: {err}")
         print(
             f"[bootstrap] System terminologies: {result['terminologies_created']} created, "
             f"{result['terminologies_existed']} existed, "
             f"{result['terms_created']} terms created, "
             f"{result['terms_existed']} terms existed"
         )
-    except Exception as e:
-        print(f"[bootstrap] WARNING: Failed to bootstrap system terminologies: {e}")
+        return not result["errors"]
+
+    await retry_until_done(attempt, description="System terminology bootstrap", sleep=_bootstrap_sleep)
+
+
+_bootstrap_sleep = asyncio.sleep  # replaced in tests
 
 
 @asynccontextmanager

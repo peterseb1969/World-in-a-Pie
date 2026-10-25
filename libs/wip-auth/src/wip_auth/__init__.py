@@ -93,7 +93,7 @@ from .resolve import (
     terminology_coordinates_by_id,
 )
 from .security import check_production_security
-from .startup import init_beanie_with_retry, retry_async
+from .startup import init_beanie_with_retry, retry_async, retry_until_done
 from .term_resolution import (
     TermResolutionError,
     resolve_term_values,
@@ -174,6 +174,7 @@ __all__ = [
     "resolve_term_by_fields_or_404",
     "resolve_term_values",
     "retry_async",
+    "retry_until_done",
     "set_auth_config",
     "set_current_identity",
     # Setup

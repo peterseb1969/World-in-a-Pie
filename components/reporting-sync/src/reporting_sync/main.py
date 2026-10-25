@@ -40,7 +40,7 @@ from wip_auth.events import WIP_EVENTS_STREAM, EventBus, StreamSpec
 from wip_auth.ratelimit import setup_rate_limiting
 from wip_auth.registry_client import RegistryError
 from wip_auth.security import check_production_security
-from wip_auth.startup import retry_async
+from wip_auth.startup import retry_until_done
 
 from . import __version__
 from .batch_sync import BatchSyncService
@@ -96,6 +96,7 @@ class AppState:
     sync_task: asyncio.Task | None = None
     alert_check_task: asyncio.Task | None = None
     initial_sync_task: asyncio.Task | None = None
+    postgres_task: asyncio.Task | None = None
     batch_sync_service: BatchSyncService | None = None
     search_service: SearchService | None = None
     sync_status: SyncStatus = SyncStatus(
@@ -464,6 +465,68 @@ async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
     )
 
 
+_postgres_sleep = asyncio.sleep  # replaced in tests
+
+
+async def _bring_up_postgres() -> None:
+    """Background: connect to PostgreSQL, then start everything that needs it.
+
+    Retries without a deadline (any connect failure, including PostgreSQL's
+    "the database system is starting up", counts as not yet). Unusable
+    service roles are a deployment fault, not an outage: they stop the loop
+    and /health answers 503 until the install is fixed.
+    """
+    async def attempt() -> bool:
+        try:
+            pool, read_pool = await connect_postgres()
+        except ServiceRolesError as e:
+            logger.critical(f"PostgreSQL service roles unusable: {e}")
+            state.sync_status.connected_to_postgres = False
+            state.sync_status.postgres_service_roles_ok = False
+            return True
+        try:
+            # Bookkeeping tables only. Per-namespace metadata and document
+            # tables are created lazily inside each namespace's schema on
+            # first sync — there is no global pre-creation.
+            await init_postgres_schema(pool)
+            await _recreate_registered_views(pool)
+        except BaseException:
+            await read_pool.close()
+            await pool.close()
+            raise
+        _start_postgres_work(pool, read_pool)
+        return True
+
+    await retry_until_done(attempt, description="PostgreSQL connect", sleep=_postgres_sleep)
+
+
+def _start_postgres_work(pool: asyncpg.Pool, read_pool: asyncpg.Pool) -> None:
+    """Record the pools and start the work that needs PostgreSQL."""
+    state.postgres_pool = pool
+    state.read_pool = read_pool
+    state.sync_status.connected_to_postgres = True
+    state.sync_status.postgres_service_roles_ok = True
+    state.search_service = SearchService(read_pool)
+    logger.info("PostgreSQL connected")
+
+    state.batch_sync_service = BatchSyncService(pool)
+    # Initial metadata sync: each step waits on its own source and retries
+    # until its listing completes (see _initial_metadata_sync).
+    state.initial_sync_task = asyncio.create_task(
+        _initial_metadata_sync(state.batch_sync_service)
+    )
+    logger.info("Initial metadata sync scheduled (background)")
+
+    # The bus runs the sync worker as soon as NATS is connected and restarts
+    # it whenever its consumer loop dies (e.g. the stream was missing, or a
+    # NATS outage outlived the subscription).
+    state.sync_task = state.bus.supervise(
+        "sync-worker",
+        lambda js: run_sync_worker(state.bus.client, js, pool, state.sync_status),
+    )
+    logger.info("Sync worker scheduled (runs while NATS is connected)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown."""
@@ -477,62 +540,15 @@ async def lifespan(app: FastAPI):
     state.bus = EventBus(settings.nats_url, name="reporting-sync", streams=[_events_stream()])
     await state.bus.start()
 
-    try:
-        # Connect to PostgreSQL with retry — tolerates PostgreSQL not being
-        # ready yet on fresh k8s boot, node drain, pod reschedule.
-        pool, read_pool = await retry_async(
-            connect_postgres,
-            retry_on=(ConnectionRefusedError, OSError),
-            description="PostgreSQL connect",
-        )
-        state.postgres_pool = pool
-        state.read_pool = read_pool
-        state.sync_status.connected_to_postgres = True
-        state.sync_status.postgres_service_roles_ok = True
-
-        # Initialize schema (bookkeeping tables only). Per-namespace metadata
-        # and document tables are created lazily inside each namespace's schema
-        # on first sync (CASE-628) — there is no global pre-creation.
-        await init_postgres_schema(pool)
-        await _recreate_registered_views(pool)
-    except ServiceRolesError as e:
-        logger.critical(f"PostgreSQL service roles unusable: {e}")
-        state.sync_status.connected_to_postgres = False
-        state.sync_status.postgres_service_roles_ok = False
-    except Exception as e:
-        logger.error(f"Failed to connect to PostgreSQL: {e}")
-        state.sync_status.connected_to_postgres = False
-
-    # Initialize batch sync service
-    if state.postgres_pool:
-        state.batch_sync_service = BatchSyncService(state.postgres_pool)
-        logger.info("Batch sync service initialized")
-
-        # Initial metadata sync runs as a background task: each step waits
-        # on its own source and retries until its listing completes (see
-        # _initial_metadata_sync). Backgrounded so it never blocks the HTTP
-        # listener; shutdown cancels it.
-        state.initial_sync_task = asyncio.create_task(
-            _initial_metadata_sync(state.batch_sync_service)
-        )
-        logger.info("Initial metadata sync scheduled (background)")
-
-    # Initialize search service (works with or without PostgreSQL)
+    # Search works with or without PostgreSQL; it gets the reader pool once
+    # PostgreSQL is up.
     state.search_service = SearchService(state.read_pool)
-    logger.info("Search service initialized")
 
-    # Start the sync worker once PostgreSQL is up. The bus runs it as soon as
-    # NATS is connected and restarts it whenever its consumer loop dies (e.g.
-    # the stream was missing, or a NATS outage outlived the subscription).
-    if state.sync_status.connected_to_postgres:
-        pool = state.postgres_pool
-        state.sync_task = state.bus.supervise(
-            "sync-worker",
-            lambda js: run_sync_worker(state.bus.client, js, pool, state.sync_status),
-        )
-        logger.info("Sync worker scheduled (runs while NATS is connected)")
-    else:
-        logger.warning("Sync worker not started - PostgreSQL unavailable")
+    # PostgreSQL connects in the background and keeps trying until it is up:
+    # a PostgreSQL that is late — or still "starting up" — must not leave the
+    # service degraded until someone restarts it. Everything that needs it
+    # (schema, batch sync, backfill, the sync worker) starts once it is up.
+    state.postgres_task = asyncio.create_task(_bring_up_postgres())
 
     # Start alert check background task
     state.alert_check_task = asyncio.create_task(run_alert_check_loop())
@@ -565,6 +581,12 @@ async def lifespan(app: FastAPI):
         state.sync_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await state.sync_task
+
+    # Cancel the PostgreSQL connect task (if still trying)
+    if state.postgres_task and not state.postgres_task.done():
+        state.postgres_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await state.postgres_task
 
     # Cancel initial metadata sync task (if still running)
     if state.initial_sync_task and not state.initial_sync_task.done():

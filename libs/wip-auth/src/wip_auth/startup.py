@@ -90,6 +90,48 @@ async def retry_async(
     ) from last_exc
 
 
+async def retry_until_done(
+    attempt: Callable[[], Awaitable[bool]],
+    *,
+    description: str,
+    first_delay_seconds: float = 5.0,
+    max_delay_seconds: float = 60.0,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> None:
+    """Run a background startup task until it reports done, with no deadline.
+
+    For one-shot startup work that must not give up: a late dependency may
+    arrive minutes after the service started, and work abandoned when a
+    deadline passes stays undone until someone restarts the service. Run it
+    as a background task (``asyncio.create_task``) so it never blocks
+    startup; cancelling the task stops it.
+
+    ``attempt`` returns True when the work is done, False when it should be
+    tried again. An exception also counts as not done; it is logged and the
+    task keeps going (``asyncio.CancelledError`` is not an ``Exception`` and
+    still stops it). The delay between attempts starts at
+    ``first_delay_seconds`` and doubles up to ``max_delay_seconds``.
+    """
+    delay = first_delay_seconds
+    tries = 0
+    while True:
+        tries += 1
+        try:
+            if await attempt():
+                if tries > 1:
+                    print(f"[startup-retry] {description}: done on attempt {tries}")
+                return
+            outcome = "not done yet"
+        except Exception as exc:  # a background task must keep going
+            outcome = f"{type(exc).__name__}: {exc}"
+        print(
+            f"[startup-retry] {description}: attempt {tries} not done ({outcome}); "
+            f"retrying in {delay:.0f}s"
+        )
+        await sleep(delay)
+        delay = min(delay * 2, max_delay_seconds)
+
+
 async def init_beanie_with_retry(
     *,
     database,  # motor database  # type: ignore[no-untyped-def]

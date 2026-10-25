@@ -35,10 +35,11 @@ from registry.services.namespace_deletion import (
 
 @pytest.mark.asyncio
 async def test_postgres_step_failure_flags_journal(client, monkeypatch):
-    """A PostgreSQL cleanup that can't reach reporting-sync degrades the step
-    and rolls the journal up to completed_with_warnings — not a bare
-    completed — without raising. (client fixture initializes Beanie so the
-    journal can persist.)"""
+    """A PostgreSQL cleanup that reporting-sync refuses degrades the step and
+    rolls the journal up to completed_with_warnings — not a bare completed —
+    without raising. (An UNREACHABLE reporting-sync defers the step instead;
+    see test_case_862_s5_deletion_recovery. The client fixture initializes
+    Beanie so the journal can persist.)"""
     import httpx as _httpx
 
     svc = NamespaceDeletionService()
@@ -54,7 +55,10 @@ async def test_postgres_step_failure_flags_journal(client, monkeypatch):
         instance = mock_client.return_value
         instance.__aenter__ = AsyncMock(return_value=instance)
         instance.__aexit__ = AsyncMock(return_value=False)
-        instance.delete = AsyncMock(side_effect=_httpx.ConnectError("unreachable"))
+        instance.delete = AsyncMock(
+            return_value=_httpx.Response(403, text="forbidden",
+                                         request=_httpx.Request("DELETE", "http://x"))
+        )
         await svc._execute_journal(journal)
 
     step = journal.steps[0]

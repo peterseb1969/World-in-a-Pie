@@ -1083,6 +1083,24 @@ wheel mismatch no longer trips that guard. Install both wheels in one command,
 not on PyPI, so the toolkit wheel alone fails to resolve its dependency. The
 regenerated app CLAUDE.md says the same.
 
+### A Registry outage answers 503, not "Namespace not found"
+
+Namespace permission checks go to the Registry. When the Registry could not be
+reached, or answered 5xx, the check used to report "no access":
+- a namespace-scoped request answered **404 "Namespace not found"**;
+- a listing across namespaces answered **403 "No accessible namespaces"**;
+- that wrong answer was cached for 30 s, so it kept coming after the Registry
+  was back.
+
+Now the check answers **503 "Authorization service unavailable"**, caches
+nothing, and access returns on the next request once the Registry is up.
+Access is still refused during the outage. A `PATCH /documents` item reports
+`error_code: "registry_error"` instead of `forbidden`. A Registry answer of "no
+access" is unchanged: still 404 or 403, still cached.
+
+**Action:** callers that treat 404 as "this namespace does not exist" should
+treat 503 as "try again", not as a missing namespace.
+
 ---
 
 ## What happens on first start after the upgrade

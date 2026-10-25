@@ -141,15 +141,16 @@ async def test_document_store_error_status_degrades_the_step(service, monkeypatc
     assert "409" in step.error
 
 
-async def test_unreachable_document_store_degrades_the_step(service, monkeypatch):
+async def test_unreachable_document_store_defers_the_step(service, monkeypatch):
+    """Unreachable is not refused: the step is retried later, not closed degraded."""
     def respond(payload):
         raise httpx.ConnectError("connection refused")
 
     monkeypatch.setattr(mod.httpx, "AsyncClient", _Recorder(respond))
     step = _step(["k1"])
 
-    assert await service._execute_step(step, "probe-ns") == 0
-    assert "could not reach document-store" in step.error
+    with pytest.raises(mod._Unreachable, match="could not reach document-store"):
+        await service._execute_step(step, "probe-ns")
 
 
 async def test_missing_document_store_url_degrades_without_calling(service, monkeypatch):

@@ -3442,6 +3442,7 @@ class DocumentService:
             require_current_identity,
             resolve_permission,
         )
+        from wip_auth.permissions import PERMISSION_UNAVAILABLE
 
         for attempt in range(max_retries):
             # 1. Read latest version (regardless of status — we still need to
@@ -3471,6 +3472,11 @@ class DocumentService:
             #    'forbidden' error instead of an HTTP 403 from check_namespace_permission.
             identity = require_current_identity()
             permission = await resolve_permission(identity, current.namespace)
+            if permission == PERMISSION_UNAVAILABLE:
+                raise PatchError(
+                    "registry_error",
+                    "Could not check write access: the Registry is unreachable",
+                )
             if not permission_sufficient(permission, "write"):
                 raise PatchError(
                     "forbidden",
