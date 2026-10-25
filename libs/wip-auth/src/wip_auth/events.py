@@ -306,6 +306,9 @@ class EventBus:
     async def _supervise_connection(self) -> None:
         import nats
 
+        url = self._url
+        if url is None:  # start() only supervises a configured bus
+            return
         while not self._stopping:
             self._state = ConnectionState.RECONNECTING if self._ever_connected else ConnectionState.CONNECTING
             self._closed = asyncio.Event()
@@ -314,7 +317,7 @@ class EventBus:
                 # connect and every later reconnect forever. Its default (60
                 # attempts x 2 s) closes the client for good after ~2 minutes.
                 nc = await nats.connect(
-                    self._url,
+                    url,
                     name=self._name,
                     max_reconnect_attempts=-1,
                     reconnect_time_wait=self._reconnect_wait,
@@ -406,7 +409,11 @@ class EventBus:
     def _spawn(self, coro: Awaitable[Any]) -> None:
         task = asyncio.ensure_future(coro)
         self._tasks.append(task)
-        task.add_done_callback(lambda t: t in self._tasks and self._tasks.remove(t))
+        task.add_done_callback(self._forget_task)
+
+    def _forget_task(self, task: asyncio.Task[Any]) -> None:
+        if task in self._tasks:
+            self._tasks.remove(task)
 
     def _note_error(self, message: str) -> None:
         self._last_error = message

@@ -43,5 +43,6 @@ def declare_api_key_security(app: FastAPI) -> FastAPI:
         app.openapi_schema = schema
         return schema
 
-    app.openapi = _openapi
+    # FastAPI's documented way to customise the schema is to replace the method.
+    app.openapi = _openapi  # type: ignore[method-assign]
     return app

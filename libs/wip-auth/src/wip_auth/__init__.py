@@ -254,7 +254,7 @@ def create_providers_from_config(
         # Dual mode - try trusted headers first, then JWT, then API key
         keys = config.load_api_keys()
 
-        api_key_provider = APIKeyProvider(
+        dual_key_provider: APIKeyProvider | None = APIKeyProvider(
             keys=keys,
             header_name=config.api_key_header,
             hash_salt=config.api_key_hash_salt,
@@ -269,7 +269,7 @@ def create_providers_from_config(
                 header_name=config.api_key_header,
                 hash_salt=config.api_key_hash_salt,
                 default_groups=config.default_groups,
-                key_provider=api_key_provider,
+                key_provider=dual_key_provider,
             ))
 
         # JWT is checked next because Bearer token is more explicit
@@ -285,8 +285,8 @@ def create_providers_from_config(
                 leeway=config.jwt_leeway_seconds,
             ))
 
-        if api_key_provider is not None:
-            providers.append(api_key_provider)
+        if dual_key_provider is not None:
+            providers.append(dual_key_provider)
 
     return providers
 
