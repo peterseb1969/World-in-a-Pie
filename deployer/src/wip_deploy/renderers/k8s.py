@@ -18,9 +18,12 @@ Design decisions:
     are a follow-up for GitOps workflows.
   - Secret values are rendered inline (stringData) from the file backend.
     A native k8s-secret backend is a follow-up.
-  - NetworkPolicies are omitted — the hand-written v1 policies had
-    cross-namespace bugs. Proper policies need a separate design pass.
-  - No apply/wait logic — manual `kubectl apply -f` for now.
+  - NetworkPolicies isolate the namespace as a whole (default deny, same-
+    namespace traffic, the ingress controller, DNS and HTTPS egress). No
+    per-component rules: inside the namespace, datastore access is limited
+    by per-component credentials (MongoDB and NATS users, PostgreSQL roles).
+  - Rendering only. Applying the tree and waiting for rollout is apply.py's
+    job (`apply_k8s`).
 """
 
 from __future__ import annotations
