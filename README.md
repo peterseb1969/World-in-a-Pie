@@ -17,11 +17,21 @@
 >
 > The AI agents building WIP keep their own working memory in **WIP-KB** — a knowledge-base app built *on top of* WIP (cross-agent cases, session history, design decisions, lessons). So WIP is developed *through* an app that runs on WIP: the platform's agentic memory both proves the model and is essential to the work.
 
-> ### ▶ Try it in ~5 minutes
+> ### ⚠ Installing from `main` / v2.1.0 is currently broken
+> v2.1.0 (the latest release, and what `main` and the one-line installer give you) stores files in **MinIO**.
+> MinIO no longer publishes downloadable images, so a fresh v2.1.0 install cannot pull everything it needs.
+> The `develop` branch has replaced MinIO with **Garage** and works, but has no release or published images yet.
+>
+> **To run WIP today**, use `develop` and the hot-reload dev guide, which builds the backend from source:
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/develop/install.sh | bash
+> git clone https://github.com/peterseb1969/World-in-a-Pie.git
+> cd World-in-a-Pie
+> git switch develop
 > ```
-> …installs the `wip-deploy` CLI from the latest release (no git needed) and prints the one command that brings up the backend from public GHCR images. Details and the React Console UI: **[single-host quickstart](docs/deploy/podman/README.md)**. (There's also a [hot-reload dev guide](docs/deploy/dev/README.md) and a [Kubernetes guide](docs/deploy/k8s/README.md).)
+> then follow [the dev guide](https://github.com/peterseb1969/World-in-a-Pie/blob/develop/docs/deploy/dev/README.md).
+>
+> **Already running v2.1.0?** It keeps working while the MinIO image is still on your machine. To move to Garage, follow
+> [the migration recipe](https://github.com/peterseb1969/World-in-a-Pie/blob/develop/docs/releases/unreleased.md#object-storage-garage-replaces-minio-now-the-default-minio-retired).
 
 ---
 
