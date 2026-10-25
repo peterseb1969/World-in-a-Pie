@@ -956,7 +956,12 @@ class TemplateService:
         # Compare fields using JSON serialization
         if request.fields is not None:
             original_fields_json = json.dumps(
-                [f.model_dump() for f in original.fields],
+                [
+                    f.model_dump()
+                    for f in TemplateService._without_endpoint_projection(
+                        original.usage, original.fields
+                    )
+                ],
                 sort_keys=True, default=str
             )
             new_fields_json = json.dumps(
@@ -1225,8 +1230,20 @@ class TemplateService:
         silently adopt the existing template, bump the version, or reject
         with a structured diff.
         """
-        existing_fields = {f.name: f for f in existing.fields}
-        proposed_fields = {f.name: f for f in proposed.fields}
+        # An edge type's source_ref/target_ref constraint is derived from the
+        # endpoint declaration (compared below), never declared on the fields:
+        # whatever either side carries there is not part of the schema. The
+        # stored side can carry it from versions minted before the update
+        # path stripped it; the proposed side whenever a caller re-posts the
+        # served shape.
+        existing_fields = {
+            f.name: f
+            for f in TemplateService._without_endpoint_projection(existing.usage, existing.fields)
+        }
+        proposed_fields = {
+            f.name: f
+            for f in TemplateService._without_endpoint_projection(existing.usage, proposed.fields)
+        }
 
         existing_names = set(existing_fields)
         proposed_names = set(proposed_fields)
@@ -1329,6 +1346,10 @@ class TemplateService:
         original = originals[0] if originals else None
         if not original:
             return None
+
+        # Same rule as create: an edge type's endpoint constraint is derived on
+        # serve, so what a caller sends for it is neither compared nor stored.
+        TemplateService._strip_endpoint_projection(original.usage, request.fields)
 
         # Check if anything has actually changed
         if not TemplateService._template_has_changed(original, request):
@@ -3227,6 +3248,22 @@ class TemplateService:
             if field.name in by_endpoint
             else field
             for field in t.fields
+        ]
+
+    @staticmethod
+    def _without_endpoint_projection(usage: TemplateUsage | None, fields: list) -> list:
+        """Copies of `fields` with the derived endpoint constraint removed.
+
+        The non-mutating form of _strip_endpoint_projection, for comparing a
+        stored template with a proposed one.
+        """
+        if usage != TemplateUsage.RELATIONSHIP:
+            return list(fields)
+        return [
+            field.model_copy(update={"target_templates": None, "include_subtypes": None})
+            if field.name in ("source_ref", "target_ref")
+            else field
+            for field in fields
         ]
 
     @staticmethod
