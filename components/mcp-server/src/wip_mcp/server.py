@@ -1047,7 +1047,13 @@ You **cannot** create, modify, or delete anything. All tools are read-only.
 
 @mcp.tool()
 async def get_wip_status() -> str:
-    """Check health of all WIP services. Call this first to verify connectivity."""
+    """Check health of WIP's backend services. Call this first to verify connectivity.
+
+    Covers the services this server talks to (registry, def-store,
+    template-store, document-store, reporting-sync). It does not see app
+    containers or infrastructure containers; on a container install, check
+    those with the container runtime (the /wip-status command does).
+    """
     try:
         results = await get_client().check_health()
         lines = ["WIP Service Status:"]
