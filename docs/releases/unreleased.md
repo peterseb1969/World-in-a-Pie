@@ -1103,6 +1103,33 @@ treat 503 as "try again", not as a missing namespace.
 
 ---
 
+### File routes: an unreachable object store answers 503; refusals get their own status
+
+With the object store down, a file upload used to escape the connection error
+to the server and answer a bare **500 "Internal Server Error"**, with no detail.
+An unreachable Registry did the same during an upload. Now:
+
+- an object store that cannot be reached (connection refused, DNS, timeout)
+  answers **503** with `detail` "Object store unreachable at … — retry
+  shortly", on every document-store route that touches storage;
+- an upload whose Registry cannot be reached answers **503**; a Registry that
+  answered but refused the file ID answers **502**;
+- `POST /files`, `GET /files/{id}/download` and `DELETE /files/{id}/hard`
+  map the refusal to a status instead of one status for all:
+  a file in the wrong state (`invalid_state` — deleted, not yet inactive)
+  is **409**, a fault on the server is **500**.
+
+**Behavior changes:** a hard-delete of a file that is still active, a
+download URL for a deleted file, and `GET /files/{id}/content` for a deleted
+file answered **400** and now answer **409**. A hard-delete while the store is
+down answers 503 and keeps the file record, as it always kept it — retry once
+the store is back.
+
+**Action:** callers that branch on 400 for these cases should branch on 409;
+treat 503 as "try again".
+
+---
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

@@ -5,6 +5,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -12,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from document_store.main import app
 from document_store.models.document import Document
 from document_store.models.file import File, FileMetadata, FileStatus
+from document_store.services.file_storage_client import FileStorageUnavailableError
 
 # Re-use conftest helpers — real Registry, no mock registry
 from tests.conftest import (
@@ -892,14 +894,14 @@ async def test_hard_delete_inactive_file(file_client: AsyncClient, auth_headers:
 
 @pytest.mark.asyncio
 async def test_hard_delete_active_file_fails(file_client: AsyncClient, auth_headers: dict):
-    """Hard-delete on an active file returns 400 (must soft-delete first)."""
+    """Hard-delete on an active file returns 409 (must soft-delete first)."""
     file = await _insert_file(status=FileStatus.ACTIVE, reference_count=1)
 
     response = await file_client.delete(
         f"/api/document-store/files/{file.file_id}/hard",
         headers=auth_headers,
     )
-    assert response.status_code == 400
+    assert response.status_code == 409
     assert "inactive" in response.json()["detail"].lower()
 
 
@@ -963,3 +965,118 @@ async def test_list_files_invalid_sort_params_are_422_not_500(file_client: Async
             params={"namespace": "wip", **params},
         )
         assert resp.status_code == 422, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Tests: dependency outages answer 503 (CASE-948)
+#
+# With the object store stopped, an upload once escaped the transport error as
+# a bare 500. An outage of the store or the Registry is now a retryable 503.
+# ---------------------------------------------------------------------------
+
+def _registry_answers(status: str):
+    """Patch the Registry call in FileService._generate_file_id."""
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {"results": [{"status": status, "registry_id": "FILE-C948"}]}
+    http = AsyncMock()
+    http.post = AsyncMock(return_value=response)
+    http.__aenter__ = AsyncMock(return_value=http)
+    http.__aexit__ = AsyncMock(return_value=False)
+    return patch("document_store.services.file_service.httpx.AsyncClient", return_value=http)
+
+
+def _storage():
+    from document_store.services.file_service import get_file_storage_client
+    return get_file_storage_client()
+
+
+async def _upload(client: AsyncClient, headers: dict):
+    return await client.post(
+        "/api/document-store/files",
+        headers=headers,
+        files={"file": ("a.txt", b"hello", "text/plain")},
+        data={"namespace": "wip"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_upload_with_the_store_down_is_503_and_a_retry_succeeds(file_client, auth_headers):
+    """The live repro, then the documented workaround: retry once the store is back.
+
+    The failed attempt left a Registry entry and no File record; the retry gets
+    `already_exists` from the Registry and must still store the file."""
+    storage = _storage()
+    storage.upload.side_effect = FileStorageUnavailableError("Object store unreachable at http://wip-garage:3900")
+    with _registry_answers("created"):
+        response = await _upload(file_client, auth_headers)
+    assert response.status_code == 503
+    assert "Object store unreachable" in response.json()["detail"]
+    assert await File.find_one({"file_id": "FILE-C948"}) is None
+
+    storage.upload.side_effect = None
+    with _registry_answers("already_exists"):
+        response = await _upload(file_client, auth_headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["file_id"] == "FILE-C948"
+    assert await File.find_one({"file_id": "FILE-C948"}) is not None
+
+
+@pytest.mark.asyncio
+async def test_upload_with_the_registry_unreachable_is_503(file_client, auth_headers):
+    http = AsyncMock()
+    http.post = AsyncMock(side_effect=httpx.ConnectError("Name or service not known"))
+    http.__aenter__ = AsyncMock(return_value=http)
+    http.__aexit__ = AsyncMock(return_value=False)
+    with patch("document_store.services.file_service.httpx.AsyncClient", return_value=http):
+        response = await _upload(file_client, auth_headers)
+    assert response.status_code == 503
+    assert "Registry unreachable" in response.json()["detail"]
+    _storage().upload.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_content_download_with_the_store_down_is_503(file_client, auth_headers):
+    file = await _insert_file(status=FileStatus.ACTIVE)
+
+    async def down(_key, chunk_size=64 * 1024):
+        raise FileStorageUnavailableError("Object store unreachable at http://wip-garage:3900")
+        yield b""  # pragma: no cover — makes this an async generator
+
+    _storage().download_stream = down
+    response = await file_client.get(
+        f"/api/document-store/files/{file.file_id}/content", headers=auth_headers,
+    )
+    assert response.status_code == 503
+    assert "Object store unreachable" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_content_download_streams_every_chunk(file_client, auth_headers):
+    """Reading the first chunk ahead must not drop or reorder any."""
+    file = await _insert_file(status=FileStatus.ACTIVE, size_bytes=9)
+
+    async def chunks(_key, chunk_size=64 * 1024):
+        for c in (b"abc", b"def", b"ghi"):
+            yield c
+
+    _storage().download_stream = chunks
+    response = await file_client.get(
+        f"/api/document-store/files/{file.file_id}/content", headers=auth_headers,
+    )
+    assert response.status_code == 200
+    assert response.content == b"abcdefghi"
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_with_the_store_down_is_503_and_keeps_the_record(file_client, auth_headers):
+    """hard_delete_file ignores FileStorageError ("already gone"). An outage
+    must not be read that way — the record would be removed and the bytes
+    orphaned with nothing left pointing at them."""
+    file = await _insert_file(status=FileStatus.INACTIVE)
+    _storage().delete.side_effect = FileStorageUnavailableError("Object store unreachable")
+    response = await file_client.delete(
+        f"/api/document-store/files/{file.file_id}/hard", headers=auth_headers,
+    )
+    assert response.status_code == 503
+    assert await File.find_one({"file_id": file.file_id}) is not None

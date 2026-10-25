@@ -9,7 +9,11 @@ once per process.
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
 
-from document_store.services.file_storage_client import FileStorageClient, FileStorageError
+from document_store.services.file_storage_client import (
+    FileStorageClient,
+    FileStorageError,
+    FileStorageUnavailableError,
+)
 
 
 class _FakeS3:
@@ -79,7 +83,7 @@ async def test_a_store_that_comes_up_late_is_ensured_on_the_next_write():
     """The startup path: store unreachable at first, reachable later — no restart."""
     s3 = _FakeS3(bucket_exists=False, reachable=False)
     c = _client(s3)
-    with pytest.raises(EndpointConnectionError):
+    with pytest.raises(FileStorageUnavailableError):
         await c.upload("k1", b"x", "text/plain")
     assert "put_object" not in s3.calls
 

@@ -74,6 +74,19 @@ router = APIRouter(
 )
 
 
+def _file_error_status(e: FileServiceError) -> int:
+    """The HTTP status a single-item file route answers a FileServiceError with.
+
+    Dependency outages are 503 (retry); a Registry that answered but refused
+    is 502; a state the file is in that forbids the operation is 409; a fault
+    on this side is 500. Anything else is a refusal of the request: 400.
+    """
+    rule = (e.details or {}).get("rule")
+    if rule in ("storage_disabled", "registry_unavailable"):
+        return 503
+    return {"registry_error": 502, "invalid_state": 409, "internal_error": 500}.get(e.code, 400)
+
+
 def require_file_storage():
     """Dependency to ensure file storage is enabled."""
     if not is_file_storage_enabled():
@@ -158,7 +171,7 @@ async def upload_file(
         await asyncio.sleep(get_throttle_delay())
         return result
     except FileServiceError as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=_file_error_status(e), detail=str(e)) from e
 
 
 @router.get(
@@ -269,7 +282,7 @@ async def get_download_url(
             raise HTTPException(status_code=404, detail="File not found")
         return response
     except FileServiceError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=_file_error_status(e), detail=str(e)) from e
 
 
 @router.get(
@@ -295,15 +308,31 @@ async def download_file_content(
         raise HTTPException(status_code=404, detail="File not found")
 
     if file_doc.status == FileStatus.INACTIVE:
-        raise HTTPException(status_code=400, detail="File has been deleted")
+        raise HTTPException(status_code=409, detail="File has been deleted")
 
     # Check namespace permission
     await check_namespace_permission(identity, file_doc.namespace, "read")
 
-    # Stream chunks directly from the object store → browser (no full buffering)
-    storage = get_file_storage_client()
+    # Stream chunks directly from the object store → browser (no full buffering).
+    # The first chunk is read before the response starts: once the status line
+    # is sent, a storage failure can only cut the stream, never become a 503.
+    # An unreachable store propagates to the app's 503 handler from here.
+    stream = get_file_storage_client().download_stream(file_doc.storage_key)
+    try:
+        first_chunk = await stream.__anext__()
+    except StopAsyncIteration:
+        first_chunk = b""
+    except FileStorageError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    async def _body():
+        if first_chunk:
+            yield first_chunk
+        async for chunk in stream:
+            yield chunk
+
     return StreamingResponse(
-        storage.download_stream(file_doc.storage_key),
+        _body(),
         media_type=file_doc.content_type,
         headers={
             "Content-Disposition": f'attachment; filename="{file_doc.filename}"',
@@ -499,7 +528,7 @@ async def hard_delete_file(
             raise HTTPException(status_code=404, detail="File not found")
         return {"status": "permanently_deleted", "file_id": file_id}
     except FileServiceError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=_file_error_status(e), detail=str(e)) from e
 
 
 class StorageDeleteRequest(StrictModel):

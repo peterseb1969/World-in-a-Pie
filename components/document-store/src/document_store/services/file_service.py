@@ -110,6 +110,12 @@ class FileService:
             )
         except RegistryError as e:
             raise FileServiceError(f"Failed to generate file ID: {e}", "registry_error") from e
+        except httpx.TransportError as e:
+            raise FileServiceError(
+                f"Registry unreachable while generating the file ID — retry shortly ({e})",
+                "registry_error",
+                rule="registry_unavailable",
+            ) from e
 
         # If Registry already had this checksum in this namespace, the File
         # document should already exist — return it without re-uploading or

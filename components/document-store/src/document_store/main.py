@@ -9,8 +9,9 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import (
@@ -36,6 +37,7 @@ from .models.document import Document
 from .models.file import File
 from .services.def_store_client import configure_def_store_client, get_def_store_client
 from .services.file_storage_client import (
+    FileStorageUnavailableError,
     configure_file_storage_client,
     get_file_storage_client,
     is_file_storage_enabled,
@@ -312,6 +314,18 @@ app.add_middleware(
 
 # Include API router
 app.include_router(api_router)
+
+
+@app.exception_handler(FileStorageUnavailableError)
+async def _object_store_unavailable(_request: Request, exc: FileStorageUnavailableError) -> JSONResponse:
+    """An unreachable object store is a dependency outage: 503, retryable.
+
+    Raised from any route that touches storage; without this it escaped to
+    the ASGI layer as a bare 500 with no detail.
+    """
+    import logging
+    logging.getLogger("document_store.files").warning("Object store unreachable: %s", exc)
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 # Declare the X-API-Key requirement in the OpenAPI contract — the shared

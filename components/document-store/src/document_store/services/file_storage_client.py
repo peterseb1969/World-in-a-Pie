@@ -1,12 +1,15 @@
 """S3-compatible storage client for file operations (Garage, or any S3 store)."""
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Any, cast
 
+import aiohttp
 from aiobotocore.session import get_session
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, HTTPClientError
+from botocore.exceptions import ConnectionError as BotocoreConnectionError
 
 # Storage was the only outbound dependency in this service with no timeout of
 # its own: botocore defaults to 60s connect AND 60s read, with retry_mode
@@ -33,6 +36,19 @@ _DATA_CONFIG = Config(
     # forwards the upstream Host at the edge (`upstream_host_header`),
     # so the store receives exactly the Host the URL was signed against.
     signature_version="s3v4",
+)
+
+# A store that cannot be reached surfaces as the transport's own exception, not
+# as a ClientError: botocore's EndpointConnectionError / ConnectTimeoutError
+# (ConnectionError), its ReadTimeoutError (HTTPClientError), or — observed live
+# with the store's container stopped — aiohttp's DNS error passing through
+# aiobotocore unwrapped. _get_client turns all of them into one
+# FileStorageUnavailableError so no caller has to know the transport.
+_TRANSPORT_ERRORS = (
+    BotocoreConnectionError,
+    HTTPClientError,
+    aiohttp.ClientError,
+    asyncio.TimeoutError,
 )
 
 # The health path gets a tighter budget than the data path: it exists to answer
@@ -127,16 +143,25 @@ class FileStorageClient:
 
         Defaults to the data-operation timeouts; callers whose latency budget
         is smaller than a data transfer's (the health check) pass their own.
+
+        Raises:
+            FileStorageUnavailableError: If the store cannot be reached while
+                the client is in use.
         """
-        async with self._session.create_client(
-            "s3",
-            endpoint_url=self.endpoint_url,
-            aws_access_key_id=self.access_key,
-            aws_secret_access_key=self.secret_key,
-            region_name=self.region,
-            config=config or _DATA_CONFIG,
-        ) as client:
-            yield client
+        try:
+            async with self._session.create_client(
+                "s3",
+                endpoint_url=self.endpoint_url,
+                aws_access_key_id=self.access_key,
+                aws_secret_access_key=self.secret_key,
+                region_name=self.region,
+                config=config or _DATA_CONFIG,
+            ) as client:
+                yield client
+        except _TRANSPORT_ERRORS as e:
+            raise FileStorageUnavailableError(
+                f"Object store unreachable at {self.endpoint_url} — retry shortly ({e})"
+            ) from e
 
     async def upload(
         self,
@@ -500,6 +525,15 @@ class FileStorageClient:
 class FileStorageError(Exception):
     """Error with file storage operations."""
     pass
+
+
+class FileStorageUnavailableError(Exception):
+    """The object store could not be reached (connection, DNS or timeout).
+
+    Deliberately not a ``FileStorageError``: several callers swallow that one
+    as "the object is gone" (hard-delete, archive cleanup, integrity checks),
+    and an outage must not be mistaken for that. The app answers it with 503.
+    """
 
 
 # Singleton instance

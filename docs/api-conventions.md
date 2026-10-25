@@ -193,7 +193,7 @@ Codes defined by document-store's create, delete, archive and file writes (`PATC
 | `not_found` | The document or file named by the request does not exist | — |
 | `invalid_state` | The entity's state forbids the operation | `deletion_mode_retain`, `file_deleted`, `referenced`, `not_inactive`, `storage_disabled` |
 | `synonym_conflict` | An inline synonym is registered to another entry (`on_synonym_conflict="fail"`) | — |
-| `registry_error` | The Registry refused, or could not be reached to check namespace isolation | `registry_unavailable` |
+| `registry_error` | The Registry refused, or could not be reached (to check namespace isolation, or to mint a file ID) | `registry_unavailable` |
 | `force_unsupported` | `force` sent on a document delete | — |
 | `internal_error` | A fault on the server's side | — |
 
