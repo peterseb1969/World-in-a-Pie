@@ -39,15 +39,23 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 # mk_fixture — build a throwaway WIP_ROOT and echo its path.
 mk_fixture() {
     local f; f="$(mktemp -d "$WORK/fixt.XXXXXX")"
-    mkdir -p "$f/scripts" "$f/docs/slash-commands/backend" "$f/.claude" "$f/.venv/bin"
+    mkdir -p "$f/scripts" "$f/docs/slash-commands/backend" "$f/.claude" "$f/.venv/bin" \
+             "$f/scaffold" "$f/agent-scripts"
     cp "$SRC" "$f/scripts/"
     cp "$WIP_ROOT/docs/slash-commands/backend/"*.md "$f/docs/slash-commands/backend/"
+    # The surfaces (CLAUDE.md, .mcp.json, commands, settings, scripts) are
+    # written by the scaffold engine, which reads its sources from WIP_ROOT.
+    cp -R "$WIP_ROOT/scaffold/src" "$WIP_ROOT/scaffold/templates" "$f/scaffold/"
+    cp -R "$WIP_ROOT/agent-scripts/src" "$f/agent-scripts/"
     # Stub python: step 1's "venv exists" check short-circuits on --version, and
-    # the wip_mcp import check + step-5 verify just need exit 0 (no real install).
-    cat > "$f/.venv/bin/python" <<'PY'
+    # the import checks + step-5 verify just need exit 0 (no real install). The
+    # engine call is the one thing that must really run: delegate it to the
+    # repo's venv, or no surface is ever written.
+    cat > "$f/.venv/bin/python" <<PY
 #!/bin/sh
-case "$1" in
+case "\$1" in
   --version) echo "Python 3.13.0 (fixture stub)" ;;
+  -m) [ "\$2" = wip_scaffold ] && exec "$WIP_ROOT/.venv/bin/python" "\$@"; exit 0 ;;
   *) exit 0 ;;
 esac
 PY
@@ -72,8 +80,10 @@ check "slash commands copied"           "ls '$A'/.claude/commands/*.md >/dev/nul
 check ".session-role == BE-YAC"         "[ \"\$(cat '$A/.claude/.session-role')\" = BE-YAC ]"
 check "tier 2: no kb.json"              "[ ! -e '$A/.claude/kb.json' ]"
 check "tier 2: no /wip-case stub"       "[ ! -e '$A/.claude/commands/wip-case.md' ]"
-check "guidance points at /wip-setup"   "grep -q '/wip-setup' '$WORK/a.log'"
-check "guidance NOT /wip-wake (no session yet)" "! grep -q '/wip-wake' '$WORK/a.log'"
+# Guidance lines are indented commands ("  /wip-setup  # ..."); the anchor
+# keeps the engine's "wrote .claude/commands/wip-wake.md" log from matching.
+check "guidance points at /wip-setup"   "grep -qE '^ +/wip-setup ' '$WORK/a.log'"
+check "guidance NOT /wip-wake (no session yet)" "! grep -qE '^ +/wip-wake ' '$WORK/a.log'"
 check ".venv presence alone did NOT trip re-sync" "grep -q 'Setting up backend agent' '$WORK/a.log'"
 
 # ── Scenario B: re-sync auto-detect (no flag, .mcp.json present) ────────────
@@ -83,17 +93,30 @@ run "$A" "$WORK/b.log"
 B_RC=$?
 check "exit 0 (no refusal)"             "[ $B_RC -eq 0 ] && ! grep -qi 'already' '$WORK/b.log'"
 check "auto-detected re-sync (Refreshing)" "grep -q 'Refreshing backend agent environment' '$WORK/b.log'"
-check "guidance flips to /wip-wake (session-id present)" "grep -q '/wip-wake' '$WORK/b.log'"
+check "guidance flips to /wip-wake (session-id present)" "grep -qE '^ +/wip-wake ' '$WORK/b.log'"
 check ".mcp.json still present"          "[ -f '$A/.mcp.json' ]"
 
 # ── Scenario C: tier 3 via scheme-less --kb (CASE-531 + folded enablement) ──
 echo "Scenario C — first setup with scheme-less --kb (tier 3, CASE-531)"
 C="$(mk_fixture)"
-run "$C" "$WORK/c.log" --kb 127.0.0.1:9
+printf 'smoke-kb-key-not-a-real-key\n' > "$WORK/kb-key"
+run "$C" "$WORK/c.log" --kb 127.0.0.1:9 --kb-key "$WORK/kb-key"
 check "exit 0 (unreachable KB is non-fatal)" "[ $? -eq 0 ]"
 check "kb.json written (tier 3)"        "[ -f '$C/.claude/kb.json' ]"
 check "kb url normalized to https"      "grep -q '\"kb_app_url\": \"https://127.0.0.1:9\"' '$C/.claude/kb.json'"
+check "kb.json records the given key file" "grep -q '\"kb_api_key_file\": \"$WORK/kb-key\"' '$C/.claude/kb.json'"
 check "/wip-case stub dropped (tier 3)" "[ -f '$C/.claude/commands/wip-case.md' ]"
+
+# ── Scenario C2: --kb without a key file fails; an existing kb.json's key is reused ─
+echo "Scenario C2 — --kb needs a key file; a recorded one is reused"
+C2="$(mk_fixture)"
+run "$C2" "$WORK/c2.log" --kb 127.0.0.1:9
+check "no --kb-key, no kb.json: exit non-zero" "[ $? -ne 0 ] && grep -q 'needs --kb-key' '$WORK/c2.log'"
+check "no kb.json written"              "[ ! -e '$C2/.claude/kb.json' ]"
+run "$C2" "$WORK/c3.log" --kb 127.0.0.1:9 --kb-key "$WORK/missing-key"
+check "unreadable key file: exit non-zero" "[ $? -ne 0 ] && grep -q 'not readable' '$WORK/c3.log'"
+run "$C" "$WORK/c4.log" --kb 127.0.0.1:9
+check "re-run --kb without --kb-key reuses the recorded key" "[ $? -eq 0 ] && grep -q '\"kb_api_key_file\": \"$WORK/kb-key\"' '$C/.claude/kb.json'"
 
 # ── Scenario D: existing kb.json preserved on a re-sync WITHOUT --kb ────────
 echo "Scenario D — re-sync without --kb must NOT rewrite kb.json (KB_OPT_IN gate)"

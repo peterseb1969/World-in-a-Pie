@@ -218,6 +218,40 @@ def test_session_role_preserved_without_prefix(tmp_path):
     assert any("Kept" in n for n in ctx.notes)
 
 
+_APP_META = {"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"}
+
+
+def _app_surface(name):
+    return [s for s in app_surfaces(_APP_META) if s.name == name]
+
+
+def test_pre_commit_gate_written_executable_when_absent(tmp_path):
+    run_surfaces(_app_surface("pre-commit-gate"), _ctx(tmp_path))
+    hook = tmp_path / ".githooks/pre-commit"
+    assert hook.read_text().startswith("#!/usr/bin/env bash")
+    assert os.stat(hook).st_mode & stat.S_IXUSR
+
+
+def test_pre_commit_gate_keeps_an_existing_hook(tmp_path):
+    # Once present the hook is the app's to extend — WIP-KB carries its own.
+    (tmp_path / ".githooks").mkdir()
+    (tmp_path / ".githooks/pre-commit").write_text("#!/bin/sh\n# app's own\n")
+    ctx = _ctx(tmp_path)
+    run_surfaces(_app_surface("pre-commit-gate"), ctx)
+    assert (tmp_path / ".githooks/pre-commit").read_text() == "#!/bin/sh\n# app's own\n"
+    assert any("Kept: .githooks/pre-commit" in n for n in ctx.notes)
+
+
+def test_kb_json_example_tier3_only_and_placeholder(tmp_path):
+    run_surfaces(_app_surface("kb-json-example"), _ctx(tmp_path, tier3=False))
+    assert not (tmp_path / ".claude/kb.json.example").exists()
+    run_surfaces(_app_surface("kb-json-example"), _ctx(tmp_path, tier3=True))
+    example = _json.loads((tmp_path / ".claude/kb.json.example").read_text())
+    assert set(example) == {"kb_app_url", "kb_api_key_file"}
+    # A placeholder, never a guessed default path into some install's secrets.
+    assert "wip-deploy" not in example["kb_api_key_file"]
+
+
 def test_session_role_warns_when_absent_and_no_prefix(tmp_path):
     surfaces = [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "session-role"]
     ctx = _ctx(tmp_path, role_prefix="")

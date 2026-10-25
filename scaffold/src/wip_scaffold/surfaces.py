@@ -64,6 +64,26 @@ def _session_role(ctx: Context) -> dict[str, bytes]:
     return {}
 
 
+def _pre_commit_gate(ctx: Context) -> dict[str, bytes]:
+    if (ctx.target_root / ".githooks/pre-commit").exists():
+        ctx.notes.append("Kept: .githooks/pre-commit (app-owned once present)")
+        return {}
+    return {".githooks/pre-commit": _template(ctx, "hooks/pre-commit-local-config.sh").encode()}
+
+
+KB_JSON_EXAMPLE = """{
+  "kb_app_url": "https://<kb-host>",
+  "kb_api_key_file": "<path to the KB API key file issued with this installation>"
+}
+"""
+
+
+def _kb_json_example(ctx: Context) -> dict[str, bytes]:
+    if not ctx.tier3 or (ctx.target_root / ".claude/kb.json.example").exists():
+        return {}
+    return {".claude/kb.json.example": KB_JSON_EXAMPLE.encode()}
+
+
 def mcp_json_surface(
     python_path: str, base_url: str, key_file: str = "", key_literal: str = ""
 ) -> Surface:
@@ -576,6 +596,19 @@ def app_surfaces(app_meta: dict[str, str]) -> list[Surface]:
                     ctx, "hooks/post-compact-reanchor.sh"
                 ).encode()
             },
+        ),
+        Surface(
+            name="pre-commit-gate",
+            policy=Policy.PRESERVE_OR_SET,
+            rationale="a .gitignore entry does not stop `git add -f` or a file that was tracked before it was ignored, and app repos have committed WIP API keys that way; written only when absent, because the hook is the app's to extend once it exists",
+            executable=True,
+            produce=_pre_commit_gate,
+        ),
+        Surface(
+            name="kb-json-example",
+            policy=Policy.PRESERVE_OR_SET,
+            rationale="kb.json is per-installation (KB URL, key-file path) and stays untracked; the tracked example shows a fresh checkout which keys to supply; tier 3 only",
+            produce=_kb_json_example,
         ),
         Surface(
             name="playbooks",

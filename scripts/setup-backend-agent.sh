@@ -115,7 +115,8 @@ while [[ $# -gt 0 ]]; do
             echo "                    installs the served KB client, drops the /wip-case stub. Idempotent;"
             echo "                    an existing kb.json keeps its other keys. Default is tier 2: WIP-only, no KB."
             echo "                    Scheme optional (kb.internal → https://kb.internal)."
-            echo "  --kb-key PATH     KB API key file (default: ~/.wip-deploy/kb/secrets/api-key)"
+            echo "  --kb-key PATH     KB API key file issued with this installation. Required with --kb"
+            echo "                    unless .claude/kb.json already records one; no default."
             echo "  -h, --help        Show this help"
             exit 0
             ;;
@@ -176,7 +177,23 @@ enable_kb() {
         echo "Error: tier-3 enable needs --kb <url> (no existing .claude/kb.json to reuse)."
         exit 1
     fi
-    KB_KEY_FILE="${KB_KEY_FILE:-$HOME/.wip-deploy/kb/secrets/api-key}"
+    # The KB key is issued with the installation and differs per install, so
+    # there is no default to guess: --kb-key, or the file an existing kb.json
+    # already records. Checked before kb.json is written, so a bad run leaves
+    # the clone as it was.
+    if [ -z "$KB_KEY_FILE" ] && [ -f "$KB_CONFIG" ]; then
+        KB_KEY_FILE="$(python3 -c "import json;print(json.load(open('$KB_CONFIG')).get('kb_api_key_file',''))" 2>/dev/null || true)"
+    fi
+    if [ -z "$KB_KEY_FILE" ]; then
+        echo "Error: --kb needs --kb-key <path>: the KB API key file issued with this installation." >&2
+        echo "       No default is assumed — each installation has its own key." >&2
+        exit 1
+    fi
+    if [ ! -r "$KB_KEY_FILE" ]; then
+        echo "Error: KB key file not readable: $KB_KEY_FILE" >&2
+        echo "       It is issued when the project is installed; pass its path with --kb-key." >&2
+        exit 1
+    fi
     mkdir -p "$WIP_ROOT/.claude/commands"
     # Update only the two keys this script owns: kb.json also carries keys
     # set elsewhere (the repo's KB namespace/project tags), and a rewrite

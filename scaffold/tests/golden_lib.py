@@ -17,9 +17,11 @@ Environment requirements (why these tests are opt-in, see conftest.py):
   backend scratch clones symlink to it so no pip install runs.
 
 Determinism notes:
-- Tier-3 scenarios pass --kb https://kb.invalid — enable_kb writes kb.json,
-  the served-client curl fails (000 → warning path), the /wip-case stub is
-  copied. No network mutation, stable output.
+- Tier-3 scenarios pass --kb https://kb.invalid plus a throwaway key file
+  (--kb is refused without one) — enable_kb writes kb.json, the
+  served-client curl fails (000 → warning path), the /wip-case stub is
+  copied. No network mutation, stable output; the key file's path is
+  normalized to __KB_KEY_FILE__.
 - The scaffolds are isolated from the host's WIP install (`_run`): the API
   key path is pinned through WIP_API_KEY_FILE_OVERRIDE, so the output does
   not depend on what the running install is called, and the app create's
@@ -126,6 +128,13 @@ def _norm_roots(**kw: str) -> dict[str, str]:
     return roots
 
 
+def _kb_key_file(tmp: Path) -> Path:
+    """A readable throwaway KB key for tier-3 runs; never sent anywhere real."""
+    key = tmp / "kb-api-key"
+    key.write_text("golden-kb-key-not-a-real-key\n")
+    return key
+
+
 # --- Backend scenarios -------------------------------------------------------
 
 def run_backend_scenario(tmp: Path, *, tier3: bool, refresh: bool) -> dict:
@@ -153,7 +162,7 @@ def run_backend_scenario(tmp: Path, *, tier3: bool, refresh: bool) -> dict:
 
     cmd = ["bash", "scripts/setup-backend-agent.sh"]
     if tier3:
-        cmd += ["--kb", "https://kb.invalid"]
+        cmd += ["--kb", "https://kb.invalid", "--kb-key", str(_kb_key_file(tmp))]
 
     runs = 2 if refresh else 1
     last: subprocess.CompletedProcess | None = None
@@ -165,7 +174,7 @@ def run_backend_scenario(tmp: Path, *, tier3: bool, refresh: bool) -> dict:
                 f"stdout:\n{last.stdout}\nstderr:\n{last.stderr}"
             )
 
-    roots = _norm_roots(__CLONE__=str(clone))
+    roots = _norm_roots(__CLONE__=str(clone), __KB_KEY_FILE__=str(tmp / "kb-api-key"))
     snap = snapshot_tree_backend(clone, roots)
     snap["mode_line"] = "Refreshing" if refresh else "Setting up"
     assert last is not None and snap["mode_line"] in last.stdout, (
@@ -211,7 +220,7 @@ def run_app_scenario(
         "--preset", preset,
     ]
     if tier3:
-        cmd += ["--kb", "https://kb.invalid"]
+        cmd += ["--kb", "https://kb.invalid", "--kb-key", str(_kb_key_file(tmp))]
 
     runs = 2 if refresh else 1
     last: subprocess.CompletedProcess | None = None
@@ -223,7 +232,7 @@ def run_app_scenario(
                 f"stdout:\n{last.stdout}\nstderr:\n{last.stderr}"
             )
 
-    roots = _norm_roots(__APP_DIR__=str(app_dir))
+    roots = _norm_roots(__APP_DIR__=str(app_dir), __KB_KEY_FILE__=str(tmp / "kb-api-key"))
     snap = snapshot_tree(app_dir, roots)
     assert last is not None
     snap["mode_line"] = "Refreshing" if refresh else "Creating"

@@ -8,6 +8,9 @@
 #   • set-up-in-place — re-run the SAME populated dir with NO flag → auto-detected,
 #                       does not error "already exists", preserves CLAUDE.md
 #   • tier 3        — scheme-less --kb normalizes to https and writes kb.json
+#   • local config  — .env / .mcp.json / kb.json are gitignored and untracked, the
+#                     pre-commit gate is enabled, a refresh flags a tracked file
+#   • no key file   — --kb without --kb-key fails before writing kb.json
 #
 # NOT isolated here: CASE-534's exact abort path (podman running but ZERO
 # wip-deploy installs) needs a host with no install — these runs have one, so the
@@ -52,6 +55,10 @@ check "git initialised"              "[ -d '$A/.git' ]"
 check "tier 2: no kb.json"           "[ ! -e '$A/.claude/kb.json' ]"
 check "guidance points at /wip-setup" "grep -q '/wip-setup' '$WORK/a.log'"
 check "guidance NOT /wip-wake"        "! grep -q '/wip-wake ' '$WORK/a.log'"
+check "local config not committed"   "[ -z \"\$(git -C '$A' ls-files -- .env .mcp.json .claude/kb.json)\" ]"
+check ".mcp.json gitignored"          "grep -qx '.mcp.json' '$A/.gitignore'"
+check "pre-commit gate shipped"       "[ -x '$A/.githooks/pre-commit' ]"
+check "pre-commit gate enabled"       "[ \"\$(git -C '$A' config --local core.hooksPath)\" = .githooks ]"
 
 # ── Scenario B: set-up-in-place auto-detect (no flag, populated dir) ────────
 echo "Scenario B — re-run the SAME populated dir with no flag"
@@ -63,16 +70,43 @@ check "CLAUDE.md preserved (CLAUDE.md.refresh written)" "[ -f '$A/CLAUDE.md.refr
 check "guidance flips to /wip-wake (session-id present)" "grep -q '/wip-wake' '$WORK/b.log'"
 check ".mcp.json still present"       "[ -f '$A/.mcp.json' ]"
 
+# A clone made before the sentinels existed has .mcp.json committed: the
+# refresh must name the untrack command, and the gate must refuse it.
+echo "Scenario B2 — refresh flags tracked local config; the gate refuses it"
+git -C "$A" add -f .mcp.json >/dev/null 2>&1
+git -C "$A" commit -q --no-verify -m "simulate an old commit of .mcp.json"
+run "$WORK/b2.log" "$A"
+check "refresh warns about tracked .mcp.json" "grep -q 'rm --cached .mcp.json' '$WORK/b2.log'"
+printf '\n' >> "$A/.mcp.json"
+git -C "$A" add -f .mcp.json >/dev/null 2>&1
+check "gate refuses a staged .mcp.json" "! git -C '$A' commit -q -m 'should be refused' >/dev/null 2>&1"
+git -C "$A" reset -q
+
 # ── Scenario C: tier 3 via scheme-less --kb ────────────────────────────────
 # Deliberately-unreachable host (127.0.0.1:9): scheme normalization + kb.json are
 # written BEFORE any network call, so CASE-531 is exercised without POSTing a real
 # SESSION_ROLE term to a live KB. enable_kb's curls fail fast and are non-fatal.
 echo "Scenario C — create with scheme-less --kb (CASE-531 normalization)"
 C="$WORK/app-c"
-run "$WORK/c.log" "$C" --name "Smoke C" --prefix APP-SMK --kb 127.0.0.1:9
+printf 'smoke-kb-key-not-a-real-key\n' > "$WORK/kb-key"
+run "$WORK/c.log" "$C" --name "Smoke C" --prefix APP-SMK --kb 127.0.0.1:9 --kb-key "$WORK/kb-key"
 check "exit 0"                        "[ $? -eq 0 ]"
 check "kb.json written (tier 3)"      "[ -f '$C/.claude/kb.json' ]"
 check "kb url normalized to https"    "grep -q '\"kb_app_url\": \"https://127.0.0.1:9\"' '$C/.claude/kb.json'"
+check "kb.json records the given key file" "grep -q '\"kb_api_key_file\": \"$WORK/kb-key\"' '$C/.claude/kb.json'"
+check "kb.json.example shipped"       "[ -f '$C/.claude/kb.json.example' ]"
+check "kb.json not committed"         "[ -z \"\$(git -C '$C' ls-files -- .claude/kb.json)\" ]"
+
+# ── Scenario D: --kb without a key file fails before writing anything ──────
+echo "Scenario D — --kb without --kb-key, and with an unreadable key file"
+D="$WORK/app-d"
+run "$WORK/d.log" "$D" --name "Smoke D" --prefix APP-SMK --kb 127.0.0.1:9
+check "exit non-zero"                 "[ $? -ne 0 ]"
+check "error names --kb-key"          "grep -q 'needs --kb-key' '$WORK/d.log'"
+check "no kb.json written"            "[ ! -e '$D/.claude/kb.json' ]"
+D2="$WORK/app-d2"
+run "$WORK/d2.log" "$D2" --name "Smoke D2" --prefix APP-SMK --kb 127.0.0.1:9 --kb-key "$WORK/missing-key"
+check "missing key file: exit non-zero" "[ $? -ne 0 ] && grep -q 'not readable' '$WORK/d2.log'"
 
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""

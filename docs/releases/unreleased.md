@@ -406,6 +406,32 @@ parameter. Until now there was NO way to remove a term's description;
 consumers treating `""` as absent can drop that shim once their data is
 normalized.
 
+### Scaffolds keep local config out of git; `--kb` needs a key file
+
+App repos had committed per-machine files, and before key files existed
+those included literal WIP API keys. Two scaffold changes stop this:
+
+- **App scaffold, every run:** `.mcp.json` and `.claude/kb.json` join `.env`
+  and the session files in `.gitignore`. Before this, the entries were added
+  only when a project was created, and the two config files were not among
+  them. A tier-3 app gets a tracked `.claude/kb.json.example` with
+  placeholder values. A new `.githooks/pre-commit` gate refuses staged local
+  config, the value of any secret file on the machine, and known key
+  shapes. The scaffold enables it unless the clone already sets
+  `core.hooksPath`, and leaves an existing `.githooks/pre-commit` alone. A
+  refresh prints the `git rm --cached` command for any local-config file
+  the repo still tracks; it does not commit.
+- **Both scaffolds:** `--kb` no longer falls back to
+  `~/.wip-deploy/kb/secrets/api-key`. The KB key is issued per installation,
+  so `--kb-key <path>` is required unless `.claude/kb.json` already records a
+  key file. A missing or unreadable key file is an error, raised before
+  `kb.json` is written.
+
+**Action:** pass `--kb-key` when enabling tier 3. In an existing app that
+still tracks `.mcp.json` or `.claude/kb.json`, run the scaffold refresh,
+then the `git rm --cached` command it prints, and commit. Repos whose
+history holds a literal key should retire that key.
+
 ### `@wip/client` browser writes over 64 KB work (0.60.1)
 
 Up to 0.60.0 the client sent every request with Fetch's `keepalive` flag,
