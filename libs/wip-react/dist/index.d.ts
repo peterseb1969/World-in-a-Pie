@@ -229,7 +229,7 @@ declare function useRegistrySearch(params: RegistrySearchParams, options?: Omit<
  *   { namespace: 'my-app' }
  * )
  */
-declare function useReportQuery(sql: string, params?: unknown[], options?: Omit<UseQueryOptions<ReportQueryResult>, 'queryFn'> & {
+declare function useReportQuery(sql: string, params?: unknown[], options?: Omit<UseQueryOptions<ReportQueryResult>, 'queryKey' | 'queryFn'> & {
     maxRows?: number;
     timeoutSeconds?: number;
     namespace?: string;

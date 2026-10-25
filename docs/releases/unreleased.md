@@ -460,6 +460,20 @@ No newer `@wip/client` is needed: the client methods behind these hooks
 batch sync, with a key that can see more than one namespace pass `namespace`.
 Re-vendor `wip-react-0.21.0.tgz`.
 
+### `@wip/react` 0.22.0: `useReportQuery` owns its query key
+
+`useReportQuery(sql, params, options)` typed its options as
+`Omit<UseQueryOptions, 'queryFn'>`, which left `queryKey` required: the hook's
+own documented call, `useReportQuery(sql, undefined, { namespace })`, failed
+`tsc` with "Property 'queryKey' is missing". The hook builds its key itself
+(`wipKeys.reporting.query(sql, params, namespace)`), and the options were spread
+after it, so a caller who passed a `queryKey` to satisfy the type silently
+replaced the hook's namespace-scoped key. The options type now omits
+`queryKey` as well.
+**Action:** drop any explicit `queryKey` from `useReportQuery` options (it no
+longer compiles; the hook's key is the same one `wipKeys` builds). Re-vendor
+`wip-react-0.22.0.tgz`.
+
 ### Platform-maintained term closure in reporting
 
 Each namespace schema gains a `term_closure` table: one row per

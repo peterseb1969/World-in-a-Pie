@@ -51,7 +51,10 @@ const REPORT_QUERY_STALE_TIME = 10_000 // 10s — report data is eventually cons
 export function useReportQuery(
   sql: string,
   params?: unknown[],
-  options?: Omit<UseQueryOptions<ReportQueryResult>, 'queryFn'> & {
+  // queryKey is omitted with queryFn: the hook owns the key
+  // (wipKeys.reporting.query, namespace-scoped), and the options spread comes
+  // after it, so a caller-supplied key would silently replace it.
+  options?: Omit<UseQueryOptions<ReportQueryResult>, 'queryKey' | 'queryFn'> & {
     maxRows?: number
     timeoutSeconds?: number
     namespace?: string
