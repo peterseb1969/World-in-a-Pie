@@ -11,6 +11,7 @@ isn't active in that mode.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from wip_deploy.config_gen.env import SecretRef
 from wip_deploy.spec import Deployment
@@ -37,6 +38,17 @@ class DexClientEntry:
 
 
 @dataclass(frozen=True)
+class DexConnectorEntry:
+    connector_id: str
+    type: str
+    name: str
+    config: dict[str, Any]  # as declared; the renderer adds the owned keys
+    redirect_uri: str | None  # derived from the issuer; None for password connectors
+    secret: SecretRef | None  # operator-supplied, never generated
+    secret_key: str | None
+
+
+@dataclass(frozen=True)
 class DexConfig:
     """Structured Dex configuration. Renderer emits Dex YAML."""
 
@@ -44,6 +56,12 @@ class DexConfig:
     users: list[DexUserEntry]
     clients: list[DexClientEntry]
     id_token_ttl: str  # e.g., "15m" — comes from auth.session_ttl
+    connectors: list[DexConnectorEntry]
+
+
+# Connectors that check a username and password themselves instead of
+# redirecting the browser to the provider, so they take no redirect URI.
+_PASSWORD_CONNECTOR_TYPES = frozenset({"ldap", "keystone", "atlassian-crowd"})
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -72,6 +90,7 @@ def generate_dex_config(
         users=users,
         clients=clients,
         id_token_ttl=deployment.spec.auth.session_ttl,
+        connectors=_dex_connectors(deployment, issuer),
     )
 
 
@@ -92,6 +111,23 @@ def _issuer_url(deployment: Deployment) -> str:
 def _user_id(username: str) -> str:
     # Stable, readable. Matches v1's "<role>-001" style for continuity.
     return f"{username}-001"
+
+
+def _dex_connectors(deployment: Deployment, issuer: str) -> list[DexConnectorEntry]:
+    # Dex serves every connector's callback at <issuer>/callback. The
+    # issuer follows --hostname, so a typed-in redirect would drift from it.
+    return [
+        DexConnectorEntry(
+            connector_id=c.id,
+            type=c.type,
+            name=c.name,
+            config=dict(c.config),
+            redirect_uri=None if c.type in _PASSWORD_CONNECTOR_TYPES else f"{issuer}/callback",
+            secret=SecretRef(c.secret_name) if c.secret_key else None,
+            secret_key=c.secret_key,
+        )
+        for c in deployment.spec.auth.connectors
+    ]
 
 
 def _dex_users(deployment: Deployment) -> list[DexUserEntry]:

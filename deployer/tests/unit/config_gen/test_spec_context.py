@@ -96,6 +96,7 @@ class TestResolveFromSpec:
                 jwt_audience="wip-gateway",
                 callback_url="cb",
                 wip_auth_mode="api_key_only",
+                federated_groups="",
             ),
             features=SpecContextFeatures(
                 files_enabled="true",

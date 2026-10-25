@@ -14,6 +14,12 @@ name from two sources:
 Then ensure each named secret has a value via the backend, generating
 fresh random values for any missing names and returning a
 `ResolvedSecrets` for renderers to consume.
+
+Dex connector secrets are the exception: they are issued by the external
+identity provider, so a generated value would be silently wrong and the
+logins would fail at the provider. They are collected like the others
+but never generated: a missing one stops the apply with instructions
+(`OperatorSecretMissing`).
 """
 
 from __future__ import annotations
@@ -62,6 +68,31 @@ BCRYPT_SUFFIX = ".bcrypt"
 def bcrypt_secret_name(plaintext_name: str) -> str:
     """Derived-secret naming convention. See `BCRYPT_SUFFIX`."""
     return f"{plaintext_name}{BCRYPT_SUFFIX}"
+
+
+class OperatorSecretMissing(ValueError):
+    """A secret only the operator can supply is not in the backend."""
+
+
+def operator_supplied_secrets(deployment: Deployment) -> dict[str, str]:
+    """Secret name -> what it is, for secrets the deployer must never generate."""
+    return {
+        c.secret_name: f"client secret of Dex connector {c.id!r} ({c.name})"
+        for c in deployment.spec.auth.connectors
+        if c.secret_key
+    }
+
+
+def _refuse_to_generate(name: str, what: str) -> Callable[[], str]:
+    def refuse() -> str:
+        raise OperatorSecretMissing(
+            f"secret {name!r} is missing: it is the {what}, issued by the "
+            "identity provider, so the deployer will not invent one. Supply "
+            f"it with `wip-deploy connector add ... --secret-file <file>`, "
+            "or remove the connector."
+        )
+
+    return refuse
 
 # ────────────────────────────────────────────────────────────────────
 
@@ -131,6 +162,9 @@ def collect_required_secrets(
             names.add(bcrypt_secret_name(u.password_secret.name))
         for dex_client in dex_cfg.clients:
             names.add(dex_client.secret.name)
+        for connector in dex_cfg.connectors:
+            if connector.secret is not None:
+                names.add(connector.secret.name)
 
     return names
 
@@ -229,10 +263,13 @@ def ensure_secrets(
     `dex-password-admin` < `dex-password-admin.bcrypt`).
     """
     names = collect_required_secrets(deployment, components, apps)
+    operator_supplied = operator_supplied_secrets(deployment)
 
     resolved: dict[str, str] = {}
     for name in sorted(names):
-        if name.endswith(BCRYPT_SUFFIX):
+        if name in operator_supplied:
+            generator = _refuse_to_generate(name, operator_supplied[name])
+        elif name.endswith(BCRYPT_SUFFIX):
             plaintext_name = name[: -len(BCRYPT_SUFFIX)]
             plaintext = resolved.get(plaintext_name)
             if plaintext is None:

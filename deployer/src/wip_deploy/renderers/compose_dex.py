@@ -76,9 +76,26 @@ def render_dex_config(dex: DexConfig, secrets: ResolvedSecrets) -> str:
         "enablePasswordDB": True,
         "staticClients": _render_static_clients(dex, secrets),
         "staticPasswords": _render_static_passwords(dex, secrets),
-        "connectors": [],
+        "connectors": _render_connectors(dex, secrets),
     }
     return yaml.safe_dump(body, sort_keys=False)
+
+
+def _render_connectors(
+    dex: DexConfig, secrets: ResolvedSecrets
+) -> list[dict[str, Any]]:
+    """External identity providers. The secret is written into the config
+    like the static clients' secrets, so the config hash covers it and a
+    changed secret recreates Dex."""
+    out: list[dict[str, Any]] = []
+    for c in dex.connectors:
+        config = dict(c.config)
+        if c.redirect_uri is not None:
+            config["redirectURI"] = c.redirect_uri
+        if c.secret is not None and c.secret_key is not None:
+            config[c.secret_key] = secrets.get(c.secret.name)
+        out.append({"type": c.type, "id": c.connector_id, "name": c.name, "config": config})
+    return out
 
 
 def _render_static_clients(

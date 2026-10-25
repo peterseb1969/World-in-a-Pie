@@ -53,6 +53,11 @@ spec:
       # Spec-declared config-file API keys (deployment auth.api_keys);
       # empty when none are declared — wip-auth treats empty as unset.
       - {name: WIP_AUTH_API_KEYS_FILE, source: {from_spec: security.api_keys_file}}
+      # Groups of logins federated through a Dex connector: reserved groups
+      # stripped, auth.group_mappings applied before the session is stored,
+      # so route gates and X-WIP-Groups see the policy. Empty without
+      # connectors.
+      - {name: WIP_AUTH_FEDERATED_GROUPS, source: {from_spec: auth.federated_groups}}
 
   depends_on: [dex]
 

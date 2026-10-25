@@ -21,6 +21,7 @@ from wip_deploy import __version__
 from wip_deploy.apply import ApplyError, ApplyResult, apply_compose, apply_k8s
 from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.config_gen.api_keys import declares_api_keys_file, effective_api_keys
+from wip_deploy.config_gen.spec_context import make_spec_context
 from wip_deploy.discovery import discover, find_repo_root
 from wip_deploy.export_ca import (
     TRUST_INSTRUCTIONS,
@@ -35,13 +36,20 @@ from wip_deploy.renderers import (
     render_dev_simple,
     render_k8s,
 )
-from wip_deploy.secrets import bcrypt_secret_name, ensure_secrets
+from wip_deploy.secrets import OperatorSecretMissing, bcrypt_secret_name, ensure_secrets
 from wip_deploy.secrets_backend import FileSecretBackend, ResolvedSecrets
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
-from wip_deploy.spec.deployment import AppRef, DexUser, SpecAPIKey
+from wip_deploy.spec.deployment import (
+    AppRef,
+    AuthSpec,
+    DexConnector,
+    DexUser,
+    GroupMapping,
+    SpecAPIKey,
+)
 from wip_deploy.spec.validators import validate_all
 
 app = typer.Typer(
@@ -3371,6 +3379,395 @@ def user_list(
         )
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Dex connectors and federated group mappings
+#
+# External identity providers (auth.connectors) and the WIP groups their
+# users get (auth.group_mappings) are spec-declared like users, so they
+# survive every re-render. Both reach more than Dex: the group policy is
+# rendered into every token-validating service and the gateway
+# (WIP_AUTH_FEDERATED_GROUPS), so these verbs apply the whole install;
+# compose recreates only the containers whose rendered config changed.
+# ─────────────────────────────────────────────────────────────────────
+
+connector_app = typer.Typer(no_args_is_help=True)
+app.add_typer(
+    connector_app,
+    name="connector",
+    help=(
+        "Manage the install's Dex connectors: external identity providers "
+        "(Google, GitHub, a corporate OIDC or LDAP) users can log in with."
+    ),
+)
+group_map_app = typer.Typer(no_args_is_help=True)
+app.add_typer(
+    group_map_app,
+    name="group-map",
+    help=(
+        "Manage the WIP groups granted to users who log in through a "
+        "connector. wip-admins and wip-services are never granted this way."
+    ),
+)
+
+
+def _install_dir_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--install-dir", help="Install directory. Defaults to ~/.wip-deploy/<name>/."
+    )
+
+
+def _replace_auth(deployment: Deployment, **changes: Any) -> None:
+    """Swap in auth fields, running AuthSpec's cross-field rules on the
+    result (assignment alone would skip them)."""
+    try:
+        deployment.spec.auth = AuthSpec.model_validate(
+            {**deployment.spec.auth.model_dump(), **changes}
+        )
+    except ValidationError as e:
+        first = e.errors()[0]
+        typer.echo(f"error: {first['msg'].removeprefix('Value error, ')}", err=True)
+        raise typer.Exit(2) from e
+
+
+def _file_secrets_dir(deployment: Deployment) -> Path:
+    spec = deployment.spec.secrets
+    if spec.backend != "file" or spec.location is None:
+        typer.echo(
+            f"error: connector secrets need the file secret backend; this install "
+            f"uses {spec.backend!r}",
+            err=True,
+        )
+        raise typer.Exit(2)
+    return Path(spec.location)
+
+
+def _read_secret_source(source: Path) -> str:
+    """The secret from a file, or from stdin for '-'. Never from the
+    command line, where it would land in shell history."""
+    import sys
+
+    value = sys.stdin.read() if str(source) == "-" else source.read_text()
+    value = value.strip()
+    if not value:
+        typer.echo(f"error: no secret in {source}", err=True)
+        raise typer.Exit(2)
+    return value
+
+
+def _store_secret(secrets_dir: Path, name: str, value: str) -> None:
+    backend = FileSecretBackend(secrets_dir)
+    backend.remove(name)
+    backend.get_or_generate(name, lambda: value)
+    backend.persist()
+
+
+def _parse_connector_config(
+    pairs: list[str], config_file: Path | None
+) -> dict[str, Any]:
+    config: dict[str, Any] = {}
+    if config_file is not None:
+        loaded = yaml.safe_load(config_file.read_text()) or {}
+        if not isinstance(loaded, dict):
+            typer.echo(f"error: {config_file} must hold a mapping", err=True)
+            raise typer.Exit(2)
+        config.update(loaded)
+    for pair in pairs:
+        key, sep, raw = pair.partition("=")
+        if not sep or not key:
+            typer.echo(f"error: --config expects KEY=VALUE, got {pair!r}", err=True)
+            raise typer.Exit(2)
+        # YAML scalars, so `insecureSkipEmailVerified=true` is a boolean and
+        # `scopes=[openid, email]` a list; anything else stays a string.
+        config[key] = yaml.safe_load(raw) if raw else raw
+    return config
+
+
+@connector_app.command("add")
+def connector_add(
+    connector_id: Annotated[
+        str, typer.Argument(help="Connector id (lowercase, e.g. google). Shown in tokens.")
+    ],
+    connector_type: Annotated[
+        str,
+        typer.Option(
+            "--type",
+            help="Dex connector type: oidc, google, github, gitlab, microsoft, ldap, saml, …",
+        ),
+    ],
+    display_name: Annotated[
+        str, typer.Option("--display-name", help="Button label on the Dex login page.")
+    ],
+    config: Annotated[
+        list[str],
+        typer.Option(
+            "--config",
+            help="Connector setting KEY=VALUE (repeatable), e.g. clientID=… or "
+            "issuer=https://accounts.google.com. redirectURI is derived.",
+        ),
+    ] = [],
+    config_file: Annotated[
+        Path | None,
+        typer.Option("--config-file", help="YAML/JSON mapping of connector settings."),
+    ] = None,
+    secret_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--secret-file",
+            help="File holding the client secret issued by the provider ('-' reads "
+            "stdin). Stored in the install's secret backend, never in the spec.",
+        ),
+    ] = None,
+    secret_key: Annotated[
+        str,
+        typer.Option(
+            "--secret-key",
+            help="Config key Dex reads the secret from: clientSecret (default), "
+            "bindPW for ldap, or 'none' for a connector without a secret.",
+        ),
+    ] = "clientSecret",
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[Path | None, _install_dir_opt()] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Declare a Dex connector on the install and apply.
+
+    The connector's redirect URI is <issuer>/callback; register that URL
+    with the provider. Users who log in through it get the groups their
+    provider sends, minus wip-admins and wip-services, plus any group
+    mappings (wip-deploy group-map).
+    """
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+    auth = deployment.spec.auth
+    if any(c.id == connector_id for c in auth.connectors):
+        typer.echo(
+            f"error: connector {connector_id!r} is already declared — remove it first",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    key = None if secret_key == "none" else secret_key
+    try:
+        connector = DexConnector(
+            id=connector_id,
+            type=connector_type,
+            name=display_name,
+            config=_parse_connector_config(config, config_file),
+            secret_key=key,
+        )
+    except ValidationError as e:
+        first = e.errors()[0]
+        typer.echo(f"error: invalid connector: {first['msg'].removeprefix('Value error, ')}", err=True)
+        raise typer.Exit(2) from e
+    if key is not None and secret_file is None:
+        typer.echo(
+            f"error: --secret-file is required: the connector reads its secret "
+            f"from {key!r} (pass --secret-key none for a connector without one)",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    _replace_auth(deployment, connectors=[*auth.connectors, connector])
+    if key is not None and secret_file is not None:
+        _store_secret(
+            _file_secrets_dir(deployment), connector.secret_name, _read_secret_source(secret_file)
+        )
+
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Added Dex connector {connector_id!r} to {resolved_name}",
+        repo_root=repo_root,
+    )
+    issuer = make_spec_context(deployment, components, apps_list).auth.issuer_url_public
+    typer.echo(f"Register this redirect URI with the provider: {issuer}/callback")
+
+
+@connector_app.command("set-secret")
+def connector_set_secret(
+    connector_id: Annotated[str, typer.Argument(help="Id of a declared connector.")],
+    secret_file: Annotated[
+        Path,
+        typer.Option("--secret-file", help="File holding the new secret ('-' reads stdin)."),
+    ],
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[Path | None, _install_dir_opt()] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Replace a connector's secret (rotation) and apply. Dex is recreated
+    with the new secret; the spec is unchanged."""
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+    connector = next((c for c in deployment.spec.auth.connectors if c.id == connector_id), None)
+    if connector is None or connector.secret_key is None:
+        typer.echo(
+            f"error: {connector_id!r} is not a declared connector that takes a secret",
+            err=True,
+        )
+        raise typer.Exit(2)
+    _store_secret(
+        _file_secrets_dir(deployment), connector.secret_name, _read_secret_source(secret_file)
+    )
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Replaced the secret of Dex connector {connector_id!r} on {resolved_name}",
+        services_scope=["dex"],
+        repo_root=repo_root,
+    )
+
+
+@connector_app.command("remove")
+def connector_remove(
+    connector_id: Annotated[str, typer.Argument(help="Id of the connector to remove.")],
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[Path | None, _install_dir_opt()] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Remove a Dex connector and apply. Its users can no longer log in;
+    its secret is deleted after the apply."""
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+    auth = deployment.spec.auth
+    match = next((c for c in auth.connectors if c.id == connector_id), None)
+    if match is None:
+        declared = ", ".join(sorted(c.id for c in auth.connectors)) or "(none)"
+        typer.echo(
+            f"error: {connector_id!r} is not a declared connector. Declared: {declared}.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    _replace_auth(deployment, connectors=[c for c in auth.connectors if c.id != connector_id])
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Removed Dex connector {connector_id!r} from {resolved_name}",
+        repo_root=repo_root,
+    )
+    secrets_spec = deployment.spec.secrets
+    if match.secret_key and secrets_spec.backend == "file" and secrets_spec.location:
+        FileSecretBackend(Path(secrets_spec.location)).remove(match.secret_name)
+        typer.echo(f"Removed secret {match.secret_name!r}.")
+
+
+@connector_app.command("list")
+def connector_list(
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[Path | None, _install_dir_opt()] = None,
+) -> None:
+    """List the install's Dex connectors."""
+    resolved_name = _resolve_name(name)
+    deployment = _load_deployment(install_dir or _default_install_dir(resolved_name))
+    connectors = deployment.spec.auth.connectors
+    if not connectors:
+        typer.echo(f"No Dex connectors declared on {resolved_name}.")
+        return
+    for c in sorted(connectors, key=lambda c: c.id):
+        secret = c.secret_name if c.secret_key else "(no secret)"
+        keys = ", ".join(sorted(c.config)) or "(no settings)"
+        typer.echo(f"{c.id}  type={c.type}  name={c.name!r}  secret={secret}  settings: {keys}")
+
+
+def _mapping_from_options(email: str | None, email_domain: str | None, group: str) -> GroupMapping:
+    try:
+        return GroupMapping(email=email, email_domain=email_domain, group=group)
+    except ValidationError as e:
+        first = e.errors()[0]
+        typer.echo(f"error: invalid mapping: {first['msg'].removeprefix('Value error, ')}", err=True)
+        raise typer.Exit(2) from e
+
+
+@group_map_app.command("add")
+def group_map_add(
+    group: Annotated[str, typer.Option("--group", help="WIP group to grant.")],
+    email: Annotated[str | None, typer.Option("--email", help="Match this exact email.")] = None,
+    email_domain: Annotated[
+        str | None, typer.Option("--email-domain", help="Match every email at this domain.")
+    ] = None,
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[Path | None, _install_dir_opt()] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Grant a WIP group to federated users by email or domain, and apply.
+    wip-admins and wip-services are refused: administrators are always
+    local users (wip-deploy user add)."""
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+    mapping = _mapping_from_options(email, email_domain, group)
+    mappings = deployment.spec.auth.group_mappings
+    if mapping in mappings:
+        typer.echo("error: this mapping is already declared", err=True)
+        raise typer.Exit(2)
+    _replace_auth(deployment, group_mappings=[*mappings, mapping])
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Mapped {email or '*@' + str(email_domain)} to {group!r} on {resolved_name}",
+        repo_root=repo_root,
+    )
+
+
+@group_map_app.command("remove")
+def group_map_remove(
+    group: Annotated[str, typer.Option("--group", help="Group of the mapping to remove.")],
+    email: Annotated[str | None, typer.Option("--email")] = None,
+    email_domain: Annotated[str | None, typer.Option("--email-domain")] = None,
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[Path | None, _install_dir_opt()] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Remove a group mapping and apply."""
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+    mappings = deployment.spec.auth.group_mappings
+    target = next(
+        (m for m in mappings if (m.email, m.email_domain, m.group) == (email, email_domain, group)),
+        None,
+    )
+    if target is None:
+        typer.echo("error: no such mapping (see wip-deploy group-map list)", err=True)
+        raise typer.Exit(2)
+    _replace_auth(deployment, group_mappings=[m for m in mappings if m is not target])
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Removed a group mapping for {group!r} from {resolved_name}",
+        repo_root=repo_root,
+    )
+
+
+@group_map_app.command("list")
+def group_map_list(
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[Path | None, _install_dir_opt()] = None,
+) -> None:
+    """List the install's federated group mappings."""
+    resolved_name = _resolve_name(name)
+    deployment = _load_deployment(install_dir or _default_install_dir(resolved_name))
+    mappings = deployment.spec.auth.group_mappings
+    if not mappings:
+        typer.echo(f"No group mappings declared on {resolved_name}.")
+        return
+    for m in mappings:
+        match = f"email={m.email}" if m.email else f"email_domain={m.email_domain}"
+        typer.echo(f"{match}  ->  {m.group}")
+
+
 @app.command("add-module")
 def add_module(
     module_name: Annotated[
@@ -5045,7 +5442,11 @@ def _ensure_secrets_via_spec(
         raise typer.Exit(2)
 
     backend = FileSecretBackend(Path(location))
-    return ensure_secrets(deployment, components, apps_list, backend, persist=persist)
+    try:
+        return ensure_secrets(deployment, components, apps_list, backend, persist=persist)
+    except OperatorSecretMissing as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from e
 
 
 def _render_tree(

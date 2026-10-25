@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -146,6 +146,97 @@ class SpecAPIKey(WIPModel):
         return self
 
 
+# Groups that bypass namespace authorization. Only local Dex users and API
+# keys ever hold them: a login federated through a connector can neither
+# bring them from its identity provider nor be mapped to them.
+RESERVED_GROUPS = ("wip-admins", "wip-services")
+
+# Dex's static-password connector. Its users are the install's local users.
+LOCAL_CONNECTOR_ID = "local"
+
+# Config keys the deployer owns on every connector: the redirect URI is
+# derived from the issuer, and the secret comes from the secret backend.
+_DERIVED_CONNECTOR_KEYS = ("redirectURI",)
+
+
+def _check_group_name(group: str) -> str:
+    if not group or not all(ch.isalnum() or ch in "._-" for ch in group):
+        raise ValueError(f"group {group!r}: use letters, digits, '.', '_' or '-'")
+    return group
+
+
+class DexConnector(WIPModel):
+    """An external identity provider Dex federates logins from.
+
+    `type` and `config` are Dex's own connector schema
+    (https://dexidp.io/docs/connectors/), passed through as declared,
+    except for what the deployer owns: `redirectURI` is derived from the
+    issuer (`<issuer>/callback`), and the secret lives in the install's
+    secret backend under `secret_name`, supplied by the operator and
+    written into `config[secret_key]` at render time. It is never
+    generated: a made-up client secret would only fail at the provider.
+    """
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9-]*$")
+    # Dex type names: oidc, github, atlassian-crowd, mockCallback, …
+    type: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9-]*$")
+    name: str = Field(min_length=1)
+    config: dict[str, Any] = Field(default_factory=dict)
+    secret_key: str | None = "clientSecret"
+    """The config key Dex reads the secret from (`clientSecret` for OAuth
+    and OIDC connectors, `bindPW` for LDAP); None for a connector that
+    takes no secret."""
+
+    @property
+    def secret_name(self) -> str:
+        return f"dex-connector-{self.id}"
+
+    @model_validator(mode="after")
+    def deployer_owned_keys(self) -> DexConnector:
+        if self.id == LOCAL_CONNECTOR_ID:
+            raise ValueError(
+                f"connector id {LOCAL_CONNECTOR_ID!r} is Dex's local-user "
+                "connector; choose another id"
+            )
+        owned = [k for k in (*_DERIVED_CONNECTOR_KEYS, self.secret_key) if k and k in self.config]
+        if owned:
+            raise ValueError(
+                f"connector {self.id!r}: config may not set {owned} — the "
+                "redirect URI is derived from the issuer and the secret "
+                f"comes from the secret backend ({self.secret_name})"
+            )
+        return self
+
+
+class GroupMapping(WIPModel):
+    """Grants a WIP group to users who log in through a connector.
+
+    Matches the token's email exactly or by domain. Local users get their
+    group from their own declaration, so mappings never apply to them.
+    """
+
+    email: str | None = Field(default=None, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    email_domain: str | None = Field(default=None, pattern=r"^[^@\s]+\.[^@\s]+$")
+    group: str
+
+    @field_validator("group")
+    @classmethod
+    def _group(cls, group: str) -> str:
+        _check_group_name(group)
+        if group in RESERVED_GROUPS:
+            raise ValueError(
+                f"group {group!r} is reserved for local users: a federated "
+                "login is never mapped to it"
+            )
+        return group
+
+    @model_validator(mode="after")
+    def one_matcher(self) -> GroupMapping:
+        if (self.email is None) == (self.email_domain is None):
+            raise ValueError("a group mapping matches exactly one of email or email_domain")
+        return self
+
+
 class AuthSpec(WIPModel):
     mode: Literal["oidc", "api-key-only", "hybrid"]
     gateway: bool
@@ -156,6 +247,28 @@ class AuthSpec(WIPModel):
     session_ttl: str = "15m"
     api_keys: list[SpecAPIKey] = Field(default_factory=list)
     """Declaratively provisioned config-file API keys — see SpecAPIKey."""
+    connectors: list[DexConnector] = Field(default_factory=list)
+    """External identity providers Dex federates logins from."""
+    group_mappings: list[GroupMapping] = Field(default_factory=list)
+    """WIP groups granted to federated users, by email or email domain."""
+
+    @model_validator(mode="after")
+    def federation_shape(self) -> AuthSpec:
+        ids = [c.id for c in self.connectors]
+        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        if dupes:
+            raise ValueError(f"duplicate connector ids: {dupes}")
+        if self.connectors and self.mode == "api-key-only":
+            raise ValueError(
+                "auth.connectors requires auth.mode ∈ {oidc, hybrid}: Dex is "
+                "not running in api-key-only"
+            )
+        if self.group_mappings and not self.connectors:
+            raise ValueError(
+                "auth.group_mappings apply to federated logins only; declare a "
+                "connector first"
+            )
+        return self
 
     @model_validator(mode="after")
     def api_key_names_unique(self) -> AuthSpec:

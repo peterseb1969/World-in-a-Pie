@@ -51,6 +51,12 @@ class SpecContextAuth:
     #   "oidc"         → "jwt_only"
     #   "hybrid"       → "dual"
     wip_auth_mode: str
+    # The group policy for logins federated through a Dex connector
+    # (WIP_AUTH_FEDERATED_GROUPS, read by wip-auth and the auth-gateway):
+    # reserved groups are stripped and auth.group_mappings applied. JSON;
+    # empty when no connector is declared, which leaves every token's groups
+    # exactly as issued.
+    federated_groups: str
 
 
 @dataclass(frozen=True)
@@ -225,6 +231,32 @@ def _compute_auth(
         jwt_audience=",".join(client_ids) or "wip",
         callback_url=f"{public_base}/auth/callback",
         wip_auth_mode=_AUTH_MODE_TO_WIP_AUTH_MODE[auth_mode],
+        federated_groups=_federated_groups_policy(deployment),
+    )
+
+
+def _federated_groups_policy(deployment: Deployment) -> str:
+    import json
+
+    from wip_deploy.spec.deployment import LOCAL_CONNECTOR_ID, RESERVED_GROUPS
+
+    auth = deployment.spec.auth
+    if not auth.connectors:
+        return ""
+    mappings = [
+        {"email": m.email, "group": m.group}
+        if m.email is not None
+        else {"email_domain": m.email_domain, "group": m.group}
+        for m in auth.group_mappings
+    ]
+    return json.dumps(
+        {
+            "local_connectors": [LOCAL_CONNECTOR_ID],
+            "reserved_groups": list(RESERVED_GROUPS),
+            "mappings": mappings,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
     )
 
 
