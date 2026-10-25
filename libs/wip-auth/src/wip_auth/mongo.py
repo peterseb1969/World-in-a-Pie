@@ -14,9 +14,10 @@ authentication, such as the test containers.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 
-def mongo_credentials() -> dict[str, str]:
+def mongo_credentials() -> dict[str, Any]:
     """Keyword arguments that authenticate a Motor/PyMongo client, or {}."""
     user = os.environ.get("MONGO_USER") or ""
     if not user:

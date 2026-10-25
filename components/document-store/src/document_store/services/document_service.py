@@ -1046,7 +1046,7 @@ class DocumentService:
         validation_result: Any,
         namespace: str,
         extra_warnings: list[str] | None = None,
-    ) -> tuple[DocumentCreateResponse, str | None]:
+    ) -> tuple[DocumentCreateResponse, dict[str, Any] | None]:
         """Phase-3 overwrite: update the existing document's data and
         references without creating a new version. Used when the
         template has versioned=False (e.g., latest-only relationship
