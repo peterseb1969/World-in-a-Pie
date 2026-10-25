@@ -1188,6 +1188,48 @@ treat 503 as "try again".
 
 ---
 
+### Registry: a synonym takes its entry's namespace and type; an unknown entity type is an error
+
+`/synonyms/add` used to store whatever `synonym_namespace` and
+`synonym_entity_type` the caller sent, and report `added`:
+- an unknown type (the singular `document`) made a synonym no lookup could
+  ever match;
+- a valid but foreign one made a synonym that resolved to the wrong thing —
+  another namespace's key answering with this entity, or a type's lookup
+  returning an entity of another type.
+
+Now:
+- **`/synonyms/add`** stores the synonym in its entry's namespace with its
+  entry's entity type. The two fields are optional — omit them. Sent values
+  that differ are refused per item: `error_code: "invalid_request"`,
+  `details.rule: "synonym_scope_mismatch"` (or `invalid_entity_type` for a
+  type that does not exist). A synonym is not a cross-namespace link; to
+  reference another namespace's entity, address it as `NS:VALUE`.
+- **`/synonyms/remove`** defaults both fields to the entry's, and still
+  honours explicit ones as sent, so a synonym stored under another scope
+  before this release can be removed.
+- **`/synonyms/merge`** refuses two entries of different namespace or entity
+  type (`merge_scope_mismatch`).
+- **Lookups** (`/entries/lookup/by-key`, `/lookup/by-id`, `/entries/resolve`,
+  `/search/by-fields`, `/search/by-term`) report an unknown entity type as a
+  per-item `invalid_entity_type` error instead of `not_found`; the
+  `GET /entries` and `GET /entries/search` filters answer it with **400**.
+  A key lookup never returns an entry whose own namespace or type differs
+  from the one asked for: such a synonym can only predate this release, and
+  it is logged and reported `not_found`.
+
+No install checked had a synonym scoped outside its entry (wip-local,
+dev-test, prod-test, kb.internal), and every platform service already sends
+the entry's own scope. The MCP `add_synonym` / `remove_synonym` tools now
+take the two fields as optional.
+
+**Action:** callers that send `synonym_namespace` / `synonym_entity_type`
+should send their entry's own values or drop them. A restore of an archive
+holding a synonym scoped outside its entry now fails loudly instead of
+re-creating it.
+
+---
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

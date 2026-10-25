@@ -625,6 +625,9 @@ already holds is refused. That refusal is a signal for the app — a real
 duplicate, or a qualifier too weak to tell two meanings apart. Choose
 qualifiers that name the meaning: {"chapter_title": "X"} and
 {"scene_title": "X"} are two synonyms; {"title": "X"} for both is one.
+A synonym is another name for its entry's own identity: it lives in the
+entry's namespace and has the entry's entity type, so a lookup by synonym
+only ever returns an entity of the namespace and type it asked for.
 - A document's identity values are registered automatically as a synonym
   qualified by its template: {"@template": "<template value>", <identity
   field>: <submitted value>, …}. The same values under two templates are two
@@ -1511,20 +1514,27 @@ async def lookup_entry(
 @mcp.tool()
 async def add_synonym(
     target_id: str,
-    synonym_namespace: str,
-    synonym_entity_type: str,
     synonym_composite_key: dict,
+    synonym_namespace: str | None = None,
+    synonym_entity_type: str | None = None,
 ) -> str:
     """Add an alternative composite key (synonym) that resolves to an existing entry.
 
-    Use this for cross-namespace linking, external/vendor ID mapping, or
-    mapping multiple identifiers to the same canonical entity.
+    Use this for external/vendor ID mapping, or mapping multiple identifiers to
+    the same canonical entity: put the identifier's source in the key itself,
+    e.g. {"erp_id": "SAP-001"}. A synonym is another name for the entry's own
+    identity, so it lives in the entry's namespace and has the entry's entity
+    type — omit synonym_namespace and synonym_entity_type. If sent, they must
+    equal the entry's, or the item is refused (details.rule
+    "synonym_scope_mismatch"). A synonym is not a cross-namespace link: to
+    reference an entity in another namespace, address it as "NS:VALUE".
 
     Args:
         target_id: The canonical entry ID to add the synonym to.
-        synonym_namespace: Namespace for the synonym key.
-        synonym_entity_type: Entity type for the synonym key.
         synonym_composite_key: The alternative composite key dict.
+        synonym_namespace: Optional; must be the entry's namespace.
+        synonym_entity_type: Optional; must be the entry's entity type
+            (plural: terminologies, terms, templates, documents, files).
     """
     try:
         data = await get_client().add_synonym(
@@ -1541,17 +1551,17 @@ async def add_synonym(
 @mcp.tool()
 async def remove_synonym(
     target_id: str,
-    synonym_namespace: str,
-    synonym_entity_type: str,
     synonym_composite_key: dict,
+    synonym_namespace: str | None = None,
+    synonym_entity_type: str | None = None,
 ) -> str:
     """Remove a synonym (alternative composite key) from a Registry entry.
 
     Args:
         target_id: The entry ID to remove the synonym from.
-        synonym_namespace: Namespace of the synonym to remove.
-        synonym_entity_type: Entity type of the synonym to remove.
         synonym_composite_key: The composite key dict to remove.
+        synonym_namespace: Namespace of the synonym (default: the entry's).
+        synonym_entity_type: Entity type of the synonym (default: the entry's).
     """
     try:
         data = await get_client().remove_synonym(

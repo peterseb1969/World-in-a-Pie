@@ -361,8 +361,16 @@ class AddSynonymItem(StrictModel):
     """Request model for adding a synonym to an existing entry."""
 
     target_id: str = Field(..., description="ID of target entry")
-    synonym_namespace: str = Field(..., description="Namespace for the synonym")
-    synonym_entity_type: str = Field(..., description="Entity type for the synonym")
+    synonym_namespace: str | None = Field(
+        default=None,
+        description="Deprecated: a synonym lives in its entry's namespace. Omit it; "
+                    "if sent, it must equal the entry's namespace.",
+    )
+    synonym_entity_type: str | None = Field(
+        default=None,
+        description="Deprecated: a synonym has its entry's entity type. Omit it; "
+                    "if sent, it must equal the entry's entity type.",
+    )
     synonym_composite_key: dict[str, Any] = Field(..., description="Composite key for the synonym")
     synonym_source_info: SourceInfo | None = Field(default=None, description="Source info for synonym")
     created_by: str | None = Field(default=None, description="Creator identifier")
@@ -383,8 +391,12 @@ class RemoveSynonymItem(StrictModel):
     """Request model for removing a synonym from an entry."""
 
     target_id: str = Field(..., description="ID of target entry")
-    synonym_namespace: str = Field(..., description="Namespace of synonym to remove")
-    synonym_entity_type: str = Field(..., description="Entity type of synonym to remove")
+    synonym_namespace: str | None = Field(
+        default=None, description="Namespace of the synonym to remove (default: the entry's)",
+    )
+    synonym_entity_type: str | None = Field(
+        default=None, description="Entity type of the synonym to remove (default: the entry's)",
+    )
     synonym_composite_key: dict[str, Any] = Field(..., description="Composite key of synonym to remove")
     updated_by: str | None = Field(default=None, description="Updater identifier")
 

@@ -23,7 +23,7 @@ from ..models.composite_key_claim import CompositeKeyClaim
 from ..models.entry import RegistryEntry, Synonym
 from ..services.auth import require_api_key
 from ..services.claims import resolve_stale_claim
-from ..services.errors import error_fields
+from ..services.errors import error_fields, invalid_entity_type_fields
 from ..services.hash import HashService
 from .grants import NamespaceAccess
 
@@ -46,6 +46,30 @@ async def _write_refusal(
     return None
 
 
+def _scope_mismatch(
+    entry: RegistryEntry, namespace: str | None, entity_type: str | None
+) -> dict | None:
+    """The per-item refusal for a synonym scoped other than its entry, or None.
+
+    A synonym names the entry's own identity, so its namespace and entity
+    type are the entry's. One scoped elsewhere would resolve another
+    namespace's or type's key to this entry (the namespace and type
+    boundaries routed around), or match no lookup at all.
+    """
+    if namespace in (None, entry.namespace) and entity_type in (None, entry.entity_type):
+        return None
+    return {
+        "error": (
+            f"A synonym takes its entry's scope: namespace '{entry.namespace}', "
+            f"entity_type '{entry.entity_type}' (got namespace '{namespace}', "
+            f"entity_type '{entity_type}'). Omit synonym_namespace and "
+            "synonym_entity_type, or send the entry's own."
+        ),
+        "error_code": "invalid_request",
+        "details": {"rule": "synonym_scope_mismatch"},
+    }
+
+
 @router.post(
     "/add",
     response_model=BulkSynonymAddResponse,
@@ -57,15 +81,25 @@ async def add_synonyms(
 ) -> BulkSynonymAddResponse:
     """Add one or more synonyms to existing registry entries.
 
-    Needs write on the entry's namespace and on the synonym's. A target the
-    caller cannot read is reported target_not_found; one it can read but
-    not write is forbidden.
+    A synonym is another composite key for its entry's own identity, so it
+    lives in the entry's namespace and has the entry's entity type. A
+    synonym_namespace or synonym_entity_type that differs is refused
+    (synonym_scope_mismatch): stored, it would either never resolve or
+    resolve across a namespace or type boundary.
+
+    Needs write on the entry's namespace. A target the caller cannot read is
+    reported target_not_found; one it can read but not write is forbidden.
     """
     results = []
     access = NamespaceAccess(identity)
 
     for i, item in enumerate(items):
         try:
+            invalid = invalid_entity_type_fields(item.synonym_entity_type)
+            if invalid:
+                results.append(AddSynonymResponse(index=i, status="error", **invalid))
+                continue
+
             # Find the target entry by ID
             entry = await RegistryEntry.find_one({
                 "entry_id": item.target_id,
@@ -78,12 +112,20 @@ async def add_synonyms(
                 ))
                 continue
 
-            refusal = await _write_refusal(access, entry.namespace, item.synonym_namespace)
+            refusal = await _write_refusal(access, entry.namespace)
             if refusal:
                 results.append(AddSynonymResponse(
                     index=i, status="forbidden", error=refusal,
                 ))
                 continue
+
+            mismatch = _scope_mismatch(entry, item.synonym_namespace, item.synonym_entity_type)
+            if mismatch:
+                results.append(AddSynonymResponse(
+                    index=i, status="error", registry_id=entry.entry_id, **mismatch,
+                ))
+                continue
+            synonym_namespace, synonym_entity_type = entry.namespace, entry.entity_type
 
             # Keys starting with "@" qualify system-generated synonyms (a
             # document's "@template"). Only system callers may write them, so
@@ -121,14 +163,14 @@ async def add_synonyms(
             for attempt in (1, 2):
                 try:
                     await CompositeKeyClaim.claim(
-                        item.synonym_namespace, item.synonym_entity_type,
+                        synonym_namespace, synonym_entity_type,
                         synonym_hash, entry.entry_id, "synonym",
                         state="pending",
                     )
                     break
                 except DuplicateKeyError:
                     existing_claim = await CompositeKeyClaim.find_existing(
-                        item.synonym_namespace, item.synonym_entity_type, synonym_hash
+                        synonym_namespace, synonym_entity_type, synonym_hash
                     )
                     owner = existing_claim.owner_entry_id if existing_claim else "?"
                     if existing_claim and owner == entry.entry_id:
@@ -151,8 +193,8 @@ async def add_synonyms(
                 continue
 
             synonym = Synonym(
-                namespace=item.synonym_namespace,
-                entity_type=item.synonym_entity_type,
+                namespace=synonym_namespace,
+                entity_type=synonym_entity_type,
                 composite_key=item.synonym_composite_key,
                 composite_key_hash=synonym_hash,
                 source_info=item.synonym_source_info,
@@ -170,7 +212,7 @@ async def add_synonyms(
                 # Anything this release misses is pending and dies in the
                 # reconcile pass.
                 await CompositeKeyClaim.release(
-                    item.synonym_namespace, item.synonym_entity_type,
+                    synonym_namespace, synonym_entity_type,
                     synonym_hash, owner_entry_id=entry.entry_id,
                 )
                 raise
@@ -179,7 +221,7 @@ async def add_synonyms(
             # failure leaves a pending-but-backed claim for the reconcile
             # pass; it must not fail the committed synonym.
             await CompositeKeyClaim.confirm(
-                item.synonym_namespace, item.synonym_entity_type,
+                synonym_namespace, synonym_entity_type,
                 synonym_hash, entry.entry_id,
             )
 
@@ -210,8 +252,11 @@ async def remove_synonyms(
 ) -> BulkSynonymRemoveResponse:
     """Remove one or more synonyms from registry entries.
 
-    Same permission rule as add: write on the entry's namespace and the
-    synonym's; an unreadable target is not_found.
+    The synonym's namespace and entity type default to the entry's. Explicit
+    ones are honoured as sent — even an entity type that does not exist — so
+    a synonym stored under another scope before add refused that can still
+    be removed; remove only deletes what is there. Needs write on the entry's
+    namespace and the synonym's; an unreadable target is not_found.
     """
     results = []
     access = NamespaceAccess(identity)
@@ -229,7 +274,10 @@ async def remove_synonyms(
                 ))
                 continue
 
-            refusal = await _write_refusal(access, entry.namespace, item.synonym_namespace)
+            synonym_namespace = item.synonym_namespace or entry.namespace
+            synonym_entity_type = item.synonym_entity_type or entry.entity_type
+
+            refusal = await _write_refusal(access, entry.namespace, synonym_namespace)
             if refusal:
                 results.append(RemoveSynonymResponse(
                     index=i, status="forbidden", registry_id=entry.entry_id,
@@ -242,8 +290,8 @@ async def remove_synonyms(
             original_count = len(entry.synonyms)
             entry.synonyms = [
                 s for s in entry.synonyms
-                if not (s.namespace == item.synonym_namespace
-                        and s.entity_type == item.synonym_entity_type
+                if not (s.namespace == synonym_namespace
+                        and s.entity_type == synonym_entity_type
                         and s.composite_key_hash == synonym_hash)
             ]
 
@@ -265,14 +313,14 @@ async def remove_synonyms(
             # fail the user's remove.
             try:
                 await CompositeKeyClaim.release(
-                    item.synonym_namespace, item.synonym_entity_type,
+                    synonym_namespace, synonym_entity_type,
                     synonym_hash, owner_entry_id=entry.entry_id,
                 )
             except Exception as release_err:
                 logger.warning(
                     "CASE-427: failed to release claim for %s (%s/%s) on entry "
                     "%s after synonym removal: %s",
-                    synonym_hash, item.synonym_namespace, item.synonym_entity_type,
+                    synonym_hash, synonym_namespace, synonym_entity_type,
                     entry.entry_id, release_err,
                 )
 
@@ -346,6 +394,25 @@ async def merge_entries(
                     index=i, status="error",
                     error="Cannot merge an entry with itself",
                     error_code="invalid_request", details={"rule": "self_merge"},
+                ))
+                continue
+            # Two entries are "the same real-world entity" only within one
+            # namespace and entity type: merging across either would make a
+            # document's old ID resolve to a template, or one namespace's key
+            # resolve into another.
+            if (preferred.namespace, preferred.entity_type) != (
+                deprecated.namespace, deprecated.entity_type
+            ):
+                results.append(MergeResponse(
+                    index=i, status="error",
+                    preferred_id=preferred.entry_id,
+                    deprecated_id=deprecated.entry_id,
+                    error=(
+                        "Only entries of one namespace and entity type merge: "
+                        f"preferred is {preferred.namespace}/{preferred.entity_type}, "
+                        f"deprecated is {deprecated.namespace}/{deprecated.entity_type}"
+                    ),
+                    error_code="invalid_request", details={"rule": "merge_scope_mismatch"},
                 ))
                 continue
             # A term's identity lives in two places — this entry and the

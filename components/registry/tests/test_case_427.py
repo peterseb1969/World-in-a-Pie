@@ -259,33 +259,33 @@ class TestWritePathClaims:
         b = await _register(client, auth_headers, "default", "templates", {"value": "B"})
         key = {"vendor": "V-1"}
 
-        assert (await _add_synonym(client, auth_headers, a, "vendor1", "templates", key))["status"] == "added"
-        assert await CompositeKeyClaim.find_existing("vendor1", "templates", _hash(key)) is not None
+        assert (await _add_synonym(client, auth_headers, a, "default", "templates", key))["status"] == "added"
+        assert await CompositeKeyClaim.find_existing("default", "templates", _hash(key)) is not None
 
         # Adding the same key to B is rejected while A owns it.
-        assert (await _add_synonym(client, auth_headers, b, "vendor1", "templates", key))["status"] == "error"
+        assert (await _add_synonym(client, auth_headers, b, "default", "templates", key))["status"] == "error"
 
         # Remove from A releases the claim.
         rm = await client.post(
             "/api/registry/synonyms/remove",
-            json=[{"target_id": a, "synonym_namespace": "vendor1",
+            json=[{"target_id": a, "synonym_namespace": "default",
                    "synonym_entity_type": "templates", "synonym_composite_key": key}],
             headers=auth_headers,
         )
         assert rm.json()["results"][0]["status"] == "removed"
-        assert await CompositeKeyClaim.find_existing("vendor1", "templates", _hash(key)) is None
+        assert await CompositeKeyClaim.find_existing("default", "templates", _hash(key)) is None
 
         # Now B can claim it.
-        assert (await _add_synonym(client, auth_headers, b, "vendor1", "templates", key))["status"] == "added"
+        assert (await _add_synonym(client, auth_headers, b, "default", "templates", key))["status"] == "added"
 
     @pytest.mark.asyncio
     async def test_self_owned_orphan_reclaim(self, client, auth_headers):
         a = await _register(client, auth_headers, "default", "templates", {"value": "SELF"})
         key = {"vendor": "ORPH"}
         # Simulate crash-after-claim: claim exists owned by A, but A doesn't embed it.
-        await CompositeKeyClaim.claim("vendor1", "templates", _hash(key), a, "synonym")
+        await CompositeKeyClaim.claim("default", "templates", _hash(key), a, "synonym")
         # add_synonym for the SAME owner reclaims the orphan → added.
-        assert (await _add_synonym(client, auth_headers, a, "vendor1", "templates", key))["status"] == "added"
+        assert (await _add_synonym(client, auth_headers, a, "default", "templates", key))["status"] == "added"
 
     @pytest.mark.asyncio
     async def test_cross_owner_orphan_healed_and_claimed(self, client, auth_headers):
@@ -296,10 +296,10 @@ class TestWritePathClaims:
         b = await _register(client, auth_headers, "default", "templates", {"value": "OTH"})
         key = {"vendor": "X"}
         # Claim owned by A, but A doesn't embed it (cross-owner orphan).
-        await CompositeKeyClaim.claim("vendor1", "templates", _hash(key), a, "synonym")
+        await CompositeKeyClaim.claim("default", "templates", _hash(key), a, "synonym")
         # B's add heals the orphan and claims the hash.
-        assert (await _add_synonym(client, auth_headers, b, "vendor1", "templates", key))["status"] == "added"
-        claim = await CompositeKeyClaim.find_existing("vendor1", "templates", _hash(key))
+        assert (await _add_synonym(client, auth_headers, b, "default", "templates", key))["status"] == "added"
+        claim = await CompositeKeyClaim.find_existing("default", "templates", _hash(key))
         assert claim is not None and claim.owner_entry_id == b
 
     @pytest.mark.asyncio
@@ -309,10 +309,10 @@ class TestWritePathClaims:
         a = await _register(client, auth_headers, "default", "templates", {"value": "OWN2"})
         b = await _register(client, auth_headers, "default", "templates", {"value": "OTH2"})
         key = {"vendor": "Y"}
-        assert (await _add_synonym(client, auth_headers, a, "vendor1", "templates", key))["status"] == "added"
-        result = await _add_synonym(client, auth_headers, b, "vendor1", "templates", key)
+        assert (await _add_synonym(client, auth_headers, a, "default", "templates", key))["status"] == "added"
+        result = await _add_synonym(client, auth_headers, b, "default", "templates", key)
         assert result["status"] == "error"
-        claim = await CompositeKeyClaim.find_existing("vendor1", "templates", _hash(key))
+        claim = await CompositeKeyClaim.find_existing("default", "templates", _hash(key))
         assert claim is not None and claim.owner_entry_id == a
 
     @pytest.mark.asyncio
@@ -320,7 +320,7 @@ class TestWritePathClaims:
         pref = await _register(client, auth_headers, "default", "templates", {"value": "PREF"})
         dep = await _register(client, auth_headers, "default", "templates", {"value": "DEP"})
         skey = {"vendor": "DEP-SYN"}
-        assert (await _add_synonym(client, auth_headers, dep, "vendor1", "templates", skey))["status"] == "added"
+        assert (await _add_synonym(client, auth_headers, dep, "default", "templates", skey))["status"] == "added"
 
         m = await client.post(
             "/api/registry/synonyms/merge",
@@ -329,5 +329,5 @@ class TestWritePathClaims:
         )
         assert m.json()["results"][0]["status"] == "merged"
         # The deprecated synonym's claim now points at preferred.
-        claim = await CompositeKeyClaim.find_existing("vendor1", "templates", _hash(skey))
+        claim = await CompositeKeyClaim.find_existing("default", "templates", _hash(skey))
         assert claim is not None and claim.owner_entry_id == pref

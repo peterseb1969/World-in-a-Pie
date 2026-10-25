@@ -59,7 +59,7 @@ from ..services.claims import (
     confirm_entry_keys,
     release_entry_keys,
 )
-from ..services.errors import error_fields
+from ..services.errors import error_fields, invalid_entity_type_fields
 from ..services.hash import HashService
 from ..services.id_generator import IdGeneratorService
 from .grants import NamespaceAccess, resolve_accessible_namespaces
@@ -105,6 +105,13 @@ def build_lookup_response(
     )
 
 
+def _require_valid_entity_type(entity_type: str | None) -> None:
+    """Refuse an unknown entity_type filter: it would list nothing, silently."""
+    invalid = invalid_entity_type_fields(entity_type)
+    if invalid:
+        raise HTTPException(status_code=400, detail=invalid["error"])
+
+
 @router.get(
     "",
     response_model=BrowseEntriesResponse,
@@ -120,6 +127,7 @@ async def browse_entries(
     identity: UserIdentity = Depends(require_api_key)
 ) -> BrowseEntriesResponse:
     """Browse registry entries with pagination and optional filters."""
+    _require_valid_entity_type(entity_type)
     query: dict = {}
 
     # Scope the listing to namespaces the caller may read. Enumeration is
@@ -197,6 +205,7 @@ async def unified_search(
     Unified search across entry IDs, additional IDs, and all composite key values
     (primary + synonyms). Returns rich results with match context and resolution paths.
     """
+    _require_valid_entity_type(entity_type)
     q_stripped = q.strip()
     escaped_q = re.escape(q_stripped)
 
@@ -1241,6 +1250,12 @@ async def lookup_by_ids(
     async with httpx.AsyncClient(timeout=10.0) as client:
         for i, item in enumerate(items):
             try:
+                invalid = invalid_entity_type_fields(item.entity_type)
+                if invalid:
+                    results.append(LookupResponse(index=i, status="error", **invalid))
+                    error_count += 1
+                    continue
+
                 matched_via = None
 
                 # 1. Find by entry_id
@@ -1307,7 +1322,8 @@ async def lookup_by_keys(
     """Look up registry entries by their composite keys.
 
     A key looked up in a namespace the caller cannot read, or matching an
-    entry that lives in one, is reported not_found.
+    entry that lives in one, is reported not_found. An unknown entity_type is
+    an error, not not_found: no key can exist under it.
     """
     results = []
     found_count = 0
@@ -1318,6 +1334,12 @@ async def lookup_by_keys(
     async with httpx.AsyncClient(timeout=10.0) as client:
         for i, item in enumerate(items):
             try:
+                invalid = invalid_entity_type_fields(item.entity_type)
+                if invalid:
+                    results.append(LookupResponse(index=i, status="error", **invalid))
+                    error_count += 1
+                    continue
+
                 if not await access.allows(item.namespace, "read"):
                     results.append(LookupResponse(index=i, status="not_found"))
                     not_found_count += 1
@@ -1367,6 +1389,20 @@ async def lookup_by_keys(
                         [e.entry_id for e in matches],
                     )
                 entry = matches[0] if matches else None
+
+                # A synonym takes its entry's namespace and type (enforced on
+                # add), so a key looked up in one namespace/type can only name
+                # an entry of that namespace/type. One stored before that rule
+                # would hand back another namespace's or type's entity: refuse
+                # it loudly rather than answer with the wrong thing.
+                if entry and (entry.namespace, entry.entity_type) != (item.namespace, item.entity_type):
+                    logger.error(
+                        "Synonym scope violation: key %s looked up as %s/%s matched "
+                        "entry %s, which is %s/%s — not returned.",
+                        key_hash, item.namespace, item.entity_type,
+                        entry.entry_id, entry.namespace, entry.entity_type,
+                    )
+                    entry = None
 
                 if not entry or not await access.allows(entry.namespace, "read"):
                     results.append(LookupResponse(index=i, status="not_found"))
@@ -1577,6 +1613,12 @@ async def resolve_synonyms(
 
     for i, item in enumerate(items):
         try:
+            invalid = invalid_entity_type_fields(item.entity_type)
+            if invalid:
+                results.append(ResolveResponse(index=i, status="error", **invalid))
+                error_count += 1
+                continue
+
             if not item.entry_id and not item.composite_key:
                 results.append(ResolveResponse(
                     index=i, status="error",

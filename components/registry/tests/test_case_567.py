@@ -12,17 +12,37 @@ Two related namespace-blindness bugs in register_keys:
    types in one batch wrongly collapsed to already_exists, though the storage
    index (CASE-18, namespace_entity_keyhash_unique_idx) and the cross-batch
    dedup both scope by (namespace, entity_type).
+
+A synonym scoped outside its entry's namespace can no longer be added
+(CASE-908: /synonyms/add takes the entry's scope), so the cross-namespace
+tests plant one directly, as data written before that rule. The dedup must
+still honour it: no second live owner for its key.
 """
 
 import pytest
 from httpx import AsyncClient
 
 from registry.models.composite_key_claim import CompositeKeyClaim
-from registry.models.entry import RegistryEntry
+from registry.models.entry import RegistryEntry, Synonym
 from registry.services.hash import HashService
 
 REGISTER = "/api/registry/entries/register"
-ADD_SYNONYM = "/api/registry/synonyms/add"
+
+
+async def _plant_cross_namespace_synonym(
+    owner_id: str, namespace: str, entity_type: str, composite_key: dict
+) -> None:
+    """Store a synonym outside its entry's scope, as /synonyms/add once did."""
+    key_hash = HashService.compute_composite_key_hash(composite_key)
+    entry = await RegistryEntry.find_one({"entry_id": owner_id})
+    assert entry is not None
+    entry.synonyms.append(Synonym(
+        namespace=namespace, entity_type=entity_type,
+        composite_key=composite_key, composite_key_hash=key_hash,
+    ))
+    entry.rebuild_search_values()
+    await entry.save()
+    await CompositeKeyClaim.claim(namespace, entity_type, key_hash, owner_id, "synonym")
 
 
 async def _register_one(client: AsyncClient, headers: dict, namespace: str,
@@ -55,18 +75,7 @@ class TestCrossNamespaceSynonymDedup:
         owner_id = created["registry_id"]
 
         # Synonym under vendor2 (a namespace other than the entry's own).
-        response = await client.post(
-            ADD_SYNONYM,
-            json=[{
-                "target_id": owner_id,
-                "synonym_namespace": "vendor2",
-                "synonym_entity_type": "terms",
-                "synonym_composite_key": key,
-            }],
-            headers=auth_headers,
-        )
-        assert response.status_code == 200
-        assert response.json()["results"][0]["status"] == "added"
+        await _plant_cross_namespace_synonym(owner_id, "vendor2", "terms", key)
 
         # /register in vendor2 with the synonym's key → the synonym owns it.
         result = await _register_one(client, auth_headers, "vendor2", key)
@@ -92,17 +101,7 @@ class TestCrossNamespaceSynonymDedup:
 
         created = await _register_one(client, auth_headers, "vendor1", {"value": "OWNER2"})
         owner_id = created["registry_id"]
-        response = await client.post(
-            ADD_SYNONYM,
-            json=[{
-                "target_id": owner_id,
-                "synonym_namespace": "vendor2",
-                "synonym_entity_type": "terms",
-                "synonym_composite_key": key,
-            }],
-            headers=auth_headers,
-        )
-        assert response.json()["results"][0]["status"] == "added"
+        await _plant_cross_namespace_synonym(owner_id, "vendor2", "terms", key)
 
         # default ≠ vendor2: no synonym owns (default, terms, hash) → created.
         result = await _register_one(client, auth_headers, "default", key)

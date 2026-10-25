@@ -141,11 +141,12 @@ async def test_synonym_on_foreign_entry_is_not_found(client: AsyncClient, setup:
 
 
 @pytest.mark.asyncio
-async def test_squatting_a_foreign_namespace_is_forbidden(
+async def test_squatting_a_foreign_namespace_is_refused(
     client: AsyncClient, auth_headers: dict, setup: dict
 ):
     """The hijack from CASE-908#1: a synonym on the caller's own entry, but
-    claimed inside another namespace."""
+    claimed inside another namespace. A synonym takes its entry's namespace
+    (CASE-908), so the foreign scope is refused whatever the caller's grants."""
     squat = {"value": f"squatted-{setup['tag']}"}
     resp = await client.post(
         f"{BASE}/synonyms/add",
@@ -154,7 +155,8 @@ async def test_squatting_a_foreign_namespace_is_forbidden(
                "synonym_entity_type": "documents", "synonym_composite_key": squat}],
     )
     result = resp.json()["results"][0]
-    assert result["status"] == "forbidden"
+    assert result["status"] == "error"
+    assert result["details"]["rule"] == "synonym_scope_mismatch"
     assert "vendor2" in result["error"]
 
     # vendor2's own registration of that value gets a fresh identity.

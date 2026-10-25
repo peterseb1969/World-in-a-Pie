@@ -201,7 +201,7 @@ Registry results keep their reason statuses (`already_exists`, `not_found`, `alr
 
 | `error_code` | When | `details.rule` (examples) |
 |--------------|------|---------------------------|
-| `invalid_request` | The request is invalid: an unknown entity type, neither `entry_id` nor composite key, merging an entry with itself, merging term entries outside def-store | `invalid_entity_type`, `self_merge`, `terms_merge_in_def_store` |
+| `invalid_request` | The request is invalid: an unknown entity type (on writes, lookups, resolve and search alike), neither `entry_id` nor composite key, a synonym scoped outside its entry's namespace or entity type, merging an entry with itself or with one of another namespace or entity type, merging term entries outside def-store | `invalid_entity_type`, `synonym_scope_mismatch`, `self_merge`, `merge_scope_mismatch`, `terms_merge_in_def_store` |
 | `not_found` | The namespace does not exist or is not active | `namespace` |
 | `already_exists` | An `entry_id` already exists, or a composite key is claimed by another entry | `key_claimed` |
 | `synonym_conflict` | The synonym is registered under another entry | — |

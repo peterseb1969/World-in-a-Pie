@@ -8,6 +8,10 @@ crash recovery, deletion status, and MCP-facing APIs.
 import pytest
 from httpx import AsyncClient
 
+from registry.models.composite_key_claim import CompositeKeyClaim
+from registry.models.entry import RegistryEntry, Synonym
+from registry.services.hash import HashService
+
 # =============================================================================
 # deletion_mode lifecycle
 # =============================================================================
@@ -429,16 +433,20 @@ class TestNamespaceDeletion:
         )
         entry_id = resp.json()["results"][0]["registry_id"]
 
-        # The surviving entry carries a synonym in the doomed namespace
-        resp = await client.post(
-            "/api/registry/synonyms/add",
-            json=[{"target_id": entry_id,
-                   "synonym_namespace": "del-syn-target",
-                   "synonym_entity_type": "templates",
-                   "synonym_composite_key": {"value": "doomed-alias"}}],
-            headers=auth_headers,
-        )
-        assert resp.json()["results"][0]["status"] == "added"
+        # The surviving entry carries a synonym in the doomed namespace. The
+        # API no longer adds one outside its entry's namespace, so it is
+        # planted as data written before that rule; deletion must still
+        # journal the link it breaks.
+        alias = {"value": "doomed-alias"}
+        alias_hash = HashService.compute_composite_key_hash(alias)
+        survivor = await RegistryEntry.find_one({"entry_id": entry_id})
+        survivor.synonyms.append(Synonym(
+            namespace="del-syn-target", entity_type="templates",
+            composite_key=alias, composite_key_hash=alias_hash,
+        ))
+        survivor.rebuild_search_values()
+        await survivor.save()
+        await CompositeKeyClaim.claim("del-syn-target", "templates", alias_hash, entry_id, "synonym")
 
         # Non-forced delete succeeds (synonym_link is low severity)
         resp = await client.delete(

@@ -979,7 +979,7 @@ class TestRemoveSynonym:
             "/api/registry/synonyms/add",
             json=[{
                 "target_id": entry_id,
-                "synonym_namespace": "vendor1",
+                "synonym_namespace": "default",
                 "synonym_entity_type": "terms",
                 "synonym_composite_key": synonym_key,
             }],
@@ -998,7 +998,7 @@ class TestRemoveSynonym:
             "/api/registry/synonyms/remove",
             json=[{
                 "target_id": entry_id,
-                "synonym_namespace": "vendor1",
+                "synonym_namespace": "default",
                 "synonym_entity_type": "terms",
                 "synonym_composite_key": synonym_key,
                 "updated_by": "remover-user",
@@ -1068,7 +1068,7 @@ class TestRemoveSynonym:
             "/api/registry/synonyms/add",
             json=[{
                 "target_id": entry_id,
-                "synonym_namespace": "vendor1",
+                "synonym_namespace": "default",
                 "synonym_entity_type": "terms",
                 "synonym_composite_key": synonym_key,
             }],
@@ -1079,7 +1079,7 @@ class TestRemoveSynonym:
         lookup_before = await client.post(
             "/api/registry/entries/lookup/by-key",
             json=[{
-                "namespace": "vendor1",
+                "namespace": "default",
                 "entity_type": "terms",
                 "composite_key": synonym_key,
             }],
@@ -1092,7 +1092,7 @@ class TestRemoveSynonym:
             "/api/registry/synonyms/remove",
             json=[{
                 "target_id": entry_id,
-                "synonym_namespace": "vendor1",
+                "synonym_namespace": "default",
                 "synonym_entity_type": "terms",
                 "synonym_composite_key": synonym_key,
             }],
@@ -1103,7 +1103,7 @@ class TestRemoveSynonym:
         lookup_after = await client.post(
             "/api/registry/entries/lookup/by-key",
             json=[{
-                "namespace": "vendor1",
+                "namespace": "default",
                 "entity_type": "terms",
                 "composite_key": synonym_key,
             }],
@@ -1126,13 +1126,13 @@ class TestRemoveSynonym:
             json=[
                 {
                     "target_id": entry_id,
-                    "synonym_namespace": "vendor1",
+                    "synonym_namespace": "default",
                     "synonym_entity_type": "terms",
                     "synonym_composite_key": syn1,
                 },
                 {
                     "target_id": entry_id,
-                    "synonym_namespace": "vendor2",
+                    "synonym_namespace": "default",
                     "synonym_entity_type": "terms",
                     "synonym_composite_key": syn2,
                 },
@@ -1146,13 +1146,13 @@ class TestRemoveSynonym:
             json=[
                 {
                     "target_id": entry_id,
-                    "synonym_namespace": "vendor1",
+                    "synonym_namespace": "default",
                     "synonym_entity_type": "terms",
                     "synonym_composite_key": syn1,
                 },
                 {
                     "target_id": entry_id,
-                    "synonym_namespace": "vendor2",
+                    "synonym_namespace": "default",
                     "synonym_entity_type": "terms",
                     "synonym_composite_key": syn2,
                 },

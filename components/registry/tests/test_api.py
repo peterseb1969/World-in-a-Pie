@@ -167,7 +167,7 @@ class TestSynonymAPI:
 
     @pytest.mark.asyncio
     async def test_add_synonym(self, client: AsyncClient, auth_headers: dict):
-        """Test adding a synonym to an existing entry."""
+        """A synonym added without a scope takes its entry's namespace and type."""
         # Register primary key
         reg_response = await client.post(
             "/api/registry/entries/register",
@@ -185,8 +185,6 @@ class TestSynonymAPI:
             "/api/registry/synonyms/add",
             json=[{
                 "target_id": registry_id,
-                "synonym_namespace": "vendor1",
-                "synonym_entity_type": "terms",
                 "synonym_composite_key": {"vendor_code": "V1-001"}
             }],
             headers=auth_headers
@@ -198,7 +196,7 @@ class TestSynonymAPI:
         lookup_response = await client.post(
             "/api/registry/entries/lookup/by-key",
             json=[{
-                "namespace": "vendor1",
+                "namespace": "default",
                 "entity_type": "terms",
                 "composite_key": {"vendor_code": "V1-001"}
             }],
@@ -280,7 +278,7 @@ class TestUnifiedSearchAPI:
             "/api/registry/synonyms/add",
             json=[{
                 "target_id": entry_id,
-                "synonym_namespace": "vendor1",
+                "synonym_namespace": "default",
                 "synonym_entity_type": "terms",
                 "synonym_composite_key": {"vendor_code": "VENDOR-SPECIAL-99"}
             }],
@@ -470,7 +468,7 @@ class TestEntryDetailAPI:
             "/api/registry/synonyms/add",
             json=[{
                 "target_id": entry_id,
-                "synonym_namespace": "vendor1",
+                "synonym_namespace": "default",
                 "synonym_entity_type": "terms",
                 "synonym_composite_key": {"alt_key": "VendorDetailSynTest"}
             }],
@@ -484,7 +482,7 @@ class TestEntryDetailAPI:
         assert response.status_code == 200
         data = response.json()
         assert len(data["synonyms"]) == 1
-        assert data["synonyms"][0]["namespace"] == "vendor1"
+        assert data["synonyms"][0]["namespace"] == "default"
         assert data["synonyms"][0]["composite_key"]["alt_key"] == "VendorDetailSynTest"
 
 
@@ -662,11 +660,11 @@ class TestSearchAPI:
     @pytest.mark.asyncio
     async def test_search_across_namespaces(self, client: AsyncClient, auth_headers: dict):
         """Test that search finds entries across all namespaces."""
-        # Register and add synonym in different namespace
+        # Register in a namespace other than the default, with a synonym there
         reg_response = await client.post(
             "/api/registry/entries/register",
             json=[{
-                "namespace": "default",
+                "namespace": "vendor2",
                 "entity_type": "terms",
                 "composite_key": {"product": "Widget", "sku": "W-100"}
             }],
@@ -674,17 +672,16 @@ class TestSearchAPI:
         )
         registry_id = reg_response.json()["results"][0]["registry_id"]
 
-        # Add synonym in vendor namespace
-        await client.post(
+        # Add a synonym (it lives in its entry's namespace, vendor2)
+        added = await client.post(
             "/api/registry/synonyms/add",
             json=[{
                 "target_id": registry_id,
-                "synonym_namespace": "vendor2",
-                "synonym_entity_type": "terms",
                 "synonym_composite_key": {"part": "Widget", "code": "WDG"}
             }],
             headers=auth_headers
         )
+        assert added.json()["results"][0]["status"] == "added"
 
         # Search for "Widget" across all namespaces
         response = await client.post(

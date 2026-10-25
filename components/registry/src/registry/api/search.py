@@ -17,7 +17,7 @@ from ..models.api_models import (
 )
 from ..models.entry import RegistryEntry
 from ..services.auth import require_api_key
-from ..services.errors import error_fields
+from ..services.errors import error_fields, invalid_entity_type_fields
 from ..services.search import SearchService
 from .grants import NamespaceAccess
 
@@ -56,6 +56,13 @@ async def search_by_fields(
 
     for i, item in enumerate(items):
         try:
+            invalid = invalid_entity_type_fields(*(item.restrict_to_entity_types or []))
+            if invalid:
+                results.append(SearchResponse(
+                    index=i, status="error", results=[], total_matches=0, **invalid,
+                ))
+                continue
+
             query = _within(SearchService.build_field_query(
                 field_criteria=item.field_criteria,
                 restrict_to_namespaces=item.restrict_to_namespaces,
@@ -119,6 +126,13 @@ async def search_by_term(
 
     for i, item in enumerate(items):
         try:
+            invalid = invalid_entity_type_fields(*(item.restrict_to_entity_types or []))
+            if invalid:
+                results.append(SearchResponse(
+                    index=i, status="error", results=[], total_matches=0, **invalid,
+                ))
+                continue
+
             # CASE-568: regex search is the primary (and only) path. The old
             # $text attempt always threw — no text index is declared on
             # RegistryEntry — so every call paid a guaranteed-failing query

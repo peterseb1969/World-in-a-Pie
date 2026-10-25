@@ -477,9 +477,9 @@ class WipClient:
     async def add_synonym(
         self,
         target_id: str,
-        synonym_namespace: str,
-        synonym_entity_type: str,
         synonym_composite_key: dict,
+        synonym_namespace: str | None = None,
+        synonym_entity_type: str | None = None,
     ) -> dict:
         resp = await self._post(
             self.registry_url,
@@ -496,9 +496,9 @@ class WipClient:
     async def remove_synonym(
         self,
         target_id: str,
-        synonym_namespace: str,
-        synonym_entity_type: str,
         synonym_composite_key: dict,
+        synonym_namespace: str | None = None,
+        synonym_entity_type: str | None = None,
     ) -> dict:
         resp = await self._post(
             self.registry_url,
