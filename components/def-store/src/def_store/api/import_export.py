@@ -12,6 +12,7 @@ from wip_auth import (
     resolve_or_404,
 )
 
+from ..services.errors import error_fields
 from ..services.import_export import ImportExportService
 from .auth import require_api_key
 
@@ -223,9 +224,9 @@ async def import_terminology(
         return JSONResponse(content=result)
 
     except ValueError as e:
-        msg = str(e)
-        status = 409 if "already exists" in msg else 400
-        raise HTTPException(status_code=status, detail=msg) from e
+        fields = error_fields(e)
+        status = 409 if fields["error_code"] == "already_exists" else 400
+        raise HTTPException(status_code=status, detail=fields["error"]) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Import failed: {e!s}") from e
 
@@ -363,8 +364,8 @@ async def import_from_url(
         return JSONResponse(content=result)
 
     except ValueError as e:
-        msg = str(e)
-        status = 409 if "already exists" in msg else 400
-        raise HTTPException(status_code=status, detail=msg) from e
+        fields = error_fields(e)
+        status = 409 if fields["error_code"] == "already_exists" else 400
+        raise HTTPException(status_code=status, detail=fields["error"]) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Import failed: {e!s}") from e

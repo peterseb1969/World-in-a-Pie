@@ -4,7 +4,7 @@ import hashlib
 import math
 import re
 from datetime import UTC, datetime, timedelta
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import httpx
 from beanie.odm.enums import SortDirection
@@ -31,8 +31,17 @@ from .registry_client import RegistryError, get_registry_client
 
 
 class FileServiceError(Exception):
-    """Error in file service operations."""
-    pass
+    """Error in file service operations.
+
+    Carries the ``error_code`` a bulk result reports for it (and, where one
+    code covers several rules, the rule that failed, as ``details.rule``).
+    Untyped raises are server-side failures: ``internal_error``.
+    """
+
+    def __init__(self, message: str, code: str = "internal_error", rule: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details: dict[str, Any] | None = {"rule": rule} if rule else None
 
 
 class FileService:
@@ -79,7 +88,7 @@ class FileService:
             FileServiceError: If upload fails
         """
         if not is_file_storage_enabled():
-            raise FileServiceError("File storage is not enabled")
+            raise FileServiceError("File storage is not enabled", "invalid_state", rule="storage_disabled")
 
         # Sanitise filename (L2 — prevent header injection, path traversal)
         from .file_validation import sanitize_filename
@@ -100,7 +109,7 @@ class FileService:
                 registry, checksum, actor, namespace=namespace, entry_id=file_id,
             )
         except RegistryError as e:
-            raise FileServiceError(f"Failed to generate file ID: {e}") from e
+            raise FileServiceError(f"Failed to generate file ID: {e}", "registry_error") from e
 
         # If Registry already had this checksum in this namespace, the File
         # document should already exist — return it without re-uploading or
@@ -242,14 +251,14 @@ class FileService:
             FileDownloadResponse with pre-signed URL, or None if not found
         """
         if not is_file_storage_enabled():
-            raise FileServiceError("File storage is not enabled")
+            raise FileServiceError("File storage is not enabled", "invalid_state", rule="storage_disabled")
 
         file_doc = await File.find_one({"file_id": file_id})
         if not file_doc:
             return None
 
         if file_doc.status == FileStatus.INACTIVE:
-            raise FileServiceError("File has been deleted")
+            raise FileServiceError("File has been deleted", "invalid_state", rule="file_deleted")
 
         try:
             storage = get_file_storage_client()
@@ -281,14 +290,14 @@ class FileService:
             Tuple of (content bytes, File document), or None if not found
         """
         if not is_file_storage_enabled():
-            raise FileServiceError("File storage is not enabled")
+            raise FileServiceError("File storage is not enabled", "invalid_state", rule="storage_disabled")
 
         file_doc = await File.find_one({"file_id": file_id})
         if not file_doc:
             return None
 
         if file_doc.status == FileStatus.INACTIVE:
-            raise FileServiceError("File has been deleted")
+            raise FileServiceError("File has been deleted", "invalid_state", rule="file_deleted")
 
         try:
             storage = get_file_storage_client()
@@ -325,7 +334,8 @@ class FileService:
         if file_doc.reference_count > 0 and not force:
             raise FileServiceError(
                 f"File is referenced by {file_doc.reference_count} document(s). "
-                "Use force=true to delete anyway."
+                "Use force=true to delete anyway.",
+                "invalid_state", rule="referenced"
             )
 
         actor = get_identity_string()
@@ -361,7 +371,7 @@ class FileService:
             return False
 
         if file_doc.status != FileStatus.INACTIVE:
-            raise FileServiceError("Only inactive files can be hard-deleted")
+            raise FileServiceError("Only inactive files can be hard-deleted", "invalid_state", rule="not_inactive")
 
         # Delete from MinIO
         if is_file_storage_enabled():
@@ -396,7 +406,7 @@ class FileService:
             return None
 
         if file_doc.status == FileStatus.INACTIVE:
-            raise FileServiceError("Cannot update deleted file")
+            raise FileServiceError("Cannot update deleted file", "invalid_state", rule="file_deleted")
 
         actor = get_identity_string()
 

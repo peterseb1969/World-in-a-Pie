@@ -23,6 +23,7 @@ from ..models.composite_key_claim import CompositeKeyClaim
 from ..models.entry import RegistryEntry, Synonym
 from ..services.auth import require_api_key
 from ..services.claims import resolve_stale_claim
+from ..services.errors import error_fields
 from ..services.hash import HashService
 from .grants import NamespaceAccess
 
@@ -141,7 +142,8 @@ async def add_synonyms(
                         continue
                     results.append(AddSynonymResponse(
                         index=i, status="error",
-                        error=f"Synonym already registered under different entry: {owner}"
+                        error=f"Synonym already registered under different entry: {owner}",
+                        error_code="synonym_conflict",
                     ))
                     claim_conflict = True
                     break
@@ -187,7 +189,7 @@ async def add_synonyms(
 
         except Exception as e:
             results.append(AddSynonymResponse(
-                index=i, status="error", error=str(e)
+                index=i, status="error", **error_fields(e)
             ))
 
     return BulkSynonymAddResponse(
@@ -280,7 +282,7 @@ async def remove_synonyms(
 
         except Exception as e:
             results.append(RemoveSynonymResponse(
-                index=i, status="error", error=str(e)
+                index=i, status="error", **error_fields(e)
             ))
 
     return BulkSynonymRemoveResponse(
@@ -342,7 +344,8 @@ async def merge_entries(
             if str(preferred.id) == str(deprecated.id):
                 results.append(MergeResponse(
                     index=i, status="error",
-                    error="Cannot merge an entry with itself"
+                    error="Cannot merge an entry with itself",
+                    error_code="invalid_request", details={"rule": "self_merge"},
                 ))
                 continue
             # A term's identity lives in two places — this entry and the
@@ -359,6 +362,7 @@ async def merge_entries(
                         "which moves the absorbed term's value and names to the survivor "
                         "and then merges these entries."
                     ),
+                    error_code="invalid_request", details={"rule": "terms_merge_in_def_store"},
                 ))
                 continue
 
@@ -415,7 +419,7 @@ async def merge_entries(
 
         except Exception as e:
             results.append(MergeResponse(
-                index=i, status="error", error=str(e)
+                index=i, status="error", **error_fields(e)
             ))
 
     return BulkMergeResponse(

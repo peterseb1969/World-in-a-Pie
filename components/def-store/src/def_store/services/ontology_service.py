@@ -18,6 +18,7 @@ from ..models.api_models import (
 )
 from ..models.term import Term
 from ..models.term_relation import TermRelation
+from .errors import error_fields
 from .nats_client import EventType as NatsEventType
 from .nats_client import publish_term_relation_event
 from .registry_client import get_registry_client
@@ -114,7 +115,8 @@ class OntologyService:
                         status="error",
                         error="Cannot validate relation type: "
                               "_ONTOLOGY_RELATIONSHIP_TYPES terminology not found. "
-                              "Restart def-store to bootstrap system terminologies."
+                              "Restart def-store to bootstrap system terminologies.",
+                        error_code="internal_error",
                     ))
                     continue
                 if item.relation_type not in valid_types:
@@ -122,7 +124,8 @@ class OntologyService:
                         index=i,
                         status="error",
                         error=f"Unknown relation type '{item.relation_type}'. "
-                              f"Valid types: {', '.join(sorted(valid_types.keys()))}"
+                              f"Valid types: {', '.join(sorted(valid_types.keys()))}",
+                        error_code="validation_failed", details={"rule": "unknown_relation_type"},
                     ))
                     continue
 
@@ -132,7 +135,8 @@ class OntologyService:
                     results.append(BulkResultItem(
                         index=i,
                         status="error",
-                        error=f"Source term '{item.source_term_id}' not found in namespace '{namespace}'"
+                        error=f"Source term '{item.source_term_id}' not found in namespace '{namespace}'",
+                        error_code="reference_violation", details={"rule": "source_term_not_found"},
                     ))
                     continue
 
@@ -142,7 +146,8 @@ class OntologyService:
                     results.append(BulkResultItem(
                         index=i,
                         status="error",
-                        error=f"Target term '{item.target_term_id}' not found in namespace '{namespace}'"
+                        error=f"Target term '{item.target_term_id}' not found in namespace '{namespace}'",
+                        error_code="reference_violation", details={"rule": "target_term_not_found"},
                     ))
                     continue
 
@@ -151,7 +156,8 @@ class OntologyService:
                     results.append(BulkResultItem(
                         index=i,
                         status="error",
-                        error="Source and target term cannot be the same"
+                        error="Source and target term cannot be the same",
+                        error_code="validation_failed", details={"rule": "self_relation"},
                     ))
                     continue
 
@@ -240,11 +246,7 @@ class OntologyService:
                     ))
             except Exception as e:
                 logger.error(f"Error creating relation at index {i}: {e}")
-                results.append(BulkResultItem(
-                    index=i,
-                    status="error",
-                    error=str(e)
-                ))
+                results.append(BulkResultItem(index=i, status="error", **error_fields(e)))
 
         return results
 
@@ -269,6 +271,7 @@ class OntologyService:
                         index=i,
                         status="error",
                         error=f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')",
+                        error_code="invalid_state", details={"rule": "deletion_mode_retain"},
                     ))
                     continue
 
@@ -283,7 +286,7 @@ class OntologyService:
                     results.append(BulkResultItem(
                         index=i,
                         status="error",
-                        error="Relation not found"
+                        error="Relation not found", error_code="not_found",
                     ))
                     continue
 
@@ -334,11 +337,7 @@ class OntologyService:
 
             except Exception as e:
                 logger.error(f"Error deleting relation at index {i}: {e}")
-                results.append(BulkResultItem(
-                    index=i,
-                    status="error",
-                    error=str(e)
-                ))
+                results.append(BulkResultItem(index=i, status="error", **error_fields(e)))
 
         return results
 

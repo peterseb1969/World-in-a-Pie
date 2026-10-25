@@ -21,6 +21,7 @@ from ..models.grant import (
 )
 from ..models.namespace import Namespace
 from ..services.auth import require_api_key
+from ..services.errors import error_fields
 
 # The wire-level set of auth_method values UserIdentity accepts. Mirrors
 # the Literal in libs/wip-auth/src/wip_auth/models.py::UserIdentity.
@@ -349,7 +350,7 @@ async def create_grants(
         except Exception as e:
             results.append({
                 "index": i, "status": "error",
-                "subject": item.subject, "error": str(e),
+                "subject": item.subject, **error_fields(e),
             })
 
     succeeded = sum(1 for r in results if r["status"] != "error")

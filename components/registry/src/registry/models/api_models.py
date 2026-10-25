@@ -7,6 +7,20 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .entry import SourceInfo, Synonym
 
+# Per-item results keep their reason statuses (already_exists, not_found,
+# forbidden, ...) — callers branch on them by value. An item whose status is
+# "error" also names a machine-readable error_code, the same vocabulary the
+# other services' bulk results use, so no caller has to match the message.
+ITEM_ERROR_CODE_DESCRIPTION = (
+    "Machine-readable error code, set on every item whose status is 'error' "
+    "(e.g. not_found, forbidden, already_exists, invalid_state, "
+    "invalid_request, validation_failed, internal_error). Branch on it, not "
+    "on the message."
+)
+ITEM_ERROR_DETAILS_DESCRIPTION = (
+    "Structured details of an error, e.g. the rule that failed (details.rule)."
+)
+
 
 class StrictModel(BaseModel):
     """Base for API request models — rejects unknown fields."""
@@ -185,6 +199,8 @@ class RekeyIdentityResponse(BaseModel):
     entry_id: str
     status: str  # rekeyed, unchanged, not_found, conflict, error
     error: str | None = None
+    error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
+    details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
 
 
 class RekeyIdentityBulkResponse(BaseModel):
@@ -206,6 +222,8 @@ class RegisterKeyResponse(BaseModel):
     entity_type: str | None = None
     identity_hash: str | None = None
     error: str | None = None
+    error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
+    details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
 
 
 class RegisterBulkResponse(BaseModel):
@@ -282,6 +300,8 @@ class ReserveItemResponse(BaseModel):
     status: str  # reserved, already_exists, invalid_format, error
     entry_id: str | None = None
     error: str | None = None
+    error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
+    details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
 
 
 class ReserveBulkResponse(BaseModel):
@@ -320,6 +340,8 @@ class ActivateItemResponse(BaseModel):
     status: str  # activated, not_found, already_active, error
     entry_id: str | None = None
     error: str | None = None
+    error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
+    details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
 
 
 class ActivateBulkResponse(BaseModel):
@@ -353,6 +375,8 @@ class AddSynonymResponse(BaseModel):
     status: str  # added, already_exists, target_not_found, forbidden, error
     registry_id: str | None = None
     error: str | None = None
+    error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
+    details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
 
 
 class RemoveSynonymItem(StrictModel):
@@ -372,6 +396,8 @@ class RemoveSynonymResponse(BaseModel):
     status: str  # removed, not_found, forbidden, error
     registry_id: str | None = None
     error: str | None = None
+    error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
+    details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
 
 
 # =============================================================================
@@ -405,6 +431,8 @@ class MergeResponse(BaseModel):
     preferred_id: str | None = None
     deprecated_id: str | None = None
     error: str | None = None
+    error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
+    details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
 
 
 # =============================================================================
@@ -455,6 +483,8 @@ class LookupResponse(BaseModel):
     source_data: dict[str, Any] | None = None
 
     error: str | None = None
+    error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
+    details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
 
 
 class LookupBulkResponse(BaseModel):
@@ -527,6 +557,8 @@ class ResolveResponse(BaseModel):
     composite_key: dict[str, Any] | None = None
     entry_id: str | None = None
     error: str | None = None
+    error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
+    details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
 
 
 class BulkResolveResponse(BaseModel):
@@ -608,6 +640,8 @@ class SearchResponse(BaseModel):
     results: list[SearchResult]
     total_matches: int
     error: str | None = None
+    error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
+    details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
 
 
 class SearchBulkResponse(BaseModel):
@@ -636,6 +670,8 @@ class UpdateEntryResponse(BaseModel):
     status: str  # updated, not_found, error
     registry_id: str | None = None
     error: str | None = None
+    error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
+    details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
 
 
 # =============================================================================
@@ -680,6 +716,8 @@ class DeleteResponse(BaseModel):
     status: str  # deactivated, deleted, not_found, error
     registry_id: str | None = None
     error: str | None = None
+    error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
+    details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
 
 
 class BulkUpdateResponse(BaseModel):

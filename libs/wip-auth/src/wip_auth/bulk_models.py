@@ -43,7 +43,8 @@ class BulkResultItemBase(BaseModel):
             "incompatible_config, force_unsupported, invalid_names, "
             "name_collision, identity_fields_immutable, immutable_property, "
             "cross_namespace_reference, invalid_state, invalid_request, "
-            "registry_error."
+            "registry_error, synonym_conflict, registry_entry_not_removed, "
+            "cross_namespace_relationship, archived_relationship_endpoint."
         ),
     )
     details: dict[str, Any] | None = Field(

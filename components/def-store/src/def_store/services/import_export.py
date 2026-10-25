@@ -19,6 +19,7 @@ from ..models.api_models import (
 from ..models.term import Term, TermName, TermTranslation
 from ..models.term_relation import TermRelation
 from ..models.terminology import Terminology, TerminologyMetadata
+from .errors import DefStoreError
 from .ontology_service import OntologyService
 from .terminology_service import TerminologyService
 
@@ -67,7 +68,7 @@ class ImportExportService:
             raise ValueError("Must provide terminology_id or terminology_value")
 
         if not terminology:
-            raise ValueError("Terminology not found")
+            raise DefStoreError("Terminology not found", "not_found")
 
         # Get terms
         query = {"terminology_id": terminology.terminology_id}

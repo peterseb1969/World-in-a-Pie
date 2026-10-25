@@ -10,7 +10,8 @@ Codes raised here: ``validation_failed``, ``not_found``, ``already_exists``,
 ``reference_violation``, ``cross_namespace_reference``,
 ``identity_fields_immutable``, ``immutable_property``, ``invalid_state`` and
 ``invalid_request``. Any other ``ValueError`` reaching a bulk handler is
-reported as ``invalid_request``, so no error item is ever without a code.
+reported as ``invalid_request`` and any other exception as ``internal_error``,
+so no error item is ever without a code.
 """
 
 from typing import Any
@@ -29,4 +30,7 @@ def error_fields(exc: Exception) -> dict[str, Any]:
     """The error, error_code and details of a per-item bulk result for ``exc``."""
     if isinstance(exc, TemplateError):
         return {"error": str(exc), "error_code": exc.code, "details": exc.details}
-    return {"error": str(exc), "error_code": "invalid_request"}
+    if isinstance(exc, ValueError):
+        return {"error": str(exc), "error_code": "invalid_request"}
+    # Not a refusal of the request: a fault on the server's side.
+    return {"error": str(exc), "error_code": "internal_error"}

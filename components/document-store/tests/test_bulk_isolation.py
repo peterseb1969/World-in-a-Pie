@@ -59,6 +59,7 @@ async def test_a_single_write_refuses_a_foreign_reference(client, auth_headers, 
     [item] = await _post(client, auth_headers, [_holder(setup["foreign"])])
     assert item["status"] == "error"
     assert "Cross-namespace reference violation" in item["error"]
+    assert item["error_code"] == "reference_violation"
 
 
 @pytest.mark.asyncio
@@ -66,6 +67,7 @@ async def test_a_batch_refuses_the_same_reference(client, auth_headers, setup):
     results = await _post(client, auth_headers, [_holder(setup["foreign"]), _holder(setup["foreign"])])
     assert [r["status"] for r in results] == ["error", "error"]
     assert all("Cross-namespace reference violation" in r["error"] for r in results)
+    assert all(r["error_code"] == "reference_violation" for r in results)
 
 
 @pytest.mark.asyncio

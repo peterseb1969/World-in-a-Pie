@@ -23,6 +23,7 @@ from ..models.api_models import (
     UpdateTerminologyItem,
 )
 from ..services.dependency_service import DependencyService, TerminologyDependencies
+from ..services.errors import error_fields
 from ..services.registry_client import RegistryError
 from ..services.terminology_service import (
     AmbiguousTerminologyValueError,
@@ -74,10 +75,8 @@ async def create_terminologies(
             results.append(BulkResultItem(index=i, status="created", id=result.terminology_id))
         except EntityExistsError as e:
             results.append(conflict_result(i, e, on_conflict, value=item.value))
-        except (ValueError, HTTPException) as e:
-            results.append(BulkResultItem(index=i, status="error", error=str(e)))
-        except RegistryError as e:
-            results.append(BulkResultItem(index=i, status="error", error=f"Registry error: {e!s}"))
+        except (ValueError, HTTPException, RegistryError) as e:
+            results.append(BulkResultItem(index=i, status="error", **error_fields(e)))
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
@@ -208,13 +207,14 @@ async def update_terminologies(
         try:
             result = await TerminologyService.update_terminology(item.terminology_id, item)
             if not result:
-                results.append(BulkResultItem(index=i, status="error", id=item.terminology_id, error="Terminology not found"))
+                results.append(BulkResultItem(
+                    index=i, status="error", id=item.terminology_id,
+                    error="Terminology not found", error_code="not_found",
+                ))
             else:
                 results.append(BulkResultItem(index=i, status="updated", id=item.terminology_id))
-        except ValueError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.terminology_id, error=str(e)))
-        except RegistryError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.terminology_id, error=f"Registry error: {e!s}"))
+        except (ValueError, RegistryError) as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.terminology_id, **error_fields(e)))
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
@@ -348,6 +348,7 @@ async def delete_terminologies(
                             "Hard-delete refused: cannot verify that no templates "
                             f"reference this terminology (Template Store unavailable).{force_note}"
                         ),
+                        error_code="invalid_state", details={"rule": "dependencies_unverifiable"},
                     ))
                     continue
                 if deps.template_count > 0:
@@ -358,6 +359,7 @@ async def delete_terminologies(
                             "any status reference this terminology. Update or delete "
                             f"them first.{force_note}"
                         ),
+                        error_code="invalid_state", details={"rule": "has_templates"},
                     ))
                     continue
             elif not item.force:
@@ -375,12 +377,14 @@ async def delete_terminologies(
                             "Could not verify template dependencies (Template Store "
                             "unavailable); retry, or use force=true to deactivate anyway."
                         ),
+                        error_code="invalid_state", details={"rule": "dependencies_unverifiable"},
                     ))
                     continue
                 if deps.template_count > 0:
                     results.append(BulkResultItem(
                         index=i, status="error", id=item.id,
-                        error=f"Terminology has {deps.template_count} dependent templates. Use force=true to delete anyway."
+                        error=f"Terminology has {deps.template_count} dependent templates. Use force=true to delete anyway.",
+                        error_code="invalid_state", details={"rule": "has_templates"},
                     ))
                     continue
 
@@ -389,17 +393,16 @@ async def delete_terminologies(
                 hard_delete=item.hard_delete,
             )
             if not success:
-                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Terminology not found"))
+                results.append(BulkResultItem(
+                    index=i, status="error", id=item.id,
+                    error="Terminology not found", error_code="not_found",
+                ))
             else:
                 results.append(BulkResultItem(index=i, status="deleted", id=item.id))
-        except RegistryEntryNotRemovedError as e:
-            # The terminology IS deleted; its Registry entry is not — say so.
-            results.append(BulkResultItem(
-                index=i, status="error", id=item.id, error=str(e),
-                error_code="registry_entry_not_removed",
-            ))
-        except ValueError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.id, error=str(e)))
+        except (RegistryEntryNotRemovedError, ValueError) as e:
+            # RegistryEntryNotRemovedError: the terminology IS deleted; its
+            # Registry entry is not — error_fields says so with its own code.
+            results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),

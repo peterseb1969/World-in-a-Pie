@@ -17,6 +17,7 @@ from ..models.api_models import (
 )
 from ..models.entry import RegistryEntry
 from ..services.auth import require_api_key
+from ..services.errors import error_fields
 from ..services.search import SearchService
 from .grants import NamespaceAccess
 
@@ -94,7 +95,7 @@ async def search_by_fields(
             logger.exception("search_by_fields failed for index=%d", i)
             results.append(SearchResponse(
                 index=i, status="error", results=[], total_matches=0,
-                error=str(e),
+                **error_fields(e),
             ))
 
     return SearchBulkResponse(results=results)
@@ -184,7 +185,7 @@ async def search_by_term(
             logger.exception("search_by_term failed for index=%d", i)
             results.append(SearchResponse(
                 index=i, status="error", results=[], total_matches=0,
-                error=str(e),
+                **error_fields(e),
             ))
 
     return SearchBulkResponse(results=results)

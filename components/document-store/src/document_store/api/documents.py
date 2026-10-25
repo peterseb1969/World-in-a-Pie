@@ -33,6 +33,7 @@ from ..models.api_models import (
 )
 from ..models.document import DocumentStatus
 from ..services.document_service import get_document_service
+from ..services.errors import error_fields
 from ..services.nats_client import get_throttle_delay
 from .auth import require_api_key
 
@@ -80,15 +81,9 @@ async def create_documents(
         # Single item — use direct create path
         response, error = await service.create_document(items[0], namespace=items[0].namespace)
         if error:
-            # CASE-436: surface a machine-readable error_code for the codes the
-            # service prefixes ("<code>: <message>"), matching the bulk path so
-            # callers branch on error_code, not the message string.
-            err_code = next(
-                (c for c in ("synonym_conflict", "registry_error")
-                 if error.startswith(f"{c}: ")),
-                None,
-            )
-            results = [BulkResultItem(index=0, status="error", error=error, error_code=err_code)]
+            # The service returns the item's error fields, code included, so
+            # the single path reports the same codes as the bulk path.
+            results = [BulkResultItem(index=0, status="error", **error)]
         else:
             assert response is not None  # paired with error: when error is None, response is set
             if response.is_new:
@@ -704,7 +699,7 @@ async def delete_documents(
                 continue
             doc = await service.get_document(item.id)
             if not doc:
-                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found", error_code="not_found"))
                 continue
             await check_namespace_permission(identity, doc.namespace, "write")
             success = await service.delete_document(
@@ -713,11 +708,11 @@ async def delete_documents(
                 version=item.version,
             )
             if not success:
-                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found", error_code="not_found"))
             else:
                 results.append(BulkResultItem(index=i, status="deleted", id=item.id))
         except ValueError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.id, error=str(e)))
+            results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
     return BulkResponse(
         results=results, total=len(items),
@@ -747,12 +742,12 @@ async def archive_documents(
     for i, item in enumerate(items):
         doc = await service.get_document(item.id)
         if not doc:
-            results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
+            results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found", error_code="not_found"))
             continue
         await check_namespace_permission(identity, doc.namespace, "write")
         success = await service.archive_document(item.id, item.archived_by)
         if not success:
-            results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
+            results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found", error_code="not_found"))
         else:
             results.append(BulkResultItem(index=i, status="updated", id=item.id))
     await asyncio.sleep(get_throttle_delay())

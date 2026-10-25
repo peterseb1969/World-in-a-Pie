@@ -2653,7 +2653,7 @@ class TemplateService:
                     value=child.value,
                     old_template_id=child.template_id,
                     status="error",
-                    error=str(e)
+                    **error_fields(e),
                 ))
 
         return CascadeResponse(

@@ -36,6 +36,7 @@ from ..models.api_models import (
     ValidationResponse,
 )
 from ..models.document import Document, DocumentMetadata, DocumentStatus
+from .errors import DocumentStoreError, error_fields
 from .file_storage_client import is_file_storage_enabled
 from .identity_service import IdentityService
 from .nats_client import EventType, publish_document_event
@@ -258,7 +259,7 @@ class DocumentService:
         template: dict[str, Any],
         validation_result: Any,
         namespace: str,
-    ) -> str | None:
+    ) -> tuple[str, str] | None:
         """Enforce relationship-document constraints beyond reference resolution.
 
         Phase 2 layer on top of the standard reference validation (which
@@ -272,7 +273,7 @@ class DocumentService:
           - the referenced documents are NOT archived (active or
             inactive is OK; archived means hard-removed semantically).
 
-        Returns None on success, or an error message string on failure.
+        Returns None on success, or (error_code, message) on failure.
         Pre-condition: validation_result.references already contains the
         resolved source_ref / target_ref entries (validation_service
         runs before this).
@@ -290,7 +291,10 @@ class DocumentService:
             if ref is None:
                 # Should have been caught by template-store at template
                 # create time, but defend anyway.
-                return f"Relationship template requires field '{field}' (missing in resolved references)"
+                return (
+                    "validation_failed",
+                    f"Relationship template requires field '{field}' (missing in resolved references)",
+                )
             resolved = ref.get("resolved") or {}
             ref_namespace = resolved.get("namespace")
             ref_status = resolved.get("status")
@@ -298,6 +302,7 @@ class DocumentService:
             if ref_namespace and ref_namespace != namespace:
                 # Distinct error code per design doc.
                 return (
+                    "cross_namespace_relationship",
                     f"cross_namespace_relationship: '{field}' points to a document in "
                     f"namespace '{ref_namespace}' but the relationship document is in "
                     f"namespace '{namespace}'. Cross-namespace relationships are not "
@@ -306,6 +311,7 @@ class DocumentService:
 
             if ref_status == "archived":
                 return (
+                    "archived_relationship_endpoint",
                     f"archived_relationship_endpoint: '{field}' points to an archived "
                     f"document ({resolved.get('document_id')}). Endpoints of a "
                     f"relationship must be active or inactive, not archived."
@@ -357,7 +363,7 @@ class DocumentService:
         self,
         request: DocumentCreateRequest,
         namespace: str,
-    ) -> tuple[DocumentCreateResponse | None, str | None]:
+    ) -> tuple[DocumentCreateResponse | None, dict[str, Any] | None]:
         """
         Create or update a document.
 
@@ -373,7 +379,9 @@ class DocumentService:
             namespace: Namespace for the document (required — no default)
 
         Returns:
-            Tuple of (response, error_message)
+            Tuple of (response, error). On failure, error holds the
+            per-item result fields — error, error_code and optional details —
+            so the caller's error item carries the code.
         """
         timing = {}
         total_start = time.perf_counter()
@@ -389,7 +397,11 @@ class DocumentService:
         timing["1_validation"] = (time.perf_counter() - start) * 1000
 
         if not validation_result.valid:
-            return None, self._format_validation_errors(validation_result.errors)
+            return None, {
+                "error": self._format_validation_errors(validation_result.errors),
+                "error_code": "validation_failed",
+                "details": {"errors": validation_result.errors},
+            }
 
         # Phase-2 relationship-template constraints. The standard
         # validation_service already verified source_ref / target_ref
@@ -410,7 +422,8 @@ class DocumentService:
                 template, validation_result, namespace,
             )
             if rel_error:
-                return None, rel_error
+                code, message = rel_error
+                return None, {"error": message, "error_code": code}
             await self._ensure_relationship_indexes(request.template_id, namespace)
 
         # Validate cross-namespace references (isolation mode check). Runs
@@ -434,11 +447,11 @@ class DocumentService:
                 document_references=validation_result.references,
             )
         except ReferenceValidationError as e:
-            return None, f"Cross-namespace reference violation: {e.violations}"
+            return None, error_fields(e)
         except RegistryUnavailableError as e:
             # Isolation cannot be checked, so the write is refused rather
             # than let through unchecked.
-            return None, str(e)
+            return None, error_fields(e)
 
         # Determine if template has identity fields
         has_identity_fields = bool(validation_result.identity_fields)
@@ -480,7 +493,7 @@ class DocumentService:
                 ),
             )
         except RegistryError as e:
-            return None, f"Failed to generate document ID: {e!s}"
+            return None, {"error": f"Failed to generate document ID: {e!s}", "error_code": "registry_error"}
         timing["2_registry"] = (time.perf_counter() - start) * 1000
 
         # Store the registry-returned identity_hash on the validation result
@@ -636,7 +649,7 @@ class DocumentService:
         synonyms: list[dict] | None = None,
         version_override: int | None = None,
         is_new_entry: bool = True,
-    ) -> tuple[DocumentCreateResponse | None, str | None]:
+    ) -> tuple[DocumentCreateResponse | None, dict[str, Any] | None]:
         """Create a brand new document with the given stable document_id."""
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -651,7 +664,7 @@ class DocumentService:
                 on_synonym_conflict=request.on_synonym_conflict, is_new_entry=is_new_entry,
             )
             if err_code:
-                return None, f"{err_code}: {err_msg}"
+                return None, {"error": f"{err_code}: {err_msg}", "error_code": err_code}
 
         # Create document
         now = datetime.now(UTC)
@@ -898,7 +911,7 @@ class DocumentService:
         document_id: str,
         namespace: str,
         force_new_version: bool = False,
-    ) -> tuple[DocumentCreateResponse | None, str | None]:
+    ) -> tuple[DocumentCreateResponse | None, dict[str, Any] | None]:
         """Create a new version of an existing document with stable document_id.
 
         For templates with versioned=False, overwrites the existing
@@ -923,7 +936,7 @@ class DocumentService:
                 on_synonym_conflict=request.on_synonym_conflict, is_new_entry=False,
             )
             if err_code:
-                return None, f"{err_code}: {err_msg}"
+                return None, {"error": f"{err_code}: {err_msg}", "error_code": err_code}
 
         # Check if the document has actually changed. The migrate path
         # (force_new_version) skips this gate: re-pinning to a new
@@ -1879,8 +1892,9 @@ class DocumentService:
             client = get_registry_client()
             deletion_mode = await client.get_namespace_deletion_mode(any_doc.namespace)
             if deletion_mode != "full":
-                raise ValueError(
-                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')"
+                raise DocumentStoreError(
+                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')",
+                    "invalid_state", rule="deletion_mode_retain",
                 )
 
             from .file_service import get_file_service
@@ -2275,7 +2289,7 @@ class DocumentService:
                 if isinstance(entry, BaseException):
                     failed += 1
                     results.append(BulkResultItem(
-                        index=task_idx, status="error", error=str(entry)
+                        index=task_idx, status="error", **error_fields(entry)
                     ))
                 else:
                     i, item, validation_result = entry
@@ -2286,7 +2300,9 @@ class DocumentService:
                         results.append(BulkResultItem(
                             index=i,
                             status="error",
-                            error=self._format_validation_errors(validation_result.errors)
+                            error=self._format_validation_errors(validation_result.errors),
+                            error_code="validation_failed",
+                            details={"errors": validation_result.errors},
                         ))
         else:
             # Sequential when continue_on_error=False — stop on first failure
@@ -2306,14 +2322,16 @@ class DocumentService:
                         results.append(BulkResultItem(
                             index=i,
                             status="error",
-                            error=self._format_validation_errors(validation_result.errors)
+                            error=self._format_validation_errors(validation_result.errors),
+                            error_code="validation_failed",
+                            details={"errors": validation_result.errors},
                         ))
                         results.extend(_skipped_rows(i))
                         break
                 except Exception as e:
                     failed += 1
                     results.append(BulkResultItem(
-                        index=i, status="error", error=str(e)
+                        index=i, status="error", **error_fields(e)
                     ))
                     results.extend(_skipped_rows(i))
                     break
@@ -2346,6 +2364,7 @@ class DocumentService:
                 BulkResultItem(
                     index=i, status="error",
                     error=registry_result.get("error", "Failed to generate ID"),
+                    error_code="registry_error",
                 ),
                 None,
                 "failed",
@@ -2616,8 +2635,9 @@ class DocumentService:
                 )
                 if rel_error:
                     failed += 1
+                    code, message = rel_error
                     results.append(BulkResultItem(
-                        index=idx, status="error", error=rel_error,
+                        index=idx, status="error", error=message, error_code=code,
                     ))
                     continue
                 # Relationship indexes are created lazily on first write. Doing it
@@ -2641,18 +2661,11 @@ class DocumentService:
                     file_references=vr.file_references,
                     document_references=vr.references,
                 )
-            except ReferenceValidationError as e:
+            except (ReferenceValidationError, RegistryUnavailableError) as e:
+                # RegistryUnavailableError: isolation cannot be checked, so the
+                # item is refused rather than written unchecked.
                 failed += 1
-                results.append(BulkResultItem(
-                    index=idx, status="error",
-                    error=f"Cross-namespace reference violation: {e.violations}",
-                ))
-                continue
-            except RegistryUnavailableError as e:
-                # Isolation cannot be checked, so the item is refused rather
-                # than written unchecked.
-                failed += 1
-                results.append(BulkResultItem(index=idx, status="error", error=str(e)))
+                results.append(BulkResultItem(index=idx, status="error", **error_fields(e)))
                 continue
             rel_checked.append(entry)
         validation_results = rel_checked
@@ -2708,9 +2721,7 @@ class DocumentService:
             # All valid documents fail due to Registry error
             for i, _item, _ in validation_results:
                 failed += 1
-                results.append(BulkResultItem(
-                    index=i, status="error", error=f"Registry error: {e!s}"
-                ))
+                results.append(BulkResultItem(index=i, status="error", **error_fields(e)))
             timing["2_registry_bulk"] = (time.perf_counter() - start) * 1000
             return self._finalize_bulk_response(results, len(items), timing, total_start)
 
@@ -2758,7 +2769,7 @@ class DocumentService:
             except Exception as e:
                 failed += 1
                 results.append(BulkResultItem(
-                    index=i, status="error", error=str(e)
+                    index=i, status="error", **error_fields(e)
                 ))
                 if not continue_on_error:
                     # Mark remaining as skipped
@@ -3355,8 +3366,7 @@ class DocumentService:
         )
         if error:
             return BulkResultItem(
-                index=index, status="error", document_id=doc.document_id,
-                error=error, error_code="internal_error",
+                index=index, status="error", document_id=doc.document_id, **error,
             )
         assert response is not None
         return BulkResultItem(

@@ -32,6 +32,7 @@ from ..models.api_models import (
     UpdateFileItem,
 )
 from ..models.file import FileStatus
+from ..services.errors import error_fields
 from ..services.file_service import FileServiceError, get_file_service
 from ..services.file_storage_client import (
     FileStorageError,
@@ -335,16 +336,16 @@ async def update_files_metadata(
         try:
             file_doc = await FileModel.find_one({"file_id": item.file_id})
             if not file_doc:
-                results.append(BulkResultItem(index=i, status="error", id=item.file_id, error="File not found"))
+                results.append(BulkResultItem(index=i, status="error", id=item.file_id, error="File not found", error_code="not_found"))
                 continue
             await check_namespace_permission(identity, file_doc.namespace, "write")
             response = await service.update_metadata(item.file_id, item)
             if not response:
-                results.append(BulkResultItem(index=i, status="error", id=item.file_id, error="File not found"))
+                results.append(BulkResultItem(index=i, status="error", id=item.file_id, error="File not found", error_code="not_found"))
             else:
                 results.append(BulkResultItem(index=i, status="updated", id=item.file_id))
         except FileServiceError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.file_id, error=str(e)))
+            results.append(BulkResultItem(index=i, status="error", id=item.file_id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
     return BulkResponse(
         results=results, total=len(items),
@@ -378,16 +379,16 @@ async def delete_files(
         try:
             file_doc = await FileModel.find_one({"file_id": item.id})
             if not file_doc:
-                results.append(BulkResultItem(index=i, status="error", id=item.id, error="File not found"))
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="File not found", error_code="not_found"))
                 continue
             await check_namespace_permission(identity, file_doc.namespace, "write")
             success = await service.delete_file(item.id, force=item.force)
             if not success:
-                results.append(BulkResultItem(index=i, status="error", id=item.id, error="File not found"))
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="File not found", error_code="not_found"))
             else:
                 results.append(BulkResultItem(index=i, status="deleted", id=item.id))
         except FileServiceError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.id, error=str(e)))
+            results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
     return BulkResponse(
         results=results, total=len(items),

@@ -59,6 +59,7 @@ from ..services.claims import (
     confirm_entry_keys,
     release_entry_keys,
 )
+from ..services.errors import error_fields
 from ..services.hash import HashService
 from ..services.id_generator import IdGeneratorService
 from .grants import NamespaceAccess, resolve_accessible_namespaces
@@ -456,7 +457,8 @@ async def register_keys(
                 results[i] = RegisterKeyResponse(
                     index=i,
                     status="error",
-                    error=f"Invalid entity_type: {item.entity_type}"
+                    error=f"Invalid entity_type: {item.entity_type}",
+                    error_code="invalid_request", details={"rule": "invalid_entity_type"},
                 )
                 error_count += 1
                 continue
@@ -466,7 +468,8 @@ async def register_keys(
                 results[i] = RegisterKeyResponse(
                     index=i,
                     status="error",
-                    error=f"Namespace '{item.namespace}' does not exist or is not active"
+                    error=f"Namespace '{item.namespace}' does not exist or is not active",
+                    error_code="not_found", details={"rule": "namespace"},
                 )
                 error_count += 1
                 continue
@@ -483,6 +486,7 @@ async def register_keys(
                         f"(namespace='{existing.namespace}', entity_type='{existing.entity_type}'). "
                         f"Restore mode requires a clean target — delete existing data first."
                     ),
+                    error_code="already_exists",
                 )
                 error_count += 1
                 continue
@@ -579,7 +583,7 @@ async def register_keys(
             results[i] = RegisterKeyResponse(
                 index=i,
                 status="error",
-                error=str(e)
+                **error_fields(e)
             )
             error_count += 1
 
@@ -594,6 +598,7 @@ async def register_keys(
         if conflict is not None:
             results[idx] = RegisterKeyResponse(
                 index=idx, status="error", error=conflict,
+                error_code="already_exists", details={"rule": "key_claimed"},
             )
             error_count += 1
             continue
@@ -623,7 +628,7 @@ async def register_keys(
                     results[idx] = RegisterKeyResponse(
                         index=idx,
                         status="error",
-                        error=f"Batch insert failed: {e!s}"
+                        error=f"Batch insert failed: {e!s}", error_code="internal_error"
                     )
                     error_count += 1
 
@@ -689,6 +694,7 @@ async def rekey_identity(
                 results.append(RekeyIdentityResponse(
                     index=i, entry_id=item.entry_id, status="error",
                     error="entry has no identity-bearing composite key (append-only document)",
+                    error_code="invalid_state", details={"rule": "no_identity"},
                 ))
                 failed += 1
                 continue
@@ -726,7 +732,7 @@ async def rekey_identity(
         except Exception as e:
             logger.error("Re-key failed for %s: %s", item.entry_id, e)
             results.append(RekeyIdentityResponse(
-                index=i, entry_id=item.entry_id, status="error", error=str(e),
+                index=i, entry_id=item.entry_id, status="error", **error_fields(e),
             ))
             failed += 1
 
@@ -854,7 +860,8 @@ async def reserve_ids(
             if item.entity_type not in VALID_ENTITY_TYPES:
                 results.append(ReserveItemResponse(
                     index=i, status="error",
-                    error=f"Invalid entity_type: {item.entity_type}"
+                    error=f"Invalid entity_type: {item.entity_type}",
+                    error_code="invalid_request", details={"rule": "invalid_entity_type"},
                 ))
                 error_count += 1
                 continue
@@ -873,7 +880,8 @@ async def reserve_ids(
             if not ns:
                 results.append(ReserveItemResponse(
                     index=i, status="error", entry_id=item.entry_id,
-                    error=f"Namespace '{item.namespace}' does not exist or is not active"
+                    error=f"Namespace '{item.namespace}' does not exist or is not active",
+                    error_code="not_found", details={"rule": "namespace"},
                 ))
                 error_count += 1
                 continue
@@ -907,7 +915,7 @@ async def reserve_ids(
 
         except Exception as e:
             results.append(ReserveItemResponse(
-                index=i, status="error", error=str(e)
+                index=i, status="error", **error_fields(e)
             ))
             error_count += 1
 
@@ -921,6 +929,7 @@ async def reserve_ids(
         if conflict is not None:
             results[idx] = ReserveItemResponse(
                 index=idx, status="error", error=conflict,
+                error_code="already_exists", details={"rule": "key_claimed"},
             )
             error_count += 1
             continue
@@ -943,7 +952,7 @@ async def reserve_ids(
                     await release_entry_keys(gated_entries[pos])
                     results[idx] = ReserveItemResponse(
                         index=idx, status="error",
-                        error=f"Batch insert failed: {e!s}"
+                        error=f"Batch insert failed: {e!s}", error_code="internal_error"
                     )
                     error_count += 1
 
@@ -1007,7 +1016,9 @@ async def activate_entries(
         if entry.status != "reserved":
             results[i] = ActivateItemResponse(
                 index=i, status="error", entry_id=item.entry_id,
-                error=f"Cannot activate entry with status '{entry.status}'")
+                error=f"Cannot activate entry with status '{entry.status}'",
+                error_code="invalid_state", details={"rule": "not_reserved"},
+            )
             error_count += 1
             continue
         # Set the final key, then run the two-phase claim: pending before the
@@ -1021,7 +1032,9 @@ async def activate_entries(
         conflict = await claim_entry_keys_pending(entry)
         if conflict is not None:
             results[i] = ActivateItemResponse(
-                index=i, status="error", entry_id=item.entry_id, error=conflict)
+                index=i, status="error", entry_id=item.entry_id, error=conflict,
+                error_code="already_exists", details={"rule": "key_claimed"},
+            )
             error_count += 1
             continue
         entry.status = "active"
@@ -1031,7 +1044,7 @@ async def activate_entries(
         except Exception as e:
             await release_entry_keys(entry)
             results[i] = ActivateItemResponse(
-                index=i, status="error", entry_id=item.entry_id, error=str(e))
+                index=i, status="error", entry_id=item.entry_id, **error_fields(e))
             error_count += 1
             continue
         await confirm_entry_keys(entry)
@@ -1054,7 +1067,7 @@ async def activate_entries(
         except Exception as e:
             for i in keyless:
                 results[i] = ActivateItemResponse(
-                    index=i, status="error", entry_id=items[i].entry_id, error=str(e))
+                    index=i, status="error", entry_id=items[i].entry_id, **error_fields(e))
                 error_count += 1
             return ActivateBulkResponse(
                 results=[r for r in results if r is not None],
@@ -1091,7 +1104,7 @@ async def activate_entries(
                 for i in keyless:
                     results[i] = ActivateItemResponse(
                         index=i, status="error", entry_id=items[i].entry_id,
-                        error=str(e))
+                        **error_fields(e))
                     error_count += 1
                 return ActivateBulkResponse(
                     results=[r for r in results if r is not None],
@@ -1111,7 +1124,9 @@ async def activate_entries(
             elif known_status != "reserved":
                 results[i] = ActivateItemResponse(
                     index=i, status="error", entry_id=item.entry_id,
-                    error=f"Cannot activate entry with status '{known_status}'")
+                    error=f"Cannot activate entry with status '{known_status}'",
+                    error_code="invalid_state", details={"rule": "not_reserved"},
+                )
                 error_count += 1
             elif item.entry_id in flipped_ids:
                 results[i] = ActivateItemResponse(
@@ -1120,7 +1135,9 @@ async def activate_entries(
             else:
                 results[i] = ActivateItemResponse(
                     index=i, status="error", entry_id=item.entry_id,
-                    error="Entry status changed concurrently; still reserved after update")
+                    error="Entry status changed concurrently; still reserved after update",
+                    error_code="concurrency_conflict",
+                )
                 error_count += 1
 
     return ActivateBulkResponse(
@@ -1269,7 +1286,7 @@ async def lookup_by_ids(
                 found_count += 1
 
             except Exception as e:
-                results.append(LookupResponse(index=i, status="error", error=str(e)))
+                results.append(LookupResponse(index=i, status="error", **error_fields(e)))
                 error_count += 1
 
     return LookupBulkResponse(
@@ -1386,7 +1403,7 @@ async def lookup_by_keys(
                 found_count += 1
 
             except Exception as e:
-                results.append(LookupResponse(index=i, status="error", error=str(e)))
+                results.append(LookupResponse(index=i, status="error", **error_fields(e)))
                 error_count += 1
 
     return LookupBulkResponse(
@@ -1435,7 +1452,7 @@ async def update_entries(
 
         except Exception as e:
             results.append(UpdateEntryResponse(
-                index=i, status="error", registry_id=item.entry_id, error=str(e)
+                index=i, status="error", registry_id=item.entry_id, **error_fields(e)
             ))
 
     return BulkUpdateResponse(
@@ -1498,6 +1515,7 @@ async def delete_entries(
                         results.append(DeleteResponse(
                             index=i, status="error", registry_id=item.entry_id,
                             error=f"Hard-delete requires namespace deletion_mode='full' (currently '{mode}')",
+                            error_code="invalid_state", details={"rule": "deletion_mode_retain"},
                         ))
                         continue
 
@@ -1522,7 +1540,7 @@ async def delete_entries(
 
         except Exception as e:
             results.append(DeleteResponse(
-                index=i, status="error", registry_id=item.entry_id, error=str(e)
+                index=i, status="error", registry_id=item.entry_id, **error_fields(e)
             ))
 
     return BulkDeleteResponse(
@@ -1562,7 +1580,7 @@ async def resolve_synonyms(
             if not item.entry_id and not item.composite_key:
                 results.append(ResolveResponse(
                     index=i, status="error",
-                    error="Provide either entry_id or composite_key",
+                    error="Provide either entry_id or composite_key", error_code="invalid_request",
                 ))
                 error_count += 1
                 continue
@@ -1625,7 +1643,7 @@ async def resolve_synonyms(
 
         except Exception as e:
             results.append(ResolveResponse(
-                index=i, status="error", error=str(e),
+                index=i, status="error", **error_fields(e),
             ))
             error_count += 1
 

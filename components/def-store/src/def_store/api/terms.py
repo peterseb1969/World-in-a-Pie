@@ -33,6 +33,7 @@ from ..models.api_models import (
 )
 from ..models.term import Term
 from ..models.terminology import Terminology
+from ..services.errors import error_fields
 from ..services.registry_client import RegistryError
 from ..services.term_names import TermNameError
 from ..services.term_reconcile import (
@@ -149,13 +150,11 @@ async def create_terms(
                 index=0, status="error", value=items[0].value,
                 error=str(e), error_code="invalid_names",
             )]
-        except ValueError as e:
-            msg = str(e)
-            if "not found" in msg:
-                raise HTTPException(status_code=404, detail=msg) from None
-            results = [BulkResultItem(index=0, status="error", value=items[0].value, error=msg)]
-        except RegistryError as e:
-            results = [BulkResultItem(index=0, status="error", value=items[0].value, error=f"Registry error: {e!s}")]
+        except (ValueError, RegistryError) as e:
+            fields = error_fields(e)
+            if fields["error_code"] == "not_found":
+                raise HTTPException(status_code=404, detail=fields["error"]) from None
+            results = [BulkResultItem(index=0, status="error", value=items[0].value, **fields)]
     else:
         # Bulk path — uses batch Registry calls and insert_many
         try:
@@ -166,10 +165,9 @@ async def create_terms(
                 registry_batch_size=registry_batch_size,
             )
         except ValueError as e:
-            msg = str(e)
-            if "not found" in msg:
-                raise HTTPException(status_code=404, detail=msg) from None
-            raise HTTPException(status_code=400, detail=msg) from None
+            fields = error_fields(e)
+            status_code = 404 if fields["error_code"] == "not_found" else 400
+            raise HTTPException(status_code=status_code, detail=fields["error"]) from None
         except RegistryError as e:
             raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
 
@@ -448,7 +446,10 @@ async def update_terms(
                 item.term_id, item, collision_out=collision_warnings
             )
             if not result:
-                results.append(BulkResultItem(index=i, status="error", id=item.term_id, error="Term not found"))
+                results.append(BulkResultItem(
+                    index=i, status="error", id=item.term_id,
+                    error="Term not found", error_code="not_found",
+                ))
             else:
                 results.append(BulkResultItem(
                     index=i, status="updated", id=item.term_id,
@@ -466,10 +467,8 @@ async def update_terms(
                 index=i, status="error", id=item.term_id,
                 error=str(e), error_code="invalid_names",
             ))
-        except ValueError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.term_id, error=str(e)))
-        except RegistryError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.term_id, error=f"Registry error: {e!s}"))
+        except (ValueError, RegistryError) as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.term_id, **error_fields(e)))
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
@@ -533,11 +532,14 @@ async def deprecate_terms(
         try:
             result = await TerminologyService.deprecate_term(item.term_id, item)
             if not result:
-                results.append(BulkResultItem(index=i, status="error", id=item.term_id, error="Term not found"))
+                results.append(BulkResultItem(
+                    index=i, status="error", id=item.term_id,
+                    error="Term not found", error_code="not_found",
+                ))
             else:
                 results.append(BulkResultItem(index=i, status="updated", id=item.term_id))
         except ValueError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.term_id, error=str(e)))
+            results.append(BulkResultItem(index=i, status="error", id=item.term_id, **error_fields(e)))
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
@@ -591,7 +593,10 @@ async def delete_terms(
                 hard_delete=item.hard_delete,
             )
             if not success:
-                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Term not found"))
+                results.append(BulkResultItem(
+                    index=i, status="error", id=item.id,
+                    error="Term not found", error_code="not_found",
+                ))
             else:
                 results.append(BulkResultItem(index=i, status="deleted", id=item.id))
         except RegistryEntryNotRemovedError as e:
@@ -601,7 +606,7 @@ async def delete_terms(
                 error_code="registry_entry_not_removed",
             ))
         except ValueError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.id, error=str(e)))
+            results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
@@ -661,7 +666,7 @@ async def merge_terms(
             ))
             continue
         except ValueError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.survivor_term_id, error=str(e)))
+            results.append(BulkResultItem(index=i, status="error", id=item.survivor_term_id, **error_fields(e)))
             continue
         details: dict[str, Any] = {
             "absorbed_term_id": item.absorbed_term_id,

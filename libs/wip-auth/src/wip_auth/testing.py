@@ -31,14 +31,25 @@ missing route dependency and a mis-allowlisted path all fail it alike.
 Two services (reporting-sync, ingest-gateway) once served every route
 anonymously while their wiring tests stayed green — that is what this
 gate exists to make impossible.
+
+A fourth contract, ``assert_error_items_carry_codes``, is a source check:
+every bulk error item a service constructs carries a machine-readable
+``error_code``, so callers branch on the code and never on the English
+message. The rule was written down in the API conventions, and a
+template-store-wide fix had just applied it, when the next change to a
+neighbouring service added two new code-less error items — one for a
+condition template-store already reported with a code. A written rule
+does not reach the next change; this gate does.
 """
 
+import ast
 import collections.abc
 import inspect
 import typing
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, get_args
 
 from fastapi.routing import APIRoute
@@ -242,6 +253,98 @@ def assert_no_factory_dependencies(app: Any, *, expect_dependencies: bool = True
         + "\n".join(f"  {o}" for o in offenders)
         + "\nFix: call the factory — Depends(require_admin()) — or use "
         "a direct dependency such as wip_auth.require_admin_identity."
+    )
+
+
+# =========================================================================
+# Error items carry an error_code
+# =========================================================================
+
+
+def _is_error_status(node: ast.AST | None) -> bool:
+    """``"error"`` as a literal, or an ``<Enum>.ERROR`` member."""
+    if isinstance(node, ast.Constant):
+        return node.value == "error"
+    return isinstance(node, ast.Attribute) and node.attr == "ERROR"
+
+
+def _is_none(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def collect_codeless_error_items(package_dir: str | Path) -> tuple[list[str], int]:
+    """Return (offenders, examined_count) over every error item constructed
+    in the Python sources under ``package_dir``.
+
+    An error item is a call with ``status="error"`` (or ``status=X.ERROR``)
+    among its keyword arguments, or a dict literal with a ``"status":
+    "error"`` entry. It is an offender when it names no ``error_code`` and
+    does not unpack a mapping (``**fields`` — the ``error_fields(exc)``
+    helper's shape, which always supplies a code), or when it passes
+    ``error_code=None`` outright. A code taken from a variable is trusted:
+    a source walk cannot see its runtime value, so a path that may hand
+    over None needs a behaviour test of the error item it produces. Offenders are
+    ``"relative/path.py:line"`` strings; examined_count is how many error
+    items the walk saw — zero means the walk found nothing, never that the
+    service is clean (same canary doctrine as the gates above).
+    """
+    root = Path(package_dir)
+    offenders: list[str] = []
+    examined = 0
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                kwargs = {k.arg: k.value for k in node.keywords}
+                if not _is_error_status(kwargs.get("status")):
+                    continue
+                coded = ("error_code" in kwargs and not _is_none(kwargs["error_code"])) \
+                    or None in kwargs
+            elif isinstance(node, ast.Dict):
+                entries = {
+                    k.value if isinstance(k, ast.Constant) else k: v
+                    for k, v in zip(node.keys, node.values, strict=True)
+                }
+                if not _is_error_status(entries.get("status")):
+                    continue
+                coded = ("error_code" in entries and not _is_none(entries["error_code"])) \
+                    or None in entries
+            else:
+                continue
+            examined += 1
+            if not coded:
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    return offenders, examined
+
+
+def assert_error_items_carry_codes(
+    package_dir: str | Path, *, expect_error_items: bool = True
+) -> None:
+    """Fail if any error item constructed under ``package_dir`` lacks an
+    ``error_code``.
+
+    Deliberately no allow-list parameter: an error item without a code is
+    a caller left matching English. Use the service's ``error_fields(exc)``
+    helper, which falls back to ``invalid_request`` for an uncategorised
+    refusal, or name the code inline.
+
+    ``expect_error_items`` is the canary: when True (default), a walk that
+    found ZERO error items fails — the source path is wrong or the
+    detection broke. Pass False only for a service that genuinely builds
+    no error items.
+    """
+    offenders, examined = collect_codeless_error_items(package_dir)
+    if expect_error_items:
+        assert examined > 0, (
+            f"The error-code gate found ZERO error items under {package_dir} — "
+            "the path is wrong or the detection broke. A gate that examines "
+            "nothing must not pass; pass expect_error_items=False only if the "
+            "service genuinely builds no error items."
+        )
+    assert not offenders, (
+        "Error items without an error_code (callers can only match the "
+        "message). Build them with the service's error_fields(exc), or name "
+        "the code:\n" + "\n".join(f"  {o}" for o in offenders)
     )
 
 

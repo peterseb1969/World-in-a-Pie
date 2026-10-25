@@ -51,6 +51,7 @@ from ..models.api_models import (
 )
 from ..models.term import Term, TermName
 from ..models.terminology import Terminology
+from .errors import error_fields
 from .term_names import NameTypeService, normalize_names, validate_names
 
 logger = logging.getLogger(__name__)
@@ -375,7 +376,7 @@ class TermReconcileService:
             except ValueError as e:
                 results.append(BulkResultItem(
                     index=idx, status="error", value=value,
-                    id=by_value[value].term_id, error=str(e),
+                    id=by_value[value].term_id, **error_fields(e),
                 ))
                 counts.errors += 1
 

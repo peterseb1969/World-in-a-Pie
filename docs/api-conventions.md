@@ -172,7 +172,44 @@ Codes defined by template-store (`POST`, `PUT` and `DELETE /templates`). Where o
 | `invalid_request` | A request parameter is missing or invalid; also any otherwise uncategorised refusal | `version_required`, `sort_order`, `namespace_required` |
 | `registry_error` | The Registry refused the item, or could not be reached to check namespace isolation (the write is refused rather than let through unchecked) | `unreachable` |
 
-Messages are unchanged and stay human-oriented; branch on the code.
+Codes defined by def-store (terminologies, terms, term relations, merges). Its earlier codes — `already_exists`, `incompatible_config`, `invalid_names`, `name_collision`, `registry_entry_not_removed` and the reconcile codes — are unchanged:
+
+| `error_code` | When | `details.rule` (examples) |
+|--------------|------|---------------------------|
+| `not_found` | The terminology, term or relation named by the request does not exist | — |
+| `reference_violation` | A relation's source or target term does not exist in the namespace | `source_term_not_found`, `target_term_not_found` |
+| `validation_failed` | A relation breaks a rule | `unknown_relation_type`, `self_relation` |
+| `invalid_state` | The entity's state forbids the operation | `has_templates`, `dependencies_unverifiable`, `has_terms`, `not_active`, `deletion_mode_retain` |
+| `invalid_request` | Any other refusal of the request (also an ambiguous unscoped value: `ambiguous_value`) | `ambiguous_value` |
+| `registry_error` | The Registry refused or could not be reached | — |
+| `internal_error` | A fault on the server's side | — |
+
+Codes defined by document-store's create, delete, archive and file writes (`PATCH` above has its own table; edge-type codes are below):
+
+| `error_code` | When | `details.rule` (examples) |
+|--------------|------|---------------------------|
+| `validation_failed` | The document fails template validation; `details.errors` lists each field error with its own code (e.g. `identity_resolution_failed`, `ambiguous_term`) | — |
+| `reference_violation` | A reference crosses into a namespace the document's namespace may not reference (the code `PATCH` reports for the same check) | `cross_namespace` |
+| `not_found` | The document or file named by the request does not exist | — |
+| `invalid_state` | The entity's state forbids the operation | `deletion_mode_retain`, `file_deleted`, `referenced`, `not_inactive`, `storage_disabled` |
+| `synonym_conflict` | An inline synonym is registered to another entry (`on_synonym_conflict="fail"`) | — |
+| `registry_error` | The Registry refused, or could not be reached to check namespace isolation | `registry_unavailable` |
+| `force_unsupported` | `force` sent on a document delete | — |
+| `internal_error` | A fault on the server's side | — |
+
+Registry results keep their reason statuses (`already_exists`, `not_found`, `already_active`, …) — callers branch on them by value. An item whose status is `error` also carries a code:
+
+| `error_code` | When | `details.rule` (examples) |
+|--------------|------|---------------------------|
+| `invalid_request` | The request is invalid: an unknown entity type, neither `entry_id` nor composite key, merging an entry with itself, merging term entries outside def-store | `invalid_entity_type`, `self_merge`, `terms_merge_in_def_store` |
+| `not_found` | The namespace does not exist or is not active | `namespace` |
+| `already_exists` | An `entry_id` already exists, or a composite key is claimed by another entry | `key_claimed` |
+| `synonym_conflict` | The synonym is registered under another entry | — |
+| `invalid_state` | The entry's state forbids the operation | `not_reserved`, `no_identity`, `deletion_mode_retain` |
+| `concurrency_conflict` | The entry changed concurrently | — |
+| `internal_error` | A fault on the server's side | — |
+
+Messages are unchanged and stay human-oriented; branch on the code. Every bulk-writing service's test suite enforces that each error item it builds names a code (`wip_auth.testing.assert_error_items_carry_codes`).
 
 **New services adopting PATCH** should reuse the same set of codes where they apply and extend it with entity-specific codes only when necessary. Client libraries (`@wip/client`, MCP, WIP-Toolkit) expose `error_code` through their bulk-error types so callers can `instanceof`-check or switch on it.
 
@@ -209,12 +246,12 @@ The field-name convention (`source_ref` / `target_ref`) is mandatory — query A
 
 On `create_document` (or `update_document`) against a `usage: "relationship"` template, document-store runs two extra checks after standard validation:
 
-| `error_code` (prefix on the error message) | When |
+| `error_code` | When |
 |---|---|
 | `cross_namespace_relationship` | `source_ref` or `target_ref` resolves to a document in a different namespace than the relationship document. Cross-namespace relationships are deferred to post-v2 — note that `allowed_external_refs` does **not** lift this: it governs plain reference fields only. Model a cross-namespace link as a plain document reference field instead (losing the relationship/traverse endpoints and edge reporting columns). |
 | `archived_relationship_endpoint` | `source_ref` or `target_ref` resolves to a document with `status == "archived"`. Endpoints must be active or inactive. |
 
-These codes are returned as the prefix on the per-item `error` string (not as machine-readable `error_code` fields). Branch on the prefix when the distinction matters.
+Both codes are the item's `error_code` on the one-item and the bulk create path alike; the `error` message still starts with the code for readers of the text. Branch on `error_code`.
 
 Standard validation (template constraints, type checks, term resolution, reference resolution via Registry) runs first; the relationship-specific checks fire only after the references have resolved.
 

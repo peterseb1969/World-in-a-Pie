@@ -134,6 +134,8 @@ class TestHardDeleteAllVersions:
 
         assert data["failed"] == 1
         assert "deletion_mode" in data["results"][0]["error"]
+        assert data["results"][0]["error_code"] == "invalid_state"
+        assert data["results"][0]["details"] == {"rule": "deletion_mode_retain"}
 
         # Document still exists
         resp = await get_doc(client, auth_headers, doc_id)

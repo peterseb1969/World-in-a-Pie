@@ -11,6 +11,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from ..models.terminology import Terminology
+from .errors import DefStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ class DependencyService:
             Terminology.terminology_id == terminology_id
         )
         if not terminology:
-            raise ValueError(f"Terminology {terminology_id} not found")
+            raise DefStoreError(f"Terminology {terminology_id} not found", "not_found")
 
         result = TerminologyDependencies(
             terminology_id=terminology_id,

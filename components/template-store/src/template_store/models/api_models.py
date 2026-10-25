@@ -475,6 +475,11 @@ class CascadeResult(BaseModel):
         description="updated, unchanged, or error"
     )
     error: str | None = None
+    error_code: str | None = Field(
+        default=None,
+        description="Machine-readable error code, set when status is 'error'.",
+    )
+    details: dict[str, Any] | None = None
 
 
 class CascadeResponse(BaseModel):

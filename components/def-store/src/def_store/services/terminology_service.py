@@ -26,6 +26,7 @@ from ..models.audit_log import TermAuditLog
 from ..models.term import CASE_INSENSITIVE_COLLATION, Term, TermName
 from ..models.term_relation import TermRelation
 from ..models.terminology import Terminology, TerminologyMetadata
+from .errors import DefStoreError
 from .nats_client import (
     EventType as NatsEventType,
 )
@@ -78,10 +79,10 @@ def _build_sort(
 class EntityExistsError(ValueError):
     """Duplicate create: the value already exists in scope (CASE-465).
 
-    Subclasses ValueError so every existing handler keeps working (the
-    import/export 409 mapping string-matches "already exists" in the
-    message). Carries the existing entity's ID and the config diff so
-    routes can implement `on_conflict` semantics without string-matching.
+    Subclasses ValueError so every existing handler keeps working;
+    error_fields reports it as error_code 'already_exists'. Carries the
+    existing entity's ID and the config diff so routes can implement
+    `on_conflict` semantics without string-matching.
     `changed` empty means the request is an identical re-create.
     """
 
@@ -369,8 +370,8 @@ class TerminologyService:
         try:
             await terminology.insert()
         except DuplicateKeyError as e:
-            raise ValueError(
-                f"Terminology ID '{terminology_id}' already exists (collision across namespaces)"
+            raise DefStoreError(
+                f"Terminology ID '{terminology_id}' already exists (collision across namespaces)", "already_exists"
             ) from e
 
         # Register auto-synonym for human-readable resolution
@@ -551,7 +552,7 @@ class TerminologyService:
             # Check new value doesn't exist within the same namespace
             existing = await Terminology.find_one({"namespace": terminology.namespace, "value": request.value})
             if existing:
-                raise ValueError(f"Terminology with value '{request.value}' already exists in namespace '{terminology.namespace}'")
+                raise DefStoreError(f"Terminology with value '{request.value}' already exists in namespace '{terminology.namespace}'", "already_exists")
 
             # Register auto-synonym for the new value (old auto-synonym persists)
             client = get_registry_client()
@@ -603,8 +604,8 @@ class TerminologyService:
             and request.mutable != terminology.mutable
             and terminology.term_count > 0
         ):
-            raise ValueError(
-                "Cannot change mutable flag on terminology with existing terms"
+            raise DefStoreError(
+                "Cannot change mutable flag on terminology with existing terms", "invalid_state", rule="has_terms"
             )
 
         # Apply updates
@@ -697,8 +698,8 @@ class TerminologyService:
             client = get_registry_client()
             deletion_mode = await client.get_namespace_deletion_mode(terminology.namespace)
             if deletion_mode != "full":
-                raise ValueError(
-                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')"
+                raise DefStoreError(
+                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')", "invalid_state", rule="deletion_mode_retain"
                 )
             should_hard_delete = True
 
@@ -871,7 +872,7 @@ class TerminologyService:
         # Verify terminology exists
         terminology = await Terminology.find_one({"terminology_id": terminology_id})
         if not terminology:
-            raise ValueError(f"Terminology '{terminology_id}' not found")
+            raise DefStoreError(f"Terminology '{terminology_id}' not found", "not_found")
 
         namespace = terminology.namespace
 
@@ -939,8 +940,8 @@ class TerminologyService:
         try:
             await term.insert()
         except DuplicateKeyError as e:
-            raise ValueError(
-                f"Term ID '{term_id}' already exists (collision across namespaces)"
+            raise DefStoreError(
+                f"Term ID '{term_id}' already exists (collision across namespaces)", "already_exists"
             ) from e
 
         # Register auto-synonym for human-readable resolution
@@ -1142,6 +1143,7 @@ class TerminologyService:
                     status="error",
                     value=term_req.value,
                     error=reg_result.get("error"),
+                    error_code="registry_error",
                 )
                 continue
 
@@ -1275,6 +1277,12 @@ class TerminologyService:
                     err["index"]: err.get("errmsg", "Insert failed")
                     for err in bwe.details.get("writeErrors", [])
                 }
+                # MongoDB's own code: 11000 is a duplicate key (the term
+                # already exists); anything else is a server-side fault.
+                error_codes = {
+                    err["index"]: "already_exists" if err.get("code") == 11000 else "internal_error"
+                    for err in bwe.details.get("writeErrors", [])
+                }
                 for pos, idx in enumerate(insert_indices):
                     term = terms_to_insert[pos]
                     if pos in failed_indices:
@@ -1283,6 +1291,7 @@ class TerminologyService:
                             status="error",
                             value=term.value,
                             error=error_messages.get(pos, "Insert failed"),
+                            error_code=error_codes.get(pos, "internal_error"),
                         )
                     else:
                         results[idx] = BulkResultItem(
@@ -1503,7 +1512,7 @@ class TerminologyService:
         # Phase A: Verify terminology exists (1 query)
         terminology = await Terminology.find_one({"terminology_id": terminology_id})
         if not terminology:
-            raise ValueError(f"Terminology '{terminology_id}' not found")
+            raise DefStoreError(f"Terminology '{terminology_id}' not found", "not_found")
 
         namespace = terminology.namespace
 
@@ -1687,7 +1696,7 @@ class TerminologyService:
                 "value": request.value
             })
             if existing:
-                raise ValueError(f"Term with value '{request.value}' already exists")
+                raise DefStoreError(f"Term with value '{request.value}' already exists", "already_exists")
 
         # Apply updates and track changes
         if request.value is not None and request.value != term.value:
@@ -1887,8 +1896,8 @@ class TerminologyService:
             client = get_registry_client()
             deletion_mode = await client.get_namespace_deletion_mode(term.namespace)
             if deletion_mode != "full":
-                raise ValueError(
-                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')"
+                raise DefStoreError(
+                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')", "invalid_state", rule="deletion_mode_retain"
                 )
             should_hard_delete = True
 
@@ -2002,14 +2011,14 @@ class TerminologyService:
         survivor = await Term.find_one({"term_id": survivor_id})
         absorbed = await Term.find_one({"term_id": absorbed_id})
         if survivor is None or absorbed is None:
-            raise ValueError(f"Term not found: {survivor_id if survivor is None else absorbed_id}")
+            raise DefStoreError(f"Term not found: {survivor_id if survivor is None else absorbed_id}", "not_found")
         if survivor.term_id == absorbed.term_id:
             raise ValueError("A term cannot be merged into itself")
         if survivor.terminology_id != absorbed.terminology_id:
             raise ValueError("Terms can only be merged within one terminology")
         for term, role in ((survivor, "survivor"), (absorbed, "absorbed term")):
             if term.status != "active":
-                raise ValueError(f"The {role} '{term.value}' is {term.status}; only active terms can be merged")
+                raise DefStoreError(f"The {role} '{term.value}' is {term.status}; only active terms can be merged", "invalid_state", rule="not_active")
         terminology = await Terminology.find_one({"terminology_id": survivor.terminology_id})
         case_sensitive = bool(terminology and terminology.case_sensitive)
 
@@ -2039,7 +2048,7 @@ class TerminologyService:
             raise
         if result is None:  # the survivor vanished between the read and the update
             await TerminologyService._restore_lifecycle(absorbed_id, before)
-            raise ValueError(f"Term not found: {survivor_id}")
+            raise DefStoreError(f"Term not found: {survivor_id}", "not_found")
         try:
             await get_registry_client().merge_entries(
                 survivor_id, absorbed_id, updated_by=get_identity_string(), owner_merge=True,
@@ -2047,7 +2056,9 @@ class TerminologyService:
         except RegistryError as e:
             await TerminologyService.update_term(survivor_id, UpdateTermRequest(names=original_names))
             await TerminologyService._restore_lifecycle(absorbed_id, before)
-            raise ValueError(f"Merge not applied — the Registry refused to merge the entries: {e}") from e
+            raise DefStoreError(
+                f"Merge not applied — the Registry refused to merge the entries: {e}", "registry_error"
+            ) from e
         return result, carried
 
     @staticmethod
