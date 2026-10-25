@@ -74,6 +74,7 @@ def _service_api_key() -> str:
 _EXTERNAL_COLLECTIONS = [
     ("wip_document_store", "files", "namespace", "document-store"),
     ("wip_document_store", "documents", "namespace", "document-store"),
+    ("wip_document_store", "restore_provenance", "namespace", "document-store"),
     ("wip_template_store", "templates", "namespace", "template-store"),
     ("wip_def_store", "terms", "namespace", "def-store"),
     ("wip_def_store", "term_relations", "namespace", "def-store"),

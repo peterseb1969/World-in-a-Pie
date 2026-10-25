@@ -35,6 +35,7 @@ from .api.auth import require_api_key
 from .models.backup_job import BackupJob
 from .models.document import Document
 from .models.file import File
+from .models.restore_provenance import RestoreProvenance
 from .services.def_store_client import configure_def_store_client, get_def_store_client
 from .services.file_storage_client import (
     FileStorageUnavailableError,
@@ -95,7 +96,7 @@ async def lifespan(app: FastAPI):
     # yet on fresh k8s boot, node drain, pod reschedule.
     await init_beanie_with_retry(
         database=client[settings.DATABASE_NAME],
-        document_models=[Document, File, BackupJob],
+        document_models=[Document, File, BackupJob, RestoreProvenance],
         description=f"MongoDB init ({settings.DATABASE_NAME})",
     )
     print("MongoDB connection and Beanie initialization successful.")

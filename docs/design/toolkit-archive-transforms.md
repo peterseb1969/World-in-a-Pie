@@ -286,20 +286,65 @@ restore writes nothing (byte-faithful by design); `BackupJob` records
 are the instance-level log. Gaps: not machine-readable, no transform
 chain, silent id-preserving mode.
 
-Direction (tracked as CASE-942):
-**namespace-granular, structured, written by all three modes** —
-restore job id, mode, archive manifest digest, and the full
-`derived_from` chain with per-hop verify verdicts. Per-document
-stamping is rejected: it would break restore mode's exact-copy
-contract; if per-document granularity ever becomes real (post-merge
-mixed namespaces), it goes in a sidecar collection keyed
-`(document_id, version) → restore job`, never in the documents.
+**Built (2026-10-25):** namespace-granular, structured, written by
+all three modes. Per-document stamping is rejected: it would break
+restore mode's exact-copy contract. If per-document granularity ever
+becomes real (post-merge mixed namespaces), it goes in a sidecar
+collection keyed `(document_id, version) → restore job`, never in the
+documents.
+
+**Where records live.** Collection `restore_provenance` in
+document-store's database, one row per (namespace, restore). Rows are
+inserted, never updated, except that the restore's own validation job
+id is filled in once that job starts. Namespace deletion removes them.
+A field on the namespace record was rejected for three reasons:
+- the Registry owns that record;
+- appending to a list through the namespace `PUT` is a read-modify-write
+  that can lose a record;
+- the writer, the backup engine, lives in document-store.
+
+**The record.**
+
+| Field | Meaning |
+|---|---|
+| `namespace` | The namespace the row belongs to (queries and deletion use it). |
+| `restored_into` | The namespace the restore wrote into. Equals `namespace` for the namespace's own restores; an inherited row keeps the name its restore happened under. |
+| `restore_job_id` | The restore's `BackupJob`. |
+| `mode` | `restore`, `remap` or `merge`. |
+| `at`, `actor` | When, and the identity that started the job. |
+| `archive` | `sha256` of the whole archive file (null when there is no file), `format_version`, `tool_version`. |
+| `source` | The archived namespace, `host`, `exported_at`, and `install` (the manifest's `source_install`, verbatim). |
+| `derived_from` | The manifest's chain, verbatim, oldest hop first (§9.1). A single object becomes a one-hop list. Empty for a full backup. |
+| `merge` | Merge only: `on_clash`, `add_missing`, `extend_terminologies`, and the merge plan's `definitions` and per-entity-type `entities` summaries. These are planned counts: under `on_clash: newer` the clashes actually written are a subset. |
+| `validation_job_id` | The validation job this restore started for the namespace. CASE-837's reference re-resolution reports there. |
+| `inherited` | True when the row arrived inside an archive. |
+
+**How each mode words it.**
+- **restore:** writes a record. The restored entities stay exact copies,
+  because the record is a separate row.
+- **remap:** writes a record and keeps the description sentence as its
+  human-readable echo.
+- **merge:** records what arrived and under which policy. The namespace
+  is now mixed, so the record does not claim the namespace came from
+  the archive.
+
+**Travelling forward.** A backup puts the namespace's rows into its
+manifest entry (`NamespaceEntry.provenance`, an optional field). The
+field is additive, so `format_version` stays 3.1. A restore of that
+archive inserts those rows first, marked `inherited`, then its own
+record. A row the target already holds, matched by `(restore_job_id,
+restored_into)`, is not copied twice.
+
+**Read surface.** `GET /api/document-store/backup/provenance?namespace=<prefix>`
+returns the history oldest first, paginated, and requires read
+permission on the namespace. An empty list means no restore has
+written into the namespace.
 
 ## 9. Open questions
 
 1. ~~`derived_from` hop schema~~ — **settled 2026-10-25, frozen in §9.1.**
-2. The structured provenance record's home and schema (§8) —
-   engine-side work, tracked as CASE-942.
+2. ~~The structured provenance record's home and schema~~ —
+   **settled and built 2026-10-25, §8.**
 3. Migration mapping-file format (M4): constants + copy-from-field +
    simple templates, escape hatch as jq-style/Python hook; no bespoke
    expression language.
@@ -382,8 +427,8 @@ writes the archive.
 - Changing a frozen field's meaning would need a new key, not a
   reinterpretation.
 - The engine's restore copies the chain into the namespace's
-  provenance record (CASE-942), so lineage survives a restore and
-  travels into later backups.
+  provenance record (§8), so lineage survives a restore and travels
+  into later backups.
 
 ## 10. Non-goals
 

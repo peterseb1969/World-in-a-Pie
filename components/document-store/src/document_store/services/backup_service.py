@@ -544,6 +544,30 @@ async def trigger_validation_for(restore_job: BackupJob) -> list[str]:
                 "Could not start validation for namespace %s after restore %s",
                 namespace, restore_job.job_id, exc_info=True,
             )
+            continue
+        # The restore's provenance record points at the job that verifies
+        # what it wrote, so a reader goes from "restored from X" to the
+        # verdict without matching on times.
+        try:
+            # The engine writes these rows through the raw client, so link
+            # them through the same collection handle.
+            from .backup_engine import PROVENANCE_COLLECTION
+
+            db_name, coll_name = PROVENANCE_COLLECTION
+            client = BackupJob.get_motor_collection().database.client
+            await client[db_name][coll_name].update_many(
+                {
+                    "namespace": namespace,
+                    "restore_job_id": restore_job.job_id,
+                    "inherited": False,
+                },
+                {"$set": {"validation_job_id": job_id}},
+            )
+        except Exception:
+            logger.warning(
+                "Could not link validation job %s to the provenance of restore %s",
+                job_id, restore_job.job_id, exc_info=True,
+            )
 
     if started:
         # Atomic field update: this task runs detached from the progress
@@ -579,9 +603,14 @@ def make_direct_restore_runner(
 
         mongo_client = cast(Any, BackupJob.get_motor_collection().database.client)
         storage = get_file_storage_client() if is_file_storage_enabled() else None
+        # The job record names who started the restore; the provenance
+        # record each namespace gets carries both.
+        job = await BackupJob.find_one(BackupJob.job_id == job_id) if job_id else None
         engine = DirectRestoreEngine(
             mongo_client, storage, progress_callback,
             reporting_client=ReportingSyncClient(),
+            job_id=job_id,
+            actor=job.created_by if job is not None else None,
         )
 
         if opts.get("mode") == "fresh":

@@ -105,7 +105,7 @@ class TestDesiredState:
         roles = {u["user"]: u["roles"] for u in state["users"]}["registry"]
         assert {"role": "readWrite", "db": "wip_registry"} in roles
         custom = [r for r in state["roles"] if r["role"] == "wip-registry-collections"]
-        assert len(custom) == 1 and len(custom[0]["privileges"]) == 7
+        assert len(custom) == 1 and len(custom[0]["privileges"]) == 8
         for p in custom[0]["privileges"]:
             assert p["actions"] == ["find", "remove"]
             assert p["resource"]["db"] != "wip_registry"

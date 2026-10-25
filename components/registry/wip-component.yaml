@@ -88,6 +88,7 @@ spec:
     collection_privileges:
       - {db: wip_document_store, collection: files, actions: [find, remove]}
       - {db: wip_document_store, collection: documents, actions: [find, remove]}
+      - {db: wip_document_store, collection: restore_provenance, actions: [find, remove]}
       - {db: wip_template_store, collection: templates, actions: [find, remove]}
       - {db: wip_def_store, collection: terms, actions: [find, remove]}
       - {db: wip_def_store, collection: term_relations, actions: [find, remove]}

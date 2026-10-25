@@ -63,6 +63,13 @@ class NamespaceEntry(BaseModel):
     prefix: str
     namespace_config: NamespaceConfig | None = None
     counts: EntityCounts = Field(default_factory=EntityCounts)
+    # The namespace's restore history at backup time, oldest first, each
+    # record as the restore engine wrote it. A restore of this archive copies
+    # them into the target before appending its own record, so lineage
+    # survives every backup/restore hop. None when the namespace had none, or
+    # the archive predates the field (an additive field: readers ignore
+    # unknown keys, so format_version is unchanged).
+    provenance: list[dict[str, Any]] | None = None
 
 
 class Manifest(BaseModel):

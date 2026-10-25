@@ -85,6 +85,11 @@ from ..models.backup_job import (
     BackupRequest,
     RestoreFromJobRequest,
 )
+from ..models.restore_provenance import (
+    RestoreProvenance,
+    RestoreProvenanceItem,
+    RestoreProvenanceListResponse,
+)
 from ..services import backup_service
 from ..services.archive_store import (
     BACKEND_MINIO,
@@ -761,6 +766,47 @@ async def get_job(
 # ---------------------------------------------------------------------------
 # GET /backup/jobs — list
 # ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/provenance",
+    response_model=RestoreProvenanceListResponse,
+    summary="A namespace's restore history",
+    description=(
+        "Every restore that wrote into the namespace, oldest first: the "
+        "restore job, mode (restore, remap or merge), the archive's digest "
+        "and source, its transform chain (derived_from), and the validation "
+        "job that checked the result. Records marked inherited arrived with "
+        "an archive and describe restores of an earlier copy. An empty list "
+        "means no restore has written into the namespace."
+    ),
+)
+async def list_restore_provenance(
+    namespace: str = Query(..., description="Namespace whose restore history to read"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
+    identity: UserIdentity = Depends(require_api_key),
+) -> RestoreProvenanceListResponse:
+    await check_namespace_permission(identity, namespace, "read")
+    query = RestoreProvenance.find(RestoreProvenance.namespace == namespace)
+    total = await query.count()
+    rows = await (
+        RestoreProvenance.find(RestoreProvenance.namespace == namespace)
+        .sort([("at", SortDirection.ASCENDING), ("_id", SortDirection.ASCENDING)])
+        .skip((page - 1) * page_size)
+        .limit(page_size)
+        .to_list()
+    )
+    return RestoreProvenanceListResponse(
+        items=[
+            RestoreProvenanceItem.model_validate(row.model_dump(exclude={"id", "revision_id"}))
+            for row in rows
+        ],
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=(total + page_size - 1) // page_size,
+    )
 
 
 @router.get(

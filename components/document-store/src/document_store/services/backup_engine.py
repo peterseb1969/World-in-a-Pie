@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import os
 import socket
@@ -71,6 +72,38 @@ _DB_DOCUMENT_STORE = os.getenv("DOCUMENT_STORE_DATABASE_NAME", "wip_document_sto
 # restored namespace has entries whose keys nothing claims, so the next write
 # reusing one of those keys passes the gate and mints a duplicate identity.
 CLAIMS_COLLECTION: tuple[str, str] = (_DB_REGISTRY, "composite_key_claims")
+
+# One row per restore into a namespace (models/restore_provenance.py). Not an
+# archive entity type: the rows travel inside the manifest's namespace entry,
+# because they describe the namespace's history, not its content.
+PROVENANCE_COLLECTION: tuple[str, str] = (_DB_DOCUMENT_STORE, "restore_provenance")
+
+
+def _derived_chain(raw: Any) -> list[dict[str, Any]]:
+    """The manifest's ``derived_from`` as a list of hops, oldest first.
+
+    Producers write a list; a single object is accepted as a one-hop chain.
+    Anything else — absent, or a shape no producer writes — is no chain.
+    """
+    if isinstance(raw, list):
+        return [hop for hop in raw if isinstance(hop, dict)]
+    if isinstance(raw, dict):
+        return [raw]
+    return []
+
+
+def _file_sha256(path: Any) -> str | None:
+    """SHA-256 of the whole archive file, or None when there is no file."""
+    if not isinstance(path, (str, Path)):
+        return None
+    file = Path(path)
+    if not file.is_file():
+        return None
+    digest = hashlib.sha256()
+    with file.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 # (archive_entity_type) → (database_name, collection_name)
 COLLECTION_MAP: dict[str, tuple[str, str]] = {
@@ -249,6 +282,7 @@ class DirectBackupEngine:
                         prefix=ns,
                         namespace_config=await self._read_namespace_config(ns),
                         counts=counts,
+                        provenance=await self._read_provenance(ns),
                     )
                 )
                 for et in BACKUP_ENTITY_ORDER:
@@ -349,6 +383,19 @@ class DirectBackupEngine:
                 logger.warning("Failed to download blob for file %s", file_id, exc_info=True)
 
         logger.info("Backed up %d blobs for namespace %s", count, namespace)
+
+    async def _read_provenance(self, namespace: str) -> list[dict[str, Any]] | None:
+        """The namespace's restore history, oldest first, for the manifest.
+
+        None when there is none, so a namespace that was never restored into
+        archives exactly as before.
+        """
+        db_name, coll_name = PROVENANCE_COLLECTION
+        cursor = self._mongo[db_name][coll_name].find(
+            {"namespace": namespace}, {"_id": 0}
+        ).sort([("at", 1), ("_id", 1)])
+        rows = [row async for row in cursor]
+        return rows or None
 
     async def _read_namespace_config(self, namespace: str) -> NamespaceConfig | None:
         """Read namespace config from the Registry database."""
@@ -472,10 +519,17 @@ class DirectRestoreEngine:
         registry_base_url: str | None = None,
         registry_api_key: str | None = None,
         reporting_client: ReportingSyncClient | None = None,
+        job_id: str | None = None,
+        actor: str | None = None,
     ) -> None:
         self._mongo = mongo_client
         self._storage = storage_client
         self._progress = progress
+        # Who and which job, for the provenance record each restore writes.
+        self._job_id = job_id
+        self._actor = actor
+        # The archive file's digest, computed once per run on first use.
+        self._archive_sha256: str | None = None
         # Structured outcome for a caller that was not watching the event
         # stream. Progress events overwrite each other on the job record, so a
         # dry run's per-type counts — the whole reason to ask — are gone by the
@@ -545,7 +599,8 @@ class DirectRestoreEngine:
             # An archive stamped as a derived artifact (produced by an archive
             # transform, not a full backup) is deliberately incomplete. The
             # Manifest model ignores unknown keys, so read the raw dict.
-            derived_from = reader.read_manifest_raw().get("derived_from")
+            raw_manifest = reader.read_manifest_raw()
+            derived_from = raw_manifest.get("derived_from")
             if derived_from is not None:
                 self._emit(
                     "warning",
@@ -710,6 +765,10 @@ class DirectRestoreEngine:
                 # actual rows, bounded wait. Mismatch completes WITH a
                 # warning — never a hard fail (operator ruling).
                 await self._reporting_phase_counts(tgt, skip_documents=skip_documents)
+                await self._write_restore_provenance(
+                    archive_path, manifest, raw_manifest,
+                    source=src, target=tgt, mode="restore",
+                )
 
             # Blobs are flat (namespace-agnostic, globally-unique file_ids) — restore
             # the whole archive's blob set once after all namespaces are in.
@@ -954,8 +1013,13 @@ class DirectRestoreEngine:
                         "re-qualified; run /maintenance/requalify-identity-synonyms",
                         target, requalified.errors,
                     )
+            raw_manifest = reader.read_manifest_raw()
             for src, target in mapping.items():
                 await self._record_provenance(target, src, manifest)
+                await self._write_restore_provenance(
+                    archive_path, manifest, raw_manifest,
+                    source=src, target=target, mode="remap",
+                )
 
         self._emit("complete", "Remap restore complete", percent=100,
                    details=self.result)
@@ -1486,6 +1550,110 @@ class DirectRestoreEngine:
                         f"First failures: {failed[:5]}"
                     )
 
+    async def _write_restore_provenance(
+        self,
+        archive_path: Any,
+        manifest: Any,
+        raw_manifest: Any,
+        *,
+        source: str,
+        target: str,
+        mode: str,
+        merge: dict[str, Any] | None = None,
+    ) -> None:
+        """Record that this run restored ``source`` into ``target``.
+
+        Every restore mode writes one, the id-preserving one included: the
+        record is a row about the restore, not a change to any restored
+        entity, so the exact-copy contract holds. The archive's own records
+        for ``source`` are copied in first, marked inherited, so the target
+        carries the whole history. A record the target already holds (a
+        merge of a backup of itself) is not copied twice.
+
+        A restore that wrote its data must not fail over its provenance: a
+        failed write is a loud warning, not an error.
+        """
+        if self._archive_sha256 is None:
+            self._archive_sha256 = await asyncio.to_thread(_file_sha256, archive_path)
+
+        entry = next(
+            (e for e in getattr(manifest, "namespaces", []) if e.prefix == source),
+            None,
+        )
+        inherited = list(getattr(entry, "provenance", None) or [])
+        exported = getattr(manifest, "exported_at", None)
+        record: dict[str, Any] = {
+            "namespace": target,
+            "restored_into": target,
+            "restore_job_id": self._job_id,
+            "mode": mode,
+            "at": datetime.now(UTC),
+            "actor": self._actor,
+            "archive": {
+                "sha256": self._archive_sha256,
+                "format_version": getattr(manifest, "format_version", None),
+                "tool_version": getattr(manifest, "tool_version", None),
+            },
+            "source": {
+                "namespace": source,
+                "host": getattr(manifest, "source_host", None) or None,
+                "exported_at": exported.isoformat() if isinstance(exported, datetime) else exported,
+                "install": getattr(manifest, "source_install", None),
+            },
+            "derived_from": _derived_chain(
+                raw_manifest.get("derived_from") if isinstance(raw_manifest, dict) else None
+            ),
+            "merge": merge,
+            "validation_job_id": None,
+            "inherited": False,
+        }
+
+        db_name, coll_name = PROVENANCE_COLLECTION
+        collection = self._mongo[db_name][coll_name]
+        try:
+            held = {
+                (row.get("restore_job_id"), row.get("restored_into"))
+                async for row in collection.find(
+                    {"namespace": target},
+                    {"_id": 0, "restore_job_id": 1, "restored_into": 1},
+                )
+            }
+            rows: list[dict[str, Any]] = []
+            for old in inherited:
+                row = {k: v for k, v in old.items() if k != "_id"}
+                key = (row.get("restore_job_id"), row.get("restored_into"))
+                if key in held:
+                    continue
+                held.add(key)
+                row["namespace"] = target
+                row.setdefault("restored_into", source)
+                row["inherited"] = True
+                # Archived as JSON, so the timestamp is an ISO string; store
+                # it as a date like every live record, or ordering by `at`
+                # would split the two types.
+                if isinstance(row.get("at"), str):
+                    with contextlib.suppress(ValueError):
+                        row["at"] = datetime.fromisoformat(row["at"])
+                rows.append(row)
+            rows.append(record)
+            await collection.insert_many(rows, ordered=True)
+        except Exception as exc:
+            logger.warning(
+                "Restore provenance for %s not recorded", target, exc_info=True,
+            )
+            self._emit(
+                "warning",
+                f"[{target}] restore provenance could not be recorded ({exc}) — "
+                "the data is restored, but this restore leaves no record",
+            )
+            return
+        self._emit(
+            "phase_namespace",
+            f"[{target}] recorded restore provenance ({mode} from '{source}'"
+            + (f", {len(rows) - 1} inherited record(s)" if len(rows) > 1 else "")
+            + ")",
+        )
+
     async def _record_provenance(
         self, namespace: str, source: str, manifest: Any
     ) -> None:
@@ -1752,6 +1920,23 @@ class DirectRestoreEngine:
                     if f.get("file_id")
                 )
                 await self._reporting_phase_counts(tgt, skip_documents=skip_documents)
+                # A merge adds to a namespace that already holds data, so its
+                # record says what arrived and under which policy, not that
+                # the namespace came from the archive. The plan summary is
+                # what was planned per entity type; with on_clash "newer" the
+                # clashes actually written are a subset of `clash`.
+                planned = self.result["namespaces"][tgt]
+                await self._write_restore_provenance(
+                    archive_path, manifest, reader.read_manifest_raw(),
+                    source=src, target=tgt, mode="merge",
+                    merge={
+                        "on_clash": on_clash,
+                        "add_missing": add_missing,
+                        "extend_terminologies": extend_terminologies,
+                        "definitions": planned.get("definitions"),
+                        "entities": planned.get("entities"),
+                    },
+                )
 
             if dry_run:
                 self._emit(

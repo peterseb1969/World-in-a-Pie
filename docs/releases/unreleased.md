@@ -406,6 +406,38 @@ parameter. Until now there was NO way to remove a term's description;
 consumers treating `""` as absent can drop that shim once their data is
 normalized.
 
+### Every restore leaves a provenance record; `wip-archive` 0.3.0
+
+Restored data was only partly identifiable: a fresh (remap) restore
+appended a sentence to the namespace description, and an id-preserving
+restore or a merge left nothing in the namespace. Every restore mode now
+writes one structured record per namespace it wrote. The record holds the
+restore job and mode; when and by whom; the archive's SHA-256 and versions;
+the source namespace, host and export time; the archive's `derived_from`
+transform chain; and, for a merge, the clash policy and planned counts.
+Records are only added, never replaced. A backup carries the namespace's
+records in its manifest (`NamespaceEntry.provenance`, a new optional field
+in `wip-archive` 0.3.0; archive format stays 3.1). A restore of that backup
+copies them in, marked `inherited`, before adding its own. Each record
+links the validation job its restore started.
+
+Read it with `GET /api/document-store/backup/provenance?namespace=<prefix>`
+(oldest first, paginated, namespace read permission). An empty list means
+no restore has written into the namespace. The id-preserving restore
+still leaves every restored entity an exact copy; the record is a separate
+row.
+
+**Action:**
+- **Re-render the install** (`wip-deploy redeploy`). The registry's
+  MongoDB user gains find and remove on the new
+  `wip_document_store.restore_provenance` collection, which namespace
+  deletion now clears. Registry code from this release on an install
+  rendered before it fails every namespace deletion, dry runs included,
+  with "not authorized": deletion counts each collection it will clear
+  before it starts.
+- **Apps that vendor `wip-archive`** pick up 0.3.0 on their next
+  scaffold refresh.
+
 ### Scaffolds keep local config out of git; `--kb` needs a key file
 
 App repos had committed per-machine files, and before key files existed

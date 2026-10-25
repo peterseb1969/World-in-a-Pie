@@ -98,6 +98,7 @@ from document_store.main import app  # noqa: E402
 from document_store.models.backup_job import BackupJob  # noqa: E402
 from document_store.models.document import Document  # noqa: E402
 from document_store.models.file import File  # noqa: E402
+from document_store.models.restore_provenance import RestoreProvenance  # noqa: E402
 from document_store.services.def_store_client import DefStoreClient  # noqa: E402
 from document_store.services.registry_client import RegistryClient  # noqa: E402
 from document_store.services.template_store_client import TemplateStoreClient  # noqa: E402
@@ -731,7 +732,7 @@ _ALL_TEST_MODELS = [
     Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal,
     CompositeKeyClaim,  # register_keys claims composite keys here
     # Document-Store models — union of every fixture's needs
-    Document, BackupJob, File,
+    Document, BackupJob, File, RestoreProvenance,
     # Def-Store models (the real def-store app in the term-resolution contract tests)
     Terminology, Term, TermAuditLog, TermRelation,
 ]
