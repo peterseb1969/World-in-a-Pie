@@ -370,7 +370,7 @@ class TestEnsureSelfSignedTLSSecret:
             MagicMock(returncode=0, stderr=""),  # create namespace
             MagicMock(returncode=0, stderr=""),  # get secret (exists)
             MagicMock(returncode=0, stdout=cert_b64, stderr=""),  # read tls.crt
-            MagicMock(  # openssl x509 -ext subjectAltName
+            MagicMock(  # openssl x509 -text
                 returncode=0,
                 stdout="X509v3 Subject Alternative Name:\n    DNS:wip-test.local\n",
                 stderr="",
@@ -381,6 +381,9 @@ class TestEnsureSelfSignedTLSSecret:
         )
         # SAN covers hostname → no cert generation (openssl req) or secret create.
         cmds = [c[0][0] for c in mock_run.call_args_list]
+        # macOS's /usr/bin/openssl is LibreSSL, which has no `-ext`.
+        san_cmd = next(c for c in cmds if c[:2] == ["openssl", "x509"])
+        assert "-text" in san_cmd and "-ext" not in san_cmd
         assert not any("req" in c for c in cmds)
         assert not any(
             "create" in c and "secret" in c and "tls" in c for c in cmds
@@ -471,3 +474,53 @@ class TestEnsureSelfSignedTLSSecret:
         )
         assert "wip-tls" in create_cmd
         assert "wip-test" in create_cmd
+
+
+class TestParseDnsSans:
+    """SANs are read from `openssl x509 -noout -text`, which OpenSSL and
+    LibreSSL print alike (`-ext` is OpenSSL-only, and its failure used to
+    read as "no SANs", refusing every k8s apply from a stock Mac)."""
+
+    TEXT = (
+        "Certificate:\n"
+        "    Data:\n"
+        "        Subject: CN=dev-test.internal\n"
+        "        X509v3 extensions:\n"
+        "            X509v3 Name Constraints:\n"
+        "                Permitted:\n"
+        "                  DNS:constraint.example\n"
+        "            X509v3 Subject Alternative Name: \n"
+        "                DNS:dev-test.internal, DNS:*.Internal, IP Address:10.0.0.1\n"
+        "            X509v3 Basic Constraints:\n"
+    )
+
+    def test_reads_only_the_san_section(self) -> None:
+        from wip_deploy.apply import _parse_dns_sans
+
+        assert _parse_dns_sans(self.TEXT) == {"dev-test.internal", "*.internal"}
+
+    def test_no_san_extension(self) -> None:
+        from wip_deploy.apply import _parse_dns_sans
+
+        assert _parse_dns_sans("Certificate:\n    Subject: CN=x\n") == set()
+
+    def test_real_certificate_from_the_local_openssl(self, tmp_path: Path) -> None:
+        import shutil
+        import subprocess
+
+        from wip_deploy.apply import _parse_dns_sans
+
+        if not shutil.which("openssl"):
+            pytest.skip("openssl not on PATH")
+        crt, key = tmp_path / "c.pem", tmp_path / "k.pem"
+        subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+             "-keyout", str(key), "-out", str(crt), "-subj", "/CN=h.internal",
+             "-days", "1", "-addext", "subjectAltName=DNS:h.internal,DNS:*.y.internal"],
+            check=True, capture_output=True,
+        )
+        text = subprocess.run(
+            ["openssl", "x509", "-in", str(crt), "-noout", "-text"],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        assert _parse_dns_sans(text) == {"h.internal", "*.y.internal"}

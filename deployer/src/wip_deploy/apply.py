@@ -1554,9 +1554,11 @@ def _verify_tls_secret_san(
     with tempfile.TemporaryDirectory() as tmp:
         crt_path = Path(tmp) / "existing.crt"
         crt_path.write_bytes(cert_pem)
+        # `-text`, not `-ext subjectAltName`: macOS ships LibreSSL as
+        # /usr/bin/openssl, which has no `-ext`; the failed call read as "no
+        # SANs" and refused every k8s apply from such a machine.
         san_proc = subprocess.run(
-            ["openssl", "x509", "-in", str(crt_path), "-noout",
-             "-ext", "subjectAltName"],
+            ["openssl", "x509", "-in", str(crt_path), "-noout", "-text"],
             capture_output=True, text=True,
         )
     sans = _parse_dns_sans(san_proc.stdout if san_proc.returncode == 0 else "")
@@ -1574,15 +1576,21 @@ def _verify_tls_secret_san(
         )
 
 
-def _parse_dns_sans(openssl_san_output: str) -> set[str]:
-    """Extract DNS SAN entries from `openssl x509 -ext subjectAltName` output.
+def _parse_dns_sans(openssl_text: str) -> set[str]:
+    """Extract DNS SAN entries from `openssl x509 -noout -text` output.
 
-    The relevant line looks like:
+    OpenSSL and LibreSSL print the extension the same way:
         X509v3 Subject Alternative Name:
             DNS:kb.internal, DNS:*.internal, IP Address:10.0.0.1
-    Only DNS entries are returned (IP SANs are not hostname-matched here).
+    Only the line after that header is read, so a `DNS:` elsewhere in the
+    text (name constraints, for instance) never counts. Only DNS entries are
+    returned (IP SANs are not hostname-matched here).
     """
-    return {m.lower() for m in re.findall(r"DNS:([^,\s]+)", openssl_san_output)}
+    lines = openssl_text.splitlines()
+    for i, line in enumerate(lines):
+        if "X509v3 Subject Alternative Name" in line and i + 1 < len(lines):
+            return {m.lower() for m in re.findall(r"DNS:([^,\s]+)", lines[i + 1])}
+    return set()
 
 
 def _hostname_in_sans(hostname: str, sans: set[str]) -> bool:
