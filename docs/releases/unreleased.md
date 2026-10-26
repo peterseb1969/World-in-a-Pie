@@ -406,6 +406,27 @@ parameter. Until now there was NO way to remove a term's description;
 consumers treating `""` as absent can drop that shim once their data is
 normalized.
 
+### Re-posting a deleted document brings it back as a proper successor
+
+Re-posting the identity of a soft-deleted document always brought it back,
+but by accident. The create path looked only for an active version, took
+the write for a brand-new document, collided with version 1, and the
+duplicate-key retry pushed it to the next version. The revived document
+reported `updated`, but its `created_at` was reset to the re-post time and
+its `metadata.custom` was dropped.
+
+A write now follows the identity's latest version, whatever its status. A
+soft-deleted document comes back as its successor:
+- it keeps the entity's `created_at`;
+- it carries `metadata.custom` forward unless the caller supplies it;
+- it reports `updated`;
+- it does not release the deleted version's file references a second time.
+
+The revival happens even when the data is identical. On a `versioned: false`
+template the document comes back in place, at the same version. PATCH on a
+deleted document still answers `not_found`: bringing a document back takes
+a full re-post.
+
 ### Every restore leaves a provenance record; `wip-archive` 0.3.0
 
 Restored data was only partly identifiable: a fresh (remap) restore

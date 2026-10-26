@@ -518,19 +518,21 @@ class DocumentService:
             )
             timing["3_create_new"] = (time.perf_counter() - start) * 1000
         else:
-            # Existing identity — find current active version and create new version.
+            # Existing identity — follow its latest version (active, or
+            # soft-deleted, which this write brings back) and write a successor.
             # Use document_id (from Registry) — NOT identity_hash. The Registry is
             # the identity authority; local identity_hash lookups bypass it and can
             # match documents from different templates (CASE-36).
             start = time.perf_counter()
-            existing = await self._find_active_by_document_id(document_id, namespace=namespace)
+            existing = await self._find_latest_by_document_id(document_id, namespace=namespace)
             if existing:
                 result = await self._create_new_version(
                     request, existing, validation_result,
                     document_id=document_id, namespace=namespace
                 )
             else:
-                # No active version found (all inactive?) — create as version 1
+                # The Registry knows the identity but no document row exists:
+                # create it as version 1.
                 result = await self._create_new_document(
                     request, validation_result, document_id=document_id,
                     namespace=namespace, synonyms=request.synonyms,
@@ -944,7 +946,8 @@ class DocumentService:
         # (the typical migration). metadata=None means the caller did not
         # address metadata — it is not compared and the existing metadata
         # carries forward on any write below.
-        if not force_new_version and not self._document_has_changed(
+        revival = self._is_revival(existing)
+        if not force_new_version and not revival and not self._document_has_changed(
             existing,
             request.data,
             validation_result.term_references,
@@ -1023,8 +1026,10 @@ class DocumentService:
             changed_by=actor
         )
 
-        # Update file reference counts
-        await self._update_file_reference_counts(existing.file_references, delta=-1)
+        # Update file reference counts. A deleted predecessor's references
+        # were already released by the delete.
+        if not revival:
+            await self._update_file_reference_counts(existing.file_references, delta=-1)
         await self._update_file_reference_counts(validation_result.file_references, delta=1)
 
         return DocumentCreateResponse(
@@ -1064,7 +1069,10 @@ class DocumentService:
         now = datetime.now(UTC)
         all_warnings = validation_result.warnings + (extra_warnings or [])
 
-        previous_file_refs = list(existing.file_references)
+        # A deleted document overwritten in place comes back; its old
+        # references were already released by the delete.
+        revival = self._is_revival(existing)
+        previous_file_refs = [] if revival else list(existing.file_references)
 
         # metadata=None carries the existing custom forward (caller did not
         # address it); a supplied dict — including {} — replaces wholesale.
@@ -1079,6 +1087,7 @@ class DocumentService:
             warnings=all_warnings,
             custom=request.metadata if request.metadata is not None else preserved_custom,
         )
+        existing.status = DocumentStatus.ACTIVE
         existing.updated_at = now
         existing.updated_by = actor
         await existing.save()
@@ -1132,6 +1141,35 @@ class DocumentService:
             "document_id": document_id,
             "status": DocumentStatus.ACTIVE.value
         })
+
+    async def _find_latest_by_document_id(
+        self,
+        document_id: str,
+        namespace: str
+    ) -> Document | None:
+        """The latest version of a document, whatever its status.
+
+        A write to an existing identity follows its latest version: the
+        active one, or a soft-deleted one, which the write brings back. An
+        active-only lookup missed deleted documents, so the write was taken
+        for a brand-new document, collided with version 1, and was pushed to
+        the next version by the duplicate-key retry, which resets the
+        entity's created_at and drops its metadata.
+        """
+        latest = await Document.find(
+            {"namespace": namespace, "document_id": document_id}
+        ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
+        return latest[0] if latest else None
+
+    @staticmethod
+    def _is_revival(existing: Document) -> bool:
+        """True when a write to this identity brings a deleted document back.
+
+        A revival is a change even when the data is identical, and the
+        deleted version's file references were already released by the
+        delete, so they are not released again.
+        """
+        return existing.status != DocumentStatus.ACTIVE
 
     def _format_validation_errors(
         self,
@@ -2404,8 +2442,9 @@ class DocumentService:
                     "failed",
                 )
 
+        revival = existing is not None and self._is_revival(existing)
         if existing and version_override is None:
-            if not self._document_has_changed(
+            if not revival and not self._document_has_changed(
                 existing,
                 item.data,
                 validation_result.term_references,
@@ -2519,8 +2558,9 @@ class DocumentService:
         event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
         pending_event = (event_type, await self._document_to_event_payload(document))
 
-        # Update file reference counts
-        if not is_new and existing:
+        # Update file reference counts. A deleted predecessor's references
+        # were already released by the delete.
+        if not is_new and existing and not revival:
             await self._update_file_reference_counts(existing.file_references, delta=-1)
         await self._update_file_reference_counts(validation_result.file_references, delta=1)
 
@@ -2746,6 +2786,14 @@ class DocumentService:
             "status": DocumentStatus.ACTIVE.value
         }).to_list() if registry_doc_ids else []
         existing_by_doc_id = {doc.document_id: doc for doc in existing_docs}
+        # A known identity with no active version is soft-deleted: the write
+        # follows its latest version and brings it back as the successor (see
+        # _find_latest_by_document_id). Rare, so looked up only for those.
+        for doc_id in dict.fromkeys(registry_doc_ids):
+            if isinstance(doc_id, str) and doc_id not in existing_by_doc_id:
+                latest = await self._find_latest_by_document_id(doc_id, namespace=namespace)
+                if latest is not None:
+                    existing_by_doc_id[doc_id] = latest
         timing["3_find_existing"] = (time.perf_counter() - start) * 1000
 
         # Stage 4: Create all documents
