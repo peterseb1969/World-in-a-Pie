@@ -55,6 +55,8 @@ class ResolvedSecrets:
     """
 
     values: dict[str, str]
+    # Names this resolution generated because the store had no value yet.
+    generated: tuple[str, ...] = ()
 
     def get(self, name: str) -> str:
         """Look up a secret by name. Raises KeyError if absent — which

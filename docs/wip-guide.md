@@ -825,6 +825,26 @@ Rotation cadences worth defaulting to:
 | Dex client secret | Annually | Affects active sessions |
 | TLS (Let's Encrypt) | Automatic | Caddy renews 30 days before expiry |
 
+**The secret store travels with the install, whole.** An install's
+`secrets/` folder holds the passwords its datastores were set up with. Every
+apply records a short fingerprint of each secret it ran with in
+`deployment.deployer-state` (never the values) and, before generating
+anything, checks the folder against that record, and on k8s against the live
+`wip-secrets` Secret too. If a known secret is missing, or holds a different
+value, the apply stops and names the secrets, instead of generating
+passwords the running datastores do not hold. To recover:
+
+- copy the install's complete `~/.wip-deploy/<name>/` from the machine that
+  last drove it, `secrets/` included;
+- on k8s, `wip-deploy secrets pull --name <install>` writes the running
+  values from the cluster into the folder;
+- if the folder is right and only the record is stale (say, the folder was
+  restored from a backup), `wip-deploy secrets accept --name <install>`
+  records it.
+
+A secret the install has never had, such as one a platform upgrade or a new
+app introduces, is still generated, and the apply prints its name.
+
 ### 7.3 Validate before exposing
 
 Run the automated pre-exposure checklist against the install:

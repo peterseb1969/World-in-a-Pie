@@ -24,9 +24,10 @@ but never generated: a missing one stops the apply with instructions
 
 from __future__ import annotations
 
+import hashlib
 import secrets as py_secrets
 import string
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 import bcrypt
 
@@ -81,6 +82,65 @@ def operator_supplied_secrets(deployment: Deployment) -> dict[str, str]:
         for c in deployment.spec.auth.connectors
         if c.secret_key
     }
+
+
+def secret_digest(value: str) -> str:
+    """A short, one-way fingerprint of a secret value. The deployer-state
+    records these, never the values, so it can tell a value it has seen
+    from a different one."""
+    return hashlib.sha256(value.encode()).hexdigest()[:16]
+
+
+class SecretDrift(ValueError):
+    """The secret store disagrees with what the install is known to run.
+
+    A missing file for a known secret would be generated afresh, and a file
+    whose value differs would replace the running one. Either would hand the
+    services passwords their datastores do not hold, so the apply stops.
+    """
+
+    def __init__(self, missing: list[str], changed: list[str]) -> None:
+        self.missing = missing
+        self.changed = changed
+        parts = []
+        if missing:
+            parts.append("missing from the secret store: " + ", ".join(missing))
+        if changed:
+            parts.append("different from the running install: " + ", ".join(changed))
+        super().__init__("; ".join(parts))
+
+
+def _never_generate() -> str:
+    raise AssertionError("an existing secret was asked to generate")
+
+
+def check_secret_drift(
+    names: set[str],
+    backend: SecretBackend,
+    known: Mapping[str, str],
+    *,
+    exempt: set[str],
+) -> None:
+    """Raise SecretDrift when a known secret is missing or has another value.
+
+    `known` maps secret names to the digests the install is known to run
+    (the last apply's record, the live cluster Secret). Only names this
+    deployment requires are checked, and `exempt` ones are skipped: secrets
+    the operator supplies, derived bcrypt hashes (regenerating one from the
+    same plaintext is harmless) and names a verb regenerates on purpose.
+    """
+    present = set(backend.list_names())
+    missing: list[str] = []
+    changed: list[str] = []
+    for name in sorted(names):
+        if name in exempt or name.endswith(BCRYPT_SUFFIX) or name not in known:
+            continue
+        if name not in present:
+            missing.append(name)
+        elif secret_digest(backend.get_or_generate(name, _never_generate)) != known[name]:
+            changed.append(name)
+    if missing or changed:
+        raise SecretDrift(missing, changed)
 
 
 def _refuse_to_generate(name: str, what: str) -> Callable[[], str]:
@@ -247,8 +307,15 @@ def ensure_secrets(
     backend: SecretBackend,
     *,
     persist: bool = True,
+    known: Mapping[str, str] | None = None,
+    regenerate: frozenset[str] = frozenset(),
 ) -> ResolvedSecrets:
     """Ensure every required secret exists via the backend.
+
+    `known` (secret name -> digest) is what the install is known to run.
+    When given, a known secret that is missing or has another value stops
+    the call with SecretDrift before anything is generated; `regenerate`
+    names the secrets a verb deliberately replaces (rotate-key).
 
     The backend caches existing values and generates only for missing
     names. Persistence is a separate step (`backend.persist()`); this
@@ -264,6 +331,11 @@ def ensure_secrets(
     """
     names = collect_required_secrets(deployment, components, apps)
     operator_supplied = operator_supplied_secrets(deployment)
+    if known:
+        check_secret_drift(
+            names, backend, known, exempt=set(operator_supplied) | set(regenerate),
+        )
+    present = set(backend.list_names())
 
     resolved: dict[str, str] = {}
     for name in sorted(names):
@@ -289,7 +361,8 @@ def ensure_secrets(
 
     if persist:
         backend.persist()
-    return ResolvedSecrets(values=resolved)
+    generated = tuple(sorted(n for n in resolved if n not in present))
+    return ResolvedSecrets(values=resolved, generated=generated)
 
 
 def _bcrypt_generator(plaintext: str):  # type: ignore[no-untyped-def]

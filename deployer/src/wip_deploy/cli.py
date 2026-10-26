@@ -6,6 +6,7 @@ Step 3 scope: `validate` and `show-spec` verbs. Renderers + `install` /
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import subprocess
@@ -18,7 +19,14 @@ import yaml
 from pydantic import ValidationError
 
 from wip_deploy import __version__
-from wip_deploy.apply import ApplyError, ApplyResult, apply_compose, apply_k8s
+from wip_deploy.apply import (
+    ApplyError,
+    ApplyResult,
+    apply_compose,
+    apply_k8s,
+    changed_outside_scope,
+    read_live_secrets,
+)
 from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.config_gen.api_keys import declares_api_keys_file, effective_api_keys
 from wip_deploy.config_gen.spec_context import make_spec_context
@@ -36,7 +44,14 @@ from wip_deploy.renderers import (
     render_dev_simple,
     render_k8s,
 )
-from wip_deploy.secrets import OperatorSecretMissing, bcrypt_secret_name, ensure_secrets
+from wip_deploy.secrets import (
+    OperatorSecretMissing,
+    SecretDrift,
+    bcrypt_secret_name,
+    collect_required_secrets,
+    ensure_secrets,
+    secret_digest,
+)
 from wip_deploy.secrets_backend import FileSecretBackend, ResolvedSecrets
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
@@ -1193,7 +1208,9 @@ def install(
     if legacy_state.exists():
         legacy_state.unlink()
 
-    secrets = _ensure_secrets_via_spec(deployment, components, apps_list)
+    secrets = _ensure_secrets_via_spec(
+        deployment, components, apps_list, install_dir=target_dir,
+    )
 
     # CASE-459: stamp the source checkout into the deployer-state so the
     # mutation verbs (add-app / app-deploy / ...) can discover manifests
@@ -1244,7 +1261,9 @@ def install(
         # applied so add-app/status/rebuild reason from reality and a
         # flagless re-install can't silently revert the deployment shape.
         if getattr(e, "mutated", False):
-            _persist_deployment(deployment, target_dir, repo_root=effective_repo_root)
+            _persist_deployment(
+                deployment, target_dir, repo_root=effective_repo_root, secrets=secrets,
+            )
             typer.echo(
                 "deployer-state persisted: the apply changed the running "
                 "deployment before failing (CASE-455)",
@@ -1261,7 +1280,9 @@ def install(
     # post-apply; PRE-mutation failures (render/build errors) leave the
     # prior state in place as last-known-good, while post-mutation
     # failures persist in the except-branch above (CASE-455).
-    _persist_deployment(deployment, target_dir, repo_root=effective_repo_root)
+    _persist_deployment(
+        deployment, target_dir, repo_root=effective_repo_root, secrets=secrets,
+    )
 
     typer.echo("")
     if result.healthy:
@@ -2332,6 +2353,7 @@ def _apply_and_persist_mutation(
     action_label: str,
     services_scope: list[str] | None = None,
     repo_root: Path | None = None,
+    regenerate: frozenset[str] = frozenset(),
 ) -> None:
     """Shared post-mutation lifecycle: validate → render → apply → persist.
 
@@ -2353,10 +2375,22 @@ def _apply_and_persist_mutation(
     collateral), but resource DELETION on k8s happens only via the full
     apply's prune, so the empty scope (remove-app's compose config-only
     mode) and None both fall back to the full tree there.
+
+    A scope is widened, never trusted blindly: services outside it whose
+    rendered configuration changed (a secret they read, the router's
+    routes, MongoDB's user set) are added to it, so the change goes live
+    now instead of on their next unrelated restart.
+
+    `regenerate` names secrets the verb deliberately replaces (rotate-key);
+    every other secret must match what the install runs (see
+    `_ensure_secrets_via_spec`).
     """
     _validate_or_exit(deployment, components, apps_list)
 
-    secrets = _ensure_secrets_via_spec(deployment, components, apps_list)
+    secrets = _ensure_secrets_via_spec(
+        deployment, components, apps_list,
+        install_dir=target_dir, regenerate=regenerate,
+    )
     # CASE-355: surface render-time errors cleanly through the additive
     # verbs too — `add-app NAME` without --app-source on a dev install
     # hits the same gate.
@@ -2370,6 +2404,17 @@ def _apply_and_persist_mutation(
             err=True,
         )
         raise typer.Exit(2) from e
+
+    if services_scope is not None:
+        widened = changed_outside_scope(
+            tree, target_dir, deployment.spec.target, services_scope,
+        )
+        if widened:
+            typer.echo(
+                "Also restarting " + ", ".join(widened)
+                + ": this change alters configuration they read at start."
+            )
+            services_scope = [*services_scope, *widened]
 
     apply_fn = apply_k8s if deployment.spec.target == "k8s" else apply_compose
     apply_kwargs: dict[str, Any] = {}
@@ -2391,7 +2436,7 @@ def _apply_and_persist_mutation(
         # CASE-455: see the install command — post-mutation failures must
         # persist the applied spec or state diverges from reality.
         if getattr(e, "mutated", False):
-            _persist_deployment(deployment, target_dir, repo_root=repo_root)
+            _persist_deployment(deployment, target_dir, repo_root=repo_root, secrets=secrets)
             typer.echo(
                 "deployer-state persisted: the apply changed the running "
                 "deployment before failing (CASE-455)",
@@ -2403,7 +2448,7 @@ def _apply_and_persist_mutation(
         )
         raise typer.Exit(1) from e
 
-    _persist_deployment(deployment, target_dir, repo_root=repo_root)
+    _persist_deployment(deployment, target_dir, repo_root=repo_root, secrets=secrets)
 
     if result.healthy:
         typer.echo(typer.style(f"✓ {action_label}.", fg=typer.colors.GREEN, bold=True))
@@ -3037,6 +3082,7 @@ def rotate_key(
         target_dir,
         f"Rotated {label} on {resolved_name}",
         repo_root=repo_root,
+        regenerate=frozenset({secret_name}),
     )
 
     # Read the regenerated plaintext straight off disk (the apply used its own
@@ -3098,6 +3144,132 @@ def rotate_key(
 # overwrites them by design. These verbs are the missing operator write
 # path into the spec list, mirroring --api-key / rotate-key.
 # ─────────────────────────────────────────────────────────────────────
+
+secrets_app = typer.Typer(no_args_is_help=True)
+app.add_typer(
+    secrets_app,
+    name="secrets",
+    help=(
+        "Bring an install's secret store back in step with what the install "
+        "runs. Every apply refuses a store that is missing a known secret or "
+        "holds a different value for one."
+    ),
+)
+
+
+def _file_secret_store(deployment: Deployment) -> Path:
+    spec = deployment.spec.secrets
+    if spec.backend != "file" or spec.location is None:
+        typer.echo(
+            "error: this verb needs the file secret backend with a location set.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    return Path(spec.location)
+
+
+@secrets_app.command("pull")
+def secrets_pull(
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+) -> None:
+    """Copy the running values of a k8s install's secrets into its store.
+
+    Reads the live `wip-secrets` Secret and writes every value the store is
+    missing or holds differently. Use it when the store on this machine is
+    stale or incomplete — for example a copy from another machine — and
+    the cluster runs the right values. Prints the names it wrote, never the
+    values. Nothing is applied.
+    """
+    resolved_name = _resolve_name(name)
+    target_dir = install_dir or _default_install_dir(resolved_name)
+    deployment = _load_deployment(target_dir)
+    k8s = deployment.spec.platform.k8s
+    if deployment.spec.target != "k8s" or k8s is None:
+        typer.echo(
+            "error: `secrets pull` reads the live k8s Secret; a compose or dev "
+            "install has none. Copy the install's secrets/ folder from the "
+            "machine that last drove it instead.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    store = _file_secret_store(deployment)
+    live = read_live_secrets(k8s.namespace)
+    if not live:
+        typer.echo(
+            f"error: could not read secret wip-secrets in namespace "
+            f"{k8s.namespace!r} (kubectl missing, no access, or no such Secret).",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    backend = FileSecretBackend(store)
+    present = set(backend.list_names())
+    written: list[str] = []
+    for secret_name, value in sorted(live.items()):
+        if secret_name in present and backend.get_or_generate(secret_name, lambda: "") == value:
+            continue
+        backend.remove(secret_name)
+        backend.get_or_generate(secret_name, functools.partial(str, value))
+        written.append(secret_name)
+    backend.persist()
+
+    if written:
+        typer.echo(f"Wrote {len(written)} secret(s) from the cluster: " + ", ".join(written))
+    else:
+        typer.echo("The store already holds every running value.")
+
+
+@secrets_app.command("accept")
+def secrets_accept(
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Record the secret store as the one this install runs.
+
+    Overwrites the digests the last apply recorded with those of the
+    store's current values, so the next apply checks against them. Use it
+    only when the store is right and the record is not — for example after
+    restoring the install's own secrets/ folder from a backup. Nothing is
+    applied, and on k8s the live Secret is still checked on every apply.
+    """
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+    store = _file_secret_store(deployment)
+    backend = FileSecretBackend(store)
+    present = set(backend.list_names())
+    required = collect_required_secrets(deployment, components, apps_list)
+    missing = sorted(required - present)
+    if missing:
+        typer.echo(
+            "error: the store has no value for: " + ", ".join(missing)
+            + ". Bring the complete secrets/ folder first.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    values = {
+        n: backend.get_or_generate(n, lambda: "") for n in sorted(required)
+    }
+    _persist_deployment(
+        deployment, target_dir, repo_root=repo_root,
+        secrets=ResolvedSecrets(values=values),
+    )
+    typer.echo(f"Recorded {len(values)} secret(s) of {store} as the ones {resolved_name} runs.")
+
 
 user_app = typer.Typer(no_args_is_help=True)
 app.add_typer(
@@ -5230,6 +5402,7 @@ def _persist_deployment(
     deployment: Deployment,
     install_dir: Path,
     repo_root: Path | None = None,
+    secrets: ResolvedSecrets | None = None,
 ) -> None:
     """Persist the Deployment to the install dir so `status --diff`
     can re-render against the same spec without needing the install
@@ -5241,16 +5414,28 @@ def _persist_deployment(
     on newer state files — so mutation verbs can discover manifests
     from any cwd. When None (the mutation-verb persists), an existing
     stamp is carried forward; it must be read BEFORE the overwrite.
+
+    `secrets` (the values the apply ran with) are recorded as digests in the
+    envelope, `secret_digests`, so the next apply can tell a stale or
+    incomplete secret store from the one this install runs. When None, the
+    existing record is carried forward.
     """
     if repo_root is None:
         repo_root = _load_state_repo_root(install_dir)
+    digests = (
+        {name: secret_digest(v) for name, v in sorted(secrets.values.items())}
+        if secrets is not None
+        else _load_state_secret_digests(install_dir)
+    )
     install_dir.mkdir(parents=True, exist_ok=True)
-    payload = {
+    payload: dict[str, Any] = {
         "wip_deploy_format_version": _DEPLOYMENT_JSON_VERSION,
         "deployment": deployment.model_dump(mode="json"),
     }
     if repo_root is not None:
         payload["repo_root"] = str(repo_root)
+    if digests:
+        payload["secret_digests"] = digests
     (install_dir / _DEPLOYMENT_STATE_FILENAME).write_text(
         json.dumps(payload, indent=2, default=str) + "\n"
     )
@@ -5519,9 +5704,18 @@ def _ensure_secrets_via_spec(
     apps_list: list[App],
     *,
     persist: bool = True,
+    install_dir: Path | None = None,
+    regenerate: frozenset[str] = frozenset(),
 ) -> ResolvedSecrets:
     """Construct the secret backend from `spec.secrets` and run
-    `ensure_secrets` (`persist=False`: read-only, for dry runs)."""
+    `ensure_secrets` (`persist=False`: read-only, for dry runs).
+
+    With `install_dir` (every apply), the store is first checked against
+    what the install is known to run — see `_known_secret_digests` — so a
+    stale or incomplete store stops the apply instead of minting new
+    passwords. `regenerate` names secrets the calling verb replaces on
+    purpose.
+    """
     spec = deployment.spec.secrets
     if spec.backend != "file":
         typer.echo(
@@ -5537,11 +5731,80 @@ def _ensure_secrets_via_spec(
         raise typer.Exit(2)
 
     backend = FileSecretBackend(Path(location))
+    known = _known_secret_digests(deployment, install_dir) if install_dir else None
     try:
-        return ensure_secrets(deployment, components, apps_list, backend, persist=persist)
+        secrets = ensure_secrets(
+            deployment, components, apps_list, backend,
+            persist=persist, known=known, regenerate=regenerate,
+        )
+    except SecretDrift as e:
+        install = deployment.metadata.name
+        typer.echo(f"error: the secret store at {location} is out of step with this install.", err=True)
+        if e.missing:
+            typer.echo(
+                "  Missing (the apply would generate new values the running "
+                "datastores do not hold): " + ", ".join(e.missing),
+                err=True,
+            )
+        if e.changed:
+            typer.echo(
+                "  Different from what the install runs: " + ", ".join(e.changed),
+                err=True,
+            )
+        if deployment.spec.target == "k8s":
+            # The live Secret wins over the record, so `accept` cannot clear
+            # a mismatch with the cluster; adopting its values can.
+            remedy = (
+                "or take the running values from the cluster with "
+                f"`wip-deploy secrets pull --name {install}`."
+            )
+        else:
+            remedy = (
+                "or, if this store is the right one and only the record is "
+                f"stale, record it with `wip-deploy secrets accept --name {install}`."
+            )
+        typer.echo(
+            "  Copy the install's complete secrets/ folder from the machine that "
+            "last drove it, " + remedy,
+            err=True,
+        )
+        raise typer.Exit(2) from e
     except OperatorSecretMissing as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(2) from e
+    if persist and secrets.generated:
+        typer.echo("Generated new secrets: " + ", ".join(secrets.generated))
+    return secrets
+
+
+def _known_secret_digests(
+    deployment: Deployment, install_dir: Path
+) -> dict[str, str]:
+    """Secret name -> digest of the value this install is known to run.
+
+    Two sources: the digests the last apply recorded in the deployer-state,
+    and on k8s the live `wip-secrets` Secret, which wins where both name a
+    secret (it is what the pods read on their next start). Values never
+    leave this function; only their digests do.
+    """
+    known = dict(_load_state_secret_digests(install_dir))
+    k8s = deployment.spec.platform.k8s
+    if deployment.spec.target == "k8s" and k8s is not None:
+        live = read_live_secrets(k8s.namespace)
+        if live:
+            known.update({name: secret_digest(v) for name, v in live.items()})
+    return known
+
+
+def _load_state_secret_digests(install_dir: Path) -> dict[str, str]:
+    target = install_dir / _DEPLOYMENT_STATE_FILENAME
+    try:
+        raw = json.loads(target.read_text()).get("secret_digests")
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
 
 
 def _render_tree(

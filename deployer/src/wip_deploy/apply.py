@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from wip_deploy.config_gen.garage import (
     GARAGE_BUCKET,
     GARAGE_KEY_NAME,
@@ -1824,3 +1826,98 @@ def _count_k8s_workloads(tree: FileTree) -> int:
         except _yaml.YAMLError:
             continue
     return count
+
+
+# ────────────────────────────────────────────────────────────────────
+# Live secret fingerprints (k8s)
+# ────────────────────────────────────────────────────────────────────
+
+
+def read_live_secrets(ns: str) -> dict[str, str] | None:
+    """The values of the live `wip-secrets` Secret, or None when there is
+    none to read (no kubectl, no cluster access, no Secret yet).
+
+    Callers keep only what they need: the drift check reduces them to
+    fingerprints at once, `secrets pull` writes them to the store.
+    """
+    if not shutil.which("kubectl"):
+        return None
+    proc = subprocess.run(
+        ["kubectl", "get", "secret", "wip-secrets", "-n", ns, "-o", "json"],
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        data = json.loads(proc.stdout).get("data") or {}
+        return {k: base64.b64decode(v).decode() for k, v in data.items()}
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+# ────────────────────────────────────────────────────────────────────
+# Out-of-scope configuration changes
+# ────────────────────────────────────────────────────────────────────
+
+
+def _workload_hashes(files: dict[Path, str], target: str) -> dict[str, str]:
+    """Service name -> config hash, read from rendered files.
+
+    compose and dev stamp the hash as a service label in
+    docker-compose.yaml; k8s stamps it on the pod template of the workload
+    in services/<name>.yaml or infrastructure/<name>.yaml.
+    """
+    from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY
+
+    out: dict[str, str] = {}
+    if target == "k8s":
+        for path, content in files.items():
+            if path.parent.name not in ("services", "infrastructure"):
+                continue
+            for doc in yaml.safe_load_all(content):
+                if not isinstance(doc, dict) or doc.get("kind") not in (
+                    "Deployment", "StatefulSet",
+                ):
+                    continue
+                annotations = (
+                    doc.get("spec", {}).get("template", {}).get("metadata", {})
+                    .get("annotations") or {}
+                )
+                if CONFIG_HASH_KEY in annotations:
+                    out[path.stem] = annotations[CONFIG_HASH_KEY]
+        return out
+    compose = files.get(Path("docker-compose.yaml"))
+    if compose is None:
+        return out
+    services = (yaml.safe_load(compose) or {}).get("services") or {}
+    for name, block in services.items():
+        labels = block.get("labels") or {}
+        if isinstance(labels, dict) and CONFIG_HASH_KEY in labels:
+            out[name] = labels[CONFIG_HASH_KEY]
+    return out
+
+
+def changed_outside_scope(
+    tree: FileTree, install_dir: Path, target: str, scope: list[str],
+) -> list[str]:
+    """Services outside `scope` whose configuration this render changes.
+
+    Compares each workload's config hash in the previous render, still on
+    disk, with the new tree. A scoped apply that skipped them would leave
+    them running the old configuration (secrets, key file, the router's
+    routes, MongoDB's user set) until something else restarts them.
+    """
+    new = _workload_hashes(
+        {p: e.content for p, e in tree.files.items()}, target,
+    )
+    old_files: dict[Path, str] = {}
+    for path in tree.files:
+        on_disk = Path(install_dir) / path
+        if on_disk.is_file():
+            old_files[path] = on_disk.read_text()
+    old = _workload_hashes(old_files, target)
+    in_scope = set(scope)
+    return sorted(
+        name for name, h in new.items()
+        if name not in in_scope and name in old and old[name] != h
+    )

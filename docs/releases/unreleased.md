@@ -1285,6 +1285,23 @@ sync afterwards.
   user verb or re-render writes `groups` into `deployment.deployer-state`,
   which an older `wip-deploy` then refuses to load: upgrade the deployer on
   every machine that drives the install.
+- **A stale or incomplete secret store stops the apply.** Every apply now
+  records a fingerprint of each secret it ran with (`secret_digests` in
+  `deployment.deployer-state`, never the values) and checks the store
+  against it, and on k8s against the live `wip-secrets`, before generating
+  anything. A known secret that is missing or different stops the apply
+  with the names. Previously the deployer generated fresh datastore
+  passwords from an old copy of the install folder and wrote them into the
+  cluster while the pods kept the old ones. New verbs: `wip-deploy secrets
+  pull` (k8s: adopt the running values) and `wip-deploy secrets accept`
+  (record the folder as right). Every apply names the secrets it generated.
+  See wip-guide §7.2.
+- **Scoped verbs also restart what they change elsewhere.** `add-app`,
+  `app-deploy`, `remove-app` and a scoped `redeploy` compare every
+  workload's config hash with the previous render and add the out-of-scope
+  services whose configuration changed — a secret they read, the router's
+  routes, MongoDB's user set — printing their names. Before, those changes
+  went live only at the services' next unrelated restart.
 - **A failed dev-target build no longer takes the stack down.** A full dev
   apply removed every `wip-*` container and then built the images inside
   `compose up --build`, so a failed build left nothing running. The apply
