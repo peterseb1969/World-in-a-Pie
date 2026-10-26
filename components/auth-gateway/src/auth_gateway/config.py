@@ -75,6 +75,10 @@ class Settings:
     # reserved groups stripped, email/domain mappings applied. Empty leaves
     # every login's groups as Dex issued them.
     federated_groups: str = os.getenv("WIP_AUTH_FEDERATED_GROUPS", "")
+    # The same policy as a file (an empty file means no policy). When set it
+    # wins, and it is re-read whenever it changes, so a mapping change
+    # applies to the next login without a restart.
+    federated_groups_file: str = os.getenv("WIP_AUTH_FEDERATED_GROUPS_FILE", "")
 
     # Scopes to request from Dex.
     oidc_scopes: str = os.getenv("OIDC_SCOPES", "openid email profile groups offline_access")

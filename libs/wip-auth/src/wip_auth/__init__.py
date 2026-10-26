@@ -59,7 +59,7 @@ from .identity import (
     reset_current_identity,
     set_current_identity,
 )
-from .key_file_watch import APIKeysFileWatcher
+from .key_file_watch import APIKeysFileWatcher, ConfigFileWatcher
 from .key_sync import KeySyncService
 from .liveness import install_liveness
 from .middleware import AuthMiddleware, create_auth_middleware
@@ -243,7 +243,7 @@ def create_providers_from_config(
             raise ValueError(
                 "JWT mode requires WIP_AUTH_JWT_ISSUER_URL or WIP_AUTH_JWT_JWKS_URI"
             )
-        providers.append(OIDCProvider(
+        oidc = OIDCProvider(
             issuer_url=config.jwt_issuer_url,
             jwks_url=config.jwt_jwks_uri,
             audience=config.jwt_audiences,
@@ -252,8 +252,10 @@ def create_providers_from_config(
             default_groups=config.default_groups,
             verify_exp=config.jwt_verify_exp,
             leeway=config.jwt_leeway_seconds,
-            federated_groups=FederatedGroupPolicy.from_json(config.federated_groups),
-        ))
+            federated_groups=_federated_policy(config),
+        )
+        providers.append(oidc)
+        _watch_federated_groups_file(config, oidc)
 
     elif config.mode == "dual":
         # Dual mode - try trusted headers first, then JWT, then API key
@@ -279,7 +281,7 @@ def create_providers_from_config(
 
         # JWT is checked next because Bearer token is more explicit
         if config.jwt_issuer_url or config.jwt_jwks_uri:
-            providers.append(OIDCProvider(
+            dual_oidc = OIDCProvider(
                 issuer_url=config.jwt_issuer_url,
                 jwks_url=config.jwt_jwks_uri,
                 audience=config.jwt_audiences,
@@ -288,14 +290,57 @@ def create_providers_from_config(
                 default_groups=config.default_groups,
                 verify_exp=config.jwt_verify_exp,
                 leeway=config.jwt_leeway_seconds,
-                federated_groups=FederatedGroupPolicy.from_json(config.federated_groups),
-            ))
+                federated_groups=_federated_policy(config),
+            )
+            providers.append(dual_oidc)
+            _watch_federated_groups_file(config, dual_oidc)
 
         if dual_key_provider is not None:
             providers.append(dual_key_provider)
             _watch_api_keys_file(config, dual_key_provider)
 
     return providers
+
+
+def _read_federated_groups_file(path: str) -> FederatedGroupPolicy | None:
+    with open(path) as f:
+        return FederatedGroupPolicy.from_json(f.read())
+
+
+def _federated_policy(config: AuthConfig) -> FederatedGroupPolicy | None:
+    """The federated group policy: from its file when one is configured (an
+    absent file means no policy yet), else from WIP_AUTH_FEDERATED_GROUPS."""
+    if config.federated_groups_file:
+        try:
+            return _read_federated_groups_file(config.federated_groups_file)
+        except FileNotFoundError:
+            return None
+    return FederatedGroupPolicy.from_json(config.federated_groups)
+
+
+def _watch_federated_groups_file(config: AuthConfig, provider: OIDCProvider) -> None:
+    """Apply changes to the federated group policy file without a restart.
+
+    A group mapping is a routine operator change; it reaches the running
+    service on the next request after the file changes. The watcher is kept
+    on the provider so its lifetime is the provider's.
+    """
+    path = config.federated_groups_file
+    if not path or config.federated_groups_file_reload_seconds <= 0:
+        return
+
+    def apply() -> None:
+        # Parse completely first: a file that does not parse raises here
+        # and the provider keeps its current policy.
+        provider.federated_groups = _read_federated_groups_file(path)
+
+    watcher = ConfigFileWatcher(
+        path, apply,
+        what="federated group policy",
+        interval_seconds=config.federated_groups_file_reload_seconds,
+    )
+    provider.policy_watcher = watcher
+    watcher.start()
 
 
 def _watch_api_keys_file(config: AuthConfig, provider: APIKeyProvider) -> None:

@@ -79,7 +79,23 @@ class AuthConfig(BaseSettings):
             "Group policy for logins federated through a Dex connector, as "
             "JSON (see wip_auth.federation): reserved groups stripped, "
             "email/domain mappings applied. Rendered by the deployer when "
-            "the install declares a connector; empty leaves groups as issued."
+            "the install declares a connector; empty leaves groups as issued. "
+            "Superseded by federated_groups_file when that is set."
+        ),
+    )
+    federated_groups_file: str | None = Field(
+        default=None,
+        description=(
+            "Path to the federated group policy as a JSON file (same format as "
+            "federated_groups; an empty file means no policy). Re-read while "
+            "running, so a mapping change applies without a restart."
+        ),
+    )
+    federated_groups_file_reload_seconds: float = Field(
+        default=10.0,
+        description=(
+            "How often to check the federated group policy file for changes; "
+            "0 disables the reload"
         ),
     )
     jwt_algorithms: list[str] = Field(

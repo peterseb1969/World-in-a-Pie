@@ -161,6 +161,8 @@ class OIDCProvider:
         self.verify_exp = verify_exp
         self.leeway = leeway
         self.federated_groups = federated_groups
+        # Set by create_providers_from_config when the policy file is watched.
+        self.policy_watcher: Any = None
 
         self._jwks_cache = JWKSCache(self._jwks_url)
 

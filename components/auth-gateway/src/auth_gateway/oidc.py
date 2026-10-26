@@ -9,6 +9,7 @@ issues (CASE-50).
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 import httpx
@@ -16,6 +17,36 @@ from starlette.requests import Request
 
 from .config import settings
 from .federation import FederatedGroupPolicy
+
+# path -> (stat signature, policy). The policy file is re-read only when it
+# changed, so each login costs one `stat`.
+_policy_cache: dict[str, tuple[tuple[int, int, int], FederatedGroupPolicy | None]] = {}
+
+
+def current_federated_policy() -> FederatedGroupPolicy | None:
+    """The federated group policy for this login.
+
+    From WIP_AUTH_FEDERATED_GROUPS_FILE when set, re-read whenever the file
+    changes; else from WIP_AUTH_FEDERATED_GROUPS. A file that cannot be read
+    or parsed keeps the last good policy (an unreadable file at start means
+    no policy), so a half-written file never strips a login's groups.
+    """
+    path = settings.federated_groups_file
+    if not path:
+        return FederatedGroupPolicy.from_json(settings.federated_groups)
+    cached = _policy_cache.get(path)
+    try:
+        st = os.stat(path)
+        signature = (st.st_mtime_ns, st.st_size, st.st_ino)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        with open(path) as f:
+            policy = FederatedGroupPolicy.from_json(f.read())
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        logger.error("Federated group policy %s unusable (%s); keeping the last one", path, e)
+        return cached[1] if cached is not None else None
+    _policy_cache[path] = (signature, policy)
+    return policy
 
 logger = logging.getLogger("auth_gateway.oidc")
 
@@ -172,7 +203,7 @@ async def exchange_code(request: Request) -> dict[str, Any]:
     claims = json.loads(base64.urlsafe_b64decode(payload_b64))
 
     groups = claims.get("groups", [])
-    policy = FederatedGroupPolicy.from_json(settings.federated_groups)
+    policy = current_federated_policy()
     if policy is not None:
         groups = policy.apply(claims, groups)
 
