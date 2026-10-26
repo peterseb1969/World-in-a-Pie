@@ -789,8 +789,11 @@ services (MongoDB, PostgreSQL, NATS, Garage, Dex) are not restarted this way.
 | **Declared keys** (`auth.api_keys`, e.g. agent keys) | install secret + rendered `api-keys.json` | `wip-deploy rotate-key <key-name> --name <install>` |
 | **Runtime keys** (console / `POST /api/registry/api-keys`) | Registry (MongoDB, bcrypt hash) | revoke + create a new one; other services see the change within the 30 s key sync |
 
-`rotate-key` prints the new plaintext **once**, names the services the apply
-restarted, and then probes the install's public URL: the Registry must
+`rotate-key` names the secret file that holds the new value
+(`~/.wip-deploy/<name>/secrets/<secret>`), not the value itself, so the key
+does not land in a terminal log or an agent's transcript; `--show-key` also
+prints the plaintext once. It then names the services the apply
+restarted, and probes the install's public URL: the Registry must
 accept the new key and refuse the old one, or the command fails (`--no-check`
 skips the probe). There is no grace window — once the apply completes, the
 old value gets 401.
@@ -798,10 +801,10 @@ old value gets 401.
 After rotating:
 
 - Clients that read the key **file** need no config change, but only some
-  re-read it while running: `kbc` reads it on every call and follows at once;
-  an MCP server configured with `WIP_API_KEY_FILE` reads it once at start, so
-  open MCP sessions get 401 until they are reconnected (e.g. `/mcp` in Claude
-  Code); app servers using `apiKeyFile` follow on their next restart.
+  re-read it while running: `kbc` reads it on every call and an MCP server
+  configured with `WIP_API_KEY_FILE` re-reads it when it changes, so both
+  follow at once; app servers using `apiKeyFile` follow on their next
+  restart.
 - Anyone holding a **copy** of the key (scripts, other machines, people)
   must be given the new value.
 - For zero downtime with external consumers that cannot switch at once,

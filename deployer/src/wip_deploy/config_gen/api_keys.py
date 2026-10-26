@@ -25,10 +25,18 @@ from wip_deploy.spec.deployment import CANARY_KEY_NAME, SpecAPIKey
 # as WIP_AUTH_API_KEYS_FILE via `from_spec: security.api_keys_file`.
 API_KEYS_CONTAINER_PATH = "/etc/wip/api-keys.json"
 
+# The file is mounted through its DIRECTORY, never as a single file: a
+# running container then sees a rewritten file (k8s refreshes a directory-
+# mounted Secret in place, a compose directory bind follows the host
+# directory), and wip-auth re-reads it without a restart. A k8s `subPath`
+# or a single-file bind would pin the content the container started with.
+API_KEYS_CONTAINER_DIR = "/etc/wip"
+
 # Relative path inside the rendered install tree (compose/dev). The
 # file carries plaintext keys, so it is written mode 0600 — same
 # posture as the install's `.env`.
 API_KEYS_RENDER_PATH = "config/auth/api-keys.json"
+API_KEYS_RENDER_DIR = "config/auth"
 
 # The namespace the canary is scoped to. Nothing creates it, so the
 # canary can read nothing; `verify --live` checks that it still sees no

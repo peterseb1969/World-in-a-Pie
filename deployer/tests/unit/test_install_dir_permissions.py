@@ -106,11 +106,14 @@ def test_files_mounted_into_non_root_containers_are_readable(
             source = volume.split(":", 1)[0]
             if not source.startswith("./"):
                 continue
-            entry = tree.files.get(Path(source[2:]))
-            if entry is None:
-                continue  # a directory or a file not produced by the render
-            checked.append(f"{name}:{source}")
-            assert entry.mode & stat.S_IROTH, f"{name} cannot read {source} (mode {oct(entry.mode)})"
+            mounted = Path(source[2:])
+            # A file mount, or every rendered file under a directory mount
+            # (the declared-key file is mounted through its directory).
+            for path, entry in tree.files.items():
+                if path != mounted and mounted not in path.parents:
+                    continue
+                checked.append(f"{name}:./{path}")
+                assert entry.mode & stat.S_IROTH, f"{name} cannot read {path} (mode {oct(entry.mode)})"
     # The two files that motivated this must be among those checked.
     assert any(c.startswith("dex:") and c.endswith("config/dex/config.yaml") for c in checked), checked
     assert any(c.startswith("registry:") and "api-keys" in c for c in checked), checked

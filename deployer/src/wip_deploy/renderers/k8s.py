@@ -41,7 +41,7 @@ from wip_deploy.config_gen import (
     resolve_all_env,
 )
 from wip_deploy.config_gen.api_keys import (
-    API_KEYS_CONTAINER_PATH,
+    API_KEYS_CONTAINER_DIR,
     declares_api_keys_file,
     generate_api_keys_json,
 )
@@ -369,8 +369,8 @@ def _render_network_policies(ns: str) -> str:
 
 def _render_api_keys_secret(ns: str, api_keys_json: str) -> str:
     """The rendered WIP_AUTH_API_KEYS_FILE document as its own Secret,
-    so it can be subPath-mounted as a file (wip-secrets carries flat
-    name→value pairs, not files)."""
+    mounted as a directory so a running pod sees it change (wip-secrets
+    carries flat name→value pairs, not files)."""
     return _dump({
         "apiVersion": "v1",
         "kind": "Secret",
@@ -622,8 +622,7 @@ def _render_component(
     if declares_api_keys_file(owner):
         volume_mounts.append({
             "name": "api-keys-config",
-            "mountPath": API_KEYS_CONTAINER_PATH,
-            "subPath": "api-keys.json",
+            "mountPath": API_KEYS_CONTAINER_DIR,
             "readOnly": True,
         })
         volumes.append({

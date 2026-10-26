@@ -146,19 +146,21 @@ class TestK8s:
             moved = _annotation(doc) != _annotation(after[name])
             assert moved == (name in readers), name
 
-    def test_declared_key_rotation_moves_the_key_file_readers(self, tmp_path, discovery):
+    def test_declared_key_rotation_moves_no_key_file_reader(self, tmp_path, discovery):
+        """CASE-884: api-keys.json is re-read by the running services, so a
+        declared key changes no workload definition — only a service that
+        takes the key from its environment would roll."""
         d = _deployment("k8s", api_keys=["agent"])
         s = _secrets(tmp_path, d, discovery)
         before = _k8s_workloads(d, discovery, s)
         after = _k8s_workloads(d, discovery, _rotated(s, "agent-api-key"))
 
-        readers = {n for n, doc in before.items()
-                   if doc["kind"] == "Deployment"
-                   and (_mounts_api_keys(doc) or _reads_secret(doc, "agent-api-key"))}
-        assert readers, "expected services that mount api-keys.json"
+        assert any(_mounts_api_keys(doc) for doc in before.values()), (
+            "expected services that mount api-keys.json"
+        )
         for name, doc in before.items():
             moved = _annotation(doc) != _annotation(after[name])
-            assert moved == (name in readers), name
+            assert moved == _reads_secret(doc, "agent-api-key"), name
 
 
 class TestCompose:

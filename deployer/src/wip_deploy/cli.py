@@ -28,7 +28,7 @@ from wip_deploy.apply import (
     read_live_secrets,
 )
 from wip_deploy.build import BuildInputs, build_deployment
-from wip_deploy.config_gen.api_keys import declares_api_keys_file, effective_api_keys
+from wip_deploy.config_gen.api_keys import effective_api_keys
 from wip_deploy.config_gen.spec_context import make_spec_context
 from wip_deploy.discovery import discover, find_repo_root
 from wip_deploy.export_ca import (
@@ -2924,15 +2924,14 @@ def _key_readers(
     deployment: Deployment,
     components: list[Component],
     apps_list: list[App],
-    *,
-    declared_key: bool,
 ) -> list[str]:
     """Active, storage-free services that read `secret_name` at start.
 
     These are the services the rotation's apply restarts: their rendered
-    definition carries a hash of the secrets (and, for a declared key, the
-    api-keys.json) they consume. A declared key's file is read by every
-    service that mounts api-keys.json, not only by the key's env consumers.
+    definition carries a hash of the secrets they take from the environment.
+    The declared-key file (api-keys.json) is not among them — the services
+    that read it re-read it while running, so a declared key reaches them
+    without a restart.
     """
     enabled_apps = {ref.name for ref in deployment.spec.apps if ref.enabled}
     owners: list[Component | App] = [
@@ -2943,8 +2942,7 @@ def _key_readers(
         if owner.spec.storage:
             continue
         env_vars = (*owner.spec.env.required, *owner.spec.env.optional)
-        reads_env = any(ev.source.from_secret == secret_name for ev in env_vars)
-        if reads_env or (declared_key and declares_api_keys_file(owner)):
+        if any(ev.source.from_secret == secret_name for ev in env_vars):
             readers.add(owner.metadata.name)
     return sorted(readers)
 
@@ -2984,6 +2982,16 @@ def rotate_key(
             "key must be accepted and the old one refused (default: check).",
         ),
     ] = True,
+    show_key: Annotated[
+        bool,
+        typer.Option(
+            "--show-key",
+            help="Also print the new plaintext. By default only the secret "
+            "file that holds it is named, so the key never lands in a "
+            "terminal log or an agent's transcript; read it from that file "
+            "when a copy has to be handed out.",
+        ),
+    ] = False,
 ) -> None:
     """Rotate an API key in place — mint a fresh plaintext, re-apply, check it.
 
@@ -3090,24 +3098,33 @@ def rotate_key(
     new_plaintext = secret_path.read_text().rstrip("\n")
 
     typer.echo("")
-    typer.echo(typer.style(f"New plaintext for {label} (shown once):", bold=True))
-    typer.echo(f"  {new_plaintext}")
+    if show_key:
+        typer.echo(typer.style(f"New plaintext for {label} (shown once):", bold=True))
+        typer.echo(f"  {new_plaintext}")
+    else:
+        typer.echo(typer.style(f"New value for {label} is in:", bold=True))
     typer.echo(f"  secret file: {secret_path}")
 
-    readers = _key_readers(
-        secret_name, deployment, components, apps_list,
-        declared_key=key_name is not None,
-    )
+    readers = _key_readers(secret_name, deployment, components, apps_list)
     typer.echo("")
     if readers:
         typer.echo(
             "Restarted by this apply (they read the key at start): "
             + ", ".join(readers)
         )
+    if key_name is not None:
+        typer.echo(
+            "The services that check declared keys re-read api-keys.json "
+            "while running: the new key is accepted, and the old one refused, "
+            "within about 10 s on compose and dev, and within about two "
+            "minutes on k8s, where the kubelet first refreshes the mounted "
+            "file. Nothing restarts for it."
+        )
     typer.echo(
         typer.style(
             "External holders of the OLD key (scripts, other machines, "
-            "humans) will now get 401 — re-hand them the new value above.",
+            "humans) will now get 401 — re-hand them the new value from "
+            "the secret file.",
             fg=typer.colors.YELLOW,
         )
     )
@@ -3116,7 +3133,13 @@ def rotate_key(
         return
     from wip_deploy.verify_security import check_key_rotation
 
-    problems = check_key_rotation(deployment, new_plaintext, old_plaintext)
+    # A declared key arrives by the services re-reading api-keys.json, which
+    # on k8s waits for the kubelet to refresh the mount (about a minute
+    # measured), so its probe gets a longer window than a restart needs.
+    problems = check_key_rotation(
+        deployment, new_plaintext, old_plaintext,
+        attempts=75 if key_name is not None else 30,
+    )
     if problems:
         typer.echo(
             typer.style("✗ post-rotation check failed:", fg=typer.colors.RED, bold=True),

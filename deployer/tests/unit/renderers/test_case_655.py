@@ -11,13 +11,16 @@ mode that killed the out-of-band `web-yac` runtime key.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 import yaml
 
 from wip_deploy.config_gen.api_keys import (
+    API_KEYS_CONTAINER_DIR,
     API_KEYS_CONTAINER_PATH,
+    API_KEYS_RENDER_DIR,
     API_KEYS_RENDER_PATH,
     CANARY_NAMESPACE,
     generate_api_keys_json,
@@ -60,8 +63,6 @@ EXPECTED_CONSUMERS = {
     "document-store",
     "reporting-sync",
     "ingest-gateway",
-    "auth-gateway",
-    "mcp-server",
 }
 
 
@@ -210,7 +211,7 @@ class TestComposeRender:
             tree.files[Path("docker-compose.yaml")].content
         )
         services = compose["services"]
-        mount = f"./{API_KEYS_RENDER_PATH}:{API_KEYS_CONTAINER_PATH}:ro"
+        mount = f"./{API_KEYS_RENDER_DIR}:{API_KEYS_CONTAINER_DIR}:ro"
         active_consumers = EXPECTED_CONSUMERS & set(services)
         assert active_consumers  # the fixture activates several
         for name in active_consumers:
@@ -237,7 +238,7 @@ class TestComposeRender:
         )
         registry = compose["services"]["registry"]
         assert registry["environment"]["WIP_AUTH_API_KEYS_FILE"] == API_KEYS_CONTAINER_PATH
-        assert any("api-keys.json" in v for v in registry.get("volumes", []))
+        assert f"./{API_KEYS_RENDER_DIR}:{API_KEYS_CONTAINER_DIR}:ro" in registry.get("volumes", [])
 
     def test_consumer_set_matches_wip_auth_importers(
         self, real_discovery: Discovery
@@ -258,8 +259,11 @@ class TestComposeRender:
             src = REPO_ROOT / "components" / c.metadata.name / "src"
             if not src.is_dir():
                 continue
+            # Real imports only: auth-gateway and mcp-server mention wip_auth
+            # in comments, which once kept them declared for a file they
+            # never read (and restarted them on every declared-key change).
             if any(
-                "wip_auth" in p.read_text()
+                re.search(r"^\s*(from|import) wip_auth\b", p.read_text(), re.M)
                 for p in src.rglob("*.py")
             ):
                 importers.add(c.metadata.name)
@@ -306,7 +310,7 @@ class TestDevRender:
             tree.files[Path("docker-compose.yaml")].content
         )
         registry = compose["services"]["registry"]
-        mount = f"./{API_KEYS_RENDER_PATH}:{API_KEYS_CONTAINER_PATH}:ro"
+        mount = f"./{API_KEYS_RENDER_DIR}:{API_KEYS_CONTAINER_DIR}:ro"
         assert mount in registry["volumes"]
 
 
@@ -357,9 +361,10 @@ class TestK8sRender:
         )
         container = workload["spec"]["template"]["spec"]["containers"][0]
         mounts = container.get("volumeMounts", [])
+        # Mounted through its directory, never subPath: a running pod must see
+        # the file change so wip-auth can re-read it (CASE-884).
         assert any(
-            m["mountPath"] == API_KEYS_CONTAINER_PATH
-            and m.get("subPath") == "api-keys.json"
+            m["mountPath"] == API_KEYS_CONTAINER_DIR and "subPath" not in m
             for m in mounts
         )
 

@@ -101,13 +101,31 @@ class TestMasterKey:
             result = _rotate(install, "--secret", "api-key")
 
         assert result.exit_code == 0, result.output
-        assert "new-master" in result.output
+        # The plaintext stays out of the output by default (it once leaked into
+        # an agent transcript); only the file holding it is named.
+        assert "new-master" not in result.output
+        assert f"secret file: {key}" in result.output
         readers_line = next(line for line in result.output.splitlines()
                             if line.startswith("Restarted by this apply"))
         assert "registry" in readers_line and "document-store" in readers_line
         assert "mongodb" not in readers_line  # storage-bearing: never restarted this way
         assert check.call_args.args[1:] == ("new-master", "old-master")
         assert "✓ post-rotation check" in result.output
+
+    def test_show_key_prints_the_plaintext(self, tmp_path):
+        install = _install(tmp_path)
+        key = install / "secrets" / "api-key"
+        key.write_text("old-master")
+        with (
+            patch("wip_deploy.cli._apply_and_persist_mutation",
+                  side_effect=_regenerate(key, "new-master")),
+            patch("wip_deploy.verify_security.check_key_rotation", return_value=[]),
+        ):
+            result = _rotate(install, "--secret", "api-key", "--show-key")
+
+        assert result.exit_code == 0, result.output
+        assert "new-master" in result.output
+        assert "old-master" not in result.output
 
     def test_failed_check_fails_the_command(self, tmp_path):
         install = _install(tmp_path)
@@ -141,7 +159,7 @@ class TestMasterKey:
 
 
 class TestDeclaredKey:
-    def test_readers_include_the_key_file_readers(self, tmp_path):
+    def test_declared_key_restarts_nothing_and_says_so(self, tmp_path):
         install = _install(tmp_path, [{"name": "agent", "namespaces": ["wip"]}])
         key = install / "secrets" / "agent-api-key"
         key.write_text("old-agent")
@@ -153,11 +171,13 @@ class TestDeclaredKey:
             result = _rotate(install, "agent")
 
         assert result.exit_code == 0, result.output
-        readers_line = next(line for line in result.output.splitlines()
-                            if line.startswith("Restarted by this apply"))
-        # Services validate keys from the mounted api-keys.json.
-        assert "registry" in readers_line
-        assert "automatically" not in result.output
+        # The services that check declared keys re-read api-keys.json while
+        # running (CASE-884): nobody reads this key from the environment, so
+        # nothing restarts, and the output says how the key arrives instead.
+        assert not any(line.startswith("Restarted by this apply")
+                       for line in result.output.splitlines())
+        assert "re-read api-keys.json" in result.output
+        assert "new-agent" not in result.output
 
 
 class TestProbe:

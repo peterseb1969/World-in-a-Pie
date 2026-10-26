@@ -38,7 +38,8 @@ from wip_deploy.config_gen import (
     resolve_all_env,
 )
 from wip_deploy.config_gen.api_keys import (
-    API_KEYS_CONTAINER_PATH,
+    API_KEYS_CONTAINER_DIR,
+    API_KEYS_RENDER_DIR,
     API_KEYS_RENDER_PATH,
     declares_api_keys_file,
     generate_api_keys_json,
@@ -350,7 +351,7 @@ def _service_block(
             f"./secrets/external-ca.crt:{_EXTERNAL_CA_CONTAINER_PATH}:ro"
         )
     if declares_api_keys_file(owner):
-        volumes.append(f"./{API_KEYS_RENDER_PATH}:{API_KEYS_CONTAINER_PATH}:ro")
+        volumes.append(f"./{API_KEYS_RENDER_DIR}:{API_KEYS_CONTAINER_DIR}:ro")
     if volumes:
         block["volumes"] = volumes
 

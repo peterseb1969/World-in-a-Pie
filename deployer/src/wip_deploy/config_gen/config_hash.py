@@ -1,13 +1,16 @@
 """Per-workload hash of the configuration a container only reads at start.
 
-A service receives its secrets as environment values and its key file
-(`api-keys.json`) and, on k8s, the router's Caddyfile through `subPath`
-mounts. All of these are read once, when the process starts, and a
-`subPath` mount is never refreshed in a running pod. Changing only their
-content — a rotated key, a re-rendered key file — leaves the rendered
-workload definition identical, so `kubectl apply` rolls nothing and
-`compose up -d` recreates nothing: the change is silently not applied
-until something restarts the service.
+A service receives its secrets as environment values and, on k8s, the
+router its Caddyfile through a `subPath` mount. Both are read once, when the
+process starts, and a `subPath` mount is never refreshed in a running pod.
+Changing only their content — a rotated master key, a re-rendered route —
+leaves the rendered workload definition identical, so `kubectl apply` rolls
+nothing and `compose up -d` recreates nothing: the change is silently not
+applied until something restarts the service.
+
+The declared-key file (`api-keys.json`) is deliberately NOT an input: it is
+mounted through its directory and wip-auth re-reads it while running, so a
+declared key is added, removed or rotated without restarting anything.
 
 The renderers stamp this hash on each workload (k8s: a pod-template
 annotation, compose: a service label), so a content change becomes a
@@ -25,7 +28,6 @@ from __future__ import annotations
 import hashlib
 import json
 
-from wip_deploy.config_gen.api_keys import declares_api_keys_file, generate_api_keys_json
 from wip_deploy.config_gen.env import ResolvedEnv, SecretRef
 from wip_deploy.secrets_backend import ResolvedSecrets
 from wip_deploy.spec import Deployment
@@ -47,9 +49,8 @@ def config_hash(
 
     None for storage-bearing owners and for owners that consume none of
     these inputs (their definition already captures everything they read).
-    Inputs are rendered deterministically (api-keys.json carries plaintext,
-    hashed by wip-auth on load), so an unchanged install hashes identically
-    and a no-op re-apply restarts nothing.
+    Inputs are rendered deterministically, so an unchanged install hashes
+    identically and a no-op re-apply restarts nothing.
     """
     if owner.spec.storage:
         return None
@@ -58,8 +59,6 @@ def config_hash(
     for value in env.merged().values():
         if isinstance(value, SecretRef):
             inputs[f"secret:{value.name}"] = secrets.values.get(value.name, "")
-    if declares_api_keys_file(owner):
-        inputs["file:api-keys.json"] = generate_api_keys_json(deployment, secrets)
     for name, content in (mounted_files or {}).items():
         inputs[f"file:{name}"] = content
 

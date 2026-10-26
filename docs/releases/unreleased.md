@@ -427,6 +427,38 @@ template the document comes back in place, at the same version. PATCH on a
 deleted document still answers `not_found`: bringing a document back takes
 a full re-post.
 
+### Declared API keys apply without restarting the backend
+
+Adding, removing or rotating a declared key (`auth.api_keys`) used to
+restart every backend service, because each one's config hash covered the
+rendered `api-keys.json`. Now:
+
+- every service that checks keys (registry, def-store, template-store,
+  document-store, reporting-sync, ingest-gateway) re-reads the file while
+  running, every 10 s (`WIP_AUTH_API_KEYS_FILE_RELOAD_SECONDS`, `0` turns it
+  off), and swaps the config keys in one step. A file that does not parse
+  keeps the previous keys and logs CRITICAL;
+- the file is mounted through its directory (`/etc/wip`), not as a single
+  file or k8s `subPath`, so a running container sees it change. On k8s the
+  kubelet refreshes the mount first: about 80 s measured on the platform
+  cluster;
+- `api-keys.json` is no longer part of the config hash, so nothing restarts
+  for a declared key. auth-gateway and mcp-server no longer mount the file;
+  they never read it;
+- `rotate-key` names the secret file instead of printing the new key;
+  `--show-key` prints it. For a declared key it says how the key arrives,
+  and its post-rotation check waits up to 150 s;
+- an MCP server configured with `WIP_API_KEY_FILE` follows a rotated key
+  file: outbound calls use the new key and the network transports accept it,
+  without a reconnect.
+
+**Action required:** the reload is in the service images. An install whose
+images predate this release gets the new mounts and hashes on its next
+re-render, but its services read the key file only at start, so a declared
+key change would reach them only on their next restart. Re-render with the
+image set of this release (`wip-deploy redeploy --tag <this release>`), the
+same rule as every rendering change.
+
 ### Every restore leaves a provenance record; `wip-archive` 0.3.0
 
 Restored data was only partly identifiable: a fresh (remap) restore
