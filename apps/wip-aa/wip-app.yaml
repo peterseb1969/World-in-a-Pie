@@ -38,7 +38,7 @@ spec:
     optional:
       # AskBar NL-query + AI manuscript import use Anthropic. Both
       # degrade gracefully when the key is unset.
-      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key, supplied_by: operator}}
       # CASE-375: the query agent uses the MCP client; without MCP_URL it
       # falls back to spawning `python -m wip_mcp` via stdio, which fails
       # inside a Node.js container (no Python). Same literal shape as

@@ -486,6 +486,29 @@ template the document comes back in place, at the same version. PATCH on a
 deleted document still answers `not_found`: bringing a document back takes
 a full re-post.
 
+### Operator-supplied secrets reach their apps (`ANTHROPIC_API_KEY`)
+
+An optional env var with `from_secret` was filled only when the deployer
+collected that secret, and it collects for required vars only, so
+`ANTHROPIC_API_KEY` never reached react-console, wip-kb, wip-aa, wip-cooking,
+wip-val, dnd, song or dev-kb, even with `secrets/anthropic-api-key` in the
+install's store, and nothing said so. A manifest now marks such a var
+`supplied_by: operator`:
+
+- the deployer never generates the secret; it fills the var whenever the
+  secret is in the store, and every apply and `render` prints a `note:`
+  naming the app, the var and the expected file when it is absent;
+- deployer-generated optional secrets (the Garage keys on document-store)
+  keep the old rule, so a key file left behind by `remove-module garage` is
+  not handed to document-store;
+- operator-supplied secrets are exempt from the secret-store drift check:
+  the operator adds, rotates and removes them on purpose.
+
+**Action:** to give an app its Anthropic key, put it in
+`~/.wip-deploy/<install>/secrets/anthropic-api-key` and re-apply
+(`wip-deploy redeploy`). App manifests outside
+this repo that read an operator-placed secret need `supplied_by: operator`.
+
 ### Group mappings and connectors no longer restart the backend
 
 The federated group policy reached the six token-validating services and

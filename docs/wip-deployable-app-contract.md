@@ -58,7 +58,7 @@ spec:
       - {name: NODE_ENV,       source: {literal: "production"}}
     optional:
       - {name: MCP_URL,            source: {literal: "http://wip-router:8080/mcp"}}  # if app uses MCP
-      - {name: ANTHROPIC_API_KEY,  source: {from_secret: anthropic-api-key}}         # if app uses Claude
+      - {name: ANTHROPIC_API_KEY,  source: {from_secret: anthropic-api-key, supplied_by: operator}}  # if app uses Claude
   routes:
     - {path: /apps/<name>, auth_required: true}
   healthcheck:
@@ -66,6 +66,8 @@ spec:
     # liveness_endpoint: /apps/<name>/api/livez  # optional, k8s only: set it if `endpoint` checks a
     #   dependency, so an outage stops routing (readiness) instead of restarting the pod (liveness)
 ```
+
+A secret the deployer cannot make up, such as an API key for an outside service, is declared `supplied_by: operator` on an **optional** var. The deployer never generates it: it fills the var whenever the operator has put the secret in the install's store (`~/.wip-deploy/<install>/secrets/anthropic-api-key`) and prints a `note:` naming the app, the var and the expected file when it is absent. Without the marker, an optional `from_secret` is filled only when the deployer itself generates that secret for an active component, so an operator-placed key would never reach the app.
 
 Port choice: pick one Express port and one Vite port from the `apps/` directory's existing range. RC = 3001/5173, CT = 3002/5174, KB = 3012/5173 (KB collides with RC on Vite; pick fresh), AA = 3014/5180. Coordinate via case-helper if the range gets crowded.
 

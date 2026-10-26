@@ -37,8 +37,9 @@ spec:
       - {name: ALLOWED_GROUPS, source: {literal: wip-admins}}
     optional:
       # askBar / NL-query feature uses Anthropic. Degrades gracefully
-      # when the key is unset.
-      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+      # when the key is unset. Operator-supplied: put the key in the
+      # install's secrets/anthropic-api-key; the deployer never generates it.
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key, supplied_by: operator}}
       - {name: MONGO_URI, source: {from_component: mongodb}}
 
   # NATS page (stream + consumer listings): the read-only nats-monitor role.

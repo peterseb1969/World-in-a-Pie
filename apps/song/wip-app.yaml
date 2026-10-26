@@ -31,7 +31,7 @@ spec:
       - {name: WIP_NAMESPACE, source: {literal: dev-wip-song}}
     optional:
       # AskBar agent (scaffold feature); app degrades gracefully without it.
-      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key, supplied_by: operator}}
       - {name: MCP_URL, source: {literal: "http://wip-router:8080/mcp"}}
 
   routes:

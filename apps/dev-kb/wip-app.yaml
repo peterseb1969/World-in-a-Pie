@@ -43,7 +43,7 @@ spec:
       - {name: VITE_KB_NAMESPACE, source: {literal: kb-libdev}}
       - {name: VITE_LIBRARY_NAMESPACE, source: {literal: library}}
     optional:
-      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key, supplied_by: operator}}
       - {name: MCP_URL, source: {literal: "http://wip-mcp-server:8007/mcp"}}
 
   routes:

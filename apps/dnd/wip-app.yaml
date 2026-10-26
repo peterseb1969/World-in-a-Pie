@@ -33,7 +33,7 @@ spec:
       # MCP is a soft dep — dnd works without it, just no NL query.
       # Env only set when mcp-server is active in the deployment.
       - {name: MCP_URL, source: {from_component: mcp-server}}
-      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key, supplied_by: operator}}
 
   routes:
     - {path: /apps/dnd, auth_required: true}

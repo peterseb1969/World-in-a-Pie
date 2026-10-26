@@ -50,6 +50,7 @@ from wip_deploy.secrets import (
     bcrypt_secret_name,
     collect_required_secrets,
     ensure_secrets,
+    operator_secret_readers,
     secret_digest,
 )
 from wip_deploy.secrets_backend import FileSecretBackend, ResolvedSecrets
@@ -5806,6 +5807,18 @@ def _ensure_secrets_via_spec(
         raise typer.Exit(2) from e
     if persist and secrets.generated:
         typer.echo("Generated new secrets: " + ", ".join(secrets.generated))
+    # An operator-supplied secret the store lacks leaves its vars unset; say
+    # so, or a misplaced or misnamed file looks like "no key configured".
+    readers = operator_secret_readers(deployment, components, apps_list)
+    for name, owners in sorted(readers.items()):
+        if name in secrets.values:
+            continue
+        for owner, var in owners:
+            typer.echo(
+                f"note: {owner}: {var} not set — no secret {name!r} at "
+                f"{Path(location) / name}",
+                err=True,
+            )
     return secrets
 
 

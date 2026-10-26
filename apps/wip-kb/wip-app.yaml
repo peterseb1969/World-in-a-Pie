@@ -45,8 +45,9 @@ spec:
       - {name: NODE_ENV, source: {literal: production}}
     optional:
       # askBar / NL-query feature uses Anthropic. Degrades gracefully
-      # when the key is unset.
-      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+      # when the key is unset. Operator-supplied: put the key in the
+      # install's secrets/anthropic-api-key; the deployer never generates it.
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key, supplied_by: operator}}
       # CASE-375: WIP-KB's query agent uses the MCP client; without
       # MCP_URL it falls back to spawning `python -m wip_mcp` via
       # stdio, which fails inside a Node.js container (no Python).

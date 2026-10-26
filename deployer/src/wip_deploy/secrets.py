@@ -229,6 +229,32 @@ def collect_required_secrets(
     return names
 
 
+def operator_secret_readers(
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+) -> dict[str, list[tuple[str, str]]]:
+    """Operator-supplied secrets the active owners read, as
+    secret name -> [(owner name, env var)].
+
+    The deployer never generates these (`supplied_by: operator` on an
+    optional `from_secret`): `ensure_secrets` reads each one when the
+    operator has put it in the store and leaves the var unset otherwise.
+    """
+    enabled_apps = {a.name for a in deployment.spec.apps if a.enabled}
+    owners: list[Component | App] = [
+        c for c in components if is_component_active(c, deployment)
+    ] + [a for a in apps if a.metadata.name in enabled_apps]
+    readers: dict[str, list[tuple[str, str]]] = {}
+    for owner in owners:
+        for ev in owner.spec.env.optional:
+            if ev.source.from_secret is not None and ev.source.supplied_by == "operator":
+                readers.setdefault(ev.source.from_secret, []).append(
+                    (owner.metadata.name, ev.name)
+                )
+    return readers
+
+
 def _collect_from_env(owner: Component | App, names: set[str]) -> None:
     for ev in owner.spec.env.required:
         if ev.source.from_secret is not None:
@@ -331,7 +357,11 @@ def ensure_secrets(
     """
     names = collect_required_secrets(deployment, components, apps)
     operator_supplied = operator_supplied_secrets(deployment)
+    operator_optional = set(operator_secret_readers(deployment, components, apps)) - names
     if known:
+        # Operator-supplied secrets change and disappear on purpose (the
+        # operator adds, rotates or removes them); only the deployer's own
+        # secrets are held to the record.
         check_secret_drift(
             names, backend, known, exempt=set(operator_supplied) | set(regenerate),
         )
@@ -358,6 +388,10 @@ def ensure_secrets(
         else:
             generator = _format_generator(name)
         resolved[name] = backend.get_or_generate(name, generator)
+
+    # Read if present, never generate: absent leaves the var unset.
+    for name in sorted(operator_optional & present):
+        resolved[name] = backend.get_or_generate(name, _never_generate)
 
     if persist:
         backend.persist()

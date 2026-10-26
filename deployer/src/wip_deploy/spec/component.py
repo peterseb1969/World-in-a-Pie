@@ -40,6 +40,13 @@ class EnvSource(WIPModel):
       - `from_component_host`:  DNS name of another component only
                                 (e.g., `wip-mongodb`)
       - `from_component_port`:  port number of another component as string
+
+    `supplied_by` says who provides a `from_secret` value. "deployer" (the
+    default): the deployer generates it when the var is collected. "operator":
+    the operator puts the secret in the install's store (an API key for an
+    outside service, say); the deployer never generates it, fills the var
+    whenever the secret is present, and reports when it is absent. Only an
+    optional var can be operator-supplied.
     """
 
     literal: str | None = None
@@ -48,6 +55,13 @@ class EnvSource(WIPModel):
     from_component: str | None = None
     from_component_host: str | None = None
     from_component_port: str | None = None
+    supplied_by: Literal["deployer", "operator"] = "deployer"
+
+    @model_validator(mode="after")
+    def operator_supplies_secrets_only(self) -> EnvSource:
+        if self.supplied_by == "operator" and self.from_secret is None:
+            raise ValueError("supplied_by: operator applies to from_secret only")
+        return self
 
     @model_validator(mode="after")
     def exactly_one_source(self) -> EnvSource:
@@ -76,6 +90,18 @@ class EnvVar(WIPModel):
 class EnvSpec(WIPModel):
     required: list[EnvVar] = Field(default_factory=list)
     optional: list[EnvVar] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def operator_secrets_are_optional(self) -> EnvSpec:
+        # A required var must always be filled, and only the deployer can
+        # guarantee that by generating the secret.
+        bad = [v.name for v in self.required if v.source.supplied_by == "operator"]
+        if bad:
+            raise ValueError(
+                f"{', '.join(bad)}: an operator-supplied secret can only feed an "
+                "optional env var"
+            )
+        return self
 
 
 # ────────────────────────────────────────────────────────────────────
