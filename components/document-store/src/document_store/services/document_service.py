@@ -1746,10 +1746,26 @@ class DocumentService:
             query["template_id"] = template_id
         if template_value:
             query["template_value"] = template_value
+        # With latest_only, a status filter describes each document's LATEST
+        # version. Applied before the group it would pick each document's
+        # highest version that has the status, so status=inactive returned
+        # the superseded versions of live documents next to the deleted ones.
+        # Active is the exception: a document has at most one active version,
+        # so filtering before the group gives the same result and keeps the
+        # common call cheap.
+        status_after_group: dict | None = None
         if status:
-            query["status"] = status.value
+            if latest_only and status != DocumentStatus.ACTIVE:
+                status_after_group = {"status": status.value}
+            else:
+                query["status"] = status.value
 
         if latest_only:
+            if cursor:
+                raise ValueError(
+                    "cursor is incompatible with latest_only (latest_only pages by "
+                    "page/page_size over the grouped result)."
+                )
             sort_clauses = build_sort_clauses(sort_by, sort_order)
             # Aggregation: group by document_id, keep highest version
             pipeline: list[dict] = [
@@ -1760,6 +1776,7 @@ class DocumentService:
                     "doc": {"$first": "$$ROOT"},
                 }},
                 {"$replaceRoot": {"newRoot": "$doc"}},
+                *([{"$match": status_after_group}] if status_after_group else []),
                 {"$sort": dict(sort_clauses)},
             ]
 

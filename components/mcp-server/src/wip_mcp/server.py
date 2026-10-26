@@ -3016,7 +3016,9 @@ async def list_documents(
         template_value: Filter by template value code (e.g., 'PATIENT'). Most convenient filter.
         template_id: Filter by template ID, value code (e.g., 'PERSON'), or synonym.
         namespace: Filter by namespace.
-        status: Filter by status.
+        status: Filter by status ('active' or 'inactive'). With latest_only it
+            applies to each document's latest version: 'inactive' lists
+            soft-deleted documents, not superseded versions.
         latest_only: Only return the latest version of each document.
     """
     try:
@@ -5088,6 +5090,9 @@ def build_network_app(transport: str):
         from starlette.middleware.base import BaseHTTPMiddleware
 
         _UNAUTH_PATHS = {"/health"}
+        # Bound here: mypy does not carry the `if api_key` narrowing into the
+        # nested method below.
+        fallback_key: str = api_key
 
         class ApiKeyMiddleware(BaseHTTPMiddleware):
             # Header only: a key in the query string ends up in access and
@@ -5098,7 +5103,7 @@ def build_network_app(transport: str):
                 key = request.headers.get("x-api-key") or ""
                 # Resolved per request: the key this server accepts must move
                 # with the key it acts with, which follows a rotated key file.
-                expected = (configured_api_key() or api_key).encode()
+                expected = (configured_api_key() or fallback_key).encode()
                 if not hmac.compare_digest(key.encode(), expected):
                     return JSONResponse(
                         {"error": "Missing or invalid API key. Pass X-API-Key header."},

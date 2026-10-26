@@ -406,6 +406,21 @@ parameter. Until now there was NO way to remove a term's description;
 consumers treating `""` as absent can drop that shim once their data is
 normalized.
 
+### `latest_only` + `status` filters on each document's latest version
+
+With `GET /api/document-store/documents?latest_only=true`, a `status` filter
+ran before the latest version of each document was picked. So
+`status=inactive` returned each document's highest *inactive* version: the
+superseded versions of live documents came back next to the soft-deleted
+ones, and `total` and `pages` counted them. The status filter now applies to
+each document's latest version, so `latest_only=true&status=inactive` lists
+exactly the soft-deleted documents. `status=active` and calls without
+`latest_only` are unchanged. This also affects the MCP `list_documents`
+tool, which defaults to `latest_only=true`.
+
+`latest_only=true` with a `cursor` used to ignore the cursor silently and
+page by `page`. It is now refused with 422.
+
 ### Document archive is removed; `@wip/client` 0.63.0, `@wip/react` 0.23.0
 
 Document "archive" is gone. It was designed as policy-driven tiering of

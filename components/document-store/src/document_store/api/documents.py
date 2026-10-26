@@ -362,7 +362,7 @@ async def list_documents(
     namespace: str | None = Query(default=None, description="Namespace to query (omit for all)"),
     template_id: str | None = Query(None, description="Filter by template ID"),
     template_value: str | None = Query(None, description="Filter by template value (e.g., PLANNED_VISIT)"),
-    status: DocumentStatus | None = Query(None, description="Filter by status"),
+    status: DocumentStatus | None = Query(None, description="Filter by status. With latest_only=true it filters on each document's latest version, so status=inactive lists soft-deleted documents."),
     latest_only: bool = Query(False, description="Only return the latest version of each document"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
@@ -373,7 +373,9 @@ async def list_documents(
 ):
     """List documents with pagination.
 
-    Use latest_only=true to return only the highest version of each document_id.
+    Use latest_only=true to return only the highest version of each document_id;
+    a status filter then applies to that latest version. latest_only pages by
+    page/page_size and cannot be combined with cursor (422).
     Use cursor for efficient deep pagination (avoids skip/limit degradation).
     When cursor is provided, page parameter is ignored and total is -1, and
     sort_by/sort_order must be omitted (cursor mode is _id-ordered).
