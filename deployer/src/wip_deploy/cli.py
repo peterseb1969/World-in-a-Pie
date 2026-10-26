@@ -5015,7 +5015,8 @@ DURABLE API KEYS — survive MongoDB wipe-restore (console-minted keys do not)
   Same, from a reviewable YAML/JSON file (merges with --api-key):
     wip-deploy install --api-keys-file keys.yaml
 
-  Rotate a declared key (prints the fresh plaintext once, no grace window):
+  Rotate a declared key (names the secret file holding the new value;
+  --show-key also prints it; no grace window):
     wip-deploy rotate-key web-yac --name wip-prod
 
 APPS ON A RUNNING INSTALL
@@ -5023,7 +5024,7 @@ APPS ON A RUNNING INSTALL
     wip-deploy add-app clintrial
 
   Enable with hot-reload from a local checkout (dev target):
-    wip-deploy add-app react-console --source $HOME/Dev/WIP-ReactConsole
+    wip-deploy add-app react-console --app-source $HOME/Dev/WIP-ReactConsole
 
   Remove it again:
     wip-deploy remove-app clintrial
