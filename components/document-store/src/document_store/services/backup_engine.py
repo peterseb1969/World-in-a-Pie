@@ -2283,17 +2283,22 @@ class DirectRestoreEngine:
         remapper: IDRemapper,
         batch_size: int,
     ) -> None:
-        """Insert the definitions the opt-in strategies allowed.
+        """Insert the definitions the opt-in strategies allowed, then carry
+        the archive's term retirements and recount the affected terminologies.
 
         Dependency order again: a term added to the target must point at the
         terminology that survived, not at the archive's copy of it.
         """
+        recount: set[str] = set()
         for entity_type in DEFINITION_TYPES:
             rows = definitions.to_add[entity_type]
             if not rows:
                 continue
             if entity_type == "terms":
                 rows = [remapper.remap_term(row) for row in rows]
+                recount.update(
+                    str(r["terminology_id"]) for r in rows if r.get("terminology_id")
+                )
             elif entity_type == "templates":
                 rows = [remapper.remap_template(row) for row in rows]
 
@@ -2307,6 +2312,67 @@ class DirectRestoreEngine:
                 "phase_definitions",
                 f"[{namespace}] added {len(rows)} {entity_type} the target "
                 "did not have",
+            )
+
+        recount.update(await self._retire_terms(namespace, definitions, remapper))
+        await self._recount_terms(recount)
+
+    async def _retire_terms(
+        self,
+        namespace: str,
+        definitions: DefinitionsPlan,
+        remapper: IDRemapper,
+    ) -> set[str]:
+        """Retire on the target the terms the archive retired. Returns the
+        terminologies whose active count changed.
+
+        The replacement term is named by its archive id; it is mapped to the
+        target's, which also covers a replacement this merge has just added.
+        """
+        db_name, coll_name = COLLECTION_MAP["terms"]
+        collection = self._mongo[db_name][coll_name]
+        now = datetime.now(UTC)
+        touched: set[str] = set()
+        for retirement in definitions.retire_terms:
+            replaced_by = retirement.get("replaced_by_term_id")
+            if replaced_by:
+                replaced_by = remapper.term_map.get(replaced_by, replaced_by)
+            await collection.update_one(
+                {"term_id": retirement["term_id"]},
+                {"$set": {
+                    "status": retirement["status"],
+                    "deprecated_reason": retirement.get("deprecated_reason"),
+                    "replaced_by_term_id": replaced_by,
+                    "updated_at": now,
+                    "updated_by": "restore-merge",
+                }},
+            )
+            if retirement.get("terminology_id"):
+                touched.add(str(retirement["terminology_id"]))
+        if definitions.retire_terms:
+            self._emit(
+                "phase_definitions",
+                f"[{namespace}] retired {len(definitions.retire_terms)} term(s) "
+                "the archive had retired",
+            )
+        return touched
+
+    async def _recount_terms(self, terminology_ids: set[str]) -> None:
+        """Recompute term_count with def-store's rule: active terms only.
+
+        The merge writes terms directly, so def-store never sees the change;
+        without this the terminology keeps the count it had before the merge.
+        """
+        if not terminology_ids:
+            return
+        terms_db, terms_coll = COLLECTION_MAP["terms"]
+        tl_db, tl_coll = COLLECTION_MAP["terminologies"]
+        for terminology_id in terminology_ids:
+            count = await self._mongo[terms_db][terms_coll].count_documents(
+                {"terminology_id": terminology_id, "status": "active"}
+            )
+            await self._mongo[tl_db][tl_coll].update_one(
+                {"terminology_id": terminology_id}, {"$set": {"term_count": count}}
             )
 
     def _merge_policy_for(self, entity_type: str, *, on_clash: str) -> str:

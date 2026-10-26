@@ -64,6 +64,24 @@ _ID_FIELDS = frozenset({
     "terminology_id", "term_id", "template_id", "entry_id",
 })
 
+# Computed from other entities, not content of the definition: a
+# terminology's term_count is def-store's count of its active terms, and the
+# terms are compared one by one. Two copies that differ only here hold
+# different terms, which the term comparison already decides; the merge
+# recounts after it adds or retires terms.
+_DERIVED_FIELDS = frozenset({
+    "term_count",
+})
+
+# A term's lifecycle. A difference is not a disagreement about what the term
+# means, so it never refuses the merge. Retirement travels one way: a term
+# the archive retired (deprecated or inactive) while the target still has it
+# active is retired on the target too, with the archive's reason and
+# replacement; a term the target already retired stays retired.
+_TERM_LIFECYCLE_FIELDS = frozenset({
+    "status", "deprecated_reason", "replaced_by_term_id",
+})
+
 # Vocabulary metadata. A difference here does not make two definitions
 # incompatible — it is cosmetic, the target's wins, and it gets reported so an
 # operator can see what their side kept.
@@ -112,6 +130,10 @@ class DefinitionsPlan:
     )
     incompatibilities: list[Incompatibility] = field(default_factory=list)
     target_wins: list[TargetWins] = field(default_factory=list)
+    # Terms the archive retired that the target still has active: the
+    # target's term_id plus the archive's lifecycle values. replaced_by_term_id
+    # is still the archive's id here; pass 2 maps it to the target's.
+    retire_terms: list[dict[str, Any]] = field(default_factory=list)
     # Definitions present and identical on both sides — nothing to do.
     unchanged: dict[str, int] = field(
         default_factory=lambda: {t: 0 for t in DEFINITION_TYPES}
@@ -127,25 +149,30 @@ class DefinitionsPlan:
                 "unchanged": self.unchanged[entity_type],
                 "add": len(self.to_add[entity_type]),
                 "mapped": len(self.mapping[entity_type]),
+                **({"retire": len(self.retire_terms)} if entity_type == "terms" else {}),
             }
             for entity_type in DEFINITION_TYPES
         }
 
 
 def compare_definitions(
-    archive: dict[str, Any], target: dict[str, Any]
+    archive: dict[str, Any],
+    target: dict[str, Any],
+    *,
+    skip: frozenset[str] = frozenset(),
 ) -> tuple[list[str], list[str]]:
     """Split a definition's differences into cosmetic and substantive.
 
-    Returns ``(cosmetic, substantive)`` field-name lists. Audit fields and
-    canonical IDs are excluded from both: two honest copies of one definition
-    differ in ``updated_at`` and (across installs) in their UUIDs, and neither
-    is a finding.
+    Returns ``(cosmetic, substantive)`` field-name lists. Audit fields,
+    canonical IDs and derived fields are excluded from both: two honest copies
+    of one definition differ in ``updated_at``, (across installs) in their
+    UUIDs, and in counts computed from other entities, and none is a finding.
+    ``skip`` excludes further fields the caller compares on its own.
     """
     cosmetic: list[str] = []
     substantive: list[str] = []
     for key in sorted(set(archive) | set(target)):
-        if key in _AUDIT_FIELDS or key in _ID_FIELDS:
+        if key in _AUDIT_FIELDS or key in _ID_FIELDS or key in _DERIVED_FIELDS or key in skip:
             continue
         if archive.get(key) == target.get(key):
             continue
@@ -208,7 +235,8 @@ class DefinitionsPlanner:
         if old_id and new_id and old_id != new_id:
             plan.mapping[entity_type][str(old_id)] = str(new_id)
 
-        cosmetic, substantive = compare_definitions(entity, target)
+        lifecycle = _TERM_LIFECYCLE_FIELDS if entity_type == "terms" else frozenset()
+        cosmetic, substantive = compare_definitions(entity, target, skip=lifecycle)
         if substantive:
             plan.incompatibilities.append(
                 Incompatibility(
@@ -229,6 +257,12 @@ class DefinitionsPlanner:
             )
             return
 
+        retired_here = False
+        if lifecycle:
+            kept = self._classify_term_lifecycle(entity, target, name, plan)
+            cosmetic = cosmetic + kept
+            retired_here = not kept and self._lifecycle_differs(entity, target)
+
         if cosmetic:
             plan.target_wins.append(
                 TargetWins(
@@ -244,7 +278,46 @@ class DefinitionsPlanner:
                     },
                 )
             )
+        if retired_here:
+            return  # retired on the target in pass 2, so not unchanged
         plan.unchanged[entity_type] += 1
+
+    @staticmethod
+    def _lifecycle_differs(archive: dict[str, Any], target: dict[str, Any]) -> bool:
+        return any(archive.get(f) != target.get(f) for f in _TERM_LIFECYCLE_FIELDS)
+
+    def _classify_term_lifecycle(
+        self,
+        archive: dict[str, Any],
+        target: dict[str, Any],
+        name: str,
+        plan: DefinitionsPlan,
+    ) -> list[str]:
+        """Carry the archive's retirement of a term, or keep the target's.
+
+        Returns the lifecycle fields in which the target's value was kept, for
+        the target-wins report (empty when nothing differs or the archive's
+        retirement is carried over).
+        """
+        if not self._lifecycle_differs(archive, target):
+            return []
+        archive_status = archive.get("status") or "active"
+        target_status = target.get("status") or "active"
+        if archive_status != "active" and target_status == "active":
+            plan.retire_terms.append({
+                "term_id": target.get(ID_KEYS["terms"]),
+                "terminology_id": target.get("terminology_id"),
+                "status": archive_status,
+                "deprecated_reason": archive.get("deprecated_reason"),
+                "replaced_by_term_id": archive.get("replaced_by_term_id"),
+                "name": name,
+            })
+            return []
+        # The target retired it, or both retired it differently: a merge never
+        # brings a retired term back, and the target's retirement stands.
+        return sorted(
+            f for f in _TERM_LIFECYCLE_FIELDS if archive.get(f) != target.get(f)
+        )
 
     def _classify_missing(
         self,

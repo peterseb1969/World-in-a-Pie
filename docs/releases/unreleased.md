@@ -406,6 +406,28 @@ parameter. Until now there was NO way to remove a term's description;
 consumers treating `""` as absent can drop that shim once their data is
 normalized.
 
+### Merging a newer backup into an older namespace works; merges carry term deprecations
+
+A merge (`mode: merge`) of a newer backup of a namespace into an older state
+of it was refused whenever a term had been added since. The terminology's
+`term_count`, a count def-store derives from its active terms, was compared
+as content. `extend_terminologies`, the flag the refusal suggested, could
+not get past that comparison. A term deprecated in the newer backup was
+refused too, because its lifecycle fields differed.
+
+Now:
+- `term_count` is not compared, and the merge recounts it with def-store's
+  rule (active terms) after it adds or retires terms. A merged terminology
+  ends with the right count.
+- **A term the archive retired** (deprecated or inactive) that the target
+  still has active is retired on the target, with the archive's reason and
+  replacement (mapped to the target's term ids).
+- **Retirement travels one way:** a term the target retired stays retired,
+  and the difference is reported like other target-wins fields.
+
+A new template version in the newer backup was not affected; it merges with
+`add_missing`.
+
 ### `latest_only` + `status` filters on each document's latest version
 
 With `GET /api/document-store/documents?latest_only=true`, a `status` filter
