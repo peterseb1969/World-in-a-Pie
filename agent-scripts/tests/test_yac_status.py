@@ -184,3 +184,113 @@ def test_context_turns_red_from_80_percent(tmp_path):
     )
     # Shown as 80%, so colored as 80%.
     assert line(root, {"context_window": {**window, "used_percentage": 79.6}}).startswith("\033[31m")
+
+
+def context_file(root: Path) -> Path:
+    return root / ".claude-context-pct"
+
+
+def test_line_writes_the_context_file(tmp_path):
+    """The file CLAUDE.md's stop rule reads; the status line is its only writer."""
+    root = make_project(tmp_path)
+    line(root)
+    assert context_file(root).read_text() == "42% (84k/200k tokens)\n"
+
+
+def test_context_file_follows_the_latest_refresh(tmp_path):
+    root = make_project(tmp_path)
+    line(root)
+    line(root, {"context_window": {"used_percentage": 61.0, "total_input_tokens": 122000,
+                                   "context_window_size": 200000}})
+    assert context_file(root).read_text() == "61% (122k/200k tokens)\n"
+
+
+def test_no_context_data_removes_a_stale_file(tmp_path):
+    root = make_project(tmp_path)
+    line(root)
+    assert run(root, "line", {}).returncode == 0
+    assert not context_file(root).exists()
+
+
+def test_percent_only_payload_still_writes_the_percent(tmp_path):
+    root = make_project(tmp_path)
+    line(root, {"context_window": {"used_percentage": 37.0}})
+    assert context_file(root).read_text() == "37%\n"
+
+
+def slim(root: Path) -> None:
+    (root / ".claude" / ".app-meta").write_text(
+        '# app metadata\nAPP_NAME="Cooking"\nPRESET="standard"\nPROFILE="slim"\n'
+    )
+
+
+def test_slim_profile_warns_at_300k_tokens_whatever_the_percent(tmp_path):
+    root = make_project(tmp_path)
+    slim(root)
+    size = 524288
+    assert line(root, {"context_window": {"used_percentage": 57.2, "total_input_tokens": 300000,
+                                          "context_window_size": size}}).startswith("\033[31m")
+    assert line(root, {"context_window": {"used_percentage": 57.0, "total_input_tokens": 299000,
+                                          "context_window_size": size}}) == "ctx 57% (299k/524k)"
+
+
+def test_slim_profile_does_not_warn_at_80_percent_of_a_small_window(tmp_path):
+    root = make_project(tmp_path)
+    slim(root)
+    assert line(root, {"context_window": {"used_percentage": 90.0, "total_input_tokens": 180000,
+                                          "context_window_size": 200000}}) == "ctx 90% (180k/200k)"
+
+
+def test_slim_profile_derives_tokens_from_percent_and_size(tmp_path):
+    root = make_project(tmp_path)
+    slim(root)
+    out = line(root, {"context_window": {"used_percentage": 60.0, "context_window_size": 524288}})
+    assert out.startswith("\033[31m")  # 60% of 524k is ~314k tokens
+    assert context_file(root).read_text() == "60% (314k/524k tokens)\n"
+
+
+def test_other_profiles_keep_the_percent_rule(tmp_path):
+    root = make_project(tmp_path)
+    (root / ".claude" / ".app-meta").write_text('APP_NAME="X"\nPROFILE="full"\n')
+    window = {"total_input_tokens": 160000, "context_window_size": 200000}
+    assert line(root, {"context_window": {**window, "used_percentage": 80.0}}).startswith("\033[31m")
+
+
+def git_project(tmp_path: Path) -> Path:
+    root = make_project(tmp_path)
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    return root
+
+
+def untracked(root: Path) -> list[str]:
+    out = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "-uall"],
+                         capture_output=True, text=True, check=True).stdout
+    return [line[3:] for line in out.splitlines() if line.startswith("??")]
+
+
+def test_written_files_never_show_as_untracked(tmp_path):
+    """An app scaffolded without .gitignore entries must not see the status
+    files as untracked: the script excludes them in .git/info/exclude."""
+    root = git_project(tmp_path)
+    prompt(root, "/wip-case read 12")
+    line(root)
+    assert (root / ".claude-context-pct").exists()
+    assert (root / ".claude" / ".yac-activity").exists()
+    assert not any(p.endswith((".claude-context-pct", ".yac-activity")) for p in untracked(root))
+
+
+def test_exclude_entries_are_added_once(tmp_path):
+    root = git_project(tmp_path)
+    for _ in range(3):
+        prompt(root, "/wip-wake")
+        line(root)
+    lines = (root / ".git" / "info" / "exclude").read_text().splitlines()
+    assert lines.count("/.claude-context-pct") == 1
+    assert lines.count("/.claude/.yac-activity") == 1
+
+
+def test_no_git_dir_is_fine(tmp_path):
+    root = make_project(tmp_path)
+    line(root)
+    assert (root / ".claude-context-pct").exists()
+    assert not (root / ".git").exists()
