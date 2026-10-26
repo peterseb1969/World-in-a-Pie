@@ -3674,10 +3674,12 @@ def user_list(
 #
 # External identity providers (auth.connectors) and the WIP groups their
 # users get (auth.group_mappings) are spec-declared like users, so they
-# survive every re-render. Both reach more than Dex: the group policy is
-# rendered into every token-validating service and the gateway
-# (WIP_AUTH_FEDERATED_GROUPS), so these verbs apply the whole install;
-# compose recreates only the containers whose rendered config changed.
+# survive every re-render. The group policy reaches every token-validating
+# service and the gateway as a file (federated-groups.json, next to the API
+# keys) that they re-read while running, so a mapping change restarts
+# nothing and a connector change restarts only Dex, which reads its
+# config.yaml only at start. Anything else the render changes is added to
+# the scope by `_apply_and_persist_mutation`.
 # ─────────────────────────────────────────────────────────────────────
 
 connector_app = typer.Typer(no_args_is_help=True)
@@ -3871,6 +3873,7 @@ def connector_add(
         target_dir,
         f"Added Dex connector {connector_id!r} to {resolved_name}",
         repo_root=repo_root,
+        services_scope=_user_verb_scope(deployment, components),
     )
     issuer = make_spec_context(deployment, components, apps_list).auth.issuer_url_public
     typer.echo(f"Register this redirect URI with the provider: {issuer}/callback")
@@ -3942,6 +3945,7 @@ def connector_remove(
         target_dir,
         f"Removed Dex connector {connector_id!r} from {resolved_name}",
         repo_root=repo_root,
+        services_scope=_user_verb_scope(deployment, components),
     )
     secrets_spec = deployment.spec.secrets
     if match.secret_key and secrets_spec.backend == "file" and secrets_spec.location:
@@ -4006,6 +4010,8 @@ def group_map_add(
         target_dir,
         f"Mapped {email or '*@' + str(email_domain)} to {group!r} on {resolved_name}",
         repo_root=repo_root,
+        # Config only: the services re-read the policy file.
+        services_scope=[],
     )
 
 
@@ -4038,6 +4044,8 @@ def group_map_remove(
         target_dir,
         f"Removed a group mapping for {group!r} from {resolved_name}",
         repo_root=repo_root,
+        # Config only: the services re-read the policy file.
+        services_scope=[],
     )
 
 

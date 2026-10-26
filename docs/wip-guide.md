@@ -383,6 +383,13 @@ A mapping trusts the email the provider asserts, so declare connectors only
 for providers you trust to verify it. A token that marks the email unverified
 gets no mapped groups.
 
+A mapping change restarts nothing. The policy is a file next to the API keys
+(`/etc/wip/federated-groups.json`) that the services and the gateway re-read
+while running: it applies to the next login within about 10 s on compose and
+dev, and within about two minutes on k8s, where the kubelet first refreshes
+the mounted file. Tokens already issued keep the groups they were issued
+with. `connector add` and `connector remove` restart only Dex.
+
 ### 4.7 Local users (Dex static users)
 
 The local-account logins on the Dex screen are **spec configuration**: the

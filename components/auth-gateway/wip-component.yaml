@@ -52,9 +52,9 @@ spec:
       - {name: WIP_VARIANT, source: {from_spec: security.variant}}
       # Groups of logins federated through a Dex connector: reserved groups
       # stripped, auth.group_mappings applied before the session is stored,
-      # so route gates and X-WIP-Groups see the policy. Empty without
-      # connectors.
-      - {name: WIP_AUTH_FEDERATED_GROUPS, source: {from_spec: auth.federated_groups}}
+      # so route gates and X-WIP-Groups see the policy. A file, re-read on
+      # change, so a mapping change needs no restart; empty without connectors.
+      - {name: WIP_AUTH_FEDERATED_GROUPS_FILE, source: {from_spec: security.federated_groups_file}}
 
   depends_on: [dex]
 

@@ -51,11 +51,11 @@ class SpecContextAuth:
     #   "oidc"         → "jwt_only"
     #   "hybrid"       → "dual"
     wip_auth_mode: str
-    # The group policy for logins federated through a Dex connector
-    # (WIP_AUTH_FEDERATED_GROUPS, read by wip-auth and the auth-gateway):
+    # The group policy for logins federated through a Dex connector:
     # reserved groups are stripped and auth.group_mappings applied. JSON;
     # empty when no connector is declared, which leaves every token's groups
-    # exactly as issued.
+    # exactly as issued. Rendered as a file (security.federated_groups_file)
+    # that wip-auth and the auth-gateway re-read while running.
     federated_groups: str
 
 
@@ -81,6 +81,10 @@ class SpecContextSecurity:
     # WIP_AUTH_API_KEYS_FILE. Every install has the file: the canary key
     # is always in it.
     api_keys_file: str
+    # Container path of the rendered federated group policy, injected as
+    # WIP_AUTH_FEDERATED_GROUPS_FILE. Every install has the file (empty
+    # without connectors), so a mapping change never alters a definition.
+    federated_groups_file: str
 
 
 @dataclass(frozen=True)
@@ -111,11 +115,15 @@ def make_spec_context(
     net = _compute_network(deployment)
     auth = _compute_auth(deployment, components, apps or [])
     features = _compute_features(deployment, components)
-    from wip_deploy.config_gen.api_keys import API_KEYS_CONTAINER_PATH
+    from wip_deploy.config_gen.api_keys import (
+        API_KEYS_CONTAINER_PATH,
+        FEDERATED_GROUPS_CONTAINER_PATH,
+    )
 
     security = SpecContextSecurity(
         variant=deployment.spec.variant,
         api_keys_file=API_KEYS_CONTAINER_PATH,
+        federated_groups_file=FEDERATED_GROUPS_CONTAINER_PATH,
     )
     return SpecContext(network=net, auth=auth, features=features, security=security)
 
@@ -231,11 +239,11 @@ def _compute_auth(
         jwt_audience=",".join(client_ids) or "wip",
         callback_url=f"{public_base}/auth/callback",
         wip_auth_mode=_AUTH_MODE_TO_WIP_AUTH_MODE[auth_mode],
-        federated_groups=_federated_groups_policy(deployment),
+        federated_groups=federated_groups_policy(deployment),
     )
 
 
-def _federated_groups_policy(deployment: Deployment) -> str:
+def federated_groups_policy(deployment: Deployment) -> str:
     import json
 
     from wip_deploy.spec.deployment import LOCAL_CONNECTOR_ID, RESERVED_GROUPS

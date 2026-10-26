@@ -38,6 +38,15 @@ API_KEYS_CONTAINER_DIR = "/etc/wip"
 API_KEYS_RENDER_PATH = "config/auth/api-keys.json"
 API_KEYS_RENDER_DIR = "config/auth"
 
+# The federated group policy (CASE-947) lives in the same directory, so the
+# one directory mount carries both and both are re-read while running.
+# Rendered on every install — empty when no connector is declared — so the
+# mount exists from the first render and a policy change alters only the
+# file's content, never a container definition.
+FEDERATED_GROUPS_FILENAME = "federated-groups.json"
+FEDERATED_GROUPS_CONTAINER_PATH = f"/etc/wip/{FEDERATED_GROUPS_FILENAME}"
+FEDERATED_GROUPS_RENDER_PATH = f"config/auth/{FEDERATED_GROUPS_FILENAME}"
+
 # The namespace the canary is scoped to. Nothing creates it, so the
 # canary can read nothing; `verify --live` checks that it still sees no
 # namespace at all.
@@ -73,6 +82,14 @@ def declares_api_keys_file(owner: Component | App) -> bool:
     return any(
         ev.name == "WIP_AUTH_API_KEYS_FILE" for ev in owner.spec.env.required
     )
+
+
+def mounts_auth_config_dir(owner: Component | App) -> bool:
+    """Does this manifest read a file from the auth config directory
+    (the declared API keys or the federated group policy)? The env
+    declarations are the opt-in, as for `declares_api_keys_file`."""
+    names = {ev.name for ev in (*owner.spec.env.required, *owner.spec.env.optional)}
+    return bool(names & {"WIP_AUTH_API_KEYS_FILE", "WIP_AUTH_FEDERATED_GROUPS_FILE"})
 
 
 def generate_api_keys_json(

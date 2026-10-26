@@ -61,8 +61,9 @@ spec:
       - {name: WIP_AUTH_JWT_JWKS_URI, source: {from_spec: auth.jwks_url_internal}}
       - {name: WIP_AUTH_JWT_AUDIENCE, source: {from_spec: auth.jwt_audience}}
       # Groups of logins federated through a Dex connector: reserved groups
-      # stripped, auth.group_mappings applied. Empty without connectors.
-      - {name: WIP_AUTH_FEDERATED_GROUPS, source: {from_spec: auth.federated_groups}}
+      # stripped, auth.group_mappings applied. A file, re-read while running,
+      # so a mapping change needs no restart; empty without connectors.
+      - {name: WIP_AUTH_FEDERATED_GROUPS_FILE, source: {from_spec: security.federated_groups_file}}
       # Cascade target for namespace-delete (CASE-34/CASE-59). When
       # reporting-sync is active, Registry's namespace-delete flow
       # calls DELETE /api/reporting-sync/namespace/{prefix} to cascade

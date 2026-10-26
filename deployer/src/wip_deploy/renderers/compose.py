@@ -41,8 +41,9 @@ from wip_deploy.config_gen.api_keys import (
     API_KEYS_CONTAINER_DIR,
     API_KEYS_RENDER_DIR,
     API_KEYS_RENDER_PATH,
-    declares_api_keys_file,
+    FEDERATED_GROUPS_RENDER_PATH,
     generate_api_keys_json,
+    mounts_auth_config_dir,
 )
 from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY, config_hash
 from wip_deploy.config_gen.env import (
@@ -69,6 +70,7 @@ from wip_deploy.config_gen.nats import (
     render_nats_conf,
 )
 from wip_deploy.config_gen.router import generate_router_config
+from wip_deploy.config_gen.spec_context import federated_groups_policy
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose_caddy import render_caddyfile
 from wip_deploy.renderers.compose_dex import (
@@ -166,6 +168,7 @@ def render_compose(
     # registry and mcp-server read it as a non-root user, so it is 0644
     # inside the 0700 install directory (see FileEntry).
     tree.add(API_KEYS_RENDER_PATH, generate_api_keys_json(deployment, secrets))
+    tree.add(FEDERATED_GROUPS_RENDER_PATH, federated_groups_policy(deployment))
 
     # wip-router Caddyfile — emitted whenever the router component is
     # active (it's infrastructure, so effectively always).
@@ -350,7 +353,7 @@ def _service_block(
         volumes.append(
             f"./secrets/external-ca.crt:{_EXTERNAL_CA_CONTAINER_PATH}:ro"
         )
-    if declares_api_keys_file(owner):
+    if mounts_auth_config_dir(owner):
         volumes.append(f"./{API_KEYS_RENDER_DIR}:{API_KEYS_CONTAINER_DIR}:ro")
     if volumes:
         block["volumes"] = volumes

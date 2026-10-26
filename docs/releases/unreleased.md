@@ -486,6 +486,27 @@ template the document comes back in place, at the same version. PATCH on a
 deleted document still answers `not_found`: bringing a document back takes
 a full re-post.
 
+### Group mappings and connectors no longer restart the backend
+
+The federated group policy reached the six token-validating services and
+the auth-gateway as `WIP_AUTH_FEDERATED_GROUPS`, read at start, so every
+`wip-deploy group-map` and `connector` change applied the whole install.
+Now:
+
+- the policy is a file, `federated-groups.json`, next to `api-keys.json` in
+  the mounted `/etc/wip` directory, rendered on every install (empty
+  without connectors). The services take it from
+  `WIP_AUTH_FEDERATED_GROUPS_FILE` and re-read it every 10 s
+  (`WIP_AUTH_FEDERATED_GROUPS_FILE_RELOAD_SECONDS`); the gateway re-reads
+  it when it changes. A file that does not parse keeps the previous policy;
+- `group-map add|remove` restarts nothing; `connector add|remove` restarts
+  only Dex. auth-gateway mounts `/etc/wip` again, for this file.
+
+**Action required:** as for the declared keys, the re-read is in the
+service images. Re-render with this release's image set; an install that
+keeps older images loses its federated group policy, because those services
+still look for `WIP_AUTH_FEDERATED_GROUPS`, which the deployer no longer sets.
+
 ### Declared API keys apply without restarting the backend
 
 Adding, removing or rotating a declared key (`auth.api_keys`) used to

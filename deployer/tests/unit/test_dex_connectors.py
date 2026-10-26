@@ -225,7 +225,7 @@ class TestFederatedGroupsPolicy:
             for c in discovery.components
             for section in (c.spec.env.required, c.spec.env.optional)
             for e in section
-            if e.name == "WIP_AUTH_FEDERATED_GROUPS"
+            if e.name == "WIP_AUTH_FEDERATED_GROUPS_FILE"
         }
         validators = {
             c.metadata.name

@@ -42,8 +42,9 @@ from wip_deploy.config_gen import (
 )
 from wip_deploy.config_gen.api_keys import (
     API_KEYS_CONTAINER_DIR,
-    declares_api_keys_file,
+    FEDERATED_GROUPS_FILENAME,
     generate_api_keys_json,
+    mounts_auth_config_dir,
 )
 from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY, config_hash
 from wip_deploy.config_gen.env import Literal
@@ -67,6 +68,7 @@ from wip_deploy.config_gen.nats import (
     render_nats_conf,
 )
 from wip_deploy.config_gen.router import generate_router_config
+from wip_deploy.config_gen.spec_context import federated_groups_policy
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose_dex import (
     DEX_COMPONENT,
@@ -125,7 +127,11 @@ def render_k8s(
     # components whose manifest declares WIP_AUTH_API_KEYS_FILE.
     tree.add(
         "api-keys-secret.yaml",
-        _render_api_keys_secret(ns, generate_api_keys_json(deployment, secrets)),
+        _render_api_keys_secret(
+            ns,
+            generate_api_keys_json(deployment, secrets),
+            federated_groups_policy(deployment),
+        ),
         mode=0o600,
     )
 
@@ -367,7 +373,7 @@ def _render_network_policies(ns: str) -> str:
 # ────────────────────────────────────────────────────────────────────
 
 
-def _render_api_keys_secret(ns: str, api_keys_json: str) -> str:
+def _render_api_keys_secret(ns: str, api_keys_json: str, federated_groups: str) -> str:
     """The rendered WIP_AUTH_API_KEYS_FILE document as its own Secret,
     mounted as a directory so a running pod sees it change (wip-secrets
     carries flat name→value pairs, not files)."""
@@ -380,7 +386,10 @@ def _render_api_keys_secret(ns: str, api_keys_json: str) -> str:
             "labels": {_LABELS_PART_OF: "wip"},
         },
         "type": "Opaque",
-        "stringData": {"api-keys.json": api_keys_json},
+        "stringData": {
+            "api-keys.json": api_keys_json,
+            FEDERATED_GROUPS_FILENAME: federated_groups,
+        },
     })
 
 
@@ -619,7 +628,7 @@ def _render_component(
 
     # Config-file API keys — mounted for exactly the manifests
     # that declare WIP_AUTH_API_KEYS_FILE (the env is the opt-in).
-    if declares_api_keys_file(owner):
+    if mounts_auth_config_dir(owner):
         volume_mounts.append({
             "name": "api-keys-config",
             "mountPath": API_KEYS_CONTAINER_DIR,
