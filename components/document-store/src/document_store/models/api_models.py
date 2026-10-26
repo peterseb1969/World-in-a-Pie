@@ -415,13 +415,6 @@ class DeleteItem(StrictModel):
     updated_by: str | None = Field(default=None, description="User performing deletion")
 
 
-class ArchiveItem(StrictModel):
-    """Item in a bulk archive request."""
-
-    id: str = Field(..., description="ID of document to archive")
-    archived_by: str | None = Field(default=None, description="User performing the archive")
-
-
 class PatchDocumentItem(StrictModel):
     """Item in a bulk PATCH /documents request.
 

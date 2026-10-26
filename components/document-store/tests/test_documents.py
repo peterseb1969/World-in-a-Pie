@@ -160,33 +160,6 @@ async def test_delete_document(client: AsyncClient, auth_headers: dict, sample_p
 
 
 @pytest.mark.asyncio
-async def test_archive_document(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
-    """Test archiving a document."""
-    # Create document
-    result = await create_one(client, auth_headers, "PERSON", sample_person_data)
-    document_id = result["document_id"]
-
-    # Archive document via bulk-first POST /documents/archive
-    response = await client.post(
-        "/api/document-store/documents/archive",
-        headers=auth_headers,
-        json=[{"id": document_id}]
-    )
-
-    assert response.status_code == 200
-    bulk = response.json()
-    assert bulk["succeeded"] == 1
-
-    # Verify document is archived
-    get_response = await client.get(
-        f"/api/document-store/documents/{document_id}",
-        headers=auth_headers
-    )
-    assert get_response.status_code == 200
-    assert get_response.json()["status"] == "archived"
-
-
-@pytest.mark.asyncio
 async def test_get_document_by_identity(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test getting a document by identity hash."""
     # Create document

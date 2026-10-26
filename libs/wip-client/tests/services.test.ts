@@ -817,24 +817,6 @@ describe('Service classes via createWipClient', () => {
       expect(url).toContain('/api/document-store/documents/by-identity/abc123hash')
     })
 
-    it('archiveDocument sends POST', async () => {
-      mockJsonResponse({
-        results: [{ index: 0, status: 'archived', id: 'D-001' }],
-        total: 1,
-        succeeded: 1,
-        failed: 0,
-      })
-
-      const result = await client.documents.archiveDocument('D-001', 'admin')
-
-      expect(result.status).toBe('archived')
-      const [url, options] = fetchMock.mock.calls[0]
-      expect(url).toContain('/api/document-store/documents/archive')
-      expect(options.method).toBe('POST')
-      const body = JSON.parse(options.body)
-      expect(body).toEqual([{ id: 'D-001', archived_by: 'admin' }])
-    })
-
     it('validateDocument sends POST', async () => {
       mockJsonResponse({ valid: true, errors: [] })
 

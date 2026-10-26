@@ -49,7 +49,7 @@ Phase 3 runner passes its own `<HHMMSS>-00a` / `-00b` names.
   term ref into `wip` (E8); `MATRIX_EVENT_LOG` identity-less append-only
   template + docs (E7); a multi-version document with `metadata.custom` (E6,
   E14); a file blob linked to a document (E9); a custom registry synonym (E10);
-  an archived document (E12).
+  a soft-deleted document (E12).
 - **NS-B (open, prefixed sequential `id_config`, E11):** `MATRIX_SAMPLE` entity
   template (the cross-source pin target); `MATRIX_LINKED_TO` edge type,
   `versioned:false` (E4) with a relationship document (E5); a terminology whose

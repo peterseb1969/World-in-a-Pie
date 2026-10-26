@@ -1222,7 +1222,7 @@ declare class TemplateStoreService extends BaseService {
     }): Promise<Template>;
 }
 
-type DocumentStatus = 'active' | 'inactive' | 'archived';
+type DocumentStatus = 'active' | 'inactive';
 interface DocumentMetadata {
     source_system: string | null;
     warnings: string[];
@@ -1543,7 +1543,7 @@ interface DocumentRelationshipsParams {
     template?: string;
     /** Defaults to the seed document's namespace. */
     namespace?: string;
-    /** Default true — exclude inactive/archived rel docs. */
+    /** Default true — exclude inactive rel docs. */
     active_only?: boolean;
     page?: number;
     /** Default 50, capped at 500. */
@@ -1567,7 +1567,7 @@ interface PeerProjection {
     namespace: string;
     template_id: string;
     template_value?: string | null;
-    status: 'active' | 'inactive' | 'archived' | 'deleted';
+    status: 'active' | 'inactive' | 'deleted';
     /**
      * Projected data fields per the peer template's `header_fields`
      * (or `identity_fields` fallback).
@@ -1946,7 +1946,6 @@ declare class DocumentStoreService extends BaseService {
     deleteDocuments(ids: string[], options?: {
         hardDelete?: boolean;
     }): Promise<BulkResponse>;
-    archiveDocument(id: string, archivedBy?: string): Promise<BulkResultItem>;
     validateDocument(data: ValidateDocumentRequest): Promise<DocumentValidationResponse>;
     /**
      * Bulk validate (CASE-419): validate many data payloads against ONE template

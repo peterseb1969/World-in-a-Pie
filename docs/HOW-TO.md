@@ -732,13 +732,8 @@ curlk -s -X DELETE -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" 
   -d '[{"id": "'"$DOCUMENT_ID"'"}]' | jq .
 ```
 
-### Archive documents
-
-```bash
-curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST/api/document-store/documents/archive" \
-  -d '[{"id": "'"$DOCUMENT_ID"'", "archived_by": "admin"}]' | jq .
-```
+A soft-deleted document is retired, not gone: re-post its full data to bring it
+back as its next version.
 
 ---
 

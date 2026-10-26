@@ -35,6 +35,7 @@ from wip_archive.remap import IDRemapper
 
 from wip_auth.composite_key import compute_composite_key_hash
 
+from .archived_status import retire_archived_row
 from .file_storage_client import FileStorageClient
 from .merge_definitions import (
     DEFINITION_TYPES,
@@ -2630,6 +2631,7 @@ class DirectRestoreEngine:
 
             row = dict(latest)
             row["document_id"] = target_head.get("document_id")
+            retire_archived_row(row)
 
             if versioned.get(clash.entity.get("template_id") or "", True) is False:
                 row["version"] = target_head.get("version", 1)
@@ -3306,6 +3308,10 @@ class DirectRestoreEngine:
             # dedupe, first occurrence wins, own-value echoes dropped.
             if entity_type == "terms" and "names" not in row:
                 _convert_legacy_term_names(row)
+            # An archive taken before the `archived` document status was
+            # removed still carries it; it is a soft delete under another name.
+            if entity_type == "documents":
+                retire_archived_row(row)
         try:
             await collection.insert_many(batch, ordered=False)
         except BulkWriteError as exc:

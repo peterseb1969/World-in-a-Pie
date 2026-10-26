@@ -406,6 +406,50 @@ parameter. Until now there was NO way to remove a term's description;
 consumers treating `""` as absent can drop that shim once their data is
 normalized.
 
+### Document archive is removed; `@wip/client` 0.63.0, `@wip/react` 0.23.0
+
+Document "archive" is gone. It was designed as policy-driven tiering of
+superseded versions, which was never built; what shipped archived the latest
+version on demand and behaved as a second soft delete, with rules that
+contradicted delete's. Soft delete replaces it.
+
+**Removed, in one step (no deprecation window):**
+- `POST /api/document-store/documents/archive` and the `document.archived`
+  event;
+- the `archived` document status and the PATCH `archived` error code;
+- `archived_relationship_endpoint`;
+- the MCP `archive_document` tool;
+- `@wip/client` `documents.archiveDocument` (0.63.0) and `@wip/react`
+  `useArchiveDocument` (0.23.0).
+
+Namespace archive (`POST /namespaces/{prefix}/archive`) is a different
+feature and is unchanged.
+
+**Existing data:**
+- document-store rewrites every `archived` document row to `inactive` at
+  startup;
+- reporting-sync rewrites `status = 'archived'` reporting rows to `deleted`
+  at startup;
+- a restore writes an `archived` row from an older backup as `inactive`.
+
+File reference counts need no fix-up: archive released them exactly as soft
+delete does.
+
+**Relationships:** an edge whose endpoint is soft-deleted is now accepted
+with a warning, the same rule a plain reference to an inactive document
+follows. Before, an archived endpoint was refused while a deleted one was
+accepted.
+
+**Action:**
+- **Callers of the removed endpoint, method, hook or tool break on upgrade.**
+  Use soft delete instead: `DELETE /api/document-store/documents`,
+  `documents.deleteDocument`, `useDeleteDocument`, `delete_document`.
+- **Apps re-vendor** `wip-client-0.63.0.tgz` and `wip-react-0.23.0.tgz`.
+  WIP-RC must remove its Archive action and Active/All archive toggle.
+- **Replayed `document.archived` events.** If an install's NATS stream still
+  holds one, reporting-sync now handles it like any document write and stores
+  the payload's `archived` status. Startup rewrites existing rows only.
+
 ### Re-posting a deleted document brings it back as a proper successor
 
 Re-posting the identity of a soft-deleted document always brought it back,

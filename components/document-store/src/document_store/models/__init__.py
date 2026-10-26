@@ -1,7 +1,6 @@
 """Models for the Document Store service."""
 
 from .api_models import (
-    ArchiveItem,
     BulkResponse,
     # Bulk operation models
     BulkResultItem,
@@ -30,7 +29,6 @@ from .document import Document, DocumentMetadata, DocumentStatus
 from .file import File, FileMetadata, FileReference, FileStatus
 
 __all__ = [
-    "ArchiveItem",
     "BulkResponse",
     # Bulk operation models
     "BulkResultItem",

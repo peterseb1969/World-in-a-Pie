@@ -37,7 +37,6 @@ class EventType(StrEnum):
     DOCUMENT_CREATED = "document.created"
     DOCUMENT_UPDATED = "document.updated"
     DOCUMENT_DELETED = "document.deleted"
-    DOCUMENT_ARCHIVED = "document.archived"
     FILE_UPLOADED = "file.uploaded"
     FILE_UPDATED = "file.updated"
     FILE_DELETED = "file.deleted"
@@ -167,7 +166,7 @@ async def publish_document_event(
     Publish a document event to NATS.
 
     Args:
-        event_type: Type of event (created, updated, deleted, archived)
+        event_type: Type of event (created, updated, deleted)
         document: Full document data to include in event
         changed_by: User/system that made the change
 

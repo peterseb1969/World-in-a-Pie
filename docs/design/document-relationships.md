@@ -93,7 +93,7 @@ On `create_document` against an edge type:
 2. `source_ref` must resolve to a document whose template value is in the template-level `source_templates` list. Resolution goes through Registry (`resolve_entity_ids(bypass_cache=True)` — Principle 3).
 3. `target_ref` must resolve to a document whose template value is in the template-level `target_templates` list.
 4. If the source or target is in a different namespace than the relationship document, **reject with `cross_namespace_relationship` error** — deferred to post-v2.
-5. If the target document has `status: archived` or is hard-deleted, reject — standard reference-integrity rule.
+5. If the target document is hard-deleted, reject — standard reference-integrity rule. A soft-deleted endpoint is accepted with a warning, as a plain reference to an inactive document is.
 
 ### Versioning
 
@@ -207,7 +207,7 @@ Materialized views are out of scope for this design — they are a general analy
 
 ### NATS event contract
 
-Relationship documents publish standard document events (`document.created`, `document.updated`, `document.deleted`, `document.archived`) on the existing `WIP_EVENTS` stream. The event payload for a relationship document MUST include enough state for an external subscriber (Snowflake, BigQuery, etc.) to rebuild the edge without querying back:
+Relationship documents publish standard document events (`document.created`, `document.updated`, `document.deleted`) on the existing `WIP_EVENTS` stream. The event payload for a relationship document MUST include enough state for an external subscriber (Snowflake, BigQuery, etc.) to rebuild the edge without querying back:
 
 ```json
 {

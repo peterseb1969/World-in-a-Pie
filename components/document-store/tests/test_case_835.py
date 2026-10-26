@@ -15,7 +15,7 @@ Two layers of coverage:
   delete + re-create), teach the mock Template Store the new incarnation
   only, then create a document by value — it must land on the NEW id;
 - spy tests pinning the bypass flag on every other write door (patch,
-  migrate, delete, archive, file metadata, file delete, CSV import),
+  migrate, delete, file metadata, file delete, CSV import),
   so dropping the flag on any one of them fails a test by name.
 """
 
@@ -117,10 +117,8 @@ def _bypass_kwarg(spy: AsyncMock) -> bool:
          [{"document_id": "019fffff-0000-7000-8000-00000000dead", "patch": {"x": 1}}]),
         ("DELETE", "/api/document-store/documents",
          [{"id": "019fffff-0000-7000-8000-00000000dead"}]),
-        ("POST", "/api/document-store/documents/archive",
-         [{"id": "019fffff-0000-7000-8000-00000000dead"}]),
     ],
-    ids=["patch", "delete", "archive"],
+    ids=["patch", "delete"],
 )
 async def test_document_write_doors_bypass_cache(
     client: AsyncClient, auth_headers: dict, method: str, path: str, body: list

@@ -65,7 +65,6 @@ export {
   useUpdateDocument,
   useUpdateDocuments,
   useDeleteDocument,
-  useArchiveDocument,
   // Files
   useUploadFile,
   useUpdateFileMetadata,

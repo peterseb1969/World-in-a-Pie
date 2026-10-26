@@ -13,7 +13,6 @@ from wip_auth import (
 )
 
 from ..models.api_models import (
-    ArchiveItem,
     BulkResponse,
     BulkResultItem,
     DeleteItem,
@@ -134,7 +133,7 @@ Merge semantics:
 Constraints:
 - Identity fields cannot be changed (use POST to create a new document)
 - Namespace cannot be changed (PATCH modifies `data`, and `metadata.custom` via `metadata_patch`)
-- Archived documents are rejected; unarchive first
+- A soft-deleted document is `not_found`; re-post its full data to bring it back
 - Optional per-item `if_match` provides optimistic concurrency control
 
 After merge the full document is re-validated against the same template
@@ -331,7 +330,7 @@ async def get_template_facets(
     ),
     status: str = Query(
         "active",
-        pattern="^(active|inactive|archived|all)$",
+        pattern="^(active|inactive|all)$",
         description="Count documents in this status ('all' disables the filter)",
     ),
     identity: UserIdentity = Depends(require_api_key),
@@ -570,7 +569,7 @@ async def get_document_relationships(
             + _EDGE_TYPE_FILTER_RESOLUTION
         )),
     namespace: str | None = Query(None, description="Namespace; default = the document's namespace"),
-    active_only: bool = Query(True, description="Exclude inactive/archived relationship docs"),
+    active_only: bool = Query(True, description="Exclude inactive relationship docs"),
     page: int = Query(1, ge=1),
     # Deliberately below the platform-wide 1000 ceiling: with include=peers each
     # row fans out into a peer-document header projection, so a page is not a
@@ -713,43 +712,6 @@ async def delete_documents(
                 results.append(BulkResultItem(index=i, status="deleted", id=item.id))
         except ValueError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
-    await asyncio.sleep(get_throttle_delay())
-    return BulkResponse(
-        results=results, total=len(items),
-        succeeded=sum(1 for r in results if r.status != "error"),
-        failed=sum(1 for r in results if r.status == "error"),
-    )
-
-
-@router.post(
-    "/archive",
-    response_model=BulkResponse,
-    summary="Archive documents",
-    description="Archive one or more documents by setting their status to archived."
-)
-async def archive_documents(
-    items: list[ArchiveItem] = Body(...),
-    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
-    identity: UserIdentity = Depends(require_api_key)
-):
-    """Archive one or more documents."""
-    await resolve_bulk_ids(
-        items, "id", "document", namespace=namespace, bypass_cache=True
-    )
-
-    service = get_document_service()
-    results = []
-    for i, item in enumerate(items):
-        doc = await service.get_document(item.id)
-        if not doc:
-            results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found", error_code="not_found"))
-            continue
-        await check_namespace_permission(identity, doc.namespace, "write")
-        success = await service.archive_document(item.id, item.archived_by)
-        if not success:
-            results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found", error_code="not_found"))
-        else:
-            results.append(BulkResultItem(index=i, status="updated", id=item.id))
     await asyncio.sleep(get_throttle_delay())
     return BulkResponse(
         results=results, total=len(items),

@@ -1,9 +1,8 @@
 """
-E2E entity lifecycle tests: create → update → archive/delete for every entity type.
+E2E entity lifecycle tests: create → update → delete for every entity type.
 
 Each test class walks a single entity through its full lifecycle via NATS events,
-verifying PostgreSQL state at every step.  This is the test that would have caught
-the missing document.archived handler.
+verifying PostgreSQL state at every step.
 
 Requires both POSTGRES_TEST_URI and NATS_TEST_URL env vars.
 """
@@ -79,7 +78,7 @@ async def _publish_and_process(worker, js, sub, subject: str, events: list[bytes
 
 
 # =============================================================================
-# Document lifecycle: create → update → archive → delete
+# Document lifecycle: create → update → delete
 # =============================================================================
 
 LIFECYCLE_TEMPLATE = {
@@ -119,7 +118,7 @@ def _doc_payload(doc_id, version, status, data, **overrides):
 
 @requires_e2e
 class TestDocumentLifecycle:
-    """Document: create → update → archive → delete, verifying PG at each step."""
+    """Document: create → update → delete, verifying PG at each step."""
 
     async def test_full_lifecycle(self, pg_pool, nats_client):
         worker, js, sub = await _make_worker(
@@ -163,19 +162,7 @@ class TestDocumentLifecycle:
             )
             assert count == 1
 
-        # --- Step 3: Archive ---
-        await _publish_and_process(worker, js, sub, "wip.documents", [
-            make_event("document.archived", "document",
-                       _doc_payload("DOC-LC-001", 2, "archived", {"name": "Alice", "age": 31, "role": "senior engineer"})),
-        ])
-
-        async with pg_pool.acquire() as conn:
-            row = await conn.fetchrow(
-                'SELECT status FROM "doc_lcperson" WHERE document_id = $1', "DOC-LC-001"
-            )
-            assert row["status"] == "archived"
-
-        # --- Step 4: Delete (soft) ---
+        # --- Step 3: Delete (soft) ---
         await _publish_and_process(worker, js, sub, "wip.documents", [
             make_event("document.deleted", "document",
                        _doc_payload("DOC-LC-001", 2, "deleted", {"name": "Alice", "age": 31, "role": "senior engineer"})),
@@ -186,27 +173,6 @@ class TestDocumentLifecycle:
                 'SELECT status FROM "doc_lcperson" WHERE document_id = $1', "DOC-LC-001"
             )
             assert row["status"] == "deleted"
-
-    async def test_archive_without_prior_delete(self, pg_pool, nats_client):
-        """Archive is a distinct status — not the same as delete."""
-        worker, js, sub = await _make_worker(
-            pg_pool, nats_client,
-            template_cache={"TPL-LC-001": LIFECYCLE_TEMPLATE},
-        )
-
-        await _publish_and_process(worker, js, sub, "wip.documents", [
-            make_event("document.created", "document",
-                       _doc_payload("DOC-LC-002", 1, "active", {"name": "Bob"})),
-            make_event("document.archived", "document",
-                       _doc_payload("DOC-LC-002", 1, "archived", {"name": "Bob"})),
-        ])
-
-        async with pg_pool.acquire() as conn:
-            row = await conn.fetchrow(
-                'SELECT status FROM "doc_lcperson" WHERE document_id = $1', "DOC-LC-002"
-            )
-            assert row["status"] == "archived"
-
 
 # =============================================================================
 # Terminology lifecycle: create → update → soft-delete → restore

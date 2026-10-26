@@ -382,6 +382,45 @@ async def _recreate_registered_views(pool: asyncpg.Pool) -> None:
         )
 
 
+async def _retire_archived_status(pool: asyncpg.Pool) -> None:
+    """Rewrite reporting rows of the removed `archived` document status.
+
+    The status was removed: an archived document was a soft-deleted one
+    under another name, and document-store rewrites its own rows to
+    `inactive` at startup. Here the matching rows become `deleted`, the
+    status a soft delete writes. Every physical document table (views are
+    derived) that has a `status` column, in every schema. Idempotent and
+    best-effort: a failure is logged and never blocks startup.
+    """
+    try:
+        async with pool.acquire() as conn:
+            tables = await conn.fetch(
+                """
+                SELECT c.table_schema, c.table_name
+                FROM information_schema.columns c
+                JOIN information_schema.tables t
+                  ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+                WHERE c.column_name = 'status'
+                  AND t.table_type = 'BASE TABLE'
+                  AND c.table_name LIKE 'doc\\_%'
+                """
+            )
+            retired = 0
+            for row in tables:
+                schema = row["table_schema"].replace('"', '""')
+                table = row["table_name"].replace('"', '""')
+                result = await conn.execute(
+                    f'UPDATE "{schema}"."{table}" SET status = $1 WHERE status = $2',  # nosec B608  # identifiers from information_schema, quoted; values bound
+                    "deleted", "archived",
+                )
+                retired += int(result.split()[-1]) if result.startswith("UPDATE") else 0
+    except Exception as e:
+        logger.warning(f"Retiring the 'archived' reporting status failed: {e}")
+        return
+    if retired:
+        logger.info(f"Retired the 'archived' status on {retired} reporting row(s) (now 'deleted')")
+
+
 # Backoff between attempts of one backfill step: 5 s doubling to 60 s, with no
 # overall deadline — a step that cannot complete keeps trying until it does.
 _BACKFILL_FIRST_DELAY = 5.0
@@ -490,6 +529,7 @@ async def _bring_up_postgres() -> None:
             # first sync — there is no global pre-creation.
             await init_postgres_schema(pool)
             await _recreate_registered_views(pool)
+            await _retire_archived_status(pool)
         except BaseException:
             await read_pool.close()
             await pool.close()
@@ -1445,7 +1485,7 @@ async def aggregated_integrity_check(
 
     Args:
         template_status: Filter templates by status ('active', 'deprecated', 'inactive')
-        document_status: Filter documents by status ('active', 'inactive', 'archived')
+        document_status: Filter documents by status ('active', 'inactive')
         template_limit: Maximum templates to check (default 0 = unbounded / full scan)
         document_limit: Maximum documents to check (default 0 = unbounded / full scan)
         check_term_refs: Whether to check term references in documents (default true)

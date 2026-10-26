@@ -695,19 +695,6 @@ function useDeleteDocument(options) {
     }
   });
 }
-function useArchiveDocument(options) {
-  const { onSuccess, ...restOptions } = options ?? {};
-  const client = useWipClient();
-  const queryClient = reactQuery.useQueryClient();
-  return reactQuery.useMutation({
-    ...restOptions,
-    mutationFn: ({ id, archivedBy }) => client.documents.archiveDocument(id, archivedBy),
-    onSuccess: (...args) => {
-      queryClient.invalidateQueries({ queryKey: wipKeys.documents.all });
-      onSuccess?.(...args);
-    }
-  });
-}
 function useUploadFile(options) {
   const { onSuccess, ...restOptions } = options ?? {};
   const client = useWipClient();
@@ -965,7 +952,6 @@ exports.useActivateTemplate = useActivateTemplate;
 exports.useActivity = useActivity;
 exports.useAddEdgeTypeEndpoints = useAddEdgeTypeEndpoints;
 exports.useAddSynonym = useAddSynonym;
-exports.useArchiveDocument = useArchiveDocument;
 exports.useArchiveNamespace = useArchiveNamespace;
 exports.useBatchJob = useBatchJob;
 exports.useBatchJobs = useBatchJobs;

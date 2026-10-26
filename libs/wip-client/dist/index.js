@@ -786,9 +786,6 @@ var DocumentStoreService = class extends BaseService {
       hard_delete: options?.hardDelete
     })), "DELETE");
   }
-  async archiveDocument(id, archivedBy) {
-    return this.bulkWriteOne("/documents/archive", { id, archived_by: archivedBy });
-  }
   // NOTE: restoreDocument was removed — no /documents/{id}/restore endpoint exists in the API spec.
   // ---- Validation ----
   async validateDocument(data) {

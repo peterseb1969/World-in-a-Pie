@@ -113,7 +113,7 @@ Semantics:
 - template_version and identity_hash are preserved — the new version validates
   against the template version recorded on the document, not the latest.
 
-Error codes from PATCH: `not_found`, `forbidden`, `archived`,
+Error codes from PATCH: `not_found`, `forbidden`,
 `identity_field_change`, `append_only`, `concurrency_conflict`,
 `validation_failed`, `reference_violation`, `internal_error`.
 
@@ -3055,7 +3055,7 @@ async def get_template_facets(
         namespace: Namespace to facet. Omittable only for single-namespace
             API keys (implicit derivation).
         status: Count documents in this status — 'active' (default),
-            'inactive', 'archived', or 'all' to disable the filter.
+            'inactive', or 'all' to disable the filter.
     """
     try:
         data = await get_client().get_template_facets(
@@ -3310,7 +3310,7 @@ async def get_document_relationships(
         template: Comma-separated edge type values to include
             (default: all edge types).
         namespace: Override; defaults to the seed document's namespace.
-        active_only: Exclude inactive/archived rel docs (default True).
+        active_only: Exclude inactive rel docs (default True).
         page, page_size: Pagination (default 1 / 50).
 
     Example:
@@ -3397,20 +3397,6 @@ async def get_document_versions(document_id: str) -> str:
 
 
 @mcp.tool()
-async def archive_document(document_id: str) -> str:
-    """Archive a document (soft-delete, sets status to inactive).
-
-    Args:
-        document_id: Document ID to archive.
-    """
-    try:
-        data = await get_client().archive_document(document_id)
-        return json.dumps(data, indent=2, default=str)
-    except Exception as e:
-        return _error(e)
-
-
-@mcp.tool()
 async def update_document(
     document_id: str,
     patch: dict,
@@ -3449,8 +3435,8 @@ async def update_document(
         - Returns `append_only` if the document's template declares no
           `identity_fields`: identity-less templates are append-only
           (create-only) — create a new document instead of patching.
-        - Cannot patch archived documents (unarchive first — `archived`).
-        - Soft-deleted / non-existent documents return `not_found`.
+        - Soft-deleted / non-existent documents return `not_found`; re-post a
+          deleted document's full data to bring it back.
         - The merged document must still validate against the template the
           document was originally created with (PATCH does NOT migrate to a
           newer template version).
@@ -3772,7 +3758,7 @@ async def search(
               every doc_* table regardless of indexing; no ranking.
         include_inactive: When false (default), only active documents
             are returned (PoNIF #1: inactive means retired). Set true
-            to surface archived/deleted docs in deliberate queries.
+            to surface deleted docs in deliberate queries.
         snippet_format: Snippet rendering for FTS hits.
             - 'html' (default): wraps matched terms with <b>...</b>.
             - 'text': plain text without highlighting markup.
@@ -4518,7 +4504,7 @@ async def start_backup(
     Backups run in the background; poll get_backup_job to track progress until
     status is 'complete' or 'failed', then download_backup_archive to fetch
     the .zip. The archive always contains every entity in every status and
-    every version — inactive and archived entities included, since live data
+    every version — inactive entities included, since live data
     references them — plus term relations and the registry entries (synonyms
     travel inside them); blob bytes are staged to the server's backup scratch
     dir, not RAM.
@@ -4953,7 +4939,6 @@ WRITE_TOOLS = frozenset({
     "create_document",
     "create_documents_bulk",
     "update_document",
-    "archive_document",
     "delete_document",
     "delete_documents_bulk",
     # migrate_documents writes new doc versions pinned to the target

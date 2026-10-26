@@ -154,7 +154,7 @@ class SearchRequest(StrictModel):
         description=(
             "When false (default), only active documents are returned — "
             "aligns with PoNIF #1 'inactive means retired, not deleted'. "
-            "Set true to surface inactive/archived docs in the result set."
+            "Set true to surface inactive docs in the result set."
         ),
     )
     snippet_format: Literal["html", "text"] = Field(

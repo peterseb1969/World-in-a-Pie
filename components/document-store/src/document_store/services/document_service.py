@@ -269,9 +269,11 @@ class DocumentService:
 
           - the referenced source/target documents are in the SAME
             namespace as the relationship document (cross-namespace
-            relationships rejected — see design doc, deferred to v2+);
-          - the referenced documents are NOT archived (active or
-            inactive is OK; archived means hard-removed semantically).
+            relationships rejected — see design doc, deferred to v2+).
+
+        An endpoint that is soft-deleted is accepted: reference validation
+        already warns about a non-active target, the same rule a plain
+        document reference follows.
 
         Returns None on success, or (error_code, message) on failure.
         Pre-condition: validation_result.references already contains the
@@ -297,7 +299,6 @@ class DocumentService:
                 )
             resolved = ref.get("resolved") or {}
             ref_namespace = resolved.get("namespace")
-            ref_status = resolved.get("status")
 
             if ref_namespace and ref_namespace != namespace:
                 # Distinct error code per design doc.
@@ -307,14 +308,6 @@ class DocumentService:
                     f"namespace '{ref_namespace}' but the relationship document is in "
                     f"namespace '{namespace}'. Cross-namespace relationships are not "
                     f"supported in v2."
-                )
-
-            if ref_status == "archived":
-                return (
-                    "archived_relationship_endpoint",
-                    f"archived_relationship_endpoint: '{field}' points to an archived "
-                    f"document ({resolved.get('document_id')}). Endpoints of a "
-                    f"relationship must be active or inactive, not archived."
                 )
 
         return None
@@ -406,8 +399,8 @@ class DocumentService:
         # Phase-2 relationship-template constraints. The standard
         # validation_service already verified source_ref / target_ref
         # resolve and point at allowed templates; here we enforce the
-        # extra rules that only apply when usage=relationship
-        # (same namespace, not archived).
+        # extra rule that only applies when usage=relationship
+        # (same namespace).
         try:
             template = await get_template_store_client().get_template(
                 template_id=request.template_id,
@@ -2041,41 +2034,6 @@ class DocumentService:
             except Exception as e:
                 logger.warning(f"Failed to hard-delete orphaned file {file_id}: {e}")
 
-    async def archive_document(
-        self,
-        document_id: str,
-        archived_by: str | None = None  # Deprecated: uses authenticated identity
-    ) -> bool:
-        """Archive a document (latest version)."""
-        results = await Document.find(
-            {"document_id": document_id}
-        ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
-        document = results[0] if results else None
-        if not document:
-            return False
-
-        # Use authenticated identity (not client-provided)
-        actor = get_identity_string()
-
-        document.status = DocumentStatus.ARCHIVED
-        document.updated_at = datetime.now(UTC)
-        document.updated_by = actor
-        await document.save()
-
-        # Publish document archived event
-        await publish_document_event(
-            EventType.DOCUMENT_ARCHIVED,
-            await self._document_to_event_payload(document),
-            changed_by=actor
-        )
-
-        # Update file reference counts (decrement for archived document)
-        await self._update_file_reference_counts(
-            document.file_references, delta=-1
-        )
-
-        return True
-
     async def query_documents(
         self,
         request: DocumentQueryRequest,
@@ -2659,8 +2617,8 @@ class DocumentService:
                 timing[f"1v_{stage}"] = round(total_ms, 1)
 
         # Stage 1b: relationship-document constraints (CASE-788). The single-item
-        # create path (create_document) enforces the cross-namespace and
-        # archived-endpoint rules for usage=relationship templates; the bulk path
+        # create path (create_document) enforces the cross-namespace rule
+        # for usage=relationship templates; the bulk path
         # must apply the identical check or the guardrail holds on one path only.
         # validation_service.validate already populated each reference's resolved
         # {namespace, status}, so this reuses _validate_relationship_constraints.
@@ -3493,8 +3451,8 @@ class DocumentService:
         from wip_auth.permissions import PERMISSION_UNAVAILABLE
 
         for attempt in range(max_retries):
-            # 1. Read latest version (regardless of status — we still need to
-            #    detect ARCHIVED/INACTIVE and return the right error code).
+            # 1. Read latest version (regardless of status — a soft-deleted
+            #    document must answer not_found, not be patched).
             latest = await Document.find(
                 {"document_id": item.document_id}
             ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
@@ -3504,16 +3462,10 @@ class DocumentService:
 
             current = latest[0]
 
-            # Soft-deleted document — treat as not_found per design doc §11.
+            # Soft-deleted document — not_found. Re-posting its full data
+            # brings it back as a successor version.
             if current.status == DocumentStatus.INACTIVE:
                 raise PatchError("not_found", "Document not found")
-
-            # Archived — explicit error per design doc.
-            if current.status == DocumentStatus.ARCHIVED:
-                raise PatchError(
-                    "archived",
-                    "Document is archived; unarchive before patching",
-                )
 
             # 2. Permission check on the document's namespace.
             #    Use resolve_permission directly so we can produce a per-item

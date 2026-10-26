@@ -88,7 +88,6 @@ import {
   useReactivateTemplate,
   useAddEdgeTypeEndpoints,
   useCreateDocuments,
-  useArchiveDocument,
   useDeleteFile,
   useDeleteFiles,
   useUpdateFileMetadata,
@@ -123,7 +122,6 @@ function createMockClient() {
     },
     documents: {
       createDocuments: vi.fn().mockResolvedValue({ results: [], total: 0, succeeded: 0, failed: 0 }),
-      archiveDocument: vi.fn().mockResolvedValue({ entity_id: 'doc1', status: 'archived' }),
     },
     files: {
       deleteFile: vi.fn().mockResolvedValue({ entity_id: 'f1', status: 'deleted' }),
@@ -857,21 +855,6 @@ describe('useCreateDocuments', () => {
 
     expect(mockClient.documents.createDocuments).toHaveBeenCalledWith(docs)
     expect(invalidateSpy).toHaveBeenCalled()
-  })
-})
-
-describe('useArchiveDocument', () => {
-  it('calls documents.archiveDocument with id and archivedBy', async () => {
-    const mockClient = createMockClient()
-    const { Wrapper } = createWrapper(mockClient)
-    const { result } = renderHook(() => useArchiveDocument(), { wrapper: Wrapper })
-
-    await act(async () => {
-      result.current.mutate({ id: 'doc1', archivedBy: 'admin' })
-    })
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-
-    expect(mockClient.documents.archiveDocument).toHaveBeenCalledWith('doc1', 'admin')
   })
 })
 

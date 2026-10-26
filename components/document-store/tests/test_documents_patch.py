@@ -308,28 +308,6 @@ async def test_patch_identity_field_change_rejected(
 
 
 @pytest.mark.asyncio
-async def test_patch_archived_document_rejected(
-    client: AsyncClient, auth_headers: dict, sample_person_data: dict
-):
-    """Patching an archived document returns the 'archived' error code."""
-    initial = await create_one(client, auth_headers, "PERSON", sample_person_data)
-
-    archive_resp = await client.post(
-        "/api/document-store/documents/archive",
-        headers=auth_headers,
-        json=[{"id": initial["document_id"]}],
-    )
-    assert archive_resp.status_code == 200
-    assert archive_resp.json()["succeeded"] == 1
-
-    _, result = await patch_one(
-        client, auth_headers, initial["document_id"], {"first_name": "Jane"}
-    )
-    assert result["status"] == "error"
-    assert result["error_code"] == "archived"
-
-
-@pytest.mark.asyncio
 async def test_patch_concurrency_conflict_on_if_match_mismatch(
     client: AsyncClient, auth_headers: dict, sample_person_data: dict
 ):

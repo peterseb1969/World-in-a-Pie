@@ -284,10 +284,10 @@ class ServiceClient:
         resp.raise_for_status()
         return resp.json()
 
-    def delete(self, path: str) -> dict | None:
-        """HTTP DELETE request."""
+    def delete(self, path: str, data: dict | list | None = None, params: dict | None = None) -> dict | None:
+        """HTTP DELETE request (with a JSON body for the bulk delete endpoints)."""
         start = time.perf_counter()
-        resp = self.session.delete(f"{self.base_url}{path}", timeout=30)
+        resp = self.session.delete(f"{self.base_url}{path}", json=data, params=params, timeout=30)
         elapsed = (time.perf_counter() - start) * 1000
         self._record_call("DELETE", path, elapsed, resp.status_code)
         resp.raise_for_status()
@@ -1319,7 +1319,8 @@ class WIPSeeder:
         except Exception as e:
             _check("reporting: doc_order_contains source/target_ref_id populated", False, str(e)[:120])
 
-        # 5. Negative case: archived endpoint should reject with archived_relationship_endpoint.
+        # 5. Edge to a soft-deleted endpoint: accepted, with a warning, the same
+        # rule a plain document reference to an inactive document follows.
         # Uses a per-run unique fixture (timestamp-suffixed employee_id) so
         # the EMPLOYEE_MANAGES identity_hash never collides with edges from
         # prior runs — that collision returns status='skipped' without
@@ -1358,31 +1359,31 @@ class WIPSeeder:
                     }],
                 )
                 fixture_r = fixture_resp.get("results", [{}])[0]
-                archive_target = fixture_r.get("document_id")
-                if not archive_target:
+                deleted_target = fixture_r.get("document_id")
+                check_name = "deleted relationship endpoint accepted with a warning"
+                if not deleted_target:
                     _check(
-                        "negative: archived_relationship_endpoint enforced",
+                        check_name,
                         False,
                         f"setup failure — fixture employee create returned status={fixture_r.get('status')} error={(fixture_r.get('error') or '')[:120]}",
                     )
                 else:
-                    # Step B: archive the fixture employee.
-                    arch_result = self.document_store.post(
-                        "/api/document-store/documents/archive",
-                        [{"id": archive_target, "archived_by": "seed_script_negative_check"}],
+                    # Step B: soft-delete the fixture employee.
+                    del_result = self.document_store.delete(
+                        "/api/document-store/documents",
+                        [{"id": deleted_target}],
                         params=self._ns_params(),
-                    )
-                    arch_r = arch_result.get("results", [{}])[0]
-                    if arch_r.get("status") not in ("archived", "deleted", "updated", "unchanged"):
+                    ) or {}
+                    del_r = del_result.get("results", [{}])[0]
+                    if del_r.get("status") != "deleted":
                         _check(
-                            "negative: archived_relationship_endpoint enforced",
+                            check_name,
                             False,
-                            f"setup failure — archive call returned status={arch_r.get('status')} error={(arch_r.get('error') or '')[:120]}",
+                            f"setup failure — delete returned status={del_r.get('status')} error={(del_r.get('error') or '')[:120]}",
                         )
                     else:
-                        # Step C: try to create an EMPLOYEE_MANAGES edge
-                        # pointing at the freshly-archived fixture employee.
-                        # Expected: per-item error with `archived_relationship_endpoint` prefix.
+                        # Step C: an EMPLOYEE_MANAGES edge pointing at the
+                        # deleted fixture employee is accepted with a warning.
                         manager_id = employees[0]
                         result = self.document_store.post(
                             "/api/document-store/documents",
@@ -1391,23 +1392,22 @@ class WIPSeeder:
                                 "namespace": self.namespace,
                                 "data": {
                                     "source_ref": manager_id,
-                                    "target_ref": archive_target,
+                                    "target_ref": deleted_target,
                                     "since": "2025-01-01",
                                     "reporting_type": "direct",
                                 },
-                                "created_by": "seed_script_negative_check",
+                                "created_by": "seed_script_deleted_endpoint_check",
                             }],
                         )
                         r = result.get("results", [{}])[0]
-                        err_str = r.get("error", "") or ""
-                        rejected = r.get("status") == "error" and "archived_relationship_endpoint" in err_str
+                        warned = any("inactive" in w for w in (r.get("warnings") or []))
                         _check(
-                            "negative: archived_relationship_endpoint enforced",
-                            rejected,
-                            f"got status={r.get('status')} error={err_str[:120]}",
+                            check_name,
+                            r.get("status") == "created" and warned,
+                            f"got status={r.get('status')} warnings={r.get('warnings')} error={(r.get('error') or '')[:120]}",
                         )
             except Exception as e:
-                _check("negative: archived_relationship_endpoint enforced", False, str(e)[:120])
+                _check("deleted relationship endpoint accepted with a warning", False, str(e)[:120])
 
         return results
 

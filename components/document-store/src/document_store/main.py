@@ -197,6 +197,14 @@ async def lifespan(app: FastAPI):
         })
         print(f"Reconciled {orphan_count} orphaned backup/restore job(s) as failed.")
 
+    # The `archived` document status was removed; rows still carrying it are
+    # soft-deleted documents and become `inactive`. Before any read: the
+    # value no longer parses as a DocumentStatus.
+    from .services.archived_status import retire_archived_status
+    retired = await retire_archived_status(Document.get_motor_collection())
+    if retired:
+        print(f"Retired the 'archived' status on {retired} document row(s) (now 'inactive').")
+
     # Run startup integrity check (non-blocking, log warnings only)
     # Only check template refs, skip term refs for faster startup
     import logging
@@ -579,7 +587,7 @@ async def integrity_check(
     - Inactive template references (referenced template is inactive)
 
     Args:
-        status: Filter documents by status ('active', 'inactive', 'archived')
+        status: Filter documents by status ('active', 'inactive')
         template_id: Filter documents by template_id
         limit: Maximum number of documents to check (0 = all, default: all)
         check_term_refs: Whether to check term references (default true, can be slow)

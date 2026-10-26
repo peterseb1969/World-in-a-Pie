@@ -170,13 +170,12 @@ async def test_table_view_pagination(client: AsyncClient, auth_headers: dict, sa
 @pytest.mark.asyncio
 async def test_table_view_status_filter(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Table view filters by document status."""
-    # Create a document and then archive it
+    # Create a document and then soft-delete it
     result = await create_one(client, auth_headers, "PERSON", sample_person_data)
     doc_id = result["document_id"]
 
-    # Archive it
-    await client.post(
-        "/api/document-store/documents/archive",
+    await client.request(
+        "DELETE", "/api/document-store/documents",
         headers=auth_headers,
         json=[{"id": doc_id}],
     )
@@ -194,9 +193,9 @@ async def test_table_view_status_filter(client: AsyncClient, auth_headers: dict,
     assert response.status_code == 200
     assert response.json()["total_documents"] == 1
 
-    # Filter: archived
+    # Filter: inactive
     response = await client.get(
-        "/api/document-store/table/PERSON?status=archived",
+        "/api/document-store/table/PERSON?status=inactive",
         headers=auth_headers,
     )
     assert response.status_code == 200

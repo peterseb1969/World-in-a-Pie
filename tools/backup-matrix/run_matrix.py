@@ -474,7 +474,7 @@ ARCHIVE_TO_FIXTURE = {
 CONSERVED_KEYS = [
     "terminologies", "terms_active", "term_relations",
     "templates_active_versions", "templates_all_versions", "edge_types",
-    "documents_active_latest", "documents_archived_latest",
+    "documents_active_latest", "documents_deleted_latest",
     "document_versions_total", "files", "registry_entries",
 ]
 

@@ -722,7 +722,7 @@ Documents under an edge type additionally enforce:
 
 - `source_ref` and `target_ref` resolve to documents in templates listed in `source_templates` / `target_templates`
 - Both endpoints live in the same namespace as the relationship document (`cross_namespace_relationship` error otherwise — deferred to post-v2)
-- Neither endpoint is `archived` (`archived_relationship_endpoint` error otherwise)
+- An endpoint may be soft-deleted: the edge is accepted with a warning, as a plain reference to an inactive document is
 
 See `docs/api-conventions.md` for the API surface (the `/relationships` and `/traverse` endpoints) and `docs/design/document-relationships.md` for the design rationale.
 
@@ -788,7 +788,7 @@ class Document(BaseModel):
         default=1,
         description="Document version number"
     )
-    status: Literal["active", "inactive", "archived"] = Field(
+    status: Literal["active", "inactive"] = Field(
         default="active"
     )
     data: dict[str, Any] = Field(

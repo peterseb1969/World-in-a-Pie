@@ -148,7 +148,6 @@ Codes defined by `PATCH /documents`:
 |--------------|------|
 | `not_found` | Document does not exist or has been soft-deleted |
 | `forbidden` | Caller lacks write permission on the document's namespace |
-| `archived` | Latest version has `status=ARCHIVED` — unarchive first |
 | `identity_field_change` | Patch attempts to change a template-defined identity field — not allowed |
 | `append_only` | Template has empty `identity_fields` (append-only) — the document has no logical identity, only a surrogate `document_id`, so it cannot be PATCHed. The error carries remediation: create a new document, or declare `identity_fields` on the template (CASE-478) |
 | `concurrency_conflict` | `if_match` mismatch, or internal version race lost after retries |
@@ -184,7 +183,7 @@ Codes defined by def-store (terminologies, terms, term relations, merges). Its e
 | `registry_error` | The Registry refused or could not be reached | — |
 | `internal_error` | A fault on the server's side | — |
 
-Codes defined by document-store's create, delete, archive and file writes (`PATCH` above has its own table; edge-type codes are below):
+Codes defined by document-store's create, delete and file writes (`PATCH` above has its own table; edge-type codes are below):
 
 | `error_code` | When | `details.rule` (examples) |
 |--------------|------|---------------------------|
@@ -249,7 +248,6 @@ On `create_document` (or `update_document`) against a `usage: "relationship"` te
 | `error_code` | When |
 |---|---|
 | `cross_namespace_relationship` | `source_ref` or `target_ref` resolves to a document in a different namespace than the relationship document. Cross-namespace relationships are deferred to post-v2 — note that `allowed_external_refs` does **not** lift this: it governs plain reference fields only. Model a cross-namespace link as a plain document reference field instead (losing the relationship/traverse endpoints and edge reporting columns). |
-| `archived_relationship_endpoint` | `source_ref` or `target_ref` resolves to a document with `status == "archived"`. Endpoints must be active or inactive. |
 
 Both codes are the item's `error_code` on the one-item and the bulk create path alike; the `error` message still starts with the code for readers of the text. Branch on `error_code`.
 

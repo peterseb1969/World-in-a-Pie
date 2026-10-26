@@ -142,10 +142,6 @@ export class DocumentStoreService extends BaseService {
     })), 'DELETE')
   }
 
-  async archiveDocument(id: string, archivedBy?: string): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/documents/archive', { id, archived_by: archivedBy })
-  }
-
   // NOTE: restoreDocument was removed — no /documents/{id}/restore endpoint exists in the API spec.
 
   // ---- Validation ----

@@ -386,22 +386,6 @@ export function useDeleteDocument(
   })
 }
 
-export function useArchiveDocument(
-  options?: Omit<UseMutationOptions<BulkResultItem, Error, { id: string; archivedBy?: string }>, 'mutationFn'>,
-) {
-  const { onSuccess, ...restOptions } = options ?? {}
-  const client = useWipClient()
-  const queryClient = useQueryClient()
-  return useMutation({
-    ...restOptions,
-    mutationFn: ({ id, archivedBy }) => client.documents.archiveDocument(id, archivedBy),
-    onSuccess: (...args) => {
-      queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
-      onSuccess?.(...args)
-    },
-  })
-}
-
 // ============================================================================
 // FILE HOOKS
 // ============================================================================

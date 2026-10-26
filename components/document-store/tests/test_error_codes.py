@@ -3,7 +3,7 @@
 Callers branch on the code, not the English message. A one-item POST runs
 the single create path, two or more the bulk path: both must report the same
 code for the same failure. These also pin the not-found codes of the
-delete/archive routes, and the source gate over the whole package.
+delete route, and the source gate over the whole package.
 """
 
 from pathlib import Path
@@ -42,8 +42,6 @@ async def test_validation_failure_is_validation_failed(client: AsyncClient, auth
 
 
 @pytest.mark.asyncio
-async def test_delete_and_archive_missing_document_are_not_found(client: AsyncClient, auth_headers: dict):
+async def test_delete_missing_document_is_not_found(client: AsyncClient, auth_headers: dict):
     resp = await client.request("DELETE", DOCS, headers=auth_headers, json=[{"id": MISSING_ID}])
-    assert resp.json()["results"][0]["error_code"] == "not_found"
-    resp = await client.post(f"{DOCS}/archive", headers=auth_headers, json=[{"id": MISSING_ID}])
     assert resp.json()["results"][0]["error_code"] == "not_found"

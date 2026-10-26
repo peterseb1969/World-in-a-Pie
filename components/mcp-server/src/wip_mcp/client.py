@@ -1295,18 +1295,6 @@ class WipClient:
             f"/api/document-store/documents/{document_id}/versions",
         )
 
-    async def archive_document(self, document_id: str, archived_by: str | None = None, namespace: str | None = None) -> dict:
-        item: dict[str, Any] = {"id": document_id}
-        if archived_by:
-            item["archived_by"] = archived_by
-        resp = await self._post(
-            self.document_store_url,
-            "/api/document-store/documents/archive",
-            json=[item],
-            namespace=namespace or self.default_namespace,
-        )
-        return self._unwrap_single(resp)
-
     async def delete_document(
         self, document_id: str, hard_delete: bool = False,
         version: int | None = None, namespace: str | None = None,

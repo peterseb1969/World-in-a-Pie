@@ -124,7 +124,7 @@ class SyncWorker:
 
     async def _process_document_event(self, event_data: dict[str, Any]) -> bool:
         """
-        Process a document event (created, updated, deleted, archived).
+        Process a document event (created, updated, deleted).
 
         Returns True if successful, False otherwise.
         """
@@ -182,11 +182,11 @@ class SyncWorker:
         # Determine sync strategy
         strategy = config.sync_strategy.value
 
-        # Handle delete/archive events — both set the document as inactive in
-        # PG. The document's rows may live in ANY version table (its history
+        # Handle delete events — they mark the document deleted in PG. The
+        # document's rows may live in ANY version table (its history
         # can span template versions), so apply across all of them — a
         # document_id absent from a sibling table is a harmless no-op.
-        if event_type in (EventType.DOCUMENT_DELETED.value, EventType.DOCUMENT_ARCHIVED.value):
+        if event_type == EventType.DOCUMENT_DELETED.value:
             version_tables = await self.schema_manager.list_version_tables(
                 namespace, template_value, config
             )
@@ -213,7 +213,7 @@ class SyncWorker:
                 logger.info(f"Hard-deleted document {document_id} from {len(targets)} version table(s)")
                 return True
 
-            new_status = "archived" if event_type == EventType.DOCUMENT_ARCHIVED.value else "deleted"
+            new_status = "deleted"
             async with self.pool.acquire() as conn:
                 for target in targets:
                     await conn.execute(

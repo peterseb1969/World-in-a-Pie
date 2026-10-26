@@ -236,7 +236,7 @@ class WipClient:
 # Statuses the bulk-first API counts as success (see wip://conventions). Spans
 # the write verbs the fixture drives: create/upsert (created/updated/unchanged),
 # bulk skips (skipped/already_exists), synonym add (added), and the lifecycle
-# transitions (deleted/deactivated/archived/deprecated).
+# transitions (deleted/deactivated/deprecated).
 _OK_STATUSES = {
     "created",
     "updated",
@@ -246,7 +246,6 @@ _OK_STATUSES = {
     "already_exists",
     "deleted",
     "deactivated",
-    "archived",
     "deprecated",
 }
 

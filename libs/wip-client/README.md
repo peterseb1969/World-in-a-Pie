@@ -499,9 +499,8 @@ const versions = await client.documents.getVersions('my-document-id')
 // Look up by identity hash
 const byIdentity = await client.documents.getDocumentByIdentity('abc123hash')
 
-// Delete (soft-delete) and archive
+// Delete (soft-delete); re-posting the document's full data brings it back
 await client.documents.deleteDocument('my-document-id', 'user@example.com')
-await client.documents.archiveDocument('my-document-id', 'user@example.com')
 
 // Validate without creating
 const validation = await client.documents.validateDocument({

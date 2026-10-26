@@ -593,7 +593,7 @@ class FixtureBuilder:
 
     def _inactivate(self) -> None:
         # Retire one term (MATRIX_COLOR/GREY), one template version
-        # (MATRIX_SPECIMEN v3), and archive one document (SPEC-2).
+        # (MATRIX_SPECIMEN v3), and soft-delete one document (SPEC-2).
         grey = self._find_term(self.ns_a, "MATRIX_COLOR", "GREY")
         if grey and grey.get("status") == "active":
             check_bulk(
@@ -636,13 +636,13 @@ class FixtureBuilder:
         spec2 = self._find_document(self.ns_a, "MATRIX_SPECIMEN", "specimen_code", "SPEC-2")
         if spec2 and spec2.get("status") == "active":
             check_bulk(
-                self.c.post(
-                    "/api/document-store/documents/archive",
-                    json_body=[{"id": spec2["document_id"], "archived_by": self.created_by}],
+                self.c.delete(
+                    "/api/document-store/documents",
+                    json_body=[{"id": spec2["document_id"]}],
                 ),
-                context="archive SPEC-2",
+                context="soft-delete SPEC-2",
             )
-            self.report.step("NS-A document SPEC-2 archived (E12)")
+            self.report.step("NS-A document SPEC-2 soft-deleted (E12)")
 
     # --------------------------------------------------------------- teardown
 
@@ -702,16 +702,20 @@ class FixtureBuilder:
             if t.get("usage") == "relationship"
         )
         # Documents, split by status so the conservation asserts are unambiguous.
-        # latest_only WITHOUT a status filter includes archived — pass the
-        # status explicitly for each bucket.
+        # A soft-deleted document is one whose LATEST version is inactive. The
+        # list endpoint applies a status filter before it picks the latest
+        # version, so latest_only + status=inactive would also count the
+        # superseded versions of live documents. Count deleted documents as
+        # latest-of-every-status minus active instead.
         docs_active = self._get_total(
             "/api/document-store/documents",
             {"namespace": ns, "latest_only": True, "status": "active", "page_size": 1000},
         )
-        docs_archived = self._get_total(
+        docs_latest = self._get_total(
             "/api/document-store/documents",
-            {"namespace": ns, "latest_only": True, "status": "archived", "page_size": 1000},
+            {"namespace": ns, "latest_only": True, "page_size": 1000},
         )
+        docs_deleted = docs_latest - docs_active
         # Every version, every status — the all_versions sync-strategy baseline.
         doc_versions_total = self._count_all_doc_versions(ns)
         files = self._get_total(
@@ -730,7 +734,7 @@ class FixtureBuilder:
             "templates_all_versions": tpl_all.get("total", 0),
             "edge_types": edge_types,
             "documents_active_latest": docs_active,
-            "documents_archived_latest": docs_archived,
+            "documents_deleted_latest": docs_deleted,
             "document_versions_total": doc_versions_total,
             "files": files,
             "registry_entries": registry_total,

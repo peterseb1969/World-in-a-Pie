@@ -52,7 +52,7 @@ This is a structural safety mechanism — write tools are removed from the MCP t
 | Terms | `create_terms`, `update_term`, `delete_term`, `deprecate_term`, `merge_terms` |
 | Term Relations | `create_term_relations`, `delete_term_relations` |
 | Templates | `create_template`, `create_templates_bulk`, `create_edge_type`, `update_template`, `activate_template`, `deactivate_template`, `reactivate_template`, `add_edge_type_endpoints` |
-| Documents | `create_document`, `create_documents_bulk`, `update_document`, `archive_document`, `delete_document`, `delete_documents_bulk`, `migrate_documents` |
+| Documents | `create_document`, `create_documents_bulk`, `update_document`, `delete_document`, `delete_documents_bulk`, `migrate_documents` |
 | Files | `upload_file`, `delete_file`, `hard_delete_file` |
 | Import | `import_terminology`, `import_documents_csv` |
 | Reporting views | `register_reporting_view`, `delete_reporting_view` |
@@ -349,7 +349,6 @@ Templates are the schema for entity documents. **Edge types** — schemas for re
 | `get_document_versions(document_id)` | List all versions of a document with latest version and total count. |
 | `create_document(document)` | Create a single document. Term values are auto-resolved. |
 | `create_documents_bulk(documents)` | Create multiple documents. Returns per-item results. |
-| `archive_document(document_id)` | Archive (soft-delete) a document. |
 | `query_documents(filters)` | Query with complex field-level filters. |
 | `query_by_template(template_value, field_filters?, ...)` | Query by template value code. Auto-resolves template_value to template_id. Field names auto-prefixed with `data.`. |
 | `get_document_relationships(document_id, direction?, template?, namespace?, active_only?, page?, page_size?)` | List relationship documents (instances of edge types — templates with `usage='relationship'`) pointing at or from a document. Indexed on `data.source_ref` / `data.target_ref`. Direction: `incoming`, `outgoing`, or `both` (default `both`). |

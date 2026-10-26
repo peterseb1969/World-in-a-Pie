@@ -13,7 +13,6 @@ class DocumentStatus(StrEnum):
     """Status values for documents."""
     ACTIVE = "active"
     INACTIVE = "inactive"
-    ARCHIVED = "archived"
 
 
 class DocumentMetadata(BaseModel):

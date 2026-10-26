@@ -2,8 +2,8 @@
 
 Phase 1 (template-store) ensured that relationship templates have the
 right shape. Phase 2 (document-store) ensures that documents *created
-against* a relationship template have valid endpoints — same namespace,
-not archived — on top of the standard reference-field validation that
+against* a relationship template have valid endpoints — same namespace —
+on top of the standard reference-field validation that
 already verifies the source/target docs exist and live in the right
 template family.
 """

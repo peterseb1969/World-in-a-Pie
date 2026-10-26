@@ -374,7 +374,6 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 | `useUpdateDocument()` | `{ documentId, patch, ifMatch? }` | `BulkResultItem` | `documents.all` + `documents.detail` + `documents.versions` |
 | `useUpdateDocuments()` | `PatchDocumentRequest[]` | `BulkResponse` | `documents.all` |
 | `useDeleteDocument()` | `{ id, updatedBy? }` | `BulkResultItem` | `documents.all` |
-| `useArchiveDocument()` | `{ id, archivedBy? }` | `BulkResultItem` | `documents.all` |
 
 **Files**
 

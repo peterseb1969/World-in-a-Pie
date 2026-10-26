@@ -84,7 +84,7 @@ async def test_facets_status_filter_and_all(
     doc_a = await Document.find_one({
         "document_id": a["document_id"], "status": DocumentStatus.ACTIVE.value,
     })
-    doc_a.status = DocumentStatus.ARCHIVED
+    doc_a.status = DocumentStatus.INACTIVE
     await doc_a.save()
 
     active = (await client.get(
@@ -97,11 +97,11 @@ async def test_facets_status_filter_and_all(
     )).json()
     assert _facet_for(everything, "PERSON")["document_count"] == 2
 
-    archived = (await client.get(
+    deleted = (await client.get(
         FACETS, headers=auth_headers,
-        params={"namespace": "wip", "status": "archived"},
+        params={"namespace": "wip", "status": "inactive"},
     )).json()
-    assert _facet_for(archived, "PERSON")["document_count"] == 1
+    assert _facet_for(deleted, "PERSON")["document_count"] == 1
 
 
 @pytest.mark.asyncio
