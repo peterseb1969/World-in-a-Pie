@@ -456,8 +456,10 @@ class TestConfigKeyGrants:
 
         provider = api_keys_module._get_provider()
         record = self._spec_declared_record()
-        provider._keys.append(record)
-        api_keys_module._config_key_names.add(record.name)
+        config_before = [
+            k for k in provider.iter_keys() if k.name in provider.config_key_names()
+        ]
+        provider.reload_config_keys([*config_before, record])
         try:
             listed = await client.get(BASE, headers=auth_headers)
             assert listed.status_code == 200
@@ -472,8 +474,7 @@ class TestConfigKeyGrants:
             assert single.status_code == 200
             assert single.json()["grants"] == {"kb": "write"}
         finally:
-            provider._keys.remove(record)
-            api_keys_module._config_key_names.discard(record.name)
+            provider.reload_config_keys(config_before)
 
     @pytest.mark.asyncio
     async def test_runtime_key_grants_always_none(

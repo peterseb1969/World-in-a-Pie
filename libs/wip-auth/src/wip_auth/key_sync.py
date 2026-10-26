@@ -24,13 +24,15 @@ class KeySyncService:
         registry_url: str,
         api_key: str,
         provider: APIKeyProvider,
-        config_key_names: set[str],
+        config_key_names: set[str] | None = None,
         interval_seconds: int = 30,
     ):
+        # config_key_names is accepted for older callers and not used: the
+        # provider knows its current config keys, which a key-file reload
+        # may have changed since startup.
         self.registry_url = registry_url.rstrip("/")
         self.api_key = api_key
         self.provider = provider
-        self.config_key_names = config_key_names
         self.interval_seconds = interval_seconds
         self._task: asyncio.Task | None = None
         self._running = False
@@ -93,7 +95,7 @@ class KeySyncService:
                 for item in resp.json()
             ]
 
-            self.provider.replace_runtime_keys(records, self.config_key_names)
+            self.provider.replace_runtime_keys(records)
             logger.debug("Key sync complete: %d runtime key(s)", len(records))
 
         except httpx.HTTPStatusError as e:

@@ -86,8 +86,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     from wip_auth import APIKeyProvider
     for p in _app_providers:
         if isinstance(p, APIKeyProvider):
-            config_key_names = {k.name for k in p._keys}
-            configure_api_key_management(p, config_key_names)
+            configure_api_key_management(p)
             break
 
     # Create test namespaces

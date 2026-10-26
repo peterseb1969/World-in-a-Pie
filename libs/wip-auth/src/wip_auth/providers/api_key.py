@@ -10,9 +10,11 @@ Legacy SHA-256 hashes are detected and verified with a deprecation warning.
 import hashlib
 import hmac
 import logging
+import threading
 import time
 from collections import OrderedDict
 from datetime import UTC, datetime
+from typing import Any
 
 import bcrypt
 from fastapi import HTTPException, Request
@@ -118,6 +120,16 @@ class APIKeyProvider:
 
         # Store enabled keys for iteration-based bcrypt verification
         self._keys: list[APIKeyRecord] = [k for k in keys if k.enabled]
+        # The keys given here are the config keys (env and key file); keys
+        # added later are runtime keys. The set moves with every config
+        # reload, so the key sync never mistakes a new config key for a
+        # vanished runtime key.
+        self._config_names: frozenset[str] = frozenset(k.name for k in keys)
+        # Writers run on the event loop (key sync, runtime key API) and on
+        # the key-file watcher thread; readers take the current references.
+        self._lock = threading.Lock()
+        # Set by create_providers_from_config when the key file is watched.
+        self.file_watcher: Any = None
 
         # Cache: SHA-256(plaintext_key) → APIKeyRecord after first bcrypt verify.
         # Avoids re-running bcrypt (~170 ms per stored hash) on every request.
@@ -142,32 +154,46 @@ class APIKeyProvider:
         about them. Rejections are forgotten: one may be this new key.
         """
         if key.enabled:
-            self._keys.append(key)
-            self._rejected.clear()
+            with self._lock:
+                self._keys = [*self._keys, key]
+                self._rejected.clear()
 
     def remove_key(self, key_hash: str) -> bool:
         """Remove an API key by its hash, evicting only that key's cache entry."""
-        for i, key in enumerate(self._keys):
-            if key.key_hash == key_hash:
-                self._keys.pop(i)
-                self._verified_cache = {
-                    fp: rec for fp, rec in self._verified_cache.items() if rec.key_hash != key_hash
-                }
-                return True
-        return False
+        with self._lock:
+            for i, key in enumerate(self._keys):
+                if key.key_hash == key_hash:
+                    self._keys = self._keys[:i] + self._keys[i + 1:]
+                    self._verified_cache = {
+                        fp: rec for fp, rec in self._verified_cache.items()
+                        if rec.key_hash != key_hash
+                    }
+                    return True
+            return False
 
-    def replace_runtime_keys(
-        self, runtime_keys: list["APIKeyRecord"], config_key_names: set[str]
-    ) -> None:
-        """Replace all runtime keys atomically. Config keys are untouched.
+    def config_key_names(self) -> frozenset[str]:
+        """Names of the current config keys (env and key file)."""
+        return self._config_names
 
-        Runs on every key-sync poll (every 30 s in every service), so it keeps
-        the verified entries of keys that still exist — re-pointed at the
-        fresh records, whose groups or grants may have changed — and drops
-        only those of keys that were removed or disabled.
+    def reload_config_keys(self, config_keys: list["APIKeyRecord"]) -> None:
+        """Replace the config keys atomically, keeping the runtime keys.
+
+        The config-key names move in the same swap as the records: the key
+        sync preserves config keys by name, so a key added here must count as
+        a config key from the moment it exists, or the next sync drops it.
+        A runtime key whose name a config key now takes is dropped.
         """
-        config_keys = [k for k in self._keys if k.name in config_key_names]
-        self._keys = config_keys + [k for k in runtime_keys if k.enabled]
+        names = frozenset(k.name for k in config_keys)
+        with self._lock:
+            runtime = [
+                k for k in self._keys
+                if k.name not in self._config_names and k.name not in names
+            ]
+            self._keys = [k for k in config_keys if k.enabled] + runtime
+            self._config_names = names
+            self._rebuild_caches()
+
+    def _rebuild_caches(self) -> None:
         current = {k.key_hash: k for k in self._keys}
         self._verified_cache = {
             fp: current[rec.key_hash]
@@ -175,6 +201,33 @@ class APIKeyProvider:
             if rec.key_hash in current
         }
         self._rejected.clear()
+
+    def replace_runtime_keys(
+        self,
+        runtime_keys: list["APIKeyRecord"],
+        config_key_names: set[str] | None = None,
+    ) -> None:
+        """Replace all runtime keys atomically. Config keys are untouched.
+
+        Runs on every key-sync poll (every 30 s in every service), so it keeps
+        the verified entries of keys that still exist — re-pointed at the
+        fresh records, whose groups or grants may have changed — and drops
+        only those of keys that were removed or disabled.
+
+        Config keys are recognised by the provider's own current name set,
+        which a key-file reload keeps current. Passing `config_key_names`
+        declares that set instead; callers must not pass a startup snapshot,
+        since after a reload it is stale and would drop a new config key.
+        """
+        with self._lock:
+            if config_key_names is not None:
+                self._config_names = frozenset(config_key_names)
+            config_keys = [k for k in self._keys if k.name in self._config_names]
+            runtime = [
+                k for k in runtime_keys if k.enabled and k.name not in self._config_names
+            ]
+            self._keys = config_keys + runtime
+            self._rebuild_caches()
 
     def iter_keys(self) -> tuple[APIKeyRecord, ...]:
         """Read-only snapshot of the registered keys.

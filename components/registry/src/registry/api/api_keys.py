@@ -38,16 +38,18 @@ router = APIRouter()
 
 # Module-level reference to the APIKeyProvider, set during startup
 _api_key_provider: APIKeyProvider | None = None
-_config_key_names: set[str] = set()
 
 
-def configure_api_key_management(
-    provider: APIKeyProvider, config_key_names: set[str]
-) -> None:
-    """Called during startup to wire the provider and config key names."""
-    global _api_key_provider, _config_key_names
+def configure_api_key_management(provider: APIKeyProvider) -> None:
+    """Called during startup to wire the provider."""
+    global _api_key_provider
     _api_key_provider = provider
-    _config_key_names = config_key_names
+
+
+def _is_config_key(name: str) -> bool:
+    """A config-file key (cannot be changed through the API). Asked of the
+    provider each time: a key-file reload changes the set at runtime."""
+    return _api_key_provider is not None and name in _api_key_provider.config_key_names()
 
 
 def _get_provider() -> APIKeyProvider:
@@ -113,7 +115,7 @@ async def create_api_key(
         )
 
     # Reject name collision with config-file keys
-    if request.name in _config_key_names:
+    if _is_config_key(request.name):
         raise HTTPException(
             status_code=409,
             detail=f"Name '{request.name}' conflicts with a config-file key",
@@ -222,7 +224,7 @@ async def list_api_keys(
 
     # Config-file keys
     for record in provider.iter_keys():
-        if record.name in _config_key_names:
+        if _is_config_key(record.name):
             results.append(_config_key_to_response(record))
 
     # Runtime keys from MongoDB (source of truth for metadata)
@@ -290,7 +292,7 @@ async def get_api_key(
     provider = _get_provider()
 
     # Check config keys first
-    if name in _config_key_names:
+    if _is_config_key(name):
         for record in provider.iter_keys():
             if record.name == name:
                 return _config_key_to_response(record)
@@ -314,7 +316,7 @@ async def update_api_key(
     _admin: str = Depends(require_admin_key),
 ) -> APIKeyResponse:
     """Update metadata on a runtime API key. Config-file keys cannot be modified."""
-    if name in _config_key_names:
+    if _is_config_key(name):
         raise HTTPException(
             status_code=400,
             detail=f"Cannot modify config-file key '{name}' via API",
@@ -368,7 +370,7 @@ async def delete_api_key(
     _admin: str = Depends(require_admin_key),
 ) -> dict:
     """Hard-delete a runtime API key. Config-file keys cannot be deleted."""
-    if name in _config_key_names:
+    if _is_config_key(name):
         raise HTTPException(
             status_code=400,
             detail=f"Cannot delete config-file key '{name}' via API",

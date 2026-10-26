@@ -59,6 +59,7 @@ from .identity import (
     reset_current_identity,
     set_current_identity,
 )
+from .key_file_watch import APIKeysFileWatcher
 from .key_sync import KeySyncService
 from .liveness import install_liveness
 from .middleware import AuthMiddleware, create_auth_middleware
@@ -234,6 +235,7 @@ def create_providers_from_config(
             ))
 
         providers.append(api_key_provider)
+        _watch_api_keys_file(config, api_key_provider)
 
     elif config.mode == "jwt_only":
         # JWT only - create OIDC provider
@@ -291,8 +293,28 @@ def create_providers_from_config(
 
         if dual_key_provider is not None:
             providers.append(dual_key_provider)
+            _watch_api_keys_file(config, dual_key_provider)
 
     return providers
+
+
+def _watch_api_keys_file(config: AuthConfig, provider: APIKeyProvider) -> None:
+    """Apply changes to WIP_AUTH_API_KEYS_FILE without a restart.
+
+    The whole key configuration is re-loaded (env keys are static, so they
+    come back unchanged) and swapped into the provider in one step. The
+    watcher is kept on the provider so its lifetime is the provider's.
+    """
+    if not config.api_keys_file or config.api_keys_file_reload_seconds <= 0:
+        return
+    watcher = APIKeysFileWatcher(
+        config.api_keys_file,
+        config.load_api_keys,
+        provider,
+        interval_seconds=config.api_keys_file_reload_seconds,
+    )
+    provider.file_watcher = watcher
+    watcher.start()
 
 
 def setup_auth(
@@ -393,13 +415,10 @@ async def setup_key_sync(
     if api_key_provider is None:
         return None
 
-    config_key_names = {k.name for k in api_key_provider.iter_keys()}
-
     sync_service = KeySyncService(
         registry_url=registry_url,
         api_key=api_key,
         provider=api_key_provider,
-        config_key_names=config_key_names,
         interval_seconds=interval_seconds,
     )
     await sync_service.start()

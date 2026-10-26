@@ -108,6 +108,13 @@ class AuthConfig(BaseSettings):
         default=None,
         description="Path to JSON file containing API key definitions"
     )
+    api_keys_file_reload_seconds: float = Field(
+        default=10.0,
+        description=(
+            "How often to check the API key file for changes and apply them "
+            "without a restart; 0 disables the reload"
+        ),
+    )
     api_key_header: str = Field(
         default="X-API-Key",
         description="HTTP header name for API key authentication"
