@@ -77,12 +77,33 @@ def configured_api_key() -> str | None:
         return key
     key_file = os.getenv("WIP_API_KEY_FILE")
     if key_file:
-        try:
-            return open(key_file).read().strip() or None
-        except OSError as e:
-            import logging
-            logging.getLogger("wip_mcp").warning("Cannot read WIP_API_KEY_FILE %s: %s", key_file, e)
+        return _read_key_file(key_file)
     return None
+
+
+# path -> (stat signature, key). WIP_API_KEY_FILE is re-read whenever the file
+# changes, so a key rotation reaches a running server without a reconnect.
+_key_file_cache: dict[str, tuple[tuple[int, int, int], str | None]] = {}
+
+
+def _read_key_file(path: str) -> str | None:
+    """The key in `path`, re-read only when the file changed (one `stat`
+    per call otherwise). An unreadable file keeps the last good key: a
+    rotation that briefly removes the file must not cut the server off."""
+    cached = _key_file_cache.get(path)
+    try:
+        st = os.stat(path)
+        signature = (st.st_mtime_ns, st.st_size, st.st_ino)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        with open(path) as f:
+            key = f.read().strip() or None
+    except OSError as e:
+        import logging
+        logging.getLogger("wip_mcp").warning("Cannot read WIP_API_KEY_FILE %s: %s", path, e)
+        return cached[1] if cached is not None else None
+    _key_file_cache[path] = (signature, key)
+    return key
 
 
 def _resolve_api_key() -> str:
@@ -114,7 +135,8 @@ class WipClient:
         access). The client owns the `/api/<service>/...` path prefix
         and appends it at call sites.
       - `api_key` → `_resolve_api_key()`, which reads WIP_API_KEY, then
-        WIP_API_KEY_FILE (for key rotation without editing .mcp.json),
+        WIP_API_KEY_FILE (re-read whenever the file changes, so a rotation
+        needs neither an .mcp.json edit nor a reconnect),
         then falls back to the dev default.
       - `verify_tls` → `WIP_VERIFY_TLS`. `false` / `0` / `no` disables
         verification — intended for local dev against a self-signed
@@ -162,7 +184,9 @@ class WipClient:
         self.reporting_sync_url: str = (
             base or reporting_sync_url or os.getenv("REPORTING_SYNC_URL") or "http://localhost:8005"
         )
-        self.api_key = api_key or _resolve_api_key()
+        # An explicit key stays fixed; otherwise the key is resolved on each
+        # use, so a rotated WIP_API_KEY_FILE takes effect without a restart.
+        self._explicit_api_key = api_key
         self.default_namespace = os.getenv("WIP_MCP_DEFAULT_NAMESPACE")
         self.timeout = timeout
         self._verify_tls = (
@@ -182,6 +206,10 @@ class WipClient:
         return resolved
 
     @property
+    def api_key(self) -> str:
+        return self._explicit_api_key or _resolve_api_key()
+
+    @property
     def _headers(self) -> dict[str, str]:
         # No Content-Type here: a client-level default would override the
         # per-request value httpx derives from the body (json= → JSON,
@@ -198,6 +226,9 @@ class WipClient:
                 timeout=self.timeout,
                 verify=self._verify_tls,
             )
+        else:
+            # The key may have rotated since the client was built.
+            self._client.headers["X-API-Key"] = self.api_key
         return self._client
 
     async def close(self):

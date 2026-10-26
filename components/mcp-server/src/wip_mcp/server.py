@@ -5103,7 +5103,6 @@ def build_network_app(transport: str):
         from starlette.middleware.base import BaseHTTPMiddleware
 
         _UNAUTH_PATHS = {"/health"}
-        expected = api_key.encode()
 
         class ApiKeyMiddleware(BaseHTTPMiddleware):
             # Header only: a key in the query string ends up in access and
@@ -5112,6 +5111,9 @@ def build_network_app(transport: str):
                 if request.url.path in _UNAUTH_PATHS:
                     return await call_next(request)
                 key = request.headers.get("x-api-key") or ""
+                # Resolved per request: the key this server accepts must move
+                # with the key it acts with, which follows a rotated key file.
+                expected = (configured_api_key() or api_key).encode()
                 if not hmac.compare_digest(key.encode(), expected):
                     return JSONResponse(
                         {"error": "Missing or invalid API key. Pass X-API-Key header."},

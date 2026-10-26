@@ -115,7 +115,7 @@ The server authenticates to WIP services using an API key, resolved in priority 
 1. `WIP_API_KEY` — direct env var (set by host-spawned stdio servers / apps)
 2. `MASTER_API_KEY` — set by the deployer via the component manifest (`MASTER_API_KEY: from_secret: api-key`)
 3. `API_KEY` — generic fallback the deployer may set
-4. `WIP_API_KEY_FILE` — path to a file containing the key, read once when the server starts: after a key rotation no config change is needed, but a running server keeps the old key (and gets 401) until it is restarted or reconnected
+4. `WIP_API_KEY_FILE` — path to a file containing the key. A running server re-reads it whenever the file changes, so a rotated key takes effect on the next call with no config change and no reconnect (a key set in 1–3 stays fixed for the life of the process)
 5. Fallback: `dev_master_key_for_testing` (local development only)
 
 The HTTP/SSE transports require every request (except `GET /health`) to carry

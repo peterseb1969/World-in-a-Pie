@@ -52,6 +52,7 @@ Each test maps 1:1 to a bug shipped in the 2026-04-22..24 window:
 from __future__ import annotations
 
 import ast
+import os
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -647,3 +648,77 @@ async def test_search_registry_uses_entries_search_route() -> None:
     assert called_url == "https://h:8443/api/registry/entries/search", called_url
     params = mock_http.get.call_args.kwargs.get("params", {})
     assert params.get("q") == "widget", params
+
+
+# ---------------------------------------------------------------------------
+# CASE-884 — a running server follows a rotated WIP_API_KEY_FILE
+# ---------------------------------------------------------------------------
+
+
+def _rotate(path, key: str) -> None:
+    path.write_text(key)
+    # Make the change visible to the stat signature even within one tick.
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+
+def test_client_follows_a_rotated_key_file(clean_api_key_env, tmp_path) -> None:
+    key_file = tmp_path / "api.key"
+    key_file.write_text("old-key")
+    clean_api_key_env.setenv("WIP_API_KEY_FILE", str(key_file))
+    client = WipClient()
+    assert client.api_key == "old-key"
+
+    _rotate(key_file, "new-key")
+    assert client.api_key == "new-key"
+
+
+def test_unreadable_key_file_keeps_the_last_key(clean_api_key_env, tmp_path) -> None:
+    key_file = tmp_path / "api.key"
+    key_file.write_text("good-key")
+    clean_api_key_env.setenv("WIP_API_KEY_FILE", str(key_file))
+    client = WipClient()
+    assert client.api_key == "good-key"
+    key_file.unlink()
+    assert client.api_key == "good-key"
+
+
+def test_explicit_key_stays_fixed(clean_api_key_env, tmp_path) -> None:
+    key_file = tmp_path / "api.key"
+    key_file.write_text("file-key")
+    clean_api_key_env.setenv("WIP_API_KEY_FILE", str(key_file))
+    client = WipClient(api_key="explicit")
+    _rotate(key_file, "rotated")
+    assert client.api_key == "explicit"
+
+
+@pytest.mark.asyncio
+async def test_shared_http_client_sends_the_rotated_key(clean_api_key_env, tmp_path) -> None:
+    key_file = tmp_path / "api.key"
+    key_file.write_text("old-key")
+    clean_api_key_env.setenv("WIP_API_KEY_FILE", str(key_file))
+    client = WipClient()
+    http = await client._get_client()
+    assert http.headers["X-API-Key"] == "old-key"
+
+    _rotate(key_file, "new-key")
+    assert (await client._get_client()).headers["X-API-Key"] == "new-key"
+    await client.close()
+
+
+def test_network_transport_accepts_the_rotated_key(clean_api_key_env, tmp_path) -> None:
+    """The key the server accepts moves with the key it acts with."""
+    from starlette.testclient import TestClient
+
+    from wip_mcp.server import build_network_app
+
+    key_file = tmp_path / "api.key"
+    key_file.write_text("old-key")
+    clean_api_key_env.setenv("WIP_API_KEY_FILE", str(key_file))
+    app = build_network_app("sse")
+    with TestClient(app) as http:
+        probe = "/messages/"
+        assert http.post(probe, headers={"X-API-Key": "old-key"}).status_code != 401
+        _rotate(key_file, "new-key")
+        assert http.post(probe, headers={"X-API-Key": "old-key"}).status_code == 401
+        assert http.post(probe, headers={"X-API-Key": "new-key"}).status_code != 401
