@@ -532,7 +532,7 @@ def _healthcheck_block(owner: Component | App) -> dict[str, Any] | None:
         port = _resolve_check_port(owner, hc.port)
         assert hc.endpoint is not None  # enforced by HealthcheckSpec validator
         url = f"http://localhost:{port}{hc.endpoint}"
-        shell_cmd = _http_probe_cmd(hc.probe, url)
+        shell_cmd = _http_probe_cmd(hc.probe, url, hc.timeout_seconds)
 
     return {
         "test": ["CMD-SHELL", shell_cmd],
@@ -543,24 +543,34 @@ def _healthcheck_block(owner: Component | App) -> dict[str, Any] | None:
     }
 
 
-def _http_probe_cmd(probe: str, url: str) -> str:
+def _http_probe_cmd(probe: str, url: str, timeout_seconds: int) -> str:
     """Build the shell-embedded HTTP probe for a healthcheck.
 
     `auto` emits a chained `curl || wget` so the same manifest works
     against images that ship either tool (v1.1.x app images ship wget
     only; most WIP service images ship curl). `-f` / `-q -O -` make
     the probe silent and exit non-zero on non-2xx.
+
+    The probe bounds its own run time with `timeout_seconds`. The compose
+    `timeout` field only marks a run unhealthy; it does not stop the probe
+    process. Against a service that accepts connections but never answers,
+    an unbounded curl stays alive and one more is started every interval,
+    so the container fills with hung probes.
     """
     import shlex as _shlex
 
     q = _shlex.quote(url)
+    t = int(timeout_seconds)
     if probe == "curl":
-        return f"curl -fsS {q}"
+        return f"curl -fsS --max-time {t} {q}"
     if probe == "wget":
-        return f"wget -qO- {q}"
+        return f"wget -qO- -T {t} {q}"
     # auto: prefer curl, fall back to wget — works on any image that has
     # either. Images with neither simply shouldn't declare an HTTP check.
-    return f"sh -c 'command -v curl >/dev/null 2>&1 && curl -fsS {q} || wget -qO- {q}'"
+    return (
+        f"sh -c 'command -v curl >/dev/null 2>&1 && curl -fsS --max-time {t} {q}"
+        f" || wget -qO- -T {t} {q}'"
+    )
 
 
 def _resolve_check_port(owner: Component | App, explicit: str | None) -> int:

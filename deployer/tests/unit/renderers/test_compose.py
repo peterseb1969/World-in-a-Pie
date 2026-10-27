@@ -381,6 +381,33 @@ class TestComposeYaml:
                 if c.metadata.name == "registry" and c.spec.healthcheck:
                     c.spec.healthcheck.probe = "auto"
 
+    @pytest.mark.parametrize("probe", ["auto", "curl", "wget"])
+    def test_healthcheck_http_probe_bounds_its_own_run_time(
+        self, probe: str, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """The compose `timeout` only marks a run unhealthy; it does not
+        stop the probe process. Against a service that accepts connections
+        but never answers, an unbounded curl/wget stays alive and one more
+        starts every interval. Each form must carry its own time bound,
+        equal to the check's timeout_seconds."""
+        reg = next(
+            c for c in real_discovery.components if c.metadata.name == "registry"
+        )
+        original = reg.spec.healthcheck.probe
+        reg.spec.healthcheck.probe = probe
+        try:
+            doc = self._render_compose(tmp_path, real_discovery)
+            hc = doc["services"]["registry"]["healthcheck"]
+            seconds = reg.spec.healthcheck.timeout_seconds
+            assert hc["timeout"] == f"{seconds}s"
+            cmd = hc["test"][1]
+            if probe in ("auto", "curl"):
+                assert f"curl -fsS --max-time {seconds} " in cmd
+            if probe in ("auto", "wget"):
+                assert f"wget -qO- -T {seconds} " in cmd
+        finally:
+            reg.spec.healthcheck.probe = original
+
     def test_healthcheck_command_emits_cmd_shell_quoted(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
