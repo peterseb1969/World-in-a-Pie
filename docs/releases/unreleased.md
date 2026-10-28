@@ -458,6 +458,21 @@ twice), a path the document-store does not serve.
 active after an overwrite merge) pass `older_versions: keep`. Apps re-vendor
 `wip-client-0.65.0.tgz` to get the typed option.
 
+### Reporting parity counts live documents on both sides
+
+The parity check (`check_reporting_parity`, and the count phase at the end of
+every restore) compared the number of active document VERSION rows in MongoDB
+with every row in the reporting tables. Two correct states failed it:
+- **A document soft-deleted after reporting had synced it:** its row stays,
+  with status `deleted`, and was counted. Such a namespace reported a
+  mismatch, and a merge into it waited the full 90 seconds and warned.
+- **A document with several active versions** (left by a merge with
+  `older_versions: keep`): counted once per version on the MongoDB side.
+
+Both sides now count live documents: documents whose latest version is active
+(the `latest_only=true` count), against reporting rows that are not `deleted`.
+`all_versions` templates are still not compared.
+
 ### `latest_only` + `status` filters on each document's latest version
 
 With `GET /api/document-store/documents?latest_only=true`, a `status` filter

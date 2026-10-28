@@ -8,7 +8,7 @@ reported as unusable (the silent-empty-reporting incident class), and a
 correctly built table verifies structurally green.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -166,3 +166,71 @@ async def test_missing_table_is_a_structural_issue(pg_pool):
     assert result.structural_issues == 1
     assert result.templates[0].table_present is False
     assert result.ok is False
+
+
+# ---------------------------------------------------------------------------
+# Counts: both sides count live documents
+# ---------------------------------------------------------------------------
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_a_soft_deleted_document_is_not_counted(pg_pool):
+    """A soft delete leaves the document's row with status 'deleted'. It is
+    not live, so the expected side (documents whose latest version is
+    active) does not count it either, and the two must agree."""
+    async with pg_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE _wip_schema_migrations (
+                namespace VARCHAR(255) NOT NULL DEFAULT 'wip',
+                template_value TEXT NOT NULL,
+                template_version INTEGER NOT NULL,
+                migration_sql TEXT NOT NULL,
+                PRIMARY KEY (namespace, template_value, template_version)
+            )
+        """)
+
+    sm = SchemaManager(pg_pool)
+    config = ReportingConfig()
+    fields = SchemaManager.parse_template_fields(TEMPLATE["fields"])
+    await sm.create_table("parityns", "PARITY_T", 1, fields, config)
+    table = sm.get_table_name("PARITY_T", config, 1)
+    async with pg_pool.acquire() as conn:
+        for doc_id, status in (("D1", "active"), ("D2", "deleted"), ("D3", "active")):
+            await conn.execute(
+                f'INSERT INTO "{sm.schema_for("parityns")}"."{table}" '
+                "(document_id, namespace, template_id, template_version, version, "
+                "status, identity_hash, created_at) "
+                "VALUES ($1, 'parityns', 'tpl-1', 1, 1, $2, $1, now())",
+                doc_id, status,
+            )
+
+    p_t, p_d = _patch_http([TEMPLATE], doc_total=2)
+    with p_t, p_d:
+        result = await check_namespace_parity(pg_pool, "parityns", include_counts=True)
+
+    row = result.templates[0]
+    assert (row.expected_documents, row.actual_rows) == (2, 2)
+    assert row.counts_match is True
+
+
+@pytest.mark.asyncio
+async def test_expected_counts_each_document_once():
+    """Several active versions of one document (a merge with
+    older_versions=keep) are one live document: the count asks for the
+    latest version per document."""
+    from reporting_sync import parity
+
+    response = MagicMock()
+    response.json.return_value = {"total": 3}
+    client = MagicMock()
+    client.get = AsyncMock(return_value=response)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("reporting_sync.parity.httpx.AsyncClient", return_value=client):
+        assert await parity._expected_document_total("tpl-1") == 3
+
+    params = client.get.call_args.kwargs["params"]
+    assert params["latest_only"] == "true"
+    assert params["status"] == "active"

@@ -44,7 +44,9 @@ class TemplateParity(BaseModel):
     write against latest would land in — and ``missing_columns`` is checked
     against it. ``actual_rows`` aggregates across every version table (a
     document lives in exactly one under latest_only, so the sum is the
-    entity count). The field names and their pass/fail meaning are stable
+    entity count), leaving out rows of soft-deleted documents.
+    ``expected_documents`` counts documents whose latest version is active,
+    once each. Both sides count live documents. The field names and their pass/fail meaning are stable
     on purpose: the restore engine's structural gate and count-parity
     phases consume them.
     """
@@ -125,13 +127,19 @@ async def _fetch_namespace_templates(namespace: str) -> list[dict[str, Any]]:
 
 
 async def _expected_document_total(template_id: str) -> int:
-    """Active-document total from document-store — the identical query the
-    batch sync pages through, asked for its count only."""
+    """How many documents of the template are live: those whose LATEST
+    version is active, one per document.
+
+    That is what a latest_only reporting table holds a live row for. Counting
+    active version rows instead would count a document twice when several of
+    its versions are active (a merge with older_versions=keep leaves that),
+    and the comparison would fail on correct data.
+    """
     async with httpx.AsyncClient() as client:
         response = await client.get(
             f"{settings.document_store_url}/api/document-store/documents",
             params={"template_id": template_id, "status": "active",
-                    "page": 1, "page_size": 1},
+                    "latest_only": "true", "page": 1, "page_size": 1},
             headers={"X-API-Key": settings.api_key},
             timeout=30.0,
         )
@@ -246,11 +254,14 @@ async def check_namespace_parity(
                     )
                     # A document lives in exactly one version table under
                     # latest_only — the entity count is the sum across them.
+                    # A soft-deleted document keeps its row with status
+                    # 'deleted'; it is not live, so it is not counted.
                     total_rows = 0
                     async with pool.acquire() as conn:
                         for _v, vt in version_tables.items():
                             total_rows += int(await conn.fetchval(
-                                f'SELECT count(*) FROM "{schema}"."{vt}"'  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
+                                f'SELECT count(*) FROM "{schema}"."{vt}" '  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
+                                "WHERE status <> 'deleted'"
                             ) or 0)
                     row.actual_rows = total_rows
                     row.counts_match = row.expected_documents == row.actual_rows

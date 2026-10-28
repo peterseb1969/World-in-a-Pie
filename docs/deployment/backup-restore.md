@@ -181,12 +181,12 @@ head:
 
 - `retire` (default) — they are soft-deleted (`inactive`), exactly as a
   normal write retires the version it supersedes. The document has one active
-  version, and reporting parity holds.
+  version.
 - `keep` — they stay `active` beside the new head. A document with several
   active versions is legal, like several active template versions, but it is a
-  choice: every query by `status=active` returns them all, and the post-merge
-  parity check (which counts active versions) reports the difference as a
-  warning.
+  choice: every query by `status=active` returns them all. Reporting still
+  holds one row per document (the latest version), and the parity check counts
+  documents, not versions, so it passes either way.
 
 A merge refuses outright on one thing no policy covers: **one ID naming two
 different entities** across the two sides. Matching is by content, so the same
