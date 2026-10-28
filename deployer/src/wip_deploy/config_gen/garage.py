@@ -41,6 +41,14 @@ GARAGE_RPC_PORT = 3901
 GARAGE_ADMIN_PORT = 3903
 
 GARAGE_BUCKET = "wip-attachments"
+# Backup and restore archives (document-store's archive store). Without it
+# provisioned, every archive stays in container scratch, swept after a day
+# and lost with the container — the files key cannot create buckets itself.
+GARAGE_BACKUP_BUCKET = "wip-backups"
+# Every bucket provisioning creates and grants the files key on. Each name is
+# also a literal in document-store's manifest (WIP_FILE_STORAGE_BUCKET,
+# WIP_BACKUP_BUCKET); a deployer test keeps the two in step.
+GARAGE_BUCKETS = (GARAGE_BUCKET, GARAGE_BACKUP_BUCKET)
 GARAGE_KEY_NAME = "wip-files"
 
 SECRET_RPC = "garage-rpc-secret"

@@ -41,10 +41,13 @@ import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from beanie.odm.operators.update.array import Push
+
 from ..models.backup_job import BackupJob, BackupJobKind
 from .file_storage_client import (
     FileStorageClient,
     FileStorageError,
+    FileStorageUnavailableError,
     is_file_storage_enabled,
 )
 
@@ -77,6 +80,21 @@ def retention_hours() -> float:
         return float(os.getenv("WIP_BACKUP_RETENTION_HOURS", "24"))
     except ValueError:
         return 24.0
+
+
+def scratch_only_warning(what: str, reason: BaseException) -> str:
+    """The job warning for an archive the object store did not take.
+
+    The job still completes — the archive exists — but it is not durable,
+    and a log line is not where an operator looks.
+    """
+    hours = retention_hours()
+    swept = f"cleared after {hours:g} hours" if hours > 0 else "not swept"
+    return (
+        f"{what} could not be stored in the object store ({reason}); it is kept only "
+        f"in this service's scratch storage, which is {swept} and does not survive "
+        "a container restart."
+    )
 
 
 class ArchiveStore:
@@ -254,11 +272,15 @@ class ArchiveStore:
         try:
             await self._ensure_bucket()
             await self._storage().upload_file(key, str(scratch))
-        except FileStorageError:
+        except (FileStorageError, FileStorageUnavailableError) as e:
             logger.exception(
                 "Archive upload to bucket failed for %s — archive retained locally",
                 job.job_id,
             )
+            await job.update(Push({BackupJob.warnings: (
+                scratch_only_warning("The archive", e)
+                + f" Download it now: GET /api/document-store/backup/jobs/{job.job_id}/download."
+            )}))
             return
         # Atomic field update, never a full-document save: this runs after a
         # slow bucket upload, and other writers (the validation back-link)
@@ -307,11 +329,14 @@ class ArchiveStore:
                     BackupJob.archive_backend: BACKEND_MINIO,
                     BackupJob.archive_path: key,
                 })
-            except FileStorageError:
+            except (FileStorageError, FileStorageUnavailableError) as e:
                 logger.exception(
                     "Restore-input upload to bucket failed for %s — input retained locally",
                     job.job_id,
                 )
+                await job.update(Push({BackupJob.warnings: scratch_only_warning(
+                    "The restore's input archive", e,
+                )}))
                 return
         with contextlib.suppress(OSError):
             scratch.unlink()

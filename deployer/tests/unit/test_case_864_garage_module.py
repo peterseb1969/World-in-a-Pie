@@ -21,6 +21,9 @@ import yaml
 
 from wip_deploy.apply import ApplyError, _provision_garage_if_active
 from wip_deploy.config_gen.garage import (
+    GARAGE_BACKUP_BUCKET,
+    GARAGE_BUCKET,
+    GARAGE_BUCKETS,
     GARAGE_SECRET_NAMES,
     SECRET_KEY_ID,
     SECRET_KEY_SECRET,
@@ -269,6 +272,59 @@ class TestProvisioning:
                 d, real_discovery.components, exec_prefix=["x"], cwd=None
             )
 
+    def test_every_bucket_is_created_and_granted(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """The files key may not create buckets, so provisioning must create
+        each one a service writes to — the archive bucket included (CASE-960:
+        it was never created, and every backup archive stayed in scratch)."""
+        d = self._deployment_with_secrets(tmp_path)
+        existing: dict[str, str] = {}
+        created: list[str] = []
+        granted: list[str] = []
+
+        def fake_run(argv, cwd=None, input=None, capture_output=True, text=True, check=True):
+            import subprocess as sp
+            tail = argv[argv.index("/garage") + 1:]
+            out, code = "{}", 0
+            if tail[:2] == ["json-api", "GetClusterLayout"]:
+                out = json.dumps({"roles": [{"id": "n1"}], "version": 1})
+            elif tail[:2] == ["json-api", "GetBucketInfo"]:
+                alias = json.loads(input)["globalAlias"]
+                if alias in existing:
+                    out = json.dumps({"id": existing[alias]})
+                else:
+                    code = 1
+            elif tail[:2] == ["json-api", "CreateBucket"]:
+                alias = json.loads(input)["globalAlias"]
+                created.append(alias)
+                existing[alias] = f"id-{alias}"
+            elif tail[:2] == ["json-api", "AllowBucketKey"]:
+                payload = json.loads(input)
+                assert payload["permissions"] == {"read": True, "write": True, "owner": True}
+                granted.append(payload["bucketId"])
+            if check and code != 0:
+                raise sp.CalledProcessError(code, argv)
+            return sp.CompletedProcess(argv, code, stdout=out, stderr="")
+
+        with patch("wip_deploy.apply.subprocess.run", side_effect=fake_run):
+            _provision_garage_if_active(
+                d, real_discovery.components, exec_prefix=["x"], cwd=None
+            )
+        assert created == list(GARAGE_BUCKETS)
+        assert granted == [f"id-{b}" for b in GARAGE_BUCKETS]
+        assert GARAGE_BACKUP_BUCKET in GARAGE_BUCKETS
+
+        # A re-run finds both and creates nothing, but grants again.
+        created.clear()
+        granted.clear()
+        with patch("wip_deploy.apply.subprocess.run", side_effect=fake_run):
+            _provision_garage_if_active(
+                d, real_discovery.components, exec_prefix=["x"], cwd=None
+            )
+        assert created == []
+        assert granted == [f"id-{b}" for b in GARAGE_BUCKETS]
+
     def test_inactive_garage_is_a_noop(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
@@ -278,3 +334,18 @@ class TestProvisioning:
                 d, real_discovery.components, exec_prefix=["x"], cwd=None
             )
         assert run.call_count == 0
+
+
+def test_document_store_buckets_are_the_provisioned_ones(real_discovery: Discovery) -> None:
+    """Document-store names its buckets as literals in its manifest; the
+    deployer provisions GARAGE_BUCKETS. A bucket named on one side only is a
+    write that fails at runtime (CASE-960), so the two must stay equal."""
+    store = next(c for c in real_discovery.components if c.metadata.name == "document-store")
+    literals = {
+        v.name: v.source.literal
+        for v in store.spec.env.required + store.spec.env.optional
+    }
+    assert literals["WIP_FILE_STORAGE_BUCKET"] == GARAGE_BUCKET
+    assert literals["WIP_BACKUP_BUCKET"] == GARAGE_BACKUP_BUCKET
+    named = {literals["WIP_FILE_STORAGE_BUCKET"], literals["WIP_BACKUP_BUCKET"]}
+    assert named == set(GARAGE_BUCKETS)

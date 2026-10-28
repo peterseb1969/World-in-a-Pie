@@ -116,6 +116,27 @@ Two cross-cutting changes ship with it:
 - New route primitive `upstream_host_header` on component manifests,
   honored by both renderers.
 
+### Backup archives reach the object store on Garage installs
+
+Document-store keeps backup and restore archives in their own bucket,
+`wip-backups`. Provisioning created only `wip-attachments`, and the files key
+may not create buckets, so on every Garage install each archive stayed in
+document-store's scratch storage: cleared after `WIP_BACKUP_RETENTION_HOURS`
+(default 24) and lost with the container, while the job reported `complete`.
+
+- Provisioning now creates `wip-backups` and grants the files key on it,
+  idempotently, next to `wip-attachments`; document-store's manifest names the
+  bucket explicitly (`WIP_BACKUP_BUCKET`).
+- A backup or restore whose archive could not be stored in the object store —
+  missing bucket, refused write, or a store that is down — still completes, but
+  the job now carries a warning saying the archive is in scratch only, until
+  when, and (for a backup) where to download it.
+
+**Action:** run `wip-deploy redeploy` on each Garage install to create the
+bucket. Until then, download any backup you need to keep
+(`GET /api/document-store/backup/jobs/{id}/download`) before the scratch sweep
+or a container restart removes it.
+
 ### ingest-gateway requires authentication
 
 Every ingest-gateway route requires an API key except

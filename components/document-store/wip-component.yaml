@@ -67,6 +67,9 @@ spec:
       - {name: WIP_FILE_STORAGE_ACCESS_KEY, source: {from_secret: garage-key-id}}
       - {name: WIP_FILE_STORAGE_SECRET_KEY, source: {from_secret: garage-key-secret}}
       - {name: WIP_FILE_STORAGE_BUCKET, source: {literal: wip-attachments}}
+      # Backup/restore archives; the deployer provisions this bucket for the
+      # files key, which cannot create buckets itself.
+      - {name: WIP_BACKUP_BUCKET, source: {literal: wip-backups}}
       - {name: CORS_ORIGINS, source: {from_spec: network.cors_origins}}
 
   # NATS user for this service (config_gen/nats.py). It may publish only the

@@ -43,7 +43,7 @@ from typing import Any
 import yaml
 
 from wip_deploy.config_gen.garage import (
-    GARAGE_BUCKET,
+    GARAGE_BUCKETS,
     GARAGE_KEY_NAME,
     SECRET_KEY_ID,
     SECRET_KEY_SECRET,
@@ -1173,22 +1173,24 @@ def _provision_garage_if_active(
             f"{proc.stderr.strip() or proc.stdout.strip()}"
         )
 
-    # 3. Bucket + grant.
-    lookup = json.dumps({"globalAlias": GARAGE_BUCKET})
-    proc = run(["json-api", "GetBucketInfo", "-"], stdin=lookup, check=False)
-    if proc.returncode != 0:
-        api("CreateBucket", lookup)
-        proc = run(["json-api", "GetBucketInfo", "-"], stdin=lookup)
-    bucket_id = json.loads(proc.stdout)["id"]
-    api("AllowBucketKey", json.dumps({
-        "bucketId": bucket_id,
-        "accessKeyId": key_id,
-        "permissions": {"read": True, "write": True, "owner": True},
-    }))
-    print(
-        f"  garage: bucket {GARAGE_BUCKET!r} ready for key {GARAGE_KEY_NAME!r}",
-        file=sys.stderr,
-    )
+    # 3. Buckets + grants. The key may not create buckets, so every bucket a
+    # service writes to is created here.
+    for bucket in GARAGE_BUCKETS:
+        lookup = json.dumps({"globalAlias": bucket})
+        proc = run(["json-api", "GetBucketInfo", "-"], stdin=lookup, check=False)
+        if proc.returncode != 0:
+            api("CreateBucket", lookup)
+            proc = run(["json-api", "GetBucketInfo", "-"], stdin=lookup)
+        bucket_id = json.loads(proc.stdout)["id"]
+        api("AllowBucketKey", json.dumps({
+            "bucketId": bucket_id,
+            "accessKeyId": key_id,
+            "permissions": {"read": True, "write": True, "owner": True},
+        }))
+        print(
+            f"  garage: bucket {bucket!r} ready for key {GARAGE_KEY_NAME!r}",
+            file=sys.stderr,
+        )
 
 
 def _refuse_generate(name: str):  # type: ignore[no-untyped-def]

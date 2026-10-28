@@ -200,8 +200,85 @@ class TestFinalizeBackup:
         fresh = await BackupJob.find_one(BackupJob.job_id == job.job_id)
         assert fresh.archive_backend == "local"
 
+    # CASE-960: on Garage installs the archive bucket did not exist and the
+    # files key may not create buckets, so every archive stayed in scratch
+    # while the job reported complete. The job now says so.
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("unreachable", [False, True], ids=["refused", "unreachable"])
+    async def test_upload_failure_is_a_job_warning(self, client, monkeypatch, unreachable):
+        from document_store.services.file_storage_client import (
+            FileStorageError,
+            FileStorageUnavailableError,
+        )
+
+        store, fake = _minio_store(monkeypatch)
+        monkeypatch.setenv("WIP_BACKUP_RETENTION_HOURS", "24")
+
+        async def refuse():
+            if unreachable:
+                raise FileStorageUnavailableError("Object store unreachable")
+            raise FileStorageError("Failed to ensure bucket exists: AccessDenied")
+
+        fake.ensure_bucket_exists = refuse
+        job = await _job()
+        scratch = scratch_path_for(job.job_id)
+        scratch.write_bytes(b"ZIPDATA")
+        job.archive_path = str(scratch)
+        await job.save()
+
+        await store.finalize_backup(job)
+
+        assert scratch.exists()
+        fresh = await BackupJob.find_one(BackupJob.job_id == job.job_id)
+        assert fresh.archive_backend == "local"
+        assert len(fresh.warnings) == 1
+        warning = fresh.warnings[0]
+        assert "kept only in this service's scratch storage" in warning
+        assert "cleared after 24 hours" in warning
+        assert ("unreachable" if unreachable else "AccessDenied") in warning
+        assert f"/api/document-store/backup/jobs/{job.job_id}/download" in warning
+
+    @pytest.mark.asyncio
+    async def test_successful_upload_adds_no_warning(self, client, monkeypatch):
+        store, _fake = _minio_store(monkeypatch)
+        job = await _job()
+        scratch = scratch_path_for(job.job_id)
+        scratch.write_bytes(b"ZIPDATA")
+        job.archive_path = str(scratch)
+        await job.save()
+
+        await store.finalize_backup(job)
+
+        fresh = await BackupJob.find_one(BackupJob.job_id == job.job_id)
+        assert fresh.archive_backend == "minio"
+        assert fresh.warnings == []
+
 
 class TestFinalizeRestoreInput:
+    @pytest.mark.asyncio
+    async def test_input_upload_failure_is_a_job_warning(self, client, monkeypatch):
+        from document_store.services.file_storage_client import FileStorageError
+
+        store, fake = _minio_store(monkeypatch)
+
+        async def refuse():
+            raise FileStorageError("Failed to ensure bucket exists: AccessDenied")
+
+        fake.ensure_bucket_exists = refuse
+        job = await _job(kind=BackupJobKind.RESTORE, job_prefix="rst")
+        scratch = scratch_path_for(job.job_id)
+        scratch.write_bytes(b"INPUT")
+        job.archive_path = str(scratch)
+        await job.save()
+
+        await store.finalize_restore_input(job)
+
+        assert scratch.exists()
+        fresh = await BackupJob.find_one(BackupJob.job_id == job.job_id)
+        assert len(fresh.warnings) == 1
+        assert fresh.warnings[0].startswith("The restore's input archive could not be stored")
+
     @pytest.mark.asyncio
     async def test_local_mode_deletes_consumed_input(self, client, monkeypatch):
         monkeypatch.delenv("WIP_FILE_STORAGE_ENABLED", raising=False)
