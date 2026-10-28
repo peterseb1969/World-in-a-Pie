@@ -726,6 +726,28 @@ replaced the hook's namespace-scoped key. The options type now omits
 longer compiles; the hook's key is the same one `wipKeys` builds). Re-vendor
 `wip-react-0.22.0.tgz`.
 
+### `@wip/client` 0.64.0 / `@wip/react` 0.24.0: the maintenance passes have typed clients and hooks
+
+`POST /api/document-store/maintenance/rehash-identities` and
+`POST /api/document-store/maintenance/requalify-identity-synonyms` answered a
+bare JSON object, so the OpenAPI snapshot had no response type and `@wip/client`
+had no method for either (an app had to use a raw `fetch`). Both endpoints now
+declare typed responses (`RehashIdentitiesResponse`,
+`RequalifyIdentitySynonymsResponse`); the response bodies themselves are
+unchanged.
+
+- `@wip/client` 0.64.0: `documents.rehashIdentities(request)` and
+  `documents.requalifyIdentitySynonyms(request)`, with typed requests and
+  responses. The namespace goes in the request body. Both passes default to a
+  dry run on the server, need admin permission on the namespace, and are
+  synchronous (no job to poll).
+- `@wip/react` 0.24.0: `useRehashIdentities()` and
+  `useRequalifyIdentitySynonyms()`. They invalidate caches only after an
+  applied pass (`dry_run: false`).
+
+**Action:** none for existing callers; this is additive. Apps that want the
+methods or hooks re-vendor `wip-client-0.64.0.tgz` and `wip-react-0.24.0.tgz`.
+
 ### Platform-maintained term closure in reporting
 
 Each namespace schema gains a `term_closure` table: one row per

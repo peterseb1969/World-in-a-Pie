@@ -1658,6 +1658,114 @@ interface DocumentMigrateResponse extends BulkResponse {
     from_version: number;
     to_version: number;
 }
+/**
+ * Request for `POST /api/document-store/maintenance/rehash-identities`.
+ *
+ * One pass over ONE namespace. Requires admin permission on it.
+ */
+interface RehashIdentitiesRequest {
+    /** The namespace to scan. Required; there is no instance-wide mode. */
+    namespace: string;
+    /**
+     * Default true: report what would change without writing anything.
+     * An apply recomputes the pass, so a dry run is a snapshot, not a plan.
+     */
+    dry_run?: boolean;
+    /**
+     * Limit the pass to documents of these templates (template values, not
+     * IDs or synonyms). Omit to scan every document in the namespace.
+     */
+    template_values?: string[];
+}
+/** One document the rehash pass did not leave unchanged. */
+interface RehashIdentitiesItem {
+    document_id: string;
+    template_id: string;
+    template_value: string | null;
+    /**
+     * `changed`: the hash differs and the pass can apply it.
+     * `unresolved`: no stored resolution to recompute from; left as is.
+     * `collision`: another document converges on the same identity; reported,
+     * never applied.
+     * `error`: the template version could not be read.
+     */
+    status: 'changed' | 'unresolved' | 'collision' | 'error';
+    old_hash: string | null;
+    new_hash: string | null;
+    detail: string | null;
+    /** Version rows rewritten; 0 on a dry run. */
+    versions_updated: number;
+    /**
+     * Outcome of the Registry re-key for this document; null on a dry run and
+     * for documents the pass did not apply. Read it per item: `applied` on the
+     * response counts rewritten documents whether or not their re-key succeeded.
+     */
+    registry_status: string | null;
+}
+/** Documents that converge on one (template, identity hash). */
+interface RehashCollisionGroup {
+    template_id: string;
+    identity_hash: string;
+    document_ids: string[];
+}
+/**
+ * Result of the rehash pass. A dry run and an apply return the same shape.
+ *
+ * The call is synchronous: one request, one response, no job to poll, so
+ * the duration grows with the namespace. Nothing is merged — documents that
+ * would converge are reported as collisions and left untouched.
+ */
+interface RehashIdentitiesResponse {
+    namespace: string;
+    dry_run: boolean;
+    scanned: number;
+    changed: number;
+    unchanged: number;
+    unresolved: number;
+    collisions: number;
+    errors: number;
+    /** Documents whose version rows were rewritten; 0 on a dry run. */
+    applied: number;
+    /** Every scanned document except the unchanged ones. */
+    items: RehashIdentitiesItem[];
+    collision_groups: RehashCollisionGroup[];
+    /** The pass does not update reporting; this says how to refresh it. */
+    reporting_note: string;
+}
+/**
+ * Request for `POST /api/document-store/maintenance/requalify-identity-synonyms`.
+ *
+ * One pass over ONE namespace. Requires admin permission on it.
+ */
+interface RequalifyIdentitySynonymsRequest {
+    /** The namespace to scan. Required. */
+    namespace: string;
+    /** Default true: report what would change without writing anything. */
+    dry_run?: boolean;
+}
+/** One document the requalify pass did not leave unchanged. */
+interface RequalifyIdentitySynonymsItem {
+    document_id: string;
+    template_value: string | null;
+    status: 'requalified' | 'no_entry' | 'error';
+    /** The bare synonym that is replaced. */
+    bare: Record<string, unknown> | null;
+    /** The template-qualified synonym that replaces it. */
+    qualified: Record<string, unknown> | null;
+    detail: string | null;
+}
+/** Result of the requalify pass. A dry run and an apply return the same shape. */
+interface RequalifyIdentitySynonymsResponse {
+    namespace: string;
+    dry_run: boolean;
+    scanned: number;
+    requalified: number;
+    unchanged: number;
+    no_entry: number;
+    errors: number;
+    /** Every scanned document except the unchanged ones. */
+    items: RequalifyIdentitySynonymsItem[];
+}
 
 /**
  * Types for the document-store backup/restore endpoints (CASE-23 Phase 3 STEP 7).
@@ -2011,6 +2119,35 @@ declare class DocumentStoreService extends BaseService {
      * @param namespace Cohort namespace. Omittable only for single-namespace keys.
      */
     migrateDocuments(request: DocumentMigrateRequest, namespace?: string): Promise<DocumentMigrateResponse>;
+    /**
+     * Re-hash a namespace's documents to the resolved-referent identity feed.
+     *
+     * Term- and reference-typed identity fields hash the canonical ID of what
+     * they resolve to; documents written before that rule carry hashes built
+     * from the submitted spelling. The pass recomputes each document's hash,
+     * rewrites every version row and re-keys the Registry's claims.
+     *
+     * `dry_run` defaults to true on the server: run it first, read `items` and
+     * `collision_groups`, then apply with `dry_run: false`. Documents that
+     * would converge on one identity are reported as collisions and are never
+     * applied. The call is synchronous (no job to poll) and the namespace is
+     * named in the request body; requires admin permission on it. Reporting is
+     * not updated by the pass — see `reporting_note` in the response.
+     *
+     * @param request Namespace, dry_run, optional template_values filter.
+     */
+    rehashIdentities(request: RehashIdentitiesRequest): Promise<RehashIdentitiesResponse>;
+    /**
+     * Re-key a namespace's identity-value synonyms to the template-qualified
+     * form: add `{"@template": <template value>, ...}` and remove the bare
+     * synonym that claimed the spelling for every template in the namespace.
+     *
+     * `dry_run` defaults to true on the server. The namespace is named in the
+     * request body; requires admin permission on it.
+     *
+     * @param request Namespace and dry_run.
+     */
+    requalifyIdentitySynonyms(request: RequalifyIdentitySynonymsRequest): Promise<RequalifyIdentitySynonymsResponse>;
     previewImport(file: Blob, filename: string): Promise<ImportPreviewResponse>;
     importDocuments(file: Blob, filename: string, options: ImportDocumentsOptions): Promise<ImportDocumentsResponse>;
     startReplay(request?: ReplayRequest): Promise<ReplaySessionResponse>;
@@ -3490,4 +3627,4 @@ interface ResolvedReference {
  */
 declare function resolveReference(client: WipClient, templateId: string, searchTerm: string, limit?: number): Promise<ResolvedReference[]>;
 
-export { type APIKeyInfo, type APIKeyListResponse, type ActivateTemplateResponse, type ActivationDetail, type ActivityItem, type ActivityResponse, type AddSynonymRequest, type Alert, type AlertConfig, type AlertSeverity, type AlertThresholds, type AlertType, type AlertsResponse, type ApiError, ApiKeyAuthProvider, type AuditLogEntry, type AuditLogResponse, type AuthProvider, type BackupJobKind, type BackupJobSnapshot, type BackupJobStatus, type BackupProgressMessage, type BackupRequest, type BatchEntitySyncResult, type BatchJobCancelResult, type BatchJobsCleared, type BatchSyncJob, type BatchSyncRequest, type BatchSyncResponse, type BatchSyncStatus, type BulkImportOptions, type BulkImportProgress, type BulkResponse, type BulkResultItem, type BulkValidateRequest, type BulkValidateResponse, type BulkValidationResponse, type CascadeResponse, type CascadeResult, type ClashPolicy, type Condition, type ConditionOperator, type ConsumerInfo, type CreateAPIKeyRequest, type CreateAPIKeyResponse, type CreateDocumentRequest, type CreateGrantRequest, type CreateNamespaceRequest, type CreateTemplateRequest, type CreateTermRelationRequest, type CreateTermRequest, type CreateTerminologyRequest, type CrossVersionView, type CsvExportQuery, DefStoreService, type DeleteTermRelationRequest, type DeleteViewResult, type DeprecateTermRequest, type Document, type DocumentCreateResponse, type DocumentListResponse, type DocumentMetadata, type DocumentMigrateRequest, type DocumentMigrateResponse, type DocumentQueryParams, type DocumentQueryRequest, type DocumentReference, type DocumentRelationshipsParams, type DocumentStatus, DocumentStoreService, type DocumentTraverseNode, type DocumentTraverseParams, type DocumentTraverseResponse, type DocumentValidationResponse, type DocumentVersionResponse, type DocumentVersionSummary, type EndpointRef, type EndpointRefInput, type EntityDetails, type EntityReference, type EntityReferencesResponse, type ExportResponse, type ExportTerminologyResponse, FetchTransport, type FetchTransportConfig, type FieldDefinition, type FieldType, type FieldValidation, type FileDownloadResponse, type FileEntity, type FileFieldConfig, type FileIntegrityIssue, type FileIntegrityResponse, type FileListResponse, type FileMetadata, type FileQueryParams, type FileStatus, FileStoreService, type FileUploadMetadata, type FormField, type FormInputType, type Grant, type GrantBulkResponse, type GrantBulkResult, type GrantPermission, type GrantRevokeBulkResponse, type GrantRevokeResult, type GrantSubjectType, type HealthResponse, type IdAlgorithmConfig, type ImportDocumentError, type ImportDocumentResult, type ImportDocumentsOptions, type ImportDocumentsResponse, type ImportPreviewResponse, type ImportResponse, type ImportTerminologyRequest, type IncomingReference, type IntegrityCheckResult, type IntegrityIssue, type IntegritySummary, type LatencyStats, type ListAPIKeysParams, type ListBackupJobsParams, type ListViewsResponse, type MergeRequest, type MetricsResponse, type Namespace, type NamespaceIntegrityIssue, type NamespaceIntegrityResult, type NamespaceIntegritySummary, type NamespaceParityResult, type NamespaceStats, OidcAuthProvider, type PaginatedResponse, type PatchDocumentRequest, type PeerProjection, type PerTemplateStats, type QueryFilter, type QueryFilterOperator, type ReconcileCounts, type ReconcileTerminologyRequest, type ReconcileTerminologyResponse, type Reference, type ReferenceType, type ReferencedByResponse, type RegisterViewResult, type RegisteredView, type RegistryBrowseParams, type RegistryByTermHit, type RegistryEntry, type RegistryEntryFull, type RegistryEntryListResponse, type RegistryLookupResponse, type RegistrySearchParams, type RegistrySearchResponse, type RegistrySearchResult, RegistryService, type RegistrySourceInfo, type RegistrySynonym, type RemoveSynonymRequest, type ReplayFilter, type ReplayRequest, type ReplaySessionResponse, type ReplayStatus, type ReportEntity, type ReportEntityVersion, type ReportQueryParams, type ReportQueryResult, type ReportTable, type ReportTableColumn, type ReportTableSchema, type ReportingConfig, ReportingSyncService, type ResolvedReference, type RestoreMode, type RestoreOptions, type RetryConfig, type RevokeGrantRequest, type RuleType, type SearchResponse, type SearchResult, type SearchTypeResults, type SemanticType, type SyncStatus, type SyncStrategy, type TableColumn, type TableViewParams, type TableViewResponse, type Template, type TemplateFacet, type TemplateFacetsParams, type TemplateFacetsResponse, type TemplateListResponse, type TemplateMetadata, type TemplateMigrationOffer, type TemplateParity, TemplateStoreService, type TemplateUpdateResponse, type TemplateUsage, type TemplateVersionEventDetails, type TemplateVersionImpact, type Term, type TermDocumentsResponse, type TermListResponse, type TermMatchCandidate, type TermName, type TermReference, type TermRelation, type TermRelationListResponse, type TermSearchHit, type TermSearchResponse, type TermTranslation, type Terminology, type TerminologyListResponse, type TerminologyMetadata, type TraversalNode, type TraversalResponse, type UpdateAPIKeyRequest, type UpdateFileMetadataRequest, type UpdateNamespaceRequest, type UpdateTemplateRequest, type UpdateTermRequest, type UpdateTerminologyRequest, type ValidateDocumentRequest, type ValidateDocumentsRequest, type ValidateNamespaceParams, type ValidateTemplateRequest, type ValidateTemplateResponse, type ValidateValueRequest, type ValidateValueResponse, type ValidationRule, type VersionStrategy, type ViewRowsFilter, type ViewRowsParams, type ViewRowsSort, WipAuthError, WipBulkItemError, type WipClient, type WipClientConfig, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, asVersionEventDetails, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };
+export { type APIKeyInfo, type APIKeyListResponse, type ActivateTemplateResponse, type ActivationDetail, type ActivityItem, type ActivityResponse, type AddSynonymRequest, type Alert, type AlertConfig, type AlertSeverity, type AlertThresholds, type AlertType, type AlertsResponse, type ApiError, ApiKeyAuthProvider, type AuditLogEntry, type AuditLogResponse, type AuthProvider, type BackupJobKind, type BackupJobSnapshot, type BackupJobStatus, type BackupProgressMessage, type BackupRequest, type BatchEntitySyncResult, type BatchJobCancelResult, type BatchJobsCleared, type BatchSyncJob, type BatchSyncRequest, type BatchSyncResponse, type BatchSyncStatus, type BulkImportOptions, type BulkImportProgress, type BulkResponse, type BulkResultItem, type BulkValidateRequest, type BulkValidateResponse, type BulkValidationResponse, type CascadeResponse, type CascadeResult, type ClashPolicy, type Condition, type ConditionOperator, type ConsumerInfo, type CreateAPIKeyRequest, type CreateAPIKeyResponse, type CreateDocumentRequest, type CreateGrantRequest, type CreateNamespaceRequest, type CreateTemplateRequest, type CreateTermRelationRequest, type CreateTermRequest, type CreateTerminologyRequest, type CrossVersionView, type CsvExportQuery, DefStoreService, type DeleteTermRelationRequest, type DeleteViewResult, type DeprecateTermRequest, type Document, type DocumentCreateResponse, type DocumentListResponse, type DocumentMetadata, type DocumentMigrateRequest, type DocumentMigrateResponse, type DocumentQueryParams, type DocumentQueryRequest, type DocumentReference, type DocumentRelationshipsParams, type DocumentStatus, DocumentStoreService, type DocumentTraverseNode, type DocumentTraverseParams, type DocumentTraverseResponse, type DocumentValidationResponse, type DocumentVersionResponse, type DocumentVersionSummary, type EndpointRef, type EndpointRefInput, type EntityDetails, type EntityReference, type EntityReferencesResponse, type ExportResponse, type ExportTerminologyResponse, FetchTransport, type FetchTransportConfig, type FieldDefinition, type FieldType, type FieldValidation, type FileDownloadResponse, type FileEntity, type FileFieldConfig, type FileIntegrityIssue, type FileIntegrityResponse, type FileListResponse, type FileMetadata, type FileQueryParams, type FileStatus, FileStoreService, type FileUploadMetadata, type FormField, type FormInputType, type Grant, type GrantBulkResponse, type GrantBulkResult, type GrantPermission, type GrantRevokeBulkResponse, type GrantRevokeResult, type GrantSubjectType, type HealthResponse, type IdAlgorithmConfig, type ImportDocumentError, type ImportDocumentResult, type ImportDocumentsOptions, type ImportDocumentsResponse, type ImportPreviewResponse, type ImportResponse, type ImportTerminologyRequest, type IncomingReference, type IntegrityCheckResult, type IntegrityIssue, type IntegritySummary, type LatencyStats, type ListAPIKeysParams, type ListBackupJobsParams, type ListViewsResponse, type MergeRequest, type MetricsResponse, type Namespace, type NamespaceIntegrityIssue, type NamespaceIntegrityResult, type NamespaceIntegritySummary, type NamespaceParityResult, type NamespaceStats, OidcAuthProvider, type PaginatedResponse, type PatchDocumentRequest, type PeerProjection, type PerTemplateStats, type QueryFilter, type QueryFilterOperator, type ReconcileCounts, type ReconcileTerminologyRequest, type ReconcileTerminologyResponse, type Reference, type ReferenceType, type ReferencedByResponse, type RegisterViewResult, type RegisteredView, type RegistryBrowseParams, type RegistryByTermHit, type RegistryEntry, type RegistryEntryFull, type RegistryEntryListResponse, type RegistryLookupResponse, type RegistrySearchParams, type RegistrySearchResponse, type RegistrySearchResult, RegistryService, type RegistrySourceInfo, type RegistrySynonym, type RehashCollisionGroup, type RehashIdentitiesItem, type RehashIdentitiesRequest, type RehashIdentitiesResponse, type RemoveSynonymRequest, type ReplayFilter, type ReplayRequest, type ReplaySessionResponse, type ReplayStatus, type ReportEntity, type ReportEntityVersion, type ReportQueryParams, type ReportQueryResult, type ReportTable, type ReportTableColumn, type ReportTableSchema, type ReportingConfig, ReportingSyncService, type RequalifyIdentitySynonymsItem, type RequalifyIdentitySynonymsRequest, type RequalifyIdentitySynonymsResponse, type ResolvedReference, type RestoreMode, type RestoreOptions, type RetryConfig, type RevokeGrantRequest, type RuleType, type SearchResponse, type SearchResult, type SearchTypeResults, type SemanticType, type SyncStatus, type SyncStrategy, type TableColumn, type TableViewParams, type TableViewResponse, type Template, type TemplateFacet, type TemplateFacetsParams, type TemplateFacetsResponse, type TemplateListResponse, type TemplateMetadata, type TemplateMigrationOffer, type TemplateParity, TemplateStoreService, type TemplateUpdateResponse, type TemplateUsage, type TemplateVersionEventDetails, type TemplateVersionImpact, type Term, type TermDocumentsResponse, type TermListResponse, type TermMatchCandidate, type TermName, type TermReference, type TermRelation, type TermRelationListResponse, type TermSearchHit, type TermSearchResponse, type TermTranslation, type Terminology, type TerminologyListResponse, type TerminologyMetadata, type TraversalNode, type TraversalResponse, type UpdateAPIKeyRequest, type UpdateFileMetadataRequest, type UpdateNamespaceRequest, type UpdateTemplateRequest, type UpdateTermRequest, type UpdateTerminologyRequest, type ValidateDocumentRequest, type ValidateDocumentsRequest, type ValidateNamespaceParams, type ValidateTemplateRequest, type ValidateTemplateResponse, type ValidateValueRequest, type ValidateValueResponse, type ValidationRule, type VersionStrategy, type ViewRowsFilter, type ViewRowsParams, type ViewRowsSort, WipAuthError, WipBulkItemError, type WipClient, type WipClientConfig, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, asVersionEventDetails, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };

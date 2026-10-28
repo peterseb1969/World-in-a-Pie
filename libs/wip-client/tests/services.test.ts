@@ -1271,6 +1271,85 @@ describe('Service classes via createWipClient', () => {
       const [url] = fetchMock.mock.calls[0]
       expect(url).not.toContain('namespace=')
     })
+
+    it('rehashIdentities POSTs the namespace in the body, not the query', async () => {
+      mockJsonResponse({
+        namespace: 'clinic-a',
+        dry_run: true,
+        scanned: 3,
+        changed: 1,
+        unchanged: 2,
+        unresolved: 0,
+        collisions: 0,
+        errors: 0,
+        applied: 0,
+        items: [{
+          document_id: 'doc-1',
+          template_id: 'T',
+          template_value: 'ROLE_ASSIGNMENT',
+          status: 'changed',
+          old_hash: 'a',
+          new_hash: 'b',
+          detail: null,
+          versions_updated: 0,
+          registry_status: null,
+        }],
+        collision_groups: [],
+        reporting_note: 'replay',
+      })
+
+      const result = await client.documents.rehashIdentities({
+        namespace: 'clinic-a',
+        template_values: ['ROLE_ASSIGNMENT'],
+      })
+
+      expect(result.dry_run).toBe(true)
+      expect(result.items[0].status).toBe('changed')
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/maintenance/rehash-identities')
+      expect(url).not.toContain('namespace=')
+      expect(options.method).toBe('POST')
+      expect(JSON.parse(options.body)).toEqual({
+        namespace: 'clinic-a',
+        template_values: ['ROLE_ASSIGNMENT'],
+      })
+    })
+
+    it('rehashIdentities sends dry_run: false only when asked', async () => {
+      mockJsonResponse({
+        namespace: 'n', dry_run: false, scanned: 0, changed: 0, unchanged: 0,
+        unresolved: 0, collisions: 0, errors: 0, applied: 0, items: [],
+        collision_groups: [], reporting_note: '',
+      })
+
+      await client.documents.rehashIdentities({ namespace: 'n', dry_run: false })
+
+      const [, options] = fetchMock.mock.calls[0]
+      expect(JSON.parse(options.body)).toEqual({ namespace: 'n', dry_run: false })
+    })
+
+    it('requalifyIdentitySynonyms POSTs the namespace in the body', async () => {
+      mockJsonResponse({
+        namespace: 'clinic-a', dry_run: true, scanned: 1, requalified: 1,
+        unchanged: 0, no_entry: 0, errors: 0,
+        items: [{
+          document_id: 'doc-1', template_value: 'PATIENT', status: 'requalified',
+          bare: { title: 'X' }, qualified: { '@template': 'PATIENT', title: 'X' },
+          detail: null,
+        }],
+      })
+
+      const result = await client.documents.requalifyIdentitySynonyms({
+        namespace: 'clinic-a',
+      })
+
+      expect(result.requalified).toBe(1)
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/maintenance/requalify-identity-synonyms')
+      expect(url).not.toContain('namespace=')
+      expect(options.method).toBe('POST')
+      expect(JSON.parse(options.body)).toEqual({ namespace: 'clinic-a' })
+    })
   })
 
   describe('RegistryService', () => {

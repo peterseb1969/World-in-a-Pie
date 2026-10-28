@@ -903,6 +903,37 @@ function useDeactivateEntry(options) {
     }
   });
 }
+function useRehashIdentities(options) {
+  const { onSuccess, ...restOptions } = options ?? {};
+  const client = useWipClient();
+  const queryClient = reactQuery.useQueryClient();
+  return reactQuery.useMutation({
+    ...restOptions,
+    mutationFn: (data) => client.documents.rehashIdentities(data),
+    onSuccess: (...args) => {
+      if (!args[0].dry_run) {
+        queryClient.invalidateQueries({ queryKey: wipKeys.documents.all });
+        queryClient.invalidateQueries({ queryKey: wipKeys.registry.all });
+      }
+      onSuccess?.(...args);
+    }
+  });
+}
+function useRequalifyIdentitySynonyms(options) {
+  const { onSuccess, ...restOptions } = options ?? {};
+  const client = useWipClient();
+  const queryClient = reactQuery.useQueryClient();
+  return reactQuery.useMutation({
+    ...restOptions,
+    mutationFn: (data) => client.documents.requalifyIdentitySynonyms(data),
+    onSuccess: (...args) => {
+      if (!args[0].dry_run) {
+        queryClient.invalidateQueries({ queryKey: wipKeys.registry.all });
+      }
+      onSuccess?.(...args);
+    }
+  });
+}
 function useFormSchema(templateValue, options) {
   const client$1 = useWipClient();
   const { namespace, ...queryOptions } = options ?? {};
@@ -990,8 +1021,10 @@ exports.useNamespaces = useNamespaces;
 exports.useQueryDocuments = useQueryDocuments;
 exports.useReactivateTemplate = useReactivateTemplate;
 exports.useRegistrySearch = useRegistrySearch;
+exports.useRehashIdentities = useRehashIdentities;
 exports.useRemoveSynonym = useRemoveSynonym;
 exports.useReportQuery = useReportQuery;
+exports.useRequalifyIdentitySynonyms = useRequalifyIdentitySynonyms;
 exports.useRestoreNamespace = useRestoreNamespace;
 exports.useSyncStatus = useSyncStatus;
 exports.useTableView = useTableView;

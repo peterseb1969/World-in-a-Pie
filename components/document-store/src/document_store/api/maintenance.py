@@ -1,6 +1,9 @@
 """Maintenance API — namespace-scoped data-repair operations."""
 
+from typing import Any, Literal
+
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
 
 from wip_auth import UserIdentity, check_namespace_permission, require_api_key
 
@@ -19,7 +22,65 @@ class RehashIdentitiesRequest(StrictModel):
     template_values: list[str] | None = None
 
 
-@router.post("/rehash-identities")
+class RehashItemResponse(BaseModel):
+    """One document the pass did not leave unchanged."""
+
+    document_id: str
+    template_id: str
+    template_value: str | None = None
+    status: Literal["changed", "unresolved", "collision", "error"] = Field(
+        description=(
+            "changed: the hash differs and the pass can apply it; "
+            "unresolved: no stored resolution to recompute from, left as is; "
+            "collision: another document converges on the same identity, "
+            "reported and never applied; error: the template version was unreadable."
+        ),
+    )
+    old_hash: str | None = None
+    new_hash: str | None = None
+    detail: str | None = None
+    versions_updated: int = Field(
+        default=0, description="Version rows rewritten; 0 on a dry run.",
+    )
+    registry_status: str | None = Field(
+        default=None,
+        description=(
+            "Outcome of the Registry re-key for this document; null on a dry "
+            "run and for documents the pass did not apply."
+        ),
+    )
+
+
+class RehashCollisionGroup(BaseModel):
+    """Documents that converge on one (template, identity hash)."""
+
+    template_id: str
+    identity_hash: str
+    document_ids: list[str]
+
+
+class RehashIdentitiesResponse(BaseModel):
+    """The pass report. A dry run and an apply return the same shape."""
+
+    namespace: str
+    dry_run: bool
+    scanned: int
+    changed: int
+    unchanged: int
+    unresolved: int
+    collisions: int
+    errors: int
+    applied: int = Field(
+        description="Documents whose version rows were rewritten; 0 on a dry run.",
+    )
+    items: list[RehashItemResponse] = Field(
+        description="Every scanned document except the unchanged ones.",
+    )
+    collision_groups: list[RehashCollisionGroup]
+    reporting_note: str
+
+
+@router.post("/rehash-identities", response_model=RehashIdentitiesResponse)
 async def rehash_identities_endpoint(
     request: RehashIdentitiesRequest,
     identity: UserIdentity = Depends(require_api_key),
@@ -53,7 +114,39 @@ class RequalifySynonymsRequest(StrictModel):
     dry_run: bool = True
 
 
-@router.post("/requalify-identity-synonyms")
+class RequalifyItemResponse(BaseModel):
+    """One document the pass did not leave unchanged."""
+
+    document_id: str
+    template_value: str | None = None
+    status: Literal["requalified", "no_entry", "error"]
+    bare: dict[str, Any] | None = Field(
+        default=None, description="The bare synonym that is replaced.",
+    )
+    qualified: dict[str, Any] | None = Field(
+        default=None, description="The template-qualified synonym that replaces it.",
+    )
+    detail: str | None = None
+
+
+class RequalifyIdentitySynonymsResponse(BaseModel):
+    """The pass report. A dry run and an apply return the same shape."""
+
+    namespace: str
+    dry_run: bool
+    scanned: int
+    requalified: int
+    unchanged: int
+    no_entry: int
+    errors: int
+    items: list[RequalifyItemResponse] = Field(
+        description="Every scanned document except the unchanged ones.",
+    )
+
+
+@router.post(
+    "/requalify-identity-synonyms", response_model=RequalifyIdentitySynonymsResponse,
+)
 async def requalify_identity_synonyms_endpoint(
     request: RequalifySynonymsRequest,
     identity: UserIdentity = Depends(require_api_key),

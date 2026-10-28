@@ -484,3 +484,118 @@ export interface DocumentMigrateResponse extends BulkResponse {
   from_version: number
   to_version: number
 }
+
+/**
+ * Request for `POST /api/document-store/maintenance/rehash-identities`.
+ *
+ * One pass over ONE namespace. Requires admin permission on it.
+ */
+export interface RehashIdentitiesRequest {
+  /** The namespace to scan. Required; there is no instance-wide mode. */
+  namespace: string
+  /**
+   * Default true: report what would change without writing anything.
+   * An apply recomputes the pass, so a dry run is a snapshot, not a plan.
+   */
+  dry_run?: boolean
+  /**
+   * Limit the pass to documents of these templates (template values, not
+   * IDs or synonyms). Omit to scan every document in the namespace.
+   */
+  template_values?: string[]
+}
+
+/** One document the rehash pass did not leave unchanged. */
+export interface RehashIdentitiesItem {
+  document_id: string
+  template_id: string
+  template_value: string | null
+  /**
+   * `changed`: the hash differs and the pass can apply it.
+   * `unresolved`: no stored resolution to recompute from; left as is.
+   * `collision`: another document converges on the same identity; reported,
+   * never applied.
+   * `error`: the template version could not be read.
+   */
+  status: 'changed' | 'unresolved' | 'collision' | 'error'
+  old_hash: string | null
+  new_hash: string | null
+  detail: string | null
+  /** Version rows rewritten; 0 on a dry run. */
+  versions_updated: number
+  /**
+   * Outcome of the Registry re-key for this document; null on a dry run and
+   * for documents the pass did not apply. Read it per item: `applied` on the
+   * response counts rewritten documents whether or not their re-key succeeded.
+   */
+  registry_status: string | null
+}
+
+/** Documents that converge on one (template, identity hash). */
+export interface RehashCollisionGroup {
+  template_id: string
+  identity_hash: string
+  document_ids: string[]
+}
+
+/**
+ * Result of the rehash pass. A dry run and an apply return the same shape.
+ *
+ * The call is synchronous: one request, one response, no job to poll, so
+ * the duration grows with the namespace. Nothing is merged — documents that
+ * would converge are reported as collisions and left untouched.
+ */
+export interface RehashIdentitiesResponse {
+  namespace: string
+  dry_run: boolean
+  scanned: number
+  changed: number
+  unchanged: number
+  unresolved: number
+  collisions: number
+  errors: number
+  /** Documents whose version rows were rewritten; 0 on a dry run. */
+  applied: number
+  /** Every scanned document except the unchanged ones. */
+  items: RehashIdentitiesItem[]
+  collision_groups: RehashCollisionGroup[]
+  /** The pass does not update reporting; this says how to refresh it. */
+  reporting_note: string
+}
+
+/**
+ * Request for `POST /api/document-store/maintenance/requalify-identity-synonyms`.
+ *
+ * One pass over ONE namespace. Requires admin permission on it.
+ */
+export interface RequalifyIdentitySynonymsRequest {
+  /** The namespace to scan. Required. */
+  namespace: string
+  /** Default true: report what would change without writing anything. */
+  dry_run?: boolean
+}
+
+/** One document the requalify pass did not leave unchanged. */
+export interface RequalifyIdentitySynonymsItem {
+  document_id: string
+  template_value: string | null
+  status: 'requalified' | 'no_entry' | 'error'
+  /** The bare synonym that is replaced. */
+  bare: Record<string, unknown> | null
+  /** The template-qualified synonym that replaces it. */
+  qualified: Record<string, unknown> | null
+  detail: string | null
+}
+
+/** Result of the requalify pass. A dry run and an apply return the same shape. */
+export interface RequalifyIdentitySynonymsResponse {
+  namespace: string
+  dry_run: boolean
+  scanned: number
+  requalified: number
+  unchanged: number
+  no_entry: number
+  errors: number
+  /** Every scanned document except the unchanged ones. */
+  items: RequalifyIdentitySynonymsItem[]
+}

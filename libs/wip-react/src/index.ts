@@ -85,6 +85,9 @@ export {
   useRemoveSynonym,
   useMergeEntries,
   useDeactivateEntry,
+  // Maintenance
+  useRehashIdentities,
+  useRequalifyIdentitySynonyms,
 } from './hooks/use-mutations.js'
 
 // Specialized hooks

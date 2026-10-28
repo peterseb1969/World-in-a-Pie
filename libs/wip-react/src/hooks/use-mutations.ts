@@ -25,6 +25,10 @@ import type {
   AddSynonymRequest,
   RemoveSynonymRequest,
   MergeRequest,
+  RehashIdentitiesRequest,
+  RehashIdentitiesResponse,
+  RequalifyIdentitySynonymsRequest,
+  RequalifyIdentitySynonymsResponse,
 } from '@wip/client'
 import { useWipClient } from '../provider.js'
 import { wipKeys } from '../utils/keys.js'
@@ -669,6 +673,51 @@ export function useDeactivateEntry(
       client.registry.deactivateEntry(entryId, updatedBy),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+// ============================================================================
+// MAINTENANCE HOOKS
+// ============================================================================
+
+// Both passes default to a dry run on the server. Caches are invalidated only
+// when the pass was applied: a dry run changes nothing.
+
+export function useRehashIdentities(
+  options?: Omit<UseMutationOptions<RehashIdentitiesResponse, Error, RehashIdentitiesRequest>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: (data: RehashIdentitiesRequest) => client.documents.rehashIdentities(data),
+    onSuccess: (...args) => {
+      if (!args[0].dry_run) {
+        queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
+        queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
+      }
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useRequalifyIdentitySynonyms(
+  options?: Omit<UseMutationOptions<RequalifyIdentitySynonymsResponse, Error, RequalifyIdentitySynonymsRequest>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: (data: RequalifyIdentitySynonymsRequest) =>
+      client.documents.requalifyIdentitySynonyms(data),
+    onSuccess: (...args) => {
+      if (!args[0].dry_run) {
+        queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
+      }
       onSuccess?.(...args)
     },
   })

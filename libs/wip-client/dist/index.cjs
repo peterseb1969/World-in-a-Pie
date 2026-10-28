@@ -883,6 +883,40 @@ var DocumentStoreService = class extends BaseService {
   async migrateDocuments(request, namespace) {
     return this.post("/documents/migrate", request, namespace ? { namespace } : void 0);
   }
+  // ---- Maintenance ----
+  /**
+   * Re-hash a namespace's documents to the resolved-referent identity feed.
+   *
+   * Term- and reference-typed identity fields hash the canonical ID of what
+   * they resolve to; documents written before that rule carry hashes built
+   * from the submitted spelling. The pass recomputes each document's hash,
+   * rewrites every version row and re-keys the Registry's claims.
+   *
+   * `dry_run` defaults to true on the server: run it first, read `items` and
+   * `collision_groups`, then apply with `dry_run: false`. Documents that
+   * would converge on one identity are reported as collisions and are never
+   * applied. The call is synchronous (no job to poll) and the namespace is
+   * named in the request body; requires admin permission on it. Reporting is
+   * not updated by the pass — see `reporting_note` in the response.
+   *
+   * @param request Namespace, dry_run, optional template_values filter.
+   */
+  async rehashIdentities(request) {
+    return this.post("/maintenance/rehash-identities", request);
+  }
+  /**
+   * Re-key a namespace's identity-value synonyms to the template-qualified
+   * form: add `{"@template": <template value>, ...}` and remove the bare
+   * synonym that claimed the spelling for every template in the namespace.
+   *
+   * `dry_run` defaults to true on the server. The namespace is named in the
+   * request body; requires admin permission on it.
+   *
+   * @param request Namespace and dry_run.
+   */
+  async requalifyIdentitySynonyms(request) {
+    return this.post("/maintenance/requalify-identity-synonyms", request);
+  }
   // ---- Import ----
   async previewImport(file, filename) {
     const form = new FormData();

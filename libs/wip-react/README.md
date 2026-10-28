@@ -411,6 +411,15 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 | `useCancelBatchJob()` | `string` | `BatchJobCancelResult` | `reporting.batchJob` + `reporting.batchJobs` |
 | `useClearCompletedJobs()` | `void` | `BatchJobsCleared` | `reporting.batchJobs` |
 
+**Maintenance**
+
+Both passes are per-namespace, need admin on it, and default to a dry run on the server. They invalidate only after an applied pass (`dry_run: false`).
+
+| Hook | Input | Returns | Invalidates |
+|------|-------|---------|-------------|
+| `useRehashIdentities()` | `RehashIdentitiesRequest` (`namespace`, `dry_run?`, `template_values?`) | `RehashIdentitiesResponse` | `documents.all` + `registry.all` (applied pass only) |
+| `useRequalifyIdentitySynonyms()` | `RequalifyIdentitySynonymsRequest` (`namespace`, `dry_run?`) | `RequalifyIdentitySynonymsResponse` | `registry.all` (applied pass only) |
+
 ### Single-Item Mutations
 
 ```tsx

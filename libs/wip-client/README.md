@@ -590,6 +590,54 @@ if (preview.failed === 0) {
 // (error_code 'validation_failed' | 'identity_fields_changed')
 ```
 
+### Maintenance: Rehashing Identities and Requalifying Synonyms
+
+Two per-namespace repair passes, both requiring admin permission on the
+namespace and both defaulting to a dry run on the server. The namespace goes
+in the request body.
+
+`rehashIdentities` recomputes the identity hash of documents whose identity
+fields are term- or reference-typed, so that documents written before the
+resolved-referent rule carry the same hash a new write would produce. It is
+synchronous (no job to poll) and slower on large namespaces. Documents that
+would converge on one identity are reported as collisions and never applied.
+Read `registry_status` per item: `applied` counts rewritten documents whether
+or not their Registry re-key succeeded.
+
+```typescript
+const preview = await client.documents.rehashIdentities({
+  namespace: 'clinic-a',
+  template_values: ['ROLE_ASSIGNMENT'],   // optional filter
+  // dry_run defaults to true
+})
+// preview.items[i].status: 'changed' | 'unresolved' | 'collision' | 'error'
+// preview.collision_groups lists documents that converge on one identity
+
+if (preview.collisions === 0 && preview.errors === 0) {
+  const applied = await client.documents.rehashIdentities({
+    namespace: 'clinic-a',
+    template_values: ['ROLE_ASSIGNMENT'],
+    dry_run: false,
+  })
+  // applied.items[i].registry_status: per-document Registry re-key outcome
+  // applied.reporting_note: how to refresh reporting (the pass does not)
+}
+```
+
+`requalifyIdentitySynonyms` re-keys identity-value synonyms to the
+template-qualified form (`{"@template": <template value>, ...}`):
+
+```typescript
+const report = await client.documents.requalifyIdentitySynonyms({
+  namespace: 'clinic-a',
+  dry_run: false,
+})
+// report.items[i].status: 'requalified' | 'no_entry' | 'error'
+```
+
+In React, use `useRehashIdentities()` and `useRequalifyIdentitySynonyms()`
+from `@wip/react`.
+
 ---
 
 ## File-Store (Binary Files)
