@@ -58,13 +58,13 @@ class TestRestoreVerb:
 
         assert result.exit_code == 0, result.output
         args = client.post_form.call_args.args
-        assert args[1] == "/api/document-store/backup/namespaces/aa/restore"
+        assert args[1] == "/backup/namespaces/aa/restore"
         form = _form(client)
         assert form["mode"] == "merge"
         assert form["on_clash"] == "newer"
         assert form["older_versions"] == "keep"
         assert form["extend_terminologies"] == "true"
-        client.get.assert_called_with("document-store", "/api/document-store/backup/jobs/rst-1")
+        client.get.assert_called_with("document-store", "/backup/jobs/rst-1")
 
     def test_merge_default_retires_older_versions(self, tmp_path):
         client = _mock_client()
@@ -83,6 +83,17 @@ class TestRestoreVerb:
         client = _mock_client(final_status="failed")
         result = _invoke(tmp_path, client)
         assert result.exit_code == 1
+
+    def test_a_refused_request_is_reported_not_raised(self, tmp_path):
+        from wip_toolkit.client import WIPClientError
+
+        client = _mock_client()
+        client.post_form.side_effect = WIPClientError(
+            "HTTP 400", status_code=400, response_body={"detail": "no"}
+        )
+        result = _invoke(tmp_path, client)
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
 
     def test_no_wait_returns_the_queued_job(self, tmp_path):
         client = _mock_client()

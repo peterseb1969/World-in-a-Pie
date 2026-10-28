@@ -381,7 +381,7 @@ class TestUpdateDocumentCommand:
         mock_client.patch.assert_called_once()
         args, kwargs = mock_client.patch.call_args
         assert args[0] == "document-store"
-        assert args[1] == "/api/document-store/documents"
+        assert args[1] == "/documents"
         body = kwargs["json"]
         assert body == [{"document_id": "DOC-123", "patch": {"score": 92}}]
 

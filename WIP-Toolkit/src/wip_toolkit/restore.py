@@ -62,7 +62,7 @@ def start_restore(
     with archive_path.open("rb") as fh:
         return client.post_form(
             "document-store",
-            f"/api/document-store/backup/namespaces/{namespace}/restore",
+            f"/backup/namespaces/{namespace}/restore",
             data=form,
             files={"archive": (archive_path.name, fh, "application/zip")},
         )
@@ -85,9 +85,7 @@ def wait_for_job(
     """
     deadline = clock() + timeout
     while True:
-        snapshot = client.get(
-            "document-store", f"/api/document-store/backup/jobs/{job_id}"
-        )
+        snapshot = client.get("document-store", f"/backup/jobs/{job_id}")
         if on_progress is not None:
             on_progress(snapshot)
         if snapshot.get("status") in TERMINAL_STATUSES or clock() >= deadline:

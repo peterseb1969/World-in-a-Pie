@@ -13,7 +13,7 @@ from wip_archive.archive import ArchiveReader
 from wip_archive.model import ArchiveModel
 
 from .backfill import backfill_synonyms
-from .client import WIPClient
+from .client import WIPClient, WIPClientError
 from .config import WIPConfig
 from .export.exporter import run_export
 from .inspect_view import (
@@ -414,7 +414,7 @@ def update_document_cmd(
     with WIPClient(config) as client:
         resp = client.patch(
             "document-store",
-            "/api/document-store/documents",
+            "/documents",
             json=[item],
         )
 
@@ -541,7 +541,13 @@ def restore(
 
     config = ctx.obj["config"]
     with WIPClient(config) as client:
-        snapshot = start_restore(client, path, namespace, form)
+        try:
+            snapshot = start_restore(client, path, namespace, form)
+        except WIPClientError as e:
+            console.print(f"[red]Restore refused:[/red] {e}")
+            if e.response_body:
+                console.print(_json.dumps(e.response_body, indent=2, default=str))
+            sys.exit(1)
         if not no_wait:
             last_message: list[str | None] = [None]
 

@@ -428,7 +428,7 @@ Now:
 A new template version in the newer backup was not affected; it merges with
 `add_missing`.
 
-### A merge asks what happens to the target's older versions; `@wip/client` 0.65.0, WIP-Toolkit 0.7.0
+### A merge asks what happens to the target's older versions; `@wip/client` 0.65.0, WIP-Toolkit 0.7.1
 
 A merge with `on_clash: overwrite` or `newer` appends the archive's latest
 version on top of the target's. It used to leave the target's older version
@@ -447,9 +447,12 @@ type `OlderVersionsPolicy`). It is recorded in the restore provenance record's
 `merge` block. Outside `mode: merge` a non-default value is rejected, like the
 other merge options.
 
-WIP-Toolkit 0.7.0 adds `wip-toolkit restore`, a thin client of the restore
+WIP-Toolkit 0.7.1 adds `wip-toolkit restore`, a thin client of the restore
 endpoint: it uploads the archive, starts the job and follows it, with every
 mode and merge option as a flag (`--older-versions retire|keep` among them).
+It also fixes `wip-toolkit update-document`, which sent its PATCH to
+`/api/document-store/api/document-store/documents` (the service prefix
+twice), a path the document-store does not serve.
 
 **Action:** callers that relied on the old behaviour (older versions staying
 active after an overwrite merge) pass `older_versions: keep`. Apps re-vendor
