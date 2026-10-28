@@ -27,6 +27,8 @@ class DexUserEntry:
     groups: list[str]
     password_secret: SecretRef  # the plain-text password; renderer bcrypts
     user_id: str  # stable ID; derived from username
+    # The operator supplied the bcrypt hash; no plaintext secret exists.
+    password_supplied: bool = False
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,12 @@ def _issuer_url(deployment: Deployment) -> str:
     return f"{_public_base(deployment)}/dex"
 
 
+def dex_password_secret(username: str) -> str:
+    """The user's password secret. Its bcrypt hash is the same name plus
+    `.bcrypt` (see `secrets.bcrypt_secret_name`)."""
+    return f"dex-password-{username}"
+
+
 def _user_id(username: str) -> str:
     # Stable, readable. Matches v1's "<role>-001" style for continuity.
     return f"{username}-001"
@@ -135,14 +143,14 @@ def _dex_users(deployment: Deployment) -> list[DexUserEntry]:
     for u in deployment.spec.auth.users:
         # Secret name: e.g., "dex-password-admin". One per user so they
         # can be rotated independently.
-        secret_name = f"dex-password-{u.username}"
         out.append(
             DexUserEntry(
                 email=u.email,
                 username=u.username,
                 groups=list(u.groups),
-                password_secret=SecretRef(secret_name),
+                password_secret=SecretRef(dex_password_secret(u.username)),
                 user_id=_user_id(u.username),
+                password_supplied=u.password == "supplied",
             )
         )
     return out

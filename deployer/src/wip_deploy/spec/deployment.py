@@ -90,11 +90,18 @@ class AppRef(WIPModel):
 
 class DexUser(WIPModel):
     """A Dex static user. `groups` becomes the token's groups claim, so a
-    user can hold several authorization groups at once."""
+    user can hold several authorization groups at once.
+
+    `password` says where the user's password comes from. `generated` (the
+    default): the deployer generates it on the first apply and keeps it.
+    `supplied`: the operator supplies its bcrypt hash (an existing user
+    brought over from a hand-written Dex config keeps their password), the
+    deployer never generates one, and no plaintext exists."""
 
     email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     username: str = Field(min_length=1)
     groups: list[str] = Field(min_length=1)
+    password: Literal["generated", "supplied"] = "generated"
 
     @model_validator(mode="before")
     @classmethod

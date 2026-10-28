@@ -436,9 +436,42 @@ wip-deploy user remove e2e --name <install>
   `remove` it and `add` it again.
 - `remove` refuses to delete the last `wip-admins` user, and `set-groups`
   refuses to take `wip-admins` away from it. Add another admin first.
-- `user add`, `user set-groups` and `user remove` re-render the install's files from the
-  current repo but apply only to Dex: Dex is recreated with the new user
-  set, and every other container keeps running.
+- `user add`, `user set-groups`, `user import` and `user remove` re-render the install's
+  files from the current repo but apply only to Dex: Dex is recreated with
+  the new user set, and every other container keeps running.
+
+**Users who already have a password.** Users created by hand in a rendered
+Dex `config.yaml` are lost on the next re-render. To keep them, and their
+passwords, declare them with their existing bcrypt hashes. The hash is
+stored as `dex-password-<username>.bcrypt`; no password is generated or
+printed, and `user list` shows the user as `supplied hash`.
+
+```bash
+# One user, from a file holding the hash ('-' reads stdin)
+wip-deploy user add alice --email alice@example.com --group wip-editors \
+    --password-hash-file alice.hash --name <install>
+
+# Many users in one apply: from a saved Dex config (its staticPasswords) ...
+wip-deploy user import dex-config-backup.yaml --groups-file groups.yaml \
+    --group wip-viewers --name <install> --dry-run
+
+# ... or from a CSV file with username,email,hash and an optional groups column
+wip-deploy user import users.csv --group wip-viewers --name <install>
+```
+
+- A Dex config carries no groups. Each user's groups come from, in order:
+  the CSV `groups` column (comma-separated, quoted), its entry in
+  `--groups-file` (a YAML mapping such as `alice: [wip-editors, wip-admins]`),
+  then `--group`. A user with none refuses the import.
+- A user already declared on the install is reported and left as it is.
+  Any other problem (a value that is not a bcrypt hash, an email another user
+  holds, a repeated username) refuses the whole import before anything
+  changes. `--dry-run` lists what would be declared.
+- The install declares each user's Dex `userID` as `<username>-001`. An
+  imported entry with a different `userID` is warned about: its token
+  subject changes.
+- The hash has to stay in the secret store. An apply that finds it missing
+  stops and names the user; the deployer never invents one.
 
 Don't hand-edit the rendered Dex `config.yaml` to add users: it is output,
 and the next render overwrites it. Don't hand-edit `auth.users` in the

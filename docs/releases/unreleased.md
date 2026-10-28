@@ -479,6 +479,34 @@ twice), a path the document-store does not serve.
 active after an overwrite merge) pass `older_versions: keep`. Apps re-vendor
 `wip-client-0.65.0.tgz` to get the typed option.
 
+### Dex users keep their existing passwords: `user add --password-hash-file`, `user import`
+
+Every redeploy-family verb renders Dex's users from the spec, so users
+created by hand in the rendered `config.yaml` were lost on the next render.
+The only supported way to declare them was `user add`, which generates a new
+password, so every existing user had to be given one.
+
+A user can now be declared with an existing bcrypt hash. In the spec this is
+`auth.users[].password: supplied` (default `generated`; saved specs load
+unchanged).
+- Only the hash secret `dex-password-<username>.bcrypt` exists for such a
+  user. It is operator-supplied: the deployer never generates it, and an
+  apply that finds it missing stops and names the user.
+- `wip-deploy user add … --password-hash-file <file>` declares one user.
+- `wip-deploy user import <file>` declares many in one apply, from a Dex
+  config (its `staticPasswords`) or a CSV file (`username,email,hash` and an
+  optional `groups` column). Groups come from the CSV column, then
+  `--groups-file` (YAML username → groups), then `--group`.
+  - Users already declared are left as they are; any other problem refuses
+    the whole import.
+  - `--dry-run` previews it.
+  - If the apply fails, the stored hashes are removed again.
+- `user list` shows such users as `supplied hash`.
+
+**Action:** an install with hand-made Dex users runs `wip-deploy user import
+<saved dex config> --group … --groups-file …` once; after that, re-renders
+keep them.
+
 ### The app scaffold no longer demands a version bump for a rebuilt, unchanged wheel
 
 The scaffold refuses to ship a vendored wheel (`wip-toolkit`, `wip-archive`)

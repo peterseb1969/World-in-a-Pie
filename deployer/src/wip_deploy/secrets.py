@@ -25,6 +25,7 @@ but never generated: a missing one stops the apply with instructions
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets as py_secrets
 import string
 from collections.abc import Callable, Mapping
@@ -32,7 +33,7 @@ from collections.abc import Callable, Mapping
 import bcrypt
 
 from wip_deploy.config_gen.api_keys import api_key_secret_names
-from wip_deploy.config_gen.dex import generate_dex_config
+from wip_deploy.config_gen.dex import dex_password_secret, generate_dex_config
 from wip_deploy.config_gen.garage import (
     GARAGE_SECRET_NAMES,
     SECRET_KEY_ID,
@@ -77,11 +78,40 @@ class OperatorSecretMissing(ValueError):
 
 def operator_supplied_secrets(deployment: Deployment) -> dict[str, str]:
     """Secret name -> what it is, for secrets the deployer must never generate."""
-    return {
-        c.secret_name: f"client secret of Dex connector {c.id!r} ({c.name})"
+    return {name: what for name, (what, _) in _operator_secrets(deployment).items()}
+
+
+def _operator_secrets(deployment: Deployment) -> dict[str, tuple[str, str]]:
+    """Secret name -> (what it is, how the operator supplies it)."""
+    out: dict[str, tuple[str, str]] = {
+        c.secret_name: (
+            f"client secret of Dex connector {c.id!r} ({c.name}), issued by "
+            "the identity provider",
+            "Supply it with `wip-deploy connector add ... --secret-file "
+            "<file>`, or remove the connector.",
+        )
         for c in deployment.spec.auth.connectors
         if c.secret_key
     }
+    for u in deployment.spec.auth.users:
+        if u.password == "supplied":
+            out[bcrypt_secret_name(dex_password_secret(u.username))] = (
+                f"bcrypt password hash of Dex user {u.username!r}, supplied "
+                "by the operator",
+                "Supply it with `wip-deploy user import <file>` or `wip-deploy "
+                f"user add {u.username} ... --password-hash-file <file>`, or "
+                "remove the user.",
+            )
+    return out
+
+
+_BCRYPT_HASH_RE = re.compile(r"^\$2[aby]\$\d\d\$[./A-Za-z0-9]{53}$")
+
+
+def is_bcrypt_hash(value: str) -> bool:
+    """A bcrypt hash as Dex reads it: `$2a$`, `$2b$` or `$2y$`, a two-digit
+    cost and 53 characters of salt and digest (60 in all)."""
+    return bool(_BCRYPT_HASH_RE.match(value))
 
 
 def secret_digest(value: str) -> str:
@@ -143,13 +173,11 @@ def check_secret_drift(
         raise SecretDrift(missing, changed)
 
 
-def _refuse_to_generate(name: str, what: str) -> Callable[[], str]:
+def _refuse_to_generate(name: str, what: str, remedy: str) -> Callable[[], str]:
     def refuse() -> str:
         raise OperatorSecretMissing(
-            f"secret {name!r} is missing: it is the {what}, issued by the "
-            "identity provider, so the deployer will not invent one. Supply "
-            f"it with `wip-deploy connector add ... --secret-file <file>`, "
-            "or remove the connector."
+            f"secret {name!r} is missing: it is the {what}, so the deployer "
+            f"will not invent one. {remedy}"
         )
 
     return refuse
@@ -213,7 +241,10 @@ def collect_required_secrets(
     dex_cfg = generate_dex_config(deployment, components, apps)
     if dex_cfg is not None:
         for u in dex_cfg.users:
-            names.add(u.password_secret.name)
+            # A supplied password has only its hash, which the operator
+            # provides; there is no plaintext to collect.
+            if not u.password_supplied:
+                names.add(u.password_secret.name)
             # CASE-295: pair the plaintext with a cached bcrypt hash so
             # renders are deterministic. Without this, each render
             # bcrypts afresh — bcrypt.gensalt() is non-deterministic by
@@ -356,7 +387,8 @@ def ensure_secrets(
     `dex-password-admin` < `dex-password-admin.bcrypt`).
     """
     names = collect_required_secrets(deployment, components, apps)
-    operator_supplied = operator_supplied_secrets(deployment)
+    operator_secrets = _operator_secrets(deployment)
+    operator_supplied = {name: what for name, (what, _) in operator_secrets.items()}
     operator_optional = set(operator_secret_readers(deployment, components, apps)) - names
     if known:
         # Operator-supplied secrets change and disappear on purpose (the
@@ -370,7 +402,7 @@ def ensure_secrets(
     resolved: dict[str, str] = {}
     for name in sorted(names):
         if name in operator_supplied:
-            generator = _refuse_to_generate(name, operator_supplied[name])
+            generator = _refuse_to_generate(name, *operator_secrets[name])
         elif name.endswith(BCRYPT_SUFFIX):
             plaintext_name = name[: -len(BCRYPT_SUFFIX)]
             plaintext = resolved.get(plaintext_name)

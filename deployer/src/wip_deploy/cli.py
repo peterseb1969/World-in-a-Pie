@@ -29,6 +29,7 @@ from wip_deploy.apply import (
 )
 from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.config_gen.api_keys import effective_api_keys
+from wip_deploy.config_gen.dex import dex_password_secret
 from wip_deploy.config_gen.spec_context import make_spec_context
 from wip_deploy.discovery import discover, find_repo_root
 from wip_deploy.export_ca import (
@@ -50,6 +51,7 @@ from wip_deploy.secrets import (
     bcrypt_secret_name,
     collect_required_secrets,
     ensure_secrets,
+    is_bcrypt_hash,
     operator_secret_readers,
     secret_digest,
 )
@@ -3312,7 +3314,7 @@ _USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def _dex_password_secret(username: str) -> str:
-    return f"dex-password-{username}"
+    return dex_password_secret(username)
 
 
 def _parse_groups(value: str) -> list[str]:
@@ -3368,6 +3370,15 @@ def user_add(
             "group).",
         ),
     ],
+    password_hash_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--password-hash-file",
+            help="File holding the user's existing bcrypt hash ('-' reads "
+            "stdin). The user keeps that password; none is generated or "
+            "printed.",
+        ),
+    ] = None,
     name: Annotated[str | None, _name_opt()] = None,
     install_dir: Annotated[
         Path | None,
@@ -3383,7 +3394,10 @@ def user_add(
     Appends the user to the spec's auth.users and re-renders, so the user
     survives every later operation (install, redeploy, rebuild, add-app).
     The password is generated on this apply, stays stable across renders,
-    and is printed ONCE below.
+    and is printed ONCE below. With --password-hash-file the user keeps an
+    existing password instead: its bcrypt hash is stored as the user's
+    secret, and no password is generated. For many existing users at once,
+    use `wip-deploy user import`.
     """
     if not _USERNAME_RE.match(username):
         typer.echo(
@@ -3394,6 +3408,9 @@ def user_add(
         )
         raise typer.Exit(2)
     groups = _parse_groups(group)
+    supplied_hash = (
+        _read_password_hash(password_hash_file) if password_hash_file is not None else None
+    )
 
     resolved_name, target_dir, deployment, components, apps_list, repo_root = (
         _load_and_discover_for_mutation(name, install_dir, repo_root)
@@ -3419,7 +3436,10 @@ def user_add(
         raise typer.Exit(2)
 
     try:
-        new_user = DexUser(email=email, username=username, groups=groups)
+        new_user = DexUser(
+            email=email, username=username, groups=groups,
+            password="generated" if supplied_hash is None else "supplied",
+        )
     except ValidationError as e:
         first = e.errors()[0]
         typer.echo(
@@ -3430,6 +3450,20 @@ def user_add(
         raise typer.Exit(2) from e
 
     users.append(new_user)
+
+    if supplied_hash is not None:
+        _apply_with_supplied_hashes(
+            deployment, components, apps_list, target_dir,
+            {username: supplied_hash},
+            f"Added Dex user {username!r} to {resolved_name}",
+            repo_root=repo_root,
+        )
+        typer.echo("")
+        typer.echo(
+            f"{username!r} ({email}, groups {','.join(new_user.groups)}) keeps "
+            "the password of the supplied hash; none was generated."
+        )
+        return
 
     _apply_and_persist_mutation(
         deployment,
@@ -3462,6 +3496,287 @@ def user_add(
             f"Password generated in secret {secret_name!r} "
             f"(backend: {secrets_spec.backend})."
         )
+
+
+def _read_password_hash(source: Path) -> str:
+    """A bcrypt hash from a file, or from stdin for '-'. Refuses anything
+    else, so a plaintext password is never stored as if it were a hash."""
+    value = _read_secret_source(source)
+    if not is_bcrypt_hash(value):
+        typer.echo(
+            f"error: {source} does not hold a bcrypt hash ($2a$, $2b$ or $2y$, "
+            "60 characters) — pass the hash Dex has for the user, not a password.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    return value
+
+
+def _apply_with_supplied_hashes(
+    deployment: Deployment,
+    components: list[Component],
+    apps_list: list[App],
+    target_dir: Path,
+    hashes: dict[str, str],
+    action_label: str,
+    *,
+    repo_root: Path | None,
+) -> None:
+    """Store each user's supplied bcrypt hash, then apply.
+
+    The hash has to be in the secret store before the render, which reads
+    it. If the apply fails, the stored hashes are removed again: a hash left
+    behind without its user would be read, unchecked, by a later `user add`
+    of the same name as the hash of a freshly generated password.
+    """
+    secrets_dir = _file_secrets_dir(deployment, what="supplied password hashes")
+    stored: list[str] = []
+    try:
+        for username, value in hashes.items():
+            name = bcrypt_secret_name(_dex_password_secret(username))
+            _store_secret(secrets_dir, name, value)
+            stored.append(name)
+        _apply_and_persist_mutation(
+            deployment,
+            components,
+            apps_list,
+            target_dir,
+            action_label,
+            services_scope=_user_verb_scope(deployment, components),
+            repo_root=repo_root,
+        )
+    except BaseException:
+        backend = FileSecretBackend(secrets_dir)
+        for name in stored:
+            backend.remove(name)
+        raise
+
+
+def _load_import_entries(path: Path, fmt: str) -> list[dict[str, Any]]:
+    """The users in an import file, each {username, email, hash, groups,
+    user_id}; groups and user_id are None when the file does not carry them.
+
+    `dex`: a Dex config (its `staticPasswords` list) or that list alone.
+    `csv`: a header row naming `username`, `email` and `hash`, and
+    optionally `groups` (comma-separated, quoted when there are several).
+    """
+    import csv
+
+    if fmt == "auto":
+        fmt = "csv" if path.suffix.lower() == ".csv" else "dex"
+    text = path.read_text()
+    entries: list[dict[str, Any]] = []
+    if fmt == "csv":
+        reader = csv.DictReader(text.splitlines())
+        missing = {"username", "email", "hash"} - set(reader.fieldnames or [])
+        if missing:
+            typer.echo(
+                f"error: {path} lacks the column(s) {', '.join(sorted(missing))} — "
+                "the header must name username, email and hash (groups is optional).",
+                err=True,
+            )
+            raise typer.Exit(2)
+        for row in reader:
+            groups = (row.get("groups") or "").strip()
+            entries.append({
+                "username": (row.get("username") or "").strip(),
+                "email": (row.get("email") or "").strip(),
+                "hash": (row.get("hash") or "").strip(),
+                "groups": [g.strip() for g in groups.split(",") if g.strip()] or None,
+                "user_id": None,
+            })
+        return entries
+
+    data = yaml.safe_load(text)
+    static = data.get("staticPasswords") if isinstance(data, dict) else data
+    if not isinstance(static, list):
+        typer.echo(
+            f"error: {path} has no staticPasswords list — pass a Dex config, "
+            "or --format csv for a CSV file.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    for item in static:
+        item = item if isinstance(item, dict) else {}
+        entries.append({
+            "username": str(item.get("username") or "").strip(),
+            "email": str(item.get("email") or "").strip(),
+            "hash": str(item.get("hash") or "").strip(),
+            "groups": None,
+            "user_id": item.get("userID"),
+        })
+    return entries
+
+
+def _load_groups_file(path: Path) -> dict[str, list[str]]:
+    """username -> groups, from a YAML (or JSON) mapping whose values are a
+    list of groups or a comma-separated string."""
+    data = yaml.safe_load(path.read_text()) or {}
+    if not isinstance(data, dict):
+        typer.echo(
+            f"error: {path} must map usernames to groups, e.g. "
+            "'alice: [wip-editors]'.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    out: dict[str, list[str]] = {}
+    for username, value in data.items():
+        items = value if isinstance(value, list) else str(value or "").split(",")
+        out[str(username)] = [str(g).strip() for g in items if str(g).strip()]
+    return out
+
+
+@user_app.command("import")
+def user_import(
+    file: Annotated[
+        Path,
+        typer.Argument(
+            help="A Dex config (its staticPasswords) or a CSV file with "
+            "username, email, hash and optionally groups columns.",
+            exists=True, dir_okay=False,
+        ),
+    ],
+    fmt: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            help="dex, csv, or auto (csv for a .csv file, dex otherwise).",
+        ),
+    ] = "auto",
+    group: Annotated[
+        str | None,
+        typer.Option(
+            "--group",
+            help="Groups for every user the file and --groups-file give none "
+            "(comma-separated).",
+        ),
+    ] = None,
+    groups_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--groups-file",
+            help="YAML mapping username -> groups (a list, or a comma-separated "
+            "string). Wins over --group; a CSV groups column wins over both.",
+            exists=True, dir_okay=False,
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Report what would be declared; change nothing."),
+    ] = False,
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Declare existing Dex users with their bcrypt hashes, in one apply.
+
+    Each user keeps their password: the hash is stored as the user's secret,
+    and no password is generated or printed. A Dex config carries no groups,
+    so they come from --groups-file or --group. A user already declared on
+    the install is reported and left as it is. Every other problem (a bad
+    hash, an email taken by another user, a user without groups) refuses the
+    whole import before anything changes.
+    """
+    if fmt not in ("auto", "dex", "csv"):
+        typer.echo("error: --format must be dex, csv or auto.", err=True)
+        raise typer.Exit(2)
+    default_groups = _parse_groups(group) if group is not None else None
+    mapped = _load_groups_file(groups_file) if groups_file is not None else {}
+    entries = _load_import_entries(file, fmt)
+
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+    declared = {u.username: u for u in deployment.spec.auth.users}
+    emails = {u.email: u.username for u in deployment.spec.auth.users}
+
+    errors: list[str] = []
+    skipped: list[str] = []
+    new_users: list[DexUser] = []
+    hashes: dict[str, str] = {}
+    seen: set[str] = set()
+    for i, e in enumerate(entries, start=1):
+        username = e["username"]
+        where = f"entry {i}" + (f" ({username})" if username else "")
+        if username in declared:
+            skipped.append(username)
+            continue
+        if not username or not _USERNAME_RE.match(username):
+            errors.append(f"{where}: username must start with a letter or digit "
+                          "and contain only letters, digits, '.', '_' or '-'")
+            continue
+        if username in seen:
+            errors.append(f"{where}: username appears more than once in the file")
+            continue
+        seen.add(username)
+        if not is_bcrypt_hash(e["hash"]):
+            errors.append(f"{where}: hash is not a bcrypt hash")
+        if e["email"] in emails:
+            errors.append(f"{where}: email {e['email']!r} is already used by "
+                          f"{emails[e['email']]!r}")
+        groups = e["groups"] or mapped.get(username) or default_groups
+        if not groups:
+            errors.append(f"{where}: no groups — give it a groups column, a "
+                          "--groups-file entry, or pass --group")
+            continue
+        try:
+            user = DexUser(
+                email=e["email"], username=username, groups=groups, password="supplied"
+            )
+        except ValidationError as err:
+            first = err.errors()[0]
+            errors.append(f"{where}: {'.'.join(str(p) for p in first['loc'])} — "
+                          f"{first['msg']}")
+            continue
+        emails[user.email] = username
+        new_users.append(user)
+        hashes[username] = e["hash"]
+        if e["user_id"] and e["user_id"] != f"{username}-001":
+            typer.echo(
+                f"warning: {username!r} had userID {e['user_id']!r}; the install "
+                f"declares it as {username + '-001'!r}, so its token subject changes.",
+                err=True,
+            )
+
+    unused = sorted(set(mapped) - seen - set(declared))
+    if unused:
+        typer.echo(
+            f"warning: --groups-file names user(s) not in {file}: {', '.join(unused)}",
+            err=True,
+        )
+    if errors:
+        for line in errors:
+            typer.echo(f"error: {line}", err=True)
+        typer.echo(f"Nothing imported ({len(errors)} problem(s)).", err=True)
+        raise typer.Exit(2)
+
+    for u in new_users:
+        typer.echo(f"  {u.username:<20} {u.email:<32} {','.join(u.groups)}")
+    if skipped:
+        typer.echo(f"Already declared, left as they are: {', '.join(skipped)}")
+    if not new_users:
+        typer.echo("No new users to import.")
+        return
+    if dry_run:
+        typer.echo(f"Dry run: {len(new_users)} user(s) would be declared on {resolved_name}.")
+        return
+
+    deployment.spec.auth.users.extend(new_users)
+    _apply_with_supplied_hashes(
+        deployment, components, apps_list, target_dir, hashes,
+        f"Imported {len(new_users)} Dex user(s) into {resolved_name}",
+        repo_root=repo_root,
+    )
+    typer.echo(
+        f"Declared {len(new_users)} user(s); each keeps the password of its "
+        "supplied hash."
+    )
 
 
 @user_app.command("remove")
@@ -3658,8 +3973,14 @@ def user_list(
     )
     for u in sorted(users, key=lambda u: u.username):
         secret_name = _dex_password_secret(u.username)
+        if u.password == "supplied":
+            secret_name = bcrypt_secret_name(secret_name)
         if secrets_dir is None:
             state = f"{secret_name} (backend: {secrets_spec.backend})"
+        elif u.password == "supplied":
+            state = f"{secret_name} (supplied hash" + (
+                ")" if (secrets_dir / secret_name).exists() else " — MISSING)"
+            )
         elif (secrets_dir / secret_name).exists():
             state = secret_name
         else:
@@ -3722,11 +4043,11 @@ def _replace_auth(deployment: Deployment, **changes: Any) -> None:
         raise typer.Exit(2) from e
 
 
-def _file_secrets_dir(deployment: Deployment) -> Path:
+def _file_secrets_dir(deployment: Deployment, *, what: str = "connector secrets") -> Path:
     spec = deployment.spec.secrets
     if spec.backend != "file" or spec.location is None:
         typer.echo(
-            f"error: connector secrets need the file secret backend; this install "
+            f"error: {what} need the file secret backend; this install "
             f"uses {spec.backend!r}",
             err=True,
         )
