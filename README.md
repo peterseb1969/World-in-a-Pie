@@ -83,10 +83,14 @@ Three principles:
 │   Web apps on top of WIP   (React Console · WIP-KB · your app) │
 └───────────────────────────────┬───────────────────────────────┘
                                  │  HTTPS via Caddy (:8443)
-                                 ▼
-┌───────────────────────────────────────────────────────────────┐
-│   Auth-Gateway   — API-key + OIDC/JWT in front of every call   │
-└───────────────────────────────┬───────────────────────────────┘
+                ┌────────────────┴───────────────┐
+                ▼                                ▼
+┌──────────────────────────────┐ ┌──────────────────────────────┐
+│ App pages → Auth-Gateway:    │ │ /api/*, /mcp → straight to   │
+│ OIDC/JWT login (Dex), then   │ │ the services; each checks    │
+│ proxied to the app           │ │ the API key or JWT itself    │
+└───────────────┬──────────────┘ └───────────────┬──────────────┘
+                └────────────────┬───────────────┘
                                  ▼
 ┌───────────────────────────────────────────────────────────────┐
 │                     FastAPI microservices                      │
@@ -97,7 +101,7 @@ Three principles:
     MongoDB   ·   PostgreSQL   ·   NATS JetStream   ·   Garage   ·   Dex (OIDC)
 ```
 
-Eight WIP services (Auth-Gateway + the seven above), fronted by Caddy, over standard infrastructure. The admin UI is the **React Console**, deployed as an app on top of the platform — not baked into the backend.
+Eight WIP services (Auth-Gateway + the seven above), fronted by Caddy, over standard infrastructure. Caddy routes by each route's `auth_required` flag: routes that declare it — an app's pages — go through the Auth-Gateway when it is enabled; every other route, including the services' `/api/*` and the MCP server's `/mcp`, goes straight to its backend, which authenticates each request itself with an API key or a JWT (wip-auth); on the services, only the health endpoints are open. The admin UI is the **React Console**, deployed as an app on top of the platform — not baked into the backend.
 
 ---
 
