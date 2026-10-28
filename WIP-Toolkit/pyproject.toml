@@ -20,7 +20,9 @@ dependencies = [
 wip-toolkit = "wip_toolkit.cli:main"
 
 [build-system]
-requires = ["hatchling"]
+# Pinned so an unchanged tree rebuilds to identical bytes: the backend stamps
+# its own version into the wheel, and apps vendor these wheels by version.
+requires = ["hatchling==1.33.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

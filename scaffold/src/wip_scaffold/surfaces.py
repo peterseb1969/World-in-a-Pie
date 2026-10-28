@@ -349,18 +349,53 @@ def client_lib_surface(lib: str, tarball_path: str) -> Surface:
     )
 
 
+def _wheel_content(data: bytes) -> dict[str, bytes] | None:
+    """What a wheel ships, minus the build tool's own fingerprint.
+
+    Two builds of an unchanged tree differ when the build backend differs:
+    the ``Generator:`` line of ``*.dist-info/WHEEL`` names it, and ``RECORD``
+    carries that file's hash. Neither is code or metadata a consumer runs,
+    so both are left out; every other member (the code, ``METADATA`` with its
+    dependencies, the rest of ``WHEEL``) is compared byte for byte. None when
+    the bytes are not a readable zip.
+    """
+    import io
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            members: dict[str, bytes] = {}
+            for name in zf.namelist():
+                if name.endswith(".dist-info/RECORD"):
+                    continue
+                body = zf.read(name)
+                if name.endswith(".dist-info/WHEEL"):
+                    body = b"\n".join(
+                        line for line in body.splitlines()
+                        if not line.startswith(b"Generator:")
+                    )
+                members[name] = body
+            return members
+    except zipfile.BadZipFile:
+        return None
+
+
 def _wheel_produce(wheel_path: str):
     """Copy a built wheel into the app's libs/, refusing silent re-pointing.
 
     Versioned wheels are immutable the same way the npm tarballs are: pip
     treats an already-installed version as satisfied, so shipping changed
-    bytes under an unchanged filename means consumers keep running the OLD
+    content under an unchanged filename means consumers keep running the OLD
     code with no error anywhere — the drift is invisible until someone
-    hits a bug the new bytes already fixed. If the app holds a same-name
+    hits a bug the new content already fixed. If the app holds a same-name
     wheel with different content, the version was not bumped: fatal, never
-    papered over. (The wheels are reproducible builds — hatchling pins
-    member timestamps — so an unchanged tree produces identical bytes and
-    never trips this.)
+    papered over.
+
+    Content, not bytes: the builds are reproducible for one build backend
+    (hatchling pins member timestamps), but a newer backend stamps its own
+    version into the wheel, so an unchanged tree rebuilt later can differ in
+    that stamp alone. That is no reason to bump a version — the app keeps
+    the wheel it has, and nothing is rewritten.
     """
 
     def produce(ctx: Context) -> dict[str, bytes]:
@@ -368,6 +403,10 @@ def _wheel_produce(wheel_path: str):
         data = src.read_bytes()
         dest = ctx.target_root / "libs" / src.name
         if dest.is_file() and dest.read_bytes() != data:
+            existing = dest.read_bytes()
+            content = _wheel_content(data)
+            if content is not None and content == _wheel_content(existing):
+                return {f"libs/{src.name}": existing}
             raise RuntimeError(
                 f"{src.name} already exists in the app with different content. "
                 f"The wheel's content changed without a version bump (versioned "

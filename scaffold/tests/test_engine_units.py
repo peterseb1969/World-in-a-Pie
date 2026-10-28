@@ -632,3 +632,71 @@ def test_app_meta_role_prefix_falls_back_to_local_file(tmp_path):
     surfaces = [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "app-meta"]
     run_surfaces(surfaces, _ctx(tmp_path, role_prefix=""))
     assert 'ROLE_PREFIX="APP-LOCAL"' in (tmp_path / ".claude/.app-meta").read_text()
+
+
+def _make_wheel(path, *, generator="hatchling 1.32.4", code=b"x = 1\n", requires=b"Requires-Dist: pydantic\n"):
+    """A minimal real wheel: one module, METADATA, WHEEL (with the build
+    backend's Generator stamp) and a RECORD that hashes them."""
+    import base64
+    import hashlib
+    import zipfile
+
+    info = "wip_archive-0.3.0.dist-info"
+    members = {
+        "wip_archive/__init__.py": code,
+        f"{info}/METADATA": b"Metadata-Version: 2.4\nName: wip-archive\nVersion: 0.3.0\n" + requires,
+        f"{info}/WHEEL": f"Wheel-Version: 1.0\nGenerator: {generator}\nRoot-Is-Purelib: true\nTag: py3-none-any\n".encode(),
+    }
+    record = []
+    for name, body in members.items():
+        digest = base64.urlsafe_b64encode(hashlib.sha256(body).digest()).rstrip(b"=").decode()
+        record.append(f"{name},sha256={digest},{len(body)}")
+    record.append(f"{info}/RECORD,,")
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, body in members.items():
+            zf.writestr(name, body)
+        zf.writestr(f"{info}/RECORD", "\n".join(record) + "\n")
+
+
+def _ship_over(tmp_path, existing_kwargs, new_kwargs):
+    from wip_scaffold.surfaces import archive_wheel_surface
+
+    app = tmp_path / "app"
+    (app / "libs").mkdir(parents=True)
+    name = "wip_archive-0.3.0-py3-none-any.whl"
+    existing = app / "libs" / name
+    _make_wheel(existing, **existing_kwargs)
+    built = tmp_path / name
+    _make_wheel(built, **new_kwargs)
+    return existing, built, lambda: run_surfaces(
+        [archive_wheel_surface(str(built))], Context(wip_root=REPO_ROOT, target_root=app)
+    )
+
+
+def test_wheel_differing_only_in_build_backend_stamp_is_kept(tmp_path):
+    # An unchanged tree rebuilt by a newer hatchling differs only in WHEEL's
+    # Generator line (and RECORD's hash of it): no version bump is owed, and
+    # the app keeps the wheel it has.
+    existing, built, ship = _ship_over(
+        tmp_path, {"generator": "hatchling 1.32.4"}, {"generator": "hatchling 1.33.0"}
+    )
+    before = existing.read_bytes()
+    assert built.read_bytes() != before
+
+    ship()
+
+    assert existing.read_bytes() == before
+
+
+def test_wheel_with_changed_code_under_same_version_is_fatal(tmp_path):
+    _, _, ship = _ship_over(tmp_path, {"code": b"x = 1\n"}, {"code": b"x = 2\n"})
+    with pytest.raises(RuntimeError, match="without a version bump"):
+        ship()
+
+
+def test_wheel_with_changed_metadata_under_same_version_is_fatal(tmp_path):
+    _, _, ship = _ship_over(
+        tmp_path, {}, {"requires": b"Requires-Dist: pydantic\nRequires-Dist: httpx\n"}
+    )
+    with pytest.raises(RuntimeError, match="without a version bump"):
+        ship()

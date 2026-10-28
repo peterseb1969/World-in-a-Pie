@@ -479,6 +479,25 @@ twice), a path the document-store does not serve.
 active after an overwrite merge) pass `older_versions: keep`. Apps re-vendor
 `wip-client-0.65.0.tgz` to get the typed option.
 
+### The app scaffold no longer demands a version bump for a rebuilt, unchanged wheel
+
+The scaffold refuses to ship a vendored wheel (`wip-toolkit`, `wip-archive`)
+whose content changed under an unchanged version, because pip never reinstalls
+a version it already has. It compared raw bytes. A newer build backend stamps
+its own version into the wheel (`Generator:` in `*.dist-info/WHEEL`), so an
+unchanged `wip-archive` 0.3.0 rebuilt with hatchling 1.33.0 instead of 1.32.4
+aborted an app refresh and asked for a version bump nobody owed.
+
+- The check compares what a wheel ships: every member byte for byte, except the
+  `Generator:` line and `RECORD` (which only hashes the members). A real code or
+  `METADATA` change under an unchanged version is still fatal. When only the
+  stamp differs, the app keeps the wheel it has.
+- Both wheel projects pin `hatchling==1.33.0` as their build backend, so an
+  unchanged tree rebuilds to identical bytes.
+
+**Action:** an app whose refresh stopped on `wip_archive-0.3.0 … different
+content` re-runs `create-app-project.sh .`; no version bump is needed.
+
 ### Reporting parity counts live documents on both sides
 
 The parity check (`check_reporting_parity`, and the count phase at the end of
