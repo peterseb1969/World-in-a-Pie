@@ -1,5 +1,7 @@
 Execute Phase 1 (Exploratory) of the AI-Assisted Development process.
 
+**Record the phase.** Before any other step, run `python3 .claude/scripts/set-phase.py explore`. It writes `.claude/.app-phase`; commit that file with this phase's work, and never edit it by hand.
+
 ### Steps
 
 1. Read the rule cards to internalize WIP's core concepts:

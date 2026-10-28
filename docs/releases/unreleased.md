@@ -774,6 +774,28 @@ the guardrails, the technology stack, the UI guidance, the deployable-app
 contract or the app CLAUDE.md template, expect the card drift test to name
 the card to re-review.
 
+### Apps record their phase and log their commits from git
+
+Two pieces of app-agent bookkeeping no longer depend on the model:
+
+- **Phase:** each phase command (`/wip-explore`, `/wip-design-model`,
+  `/wip-implement`, `/wip-build-app`, `/wip-improve`) first runs
+  `.claude/scripts/set-phase.py <phase>`, which writes a tracked
+  `.claude/.app-phase` ("3 implement"). Committed with the phase's work, its
+  `git log` is the phase history.
+- **Commit log:** a new `.githooks/post-commit` runs
+  `.claude/scripts/log-commit.py`, which appends each commit's entry to
+  `reports/<session-id>/commits.md` from git: hash, time, author, files and
+  lines, the subject as heading, the body as the Why, and the `Tests:`,
+  `PoNIF:` and `Discovered:` commit-message trailers. An already-listed hash
+  is not logged twice. The app CLAUDE.md's "After Every Commit" now asks only
+  for those trailers.
+
+**Action:** an app picks both up on its next scaffold refresh. The hook is
+written only when `.githooks/post-commit` is absent, and runs only when
+`core.hooksPath` is `.githooks` — a clone with its own hooks path gets no
+entries until it calls `.claude/scripts/log-commit.py` from its own hook.
+
 ### Query-preset production images build for their base path and pass the healthcheck
 
 The `--preset query` production `Dockerfile` declared no `VITE_BASE_PATH`

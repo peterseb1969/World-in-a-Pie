@@ -1,5 +1,7 @@
 Execute Phase 4 (Application Layer) of the AI-Assisted Development process.
 
+**Record the phase.** Once the prerequisites below hold, and before any other step, run `python3 .claude/scripts/set-phase.py build-app`. It writes `.claude/.app-phase`; commit that file with this phase's work, and never edit it by hand.
+
 ### Prerequisite — GATE
 
 Phase 3 must be complete: all terminologies, templates, and test documents created and verified via MCP tools. If Phase 3 is not complete, stop and tell the user — do not proceed and do not load the playbook.

@@ -1,5 +1,7 @@
 Execute Phase 3 (Implementation) of the AI-Assisted Development process.
 
+**Record the phase.** Once the prerequisites below hold, and before any other step, run `python3 .claude/scripts/set-phase.py implement`. It writes `.claude/.app-phase`; commit that file with this phase's work, and never edit it by hand.
+
 ### Prerequisites
 Phase 2 must be complete with **explicit user approval** of the data model.
 The WIP MCP server must be connected.

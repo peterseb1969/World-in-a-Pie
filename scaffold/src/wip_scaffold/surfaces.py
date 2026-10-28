@@ -50,6 +50,16 @@ def _yac_status(ctx: Context) -> dict[str, bytes]:
     return {".claude/scripts/yac-status.py": src.read_bytes()}
 
 
+def _set_phase(ctx: Context) -> dict[str, bytes]:
+    src = ctx.wip_root / "agent-scripts/src/set_phase.py"
+    return {".claude/scripts/set-phase.py": src.read_bytes()}
+
+
+def _log_commit(ctx: Context) -> dict[str, bytes]:
+    src = ctx.wip_root / "agent-scripts/src/log_commit.py"
+    return {".claude/scripts/log-commit.py": src.read_bytes()}
+
+
 def _session_role(ctx: Context) -> dict[str, bytes]:
     dest = ctx.target_root / ".claude/.session-role"
     if ctx.role_prefix:
@@ -62,6 +72,13 @@ def _session_role(ctx: Context) -> dict[str, bytes]:
         "/wip-setup and /wip-wake need it to mint session IDs."
     )
     return {}
+
+
+def _post_commit_log(ctx: Context) -> dict[str, bytes]:
+    if (ctx.target_root / ".githooks/post-commit").exists():
+        ctx.notes.append("Kept: .githooks/post-commit (app-owned once present)")
+        return {}
+    return {".githooks/post-commit": _template(ctx, "hooks/post-commit-log.sh").encode()}
 
 
 def _pre_commit_gate(ctx: Context) -> dict[str, bytes]:
@@ -613,6 +630,20 @@ def app_surfaces(app_meta: dict[str, str]) -> list[Surface]:
             produce=_yac_status,
         ),
         Surface(
+            name="set-phase",
+            policy=Policy.REGENERATE,
+            rationale="the phase is written by the command that starts it, into a tracked file, instead of being inferred from WIP state on every wake",
+            executable=True,
+            produce=_set_phase,
+        ),
+        Surface(
+            name="log-commit",
+            policy=Policy.REGENERATE,
+            rationale="the commits.md entry is built from git by the post-commit hook, so a forgotten or hand-mangled entry cannot happen",
+            executable=True,
+            produce=_log_commit,
+        ),
+        Surface(
             name="session-role",
             policy=Policy.PRESERVE_OR_SET,
             rationale="--prefix sets; an existing role file is operator state and preserved; neither → warn loudly",
@@ -649,6 +680,13 @@ def app_surfaces(app_meta: dict[str, str]) -> list[Surface]:
             rationale="a .gitignore entry does not stop `git add -f` or a file that was tracked before it was ignored, and app repos have committed WIP API keys that way; written only when absent, because the hook is the app's to extend once it exists",
             executable=True,
             produce=_pre_commit_gate,
+        ),
+        Surface(
+            name="post-commit-log",
+            policy=Policy.PRESERVE_OR_SET,
+            rationale="every commit gets its commits.md entry, including one made outside the agent; written only when absent, because the hook is the app's to extend once it exists",
+            executable=True,
+            produce=_post_commit_log,
         ),
         Surface(
             name="kb-json-example",

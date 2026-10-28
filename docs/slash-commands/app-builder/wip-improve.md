@@ -1,5 +1,7 @@
 Improve an existing constellation app. Use this for bug fixes, UX refinements, feature additions, and polish after Phase 4 is complete.
 
+**Record the phase.** Before any other step, run `python3 .claude/scripts/set-phase.py improve`. It writes `.claude/.app-phase`; commit that file with this phase's work, and never edit it by hand.
+
 ### This is NOT a formal phase
 
 There is no gate, no approval step for starting improvements. But there are rules that prevent waste, regression, and scope creep.

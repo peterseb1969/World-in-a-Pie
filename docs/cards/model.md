@@ -3,8 +3,8 @@ wip://data-model sha256:bffb8895a216ea4c reviewed:a66e110f
 wip://conventions sha256:87ba62a4fe264d2c reviewed:a66e110f
 docs/WIP_PoNIFs.md sha256:99346d0d8e8c7605 reviewed:ea985986
 docs/design/ontology-support.md sha256:06666e3c8f3a3cc1 reviewed:ea985986
-docs/slash-commands/app-builder/wip-implement.md sha256:7c84315b0d4fb4b0 reviewed:a66e110f
-docs/slash-commands/app-builder/wip-design-model.md sha256:3485f5c0cd3f136b reviewed:a66e110f
+docs/slash-commands/app-builder/wip-implement.md sha256:1afef1d1999621a1 reviewed:809f9059
+docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca reviewed:809f9059
 -->
 # WIP model card — Phase 2–3: designing and implementing the data model
 

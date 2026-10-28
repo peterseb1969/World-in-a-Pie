@@ -277,22 +277,15 @@ Seconds precision (`HHMMSS`) eliminates the same-minute collision class. Record 
 
 ### After Every Commit
 
-Before appending, read `commits.md` first. If the commit hash is already listed, skip it (prevents duplicates after context compaction).
+Nothing to do by hand: the `post-commit` hook (`.githooks/post-commit` → `.claude/scripts/log-commit.py`) appends the entry to `reports/<session-id>/commits.md`. Hash, time, author, files and lines come from git; the subject becomes the heading and the body the **Why**. Write the judgment into the commit message as trailers at its end, one per line:
 
-Append to `commits.md` in your report directory:
-
-```markdown
-## <short-hash> — <commit message>
-**Time:** <run `date '+%H:%M'`>
-**Files:** <count> changed, +<added>/-<removed>
-**Tests:** <X passed, Y failed — or "not run">
-**What:** <1-2 sentences — what changed>
-**Why:** <1-2 sentences — what motivated this change>
-**PoNIF:** <if you encountered a PoNIF — which one and whether it caused issues. Omit if none.>
-**Discovered:** <anything surprising, bugs found, or gaps identified — omit if nothing>
+```
+Tests: <X passed, Y failed — or "not run">
+PoNIF: <which PoNIF you hit and whether it caused issues — omit if none>
+Discovered: <anything surprising, bugs found, gaps identified — omit if nothing>
 ```
 
-If you encountered a PoNIF and handled it correctly, note which one. If you hit a PoNIF and it caused a bug, definitely note it — the Field Reporter tracks these patterns.
+If you encountered a PoNIF and handled it correctly, note which one. If you hit a PoNIF and it caused a bug, definitely note it — the Field Reporter tracks these patterns. If an entry is missing after a commit, the hook is not installed: check that `git config core.hooksPath` prints `.githooks`.
 
 ### Session Summary
 

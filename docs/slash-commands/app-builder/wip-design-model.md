@@ -1,5 +1,7 @@
 Execute Phase 2 (Data Model Design) of the AI-Assisted Development process.
 
+**Record the phase.** Once the prerequisites below hold, and before any other step, run `python3 .claude/scripts/set-phase.py design-model`. It writes `.claude/.app-phase`; commit that file with this phase's work, and never edit it by hand.
+
 ### Prerequisites
 Phase 1 must be complete. You must have:
 - Verified WIP MCP server connectivity

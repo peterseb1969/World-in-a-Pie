@@ -990,13 +990,14 @@ if $REFRESH_MODE && [ -d "$APP_DIR/.git" ]; then
     fi
 fi
 
-# Enable the pre-commit gate shipped as .githooks/pre-commit. A clone that
-# already points core.hooksPath somewhere (husky, a team hook dir) keeps it.
+# Enable the hooks shipped in .githooks/: the pre-commit gate and the
+# post-commit commits.md logger. A clone that already points core.hooksPath
+# somewhere (husky, a team hook dir) keeps it, and gets neither.
 _enable_hooks() {
     if [ -f "$APP_DIR/.githooks/pre-commit" ] \
         && [ -z "$(git -C "$APP_DIR" config --local core.hooksPath 2>/dev/null)" ]; then
         git -C "$APP_DIR" config --local core.hooksPath .githooks
-        echo "   Enabled the pre-commit gate (core.hooksPath=.githooks)"
+        echo "   Enabled the commit hooks (core.hooksPath=.githooks)"
     fi
 }
 if $REFRESH_MODE && [ -d "$APP_DIR/.git" ]; then
