@@ -59,6 +59,21 @@ Modes
                                               linked session, or
                                               /wip-report session-end first.
 
+--close FILE
+            /wip-report session-end — close the CURRENT session (the one the
+            sentinel names) with the summary text in FILE. The model writes
+            only that text; this does the rest in ONE atomic rewrite:
+            `status: closed` + `ended_at`, and FILE's text as the
+            `## Session Summary` section (replacing any section of that name,
+            else appended). Then mirror to kb. Idempotent:
+              - closed with a real summary -> nothing changes
+                (CLOSED=unchanged);
+              - closed with a stub summary (the /wip-wake placeholder) ->
+                the stub is replaced, `ended_at` kept (CLOSED=replaced-stub);
+              - otherwise -> closed now (CLOSED=closed).
+            No sentinel -> exit 2; no reports/<id>/session.md -> exit 3;
+            an empty FILE -> exit 1. Output: SESSION_ID=<id>, CLOSED=<state>.
+
 --dry-run   Walk the decisions and print the plan; write nothing, call
             nothing.
 
@@ -501,16 +516,113 @@ def fresh(root: Path, dry_run: bool) -> tuple[str, str, str]:
     return prior or "-", new_id, prior_summary
 
 
+def _set_summary(body: str, summary: str) -> str:
+    """Put `summary` under `## Session Summary`, replacing any such section."""
+    lines = body.rstrip("\n").splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith("## Session Summary")]
+    if starts:
+        start = starts[0]
+        end = len(lines)
+        for i in range(start + 1, len(lines)):
+            if lines[i].startswith("## ") and not lines[i].startswith("## Session Summary"):
+                end = i
+                break
+        lines = lines[:start] + lines[end:]
+    text = "\n".join(lines).rstrip("\n")
+    return f"{text}\n\n## Session Summary\n\n{summary.strip()}\n"
+
+
+def close_current(root: Path, summary_file: Path, dry_run: bool) -> tuple[str, str]:
+    session = read_sentinel(root)
+    if session is None:
+        print("Error: no session at .claude/.session-id — nothing to close.", file=sys.stderr)
+        sys.exit(EXIT_NO_PRIOR)
+    session_md = root / "reports" / session / "session.md"
+    if not session_md.is_file():
+        print(f"Error: reports/{session}/session.md not found — refusing to fabricate state.",
+              file=sys.stderr)
+        sys.exit(EXIT_PRIOR_DIR_MISSING)
+    try:
+        summary = summary_file.read_text()
+    except OSError as e:
+        print(f"Error: cannot read the summary file {summary_file}: {e}", file=sys.stderr)
+        sys.exit(1)
+    summary_lines = summary.strip().splitlines()
+    if summary_lines and summary_lines[0].startswith("## Session Summary"):
+        summary_lines = summary_lines[1:]
+    summary = "\n".join(summary_lines).strip()
+    if not summary:
+        print(f"Error: the summary file {summary_file} is empty.", file=sys.stderr)
+        sys.exit(1)
+
+    text = session_md.read_text()
+    fm, body = parse_frontmatter(text)
+    state = summary_state(root, session)
+    if fm is not None and fm.get("status") == "closed":
+        if state == "content":
+            log(f"session {session}: already closed with a summary — unchanged")
+            return session, "unchanged"
+        outcome = "replaced-stub"
+    else:
+        outcome = "closed"
+
+    if fm is None:
+        role = session.rsplit("-", 2)[0]
+        fields = [
+            ("session_id", session),
+            ("role", role),
+            ("started_at", stamp_to_iso("-".join(session.rsplit("-", 2)[1:]))),
+        ]
+    else:
+        raw = text[4 : text.find("\n---\n", 4)]
+        order: list[str] = []
+        for line in raw.splitlines():
+            k = line.partition(":")[0].strip()
+            if k and k not in order:
+                order.append(k)
+        for k in fm:
+            if k not in order:
+                order.append(k)
+        fields = [(k, fm[k]) for k in order if k in fm]
+    fields = [(k, v) for k, v in fields if k not in ("status", "ended_at")]
+    ended = fm.get("ended_at") if (fm and outcome == "replaced-stub" and fm.get("ended_at")) else None
+    fields += [("status", "closed"), ("ended_at", ended or stamp_to_iso(now_stamp()))]
+    new_text = render_frontmatter(fields) + _set_summary(body, summary)
+
+    if dry_run:
+        log(f"dry-run: would close {session} ({outcome})")
+        return session, outcome
+    atomic_write(session_md, new_text)
+    log(f"session {session}: {outcome}")
+    kb_mirror(root, session_md, dry_run)
+    return session, outcome
+
+
 def main(argv: list[str]) -> int:
     dry_run = "--dry-run" in argv
     mode_fresh = "--fresh" in argv
-    unknown = [a for a in argv[1:] if a not in ("--fresh", "--dry-run")]
-    if unknown:
-        print(f"Error: unknown argument(s): {unknown}", file=sys.stderr)
+    close_file: str | None = None
+    rest = argv[1:]
+    if "--close" in rest:
+        i = rest.index("--close")
+        if i + 1 >= len(rest):
+            print("Error: --close needs the summary file.", file=sys.stderr)
+            return 1
+        close_file = rest[i + 1]
+        rest = rest[:i] + rest[i + 2 :]
+    unknown = [a for a in rest if a not in ("--fresh", "--dry-run")]
+    if unknown or (close_file and mode_fresh):
+        print(f"Error: unknown or conflicting argument(s): {unknown or ['--fresh', '--close']}",
+              file=sys.stderr)
         print(__doc__, file=sys.stderr)
         return 1
 
     root = project_root()
+    if close_file is not None:
+        session, outcome = close_current(root, Path(close_file), dry_run)
+        print(f"SESSION_ID={session}")
+        print(f"CLOSED={outcome}")
+        return 0
     if mode_fresh:
         prior, new_id, prior_summary = fresh(root, dry_run)
     else:

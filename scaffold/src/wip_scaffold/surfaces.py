@@ -40,6 +40,25 @@ def _commands(ctx: Context, source_subdir: str) -> dict[str, bytes]:
     return out
 
 
+# The slim profile's command set: the shared phase commands, minus the ones a
+# small-context agent never used, with its own short wake, setup and report.
+SLIM_DROPPED_COMMANDS = {
+    "wip-analyst.md", "wip-add-app.md", "wip-bootstrap.md", "wip-fireside.md", "wip-status.md",
+}
+
+
+def _slim_commands(ctx: Context) -> dict[str, bytes]:
+    out = {k: v for k, v in _commands(ctx, "app-builder").items()
+           if Path(k).name not in SLIM_DROPPED_COMMANDS}
+    out.update(_commands(ctx, "app-slim"))
+    return out
+
+
+def _wake_brief(ctx: Context) -> dict[str, bytes]:
+    src = ctx.wip_root / "agent-scripts/src/wake_brief.py"
+    return {".claude/scripts/wake-brief.py": src.read_bytes()}
+
+
 def _wake_rollover(ctx: Context) -> dict[str, bytes]:
     src = ctx.wip_root / "agent-scripts/src/wake_rollover.py"
     return {".claude/scripts/wake-rollover.py": src.read_bytes()}
@@ -575,10 +594,15 @@ def _app_playbooks(ctx: Context) -> dict[str, bytes]:
     return {f"docs/playbooks/{p.name}": p.read_bytes() for p in sorted(src.glob("*.md"))}
 
 
-def app_surfaces(app_meta: dict[str, str]) -> list[Surface]:
-    """app_meta: APP_NAME / APP_SLUG / DEV_NAMESPACE / PRESET — persisted so
+def app_surfaces(app_meta: dict[str, str], profile: str = "full") -> list[Surface]:
+    """app_meta: APP_NAME / APP_SLUG / DEV_NAMESPACE / PRESET / PROFILE — persisted so
     a set-up-in-place run regenerates CLAUDE.md from recorded metadata
     instead of deriving it from the directory name."""
+    slim = profile == "slim"
+    claude_md_template = "claude-md/app-slim.md" if slim else "claude-md/app.md"
+    reanchor_template = (
+        "hooks/post-compact-reanchor-slim.sh" if slim else "hooks/post-compact-reanchor.sh"
+    )
 
     def _app_meta_file(ctx: Context) -> dict[str, bytes]:
         # ROLE_PREFIX is persisted here because .session-role is gitignored:
@@ -605,7 +629,7 @@ def app_surfaces(app_meta: dict[str, str]) -> list[Surface]:
 
     def _claude_md(ctx: Context) -> dict[str, bytes]:
         return {
-            "CLAUDE.md": render(_template(ctx, "claude-md/app.md"), ctx.tokens, ctx.tier3).encode()
+            "CLAUDE.md": render(_template(ctx, claude_md_template), ctx.tokens, ctx.tier3).encode()
         }
 
     return [
@@ -614,7 +638,7 @@ def app_surfaces(app_meta: dict[str, str]) -> list[Surface]:
             policy=Policy.REGENERATE,
             rationale="wipe-then-copy so renamed/retired gene-pool commands never linger; tier 2 omits /wip-case",
             wipe_glob=".claude/commands/*.md",
-            produce=lambda ctx: _commands(ctx, "app-builder"),
+            produce=_slim_commands if slim else lambda ctx: _commands(ctx, "app-builder"),
         ),
         Surface(
             name="wake-rollover",
@@ -622,6 +646,13 @@ def app_surfaces(app_meta: dict[str, str]) -> list[Surface]:
             rationale="session rollover must be a vendored script, not prose an agent may skip",
             produce=_wake_rollover,
         ),
+        *([Surface(
+            name="wake-brief",
+            policy=Policy.REGENERATE,
+            rationale="the slim wake reads one script's output instead of two dozen files and a WIP census",
+            executable=True,
+            produce=_wake_brief,
+        )] if slim else []),
         Surface(
             name="yac-status",
             policy=Policy.REGENERATE,
@@ -670,7 +701,7 @@ def app_surfaces(app_meta: dict[str, str]) -> list[Surface]:
             executable=True,
             produce=lambda ctx: {
                 ".claude/hooks/post-compact-reanchor.sh": _template(
-                    ctx, "hooks/post-compact-reanchor.sh"
+                    ctx, reanchor_template
                 ).encode()
             },
         ),

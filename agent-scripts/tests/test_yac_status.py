@@ -229,23 +229,23 @@ def test_slim_profile_warns_at_300k_tokens_whatever_the_percent(tmp_path):
     slim(root)
     size = 524288
     assert line(root, {"context_window": {"used_percentage": 57.2, "total_input_tokens": 300000,
-                                          "context_window_size": size}}).startswith("\033[31m")
+                                          "context_window_size": size}}).startswith("slim \033[31m")
     assert line(root, {"context_window": {"used_percentage": 57.0, "total_input_tokens": 299000,
-                                          "context_window_size": size}}) == "ctx 57% (299k/524k)"
+                                          "context_window_size": size}}) == "slim ctx 57% (299k/524k)"
 
 
 def test_slim_profile_does_not_warn_at_80_percent_of_a_small_window(tmp_path):
     root = make_project(tmp_path)
     slim(root)
     assert line(root, {"context_window": {"used_percentage": 90.0, "total_input_tokens": 180000,
-                                          "context_window_size": 200000}}) == "ctx 90% (180k/200k)"
+                                          "context_window_size": 200000}}) == "slim ctx 90% (180k/200k)"
 
 
 def test_slim_profile_derives_tokens_from_percent_and_size(tmp_path):
     root = make_project(tmp_path)
     slim(root)
     out = line(root, {"context_window": {"used_percentage": 60.0, "context_window_size": 524288}})
-    assert out.startswith("\033[31m")  # 60% of 524k is ~314k tokens
+    assert out.startswith("slim \033[31m")  # 60% of 524k is ~314k tokens
     assert context_file(root).read_text() == "60% (314k/524k tokens)\n"
 
 
@@ -253,7 +253,15 @@ def test_other_profiles_keep_the_percent_rule(tmp_path):
     root = make_project(tmp_path)
     (root / ".claude" / ".app-meta").write_text('APP_NAME="X"\nPROFILE="full"\n')
     window = {"total_input_tokens": 160000, "context_window_size": 200000}
-    assert line(root, {"context_window": {**window, "used_percentage": 80.0}}).startswith("\033[31m")
+    assert line(root, {"context_window": {**window, "used_percentage": 80.0}}).startswith("full \033[31m")
+
+
+def test_the_recorded_profile_is_shown(tmp_path):
+    root = make_project(tmp_path)
+    slim(root)
+    assert line(root).startswith("slim ctx 42%")
+    (root / ".claude" / ".app-meta").write_text('APP_NAME="X"\nPROFILE="full"\n')
+    assert line(root).startswith("full ctx 42%")
 
 
 def git_project(tmp_path: Path) -> Path:

@@ -61,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--dev-namespace", required=True)
     a.add_argument("--key-file", required=True)
     a.add_argument("--preset", required=True)
+    a.add_argument("--profile", choices=("full", "slim"), default="full")
     a.add_argument("--role-prefix", default="")
     a.add_argument("--tier3", action="store_true")
     a.add_argument("--refresh", action="store_true")
@@ -111,7 +112,9 @@ def main(argv: list[str] | None = None) -> int:
                 "APP_SLUG": args.app_slug,
                 "DEV_NAMESPACE": args.dev_namespace,
                 "PRESET": args.preset,
-            }
+                "PROFILE": args.profile,
+            },
+            profile=args.profile,
         )
         if args.mcp_python:
             surfaces.insert(0, mcp_json_surface(

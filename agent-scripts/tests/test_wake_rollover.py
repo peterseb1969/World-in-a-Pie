@@ -529,3 +529,80 @@ class TestDryRun:
         # Reports the plan's outcome — the close it didn't perform would have
         # left a placeholder — rather than the untouched file's state.
         assert out_ids(res)["PRIOR_SUMMARY"] == "stub"
+
+
+class TestClose:
+    """--close: /wip-report session-end with the frontmatter owned by the script."""
+
+    def summary(self, tmp_path, text="Built the shelf view.\n\nDead ends: none.") -> Path:
+        f = tmp_path / "summary.md"
+        f.write_text(text)
+        return f
+
+    def session_md(self, root) -> str:
+        return (root / "reports" / PRIOR_ID / "session.md").read_text()
+
+    def test_active_session_closed_with_summary(self, tmp_path):
+        root = make_project(tmp_path)
+        kbc, log = make_fake_kbc(tmp_path)
+        res = run(root, "--close", str(self.summary(tmp_path)), kbc=kbc)
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res) == {"SESSION_ID": PRIOR_ID, "CLOSED": "closed"}
+        text = self.session_md(root)
+        assert "status: closed\n" in text
+        assert "ended_at: 2026-07-04T09:00:00\n" in text
+        assert "continues_from: BE-YAC-20260630-080000\n" in text
+        assert text.count("## Session Summary") == 1
+        assert "## Session Summary\n\nBuilt the shelf view." in text
+        assert "Body text." in text
+        assert "SESSION" in log.read_text()
+        # the sentinel still names the session: closing does not mint
+        assert (root / ".claude" / ".session-id").read_text().strip() == PRIOR_ID
+
+    def test_heading_in_the_file_is_not_doubled(self, tmp_path):
+        root = make_project(tmp_path)
+        run(root, "--close", str(self.summary(tmp_path, "## Session Summary\nShort.")))
+        text = self.session_md(root)
+        assert text.count("## Session Summary") == 1
+        assert "## Session Summary\n\nShort.\n" in text
+
+    def test_stub_replaced_and_ended_at_kept(self, tmp_path):
+        root = make_project(tmp_path, prior_status="closed")
+        md = root / "reports" / PRIOR_ID / "session.md"
+        md.write_text(md.read_text().replace("status: closed\n",
+                                             "status: closed\nended_at: 2026-07-02T08:00:00\n")
+                      + "\n## Session Summary — auto-closed by /wip-wake (2026-07-02T08:00:00)\n")
+        res = run(root, "--close", str(self.summary(tmp_path)))
+        assert out_ids(res)["CLOSED"] == "replaced-stub"
+        text = self.session_md(root)
+        assert "ended_at: 2026-07-02T08:00:00\n" in text
+        assert "auto-closed" not in text
+        assert "Built the shelf view." in text
+
+    def test_real_summary_never_overwritten(self, tmp_path):
+        root = make_project(tmp_path, prior_status="closed")
+        md = root / "reports" / PRIOR_ID / "session.md"
+        md.write_text(md.read_text() + "\n## Session Summary\n\nThe real one.\n")
+        before = md.read_text()
+        kbc, log = make_fake_kbc(tmp_path)
+        res = run(root, "--close", str(self.summary(tmp_path)), kbc=kbc)
+        assert out_ids(res)["CLOSED"] == "unchanged"
+        assert md.read_text() == before
+        assert not log.exists()
+
+    def test_empty_summary_refused(self, tmp_path):
+        root = make_project(tmp_path)
+        before = self.session_md(root)
+        res = run(root, "--close", str(self.summary(tmp_path, "  \n")))
+        assert res.returncode == 1
+        assert self.session_md(root) == before
+
+    def test_no_sentinel(self, tmp_path):
+        root = make_project(tmp_path, with_prior=False)
+        res = run(root, "--close", str(self.summary(tmp_path)))
+        assert res.returncode == 2
+
+    def test_close_and_fresh_conflict(self, tmp_path):
+        root = make_project(tmp_path)
+        res = run(root, "--fresh", "--close", str(self.summary(tmp_path)))
+        assert res.returncode == 1

@@ -63,6 +63,7 @@ APP_DIR=""
 APP_NAME=""
 APP_PREFIX=""
 PRESET="standard"
+PROFILE="full"
 # REFRESH_MODE is AUTO-DETECTED below from the directory state (CASE-535), not
 # a user flag: populated dir → set up in place (true); empty/new dir → create.
 REFRESH_MODE=false
@@ -85,6 +86,11 @@ while [[ $# -gt 0 ]]; do
             ;;
         --prefix)
             APP_PREFIX="$2"
+            shift 2
+            ;;
+        --profile)
+            PROFILE="$2"
+            PROFILE_EXPLICIT=1
             shift 2
             ;;
         --force-claude-md)
@@ -126,6 +132,10 @@ while [[ $# -gt 0 ]]; do
             echo "  --prefix    Session-role prefix (APP-KB, APP-RC, ...). Written to .claude/.session-role"
             echo "              so /wip-setup and /wip-wake mint <PREFIX>-YYYYMMDD-HHMMSS session IDs (CASE-389)."
             echo "  --preset    Project preset: 'standard' (default) or 'query' (NL query app)"
+            echo "  --profile   Agent profile: 'full' (default) or 'slim' (short CLAUDE.md, rule cards"
+            echo "              instead of depth reading, a script-driven wake — for a local model"
+            echo "              with a small working set). Recorded in .claude/.app-meta; a refresh"
+            echo "              keeps it unless --profile is given again."
             echo "  --force-claude-md   Overwrite an existing CLAUDE.md outright instead of writing"
             echo "              CLAUDE.md.refresh. App-authored content is lost."
             echo "  --with-bootstrap    Retrofit the genesis bootstrap templates"
@@ -159,6 +169,11 @@ fi
 
 if [[ "$PRESET" != "standard" && "$PRESET" != "query" ]]; then
     echo "Error: Unknown preset '$PRESET'. Use 'standard' or 'query'."
+    exit 1
+fi
+
+if [[ "$PROFILE" != "full" && "$PROFILE" != "slim" ]]; then
+    echo "Error: Unknown profile '$PROFILE'. Use 'full' or 'slim'."
     exit 1
 fi
 
@@ -369,6 +384,17 @@ if $REFRESH_MODE; then
                 exit 1
             fi
         fi
+        # The profile resolves the same way: --profile wins, else the
+        # recorded value, else full. Without this a plain refresh would put a
+        # slim app back on the full profile.
+        if [ -z "${PROFILE_EXPLICIT:-}" ]; then
+            PROFILE="$(meta_get PROFILE)"
+            PROFILE="${PROFILE:-full}"
+            if [[ "$PROFILE" != "full" && "$PROFILE" != "slim" ]]; then
+                echo "Error: .claude/.app-meta records unknown profile '$PROFILE'. Use --profile full|slim."
+                exit 1
+            fi
+        fi
         META_SOURCE=".claude/.app-meta"
     elif [ -n "$APP_NAME" ]; then
         META_SOURCE="--name"
@@ -443,6 +469,7 @@ if [ -n "$META_SOURCE" ]; then
     echo "  Metadata:  $META_SOURCE"
 fi
 echo "  Preset:    $PRESET"
+echo "  Profile:   $PROFILE"
 echo "  WIP root:  $WIP_ROOT"
 echo ""
 
@@ -911,7 +938,7 @@ PYTHONPATH="$WIP_ROOT/scaffold/src${PYTHONPATH:+:$PYTHONPATH}" \
     --wip-root "$WIP_ROOT" --app-dir "$APP_DIR" \
     --app-name "$APP_NAME" --app-slug "$APP_SLUG" \
     --dev-namespace "$DEV_NAMESPACE" --key-file "$WIP_API_KEY_FILE" \
-    --preset "$PRESET" --role-prefix "$APP_PREFIX" \
+    --preset "$PRESET" --profile "$PROFILE" --role-prefix "$APP_PREFIX" \
     --mcp-python "$PYTHON_PATH" --mcp-base-url "$WIP_BASE_URL" \
     --mcp-key-file "$WIP_API_KEY_FILE" \
     $LIB_FLAGS $TOOLKIT_FLAG $ARCHIVE_FLAG $QUERY_FLAG $SEED_BOOTSTRAP_FLAG $WRITE_ENV_FLAG $ENGINE_FLAGS

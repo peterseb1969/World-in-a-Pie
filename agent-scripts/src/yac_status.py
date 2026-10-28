@@ -215,7 +215,10 @@ def context_part(payload: dict, cdir: Path) -> str:
         part += f" ({tokens // 1000}k/{size // 1000}k)"
     if context_warning(cdir, used, tokens):
         part = f"{RED}{part}{RESET}"
-    return part
+    # The profile sets the warning threshold; showing it makes a profile lost
+    # to a refresh visible instead of a silently different threshold.
+    profile = app_profile(cdir)
+    return f"{profile} {part}" if profile else part
 
 
 def write_context_file(payload: dict, cdir: Path) -> None:

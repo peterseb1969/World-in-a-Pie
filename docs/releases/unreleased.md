@@ -774,6 +774,44 @@ the guardrails, the technology stack, the UI guidance, the deployable-app
 contract or the app CLAUDE.md template, expect the card drift test to name
 the card to re-review.
 
+### A slim app profile for agents with a small working set
+
+`scripts/create-app-project.sh --profile slim` scaffolds an app for an agent
+that must stay well inside its context (a local model): it reads short rule
+cards instead of the depth documents, and scripts do its bookkeeping.
+
+- **CLAUDE.md** is `scaffold/templates/claude-md/app-slim.md` (~1k tokens,
+  against ~8k for the full one): the app line, the dev namespace, one line
+  per phase command, the session protocol, the 300k-token stop rule, an
+  empty app-gotchas section, and where the cards and depth documents are.
+- **Commands:** the shared phase commands, without `/wip-analyst`,
+  `/wip-add-app`, `/wip-bootstrap`, `/wip-fireside` and `/wip-status`, and
+  with short `/wip-wake`, `/wip-setup` and `/wip-report` from
+  `docs/slash-commands/app-slim/`. The slim wake is one script call
+  (`wake-rollover.py`, then the new `wake-brief.py`), the core card, the
+  phase card, and a WIP check only when the next task touches WIP data.
+- **`wake-brief.py`** prints the recorded phase and its age, the previous
+  session's summary, recent commits, uncommitted files, the brief's open
+  cases and decisions, and a warning when the commit hook is not active.
+- **`wake-rollover.py --close FILE`** closes the current session: the agent
+  writes only the summary text; the script sets `status: closed` and
+  `ended_at`, keeps an existing summary, replaces a stub, and mirrors to kb.
+  Both profiles can use it; the slim `/wip-report session-end` does.
+- **Compaction** keeps the session: the slim re-anchor hook prints the core
+  card and the recorded phase instead of sending the agent to `/wip-wake`.
+- **Status line:** the recorded profile is shown next to the context figure;
+  `slim` turns red at 300k tokens used, `full` at 80%.
+
+The profile is recorded as `PROFILE` in `.claude/.app-meta` (every app now
+records it; existing apps get `PROFILE="full"`). A refresh keeps the recorded
+profile unless `--profile` is given again; an unknown value is refused.
+
+**Action:** none for existing apps. To move an app to the slim profile, run
+the scaffold with `--profile slim`. Its existing CLAUDE.md is kept and the
+slim one is written as `CLAUDE.md.refresh`: move the app's own sections into
+the slim file's "App-specific gotchas", then replace CLAUDE.md with it (or
+pass `--force-claude-md`).
+
 ### Apps record their phase and log their commits from git
 
 Two pieces of app-agent bookkeeping no longer depend on the model:

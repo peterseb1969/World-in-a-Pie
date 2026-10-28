@@ -211,7 +211,7 @@ def snapshot_tree_backend(clone: Path, roots: dict[str, str]) -> dict:
 # --- App scenarios -----------------------------------------------------------
 
 def run_app_scenario(
-    tmp: Path, *, preset: str, tier3: bool, refresh: bool, slug: str
+    tmp: Path, *, preset: str, tier3: bool, refresh: bool, slug: str, profile: str = ""
 ) -> dict:
     app_dir = tmp / slug
     cmd = [
@@ -221,6 +221,8 @@ def run_app_scenario(
     ]
     if tier3:
         cmd += ["--kb", "https://kb.invalid", "--kb-key", str(_kb_key_file(tmp))]
+    if profile:
+        cmd += ["--profile", profile]
 
     runs = 2 if refresh else 1
     last: subprocess.CompletedProcess | None = None

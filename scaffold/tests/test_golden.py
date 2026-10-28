@@ -84,6 +84,16 @@ def test_app_query_create(tmp: Path):
     _check("app-query-create-tier2", snap)
 
 
+@pytest.mark.parametrize("refresh", [False, True], ids=["create", "refresh"])
+def test_app_slim(tmp: Path, refresh: bool):
+    mode = "refresh" if refresh else "create"
+    snap = G.run_app_scenario(
+        tmp, preset="standard", tier3=False, refresh=refresh,
+        slug=f"slim-{mode}", profile="slim",
+    )
+    _check(f"app-slim-{mode}-tier2", snap)
+
+
 # --- targeted modifier fixtures --------------------------------------------
 
 def _app_meta_preset(app_dir: Path) -> str:
@@ -111,6 +121,40 @@ def test_app_refresh_keeps_recorded_preset(tmp: Path):
     r = G._run(["bash", *base, "--preset", "standard"], cwd=G.REPO_ROOT)
     assert r.returncode == 0, r.stdout + r.stderr
     assert _app_meta_preset(app_dir) == "standard"
+
+
+def _app_meta_value(app_dir: Path, key: str) -> str:
+    for line in (app_dir / ".claude" / ".app-meta").read_text().splitlines():
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1].strip('"')
+    return ""
+
+
+def test_app_refresh_keeps_recorded_profile(tmp: Path):
+    """A refresh without --profile keeps the profile recorded in .app-meta —
+    a slim app must not silently fall back to the full profile — and an
+    explicit --profile on refresh still wins. An unknown profile is refused."""
+    app_dir = tmp / "profile-refresh"
+    script = str(G.REPO_ROOT / "scripts/create-app-project.sh")
+    base = [script, str(app_dir), "--name", "Golden profile-refresh", "--prefix", "APP-GLD"]
+    for cmd in (
+        ["bash", *base, "--profile", "slim"],   # create
+        ["bash", *base],                        # refresh, no --profile
+    ):
+        r = G._run(cmd, cwd=G.REPO_ROOT)
+        assert r.returncode == 0, r.stdout + r.stderr
+    assert _app_meta_value(app_dir, "PROFILE") == "slim"
+    assert (app_dir / ".claude/scripts/wake-brief.py").is_file()
+    assert not (app_dir / ".claude/commands/wip-status.md").exists()
+
+    r = G._run(["bash", *base, "--profile", "full"], cwd=G.REPO_ROOT)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _app_meta_value(app_dir, "PROFILE") == "full"
+    assert (app_dir / ".claude/commands/wip-status.md").is_file()
+
+    r = G._run(["bash", *base, "--profile", "tiny"], cwd=G.REPO_ROOT)
+    assert r.returncode != 0
+    assert "Unknown profile 'tiny'" in r.stdout + r.stderr
 
 
 def test_app_force_claude_md(tmp: Path):
