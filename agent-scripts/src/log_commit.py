@@ -15,6 +15,12 @@ author from git (so a commit someone makes by hand in an agent's clone is
 not attributed to the agent). An entry whose hash is already listed is not
 written again. A clone without a session sentinel logs nothing.
 
+A commit that changes only files under reports/ is bookkeeping (a session
+close, a running-log entry, the commit log itself) and is not logged. The
+hook runs after the commit exists, so a commit can never carry its own
+entry: without this rule, the commit that sweeps up the last pending entry
+would log itself, and every session would end with commits.md modified.
+
 Usage: log-commit.py [--why TEXT] [REV]     (REV defaults to HEAD)
 
 Stdlib only — vendored into apps as .claude/scripts/log-commit.py.
@@ -72,6 +78,11 @@ def body_without_trailers(root: Path, rev: str) -> str:
     return "\n\n".join(paragraphs).strip()
 
 
+def report_only(root: Path, rev: str) -> bool:
+    paths = [p for p in git(root, "show", "--name-only", "--format=", rev).splitlines() if p]
+    return bool(paths) and all(p.startswith("reports/") for p in paths)
+
+
 def diffstat(root: Path, rev: str) -> tuple[int, int, int]:
     files = added = removed = 0
     for line in git(root, "show", "--numstat", "--format=", rev).splitlines():
@@ -120,6 +131,8 @@ def main(argv: list[str]) -> int:
     session = sentinel.read_text().strip()
 
     try:
+        if report_only(root, args.rev):
+            return 0
         short, text = entry(root, args.rev, args.why)
     except (OSError, subprocess.CalledProcessError, ValueError) as exc:
         print(f"log-commit: could not read {args.rev} from git ({exc}) — commit not logged",

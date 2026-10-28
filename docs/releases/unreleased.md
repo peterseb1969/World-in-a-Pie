@@ -875,7 +875,9 @@ Two pieces of app-agent bookkeeping no longer depend on the model:
   `reports/<session-id>/commits.md` from git: hash, time, author, files and
   lines, the subject as heading, the body as the Why, and the `Tests:`,
   `PoNIF:` and `Discovered:` commit-message trailers. An already-listed hash
-  is not logged twice. The app CLAUDE.md's "After Every Commit" now asks only
+  is not logged twice, and a commit that changes only files under `reports/`
+  (a session close, the commit log itself) is not logged at all — so the
+  commit that sweeps up the last entry does not leave a new one behind. The app CLAUDE.md's "After Every Commit" now asks only
   for those trailers.
 
 **Action:** an app picks both up on its next scaffold refresh. The hook is

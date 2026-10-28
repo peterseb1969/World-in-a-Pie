@@ -114,6 +114,32 @@ def test_entries_append_in_order(tmp_path):
     assert text.index(f"## {first} ") < text.index(f"## {second} ")
 
 
+def test_report_only_commit_is_not_logged(tmp_path):
+    root = make_repo(tmp_path)
+    work = commit(root, "feat: work", {"a.txt": "x\n"})
+    run(root)
+    git(root, "add", "reports")
+    git(root, "commit", "-q", "--no-verify", "-m", "docs(report): close session")
+    report_commit = git(root, "rev-parse", "--short", "HEAD").strip()
+    run(root)
+    text = log(root)
+    assert f"## {work} " in text
+    assert f"## {report_commit} " not in text
+    assert git(root, "status", "--short", "--", "reports").strip() == ""
+
+
+def test_commit_mixing_reports_and_work_is_logged(tmp_path):
+    root = make_repo(tmp_path)
+    commit(root, "feat: one", {"a.txt": "1\n"})
+    run(root)
+    (root / "b.txt").write_text("2\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "--no-verify", "-m", "feat: two, with the report")
+    mixed = git(root, "rev-parse", "--short", "HEAD").strip()
+    run(root)
+    assert f"## {mixed} " in log(root)
+
+
 def test_no_session_logs_nothing(tmp_path):
     root = make_repo(tmp_path, session=False)
     commit(root, "feat: one", {"a.txt": "1\n"})
