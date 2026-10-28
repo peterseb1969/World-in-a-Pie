@@ -700,3 +700,49 @@ def test_wheel_with_changed_metadata_under_same_version_is_fatal(tmp_path):
     )
     with pytest.raises(RuntimeError, match="without a version bump"):
         ship()
+
+
+# --- .mcp.json: only the wip server is the scaffold's ------------------------
+# A refresh rewrote .mcp.json whole and silently dropped an MCP server the app
+# had added itself (a browser driver for QA).
+
+def _mcp(tmp_path, existing=None):
+    from wip_scaffold.surfaces import mcp_json_surface
+    if existing is not None:
+        (tmp_path / ".mcp.json").write_text(existing)
+    surface = mcp_json_surface("/venv/bin/python", "https://localhost:8443", key_file="/keys/api-key")
+    ctx = _ctx(tmp_path)
+    run_surfaces([surface], ctx)
+    return (tmp_path / ".mcp.json").read_text(), ctx
+
+
+def test_mcp_json_fresh_has_only_wip(tmp_path):
+    text, _ = _mcp(tmp_path)
+    assert list(_json.loads(text)["mcpServers"]) == ["wip"]
+
+
+def test_mcp_json_keeps_servers_the_app_added(tmp_path):
+    existing = {"mcpServers": {
+        "playwright": {"command": "npx", "args": ["@playwright/mcp@0.0.83"]},
+        "wip": {"type": "stdio", "command": "/old/python", "args": [], "env": {"WIP_API_KEY_FILE": "/old"}},
+    }}
+    text, ctx = _mcp(tmp_path, _json.dumps(existing))
+    servers = _json.loads(text)["mcpServers"]
+    assert servers["playwright"] == existing["mcpServers"]["playwright"]
+    assert servers["wip"]["command"] == "/venv/bin/python"
+    assert servers["wip"]["env"]["WIP_API_KEY_FILE"] == "/keys/api-key"
+    assert any("Kept in .mcp.json: playwright" in n for n in ctx.notes)
+
+
+def test_mcp_json_without_extras_is_byte_identical_to_a_fresh_write(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    fresh, _ = _mcp(tmp_path / "a")
+    again, _ = _mcp(tmp_path / "b", fresh)
+    assert again == fresh
+
+
+def test_mcp_json_invalid_existing_is_rewritten_with_a_warning(tmp_path):
+    text, ctx = _mcp(tmp_path, "{not json")
+    assert list(_json.loads(text)["mcpServers"]) == ["wip"]
+    assert any("not valid JSON" in n for n in ctx.notes)

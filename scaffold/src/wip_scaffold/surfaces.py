@@ -19,6 +19,7 @@ so "why is this here" survives refactors.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from .engine import Context, Policy, Surface
@@ -128,7 +129,12 @@ def mcp_json_surface(
     preferred — rotation then applies without re-running the scaffold; a
     literal key exists only for the no-install dev fixture. The remote
     (ssh/http) backend transports write different shapes and stay in bash;
-    they simply don't request this surface."""
+    they simply don't request this surface.
+
+    Only the `wip` server is the scaffold's. Every other entry in an
+    existing .mcp.json (an MCP server the project added itself, e.g. a
+    browser driver for QA) and any other top-level key is kept; the file is
+    written exactly as before when there is nothing else to keep."""
     key_line = (
         f'"WIP_API_KEY_FILE": "{key_file}"' if key_file
         else f'"WIP_API_KEY": "{key_literal}"'
@@ -152,11 +158,27 @@ def mcp_json_surface(
   }}
 }}
 """
+    def produce(ctx: Context) -> dict[str, bytes]:
+        existing_path = ctx.target_root / ".mcp.json"
+        try:
+            existing = json.loads(existing_path.read_text()) if existing_path.is_file() else {}
+        except (OSError, ValueError):
+            ctx.notes.append("WARNING: existing .mcp.json is not valid JSON — rewritten from scratch")
+            existing = {}
+        servers = existing.get("mcpServers") if isinstance(existing, dict) else None
+        others = {k: v for k, v in (servers or {}).items() if k != "wip"} if isinstance(servers, dict) else {}
+        extra_keys = {k: v for k, v in existing.items() if k != "mcpServers"} if isinstance(existing, dict) else {}
+        if not others and not extra_keys:
+            return {".mcp.json": body.encode()}
+        merged = {**extra_keys, "mcpServers": {**json.loads(body)["mcpServers"], **others}}
+        ctx.notes.append(f"Kept in .mcp.json: {', '.join(sorted(others)) or 'other top-level keys'}")
+        return {".mcp.json": (json.dumps(merged, indent=2) + "\n").encode()}
+
     return Surface(
         name="mcp-json",
         policy=Policy.REGENERATE,
-        rationale="one writer for both roles ends the two-heredoc drift; key file over literal so rotation needs no re-scaffold",
-        produce=lambda ctx: {".mcp.json": body.encode()},
+        rationale="one writer for both roles ends the two-heredoc drift; key file over literal so rotation needs no re-scaffold; only the wip server is regenerated, servers the project added are kept",
+        produce=produce,
     )
 
 

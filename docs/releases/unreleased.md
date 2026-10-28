@@ -823,6 +823,17 @@ the guardrails, the technology stack, the UI guidance, the deployable-app
 contract or the app CLAUDE.md template, expect the card drift test to name
 the card to re-review.
 
+### A scaffold refresh keeps MCP servers the project added to `.mcp.json`
+
+The scaffolds rewrote `.mcp.json` whole, so a refresh silently dropped any
+MCP server a project had added itself (WIP-Cooking lost its Playwright
+server for browser QA). Only the `wip` server is the scaffold's now: it is
+regenerated, and every other server and top-level key is kept. A file with
+nothing else in it is written exactly as before.
+
+**Action:** a project that already lost a server on an earlier refresh
+re-adds it once, e.g. from its git history.
+
 ### A slim app profile for agents with a small working set
 
 `scripts/create-app-project.sh --profile slim` scaffolds an app for an agent
