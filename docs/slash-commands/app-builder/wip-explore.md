@@ -2,11 +2,13 @@ Execute Phase 1 (Exploratory) of the AI-Assisted Development process.
 
 ### Steps
 
-1. Read the MCP resources to internalize WIP's core concepts:
-   - Read `wip://conventions` — bulk-first API, versioning, namespaces
-   - Read `wip://data-model` — terminologies, terms, templates, documents, registry
-   - Read `wip://development-guide` — the 4-phase process
-   - Read `wip://ponifs` — powerful non-intuitive features that will trip you up
+1. Read the rule cards to internalize WIP's core concepts:
+   - Read `docs/cards/core.md` — what you are building, the model rule, the gates, the eight PoNIFs
+   - Read `docs/cards/model.md` — terminologies, terms, templates, documents, identity, edge types
+   - The MCP resources are their depth — open one when a card does not answer a question:
+     `wip://conventions` (bulk-first API, versioning, namespaces), `wip://data-model`
+     (the full data model), `wip://development-guide` (the 4-phase process),
+     `wip://ponifs` (the non-intuitive features in full)
 2. Verify the WIP MCP server is connected and responding:
    - Call `get_wip_status` — confirms all WIP services are reachable
    - If the MCP server is not available, ask the user to configure it
@@ -37,4 +39,4 @@ Do NOT proceed to Phase 2 until:
 - The WIP MCP server is connected and all services are healthy
 - All existing terminologies and templates have been inventoried
 - You can explain WIP's core concepts (terminologies, templates, documents, references, identity hashing, synonyms, bulk-first APIs)
-- You have read the MCP resources and understand the PoNIFs
+- You have read the core and model cards and understand the PoNIFs

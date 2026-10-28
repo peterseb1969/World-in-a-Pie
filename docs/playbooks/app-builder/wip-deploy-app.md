@@ -5,7 +5,9 @@ included, what runtime the dev install gives me, how the hot-reload loop
 works, how to debug my container. The *contract* your app must satisfy
 (Dockerfile.dev shape, vite binding, base-path rules, platform invariants)
 is owned by `docs/wip-deployable-app-contract.md` (bundled into this project
-by the scaffold) — read that first when building; read this when deploying.
+by the scaffold). Its checklist form is `docs/cards/ship.md` — read the card
+first when building and open the contract when the card does not answer a
+question; read this playbook when deploying.
 Operator-side lifecycle (installs, nuke, recovery) is
 `docs/playbooks/wip-deploy-be.md` in World-in-a-Pie.
 

@@ -5,11 +5,9 @@ Full procedure for the `/build-app` slash command. The slash command stub at `.c
 ## Before Writing Any Code
 
 1. Run `/wip-status` to confirm all terminologies and templates from Phase 3 are intact.
-2. Read `docs/WIP_DevGuardrails.md` — all seven guides apply in this phase.
-   - Note: Guide 1 (App Gateway & Portal) is not yet implemented — apps don't yet register via manifests or appear on a portal page. However, the **API proxy already exists**: Caddy routes `/api/def-store/*`, `/api/template-store/*`, etc. to the correct service ports. Your app should use Caddy (e.g., `baseUrl: ''` in browser, `baseUrl: 'https://hostname:8443'` in Node.js) — never direct service ports.
-3. Read `libs/wip-client/README.md` and `libs/wip-react/README.md` — understand @wip/client and @wip/react APIs.
-4. Read `docs/WIP_PoNIFs.md` — especially PoNIF #4 (bulk-first 200 OK) and PoNIF #3 (document identity). These affect every @wip/client call.
-5. Confirm the app name, gateway path, and internal port with the user.
+2. Read `docs/cards/build.md` — the pinned stack, providers, proxy, `baseUrl`, UI and bootstrap rules, and the client-side consequences of PoNIF #3 (document identity) and PoNIF #4 (bulk-first 200 OK).
+3. Open the depth documents when the card does not answer a question: `docs/WIP_DevGuardrails.md` (all seven guides), the @wip/client and @wip/react READMEs, `docs/WIP_PoNIFs.md`.
+4. Confirm the app name, gateway path, and internal port with the user.
 
 ## UX Proposal — GATE (requires user approval)
 

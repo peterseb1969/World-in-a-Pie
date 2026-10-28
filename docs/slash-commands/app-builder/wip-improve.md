@@ -35,6 +35,7 @@ Before committing any change:
 You have no memory between sessions. At the start of every improvement session:
 - Run `/wip-status` to confirm WIP state
 - Read ONLY the files you'll be changing — not the whole app
+- Read the card for the work: `docs/cards/build.md` for app code and UI, `docs/cards/model.md` when the change touches the data model (Rule 6)
 - Ask the user what needs fixing — don't guess from reading code
 
 #### 6. Data model changes go back to the formal process

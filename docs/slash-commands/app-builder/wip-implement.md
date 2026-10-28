@@ -7,7 +7,7 @@ The WIP MCP server must be connected.
 The model is **approved and frozen** for this command. If you discover mid-implementation that you need a shape the approved model doesn't have, that is a Phase-2 event — Step 0 Q1 — not an inline addition.
 
 ### Before Any MCP Calls
-Read `docs/WIP_PoNIFs.md` — the 8 PoNIFs describe non-intuitive WIP behaviours that will cause silent failures if you rely on conventional assumptions. Pay special attention to:
+Read `docs/cards/model.md` — the modelling rules, including the PoNIFs: non-intuitive WIP behaviours that cause silent failures if you rely on conventional assumptions. Open `docs/WIP_PoNIFs.md` when the card does not answer a question. Pay special attention to:
 - PoNIF #2: Template update does NOT replace the old version — both stay active
 - PoNIF #3: Identity fields control create-vs-update via hash — get them wrong and versioning breaks silently
 - PoNIF #4: Bulk API returns 200 OK even when items fail — check per-item results
@@ -35,8 +35,8 @@ For each terminology in the approved data model:
 - Create all terms: `create_terms(terminology_id, [{value, label, aliases, description}, ...])`
 - Verify: `list_terms(terminology_id)` — confirm all terms are present
 - **If the data model specifies ontology relations** (hierarchical terminologies):
-  - Create relations: `create_relations([{source_term_id, target_term_id, relation_type}, ...])`
-  - Relation types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates
+  - Create relations: `create_term_relations([{source_term_id, target_term_id, relation_type}, ...])` — each term as a canonical UUID, `ns:terminology:value`, or a raw value with `source_terminology` / `target_terminology` set; the 2-part `TERMINOLOGY:VALUE` shorthand is rejected
+  - Relation types: the seeded set listed in `docs/cards/model.md` (is_a, part_of, has_part, …); an app can add its own to `_ONTOLOGY_RELATIONSHIP_TYPES`
   - Verify: `get_term_hierarchy(term_id, direction="children")` — confirm the hierarchy is correct
   - For bulk ontology loading, use `import_terminology` with OBO Graph JSON format
 - Log: record the terminology ID and value
@@ -80,4 +80,4 @@ If any MCP tool call fails:
 - Ask the user how to proceed
 
 ### Transition to Phase 4
-Once Phase 3 is complete and verified, the development-time work with MCP tools is done. Phase 4 shifts to writing application code that uses `@wip/client` and `@wip/react` at runtime. Read `docs/WIP_DevGuardrails.md` before proceeding.
+Once Phase 3 is complete and verified, the development-time work with MCP tools is done. Phase 4 shifts to writing application code that uses `@wip/client` and `@wip/react` at runtime. Read `docs/cards/build.md` before proceeding; `docs/WIP_DevGuardrails.md` is its depth, for when the card does not answer a question.

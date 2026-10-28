@@ -7,6 +7,8 @@ Two modes, scoped to the dev-loop. Each runs **mandatory pre-flight** before any
 | `/wip-deploy redeploy` | Redeploy this YAC's own source to the currently-running dev install. Most routine. |
 | `/wip-deploy verify` | Smoke the currently-running install. No change. Used after a deploy or when diagnosing. |
 
+Before the first deploy, and whenever a deploy fails in a way pre-flight does not name, read `docs/cards/ship.md` — the deployable-app contract as a checklist, with the failure signature of each skipped item. Open `docs/wip-deployable-app-contract.md` when the card does not answer a question.
+
 This skill is a strict subset of BE-YAC's `/wip-deploy` (see the backend equivalent at `docs/slash-commands/backend/wip-deploy.md` in the WIP repo). APP-YACs do not own `install` — fresh installs go through BE-YAC or Peter.
 
 Pre-flight catches the recurring failure modes APP-YACs have hit:

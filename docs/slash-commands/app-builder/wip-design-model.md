@@ -7,6 +7,7 @@ Phase 1 must be complete. You must have:
 
 ### Steps
 
+0. Read `docs/cards/model.md` — field naming, identity rules, versions, edge types, term relations. Open `wip://data-model` or `docs/WIP_PoNIFs.md` when the card does not answer a question.
 1. If the user provides a use case document, read it for domain context.
 2. Ask the user about their specific requirements:
    - What data do they want to store?

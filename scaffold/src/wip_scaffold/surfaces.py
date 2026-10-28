@@ -498,6 +498,13 @@ def _app_docs(ctx: Context) -> dict[str, bytes]:
         out["docs/ontology-support.md"] = onto.read_bytes()
     else:
         ctx.notes.append("Warning: docs/design/ontology-support.md not found, skipping")
+    # The rule cards: the short form of the documents above that the phase
+    # commands mandate reading. Copied byte for byte like every reference doc.
+    cards = sorted((ctx.wip_root / "docs/cards").glob("*.md"))
+    if not cards:
+        ctx.notes.append("Warning: docs/cards/ not found, skipping the rule cards")
+    for card in cards:
+        out[f"docs/cards/{card.name}"] = card.read_bytes()
     return out
 
 

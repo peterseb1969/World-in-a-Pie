@@ -708,6 +708,32 @@ still tracks `.mcp.json` or `.claude/kb.json`, run the scaffold refresh,
 then the `git rm --cached` command it prints, and commit. Repos whose
 history holds a literal key should retire that key.
 
+### App phase commands read rule cards instead of the depth documents
+
+Four short rule cards now live in `docs/cards/` and are bundled into every
+app's `docs/cards/` by the scaffold: `core.md` (what an app is, the model
+rule, the approval gate, the eight PoNIFs in one line each), `model.md`
+(Phase 2–3), `build.md` (Phase 4) and `ship.md` (the deployable-app
+contract as a checklist). The phase commands' mandated reading points at
+them: `/wip-explore` reads `core.md` and `model.md` instead of the four MCP
+resources, `/wip-design-model` and `/wip-implement` read `model.md` instead
+of `WIP_PoNIFs.md`, the build playbook reads `build.md` instead of
+`WIP_DevGuardrails.md`, both READMEs and the PoNIFs, and `/wip-deploy` and
+the deploy playbook point at `ship.md`. The depth documents stay bundled
+and are opened when a card does not answer a question. `/wip-setup` and
+`/wip-wake` keep their full baseline reload.
+
+Each card records a hash of every source it condenses (the served
+`wip://` resource text for the MCP resources). A test in the mcp-server
+suite fails when a source changes after the card's last review, and names
+the `git diff` to read before the hash is updated.
+
+**Action:** none for the platform. An app picks the cards up on its next
+scaffold refresh. When editing Vision, the PoNIFs, the served resources,
+the guardrails, the technology stack, the UI guidance, the deployable-app
+contract or the app CLAUDE.md template, expect the card drift test to name
+the card to re-review.
+
 ### `@wip/client` browser writes over 64 KB work (0.60.1)
 
 Up to 0.60.0 the client sent every request with Fetch's `keepalive` flag,
