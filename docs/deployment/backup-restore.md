@@ -176,6 +176,18 @@ contract. You get the target's history plus one new head. On a
 `versioned: false` template the single version is replaced in place instead,
 which is that template's own lifecycle.
 
+`older_versions` decides what happens to the target's versions under the new
+head:
+
+- `retire` (default) — they are soft-deleted (`inactive`), exactly as a
+  normal write retires the version it supersedes. The document has one active
+  version, and reporting parity holds.
+- `keep` — they stay `active` beside the new head. A document with several
+  active versions is legal, like several active template versions, but it is a
+  choice: every query by `status=active` returns them all, and the post-merge
+  parity check (which counts active versions) reports the difference as a
+  warning.
+
 A merge refuses outright on one thing no policy covers: **one ID naming two
 different entities** across the two sides. Matching is by content, so the same
 entity under two IDs is a match; the reverse cannot be resolved, since picking
@@ -200,6 +212,14 @@ everything a real run would refuse.
 start_restore(namespace="kb", archive_path="kb.zip", mode="merge", dry_run=True)
 start_restore(namespace="kb", archive_path="kb.zip", mode="merge",
               add_missing=True, on_clash="overwrite")
+```
+
+The same from the command line:
+
+```bash
+wip-toolkit restore kb.zip --mode merge --dry-run
+wip-toolkit restore kb.zip --mode merge --add-missing --on-clash overwrite \
+    --older-versions retire
 ```
 
 ---

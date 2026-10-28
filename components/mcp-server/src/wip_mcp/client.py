@@ -1661,6 +1661,7 @@ class WipClient:
         target_namespace: str | None = None,
         namespace_map: dict[str, str] | None = None,
         on_clash: str = "skip",
+        older_versions: str = "retire",
         add_missing: bool = False,
         extend_terminologies: bool = False,
         skip_documents: bool = False,
@@ -1706,6 +1707,7 @@ class WipClient:
             data["namespace_map"] = json.dumps(namespace_map)
         if mode == "merge":
             data["on_clash"] = on_clash
+            data["older_versions"] = older_versions
             data["add_missing"] = str(add_missing).lower()
             data["extend_terminologies"] = str(extend_terminologies).lower()
 

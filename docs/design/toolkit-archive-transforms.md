@@ -315,7 +315,7 @@ A field on the namespace record was rejected for three reasons:
 | `archive` | `sha256` of the whole archive file (null when there is no file), `format_version`, `tool_version`. |
 | `source` | The archived namespace, `host`, `exported_at`, and `install` (the manifest's `source_install`, verbatim). |
 | `derived_from` | The manifest's chain, verbatim, oldest hop first (§9.1). A single object becomes a one-hop list. Empty for a full backup. |
-| `merge` | Merge only: `on_clash`, `add_missing`, `extend_terminologies`, and the merge plan's `definitions` and per-entity-type `entities` summaries. These are planned counts: under `on_clash: newer` the clashes actually written are a subset. |
+| `merge` | Merge only: `on_clash`, `older_versions`, `add_missing`, `extend_terminologies`, and the merge plan's `definitions` and per-entity-type `entities` summaries. These are planned counts: under `on_clash: newer` the clashes actually written are a subset. |
 | `validation_job_id` | The validation job this restore started for the namespace. CASE-837's reference re-resolution reports there. |
 | `inherited` | True when the row arrived inside an archive. |
 

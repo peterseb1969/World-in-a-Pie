@@ -629,6 +629,7 @@ def make_direct_restore_runner(
                 Path(archive_path),
                 target_namespace=opts.get("target_namespace", ""),
                 on_clash=opts.get("on_clash", "skip"),
+                older_versions=opts.get("older_versions", "retire"),
                 add_missing=opts.get("add_missing", False),
                 extend_terminologies=opts.get("extend_terminologies", False),
                 skip_documents=opts.get("skip_documents", False),

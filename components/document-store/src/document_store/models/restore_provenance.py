@@ -61,7 +61,8 @@ class RestoreProvenance(BeanieDocument):
     merge: dict[str, Any] | None = Field(
         None,
         description=(
-            "Merge only: on_clash, add_missing, extend_terminologies, and the "
+            "Merge only: on_clash, older_versions, add_missing, "
+            "extend_terminologies, and the "
             "merge plan's per-entity-type summary"
         ),
     )

@@ -1045,6 +1045,7 @@ describe('Service classes via createWipClient', () => {
       await client.documents.startRestore('aa', archive, {
         mode: 'merge',
         on_clash: 'overwrite',
+        older_versions: 'keep',
         add_missing: true,
       })
 
@@ -1052,6 +1053,7 @@ describe('Service classes via createWipClient', () => {
       const fd = options.body as FormData
       expect(fd.get('mode')).toBe('merge')
       expect(fd.get('on_clash')).toBe('overwrite')
+      expect(fd.get('older_versions')).toBe('keep')
       expect(fd.get('add_missing')).toBe('true')
     })
 

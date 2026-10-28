@@ -340,6 +340,16 @@ class RestoreFromJobRequest(StrictModel):
             "so only when the archive's copy was updated more recently."
         ),
     )
+    older_versions: str = Field(
+        "retire",
+        description=(
+            "Merge only — when 'overwrite' or 'newer' appends the archive's "
+            "version on top of the target's, what happens to the target's "
+            "older versions. 'retire' (default) soft-deletes them, as a normal "
+            "write does; 'keep' leaves them active, so the document has "
+            "several active versions."
+        ),
+    )
     add_missing: bool = Field(
         False,
         description=(

@@ -866,6 +866,12 @@ class DirectRestoreEngine:
     # that had to reconcile schemas while writing data would be validating one
     # side's documents against the other's contract.
     MERGE_CLASH_POLICIES = ("skip", "overwrite", "newer")
+    # What happens to the target's older versions when a clash appends the
+    # archive's version on top. 'retire' soft-deletes them, exactly as a normal
+    # write retires the version it supersedes; 'keep' leaves them active, so
+    # the document has several active versions (legal, like several active
+    # template versions, but it is a choice the caller makes, never a default).
+    MERGE_OLDER_VERSIONS = ("retire", "keep")
 
     async def run_remap(
         self,
@@ -1817,6 +1823,7 @@ class DirectRestoreEngine:
         target_namespace: str,
         *,
         on_clash: str = "skip",
+        older_versions: str = "retire",
         add_missing: bool = False,
         extend_terminologies: bool = False,
         skip_documents: bool = False,
@@ -1839,7 +1846,9 @@ class DirectRestoreEngine:
         effect of restoring data into it.
 
         Documents get the policy: ``on_clash`` decides what happens where the
-        target already holds an identity.
+        target already holds an identity, and ``older_versions`` whether the
+        target's versions under an appended one are retired (the default) or
+        stay active.
 
         Both passes are computed before anything is written, so ``dry_run`` is
         exact rather than indicative, and still fails on everything a real run
@@ -1849,6 +1858,11 @@ class DirectRestoreEngine:
             raise RestoreEngineError(
                 f"Invalid on_clash '{on_clash}' — must be one of "
                 f"{', '.join(self.MERGE_CLASH_POLICIES)}"
+            )
+        if older_versions not in self.MERGE_OLDER_VERSIONS:
+            raise RestoreEngineError(
+                f"Invalid older_versions '{older_versions}' — must be one of "
+                f"{', '.join(self.MERGE_OLDER_VERSIONS)}"
             )
 
         with ArchiveReader(archive_path) as reader:
@@ -2052,7 +2066,8 @@ class DirectRestoreEngine:
                 await self._apply_definitions(tgt, definitions, remapper, batch_size)
                 await self._apply_merge(
                     tgt, built, doc_groups or {},
-                    on_clash=on_clash, batch_size=batch_size, streamed=streamed,
+                    on_clash=on_clash, older_versions=older_versions,
+                    batch_size=batch_size, streamed=streamed,
                 )
                 inserted_file_ids.update(
                     f["file_id"] for f in built.get(
@@ -2072,6 +2087,7 @@ class DirectRestoreEngine:
                     source=src, target=tgt, mode="merge",
                     merge={
                         "on_clash": on_clash,
+                        "older_versions": older_versions,
                         "add_missing": add_missing,
                         "extend_terminologies": extend_terminologies,
                         "definitions": planned.get("definitions"),
@@ -2732,6 +2748,7 @@ class DirectRestoreEngine:
         doc_groups: dict[str, list[dict[str, Any]]],
         *,
         on_clash: str,
+        older_versions: str = "retire",
         batch_size: int,
         streamed: _StreamedDocuments | None = None,
     ) -> None:
@@ -2767,7 +2784,8 @@ class DirectRestoreEngine:
                     )
                 if on_clash in ("overwrite", "newer"):
                     await self._overwrite_documents(
-                        namespace, plan, doc_groups, on_clash=on_clash,
+                        namespace, plan, doc_groups,
+                        on_clash=on_clash, older_versions=older_versions,
                         sources=streamed.clash_sources(), batch_size=batch_size,
                     )
                 continue
@@ -2799,7 +2817,8 @@ class DirectRestoreEngine:
 
             if entity_type == "documents" and on_clash in ("overwrite", "newer"):
                 await self._overwrite_documents(
-                    namespace, plan, doc_groups, on_clash=on_clash
+                    namespace, plan, doc_groups,
+                    on_clash=on_clash, older_versions=older_versions,
                 )
 
         entries_plan = plans.get("registry_entries")
@@ -2855,6 +2874,7 @@ class DirectRestoreEngine:
         doc_groups: dict[str, list[dict[str, Any]]],
         *,
         on_clash: str = "overwrite",
+        older_versions: str = "retire",
         sources: Iterator[tuple[Clash, dict[str, Any]]] | None = None,
         batch_size: int = 500,
     ) -> None:
@@ -2865,6 +2885,10 @@ class DirectRestoreEngine:
         document_id. The target's history is preserved and the archive's is not
         spliced in: interleaving two independent version chains has no defined
         order and would corrupt the (document_id, version) contract.
+
+        ``older_versions='retire'`` then soft-deletes the target's active
+        versions below the appended one, as a normal write retires the version
+        it supersedes. ``'keep'`` leaves them active alongside it.
 
         A ``versioned: false`` template has no such contract to protect — its
         lifecycle IS overwrite-in-place — so there the single row is replaced.
@@ -2898,7 +2922,35 @@ class DirectRestoreEngine:
         replaced = 0
         kept = 0
         undecidable = 0
+        retired = 0
         new_rows: list[dict[str, Any]] = []
+
+        async def _flush(rows: list[dict[str, Any]]) -> int:
+            """Insert one batch of appended heads, then retire what they
+            supersede — after the insert, so a failed insert never leaves a
+            document with no active version."""
+            await self._insert_batch(collection, rows, "documents")
+            if older_versions != "retire":
+                return 0
+            now = datetime.now(UTC)
+            count = 0
+            for row in rows:
+                result = await collection.update_many(
+                    {
+                        "namespace": namespace,
+                        "document_id": row["document_id"],
+                        "version": {"$lt": row["version"]},
+                        "status": "active",
+                    },
+                    {"$set": {
+                        "status": "inactive",
+                        "updated_at": now,
+                        "updated_by": "restore-merge",
+                    }},
+                )
+                count += result.modified_count
+            return count
+
         for clash, latest in sources:
             target_head = max(clash.targets, key=lambda r: r.get("version", 1))
 
@@ -2932,17 +2984,21 @@ class DirectRestoreEngine:
                 new_rows.append(row)
                 appended += 1
                 if len(new_rows) >= batch_size:
-                    await self._insert_batch(collection, new_rows, "documents")
+                    retired += await _flush(new_rows)
                     new_rows = []
 
         if new_rows:
-            await self._insert_batch(collection, new_rows, "documents")
+            retired += await _flush(new_rows)
 
         summary = (
             f"[{namespace}] {appended + replaced} clashing document(s) taken "
             f"from the archive ({appended} appended as a new version, "
             f"{replaced} replaced in place on versioned:false templates)"
         )
+        if older_versions == "retire":
+            summary += f", {retired} older version(s) retired"
+        else:
+            summary += ", older versions kept active"
         if on_clash == "newer":
             summary += f", {kept} kept because the target's copy is not older"
         self._emit("phase_documents", summary)

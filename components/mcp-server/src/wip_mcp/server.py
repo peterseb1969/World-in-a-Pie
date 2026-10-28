@@ -4535,6 +4535,7 @@ async def start_restore(
     target_namespace: str | None = None,
     namespace_map: dict[str, str] | None = None,
     on_clash: str = "skip",
+    older_versions: str = "retire",
     add_missing: bool = False,
     extend_terminologies: bool = False,
     skip_documents: bool = False,
@@ -4591,7 +4592,10 @@ async def start_restore(
     updated_at. A tie keeps the target, as does a missing or unparseable
     timestamp on either side (reported as a job warning). Across two installs
     'newer' is only as reliable as the two machines' clocks: UTC removes
-    timezone error, not skew. A merge refuses outright
+    timezone error, not skew. When a version is appended, older_versions
+    decides the target's versions underneath it: 'retire' (default)
+    soft-deletes them, as a normal write does, so the document keeps one
+    active version; 'keep' leaves them active alongside it. A merge refuses outright
     only when one ID names two different entities across the two sides.
 
     dry_run is exact for a merge: the plan is computed before anything is
@@ -4624,6 +4628,9 @@ async def start_restore(
             target_namespace: pass exactly one of the two for 'fresh'.
         on_clash: Merge only — 'skip', 'overwrite' or 'newer' for clashing
             documents.
+        older_versions: Merge only — 'retire' (default) or 'keep': whether
+            the target's older versions are soft-deleted when 'overwrite' or
+            'newer' appends the archive's version on top of them.
         add_missing: Merge only — insert terminologies and templates the
             target does not have, instead of refusing.
         extend_terminologies: Merge only — add terms the target's terminology
@@ -4643,6 +4650,7 @@ async def start_restore(
             target_namespace=target_namespace,
             namespace_map=namespace_map,
             on_clash=on_clash,
+            older_versions=older_versions,
             add_missing=add_missing,
             extend_terminologies=extend_terminologies,
             skip_documents=skip_documents,

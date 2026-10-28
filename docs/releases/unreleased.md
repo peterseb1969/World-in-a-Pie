@@ -428,6 +428,33 @@ Now:
 A new template version in the newer backup was not affected; it merges with
 `add_missing`.
 
+### A merge asks what happens to the target's older versions; `@wip/client` 0.65.0, WIP-Toolkit 0.7.0
+
+A merge with `on_clash: overwrite` or `newer` appends the archive's latest
+version on top of the target's. It used to leave the target's older version
+`active` beside it, unlike a normal write, which retires the version it
+supersedes. The document then had two active versions, and the post-merge
+parity check waited its full 90 seconds and warned.
+
+The new merge option `older_versions` makes it a choice:
+- `retire` (default): the target's older versions are soft-deleted, as a
+  normal write does.
+- `keep`: they stay active beside the new head.
+
+It is accepted by the upload restore and restore-from-job endpoints, the MCP
+`start_restore` tool, and `@wip/client` 0.65.0 (`RestoreOptions.older_versions`,
+type `OlderVersionsPolicy`). It is recorded in the restore provenance record's
+`merge` block. Outside `mode: merge` a non-default value is rejected, like the
+other merge options.
+
+WIP-Toolkit 0.7.0 adds `wip-toolkit restore`, a thin client of the restore
+endpoint: it uploads the archive, starts the job and follows it, with every
+mode and merge option as a flag (`--older-versions retire|keep` among them).
+
+**Action:** callers that relied on the old behaviour (older versions staying
+active after an overwrite merge) pass `older_versions: keep`. Apps re-vendor
+`wip-client-0.65.0.tgz` to get the typed option.
+
 ### `latest_only` + `status` filters on each document's latest version
 
 With `GET /api/document-store/documents?latest_only=true`, a `status` filter

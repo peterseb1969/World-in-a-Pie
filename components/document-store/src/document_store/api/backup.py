@@ -118,6 +118,7 @@ def _validate_merge_options(
     mode: str,
     *,
     on_clash: str,
+    older_versions: str,
     add_missing: bool,
     extend_terminologies: bool,
     drop_stale_reporting: bool,
@@ -135,6 +136,7 @@ def _validate_merge_options(
     if mode != "merge":
         for name, value, default in (
             ("on_clash", on_clash, "skip"),
+            ("older_versions", older_versions, "retire"),
             ("add_missing", add_missing, False),
             ("extend_terminologies", extend_terminologies, False),
         ):
@@ -155,6 +157,14 @@ def _validate_merge_options(
             detail=(
                 f"Invalid on_clash '{on_clash}' — must be 'skip', 'overwrite' "
                 "or 'newer'"
+            ),
+        )
+    if older_versions not in ("retire", "keep"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid older_versions '{older_versions}' — must be 'retire' "
+                "or 'keep'"
             ),
         )
     if drop_stale_reporting:
@@ -384,6 +394,16 @@ async def start_restore(
             "more recently, keeping the target's on a tie."
         ),
     ),
+    older_versions: str = Form(
+        "retire",
+        description=(
+            "Merge only — when 'overwrite' or 'newer' appends the archive's "
+            "version on top of the target's, what happens to the target's "
+            "older versions. 'retire' (default) soft-deletes them, as a normal "
+            "write does; 'keep' leaves them active, so the document has "
+            "several active versions."
+        ),
+    ),
     add_missing: bool = Form(
         False,
         description=(
@@ -491,6 +511,7 @@ async def start_restore(
     _validate_merge_options(
         mode,
         on_clash=on_clash,
+        older_versions=older_versions,
         add_missing=add_missing,
         extend_terminologies=extend_terminologies,
         drop_stale_reporting=drop_stale_reporting,
@@ -596,6 +617,7 @@ async def start_restore(
         "target_namespace": effective_target,
         "namespace_map": parsed_namespace_map,
         "on_clash": on_clash,
+        "older_versions": older_versions,
         "add_missing": add_missing,
         "extend_terminologies": extend_terminologies,
         "skip_documents": skip_documents,
@@ -1028,6 +1050,7 @@ async def restore_from_job(
     _validate_merge_options(
         request.mode,
         on_clash=request.on_clash,
+        older_versions=request.older_versions,
         add_missing=request.add_missing,
         extend_terminologies=request.extend_terminologies,
         drop_stale_reporting=False,
@@ -1075,6 +1098,7 @@ async def restore_from_job(
         "mode": request.mode,
         "target_namespace": effective_target,
         "on_clash": request.on_clash,
+        "older_versions": request.older_versions,
         "add_missing": request.add_missing,
         "extend_terminologies": request.extend_terminologies,
         "skip_documents": request.skip_documents,

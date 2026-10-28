@@ -555,12 +555,14 @@ async def test_start_restore_merge_sends_the_clash_policies(tmp_path):
             archive_path=str(archive),
             mode="merge",
             on_clash="overwrite",
+            older_versions="keep",
             add_missing=True,
         )
 
     data = mock_http.post.call_args.kwargs["data"]
     assert data["mode"] == "merge"
     assert data["on_clash"] == "overwrite"
+    assert data["older_versions"] == "keep"
     assert data["add_missing"] == "true"
     assert data["extend_terminologies"] == "false"
 
@@ -579,6 +581,7 @@ async def test_start_restore_omits_clash_policies_outside_merge(tmp_path):
 
     data = mock_http.post.call_args.kwargs["data"]
     assert "on_clash" not in data and "add_missing" not in data
+    assert "older_versions" not in data
 
 
 @pytest.mark.asyncio

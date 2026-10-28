@@ -429,6 +429,148 @@ def update_document_cmd(
     console.print(_json.dumps(result, indent=2, default=str))
 
 
+_MERGE_ONLY_OPTIONS = ("on_clash", "older_versions", "add_missing", "extend_terminologies")
+
+
+@main.command()
+@click.argument("archive_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--mode", type=click.Choice(["restore", "merge", "fresh"]), default="restore",
+              show_default=True,
+              help="restore: into an empty namespace, ids kept. merge: into a namespace "
+                   "that holds data, ids kept. fresh: into a new namespace, ids re-minted.")
+@click.option("--namespace", default=None,
+              help="Namespace the request is authorized against (default: the archive's).")
+@click.option("--target-namespace", default=None,
+              help="Where to write (required for a single-namespace fresh restore).")
+@click.option("--map", "namespace_map", multiple=True, metavar="SOURCE=TARGET",
+              help="Fresh only: map an archived namespace to a new one (repeatable).")
+@click.option("--on-clash", type=click.Choice(["skip", "overwrite", "newer"]), default=None,
+              help="Merge only: for a document the target already holds, keep the target's "
+                   "(skip, default), take the archive's (overwrite), or take it only where "
+                   "it was updated more recently (newer).")
+@click.option("--older-versions", type=click.Choice(["retire", "keep"]), default=None,
+              help="Merge only: when overwrite/newer puts the archive's version on top, "
+                   "soft-delete the target's older versions (retire, default) or leave "
+                   "them active (keep).")
+@click.option("--add-missing", is_flag=True, default=None,
+              help="Merge only: insert terminologies and templates the target lacks.")
+@click.option("--extend-terminologies", is_flag=True, default=None,
+              help="Merge only: add terms the target's terminologies lack.")
+@click.option("--skip-documents", is_flag=True, help="Definitions only.")
+@click.option("--skip-files", is_flag=True, help="Do not restore file blobs.")
+@click.option("--dry-run", is_flag=True, help="Report what would happen; write nothing.")
+@click.option("--no-wait", is_flag=True, help="Print the queued job and return.")
+@click.option("--timeout", default=3600.0, show_default=True,
+              help="Seconds to follow the job before returning (it keeps running).")
+@click.option("--json", "as_json", is_flag=True, help="Print the final job snapshot as JSON.")
+@click.pass_context
+def restore(
+    ctx: click.Context,
+    archive_path: str,
+    mode: str,
+    namespace: str | None,
+    target_namespace: str | None,
+    namespace_map: tuple[str, ...],
+    on_clash: str | None,
+    older_versions: str | None,
+    add_missing: bool | None,
+    extend_terminologies: bool | None,
+    skip_documents: bool,
+    skip_files: bool,
+    dry_run: bool,
+    no_wait: bool,
+    timeout: float,
+    as_json: bool,
+) -> None:
+    """Restore or merge an archive through the server's restore engine.
+
+    ARCHIVE_PATH is a backup ZIP. The server validates everything that
+    enters; this command uploads the archive, starts the job and follows it.
+    Exits 1 when the job fails.
+
+    Examples:
+
+      wip-toolkit restore backup.zip
+
+      wip-toolkit restore newer.zip --mode merge --on-clash newer \\
+          --extend-terminologies --dry-run
+
+      wip-toolkit restore newer.zip --mode merge --on-clash overwrite \\
+          --older-versions keep
+    """
+    from pathlib import Path
+
+    from .restore import build_form, start_restore, wait_for_job
+
+    given = {
+        "on_clash": on_clash, "older_versions": older_versions,
+        "add_missing": add_missing, "extend_terminologies": extend_terminologies,
+    }
+    if mode != "merge":
+        misplaced = [name for name in _MERGE_ONLY_OPTIONS if given[name]]
+        if misplaced:
+            flags = ", ".join("--" + n.replace("_", "-") for n in misplaced)
+            raise click.UsageError(f"{flags} apply to --mode merge only.")
+    if namespace_map and mode != "fresh":
+        raise click.UsageError("--map applies to --mode fresh only.")
+
+    parsed_map: dict[str, str] = {}
+    for entry in namespace_map:
+        source, sep, target = entry.partition("=")
+        if not sep or not source or not target:
+            raise click.UsageError(f"--map expects SOURCE=TARGET, got '{entry}'.")
+        parsed_map[source] = target
+
+    path = Path(archive_path)
+    if namespace is None:
+        with ArchiveReader(path) as reader:
+            namespace = reader.read_manifest().namespace
+
+    form = build_form(
+        mode,
+        target_namespace=target_namespace,
+        namespace_map=parsed_map or None,
+        on_clash=on_clash or "skip",
+        older_versions=older_versions or "retire",
+        add_missing=bool(add_missing),
+        extend_terminologies=bool(extend_terminologies),
+        skip_documents=skip_documents,
+        skip_files=skip_files,
+        dry_run=dry_run,
+    )
+
+    config = ctx.obj["config"]
+    with WIPClient(config) as client:
+        snapshot = start_restore(client, path, namespace, form)
+        if not no_wait:
+            last_message: list[str | None] = [None]
+
+            def _progress(snap: dict) -> None:
+                message = snap.get("message")
+                if message and message != last_message[0] and not as_json:
+                    console.print(f"[dim]{message}[/dim]")
+                last_message[0] = message
+
+            snapshot = wait_for_job(
+                client, snapshot["job_id"], timeout=timeout, on_progress=_progress
+            )
+
+    if as_json:
+        click.echo(_json.dumps(snapshot, indent=2, default=str))
+    else:
+        status = snapshot.get("status")
+        colour = {"complete": "green", "failed": "red"}.get(status or "", "yellow")
+        console.print(f"[{colour}]{snapshot.get('job_id')}: {status}[/{colour}]")
+        if snapshot.get("error"):
+            console.print(f"[red]{snapshot['error']}[/red]")
+        for warning in snapshot.get("warnings") or []:
+            console.print(f"[yellow]warning:[/yellow] {warning}")
+        if snapshot.get("result"):
+            console.print(_json.dumps(snapshot["result"], indent=2, default=str))
+    if snapshot.get("status") == "failed":
+        sys.exit(1)
+
+
 @main.command()
 @click.argument("data_model_dir")
 @click.argument("namespace")

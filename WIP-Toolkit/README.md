@@ -49,18 +49,28 @@ change, convert them before relying on a restore.**
 There is **one import write-path: the server restore engine.** Upload the
 archive to the target instance's restore endpoint
 (`POST /api/document-store/backup/namespaces/{ns}/restore`, or the
-`start_restore` MCP tool): `mode=restore` preserves ids into empty
-namespaces, `mode=fresh` re-mints beside a live original, `mode=merge`
-treats the archive as a delta. The toolkit's former client-side `import`
-command was removed once CLI exports carried full registry identity and
-the engine could restore them faithfully.
+`start_restore` MCP tool, or `wip-toolkit restore`): `mode=restore`
+preserves ids into empty namespaces, `mode=fresh` re-mints beside a live
+original, `mode=merge` treats the archive as a delta. The toolkit's former
+client-side `import` command was removed once CLI exports carried full
+registry identity and the engine could restore them faithfully;
+`wip-toolkit restore` is a thin client of that endpoint, not a second
+write-path.
 
 ## CLI (single-namespace export)
 
 ```bash
 wip-toolkit export <namespace> <archive.zip> [--include-files] …
 wip-toolkit inspect <archive.zip>
+wip-toolkit restore <archive.zip> [--mode restore|merge|fresh] [--dry-run] …
 ```
+
+`restore` uploads the archive, starts the server job and follows it to the
+end (`--no-wait` returns at once; exit code 1 when the job fails). Merge
+options apply to `--mode merge` only: `--on-clash skip|overwrite|newer`,
+`--older-versions retire|keep` (whether the target's older versions are
+soft-deleted when the archive's version is put on top; default `retire`),
+`--add-missing`, `--extend-terminologies`.
 
 Export writes a 1-namespace v3 archive, including the raw registry
 identity rows (fetched through the Registry's admin-gated

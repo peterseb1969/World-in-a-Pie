@@ -426,6 +426,7 @@ async def test_merge_mode_forwards_its_policies_to_the_runner(
             data={
                 "mode": "merge",
                 "on_clash": "overwrite",
+                "older_versions": "keep",
                 "add_missing": "true",
             },
         )
@@ -434,13 +435,14 @@ async def test_merge_mode_forwards_its_policies_to_the_runner(
     options = mk_runner.call_args.kwargs["options"]
     assert options["mode"] == "merge"
     assert options["on_clash"] == "overwrite"
+    assert options["older_versions"] == "keep"
     assert options["add_missing"] is True
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("on_clash", "clobber")],
+    [("on_clash", "clobber"), ("older_versions", "drop")],
 )
 async def test_merge_rejects_unknown_policies(
     client: AsyncClient, auth_headers: dict, field: str, value: str
@@ -489,6 +491,7 @@ async def test_extend_terminologies_reaches_the_runner(
     ("field", "value"),
     [
         ("on_clash", "overwrite"),
+        ("older_versions", "keep"),
         ("add_missing", "true"),
         ("extend_terminologies", "true"),
     ],

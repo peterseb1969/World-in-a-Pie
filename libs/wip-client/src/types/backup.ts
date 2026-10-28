@@ -48,6 +48,14 @@ export type RestoreMode = 'restore' | 'merge' | 'fresh'
  */
 export type ClashPolicy = 'skip' | 'overwrite' | 'newer'
 
+/**
+ * Merge only — what happens to the target's older versions when `'overwrite'`
+ * or `'newer'` appends the archive's version on top of them. `'retire'` (the
+ * server default) soft-deletes them, as a normal write does, so the document
+ * keeps one active version; `'keep'` leaves them active alongside it.
+ */
+export type OlderVersionsPolicy = 'retire' | 'keep'
+
 
 
 /**
@@ -194,6 +202,8 @@ export interface RestoreOptions {
   namespace_map?: Record<string, string>
   /** Merge only — resolution for a document identity the target already holds. */
   on_clash?: ClashPolicy
+  /** Merge only — retire (default) or keep the target's older versions under an appended one. */
+  older_versions?: OlderVersionsPolicy
   /**
    * Merge only — insert terminologies and templates the target does not
    * have. Without it a missing definition refuses the merge: changing a live
