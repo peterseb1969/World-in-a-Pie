@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
+import functools
 import hashlib
 import logging
 import os
 import socket
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -36,18 +38,24 @@ from wip_archive.remap import IDRemapper
 from wip_auth.composite_key import compute_composite_key_hash
 
 from .archived_status import retire_archived_row
+from .document_chains import (
+    UnsortedArchive,
+    compact_heads,
+    head_of,
+    iter_chains,
+    transformed_chains,
+)
 from .file_storage_client import FileStorageClient
 from .merge_definitions import (
     DEFINITION_TYPES,
     DefinitionsPlan,
     DefinitionsPlanner,
 )
-from .merge_plan import MERGE_ENTITY_SPECS, EntityPlan, MergePlanner
+from .merge_plan import MERGE_ENTITY_SPECS, Clash, EntityPlan, MergePlanner
 from .remap_restore import (
     REMAP_ENTITY_ORDER,
     RemapPlan,
     RemapSource,
-    composite_key_for,
     plan_multi,
 )
 from .reporting_client import ReportingSyncClient
@@ -145,6 +153,81 @@ EXPORT_SORT_ORDER: dict[str, list[tuple[str, int]]] = {
     "files": [("file_id", 1)],
     "registry_entries": [("entry_id", 1)],
 }
+
+# What a fresh restore's Registry key for a document needs
+# (`composite_key_for("documents", ...)`): the planner keeps one such row per
+# document and streams the rest (CASE-959).
+_DOCUMENT_KEY_FIELDS = ("document_id", "template_id", "identity_hash", "version")
+
+
+class _StreamedDocuments:
+    """A merge's documents, read from the archive chain by chain.
+
+    Planning ran on compact heads; this carries the plan's per-document
+    decisions (insert the chain, or take the archive's head over a clash) and
+    streams the chains again for each step that needs their content — the
+    reference check and the writes — so no step holds more than one chain.
+    Every chain passes through ``transform`` (the namespace and reference
+    rewrite) exactly as the in-memory path's chains do.
+    """
+
+    def __init__(
+        self,
+        reader: ArchiveReader,
+        source: str,
+        transform: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+        plan: EntityPlan,
+        *,
+        overwrite: bool,
+    ) -> None:
+        self._reader = reader
+        self._source = source
+        self._transform = transform
+        self._insert_ids = {str(h.get("document_id", "")) for h in plan.to_insert}
+        # Keyed by the ARCHIVE's document_id (the clash entity is the archive
+        # head); the write adopts the target's id from clash.targets.
+        self._clashes: dict[str, Clash] = (
+            {str(c.entity.get("document_id", "")): c for c in plan.differing_clashes}
+            if overwrite else {}
+        )
+
+    def _chains(self) -> Iterator[list[dict[str, Any]]]:
+        if not self._insert_ids and not self._clashes:
+            return
+        yield from transformed_chains(self._reader, self._source, self._transform)
+
+    def referenced_ids(
+        self, collect: Callable[[list[dict[str, Any]]], dict[str, set[str]]]
+    ) -> dict[str, set[str]]:
+        """What the rows this merge writes point at: every row of an inserted
+        chain, the head of an overwritten clash."""
+        wanted: dict[str, set[str]] = {}
+        for chain in self._chains():
+            doc_id = str(chain[0].get("document_id", ""))
+            if doc_id in self._insert_ids:
+                rows = chain
+            elif doc_id in self._clashes:
+                rows = [head_of(chain)]
+            else:
+                continue
+            for kind, ids in collect(rows).items():
+                wanted.setdefault(kind, set()).update(ids)
+        return wanted
+
+    def inserted_chains(self) -> Iterator[list[dict[str, Any]]]:
+        for chain in self._chains():
+            if str(chain[0].get("document_id", "")) in self._insert_ids:
+                yield chain
+
+    def clash_sources(self) -> Iterator[tuple[Clash, dict[str, Any]]]:
+        """(clash, the archive's latest row) for every overwritten clash."""
+        if not self._clashes:
+            return
+        for chain in self._chains():
+            clash = self._clashes.get(str(chain[0].get("document_id", "")))
+            if clash is not None:
+                yield clash, head_of(chain)
+
 
 # Merge writes in the same order for the same reason a restore does: it is
 # dependency order. Terms need their terminology, documents need their
@@ -856,11 +939,30 @@ class DirectRestoreEngine:
             remap_sources: list[RemapSource] = []
             for src, target in mapping.items():
                 entities_by_type: dict[str, list[dict[str, Any]]] = {}
+                document_chains = None
                 for entity_type in (*REMAP_ENTITY_ORDER, "term_relations"):
                     if skip_documents and entity_type == "documents":
                         continue
                     if skip_files and entity_type == "files":
                         continue
+                    if entity_type == "documents":
+                        # Documents dominate the archive: plan from one key row
+                        # per document and stream the chains where they are
+                        # rewritten and written (CASE-959). An unsorted
+                        # (pre-sort) archive falls back to holding them.
+                        try:
+                            entities_by_type[entity_type] = [
+                                {k: chain[0][k] for k in _DOCUMENT_KEY_FIELDS if k in chain[0]}
+                                for chain in iter_chains(reader, src)
+                            ]
+                            document_chains = functools.partial(iter_chains, reader, src)
+                            continue
+                        except UnsortedArchive as e:
+                            self._emit(
+                                "warning",
+                                f"[{src}] {e} — the restore holds every document "
+                                "in memory; a backup taken with this release streams.",
+                            )
                     rows = []
                     for row in reader.read_entities(entity_type, namespace=src):
                         row.pop("_id", None)
@@ -887,6 +989,7 @@ class DirectRestoreEngine:
                     entities_by_type=entities_by_type,
                     identity_fields=identity_fields,
                     template_fields=template_fields,
+                    document_chains=document_chains,
                 ))
 
             # The namespaces have to exist before anything is provisioned: the
@@ -983,11 +1086,7 @@ class DirectRestoreEngine:
                     if t != target:
                         continue
                     plan = plans[src]
-                    doc_keys: dict[str, dict[str, Any]] = {}
-                    for row in plan.rows.get("documents", []):
-                        key = composite_key_for("documents", row, target, plan.id_map)
-                        if key:
-                            doc_keys[row["document_id"]] = key
+                    doc_keys = plan.final_document_keys(target)
                     for m in plan.id_map.values():
                         for new_id in m.values():
                             item: dict[str, Any] = {"entry_id": new_id}
@@ -1317,11 +1416,29 @@ class DirectRestoreEngine:
         writing the archive's would duplicate every identity under its old id.
         """
         for entity_type in (*REMAP_ENTITY_ORDER, "term_relations"):
+            db_name, coll_name = COLLECTION_MAP[entity_type]
+            collection = self._mongo[db_name][coll_name]
+            if entity_type == "documents" and plan.document_stream is not None:
+                written = 0
+                batch: list[dict[str, Any]] = []
+                for row in plan.iter_documents():
+                    batch.append(row)
+                    if len(batch) >= batch_size:
+                        await self._insert_batch(collection, batch, entity_type)
+                        written += len(batch)
+                        batch = []
+                if batch:
+                    await self._insert_batch(collection, batch, entity_type)
+                    written += len(batch)
+                if written:
+                    self._emit(
+                        f"phase_{entity_type}",
+                        f"[{namespace}] wrote {written} {entity_type} under new ids",
+                    )
+                continue
             rows = plan.rows.get(entity_type) or []
             if not rows:
                 continue
-            db_name, coll_name = COLLECTION_MAP[entity_type]
-            collection = self._mongo[db_name][coll_name]
             for start in range(0, len(rows), batch_size):
                 await self._insert_batch(
                     collection, rows[start:start + batch_size], entity_type
@@ -1447,11 +1564,11 @@ class DirectRestoreEngine:
             # A document claims its (possibly recomputed) identity hash at
             # activation; its synonym must carry the SAME new hash, not the
             # archived pre-remap one (id-valued identity fields — edges — rehash).
-            new_doc_hash: dict[str, str] = {}
-            for row in plan.rows.get("documents", []):
-                key = composite_key_for("documents", row, target, plan.id_map)
-                if key and key.get("identity_hash"):
-                    new_doc_hash[row["document_id"]] = key["identity_hash"]
+            new_doc_hash: dict[str, str] = {
+                doc_id: key["identity_hash"]
+                for doc_id, key in plan.final_document_keys(target).items()
+                if key.get("identity_hash")
+            }
 
             syn_by_old: dict[str, list[dict[str, Any]]] = {}
             for entry in reader.read_entities("registry_entries", namespace=src):
@@ -1779,13 +1896,14 @@ class DirectRestoreEngine:
                             self._rewrite_namespace(entity_type, entity, src, tgt)
                             for entity in entities
                         ]
-                    doc_groups = {
-                        doc_id: [
-                            self._rewrite_namespace("documents", row, src, tgt)
-                            for row in rows
-                        ]
-                        for doc_id, rows in doc_groups.items()
-                    }
+                    if doc_groups is not None:
+                        doc_groups = {
+                            doc_id: [
+                                self._rewrite_namespace("documents", row, src, tgt)
+                                for row in rows
+                            ]
+                            for doc_id, rows in doc_groups.items()
+                        }
                     self._emit(
                         "phase_merge_plan",
                         f"[{tgt}] merging from namespace '{src}' — entities "
@@ -1815,6 +1933,12 @@ class DirectRestoreEngine:
                 planner = MergePlanner(self._mongo, COLLECTION_MAP)
                 built: dict[str, EntityPlan] = {}
                 rewritten = 0
+                # Streamed documents are rewritten as they are read again,
+                # with the remapper as it stands HERE — the same state the
+                # in-memory path applies to its chains below. Document and
+                # file mappings added after this point never reached a
+                # chain, and must not start to.
+                chain_transform: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None
                 for entity_type in MERGE_ENTITY_ORDER:
                     if entity_type in DEFINITION_TYPES:
                         continue
@@ -1827,7 +1951,12 @@ class DirectRestoreEngine:
                     rewritten += changed
                     archive_entities[entity_type] = entities
                     if entity_type == "documents":
-                        doc_groups = self._regroup_documents(doc_groups, remapper)
+                        if doc_groups is not None:
+                            doc_groups = self._regroup_documents(doc_groups, remapper)
+                        else:
+                            chain_transform = self._chain_transform(
+                                copy.deepcopy(remapper), src, tgt
+                            )
                     plan = await planner.plan(entity_type, entities, tgt)
                     built[entity_type] = plan
                     # A document the target holds under another ID is still a
@@ -1894,25 +2023,36 @@ class DirectRestoreEngine:
                     },
                 }
                 documents_plan = built.get("documents")
-                rows_to_write: list[dict[str, Any]] = []
-                if documents_plan is not None:
-                    for head in documents_plan.to_insert:
-                        rows_to_write.extend(
-                            doc_groups.get(head.get("document_id", ""), [head])
-                        )
-                    if on_clash != "skip":
-                        rows_to_write.extend(
-                            clash.entity for clash in documents_plan.differing_clashes
-                        )
-                await self._check_merge_references(tgt, rows_to_write, arriving)
+                streamed: _StreamedDocuments | None = None
+                if documents_plan is not None and doc_groups is None:
+                    assert chain_transform is not None
+                    streamed = _StreamedDocuments(
+                        reader, src, chain_transform, documents_plan,
+                        overwrite=on_clash != "skip",
+                    )
+                    await self._check_merge_wanted(
+                        tgt, streamed.referenced_ids(self._referenced_ids), arriving
+                    )
+                else:
+                    rows_to_write: list[dict[str, Any]] = []
+                    if documents_plan is not None and doc_groups is not None:
+                        for head in documents_plan.to_insert:
+                            rows_to_write.extend(
+                                doc_groups.get(head.get("document_id", ""), [head])
+                            )
+                        if on_clash != "skip":
+                            rows_to_write.extend(
+                                clash.entity for clash in documents_plan.differing_clashes
+                            )
+                    await self._check_merge_references(tgt, rows_to_write, arriving)
 
                 if dry_run:
                     continue
 
                 await self._apply_definitions(tgt, definitions, remapper, batch_size)
                 await self._apply_merge(
-                    tgt, built, doc_groups,
-                    on_clash=on_clash, batch_size=batch_size,
+                    tgt, built, doc_groups or {},
+                    on_clash=on_clash, batch_size=batch_size, streamed=streamed,
                 )
                 inserted_file_ids.update(
                     f["file_id"] for f in built.get(
@@ -1963,17 +2103,24 @@ class DirectRestoreEngine:
         *,
         skip_documents: bool,
         skip_files: bool,
-    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]] | None]:
         """Read the archive's entities for one namespace, ready for planning.
 
         Documents are planned at the *logical* level: an archived document is
         a chain of version rows, and it is the chain that clashes with the
         target's chain, not each row separately. The head row represents the
-        group during planning; ``doc_groups`` keeps the full chains so an
-        inserted document brings all its history.
+        group during planning.
+
+        Documents dominate an archive's size, so they are not held: planning
+        gets a compact head per document (`document_chains.compact_heads`),
+        and the chains are streamed again where they are checked and written.
+        The returned ``doc_groups`` is then None. An archive whose documents
+        are not sorted by document_id (exported before the backup sorted
+        them) cannot be streamed that way; for it the full chains are read
+        into ``doc_groups`` as before, with a warning.
         """
         entities_by_type: dict[str, list[dict[str, Any]]] = {}
-        doc_groups: dict[str, list[dict[str, Any]]] = {}
+        doc_groups: dict[str, list[dict[str, Any]]] | None = None
 
         for entity_type in MERGE_ENTITY_ORDER:
             if skip_documents and entity_type == "documents":
@@ -1981,12 +2128,25 @@ class DirectRestoreEngine:
             if skip_files and entity_type == "files":
                 continue
 
+            if entity_type == "documents":
+                try:
+                    entities_by_type[entity_type] = compact_heads(reader, src)
+                    continue
+                except UnsortedArchive as e:
+                    self._emit(
+                        "warning",
+                        f"[{src}] {e} — the merge holds every document in "
+                        "memory; a backup taken with this release streams.",
+                    )
+                    doc_groups = {}
+
             entities: list[dict[str, Any]] = []
             for entity in reader.read_entities(entity_type, namespace=src):
                 entity.pop("_id", None)
                 entities.append(entity)
 
             if entity_type == "documents":
+                assert doc_groups is not None
                 for row in entities:
                     doc_groups.setdefault(row.get("document_id", ""), []).append(row)
                 entities = [
@@ -2052,6 +2212,18 @@ class DirectRestoreEngine:
             "in two namespaces. Merge an archive whose namespace no longer "
             "exists here, or from another instance."
         )
+
+    def _chain_transform(
+        self, remapper: IDRemapper, source: str, target: str
+    ) -> Callable[[list[dict[str, Any]]], list[dict[str, Any]]]:
+        """What the in-memory path does to a document chain, as a function:
+        the namespace rewrite of a redirected merge, then the reference
+        rewrite onto the target's definitions."""
+        def transform(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            if source != target:
+                rows = [self._rewrite_namespace("documents", r, source, target) for r in rows]
+            return [remapper.remap_document(r) for r in rows]
+        return transform
 
     def _rewrite_namespace(
         self,
@@ -2499,8 +2671,18 @@ class DirectRestoreEngine:
         """
         if not rows_to_write:
             return
+        await self._check_merge_wanted(
+            namespace, self._referenced_ids(rows_to_write), arriving
+        )
 
-        wanted = self._referenced_ids(rows_to_write)
+    async def _check_merge_wanted(
+        self,
+        namespace: str,
+        wanted: dict[str, set[str]],
+        arriving: dict[str, set[str]],
+    ) -> None:
+        """`_check_merge_references` on ids already collected — the form a
+        streamed merge uses, which gathers them chain by chain."""
         problems: list[str] = []
         for entity_type, ids in wanted.items():
             unresolved = ids - arriving.get(entity_type, set())
@@ -2551,8 +2733,13 @@ class DirectRestoreEngine:
         *,
         on_clash: str,
         batch_size: int,
+        streamed: _StreamedDocuments | None = None,
     ) -> None:
-        """Write the plan. Inserts first, then policy-driven clash handling."""
+        """Write the plan. Inserts first, then policy-driven clash handling.
+
+        With ``streamed``, documents are read from the archive again chain by
+        chain and written in batches instead of coming from ``doc_groups``.
+        """
         for entity_type in MERGE_ENTITY_ORDER:
             plan = plans.get(entity_type)
             if plan is None:
@@ -2560,6 +2747,30 @@ class DirectRestoreEngine:
 
             db_name, coll_name = COLLECTION_MAP[entity_type]
             collection = self._mongo[db_name][coll_name]
+
+            if entity_type == "documents" and streamed is not None:
+                inserted = 0
+                batch: list[dict[str, Any]] = []
+                for chain in streamed.inserted_chains():
+                    batch.extend(chain)
+                    if len(batch) >= batch_size:
+                        await self._insert_batch(collection, batch, entity_type)
+                        inserted += len(batch)
+                        batch = []
+                if batch:
+                    await self._insert_batch(collection, batch, entity_type)
+                    inserted += len(batch)
+                if inserted:
+                    self._emit(
+                        f"phase_{entity_type}",
+                        f"[{namespace}] inserted {inserted} {entity_type}",
+                    )
+                if on_clash in ("overwrite", "newer"):
+                    await self._overwrite_documents(
+                        namespace, plan, doc_groups, on_clash=on_clash,
+                        sources=streamed.clash_sources(), batch_size=batch_size,
+                    )
+                continue
 
             rows = plan.to_insert
             if entity_type == "documents":
@@ -2644,6 +2855,8 @@ class DirectRestoreEngine:
         doc_groups: dict[str, list[dict[str, Any]]],
         *,
         on_clash: str = "overwrite",
+        sources: Iterator[tuple[Clash, dict[str, Any]]] | None = None,
+        batch_size: int = 500,
     ) -> None:
         """Let the archive win, going forward.
 
@@ -2673,16 +2886,20 @@ class DirectRestoreEngine:
             namespace, [c.entity.get("template_id") for c in clashes]
         )
 
+        if sources is None:
+            sources = (
+                (clash, head_of(doc_groups.get(
+                    clash.entity.get("document_id", ""), [clash.entity]
+                )))
+                for clash in clashes
+            )
+
         appended = 0
         replaced = 0
         kept = 0
         undecidable = 0
         new_rows: list[dict[str, Any]] = []
-        for clash in clashes:
-            source_rows = doc_groups.get(
-                clash.entity.get("document_id", ""), [clash.entity]
-            )
-            latest = max(source_rows, key=lambda r: r.get("version", 1))
+        for clash, latest in sources:
             target_head = max(clash.targets, key=lambda r: r.get("version", 1))
 
             if on_clash == "newer":
@@ -2714,6 +2931,9 @@ class DirectRestoreEngine:
                 row["version"] = target_head.get("version", 1) + 1
                 new_rows.append(row)
                 appended += 1
+                if len(new_rows) >= batch_size:
+                    await self._insert_batch(collection, new_rows, "documents")
+                    new_rows = []
 
         if new_rows:
             await self._insert_batch(collection, new_rows, "documents")

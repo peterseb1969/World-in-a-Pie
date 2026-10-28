@@ -508,6 +508,27 @@ template the document comes back in place, at the same version. PATCH on a
 deleted document still answers `not_found`: bringing a document back takes
 a full re-post.
 
+### Merge and fresh restores stream the documents
+
+Only a plain `restore` streamed the archive. A `merge` and a `fresh` restore
+read every document version row into memory before writing, so their peak
+memory grew with the archive's document payload and large restores crashed
+memory-limited pods. Both now plan from a compact row per document and read
+each document's version chain again, one at a time, where it is checked and
+written.
+
+Measured on synthetic archives (Python heap): a merge's planning input for
+40 000 documents x 2 versions went from 201.9 to 43.1 MiB; a fresh restore's
+planning phase from 106 to 20.4 MiB, and with ten times larger documents
+from 449 to 20.5 MiB. What remains grows with the number of documents and
+registry entries, not with their size. Definitions (terminologies, terms,
+templates) are still held whole.
+
+**Action:** none. An archive whose documents are not sorted by
+`document_id` (exported before the backup sorted them, July 2026) cannot be
+streamed this way; it restores as before, holding the documents in memory,
+with a warning naming the archive. A new backup of the source streams.
+
 ### Operator-supplied secrets reach their apps (`ANTHROPIC_API_KEY`)
 
 An optional env var with `from_secret` was filled only when the deployer

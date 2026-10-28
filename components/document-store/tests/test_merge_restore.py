@@ -56,8 +56,14 @@ def _all_collections():
 
 
 @pytest_asyncio.fixture
-async def mongo():
+async def mongo(session_mongo_client):
     """A real client, with this namespace's rows cleared before and after."""
+    # The engine's restore tail reads through Beanie models; bind them once
+    # to the session client, so these tests pass on their own and not only
+    # after some other test has initialized Beanie.
+    from tests.conftest import _ensure_beanie
+
+    await _ensure_beanie(session_mongo_client)
     client = AsyncIOMotorClient(
         os.environ.get("MONGO_URI", "mongodb://localhost:27017/")
     )

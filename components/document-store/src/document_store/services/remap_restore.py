@@ -25,8 +25,9 @@ they are the single most breakable thing in this module.
 
 from __future__ import annotations
 
+import copy
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -94,6 +95,11 @@ class RemapSource:
     # identity_fields: the resolved-referent rehash needs to know which
     # identity fields are term/reference typed.
     template_fields: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    # Streamed documents: when set, ``entities_by_type["documents"]`` holds
+    # ONE compact row per document (what its Registry key needs) and this
+    # re-reads the archive's version chains, so the plan never holds the
+    # documents' content.
+    document_chains: Callable[[], Iterator[list[dict[str, Any]]]] | None = None
 
 
 @dataclass
@@ -105,11 +111,41 @@ class RemapPlan:
     # Documents whose identity hash had to be recomputed because an identity
     # field held a canonical ID that has just changed.
     rehashed_documents: int = 0
+    # Streamed documents (RemapSource.document_chains): the rewritten rows
+    # are produced on demand instead of held in ``rows["documents"]``, each
+    # paired with whether its identity hash was recomputed.
+    document_stream: Callable[[], Iterator[tuple[dict[str, Any], bool]]] | None = None
+    document_rows: int = 0
+    # Streamed documents' FINAL Registry keys (after rewrite and rehash), by
+    # new document_id — what activation and the synonym restore need, kept
+    # so neither has to stream the documents again.
+    document_keys: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def final_document_keys(self, namespace: str) -> dict[str, dict[str, Any]]:
+        """New document_id -> final Registry key, for every keyed document."""
+        if self.document_stream is not None:
+            return self.document_keys
+        keys: dict[str, dict[str, Any]] = {}
+        for row in self.rows.get("documents", []):
+            key = composite_key_for("documents", row, namespace, self.id_map)
+            if key:
+                keys[row["document_id"]] = key
+        return keys
+
+    def iter_documents(self) -> Iterator[dict[str, Any]]:
+        """The rewritten document rows, held or streamed."""
+        if self.document_stream is not None:
+            for row, _rehashed in self.document_stream():
+                yield row
+        else:
+            yield from self.rows.get("documents", [])
 
     def summary(self) -> dict[str, int]:
         counts = {
             entity_type: len(rows) for entity_type, rows in self.rows.items()
         }
+        if self.document_stream is not None:
+            counts["documents"] = self.document_rows
         counts["rehashed_documents"] = self.rehashed_documents
         return counts
 
@@ -194,9 +230,11 @@ class RemapRestore:
         *,
         identity_fields_by_template: dict[str, list[str]] | None = None,
         template_fields_by_template: dict[str, list[dict[str, Any]]] | None = None,
+        document_chains: Callable[[], Iterator[list[dict[str, Any]]]] | None = None,
     ):
         self._provision = provision
         self._remapper = remapper
+        self._document_chains = document_chains
         # template value -> identity_fields, used to decide which documents
         # need their identity hash recomputed after references move.
         self._identity_fields = identity_fields_by_template or {}
@@ -300,6 +338,9 @@ class RemapRestore:
         new_ids: list[str],
         namespace: str,
     ) -> None:
+        if entity_type == "documents" and self._document_chains is not None:
+            self._defer_documents(plan, groups, new_ids, namespace)
+            return
         plan.rows[entity_type] = [
             self._rewrite(entity_type, row, namespace, new_id)
             for (rows, new_id) in zip(groups.values(), new_ids, strict=True)
@@ -321,7 +362,50 @@ class RemapRestore:
             {**self._remapper.remap_term_relation(relation), "namespace": namespace}
             for relation in entities_by_type.get("term_relations") or []
         ]
-        plan.rehashed_documents = self._recompute_identity_hashes(plan, namespace)
+        if plan.document_stream is not None:
+            # One counting pass: the plan's summary (and a dry run's report)
+            # states how many rows and rehashes the write will produce.
+            rows = rehashed = 0
+            for row, was_rehashed in plan.document_stream():
+                rows += 1
+                rehashed += was_rehashed
+                key = composite_key_for("documents", row, namespace, plan.id_map)
+                if key:
+                    plan.document_keys[row["document_id"]] = key
+            plan.document_rows, plan.rehashed_documents = rows, rehashed
+        else:
+            plan.rehashed_documents = self._recompute_identity_hashes(plan, namespace)
+
+    def _defer_documents(
+        self,
+        plan: RemapPlan,
+        groups: dict[str, list[dict[str, Any]]],
+        new_ids: list[str],
+        namespace: str,
+    ) -> None:
+        """The document rewrite, as a stream over the archive's chains.
+
+        The in-memory path rewrites every document row here and holds them.
+        This produces the same rows on demand: the remapper is snapshotted at
+        this point — the state the in-memory rewrite sees — and each row is
+        rewritten and rehashed as it is read.
+        """
+        chains = self._document_chains
+        assert chains is not None
+        new_id_by_old = dict(zip(groups, new_ids, strict=True))
+        remapper = copy.deepcopy(self._remapper)
+
+        def stream() -> Iterator[tuple[dict[str, Any], bool]]:
+            for chain in chains():
+                new_id = new_id_by_old[str(chain[0].get("document_id"))]
+                for entity in chain:
+                    row = remapper.remap_document(entity)
+                    row["namespace"] = namespace
+                    row[ID_FIELDS["documents"]] = new_id
+                    yield row, self._rehash(row)
+
+        plan.document_stream = stream
+        plan.rows["documents"] = []
 
     def _feed_remapper(self, entity_type: str, mapping: dict[str, str]) -> None:
         add = {
@@ -371,6 +455,10 @@ class RemapRestore:
         longer describes its own feed: wrong silently, and the next write on
         that identity would land somewhere else.
         """
+        return sum(self._rehash(row) for row in plan.rows.get("documents", []))
+
+    def _rehash(self, row: dict[str, Any]) -> bool:
+        """Recompute one remapped row's identity hash; True if it changed."""
         from wip_auth.document_identity import (
             build_referent_resolutions,
             compute_hash,
@@ -379,35 +467,33 @@ class RemapRestore:
             substitute_resolved_referents,
         )
 
-        rehashed = 0
-        for row in plan.rows.get("documents", []):
-            template_value = row.get("template_value") or ""
-            identity_fields = self._identity_fields.get(template_value)
-            if not identity_fields:
-                continue
-            try:
-                values = extract_identity_values(row.get("data") or {}, identity_fields)
-                values = substitute_resolved_referents(
-                    values,
-                    referent_identity_fields(
-                        identity_fields,
-                        self._template_fields.get(template_value) or [],
-                    ),
-                    build_referent_resolutions(
-                        row.get("term_references"), row.get("references")
-                    ),
-                )
-            except ValueError as exc:
-                logger.warning(
-                    "Document %s cannot be rehashed (%s); leaving its hash "
-                    "as archived", row.get("document_id"), exc,
-                )
-                continue
-            recomputed = compute_hash(values)
-            if recomputed != row.get("identity_hash"):
-                row["identity_hash"] = recomputed
-                rehashed += 1
-        return rehashed
+        template_value = row.get("template_value") or ""
+        identity_fields = self._identity_fields.get(template_value)
+        if not identity_fields:
+            return False
+        try:
+            values = extract_identity_values(row.get("data") or {}, identity_fields)
+            values = substitute_resolved_referents(
+                values,
+                referent_identity_fields(
+                    identity_fields,
+                    self._template_fields.get(template_value) or [],
+                ),
+                build_referent_resolutions(
+                    row.get("term_references"), row.get("references")
+                ),
+            )
+        except ValueError as exc:
+            logger.warning(
+                "Document %s cannot be rehashed (%s); leaving its hash "
+                "as archived", row.get("document_id"), exc,
+            )
+            return False
+        recomputed = compute_hash(values)
+        if recomputed != row.get("identity_hash"):
+            row["identity_hash"] = recomputed
+            return True
+        return False
 
 
 async def plan_multi(
@@ -436,6 +522,7 @@ async def plan_multi(
             remapper,
             identity_fields_by_template=s.identity_fields,
             template_fields_by_template=s.template_fields,
+            document_chains=s.document_chains,
         )
         for s in sources
     }
