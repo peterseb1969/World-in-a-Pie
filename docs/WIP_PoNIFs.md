@@ -96,7 +96,7 @@ For `updateTemplate()`, the default should be to keep the previous version activ
 - `template_version` — see PoNIF #2's corollary; the same canonical entity carries forward across template versions cleanly.
 - `namespace` — scoped externally via the platform's composite key `(namespace, identity_hash, template_id)`. The same `identity_hash` in two different namespaces is two different entities, not a collision.
 
-**Adding to `identity_fields` IS breaking.** Every existing doc would hash differently on next write, creating parallel orphan docs. The CASE-316 / 317 / 318 family is the canonical example: an external loader (`kb-bulk-mirror.py`) computed identity from `metadata.custom.case_number` while the template declared `identity_fields=[]`, hashes all collided to an empty key, 213 of 214 records silently dropped on the reporting-sync side. The fix (CASE-318) was to extend `identity_fields` on the template AND backfill — the additive-to-identity case requires coordinated data migration, not just a re-mirror.
+**Changing `identity_fields` is refused.** A template update or re-post with a different list fails with `identity_fields_immutable`: allowed, every existing doc would hash differently on next write and fork into parallel orphan docs, so changing identity is a fork — create a new template value. The CASE-316 / 317 / 318 family is the canonical example: an external loader (`kb-bulk-mirror.py`) computed identity from `metadata.custom.case_number` while the template declared `identity_fields=[]`, hashes all collided to an empty key, 213 of 214 records silently dropped on the reporting-sync side. The fix then (CASE-318) was to extend `identity_fields` on the template AND backfill; the platform now refuses such a change, so an identity that was wrong at design time is fixed by a new template value and a migration of the data into it.
 
 **Adding to `data.*` outside `identity_fields` is non-breaking.** Existing docs receive the new field's value on the next backfill (see PoNIF #2's corollary). This is the path CASE-404 takes for the CASE_RECORD schema extension.
 
@@ -186,11 +186,11 @@ See `docs/design/document-relationships.md` for the full design rationale, valid
 
 ### 8. `versioned: false` — Updates Overwrite In Place
 
-**The feature:** Setting `versioned: false` on an edge type (PoNIF #7) makes updates **overwrite the existing payload** instead of creating a new version. Documents under such an edge type stay at `version: 1` forever. The previous data is gone after a successful update.
+**The feature:** Setting `versioned: false` on a template with identity fields — typically an edge type (PoNIF #7) — makes updates **overwrite the existing payload** instead of creating a new version. Documents under such a template stay at `version: 1` forever. The previous data is gone after a successful update.
 
-This is a deliberate exception to PoNIF #2 ("Template Versioning — Update Does NOT Replace"). It applies only to edge types today; the flag is immutable after template creation.
+This is a deliberate exception to PoNIF #2 ("Template Versioning — Update Does NOT Replace"). It was introduced for edge types and is not limited to them; the flag is immutable after template creation.
 
-**Invariant: `versioned: false` requires non-empty `identity_fields`.** Overwrite-in-place means "re-address the same entity and replace it" — you cannot re-address a thing that has no identity. The combination is rejected at template create **and** update (the update check matters because `versioned` is immutable while `identity_fields` is not). So `versioned` is N/A for append-only (identity-less) templates, which are always `versioned: true`.
+**Invariant: `versioned: false` requires non-empty `identity_fields`.** Overwrite-in-place means "re-address the same entity and replace it" — you cannot re-address a thing that has no identity. The combination is rejected at template create **and** update. So `versioned` is N/A for append-only (identity-less) templates, which are always `versioned: true`.
 
 **Why it's powerful:** Some relationships have identity but not history. "Monster has spell" in a bestiary changes when the bestiary author tweaks a spell list — there's no audit interest in "what spells did this monster have last year." Versioning every edge update wastes storage and obscures the current state.
 

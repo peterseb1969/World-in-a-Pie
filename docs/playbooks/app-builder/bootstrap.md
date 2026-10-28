@@ -8,9 +8,9 @@ Reads declarative seed files from `data-model/` in the constellation repo and cr
 
 ## API gotchas (read before bootstrapping)
 
-1. **`create_terms` requires terminology UUID**, not value. After creating a terminology, use the returned UUID (or list terminologies to get it) for `create_terms(terminology_id, terms)`.
-2. **`create_relations` requires `TERMINOLOGY:TERM_VALUE` format** (e.g., `CT_DRUG_CLASS:CHECKPOINT_INHIBITOR`). Bare term values fail with "not found in namespace". The seed files already use this format in their `ontology.relations` arrays — pass `source`/`target` directly as `source_term_id`/`target_term_id`.
-3. **Cross-namespace terminology refs in templates** need the terminology UUID, not the value. COUNTRY lives in the `wip` namespace; when creating templates in your app's namespace, look up COUNTRY's UUID first and use it for `terminology_ref`.
+1. **`create_terms` takes the terminology's UUID or its value** (`create_terms(terminology_id, terms)`); pass the namespace explicitly with a value.
+2. **`create_term_relations` rejects the 2-part `TERMINOLOGY:TERM_VALUE` form with 422** — a value that itself contains `:` (OBO ids like `GO:0000278`) is indistinguishable from it. The seed files store `source`/`target` in that 2-part form; prefix each with the namespace to get the fully qualified `ns:TERMINOLOGY:TERM_VALUE` (split on the first two colons, so the value keeps any colons it contains) and pass that as `source_term_id`/`target_term_id`.
+3. **Cross-namespace terminology refs in templates** need the namespace prefix: a bare value always resolves in the app's OWN namespace. COUNTRY lives in the `wip` namespace, so write `"terminology_ref": "wip:COUNTRY"` (a UUID also works, but is not portable across instances).
 4. **Custom relation types** (like `targets`) must exist in `_ONTOLOGY_RELATIONSHIP_TYPES` before creating relations that use them. Process `_ONTOLOGY_RELATIONSHIP_TYPES_EXT.json` first.
 5. **Namespace must exist** before creating terminologies in it. Create with `create_namespace`.
 6. **Pass namespace explicitly** on `create_terminology` calls — do not rely on implicit derivation during bootstrap, as the namespace may not be the API key's default.
@@ -122,7 +122,7 @@ For each file in `data-model/terminologies/` (excluding `_*_EXT.json` files):
 
 ### 4. Create ontology relations
 For each terminology file that has an `ontology.relations` array:
-- Pass each relation to `create_relations` using the `source`/`target` fields directly as `source_term_id`/`target_term_id` (they're already in `TERMINOLOGY:TERM_VALUE` format)
+- Pass each relation to `create_term_relations` with `source_term_id` = `<namespace>:<source>` and `target_term_id` = `<namespace>:<target>` (the seed's 2-part `TERMINOLOGY:TERM_VALUE` prefixed with the namespace — the 2-part form alone is rejected)
 - Pass the app's namespace
 - Process terminologies that are only targets (e.g., CT_DRUG_CLASS) before terminologies that reference them (e.g., CT_MOLECULE)
 

@@ -755,6 +755,39 @@ the guardrails, the technology stack, the UI guidance, the deployable-app
 contract or the app CLAUDE.md template, expect the card drift test to name
 the card to re-review.
 
+### App guidance matches the platform again
+
+Writing the rule cards turned up app-facing documents that taught code the
+platform rejects. Corrected:
+
+- **Bootstrap** (`/wip-bootstrap`, the bootstrap playbook): relations are
+  created with `create_term_relations`, not `create_relations`, and the
+  seed files' 2-part `TERMINOLOGY:TERM_VALUE` must be prefixed with the
+  namespace (`ns:TERMINOLOGY:TERM_VALUE`) — the 2-part form is rejected with
+  422. `create_terms` takes a terminology value as well as a UUID, and a
+  cross-namespace terminology reference is `wip:COUNTRY`, not a UUID lookup.
+- **`baseUrl`**: `technology-stack.md` and the app CLAUDE.md template use
+  `` `${import.meta.env.BASE_URL}wip` ``; a bare `'/wip'` works only for an
+  app served at `/`.
+- **`WIP_DevGuardrails.md`**: Guide 4's client example uses the real
+  options, hooks and error classes; Guide 6 states the client's actual retry
+  policy (GET only, 2 retries from 500 ms); Guide 3's container skeleton
+  points at the deployable-app contract instead of a superseded Caddy
+  image and `VITE_WIP_*` variables; Guide 2's React and Router versions
+  match `technology-stack.md`.
+- **The build playbook**: term dropdowns use `useTerms`, references
+  `resolveReference(client, …)`, document lists `useDocuments({ … })`.
+- **The deployable-app contract**: `wip-deploy check-app-deployability` is
+  a shipped CLI verb, and the scaffold-gaps table says what the query
+  scaffold does today.
+- **PoNIFs #3 and #8** (served `wip://ponifs` and `WIP_PoNIFs.md`):
+  changing `identity_fields` is refused (`identity_fields_immutable`), and
+  `versioned: false` is available on any template with identity fields,
+  not only edge types.
+
+**Action:** none. Apps pick up the corrected documents on their next
+scaffold refresh.
+
 ### `@wip/client` browser writes over 64 KB work (0.60.1)
 
 Up to 0.60.0 the client sent every request with Fetch's `keepalive` flag,

@@ -1,8 +1,8 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
 docs/Vision.md sha256:d48669c11fbfe408 reviewed:a66e110f
-wip://ponifs sha256:3e31637afb5d232b reviewed:a66e110f
+wip://ponifs sha256:5c8bc104858a9cb9 reviewed:ea985986
 wip://development-guide sha256:d44cd305a3b84d3e reviewed:a66e110f
-scaffold/templates/claude-md/app.md sha256:d19063ac5de0245d reviewed:a66e110f
+scaffold/templates/claude-md/app.md sha256:6d9732fc394e514e reviewed:ea985986
 docs/slash-commands/app-builder/wip-design-model.md sha256:3485f5c0cd3f136b reviewed:a66e110f
 -->
 # WIP core card — reread on every wake
@@ -45,7 +45,7 @@ with an admin key that spans namespaces: always pass `namespace=` explicitly.
 5. Several IDs for one entity (synonyms) is normal, not corruption.
 6. "Latest active" template lookups are cached ~5 s — pass template_version explicitly.
 7. Edge types are templates with usage: relationship — different rules; check `usage`.
-8. Edge types with versioned: false overwrite in place — no history.
+8. A template with versioned: false (typically an edge type) overwrites in place — no history.
 
 ## WIP's principles, in one line each
 Prefer deactivation over deletion · references must resolve, and any synonym works like

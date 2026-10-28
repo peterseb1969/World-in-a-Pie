@@ -187,9 +187,9 @@ The WIP libs are tarballs in `libs/`. `@tanstack/react-query` is the peer depend
 
 **TLS:** WIP uses a self-signed cert on whichever hostname the install runs at — `https://localhost:8443` for compose dev, `https://<ingress-hostname>` for k8s (e.g. `https://kb.internal`). Node.js `fetch()` rejects self-signed certs; add `NODE_TLS_REJECT_UNAUTHORIZED=0` to your `dev:server` script (NOT `start`/production). The python wip_mcp client uses `WIP_VERIFY_TLS=false` (already set in `.mcp.json`). Production with proper certs needs no workaround.
 
-**@wip/client baseUrl:** In browser apps behind a Vite proxy, use `baseUrl: '/wip'` (resolved to `window.location.origin + '/wip'`). Do NOT use a bare relative path without the client resolving it — `new URL('/wip/...')` throws without a protocol.
+**@wip/client baseUrl:** In browser apps behind the `@wip/proxy` mount, use ``baseUrl: `${import.meta.env.BASE_URL}wip` `` — a deployed app lives under `/apps/<name>/`, so a bare `'/wip'` works only for an app served at `/`. Do NOT use a bare relative path without the client resolving it — `new URL('/wip/...')` throws without a protocol.
 
-**@wip/react providers:** Hooks require BOTH `QueryClientProvider` (from `@tanstack/react-query`) AND `WipProvider` (from `@wip/react`). Missing either causes silent failure — hooks mount but never fetch, no errors.
+**@wip/react providers:** Hooks require BOTH `QueryClientProvider` (from `@tanstack/react-query`) AND `WipProvider` (from `@wip/react`). Missing either breaks every hook: outside `WipProvider`, `useWipClient` throws "useWipClient must be used within a <WipProvider>"; outside `QueryClientProvider`, TanStack's hooks throw that no QueryClient is set.
 
 ## Tool use — Bash timeouts and waits
 

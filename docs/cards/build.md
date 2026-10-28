@@ -1,14 +1,14 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
-docs/technology-stack.md sha256:d5e034b3496650f8 reviewed:a66e110f
+docs/technology-stack.md sha256:35a66855d47b3bc4 reviewed:ea985986
 docs/ui-guidance.md sha256:8667dff0c17994c4 reviewed:a66e110f
-docs/WIP_DevGuardrails.md sha256:2420d416e953fdc2 reviewed:a66e110f
+docs/WIP_DevGuardrails.md sha256:d8b70a45871f831e reviewed:ea985986
 libs/wip-client/README.md sha256:b24b17a0eb14e1ce reviewed:a66e110f
 libs/wip-react/README.md sha256:9e71f0ba4a17d97a reviewed:a66e110f
 libs/wip-proxy/README.md sha256:35e6262638a97d55 reviewed:a66e110f
-docs/wip-deployable-app-contract.md sha256:a38bfc735b30328f reviewed:a66e110f
-docs/playbooks/app-builder/build-app.md sha256:cf564ab54f1e5b45 reviewed:a66e110f
-docs/playbooks/app-builder/bootstrap.md sha256:ec7588950a773b63 reviewed:a66e110f
-scaffold/templates/claude-md/app.md sha256:d19063ac5de0245d reviewed:a66e110f
+docs/wip-deployable-app-contract.md sha256:3eb21c675ce50e8c reviewed:ea985986
+docs/playbooks/app-builder/build-app.md sha256:5e2c885a93de9e91 reviewed:ea985986
+docs/playbooks/app-builder/bootstrap.md sha256:4bc80d0099e12f0b reviewed:ea985986
+scaffold/templates/claude-md/app.md sha256:6d9732fc394e514e reviewed:ea985986
 -->
 # WIP build card — Phase 4: writing the app
 

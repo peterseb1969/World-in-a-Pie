@@ -115,7 +115,7 @@ OBO ontologies bring additional relation types that are auto-created as terms in
 
 ### Validation
 
-`create_relations` validates every `relation_type` against terms in `_ONTOLOGY_RELATIONSHIP_TYPES`. Unknown types are rejected with a clear error listing valid types.
+`create_term_relations` validates every `relation_type` against terms in `_ONTOLOGY_RELATIONSHIP_TYPES`. Unknown types are rejected with a clear error listing valid types.
 
 **Per-terminology restriction** of allowed relation types is not enforced by WIP — this is delegated to client applications. The global terminology defines what types *exist*; clients decide which types to *use* per context.
 

@@ -866,11 +866,13 @@ What's NOT in the identity hash:
   (namespace, identity_hash, template_id); the same identity_hash in two
   different namespaces is two different entities.
 
-Adding a field to `identity_fields` IS breaking: every existing doc would
-hash differently on next write, creating parallel orphan docs (a recurring
-real-world shape: an external loader computed identity from fields the
-template didn't declare, hashes collided to empty, and 213 of 214 records
-were silently dropped). Adding a field to `data.*` that is NOT in
+Changing `identity_fields` is refused: a template update or re-post with a
+different list fails with error_code `identity_fields_immutable`. Allowed, it
+would make every existing doc hash differently on next write and fork into
+parallel orphan docs (a recurring real-world shape: an external loader
+computed identity from fields the template didn't declare, hashes collided
+to empty, and 213 of 214 records were silently dropped). Changing identity is
+a fork: create a new template value. Get identity right at design time. Adding a field to `data.*` that is NOT in
 identity_fields is non-breaking — see PoNIF #2's corollary; existing docs
 just receive the new field's value on next backfill.
 
@@ -929,9 +931,9 @@ Rule: Check `template.usage` before reasoning about a template's lifecycle.
 
 ## 8. `versioned: false` — Updates Overwrite In Place
 Direct exception to PoNIF #2. PoNIF #2 says every update creates a new
-version. That's the default and applies to entity templates. Edge types
-(see PoNIF #7) can declare `versioned: false` at creation; documents under
-such an edge type stay at version=1 forever, updates overwrite the existing
+version. That's the default. A template with identity fields can declare
+`versioned: false` at creation — edge types (see PoNIF #7) are the typical
+use; documents under such a template stay at version=1 forever, updates overwrite the existing
 payload, the previous data is gone. Used for relationships where the edge
 identity matters but its history doesn't (e.g. "monster has spell"). The
 flag is immutable after creation.
@@ -939,8 +941,7 @@ flag is immutable after creation.
 Invariant: `versioned: false` REQUIRES non-empty identity_fields.
 Overwrite-in-place means "re-address the same entity and replace it" — you
 cannot re-address a thing with no identity. `versioned: false` + empty
-identity_fields is rejected at template create AND update (the update check
-matters because `versioned` is immutable but identity_fields is not). So
+identity_fields is rejected at template create AND update. So
 `versioned` is N/A for append-only (identity-less) templates, which are always
 `versioned: true`.
 
@@ -952,8 +953,8 @@ Trap: You write code that loads `version=N-1` to compute a diff between
       apply that rule universally and be blindsided.
 Rule: Check `template.versioned` (defaults to true) before assuming version
       history exists. If you need history on a relationship, build the edge
-      type with `versioned: true`. Currently only available on edge types;
-      if/when it expands to entity templates, this rule applies there too.
+      type with `versioned: true`. The flag is not limited to edge types:
+      check it on every template.
 
 ## The Compactheimer's Warning
 If you are an AI assistant and your context has been compacted, you may have
@@ -2779,7 +2780,9 @@ async def update_template(
             - label: New display label
             - description: New description
             - fields: Complete field list (replaces all fields — include unchanged ones too)
-            - identity_fields: Updated identity fields
+            - identity_fields: must equal the current list — a change is
+              rejected (identity_fields_immutable); changing identity is a
+              fork, so create a new template value instead
             - header_fields: Updated peer-projection fields.
               Bare names target data.<name>; `metadata.custom.<name>`
               paths allowed. Empty → projection falls back to

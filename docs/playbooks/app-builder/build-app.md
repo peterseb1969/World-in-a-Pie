@@ -65,8 +65,8 @@ For each major feature of the app:
 Follow Guide 5 (Data Entry Patterns):
 - For simple forms: use `useFormSchema()` to auto-generate from template
 - For specialized UIs (e.g., receipt scanning): build custom forms using @wip/client types
-- Term fields -> searchable dropdown populated from `useTerminology()`
-- Reference fields -> search input using `wip.utils.resolveReference()`
+- Term fields -> searchable dropdown populated from `useTerms(terminologyId)` (`useTerminology` returns the terminology itself, not its terms)
+- Reference fields -> search input using `resolveReference(client, …)` (a standalone `@wip/client` export)
 - File fields -> upload zone using `useUploadFile()`, then link FILE-XXXXXX to document immediately (never leave files unlinked — they become orphans)
 - Always handle: required field validation, term resolution errors, reference resolution errors
 
@@ -82,7 +82,7 @@ If the app imports files (CSV, PDF, XLSX):
 **Only then** write the parser, mapping raw extracted fields to WIP template fields. Document every mapping in IMPORT_FORMATS.md as you go, not after the fact.
 
 ### Step 4: Build list/table views
-- Use `useDocuments(templateCode, filters)` for paginated document lists
+- Use `useDocuments({ template_value, namespace, page, page_size })` for paginated document lists, and `useQueryDocuments(query)` when filtering on field values
 - Provide filtering by key fields (date ranges, categories, etc.)
 - Show loading states, empty states, and error states
 

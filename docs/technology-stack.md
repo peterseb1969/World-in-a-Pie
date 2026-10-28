@@ -100,7 +100,7 @@ app-name/
 ```tsx
 // src/main.tsx
 <QueryClientProvider client={queryClient}>
-  <WipProvider client={createWipClient({ baseUrl: '/wip' })}>
+  <WipProvider client={createWipClient({ baseUrl: `${import.meta.env.BASE_URL}wip` })}>
     <BrowserRouter basename={import.meta.env.BASE_URL}>
       <App />
     </BrowserRouter>
@@ -108,7 +108,7 @@ app-name/
 </QueryClientProvider>
 ```
 
-The `baseUrl: '/wip'` matches `@wip/proxy`'s mount in Express (apps proxy `/wip/api/*` → backend with auth-key injection). The browser never sees the API key.
+The `baseUrl` matches `@wip/proxy`'s mount in Express (apps proxy `<base>/wip/api/*` → backend with auth-key injection). The browser never sees the API key. Prefix it with `import.meta.env.BASE_URL`: an app deployed under `/apps/<name>/` serves its proxy at `/apps/<name>/wip`, so a bare `'/wip'` is correct only for an app served at `/`.
 
 ### Router basename
 

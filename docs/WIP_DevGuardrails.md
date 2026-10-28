@@ -138,13 +138,13 @@ All constellation apps use the same stack:
 |                            |                              |                                                                                                                                                  |
 |----------------------------|------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
 | **Concern**                | **Choice**                   | **Rationale**                                                                                                                                    |
-| **UI Framework**           | React 18+                    | Widest AI training coverage, broadest component ecosystem, Claude’s strongest UI generation language.                                            |
+| **UI Framework**           | React 19 (pinned in `docs/technology-stack.md`) | Widest AI training coverage, broadest component ecosystem, Claude’s strongest UI generation language.                                            |
 | **Build tool**             | Vite                         | Fast cold start, simple config, excellent React support, small footprint suitable for Pi.                                                        |
 | **Styling**                | Tailwind CSS                 | Utility-first approach works well with AI code generation. No separate CSS files to maintain. Consistent spacing and colour via config.          |
 | **Component library**      | shadcn/ui                    | Unstyled, composable primitives built on Radix. Tailwind-native. Copy-paste model means no version dependency issues. AI generates well with it. |
 | **Icons**                  | Lucide React                 | Clean, consistent icon set. Already a shadcn/ui convention.                                                                                      |
 | **Data fetching**          | TanStack Query (React Query) | Handles caching, refetching, loading/error states. Prevents every app from reinventing data fetch patterns.                                      |
-| **Routing**                | React Router v6+             | Standard React routing. Apps must support a configurable base path for gateway integration (e.g., /apps/statements/).                            |
+| **Routing**                | React Router v7 (pinned in `docs/technology-stack.md`) | Standard React routing. Apps must support a configurable base path for gateway integration (e.g., /apps/statements/).                            |
 | **Charts / visualisation** | Recharts                     | React-native charting, simple API, sufficient for the BI dashboards described in the constellation docs.                                         |
 
 ## Design tokens
@@ -199,47 +199,16 @@ Each app has a consistent navigation structure:
 > **Priority: High — the structural blueprint for every app**
 > Every constellation app is a containerised web application with a predictable structure. The AI copies this skeleton for every new app, modifying only the domain-specific parts. This ensures consistency and eliminates boilerplate decision-making.
 
-## Folder structure
+## Where the skeleton is defined
 
-app-name/
-
-├── app-manifest.json \# Gateway registration (see Guide 1)
-
-├── Dockerfile \# Multi-stage build: Node build → Caddy serve
-
-├── docker-compose.yml \# Standalone dev compose (extends ecosystem compose)
-
-├── .env.example \# Environment variable template
-
-├── vite.config.ts \# Vite config with base path from env
-
-├── tailwind.config.ts \# Extends shared design tokens
-
-├── src/
-
-│ ├── main.tsx \# Entry point
-
-│ ├── App.tsx \# Root component with router
-
-│ ├── lib/
-
-│ │ └── config.ts \# Runtime config (WIP URL, base path)
-
-│ ├── components/ \# Reusable UI components
-
-│ ├── pages/ \# Route-level page components
-
-│ ├── hooks/ \# Custom React hooks (data fetching, etc.)
-
-│ └── types/ \# TypeScript type definitions
-
-├── tests/
-
-│ ├── e2e/ \# End-to-end tests (see Guide 7)
-
-│ └── unit/ \# Unit tests
-
-└── README.md \# App-specific documentation
+The container shape every app must have — `Dockerfile.dev` and the production
+`Dockerfile`, the Vite `base` and dev-server binding, every server route on a
+Router mounted under `APP_BASE_PATH`, the `/api/app-config` endpoint that
+replaces baked `VITE_*` values, a health endpoint that answers without WIP being
+reachable, and the `apps/<name>/wip-app.yaml` manifest that wires ports, env,
+routes and secrets — is owned by `docs/wip-deployable-app-contract.md`. Its
+checklist form is `docs/cards/ship.md`. The scaffold (`create-app-project.sh`)
+lays out the source tree.
 
 ## TLS in development
 
@@ -258,73 +227,13 @@ WIP uses a self-signed TLS certificate on `https://localhost:8443`. Node.js `fet
 
 Do NOT set this in `start` (production). Production deployments should use proper CA-signed certificates — Caddy handles this automatically with real domains.
 
-## Environment variables
+## Environment variables, Dockerfile, health endpoint
 
-Every app uses the same environment variable pattern for WIP connection and gateway integration:
-
-|                      |                     |                                                      |
-|----------------------|---------------------|------------------------------------------------------|
-| **Variable**         | **Example**         | **Purpose**                                          |
-| **VITE_WIP_HOST**    | http://wip-api:8001 | WIP Registry service URL (internal network)          |
-| **VITE_WIP_API_KEY** | wip-dev-key-001     | API key for development/scripts                      |
-| **VITE_BASE_PATH**   | /apps/statements    | Gateway path prefix. Vite and React Router use this. |
-| **VITE_APP_PORT**    | 3001                | Internal port (never exposed to host)                |
-
-## Dockerfile pattern
-
-Multi-stage build: Node.js for building, a lightweight server for serving. The production image should be as small as possible for Raspberry Pi deployment.
-
-\# Stage 1: Build
-
-FROM node:20-alpine AS build
-
-WORKDIR /app
-
-COPY package\*.json ./
-
-RUN npm ci
-
-COPY . .
-
-RUN npm run build
-
-\# Stage 2: Serve
-
-FROM caddy:2-alpine
-
-COPY --from=build /app/dist /srv
-
-COPY Caddyfile /etc/caddy/Caddyfile
-
-EXPOSE 3001
-
-## Health endpoint
-
-Every app exposes a /health endpoint that the gateway checks. For a static frontend app, Caddy can serve a static health response. For apps with a backend component, the health check should verify WIP connectivity.
-
-## Docker Compose integration
-
-Each app has its own docker-compose.yml for standalone development. For production, an ecosystem-level compose file includes all apps, the gateway, and WIP services. Apps declare their dependency on the WIP services and the gateway network:
-
-services:
-
-statements:
-
-build: ./apps/statements
-
-labels:
-
-\- "wip.app=true"
-
-\- "wip.manifest=/app/app-manifest.json"
-
-networks:
-
-\- wip-network
-
-depends_on:
-
-\- wip-document-store
+All three are defined by the deployable-app contract
+(`docs/wip-deployable-app-contract.md`): the manifest supplies `WIP_BASE_URL`,
+the API key, `APP_BASE_PATH` and `PORT`; the browser reads per-deployment
+values from `/api/app-config` at boot; only `VITE_BASE_PATH` is baked into the
+build; the health endpoint must not depend on WIP.
 
 # Guide 4: WIP Client Library
 
@@ -345,39 +254,27 @@ Single-item methods (the common case in apps) wrap the input into a one-element 
 
 ## Usage in constellation apps
 
-import { createWipClient } from '@wip/client';
-
+```tsx
+import { createWipClient, WipValidationError, WipBulkItemError } from '@wip/client';
 import { WipProvider, useDocuments, useCreateDocument } from '@wip/react';
 
-// Initialise once at app root:
+// Initialise once at app root. The browser talks to the app's own @wip/proxy
+// mount, which injects the API key server-side — no key in the browser, and
+// no key in any VITE_* variable.
+const wip = createWipClient({ baseUrl: `${import.meta.env.BASE_URL}wip` });
 
-const wip = createWipClient({
-
-host: 'https://your-host.local',
-
-auth: { mode: 'api-key', key: import.meta.env.VITE_WIP_API_KEY },
-
-});
-
-// In components — query:
-
-const { data, isLoading } = useDocuments('BANK_TRANSACTION', { filters });
+// In components — query (filters on field values go through useQueryDocuments):
+const { data, isLoading } = useDocuments({ template_value: 'BANK_TRANSACTION', namespace });
 
 // In components — create with typed error handling:
-
 const { mutate, isPending } = useCreateDocument();
-
-mutate({ templateId, data }, {
-
-onError: (e) =\> {
-
-if (e instanceof WipValidationError) highlightFields(e.fields);
-
-if (e instanceof WipResolutionError) showTermError(e.field, e.value);
-
-}
-
+mutate({ template_id, template_version, namespace, data }, {
+  onError: (e) => {
+    if (e instanceof WipBulkItemError) showItemError(e.errorCode, e.details);
+    else if (e instanceof WipValidationError) showValidation(e.detail);
+  },
 });
+```
 
 The full specification — including all service methods, the error hierarchy, the BulkResult type, the type generation pipeline, and the React hooks — is documented in the companion design specification: @wip/client TypeScript Client Library.
 
@@ -462,7 +359,7 @@ Several constellation apps need bulk import for historical data: past bank state
 
 ## Retry pattern
 
-For network and server errors, the WIP client (Guide 4) implements automatic retry with exponential backoff: 1s, 2s, 4s, maximum 3 attempts. If all retries fail, the error is surfaced to the UI. Mutations (POST/PUT/DELETE) are not automatically retried — only the user can trigger a retry for write operations, to prevent duplicate submissions.
+The WIP client (Guide 4) retries GET requests only: on 502/503/504 responses, network errors and timeouts, up to 2 retries with exponential backoff from 500 ms (capped at 5 s; configurable through the client's `retry` option). If all attempts fail, the error is surfaced to the UI. Writes (POST/PUT/PATCH/DELETE) are never retried automatically — only the user can trigger a retry for a write, to prevent duplicate submissions.
 
 # Guide 7: Testing Contract
 
