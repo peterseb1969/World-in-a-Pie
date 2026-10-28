@@ -7,6 +7,13 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
 COPY . .
+# Vite reads VITE_BASE_PATH at build time for the SPA's asset base. A
+# --build-arg is only visible to RUN when the Dockerfile declares it: without
+# this ARG the CI's --build-arg VITE_BASE_PATH=/apps/<slug>/ was dropped and
+# the bundle built with base '/', so a deployed app's assets 404. Default '/'
+# keeps a plain local `docker build` serving at the root.
+ARG VITE_BASE_PATH=/
+ENV VITE_BASE_PATH=${VITE_BASE_PATH}
 # CASE-472: bake a build-stamp into the SPA so a running app shows which build
 # it is. The image builder (CI / wip-deploy) supplies these via --build-arg,
 # e.g. `--build-arg VITE_BUILD_STAMP=$(date -u +%FT%TZ) --build-arg
@@ -21,6 +28,14 @@ RUN npm run build          # vite build → /app/dist
 
 FROM node:22-slim AS runtime
 WORKDIR /app
+# The deployer's HTTP healthcheck probe is a shell `curl || wget` chain, and
+# node:*-slim ships neither: without one every probe exits 127 and the app
+# reports permanently unhealthy while it serves fine. The runtime stays on the
+# build stage's slim (glibc) base because node_modules, including tsx's
+# platform-specific esbuild binary, is copied from it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends wget \
+    && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
 # Reuse the resolved deps from the build stage (includes tsx, used at runtime).
 COPY --from=build /app/node_modules ./node_modules

@@ -50,7 +50,7 @@ Use the app skeleton from Guide 3 of the guardrails:
 - Create `.env.example` with WIP connection variables
 - Set up `vite.config.ts` with configurable base path
 - Set up `tailwind.config.ts` with shared design tokens from Guide 2
-- Install dependencies: react, @wip/client, @wip/react, tailwind, shadcn/ui components
+- Install dependencies: the pinned stack in `docs/technology-stack.md` (react, the vendored @wip/client and @wip/react, @tanstack/react-query, tailwind) — no component library
 - Create the WipProvider + QueryClientProvider setup in App.tsx
 
 ### Step 2: Build core pages
@@ -58,7 +58,7 @@ For each major feature of the app:
 - Use `@wip/react` hooks for data fetching (useDocuments, useTemplate, useTerminology)
 - Use `@wip/react` mutations for data creation (useCreateDocument)
 - Handle errors using the WipError hierarchy — map to user-facing messages per Guide 6
-- Use shadcn/ui components with Tailwind styling per Guide 2 design tokens
+- Build components from the Tailwind shapes in `docs/ui-guidance.md`, using the design tokens
 - Ensure responsive layout (works at 375px width and up)
 
 ### Step 3: Build data entry forms

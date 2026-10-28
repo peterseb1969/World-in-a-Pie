@@ -755,6 +755,22 @@ the guardrails, the technology stack, the UI guidance, the deployable-app
 contract or the app CLAUDE.md template, expect the card drift test to name
 the card to re-review.
 
+### Query-preset production images build for their base path and pass the healthcheck
+
+The `--preset query` production `Dockerfile` declared no `VITE_BASE_PATH`
+ARG, so the `--build-arg VITE_BASE_PATH=/apps/<slug>/` its CI workflow
+passes never reached `vite build`: the SPA built with base `/` and a
+deployed app's assets 404. Its `node:22-slim` runtime also had neither
+`curl` nor `wget`, so the deployer's HTTP healthcheck probe exited 127 and
+the app reported permanently unhealthy. The scaffold's `Dockerfile` now
+declares the ARG and installs `wget` in the runtime stage.
+
+**Action:** the scaffold creates this file only for a new app, and a
+refresh does not rewrite it. In an existing query-preset app, add
+`ARG VITE_BASE_PATH=/` plus `ENV VITE_BASE_PATH=${VITE_BASE_PATH}` before
+`npm run build`, and install `wget` (or `curl`) in the runtime stage — or
+copy both from `scripts/scaffold-query/Dockerfile`.
+
 ### App guidance matches the platform again
 
 Writing the rule cards turned up app-facing documents that taught code the

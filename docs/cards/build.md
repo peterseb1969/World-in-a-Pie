@@ -1,12 +1,12 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
 docs/technology-stack.md sha256:35a66855d47b3bc4 reviewed:ea985986
 docs/ui-guidance.md sha256:8667dff0c17994c4 reviewed:a66e110f
-docs/WIP_DevGuardrails.md sha256:d8b70a45871f831e reviewed:ea985986
+docs/WIP_DevGuardrails.md sha256:30130d07053d7ac5 reviewed:fe514f02
 libs/wip-client/README.md sha256:b24b17a0eb14e1ce reviewed:a66e110f
 libs/wip-react/README.md sha256:9e71f0ba4a17d97a reviewed:a66e110f
 libs/wip-proxy/README.md sha256:35e6262638a97d55 reviewed:a66e110f
-docs/wip-deployable-app-contract.md sha256:3eb21c675ce50e8c reviewed:ea985986
-docs/playbooks/app-builder/build-app.md sha256:5e2c885a93de9e91 reviewed:ea985986
+docs/wip-deployable-app-contract.md sha256:22fdb5b3d6fb0ce9 reviewed:fe514f02
+docs/playbooks/app-builder/build-app.md sha256:732acb6b731e64ca reviewed:fe514f02
 docs/playbooks/app-builder/bootstrap.md sha256:4bc80d0099e12f0b reviewed:ea985986
 scaffold/templates/claude-md/app.md sha256:6d9732fc394e514e reviewed:ea985986
 -->

@@ -125,7 +125,7 @@ The WIP Console — itself built by Claude — uses a different frontend stack: 
 
 The Console is a data-heavy administration and debugging interface. PrimeVue’s DataTable, TreeTable, and complex form components are purpose-built for exactly this kind of work: inspecting terminologies, browsing raw documents, editing template schemas. It is the right tool for an admin UI.
 
-Constellation apps are end-user tools: a receipt scanner, a fuel log, an energy dashboard, a renovation planner. They need to feel lightweight, approachable, and visually cohesive with each other — not like lighter versions of an admin console. A different component library (shadcn/ui) and framework (React) better serve this audience.
+Constellation apps are end-user tools: a receipt scanner, a fuel log, an energy dashboard, a renovation planner. They need to feel lightweight, approachable, and visually cohesive with each other — not like lighter versions of an admin console. A different framework (React with Tailwind, built from the shapes in `docs/ui-guidance.md`) better serves this audience.
 
 There is also a practical consideration for the AI-assisted development experiment. While Claude can produce excellent Vue/PrimeVue code (the Console proves this), the depth of React training data across LLMs is significantly larger. For an experiment testing the limits of AI-generated applications, optimising for the AI’s strongest output language reduces a variable and gives the experiment its best chance of success.
 
@@ -141,11 +141,11 @@ All constellation apps use the same stack:
 | **UI Framework**           | React 19 (pinned in `docs/technology-stack.md`) | Widest AI training coverage, broadest component ecosystem, Claude’s strongest UI generation language.                                            |
 | **Build tool**             | Vite                         | Fast cold start, simple config, excellent React support, small footprint suitable for Pi.                                                        |
 | **Styling**                | Tailwind CSS                 | Utility-first approach works well with AI code generation. No separate CSS files to maintain. Consistent spacing and colour via config.          |
-| **Component library**      | shadcn/ui                    | Unstyled, composable primitives built on Radix. Tailwind-native. Copy-paste model means no version dependency issues. AI generates well with it. |
-| **Icons**                  | Lucide React                 | Clean, consistent icon set. Already a shadcn/ui convention.                                                                                      |
+| **Components**             | Plain Tailwind               | No component library: build each shape from the class strings in `docs/ui-guidance.md` (card, buttons, modal, badge, chip, list row, page header, empty state). |
+| **Icons**                  | Lucide React                 | Clean, consistent icon set.                                                                                                                      |
 | **Data fetching**          | TanStack Query (React Query) | Handles caching, refetching, loading/error states. Prevents every app from reinventing data fetch patterns.                                      |
 | **Routing**                | React Router v7 (pinned in `docs/technology-stack.md`) | Standard React routing. Apps must support a configurable base path for gateway integration (e.g., /apps/statements/).                            |
-| **Charts / visualisation** | Recharts                     | React-native charting, simple API, sufficient for the BI dashboards described in the constellation docs.                                         |
+| **Charts / visualisation** | No standard yet              | `docs/ui-guidance.md` has no chart standard; propose one in a case before adding a chart library.                                                |
 
 ## Design tokens
 
