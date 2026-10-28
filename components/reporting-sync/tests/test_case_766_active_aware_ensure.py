@@ -85,7 +85,7 @@ class TestEagerEnsureIsActiveAware:
         svc._fetch_latest_active_version = AsyncMock(
             return_value=_template(1, "active")
         )
-        svc._fetch_documents = AsyncMock(return_value=([], 0))
+        svc._fetch_documents = AsyncMock(return_value=([], 0, None))
 
         job = _job()
         await svc._run_batch_sync(job, _template(2, "inactive"), force=False, page_size=1000)
@@ -101,7 +101,7 @@ class TestEagerEnsureIsActiveAware:
     @pytest.mark.asyncio
     async def test_active_latest_never_refetches(self, svc):
         svc._fetch_latest_active_version = AsyncMock()
-        svc._fetch_documents = AsyncMock(return_value=([], 0))
+        svc._fetch_documents = AsyncMock(return_value=([], 0, None))
 
         job = _job()
         await svc._run_batch_sync(job, _template(2, "active"), force=False, page_size=1000)
@@ -114,7 +114,7 @@ class TestEagerEnsureIsActiveAware:
         # Every version inactive: parity's active-only listing skips the
         # template, so the eager ensure must too — no table, clean complete.
         svc._fetch_latest_active_version = AsyncMock(return_value=None)
-        svc._fetch_documents = AsyncMock(return_value=([], 0))
+        svc._fetch_documents = AsyncMock(return_value=([], 0, None))
 
         job = _job()
         await svc._run_batch_sync(job, _template(2, "inactive"), force=False, page_size=1000)
@@ -131,7 +131,7 @@ class TestEagerEnsureIsActiveAware:
             return_value=_template(1, "active")
         )
         docs = [_doc("d1", version=2), _doc("d2", version=2)]
-        svc._fetch_documents = AsyncMock(return_value=(docs, len(docs)))
+        svc._fetch_documents = AsyncMock(return_value=(docs, len(docs), None))
 
         job = _job()
         await svc._run_batch_sync(job, _template(2, "inactive"), force=False, page_size=1000)

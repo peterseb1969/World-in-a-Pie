@@ -204,7 +204,7 @@ class TestZeroDocumentMaterialization:
             "identity_fields": ["name"],
             "reporting": {"sync_enabled": True},
         }
-        svc._fetch_documents = AsyncMock(return_value=([], 0))
+        svc._fetch_documents = AsyncMock(return_value=([], 0, None))
 
         job = BatchSyncJob(
             job_id="t636", template_value="val_template", status=BatchSyncStatus.PENDING

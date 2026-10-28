@@ -594,7 +594,7 @@ class TestBatchSyncZeroDocuments:
             "namespace": "wip-val",
             "fields": [{"name": "name", "type": "string"}],
         }
-        service._fetch_documents = AsyncMock(return_value=([], 0))
+        service._fetch_documents = AsyncMock(return_value=([], 0, None))
 
         job = BatchSyncJob(
             job_id="t636", template_value="VAL_TEMPLATE", status=BatchSyncStatus.PENDING
@@ -624,7 +624,7 @@ class TestBatchSyncZeroDocuments:
             "namespace": "wip-val",
             "fields": [{"name": "name", "type": "string"}],
         }
-        service._fetch_documents = AsyncMock(return_value=([], 0))
+        service._fetch_documents = AsyncMock(return_value=([], 0, None))
 
         job = BatchSyncJob(
             job_id="tscoped", template_value="VAL_TEMPLATE",
@@ -653,7 +653,7 @@ class TestBatchSyncZeroDocuments:
             "namespace": "ct-1000",
             "fields": [{"name": "name", "type": "string"}],
         }
-        service._fetch_documents = AsyncMock(return_value=([], 0))
+        service._fetch_documents = AsyncMock(return_value=([], 0, None))
 
         job = BatchSyncJob(
             job_id="town", template_value="VAL_TEMPLATE",

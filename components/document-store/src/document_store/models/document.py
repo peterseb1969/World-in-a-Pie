@@ -155,6 +155,14 @@ class Document(BeanieDocument):
                 [("namespace", 1), ("template_id", 1), ("status", 1), ("created_at", DESCENDING)],
                 name="ns_template_status_time_idx"
             ),
+            # Cursor paging of one template's documents (the list endpoint's
+            # cursor mode, which the reporting batch sync uses): equality on
+            # the prefix, then _id order, so each page reads one page of keys
+            # instead of sorting every matching document.
+            IndexModel(
+                [("namespace", 1), ("template_id", 1), ("status", 1), ("_id", 1)],
+                name="ns_template_status_id_idx"
+            ),
             # document_id lookup (non-unique, for finding all versions)
             IndexModel([("document_id", 1)], name="document_id_idx"),
             # Term reference reverse lookups (find documents referencing a term)

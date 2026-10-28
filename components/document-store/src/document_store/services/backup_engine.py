@@ -3380,11 +3380,14 @@ class DirectRestoreEngine:
     # -- Reporting verification phases (restore-verification design) --------
     #
     # Poll pacing: structure materializes within a couple of batch-sync
-    # seconds; counts follow the batch sync of the full document set. Both
-    # bounds are generous for dev-class data volumes and merely delay the
-    # warning, not the restore, when exceeded.
+    # seconds. Counts follow the batch sync of the full document set, which
+    # for a large namespace takes minutes — so the count wait follows
+    # progress: it lasts while reporting rows keep landing and gives up after
+    # _REPORTING_COUNTS_STALL_S without a change, or at the overall cap.
+    # Exceeding either delays only the warning, never the restore's data.
     _REPORTING_STRUCTURE_TIMEOUT_S = 30
-    _REPORTING_COUNTS_TIMEOUT_S = 90
+    _REPORTING_COUNTS_STALL_S = 60
+    _REPORTING_COUNTS_MAX_S = 1800
     _REPORTING_POLL_INTERVAL_S = 3
 
     def _reporting_unavailable(self, namespace: str, what: str) -> None:
@@ -3508,11 +3511,14 @@ class DirectRestoreEngine:
     async def _reporting_phase_counts(
         self, namespace: str, *, skip_documents: bool
     ) -> None:
-        """Post-data count parity: bounded wait, then complete WITH warning.
+        """Post-data count parity: wait while the sync progresses, then
+        complete WITH warning if parity still does not hold.
 
         Never a hard fail — data is safely in MongoDB at this point and the
         reporting layer can catch up or be replayed; the warning makes the
-        gap visible instead of silent.
+        gap visible instead of silent. Progress is the namespace's total
+        reporting row count from the parity check itself: while it keeps
+        changing the sync is alive, however long the namespace takes.
         """
         if not self._reporting or skip_documents:
             return
@@ -3521,9 +3527,11 @@ class DirectRestoreEngine:
             f"[{namespace}] verifying reporting row-count parity",
         )
         await self._reporting.trigger_batch_sync(namespace)
-        deadline = asyncio.get_event_loop().time() + self._REPORTING_COUNTS_TIMEOUT_S
+        clock = asyncio.get_event_loop()
+        started = last_change = clock.time()
+        last_rows: int | None = None
         parity: dict[str, Any] | None = None
-        while asyncio.get_event_loop().time() < deadline:
+        while True:
             parity = await self._reporting.parity(namespace, include_counts=True)
             if parity is None:
                 self._reporting_unavailable(namespace, "count parity")
@@ -3535,6 +3543,22 @@ class DirectRestoreEngine:
                     f"({len(parity.get('templates', []))} template(s))",
                 )
                 return
+            templates = parity.get("templates", [])
+            rows = sum(int(t.get("actual_rows") or 0) for t in templates)
+            now = clock.time()
+            if rows != last_rows:
+                last_rows, last_change = rows, now
+                expected = sum(int(t.get("expected_documents") or 0) for t in templates)
+                self._emit(
+                    "phase_reporting_parity",
+                    f"[{namespace}] reporting catching up: {rows} of {expected} rows",
+                )
+            if now - last_change >= self._REPORTING_COUNTS_STALL_S:
+                reason = f"no reporting rows written for {self._REPORTING_COUNTS_STALL_S}s"
+                break
+            if now - started >= self._REPORTING_COUNTS_MAX_S:
+                reason = f"still catching up after {self._REPORTING_COUNTS_MAX_S}s"
+                break
             await asyncio.sleep(self._REPORTING_POLL_INTERVAL_S)
         mismatches = [
             f"{t.get('template_value')} expected={t.get('expected_documents')} "
@@ -3544,11 +3568,12 @@ class DirectRestoreEngine:
         ]
         self._emit(
             "warning",
-            f"[{namespace}] reporting count parity incomplete after "
-            f"{self._REPORTING_COUNTS_TIMEOUT_S}s: "
+            f"[{namespace}] reporting count parity incomplete ({reason}): "
             f"{'; '.join(mismatches[:5]) or 'no per-template detail'} — "
-            "restore data is complete in MongoDB; re-run the batch sync or "
-            "check the parity endpoint",
+            "restore data is complete in MongoDB; the batch sync may still be "
+            "running: watch GET /api/reporting-sync/sync/batch/jobs or "
+            f"GET /api/reporting-sync/parity?namespace={namespace}, or re-run "
+            "the batch sync",
         )
 
     async def _upsert_namespace(

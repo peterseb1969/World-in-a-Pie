@@ -26,7 +26,8 @@ def _engine(reporting, events):
     # Shrink the bounded waits — the logic under test is the decision,
     # not the pacing.
     eng._REPORTING_STRUCTURE_TIMEOUT_S = 0.05
-    eng._REPORTING_COUNTS_TIMEOUT_S = 0.05
+    eng._REPORTING_COUNTS_STALL_S = 0.05
+    eng._REPORTING_COUNTS_MAX_S = 5
     eng._REPORTING_POLL_INTERVAL_S = 0.01
     return eng
 
@@ -130,6 +131,59 @@ class TestCountParity:
         await eng._reporting_phase_counts("ns1", skip_documents=False)
         warnings = [ev for ev in events if ev.phase == "warning"]
         assert warnings and "T1" in warnings[-1].message
+
+    # CASE-967: a large namespace's catch-up takes minutes; a fixed 90 s wait
+    # declared it incomplete while it was still running. The wait now follows
+    # the reporting row count.
+
+    @staticmethod
+    def _catching_up(rows_per_poll, *, ok_after=None, expected=1000):
+        """Parity results whose row count advances by rows_per_poll per call,
+        turning ok after ok_after calls (never, when None)."""
+        calls = {"n": 0}
+
+        async def parity(namespace, include_counts=False):
+            calls["n"] += 1
+            if ok_after is not None and calls["n"] > ok_after:
+                return dict(CLEAN, ok=True, templates=[{"template_value": "T1"}])
+            rows = calls["n"] * rows_per_poll
+            return dict(CLEAN, ok=False, templates=[
+                {"template_value": "T1", "counts_match": False,
+                 "expected_documents": expected, "actual_rows": rows},
+            ])
+
+        stub = _reporting_stub(None)
+        stub.parity = AsyncMock(side_effect=parity)
+        return stub
+
+    @pytest.mark.asyncio
+    async def test_progress_keeps_the_wait_alive_past_the_stall_window(self):
+        events = []
+        eng = _engine(self._catching_up(10, ok_after=30), events)  # 30 polls ≈ 0.3 s > 0.05 s stall
+        await eng._reporting_phase_counts("ns1", skip_documents=False)
+        assert not any(ev.phase == "warning" for ev in events)
+        messages = [ev.message for ev in events if ev.phase == "phase_reporting_parity"]
+        assert any("reporting catching up: 10 of 1000 rows" in m for m in messages)
+        assert "reporting parity verified" in messages[-1]
+
+    @pytest.mark.asyncio
+    async def test_no_progress_gives_up_after_the_stall_window(self):
+        events = []
+        eng = _engine(self._catching_up(0), events)
+        await eng._reporting_phase_counts("ns1", skip_documents=False)
+        warning = [ev for ev in events if ev.phase == "warning"][-1].message
+        assert "no reporting rows written for 0.05s" in warning
+        assert "GET /api/reporting-sync/sync/batch/jobs" in warning
+        assert "parity?namespace=ns1" in warning
+
+    @pytest.mark.asyncio
+    async def test_endless_progress_stops_at_the_cap(self):
+        events = []
+        eng = _engine(self._catching_up(1), events)
+        eng._REPORTING_COUNTS_MAX_S = 0.1
+        await eng._reporting_phase_counts("ns1", skip_documents=False)
+        warning = [ev for ev in events if ev.phase == "warning"][-1].message
+        assert "still catching up after 0.1s" in warning
 
     @pytest.mark.asyncio
     async def test_skip_documents_skips_count_phase(self):

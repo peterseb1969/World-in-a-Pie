@@ -137,6 +137,27 @@ bucket. Until then, download any backup you need to keep
 (`GET /api/document-store/backup/jobs/{id}/download`) before the scratch sweep
 or a container restart removes it.
 
+### Reporting catch-up after a restore no longer slows with the square of a template's size
+
+A batch sync paged each template's documents by offset, and every page made
+document-store sort all of the template's documents (the list's default order
+cannot use an index): measured on 43,856 documents, the first and the fortieth
+page each examined all 43,856. A 115k-document template took about four minutes.
+
+- The batch sync now pages by cursor (`_id` order). A new index on the
+  documents collection, `ns_template_status_id_idx`
+  (`namespace, template_id, status, _id`), lets each page read one page of
+  keys — a test checks the query plan against MongoDB. The template's total,
+  for progress, comes from one single-document request.
+- A restore's reporting count check waits while reporting rows keep landing,
+  instead of a fixed 90 seconds: it gives up after 60 seconds without
+  progress (or 30 minutes overall), and its warning names the batch-jobs and
+  parity endpoints to watch. Meanwhile the job's progress message shows
+  "reporting catching up: X of Y rows".
+
+**Note:** document-store builds the new index at its first start after the
+upgrade; on a large collection that start takes correspondingly longer.
+
 ### ingest-gateway requires authentication
 
 Every ingest-gateway route requires an API key except

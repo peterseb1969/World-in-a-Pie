@@ -77,7 +77,7 @@ class TestSiblingCleanupIsSkippedWithoutSiblings:
             return_value={1: "doc_ct_trial_ae__v1"}
         )
         docs = [_doc(f"d{i}") for i in range(250)]
-        svc._fetch_documents = AsyncMock(return_value=(docs, len(docs)))
+        svc._fetch_documents = AsyncMock(return_value=(docs, len(docs), None))
 
         job = _job()
         await svc._run_batch_sync(job, TEMPLATE, force=False, page_size=1000)
@@ -95,7 +95,7 @@ class TestSiblingCleanupIsSkippedWithoutSiblings:
             return_value={1: "doc_ct_trial_ae__v1", 2: "doc_ct_trial_ae__v2"}
         )
         docs = [_doc(f"d{i}", version=2) for i in range(5)]
-        svc._fetch_documents = AsyncMock(return_value=(docs, len(docs)))
+        svc._fetch_documents = AsyncMock(return_value=(docs, len(docs), None))
         svc.schema_manager.ensure_table_for_template = AsyncMock(
             return_value="doc_ct_trial_ae__v2"
         )
@@ -117,7 +117,7 @@ class TestJobInstrumentation:
             return_value={1: "doc_ct_trial_ae__v1"}
         )
         docs = [_doc(f"d{i}") for i in range(10)]
-        svc._fetch_documents = AsyncMock(return_value=(docs, len(docs)))
+        svc._fetch_documents = AsyncMock(return_value=(docs, len(docs), None))
 
         job = _job()
         await svc._run_batch_sync(job, TEMPLATE, force=False, page_size=1000)

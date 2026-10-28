@@ -97,7 +97,7 @@ class TestForceDropsBeforeSync:
             lambda *a, **k: order.append("ensure") or "doc_ct_trial_ae__v1"
         )
         docs = [_doc(f"d{i}") for i in range(3)]
-        svc._fetch_documents = AsyncMock(return_value=(docs, len(docs)))
+        svc._fetch_documents = AsyncMock(return_value=(docs, len(docs), None))
 
         job = _job()
         await svc._run_batch_sync(job, TEMPLATE, force=True, page_size=1000)
@@ -114,7 +114,7 @@ class TestForceDropsBeforeSync:
     async def test_dropped_relations_recorded_on_job(self, svc):
         # A destructive step must be auditable from the job record.
         docs = [_doc("d1")]
-        svc._fetch_documents = AsyncMock(return_value=(docs, 1))
+        svc._fetch_documents = AsyncMock(return_value=(docs, 1, None))
 
         job = _job()
         await svc._run_batch_sync(job, TEMPLATE, force=True, page_size=1000)
@@ -126,7 +126,7 @@ class TestForceDropsBeforeSync:
     @pytest.mark.asyncio
     async def test_without_force_nothing_is_dropped(self, svc):
         docs = [_doc("d1")]
-        svc._fetch_documents = AsyncMock(return_value=(docs, 1))
+        svc._fetch_documents = AsyncMock(return_value=(docs, 1, None))
 
         job = _job()
         await svc._run_batch_sync(job, TEMPLATE, force=False, page_size=1000)
@@ -144,7 +144,7 @@ class TestForceDropsBeforeSync:
         # drops.
         foreign = dict(TEMPLATE, namespace="kb")
         docs = [_doc("d1")]
-        svc._fetch_documents = AsyncMock(return_value=(docs, 1))
+        svc._fetch_documents = AsyncMock(return_value=(docs, 1, None))
 
         job = _job(ns="ct")
         await svc._run_batch_sync(job, foreign, force=True, page_size=1000)
@@ -156,7 +156,7 @@ class TestForceDropsBeforeSync:
         # "Rebuild from source" with an empty source degrades to an empty
         # table, not resurrection of the dropped content — the drop must not
         # be skipped just because nothing will be fetched.
-        svc._fetch_documents = AsyncMock(return_value=([], 0))
+        svc._fetch_documents = AsyncMock(return_value=([], 0, None))
 
         job = _job()
         await svc._run_batch_sync(job, TEMPLATE, force=True, page_size=1000)

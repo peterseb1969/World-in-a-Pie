@@ -31,6 +31,11 @@ from .transformer import DocumentTransformer, _parse_datetime, term_name_rows
 
 logger = logging.getLogger(__name__)
 
+# The smallest MongoDB ObjectId: a cursor below every document, so the first
+# cursor page starts at the beginning. The document-store enters cursor mode
+# only when a cursor is given.
+FIRST_CURSOR = "000000000000000000000000"
+
 
 class BatchSyncService:
     """Service for batch syncing documents to PostgreSQL."""
@@ -235,7 +240,8 @@ class BatchSyncService:
         page_size: int,
         status: str = "active",
         namespace: str | None = None,
-    ) -> tuple[list[dict[str, Any]], int]:
+        cursor: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int, str | None]:
         """
         Fetch documents from Document Store.
 
@@ -244,8 +250,13 @@ class BatchSyncService:
         template owned by another namespace, so resolving the template
         does not scope its documents.
 
+        With `cursor`, the document-store pages by `_id` (no sort over the
+        whole template, no skip, no count; `page` is ignored and the total
+        comes back as -1). Without it, offset paging — which sorts every
+        matching document on every page.
+
         Returns:
-            Tuple of (documents, total_count)
+            Tuple of (documents, total_count, next_cursor)
         """
         try:
             params: dict[str, Any] = {
@@ -254,6 +265,8 @@ class BatchSyncService:
                 "page": page,
                 "page_size": page_size,
             }
+            if cursor:
+                params["cursor"] = cursor
             if namespace:
                 params["namespace"] = namespace
             async with httpx.AsyncClient() as client:
@@ -265,12 +278,16 @@ class BatchSyncService:
                 )
                 if response.status_code == 200:
                     data = response.json()
-                    return data.get("items", []), data.get("total", 0)
+                    return (
+                        data.get("items", []),
+                        data.get("total", 0),
+                        data.get("next_cursor"),
+                    )
                 logger.error(f"Failed to fetch documents: {response.status_code}")
-                return [], 0
+                return [], 0, None
         except Exception as e:
             logger.error(f"Error fetching documents: {e}")
-            return [], 0
+            return [], 0, None
 
     def _get_reporting_config(self, template: dict[str, Any]) -> ReportingConfig:
         """Extract reporting config from template."""
@@ -527,10 +544,12 @@ class BatchSyncService:
                     )
                 return ns_versions_on_disk[ns]
 
-            # Fetch first page to get total count
+            # The total, for progress and the empty-template exit: one
+            # one-document offset request (a count plus a single sort).
+            # The pages themselves are fetched by cursor below.
             fetch_started = time.monotonic()
-            documents, total = await self._fetch_documents(
-                template_id, 1, page_size, namespace=job.namespace
+            _probe, total, _ = await self._fetch_documents(
+                template_id, 1, 1, namespace=job.namespace
             )
             job.fetch_ms += int((time.monotonic() - fetch_started) * 1000)
             job.total_documents = total
@@ -549,15 +568,22 @@ class BatchSyncService:
 
             logger.info(f"Starting batch sync for {job.template_value}: {total} documents")
 
-            # Process all pages
-            page = 1
-            while True:
-                if page > 1:
-                    fetch_started = time.monotonic()
-                    documents, _ = await self._fetch_documents(
-                        template_id, page, page_size, namespace=job.namespace
-                    )
-                    job.fetch_ms += int((time.monotonic() - fetch_started) * 1000)
+            # Process all pages, by cursor. Offset paging sorted every
+            # matching document on every page (the default order cannot use
+            # an index), so a template's sync cost grew with the square of
+            # its size; a cursor page reads one page of the
+            # ns_template_status_id_idx index. The smallest possible _id
+            # starts the walk.
+            page = 0
+            cursor: str | None = FIRST_CURSOR
+            while cursor is not None:
+                page += 1
+                fetch_started = time.monotonic()
+                documents, _, cursor = await self._fetch_documents(
+                    template_id, page, page_size, namespace=job.namespace,
+                    cursor=cursor,
+                )
+                job.fetch_ms += int((time.monotonic() - fetch_started) * 1000)
 
                 if not documents:
                     break
@@ -633,10 +659,8 @@ class BatchSyncService:
                             )
                     job.sibling_ms += int((time.monotonic() - sibling_started) * 1000)
 
-                # Check if we've processed all pages
-                if len(documents) < page_size:
-                    break
-                page += 1
+                # The document-store returns no next cursor after a short
+                # page, which ends the loop.
 
                 # Yield to the event loop between pages. The flat 100 ms
                 # sleep that used to sit here predates the per-template job
