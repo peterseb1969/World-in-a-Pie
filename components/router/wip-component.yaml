@@ -30,13 +30,15 @@ spec:
   # until config_files generalization lands).
   command: [caddy, run, --config, /etc/caddy/Caddyfile, --adapter, caddyfile]
 
-  # The router has no `/` handler — bare `/` falls through to Caddy's
-  # default: an empty 200 (the /api/* fallthrough-404 guard doesn't
-  # cover it; see caddy_common.write_api_fallthrough_404). Fine as a
-  # liveness signal (the listener is up), and the probe doesn't care
-  # about the status anyway: it accepts any 3-digit HTTP code.
+  # The router has no `/` route — bare `/` reaches the terminal
+  # catch-all (caddy_common.write_unrouted_404) and gets a 404, so
+  # `curl -f` prints an error and exits 22. That is still a liveness
+  # signal (the listener answered), and the probe ignores the status:
+  # the pipeline's exit is grep's, which accepts any 3-digit HTTP code.
+  # `--max-time 5` matches the default timeout_seconds: compose's timeout
+  # does not kill the probe, so an unbounded curl would pile up.
   healthcheck:
-    command: ["sh", "-c", "curl -fsS -o /dev/null -w '%{http_code}' http://localhost:8080/ | grep -qE '^[0-9]{3}$'"]
+    command: ["sh", "-c", "curl -fsS --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:8080/ | grep -qE '^[0-9]{3}$'"]
     start_period_seconds: 5
 
   # CASE-359: the router only routes to internal core services. In

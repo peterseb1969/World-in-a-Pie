@@ -38,8 +38,11 @@ spec:
   storage:
     - {name: jetstream, mount_path: /data, size: 5Gi}
 
+  # `-T 5` matches timeout_seconds: compose's timeout only marks a run
+  # unhealthy, it does not kill the probe, so an unbounded wget against a
+  # monitor that accepts and never answers stays alive and piles up.
   healthcheck:
-    command: [wget, -q, -O, /dev/null, "http://127.0.0.1:8222/healthz"]
+    command: [wget, -q, -O, /dev/null, -T, "5", "http://127.0.0.1:8222/healthz"]
     interval_seconds: 10
     timeout_seconds: 5
     start_period_seconds: 10
