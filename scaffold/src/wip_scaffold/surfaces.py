@@ -365,15 +365,16 @@ def client_lib_surface(lib: str, tarball_path: str) -> Surface:
         data = src.read_bytes()
 
         # Belt on top of the wrapper's pre-validation: a tarball with no
-        # compiled dist/*.js means npm pack ran without npm run build.
+        # compiled dist/*.js means npm pack ran without npm run build. Fatal,
+        # not a skip: skipping one library while the others are swapped in
+        # leaves the app with a half-updated library set.
         with tarfile.open(src, "r:gz") as tf:
             names = tf.getnames()
             if not any(n.startswith("package/dist/") and n.endswith(".js") for n in names):
-                ctx.notes.append(
-                    f"ERROR: {src.name} contains no compiled JS in dist/ — skipped. "
-                    f"Fix: npm run build && npm pack in libs/wip-{lib}."
+                raise RuntimeError(
+                    f"{src.name} contains no compiled JS in dist/. "
+                    f"Fix: npm run build && npm pack in libs/wip-{lib}, then re-run this script."
                 )
-                return {}
             readme: bytes | None = None
             try:
                 member = tf.extractfile("package/README.md")

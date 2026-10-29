@@ -63,17 +63,29 @@ def _surface(name="s", policy=Policy.REGENERATE, files=None, **kw) -> Surface:
     return Surface(name=name, policy=policy, produce=lambda ctx: dict(files), **kw)
 
 
-def test_write_is_atomic_no_partial_on_failure(tmp_path):
-    # Failure inside produce of a LATER surface must not corrupt an
-    # earlier surface's completed write, and no temp litter remains.
+def _tree(root: Path) -> dict[str, bytes]:
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_refused_run_leaves_tree_unchanged(tmp_path):
+    # A refresh once died on its wheel surface after the library surfaces had
+    # already swapped the tarballs and wiped the old ones: the app's
+    # package.json named files that were gone. A LATER surface that raises
+    # must leave every earlier surface's writes AND wipes undone — nothing is
+    # touched until every surface has planned — and no temp litter remains.
+    (tmp_path / "libs").mkdir()
+    (tmp_path / "libs/old-1.0.tgz").write_bytes(b"old")
+    (tmp_path / "a.txt").write_bytes(b"before")
+    before = _tree(tmp_path)
+
     def boom(ctx):
         raise RuntimeError("producer failed")
 
-    ok = _surface(files={"a.txt": b"A"})
+    ok = _surface(files={"a.txt": b"A", "libs/old-2.0.tgz": b"new"}, wipe_glob="libs/old-*.tgz")
     bad = Surface(name="bad", policy=Policy.REGENERATE, produce=boom)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="producer failed"):
         run_surfaces([ok, bad], _ctx(tmp_path))
-    assert (tmp_path / "a.txt").read_bytes() == b"A"
+    assert _tree(tmp_path) == before
     litter = [p for p in tmp_path.rglob(".*") if p.is_file() and p.name.startswith(".")]
     assert litter == [], f"temp litter: {litter}"
 
@@ -421,16 +433,26 @@ def test_client_lib_immutability_violation_is_fatal(tmp_path):
     assert conflicting.exists()
 
 
-def test_client_lib_invalid_dist_skips_with_note(tmp_path):
+def test_client_lib_invalid_dist_refuses_whole_lib_set(tmp_path):
+    # Skipping one library while the others are swapped in leaves the app with
+    # a half-updated library set and no refusal to say so. A tarball with no
+    # compiled dist/ is fatal, and the libraries planned before it stay unswapped.
     from wip_scaffold.surfaces import client_lib_surface
 
-    tgz = tmp_path / "wip-client-1.0.0.tgz"
-    _make_tgz(tgz, with_dist=False)
+    good = tmp_path / "wip-client-2.0.0.tgz"
+    _make_tgz(good, with_dist=True)
+    broken = tmp_path / "wip-react-1.0.0.tgz"
+    _make_tgz(broken, with_dist=False)
     app = tmp_path / "app"
-    ctx = Context(wip_root=REPO_ROOT, target_root=app)
-    run_surfaces([client_lib_surface("client", str(tgz))], ctx)
-    assert not (app / "libs/wip-client-1.0.0.tgz").exists()
-    assert any("no compiled JS" in n for n in ctx.notes)
+    (app / "libs").mkdir(parents=True)
+    old = app / "libs/wip-client-1.0.0.tgz"
+    _make_tgz(old, with_dist=True)
+    before = _tree(app)
+    with pytest.raises(RuntimeError, match="no compiled JS"):
+        run_surfaces([client_lib_surface("client", str(good)),
+                      client_lib_surface("react", str(broken))],
+                     Context(wip_root=REPO_ROOT, target_root=app))
+    assert _tree(app) == before
 
 
 def test_toolkit_wheel_copies(tmp_path):

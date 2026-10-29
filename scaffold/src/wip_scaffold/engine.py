@@ -96,40 +96,21 @@ def _atomic_write(dest: Path, data: bytes, executable: bool) -> None:
 
 
 def run_surfaces(surfaces: list[Surface], ctx: Context) -> list[str]:
-    """Execute (or dry-run) the surface list in order; returns action log."""
+    """Execute (or dry-run) the surface list in order; returns action log.
+
+    Two phases. The plan phase produces every surface, applies its policy
+    and resolves its wipes, touching nothing; only when every surface
+    planned without raising does the apply phase wipe and write. A surface
+    that refuses (a version not bumped, a missing build) therefore leaves
+    the target exactly as it was, and "fix the cause, re-run" is always
+    safe — interleaving the two once left an app with new tarballs and a
+    package.json still naming the deleted ones. No producer reads another
+    surface's output, which is what makes planning everything first sound.
+    """
+    plan = [(s, *_plan_surface(s, ctx)) for s in surfaces]
+
     log: list[str] = []
-
-    for s in surfaces:
-        files = s.produce(ctx)
-
-        if s.policy is Policy.PRESERVE_OR_SET:
-            # produce() returns {} when there is nothing to set — the
-            # existing file (if any) is preserved; produce() appends any
-            # operator warning to ctx.notes itself.
-            pass
-
-        if s.policy is Policy.RENDER_REFRESH and ctx.refresh and not ctx.force_claude_md:
-            redirected = {}
-            for rel, data in files.items():
-                target = ctx.target_root / rel
-                if target.exists():
-                    redirected[rel + ".refresh"] = data
-                    ctx.notes.append(
-                        f"NOTICE: existing {rel} left untouched (app-authored content) — fresh "
-                        f"render written to {rel}.refresh; merge then delete it, or "
-                        f"re-run with --force-claude-md to overwrite."
-                    )
-                else:
-                    redirected[rel] = data
-            files = redirected
-
-        if s.policy is Policy.MERGE_JSON_BASELINE:
-            files = _merge_json_baselines(s.name, files, ctx)
-
-        wiped: list[Path] = []
-        if s.wipe_glob:
-            wiped = sorted((ctx.target_root).glob(s.wipe_glob))
-
+    for s, files, wiped in plan:
         if ctx.dry_run:
             for w in wiped:
                 log.append(f"[dry-run] {s.name}: would remove {w.relative_to(ctx.target_root)}")
@@ -145,6 +126,36 @@ def run_surfaces(surfaces: list[Surface], ctx: Context) -> list[str]:
             log.append(f"{s.name}: wrote {rel}")
 
     return log
+
+
+def _plan_surface(s: Surface, ctx: Context) -> tuple[dict[str, bytes], list[Path]]:
+    """What one surface would write and remove; reads the target, never writes it."""
+    files = s.produce(ctx)
+
+    # PRESERVE_OR_SET needs no step here: produce() returns {} when there is
+    # nothing to set, so the existing file (if any) is preserved, and it
+    # appends any operator warning to ctx.notes itself.
+
+    if s.policy is Policy.RENDER_REFRESH and ctx.refresh and not ctx.force_claude_md:
+        redirected = {}
+        for rel, data in files.items():
+            target = ctx.target_root / rel
+            if target.exists():
+                redirected[rel + ".refresh"] = data
+                ctx.notes.append(
+                    f"NOTICE: existing {rel} left untouched (app-authored content) — fresh "
+                    f"render written to {rel}.refresh; merge then delete it, or "
+                    f"re-run with --force-claude-md to overwrite."
+                )
+            else:
+                redirected[rel] = data
+        files = redirected
+
+    if s.policy is Policy.MERGE_JSON_BASELINE:
+        files = _merge_json_baselines(s.name, files, ctx)
+
+    wiped: list[Path] = sorted(ctx.target_root.glob(s.wipe_glob)) if s.wipe_glob else []
+    return files, wiped
 
 
 def _merge_json_baselines(name: str, files: dict[str, bytes], ctx: Context) -> dict[str, bytes]:
