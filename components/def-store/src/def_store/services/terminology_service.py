@@ -758,6 +758,14 @@ class TerminologyService:
                     "updated_by": actor
                 }
             })
+            term_ids = [
+                t["term_id"] async for t in Term.get_motor_collection().find(
+                    {"terminology_id": terminology_id}, {"term_id": 1},
+                )
+            ]
+            await TerminologyService._sync_registry_lifecycle(
+                [terminology_id, *term_ids], retired=True, actor=actor,
+            )
 
             event_dict = TerminologyService._terminology_to_event_dict(terminology)
 
@@ -811,7 +819,13 @@ class TerminologyService:
         await terminology.save()
 
         # Reactivate terms
+        restored_term_ids: list[str] = []
         if restore_terms:
+            restored_term_ids = [
+                t["term_id"] async for t in Term.get_motor_collection().find(
+                    {"terminology_id": terminology_id, "status": "inactive"}, {"term_id": 1},
+                )
+            ]
             await Term.find({
                 "terminology_id": terminology_id,
                 "status": "inactive"
@@ -829,6 +843,10 @@ class TerminologyService:
                 "status": "active"
             }).count()
             await terminology.save()
+
+        await TerminologyService._sync_registry_lifecycle(
+            [terminology_id, *restored_term_ids], retired=False, actor=actor,
+        )
 
         # Publish NATS event
         await publish_terminology_event(
@@ -1828,12 +1846,55 @@ class TerminologyService:
         return TerminologyService._to_term_response(term)
 
     @staticmethod
+    async def _sync_registry_lifecycle(entry_ids: list[str], *, retired: bool, actor: str | None) -> None:
+        """Tell the Registry these terms or terminologies were retired
+        (deprecated, soft-deleted) or revived (restored).
+
+        Retiring releases their caller-added synonyms — they stay recorded as
+        inactive and neither block another entity from claiming the key nor
+        resolve; reviving claims them again where free. The {ns, type, …}
+        auto-synonym and the primary key are never released, so a retired
+        term or terminology stays addressable by value. The def-store write
+        has already committed, so a failed call is logged;
+        /maintenance/reconcile-synonym-lifecycle repairs it.
+        """
+        if not entry_ids:
+            return
+        verb = "retired" if retired else "revived"
+        try:
+            client = get_registry_client()
+            if retired:
+                results = await client.deactivate_entries(entry_ids, updated_by=actor)
+            else:
+                results = await client.reactivate_entries(entry_ids, updated_by=actor)
+        except Exception as e:
+            logger.warning(
+                "Registry not told %d entr%s %s: %s",
+                len(entry_ids), "y was" if len(entry_ids) == 1 else "ies were", verb, e,
+            )
+            return
+        for r in results:
+            for warning in r.get("warnings") or []:
+                logger.warning("Entry %s: %s", r.get("registry_id"), warning)
+            if r.get("status") in ("error", "not_found"):
+                logger.warning(
+                    "Registry could not record entry %s as %s: %s",
+                    r.get("registry_id"), verb, r.get("error") or r.get("status"),
+                )
+
+    @staticmethod
     async def deprecate_term(
         term_id: str,
-        request: DeprecateTermRequest
+        request: DeprecateTermRequest,
+        release_synonyms: bool = True,
     ) -> TermResponse | None:
         """
         Deprecate a term (mark as deprecated but keep for historical data).
+
+        A deprecated term is retired, so its synonyms are released in the
+        Registry — except when the deprecation is part of a merge
+        (release_synonyms=False): those synonyms move to the survivor and
+        must stay live.
         """
         term = await Term.find_one({"term_id": term_id})
         if not term:
@@ -1848,6 +1909,8 @@ class TerminologyService:
         term.updated_at = datetime.now(UTC)
         term.updated_by = actor
         await term.save()
+        if release_synonyms:
+            await TerminologyService._sync_registry_lifecycle([term_id], retired=True, actor=actor)
 
         # Update terminology term count
         terminology = await Terminology.find_one({"terminology_id": term.terminology_id})
@@ -1961,6 +2024,7 @@ class TerminologyService:
             term.updated_by = actor
             await term.save()
             event_dict = TerminologyService._term_to_event_dict(term)
+            await TerminologyService._sync_registry_lifecycle([term_id], retired=True, actor=actor)
 
         # Update terminology term count
         if terminology:
@@ -2036,9 +2100,11 @@ class TerminologyService:
         validate_names(new_names, survivor.value, await NameTypeService.get_valid_name_types())
 
         before = (absorbed.status, absorbed.deprecated_reason, absorbed.replaced_by_term_id)
+        # Not a retirement of the absorbed identity: its synonyms move to the
+        # survivor with the Registry merge below, so they stay claimed.
         await TerminologyService.deprecate_term(absorbed_id, DeprecateTermRequest(
             reason=reason or f"Merged into '{survivor.value}'", replaced_by_term_id=survivor_id,
-        ))
+        ), release_synonyms=False)
         try:
             result = await TerminologyService.update_term(
                 survivor_id, UpdateTermRequest(names=new_names), collision_out=collision_out,

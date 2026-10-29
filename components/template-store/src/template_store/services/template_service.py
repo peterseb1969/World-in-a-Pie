@@ -12,6 +12,7 @@ from wip_auth.resolve import (
     resolve_entity_id,
     resolve_entity_ids,
 )
+from wip_auth.synonym_lifecycle import sync_entry_lifecycle
 
 from ..api.auth import get_identity_string
 from ..models.api_models import (
@@ -1554,7 +1555,12 @@ class TemplateService:
             updated_at=datetime.now(UTC),
             updated_by=actor,
         )
+        was_retired = await Template.find_one(
+            {"template_id": original.template_id, "status": "active"}
+        ) is None
         await new_template.insert()
+        if was_retired:
+            await TemplateService._sync_registry_lifecycle(original.template_id, actor)
 
         # Publish template updated event
         await publish_template_event(
@@ -1671,6 +1677,7 @@ class TemplateService:
         template.updated_at = datetime.now(UTC)
         template.updated_by = actor
         await template.save()
+        await TemplateService._sync_registry_lifecycle(template_id, actor)
 
         # Publish template deleted event
         await publish_template_event(
@@ -1723,6 +1730,7 @@ class TemplateService:
         template.updated_at = datetime.now(UTC)
         template.updated_by = actor
         await template.save()
+        await TemplateService._sync_registry_lifecycle(template_id, actor)
 
         await publish_template_event(
             EventType.TEMPLATE_UPDATED,
@@ -1731,6 +1739,27 @@ class TemplateService:
         )
 
         return TemplateService._to_template_response(template)
+
+    @staticmethod
+    async def _sync_registry_lifecycle(template_id: str, actor: str | None) -> None:
+        """Tell the Registry whether this template is retired.
+
+        A template keeps one Registry entry across its versions, so it is
+        retired only when no version is active: then its synonyms are
+        released (they neither block another template from claiming the key
+        nor resolve), and they are claimed again as soon as a version is
+        active. Its {ns, type, value} key is the entry's primary key, never
+        released — a retired template stays addressable by value, to
+        reactivate it. The
+        template write has already committed, so a failed call is logged;
+        /maintenance/reconcile-synonym-lifecycle repairs it.
+        """
+        active = await Template.find_one({"template_id": template_id, "status": "active"})
+        for warning in await sync_entry_lifecycle(
+            get_registry_client(), template_id,
+            retired=active is None, actor=actor, noun="template",
+        ):
+            logger.warning("Template %s: %s", template_id, warning)
 
     @staticmethod
     async def add_edge_type_endpoints(
@@ -3154,6 +3183,9 @@ class TemplateService:
             t.updated_by = actor
             await t.save()
             activated_ids.append(t.template_id)
+            # A draft version activated on a template whose other versions
+            # are all inactive brings the template back.
+            await TemplateService._sync_registry_lifecycle(t.template_id, actor)
 
             # Publish activation event
             await publish_template_event(
