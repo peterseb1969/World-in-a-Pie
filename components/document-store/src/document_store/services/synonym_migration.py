@@ -14,6 +14,12 @@ namespace:
 - add the qualified synonym, then remove the bare one, which releases its
   claim.
 
+A bare synonym that is inactive belongs to a retired document whose synonyms
+were released. Its qualified form is added and released again, so the
+document stays retired in the new form too; when another entity already holds
+the qualified key, the bare synonym is only removed — the key is that
+entity's now.
+
 Dry-run (the default) only reports. Applying is idempotent: a document that
 already has the qualified synonym and no bare one is ``unchanged``.
 """
@@ -43,6 +49,8 @@ class RequalifyItem:
     bare: dict[str, Any] | None = None
     qualified: dict[str, Any] | None = None
     detail: str | None = None
+    # The bare synonym was released (its document is retired); not reported.
+    released: bool = False
 
 
 @dataclass
@@ -67,7 +75,10 @@ class RequalifyReport:
             "unchanged": self.unchanged,
             "no_entry": self.no_entry,
             "errors": self.errors,
-            "items": [vars(i) for i in self.items if i.status != "unchanged"],
+            "items": [
+                {k: v for k, v in vars(i).items() if k != "released"}
+                for i in self.items if i.status != "unchanged"
+            ],
         }
 
 
@@ -151,18 +162,20 @@ async def requalify_identity_synonyms(
 
         keys = set(identity_fields)
         bare = [
-            s["composite_key"] for s in synonyms_by_entry[document_id]
+            (s["composite_key"], s.get("status") == "inactive")
+            for s in synonyms_by_entry[document_id]
             if set(s.get("composite_key") or {}) == keys
         ]
         if not bare:
             report.unchanged += 1
             continue
 
-        for bare_key in bare:
+        for bare_key, released in bare:
             qualified = {SYSTEM_QUALIFIER_KEY: template_value, **bare_key}
-            planned.append(
-                RequalifyItem(document_id, template_value, "requalified", bare_key, qualified)
-            )
+            planned.append(RequalifyItem(
+                document_id, template_value, "requalified", bare_key, qualified,
+                released=released,
+            ))
 
     if not dry_run:
         for start in range(0, len(planned), REQUALIFY_BATCH):
@@ -197,7 +210,9 @@ def _synonym_item(namespace: str, document_id: str, key: dict[str, Any]) -> dict
 async def _apply_batch(registry: Any, namespace: str, batch: list[RequalifyItem]) -> None:
     """Add the batch's qualified synonyms, then remove the bare ones for the
     items whose add succeeded. A failure marks the item `error`; an item
-    whose add failed keeps its bare synonym."""
+    whose add failed keeps its bare synonym. A released bare synonym whose
+    qualified key another entry holds is removed without the add; one whose
+    add succeeded is released again with its document."""
     try:
         added = await registry.add_synonyms_bulk(
             [_synonym_item(namespace, i.document_id, i.qualified or {}) for i in batch]
@@ -210,6 +225,13 @@ async def _apply_batch(registry: Any, namespace: str, batch: list[RequalifyItem]
     to_remove: list[RequalifyItem] = []
     for item, result in zip(batch, added, strict=True):
         if result.get("status") in ("added", "already_exists"):
+            to_remove.append(item)
+        elif item.released and result.get("error_code") == "synonym_conflict":
+            item.qualified = None
+            item.detail = (
+                "retired document; the qualified key is held by another "
+                "entry, so only the bare synonym was removed"
+            )
             to_remove.append(item)
         else:
             item.status = "error"
@@ -233,3 +255,18 @@ async def _apply_batch(registry: Any, namespace: str, batch: list[RequalifyItem]
                 "qualified synonym added, bare not removed: "
                 f"{result.get('error') or result.get('status')}"
             )
+
+    # A retired document's re-keyed synonym was claimed by the add: release
+    # it again, so the document stays retired in the qualified form too.
+    retire = sorted({
+        i.document_id for i in to_remove
+        if i.released and i.qualified is not None and i.status != "error"
+    })
+    if retire:
+        try:
+            await registry.deactivate_entries(retire)
+        except RegistryError as e:
+            for item in to_remove:
+                if item.document_id in retire:
+                    item.status = "error"
+                    item.detail = f"requalified, but its synonyms were not released again: {e}"

@@ -703,15 +703,17 @@ async def delete_documents(
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found", error_code="not_found"))
                 continue
             await check_namespace_permission(identity, doc.namespace, "write")
+            warnings: list[str] = []
             success = await service.delete_document(
                 item.id, item.updated_by,
                 hard_delete=item.hard_delete,
                 version=item.version,
+                warnings=warnings,
             )
             if not success:
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found", error_code="not_found"))
             else:
-                results.append(BulkResultItem(index=i, status="deleted", id=item.id))
+                results.append(BulkResultItem(index=i, status="deleted", id=item.id, warnings=warnings))
         except ValueError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())

@@ -9,6 +9,7 @@ from typing import Any, ClassVar, NamedTuple, cast
 
 from beanie.odm.enums import SortDirection
 
+from wip_auth.synonym_lifecycle import sync_entry_lifecycle
 from wip_auth.term_resolution import term_resolution_batch
 
 # Import identity helper from wip-auth
@@ -963,10 +964,15 @@ class DocumentService:
 
         # Phase 3: templates with versioned=false overwrite in place.
         if not await self._is_template_versioned(request.template_id):
-            return await self._overwrite_in_place(
+            overwritten, err = await self._overwrite_in_place(
                 request, existing, validation_result, namespace,
                 extra_warnings=synonym_warnings,
             )
+            if revival and err is None:
+                overwritten.warnings += await self._sync_registry_lifecycle(
+                    document_id, retired=False, actor=get_identity_string(),
+                )
+            return overwritten, err
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -1025,6 +1031,10 @@ class DocumentService:
             await self._update_file_reference_counts(existing.file_references, delta=-1)
         await self._update_file_reference_counts(validation_result.file_references, delta=1)
 
+        lifecycle_warnings = (
+            await self._sync_registry_lifecycle(document_id, retired=False, actor=actor)
+            if revival else []
+        )
         return DocumentCreateResponse(
             document_id=document_id,
             namespace=namespace,
@@ -1034,7 +1044,7 @@ class DocumentService:
             version=new_version,
             is_new=False,
             previous_version=existing.version,
-            warnings=validation_result.warnings + synonym_warnings
+            warnings=validation_result.warnings + synonym_warnings + lifecycle_warnings
         ), None
 
     async def _overwrite_in_place(
@@ -1163,6 +1173,23 @@ class DocumentService:
         delete, so they are not released again.
         """
         return existing.status != DocumentStatus.ACTIVE
+
+    async def _sync_registry_lifecycle(
+        self, document_id: str, *, retired: bool, actor: str | None,
+    ) -> list[str]:
+        """Tell the Registry a document was retired (soft delete) or revived
+        (a write to its identity), returning warnings for the caller's result.
+
+        Retiring releases the document's synonyms — the identity-values
+        synonym and any caller-added ones — so a different identity with the
+        same spellings is no longer refused; reviving claims them again where
+        nobody took them meanwhile. A failed call is a warning, not an error:
+        the document write has already committed.
+        """
+        return await sync_entry_lifecycle(
+            get_registry_client(), document_id,
+            retired=retired, actor=actor, noun="document",
+        )
 
     def _format_validation_errors(
         self,
@@ -1918,6 +1945,7 @@ class DocumentService:
         deleted_by: str | None = None,  # Deprecated: uses authenticated identity
         hard_delete: bool = False,
         version: int | None = None,
+        warnings: list[str] | None = None,
     ) -> bool:
         """Delete a document. Soft-delete by default, hard-delete if requested
         and namespace deletion_mode is 'full'.
@@ -1927,6 +1955,8 @@ class DocumentService:
             deleted_by: Deprecated - uses authenticated identity
             hard_delete: Permanently remove (requires namespace deletion_mode='full')
             version: Specific version to hard-delete (None = all). Ignored for soft-delete.
+            warnings: When given, receives the warnings of a soft delete whose
+                retirement did not fully reach the Registry.
         """
         # Use authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -2013,6 +2043,12 @@ class DocumentService:
         document.updated_at = datetime.now(UTC)
         document.updated_by = actor
         await document.save()
+
+        lifecycle_warnings = await self._sync_registry_lifecycle(
+            document_id, retired=True, actor=actor,
+        )
+        if warnings is not None:
+            warnings.extend(lifecycle_warnings)
 
         # Publish document deleted event
         await publish_document_event(
@@ -2452,6 +2488,10 @@ class DocumentService:
                     item, existing, validation_result, namespace,
                     extra_warnings=synonym_warnings,
                 )
+                if revival:
+                    response.warnings += await self._sync_registry_lifecycle(
+                        document_id, retired=False, actor=actor,
+                    )
                 # existing_by_doc_id already holds this Document object,
                 # mutated in place — later same-identity items in the batch
                 # see the fresh data. No pending event: _overwrite_in_place
@@ -2539,6 +2579,10 @@ class DocumentService:
             await self._update_file_reference_counts(existing.file_references, delta=-1)
         await self._update_file_reference_counts(validation_result.file_references, delta=1)
 
+        lifecycle_warnings = (
+            await self._sync_registry_lifecycle(document_id, retired=False, actor=actor)
+            if revival else []
+        )
         return _ItemOutcome(
             BulkResultItem(
                 index=i,
@@ -2547,7 +2591,7 @@ class DocumentService:
                 identity_hash=identity_hash,
                 version=new_version,
                 is_new=is_new,
-                warnings=validation_result.warnings + synonym_warnings,
+                warnings=validation_result.warnings + synonym_warnings + lifecycle_warnings,
             ),
             pending_event,
             "created" if is_new else "updated",

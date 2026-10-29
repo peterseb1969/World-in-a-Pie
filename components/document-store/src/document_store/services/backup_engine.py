@@ -853,6 +853,8 @@ class DirectRestoreEngine:
                     if entity_type == "templates":
                         await self._reporting_phase_structure(tgt)
 
+                await self._release_retired_synonyms(tgt)
+
                 # Count parity after the namespace's data is in: expected vs
                 # actual rows, bounded wait. Mismatch completes WITH a
                 # warning — never a hard fail (operator ruling).
@@ -1138,6 +1140,9 @@ class DirectRestoreEngine:
                         "re-qualified; run /maintenance/requalify-identity-synonyms",
                         target, requalified.errors,
                     )
+                # After the re-key: it registers the qualified form as a new,
+                # claimed synonym, which a retired document must not keep.
+                await self._release_retired_synonyms(target)
             raw_manifest = reader.read_manifest_raw()
             for src, target in mapping.items():
                 await self._record_provenance(target, src, manifest)
@@ -1599,7 +1604,14 @@ class DirectRestoreEngine:
             for entry in reader.read_entities("registry_entries", namespace=src):
                 syns = entry.get("synonyms")
                 if isinstance(syns, list) and syns:
-                    syn_by_old[entry.get("entry_id")] = syns
+                    # A synonym the archive holds inactive was released when
+                    # its entity was retired; /synonyms/add would claim it
+                    # again — and fail the restore if another archived entity
+                    # took the key since. It is not carried over.
+                    syn_by_old[entry.get("entry_id")] = [
+                        s for s in syns
+                        if not (isinstance(s, dict) and s.get("status") == "inactive")
+                    ]
             if not syn_by_old:
                 continue
 
@@ -1649,6 +1661,82 @@ class DirectRestoreEngine:
             "synonym_entity_type": entity_type,
             "synonym_composite_key": new_key,
         }
+
+    async def _retired_entry_ids(self, namespace: str) -> list[str]:
+        """The Registry entry IDs of the namespace's retired entities: documents
+        and templates with no active version, inactive terminologies, inactive
+        or deprecated terms."""
+        ids: list[str] = []
+        for entity_type, id_field in (("documents", "document_id"), ("templates", "template_id")):
+            db_name, coll_name = COLLECTION_MAP[entity_type]
+            async for row in self._mongo[db_name][coll_name].aggregate([
+                {"$match": {"namespace": namespace}},
+                {"$group": {
+                    "_id": f"${id_field}",
+                    "active": {"$max": {"$cond": [{"$eq": ["$status", "active"]}, 1, 0]}},
+                }},
+                {"$match": {"active": 0}},
+            ], allowDiskUse=True):
+                ids.append(row["_id"])
+        for entity_type, id_field, statuses in (
+            ("terminologies", "terminology_id", ["inactive"]),
+            ("terms", "term_id", ["inactive", "deprecated"]),
+        ):
+            db_name, coll_name = COLLECTION_MAP[entity_type]
+            async for row in self._mongo[db_name][coll_name].find(
+                {"namespace": namespace, "status": {"$in": statuses}}, {id_field: 1},
+            ):
+                ids.append(row[id_field])
+        return ids
+
+    async def _release_retired_synonyms(self, namespace: str) -> None:
+        """Release the synonyms of the entities the restored namespace holds
+        retired, as their stores would have when retiring them.
+
+        Rows arrive by direct writes, so no store saw a retirement. Archives
+        taken before retirement released synonyms carry every synonym active,
+        and the claim rebuild / synonym re-add claimed them: a retired entity
+        would again block another identity with the same spellings. Idempotent
+        — an entry with nothing left to release is unchanged. A failure is a
+        warning: the data is committed, and each store's
+        /maintenance/reconcile-synonym-lifecycle pass repairs it.
+        """
+        import httpx
+
+        url = f"{self._registry_url}/api/registry/entries/deactivate"
+        headers = {"X-API-Key": self._registry_api_key, "Content-Type": "application/json"}
+        ids: list[str] = []
+        released = 0
+        try:
+            ids = await self._retired_entry_ids(namespace)
+            if not ids:
+                return
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                for start in range(0, len(ids), 500):
+                    batch = ids[start:start + 500]
+                    resp = await client.post(
+                        url, json=[{"entry_id": i, "updated_by": "restore"} for i in batch],
+                        headers=headers,
+                    )
+                    if resp.status_code != 200:
+                        raise RestoreEngineError(f"{resp.status_code} — {resp.text}")
+                    released += sum(
+                        1 for r in resp.json().get("results", [])
+                        if r.get("status") == "deactivated"
+                    )
+        except Exception as e:
+            self._emit(
+                "warning",
+                f"[{namespace}] the synonyms of {len(ids) or 'the'} retired entities could "
+                f"not be released ({e}); they still block other identities with the same "
+                "keys until each store's /maintenance/reconcile-synonym-lifecycle runs",
+            )
+            return
+        if released:
+            self._emit(
+                "phase_synonyms",
+                f"[{namespace}] released the synonyms of {released} retired entities",
+            )
 
     async def _add_synonyms(
         self, namespace: str, items: list[dict[str, Any]]
@@ -2097,6 +2185,7 @@ class DirectRestoreEngine:
                     ).to_insert
                     if f.get("file_id")
                 )
+                await self._release_retired_synonyms(tgt)
                 await self._reporting_phase_counts(tgt, skip_documents=skip_documents)
                 # A merge adds to a namespace that already holds data, so its
                 # record says what arrived and under which policy, not that
@@ -3213,7 +3302,7 @@ class DirectRestoreEngine:
     ) -> list[dict[str, Any]]:
         """Derive the claim rows a batch of registry entries implies.
 
-        One per entry primary key, one per embedded synonym. Synonyms carry
+        One per entry primary key, one per active embedded synonym. Synonyms carry
         their own namespace/entity_type — a synonym may live in a different
         namespace than the entry it points at — so claims are keyed from the
         synonym's fields, not the owner's.
@@ -3238,7 +3327,9 @@ class DirectRestoreEngine:
                     "synonym",
                 )
                 for syn in entry.get("synonyms", [])
-                if isinstance(syn, dict)
+                # An inactive synonym belongs to a retired entity: recorded,
+                # but it holds no claim.
+                if isinstance(syn, dict) and syn.get("status") != "inactive"
             ]
             for ns, entity_type, key_hash, kind in pairs:
                 if not key_hash or not ns or not entity_type:

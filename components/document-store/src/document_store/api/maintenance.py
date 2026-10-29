@@ -9,6 +9,7 @@ from wip_auth import UserIdentity, check_namespace_permission, require_api_key
 
 from ..models.api_models import StrictModel
 from ..services.identity_migration import rehash_identities
+from ..services.synonym_lifecycle import reconcile_synonym_lifecycle
 from ..services.synonym_migration import requalify_identity_synonyms
 
 router = APIRouter(prefix="/maintenance", tags=["Maintenance"])
@@ -165,5 +166,78 @@ async def requalify_identity_synonyms_endpoint(
     await check_namespace_permission(identity, request.namespace, "admin")
     report = await requalify_identity_synonyms(
         namespace=request.namespace, dry_run=request.dry_run,
+    )
+    return report.to_dict()
+
+
+class ReconcileSynonymLifecycleRequest(StrictModel):
+    """One pass aligning the Registry's synonym state with documents' lifecycle."""
+
+    namespace: str
+    dry_run: bool = True
+    revive: bool = Field(
+        default=False,
+        description=(
+            "Also reclaim the released synonyms of every active document (a "
+            "revival whose Registry call failed). Applied only, never on a dry run."
+        ),
+    )
+
+
+class LifecycleItemResponse(BaseModel):
+    """One document the pass changed, or could not handle."""
+
+    entry_id: str = Field(description="The document_id (its Registry entry ID).")
+    status: Literal["released", "reclaimed", "not_reclaimed", "not_found", "error"]
+    keys: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="The synonyms released, reclaimed, or held by another entry.",
+    )
+    detail: str | None = None
+
+
+class ReconcileSynonymLifecycleResponse(BaseModel):
+    """The pass report. A dry run and an apply return the same shape."""
+
+    namespace: str
+    dry_run: bool
+    revive: bool
+    retired_scanned: int
+    released: int
+    active_scanned: int
+    reclaimed: int
+    not_reclaimed: int
+    unchanged: int
+    not_found: int
+    errors: int
+    items: list[LifecycleItemResponse] = Field(
+        description="Every document except the unchanged ones.",
+    )
+
+
+@router.post(
+    "/reconcile-synonym-lifecycle", response_model=ReconcileSynonymLifecycleResponse,
+)
+async def reconcile_synonym_lifecycle_endpoint(
+    request: ReconcileSynonymLifecycleRequest,
+    identity: UserIdentity = Depends(require_api_key),
+) -> dict:
+    """Release the Registry synonyms of retired documents.
+
+    A soft-deleted document's synonyms — its identity-values synonym and any
+    caller-added ones — are released: they stay recorded on its Registry entry
+    but neither block a different identity with the same spellings nor
+    resolve. Its canonical ID and identity keep resolving, so re-posting it
+    still revives it. Deletes and revivals do this as they happen; this pass
+    covers documents retired before that, and any delete whose Registry call
+    failed. With revive=true it also reclaims the synonyms of active
+    documents (a revival whose Registry call failed). Dry-run (the default)
+    only reports. Idempotent.
+
+    Requires admin permission on the namespace.
+    """
+    await check_namespace_permission(identity, request.namespace, "admin")
+    report = await reconcile_synonym_lifecycle(
+        namespace=request.namespace, dry_run=request.dry_run, revive=request.revive,
     )
     return report.to_dict()
