@@ -619,6 +619,10 @@ class DirectRestoreEngine:
         # dry run's per-type counts — the whole reason to ask — are gone by the
         # time it completes unless they are collected here.
         self.result: dict[str, Any] = {}
+        # Namespaces whose reporting batch sync this run has already
+        # triggered (the count phase). Reported on the complete event so the
+        # job's completion does not trigger a second, full re-sync of them.
+        self._reporting_synced: list[str] = []
         self._registry_url = registry_base_url or os.getenv(
             "REGISTRY_URL", "http://localhost:8001"
         )
@@ -859,7 +863,8 @@ class DirectRestoreEngine:
             if not skip_files and self._storage:
                 await self._restore_blobs(reader, targets[0][1])
 
-        self._emit("complete", "Restore complete", percent=100)
+        self.result["reporting_synced"] = list(self._reporting_synced)
+        self._emit("complete", "Restore complete", percent=100, details=self.result)
 
     # Documents are the only thing a merge resolves by policy. Definitions
     # (terminologies, terms, templates) are a precondition instead: a merge
@@ -2110,6 +2115,7 @@ class DirectRestoreEngine:
             if not skip_files and self._storage and inserted_file_ids:
                 await self._restore_blobs(reader, targets[0][1], only=inserted_file_ids)
 
+        self.result["reporting_synced"] = list(self._reporting_synced)
         self._emit("complete", "Merge complete", percent=100, details=self.result)
 
     def _build_merge_plan_inputs(
@@ -3526,7 +3532,8 @@ class DirectRestoreEngine:
             "phase_reporting_parity",
             f"[{namespace}] verifying reporting row-count parity",
         )
-        await self._reporting.trigger_batch_sync(namespace)
+        if await self._reporting.trigger_batch_sync(namespace):
+            self._reporting_synced.append(namespace)
         clock = asyncio.get_event_loop()
         started = last_change = clock.time()
         last_rows: int | None = None

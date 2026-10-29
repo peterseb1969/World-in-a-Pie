@@ -183,9 +183,15 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
             await job.set(fields)
             # One sync per namespace the restore WROTE — a multi-target fresh
             # restore (namespace_map with several targets) needs each target
-            # synced; job.namespace alone would cover only the first.
+            # synced; job.namespace alone would cover only the first. A plain
+            # or merge restore has already triggered and waited on the sync
+            # of each namespace in its count phase (listed in the complete
+            # event's reporting_synced); triggering again here re-synced every
+            # template from scratch — a second full pass per restore.
+            already = set((event.details or {}).get("reporting_synced") or [])
             for target in dict.fromkeys(job.namespaces or [job.namespace]):
-                _track(asyncio.ensure_future(_trigger_reporting_batch_sync(target)))
+                if target not in already:
+                    _track(asyncio.ensure_future(_trigger_reporting_batch_sync(target)))
             # And verify what was written. A restore validates nothing while
             # writing, so this is the only thing that would notice a dangling
             # reference or an identity hash that no longer matches its data.

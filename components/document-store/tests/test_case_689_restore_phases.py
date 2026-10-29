@@ -186,6 +186,22 @@ class TestCountParity:
         assert "still catching up after 0.1s" in warning
 
     @pytest.mark.asyncio
+    async def test_a_triggered_sync_is_recorded_for_the_completion(self):
+        eng = _engine(_reporting_stub(dict(CLEAN, ok=True)), [])
+        await eng._reporting_phase_counts("ns1", skip_documents=False)
+        assert eng._reporting_synced == ["ns1"]
+
+    @pytest.mark.asyncio
+    async def test_a_refused_trigger_is_not_recorded(self):
+        """The completion's own trigger is the second chance — a namespace
+        whose count-phase trigger failed must not be skipped there."""
+        stub = _reporting_stub(dict(CLEAN, ok=True))
+        stub.trigger_batch_sync = AsyncMock(return_value=False)
+        eng = _engine(stub, [])
+        await eng._reporting_phase_counts("ns1", skip_documents=False)
+        assert eng._reporting_synced == []
+
+    @pytest.mark.asyncio
     async def test_skip_documents_skips_count_phase(self):
         reporting = _reporting_stub(CLEAN)
         eng = _engine(reporting, [])

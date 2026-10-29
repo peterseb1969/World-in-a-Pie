@@ -508,6 +508,39 @@ class TestDryRunSideEffects:
             "target-a", "target-b",
         ]
 
+    async def test_namespaces_already_synced_by_the_count_phase_are_not_resynced(
+        self, fresh_job
+    ):
+        """CASE-967: a plain or merge restore triggers each namespace's batch
+        sync in its count phase and waits on it. Triggering again on
+        completion re-synced every template from scratch — the duplicate
+        second run observed after every large restore."""
+        fresh_job.kind = BackupJobKind.RESTORE
+        fresh_job.status = BackupJobStatus.RUNNING
+        fresh_job.options = {"dry_run": False}
+        fresh_job.namespace = "target-a"
+        fresh_job.namespaces = ["target-a", "target-b"]
+        await fresh_job.save()
+
+        with (
+            patch.object(
+                backup_service, "_trigger_reporting_batch_sync", new=AsyncMock()
+            ) as sync,
+            patch.object(
+                backup_service, "trigger_validation_for", new=AsyncMock()
+            ) as validate,
+        ):
+            await backup_service._persist_event(
+                fresh_job.job_id,
+                ProgressEvent(phase="complete", message="done", percent=100.0,
+                              details={"reporting_synced": ["target-a"]}),
+            )
+
+        # target-b's count phase did not trigger (reporting-sync unreachable,
+        # say): the completion still syncs it.
+        assert [c.args[0] for c in sync.call_args_list] == ["target-b"]
+        validate.assert_called_once()
+
     async def test_archive_finalize_preserves_concurrent_field_writes(
         self, fresh_job, tmp_path
     ):
