@@ -870,7 +870,11 @@ cards instead of the depth documents, and scripts do its bookkeeping.
 - **Compaction** keeps the session: the slim re-anchor hook prints the core
   card and the recorded phase instead of sending the agent to `/wip-wake`.
 - **Status line:** the recorded profile is shown next to the context figure;
-  `slim` turns red at 300k tokens used, `full` at 80%.
+  `slim` turns red at 300k tokens used, `full` at 80%. The tokens are what
+  the context holds now: `current_usage` when the harness sends it (Qwen
+  Code), else the fill percentage times the window (Claude Code). Qwen
+  Code's `total_input_tokens` is the sum over every request of the session
+  and would trip the 300k rule within a few dozen requests.
 
 The profile is recorded as `PROFILE` in `.claude/.app-meta` (every app now
 records it; existing apps get `PROFILE="full"`). A refresh keeps the recorded

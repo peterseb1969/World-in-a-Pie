@@ -180,7 +180,7 @@ def test_context_turns_red_from_80_percent(tmp_path):
         "\033[31mctx 80% (160k/200k)\033[0m"
     )
     assert line(root, {"context_window": {**window, "used_percentage": 79.4}}) == (
-        "ctx 79% (160k/200k)"
+        "ctx 79% (158k/200k)"
     )
     # Shown as 80%, so colored as 80%.
     assert line(root, {"context_window": {**window, "used_percentage": 79.6}}).startswith("\033[31m")
@@ -228,10 +228,29 @@ def test_slim_profile_warns_at_300k_tokens_whatever_the_percent(tmp_path):
     root = make_project(tmp_path)
     slim(root)
     size = 524288
-    assert line(root, {"context_window": {"used_percentage": 57.2, "total_input_tokens": 300000,
+    assert line(root, {"context_window": {"used_percentage": 57.3, "total_input_tokens": 300000,
                                           "context_window_size": size}}).startswith("slim \033[31m")
     assert line(root, {"context_window": {"used_percentage": 57.0, "total_input_tokens": 299000,
-                                          "context_window_size": size}}) == "slim ctx 57% (299k/524k)"
+                                          "context_window_size": size}}) == "slim ctx 57% (298k/524k)"
+
+
+def test_slim_profile_ignores_cumulative_input_tokens(tmp_path):
+    """Qwen Code's payload as captured: total_input_tokens sums every request of
+    the session, current_usage is what the context holds now. Reading the sum
+    fired the 300k stop rule at 6% full."""
+    root = make_project(tmp_path)
+    slim(root)
+    qwen = {"context_window": {"context_window_size": 524288, "used_percentage": 6.2,
+                               "remaining_percentage": 93.8, "current_usage": 32374,
+                               "total_input_tokens": 500296, "total_output_tokens": 3080}}
+    assert line(root, qwen) == "slim ctx 6% (32k/524k)"
+
+
+def test_without_percentage_or_current_usage_total_input_tokens_is_used(tmp_path):
+    root = make_project(tmp_path)
+    slim(root)
+    assert line(root, {"context_window": {"total_input_tokens": 100000,
+                                          "context_window_size": 200000}}) == "slim ctx 50% (100k/200k)"
 
 
 def test_slim_profile_does_not_warn_at_80_percent_of_a_small_window(tmp_path):

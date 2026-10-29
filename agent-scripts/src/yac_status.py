@@ -183,15 +183,27 @@ def age(seconds: int) -> str:
 
 
 def context_usage(payload: dict) -> tuple[float | None, int | None, int | None]:
-    """(percent used, tokens used, window size) from the status-line payload."""
+    """(percent used, tokens used, window size) from the status-line payload.
+
+    The tokens must be what the context holds NOW, because the slim stop rule
+    compares them with an absolute limit. `total_input_tokens` is not that in
+    every harness: Qwen Code sends the sum over every request of the session
+    (500k at 6% full), so it is the last resort. In order: `current_usage`
+    when it is a number (Qwen Code), else the harness's own fill percentage
+    times the window size (Claude Code), else `total_input_tokens`.
+    """
     window = payload.get("context_window") or {}
     used = window.get("used_percentage")
-    tokens = window.get("total_input_tokens")
     size = window.get("context_window_size")
+    current = window.get("current_usage")
+    if isinstance(current, (int, float)) and not isinstance(current, bool):
+        tokens = int(current)
+    elif used is not None and size:
+        tokens = int(used * size / 100)
+    else:
+        tokens = window.get("total_input_tokens")
     if used is None and tokens and size:
         used = tokens * 100 / size
-    if tokens is None and used is not None and size:
-        tokens = int(used * size / 100)
     return used, tokens, size
 
 
