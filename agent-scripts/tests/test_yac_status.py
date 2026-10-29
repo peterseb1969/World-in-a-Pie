@@ -351,3 +351,27 @@ def test_prose_ending_in_a_wip_word_is_not_a_command(tmp_path):
     prompt(root, "/wip-case read 973")
     prompt(root, "the list page of\nwip-cooking is slow")
     assert "CASE-973" not in line(root)
+
+
+def test_qwen_shell_tool_records_a_closed_case(tmp_path):
+    """Captured from Qwen Code 0.26.2: the shell tool is run_shell_command, the
+    command line is tool_input.command, as with Claude Code's Bash."""
+    root = make_project(tmp_path)
+    prompt(root, "/wip-case implement 973")
+    assert run(root, "hook", {
+        "hook_event_name": "PostToolUse", "tool_name": "run_shell_command",
+        "tool_input": {"command": "kbc kb-write.py CASE_RECORD --patch status=implemented "
+                                  "--match case_number=973",
+                       "description": "Mark CASE-973 implemented"},
+    }).returncode == 0
+    assert "implemented CASE-973" in line(root)
+
+
+def test_qwen_skill_tool_shows_the_skill(tmp_path):
+    """Captured from Qwen Code 0.26.2: the skill tool is `skill`, its input is
+    {"skill": "wip-case"} with no args, so the line shows the skill's name."""
+    root = make_project(tmp_path)
+    assert run(root, "hook", {
+        "hook_event_name": "PreToolUse", "tool_name": "skill", "tool_input": {"skill": "wip-case"},
+    }).returncode == 0
+    assert "wip-case" in line(root)

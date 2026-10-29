@@ -878,7 +878,10 @@ cards instead of the depth documents, and scripts do its bookkeeping.
   part reads Qwen Code's prompt hook too: Qwen sends a slash command
   expanded into the command's text with the typed command as the last line,
   and fires the hook with an empty prompt on its own turns, which no longer
-  clears the activity.
+  clears the activity. Qwen Code's tool hooks are recognised as well
+  (`skill`, `run_shell_command` next to Claude Code's `Skill`, `Bash`); a
+  skill Qwen's agent calls itself shows by name only, since Qwen sends no
+  arguments with it.
 
 The profile is recorded as `PROFILE` in `.claude/.app-meta` (every app now
 records it; existing apps get `PROFILE="full"`). A refresh keeps the recorded
