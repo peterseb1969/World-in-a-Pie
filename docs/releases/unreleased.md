@@ -657,6 +657,75 @@ template the document comes back in place, at the same version. PATCH on a
 deleted document still answers `not_found`: bringing a document back takes
 a full re-post.
 
+### A retired entity releases its synonyms; a soft-deleted document no longer blocks a new identity
+
+A soft-deleted document kept its Registry synonyms claimed. A new document
+whose identity spellings matched it, but whose identity resolved differently,
+was refused with `Composite key already registered under different entry`.
+The typical case is a term identity field whose term was hard-deleted and
+re-created. Deleting the documents too worked only in a `deletion_mode: full`
+namespace.
+
+Retiring an entity now releases its synonyms. Retiring means:
+- soft-deleting a document or a term;
+- deprecating a term;
+- soft-deleting a terminology, which retires its terms with it;
+- deactivating the last active version of a template.
+
+A released synonym stays recorded on the entity's Registry entry with
+`status: "inactive"`. It no longer resolves, and it no longer blocks another
+entity from registering the same key.
+
+What is not released:
+- the entity's canonical ID;
+- its primary key;
+- its own `{ns, type, …}` value synonym.
+
+So a retired entity stays addressable by ID and by value, and re-posting a
+deleted document's identity still revives it.
+
+Reviving an entity claims its synonyms again. Reviving means:
+- re-posting a document's identity;
+- reactivating, re-posting or activating a template version;
+- restoring a terminology.
+
+A synonym that another entity took in the meantime stays with that entity.
+The revived document's write result carries a warning naming the holder.
+
+**Registry:**
+- `POST /api/registry/entries/deactivate` (with `dry_run`) and
+  `/entries/reactivate` are new. They are bulk and privileged, and the stores
+  call them.
+- Lookups, `/resolve`, search and registration dedup ignore inactive
+  synonyms.
+- A merge moves an inactive synonym as a record only. It never takes over
+  the claim, which may belong to another entry by then.
+- A term merge does not release the absorbed term's synonyms: they move to
+  the survivor and stay live.
+
+**Restores:**
+- Every restore mode ends by releasing the synonyms of the entities it
+  restored as retired. This also covers archives taken before this change.
+- An id-preserving restore claims no inactive synonym.
+- A fresh restore does not re-add a synonym the archive holds inactive. On
+  that path the record of an already-released synonym is not carried over.
+- `/maintenance/requalify-identity-synonyms` keeps a retired document's
+  synonym released in its new qualified form.
+
+**Action:** documents, templates and vocabularies retired before this release
+still hold their synonyms. Run the new pass per namespace, dry run first:
+`POST /maintenance/reconcile-synonym-lifecycle` with
+`{"namespace": …, "dry_run": true}`. It exists on document-store,
+template-store and def-store, and requires namespace admin. `revive: true`
+also reclaims the synonyms of active entities; it is applied only, never on a
+dry run.
+
+A failed Registry call during a delete or revival does not fail the write:
+- document-store reports it as a warning on the item;
+- template-store and def-store log it.
+
+The pass repairs both.
+
 ### Merge and fresh restores stream the documents
 
 Only a plain `restore` streamed the archive. A `merge` and a `fresh` restore

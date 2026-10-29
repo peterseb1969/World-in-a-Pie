@@ -226,6 +226,12 @@ retired years later. Historical data never breaks.
 WIP enforces this: inactive terms are rejected in new documents (only active
 terms match during validation). You do not need to check term status yourself.
 
+A retired entity gives up its synonyms: they stay recorded on it but neither
+resolve nor block another entity from registering them. Its canonical ID and
+its value keep resolving. A soft-deleted document therefore no longer blocks a
+different document whose identity spellings match it, and re-posting the
+deleted document's own identity still brings it back.
+
 ## Identity & Versioning
 
 ### Templates: Multiple Active Versions Coexist
@@ -634,6 +640,15 @@ only ever returns an entity of the namespace and type it asked for.
   synonyms, matching the identity rule (identity is scoped to the template).
 - Keys starting with "@" are reserved for these system-generated synonyms;
   only system callers may register them.
+- Retiring an entity (soft-deleting a document or term, deprecating a term,
+  deactivating every version of a template or a terminology) releases its
+  synonyms: they stay recorded on the entry as inactive, but neither resolve
+  nor block another entity from registering the same key. What stays is the
+  entity's canonical ID, its primary key and its own {ns, type, …} value
+  synonym, so it remains addressable and a re-post of the same identity
+  revives it. A revived entity claims its synonyms again; one that another
+  entity took in the meantime stays with that entity, and the revival returns
+  a warning naming it.
 
 ## Ontology Relations
 Terms can be connected via typed relations:
