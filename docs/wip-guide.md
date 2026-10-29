@@ -144,6 +144,8 @@ Networking is where most operator failures happen. The three callouts below prev
 
 > **The hostname and HTTPS port you install with become Dex's issuer URL, and every token's `iss` claim. Choose them once, as the name browsers will actually use.**
 >
+> That is why `wip-deploy install` requires `--hostname` for `--target compose` and `--target k8s`: there is no default to fall back on silently. Only `--target dev` defaults it, to `localhost`. The preview verbs (`validate`, `show-spec`, `render`) still use the placeholder `wip.local` when it is omitted.
+>
 > `wip-deploy` derives all of a service's token-validation settings from that one value, so they cannot drift apart. Never set them by hand: every apply re-renders them.
 >
 > | Setting | Rendered as | Example |
@@ -269,7 +271,7 @@ Several keys are more comfortably declared in a file than in repeated
 `--api-key` JSON — reviewable and diffable deployer input:
 
 ```bash
-wip-deploy install --api-keys-file keys.yaml
+wip-deploy install --hostname wip.example.com --api-keys-file keys.yaml
 # keys.yaml: a list under a top-level `keys:` (or a bare list) —
 # each entry {name, namespaces, grants, owner?, groups?}.
 # File entries merge with any --api-key values.

@@ -31,7 +31,7 @@ from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.config_gen.api_keys import effective_api_keys
 from wip_deploy.config_gen.dex import dex_password_secret
 from wip_deploy.config_gen.spec_context import make_spec_context
-from wip_deploy.discovery import discover, find_repo_root
+from wip_deploy.discovery import Discovery, discover, find_repo_root
 from wip_deploy.export_ca import (
     TRUST_INSTRUCTIONS,
     ExportCAError,
@@ -257,10 +257,40 @@ def _hostname_opt() -> typer.models.OptionInfo:
         "--hostname",
         help=(
             "External hostname as seen by browsers. Defaults to "
-            "'localhost' when --target dev (no /etc/hosts magic) and "
-            "'wip.local' otherwise."
+            "'localhost' when --target dev (no /etc/hosts magic). `install` "
+            "requires it for compose and k8s; validate, show-spec and render "
+            "preview with 'wip.local'."
         ),
     )
+
+
+def _discover_or_exit(root: Path) -> Discovery:
+    """Discover the manifests under `root`, or stop naming the cause.
+
+    Every verb that builds or renders a spec goes through here, so a wrong
+    root fails the same way everywhere. Zero components AND zero apps is
+    never a real WIP checkout: `find_repo_root` falls back to any `.git`, so
+    run from another repository it "succeeds" with that repository, and
+    without this check validation reports every preset module as an
+    unknown component (known: []) — errors that point at the wrong layer.
+    """
+    discovery = discover(root)
+    if not discovery.ok:
+        typer.echo("manifest discovery errors:", err=True)
+        for err in discovery.errors:
+            typer.echo(f"  - {err}", err=True)
+        raise typer.Exit(1)
+    if not discovery.components and not discovery.apps:
+        typer.echo(
+            f"error: discovery found no components/apps under {root} — "
+            "this is not a World-in-a-Pie checkout. Run from the WIP "
+            "repo root, pass --repo-root <path> (or set WIP_REPO_ROOT), "
+            "or re-run `wip-deploy install` to stamp the checkout into "
+            "the deployer-state.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    return discovery
 
 
 def _resolve_hostname(hostname: str | None, target: str) -> str:
@@ -268,8 +298,9 @@ def _resolve_hostname(hostname: str | None, target: str) -> str:
 
     - target=dev defaults to 'localhost' (browser-reachable on the
       same machine, no /etc/hosts entry required).
-    - target=compose|k8s defaults to 'wip.local' for backwards
-      compatibility (operator typically picks a real hostname).
+    - target=compose|k8s defaults to 'wip.local', for the preview verbs
+      (validate, show-spec, render) only; `install` refuses to run
+      without an explicit --hostname there.
 
     An explicit --hostname always overrides.
     """
@@ -1096,13 +1127,13 @@ def install(
       wip-deploy install --target dev --app-source react-console=$HOME/Dev/WIP-ReactConsole
 
       # Deploy everything at one tag (--tag overrides manifest pins)
-      wip-deploy install --tag 20260610a --registry ghcr.io/you
+      wip-deploy install --hostname wip.example.com --tag 20260610a --registry ghcr.io/you
 
       # Override the tag for a single service (beats --tag and pins)
-      wip-deploy install --tag 20260610a --image-tag registry=20260611-fix
+      wip-deploy install --hostname wip.example.com --tag 20260610a --image-tag registry=20260611-fix
 
       # Render against K8s instead of compose
-      wip-deploy install --target k8s --namespace wip --tls external
+      wip-deploy install --target k8s --namespace wip --hostname wip.example.com --tls external
 
     Run 'wip-deploy examples' for more workflows.
     """
@@ -1113,6 +1144,9 @@ def install(
         )
         raise typer.Exit(2)
 
+    # Checked after the existing-install guard below, whose "use redeploy"
+    # message is the better answer for a re-run over a live install.
+    hostname_missing = hostname is None and target != "dev"
     hostname = _resolve_hostname(hostname, target)
     namespace = _resolve_namespace(name, target=target, namespace=namespace)
     name = _resolve_name(name, target=target, namespace=namespace)
@@ -1176,6 +1210,20 @@ def install(
                 dropped_modules=dropped_modules,
                 drifted=drifted,
             )
+
+    if hostname_missing:
+        # The hostname is identity: it is the Ingress host, Dex's issuer and
+        # every service's token issuer, and the TLS certificate's SAN. A
+        # silent placeholder gives an install that looks healthy and cannot
+        # be logged into from the name the operator actually uses.
+        typer.echo(
+            f"error: --hostname is required for --target {target}: it becomes "
+            "the Ingress host, the OIDC issuer and the TLS certificate's name, "
+            "so it must be the name browsers use (e.g. --hostname "
+            "wip.example.org). Only --target dev defaults it (to localhost).",
+            err=True,
+        )
+        raise typer.Exit(2)
 
     _validate_or_exit(deployment, components, apps_list)
 
@@ -2315,26 +2363,7 @@ def _load_and_discover_for_mutation(
             typer.echo(f"error: {e}", err=True)
             raise typer.Exit(1) from e
 
-    discovery = discover(root)
-    if not discovery.ok:
-        typer.echo("manifest discovery errors:", err=True)
-        for err in discovery.errors:
-            typer.echo(f"  - {err}", err=True)
-        raise typer.Exit(1)
-
-    # CASE-459: zero components AND zero apps is never a real WIP
-    # checkout — fail naming the cause instead of letting validation
-    # spew per-item spec errors that point at the wrong layer.
-    if not discovery.components and not discovery.apps:
-        typer.echo(
-            f"error: discovery found no components/apps under {root} — "
-            "this is not a World-in-a-Pie checkout. Run from the WIP "
-            "repo root, pass --repo-root <path> (or set WIP_REPO_ROOT), "
-            "or re-run `wip-deploy install` to stamp the checkout into "
-            "the deployer-state.",
-            err=True,
-        )
-        raise typer.Exit(1)
+    discovery = _discover_or_exit(root)
 
     # The resolved root rides along so the verb's persist re-stamps it —
     # a successful mutation heals a pre-CASE-459 (unstamped) state file.
@@ -5311,10 +5340,10 @@ DEV LOOP — hot-reload an app from a local checkout
       --app-source clintrial=$HOME/Dev/WIP-ClinTrial
 
   Deploy every WIP-built image at one tag (--tag overrides manifest pins):
-    wip-deploy install --tag 20260610a --registry ghcr.io/you
+    wip-deploy install --hostname wip.example.com --tag 20260610a --registry ghcr.io/you
 
   Override the tag for a single service (beats --tag and manifest pins):
-    wip-deploy install --tag 20260610a --image-tag registry=20260611-fix
+    wip-deploy install --hostname wip.example.com --tag 20260610a --image-tag registry=20260611-fix
 
 CHANGING AN EXISTING INSTALL
   Re-import a source edit in dev mode (process bounce only):
@@ -5340,10 +5369,10 @@ SECURITY — before exposing an install
 
 DURABLE API KEYS — survive MongoDB wipe-restore (console-minted keys do not)
   Declare a key with write grants on the deployment:
-    wip-deploy install --api-key '{"name": "web-yac", "namespaces": ["kb"], "grants": {"kb": "write"}}'
+    wip-deploy install --hostname wip.example.com --api-key '{"name": "web-yac", "namespaces": ["kb"], "grants": {"kb": "write"}}'
 
   Same, from a reviewable YAML/JSON file (merges with --api-key):
-    wip-deploy install --api-keys-file keys.yaml
+    wip-deploy install --hostname wip.example.com --api-keys-file keys.yaml
 
   Rotate a declared key (names the secret file holding the new value;
   --show-key also prints it; no grace window):
@@ -5374,7 +5403,7 @@ KUBERNETES
     wip-deploy render --target k8s --namespace wip --preset standard
 
   Install against a real cluster (needs kubectl context set):
-    wip-deploy install --target k8s --namespace wip --tls external
+    wip-deploy install --target k8s --namespace wip --hostname wip.example.com --tls external
 
 PAUSE / RESUME (zero-delete halt — keeps every object and all data)
   Stop a running install without deleting anything:
@@ -5629,12 +5658,7 @@ def _assemble(
         return deployment, [], []
 
     # Discover
-    discovery = discover(root)
-    if not discovery.ok:
-        typer.echo("manifest discovery errors:", err=True)
-        for err in discovery.errors:
-            typer.echo(f"  - {err}", err=True)
-        raise typer.Exit(1)
+    discovery = _discover_or_exit(root)
 
     _warn_unmatched_tag_overrides(deployment, discovery.components, discovery.apps)
 
@@ -6012,12 +6036,7 @@ def _do_status_diff(install_dir: Path, namespace_override: str | None) -> None:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(1) from e
 
-    discovery = discover(root)
-    if not discovery.ok:
-        typer.echo("manifest discovery errors:", err=True)
-        for err in discovery.errors:
-            typer.echo(f"  - {err}", err=True)
-        raise typer.Exit(1)
+    discovery = _discover_or_exit(root)
 
     secrets = _ensure_secrets_via_spec(
         deployment, discovery.components, discovery.apps

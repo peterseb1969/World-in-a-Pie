@@ -447,6 +447,29 @@ class ImagesSpec(WIPModel):
     tag_overrides: dict[str, str] = Field(default_factory=dict)
     pull_policy: Literal["always", "if-not-present"] = "if-not-present"
 
+    @field_validator("registry")
+    @classmethod
+    def _registry_is_an_image_prefix(cls, value: str | None) -> str | None:
+        # Images are `{registry}/{name}:{tag}`. A URL scheme or a trailing
+        # slash makes that an invalid image reference, which would only
+        # surface as every pod failing to pull. A port is not a scheme:
+        # `localhost:5000/x` is a valid prefix.
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if "://" in cleaned:
+            cleaned = cleaned.split("://", 1)[1]
+        cleaned = cleaned.rstrip("/")
+        if cleaned != value:
+            raise ValueError(
+                f"registry {value!r} is not an image prefix — images are "
+                f"<registry>/<name>:<tag>, so no URL scheme, trailing slash or "
+                f"spaces: use {cleaned!r}"
+            )
+        if not cleaned:
+            raise ValueError("registry must not be empty; omit it to build or pull by name")
+        return value
+
 
 # ────────────────────────────────────────────────────────────────────
 # Platform (per-target)

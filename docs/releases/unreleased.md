@@ -500,6 +500,16 @@ twice), a path the document-store does not serve.
 active after an overwrite merge) pass `older_versions: keep`. Apps re-vendor
 `wip-client-0.65.0.tgz` to get the typed option.
 
+### `wip-deploy install`: a wrong repo root, a registry URL and a missing `--hostname` stop with the cause
+
+One k8s install hit three silent defaults at once:
+
+- **Wrong repository root.** Run from another git repository, `install` (and every verb that builds a fresh spec, such as `validate` and `render`) took that repository as the WIP checkout. Validation then reported every preset module as `unknown component (known: [])`. These verbs now stop with the same message the additive verbs already gave: `discovery found no components/apps under <root> — this is not a World-in-a-Pie checkout`, followed by the ways to point at the right one. The check is one helper shared by every path.
+- **Registry with a scheme.** `--registry https://ghcr.io/x` was taken verbatim, and every image reference (`<registry>/<name>:<tag>`) would have failed to pull. `images.registry` now refuses a URL scheme, a trailing slash or surrounding spaces, naming the value to use (`use 'ghcr.io/x'`). A port is fine: `localhost:5000/x`. Saved specs are checked when they load.
+- **No `--hostname`.** `install --target compose|k8s` silently used `wip.local` as the Ingress host, the OIDC issuer and the TLS certificate's name. The result was an install that looked healthy and could not be logged into. It is now refused. `--target dev` keeps `localhost`, and the preview verbs keep `wip.local`. A re-run over an existing install still shows the existing-install guard first; `--reconcile` without `--hostname` is refused too, so a reconcile cannot move a live install to the placeholder.
+
+**Action:** scripts that run `wip-deploy install` on compose or k8s without `--hostname` now pass it explicitly. Fix any `--registry` value with `https://` or a trailing `/`.
+
 ### Dex users keep their existing passwords: `user add --password-hash-file`, `user import`
 
 Every redeploy-family verb renders Dex's users from the spec, so users

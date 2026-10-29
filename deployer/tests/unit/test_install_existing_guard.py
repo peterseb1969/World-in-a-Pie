@@ -261,6 +261,9 @@ class TestInstallExistingGuardCLI:
                 "--name", "guard-test",
                 "--install-dir", str(tmp_path),
                 "--reconcile",
+                # --hostname is required on compose (CASE-962); the saved one
+                # keeps this a reconcile of the same identity.
+                "--hostname", "cloud.example.com",
                 # no --registry → validation error, proving we got past the guard
             ],
         )
