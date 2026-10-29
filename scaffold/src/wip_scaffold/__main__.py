@@ -28,6 +28,7 @@ from .surfaces import (
     bootstrap_surface,
     client_lib_surface,
     env_surface,
+    lockfile_surface,
     mcp_json_surface,
     query_scaffold_surfaces,
     toolkit_surface,
@@ -74,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--lib-proxy", default="")
     a.add_argument("--toolkit-wheel", default="")
     a.add_argument("--archive-wheel", default="")
+    a.add_argument("--lockfile-from", default="")
     a.add_argument("--write-env", action="store_true")
     _add_mcp_args(a)
 
@@ -126,6 +128,10 @@ def main(argv: list[str] | None = None) -> int:
                           ("proxy", args.lib_proxy)):
             if path:
                 surfaces.append(client_lib_surface(lib, path))
+        if args.lockfile_from:
+            surfaces.append(lockfile_surface(
+                args.lockfile_from,
+                [p for p in (args.lib_client, args.lib_react, args.lib_proxy) if p]))
         if args.toolkit_wheel:
             surfaces.append(toolkit_surface(args.toolkit_wheel))
         if args.archive_wheel:

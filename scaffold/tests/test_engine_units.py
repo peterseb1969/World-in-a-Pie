@@ -455,6 +455,114 @@ def test_client_lib_invalid_dist_refuses_whole_lib_set(tmp_path):
     assert _tree(app) == before
 
 
+def _sri(data: bytes) -> str:
+    import base64
+    import hashlib
+
+    return "sha512-" + base64.b64encode(hashlib.sha512(data).digest()).decode()
+
+
+def _stage_lockfile(stage: Path, tgz: Path, integrity: str) -> None:
+    # What `npm install --package-lock-only ./libs/<tgz>` leaves in the stage.
+    stage.mkdir(parents=True, exist_ok=True)
+    spec = f"file:libs/{tgz.name}"
+    (stage / "package.json").write_text(_json.dumps({"dependencies": {"@wip/client": spec}}))
+    (stage / "package-lock.json").write_text(_json.dumps({"packages": {
+        "": {"dependencies": {"@wip/client": spec}},
+        "node_modules/@wip/client": {"resolved": spec, "integrity": integrity},
+    }}))
+
+
+def test_lockfile_written_with_the_tarballs(tmp_path):
+    from wip_scaffold.surfaces import client_lib_surface, lockfile_surface
+
+    tgz = tmp_path / "wip-client-2.0.0.tgz"
+    _make_tgz(tgz, with_dist=True)
+    stage = tmp_path / "stage"
+    _stage_lockfile(stage, tgz, _sri(tgz.read_bytes()))
+    app = tmp_path / "app"
+    (app / "libs").mkdir(parents=True)
+    (app / "package.json").write_text('{"dependencies": {"@wip/client": "file:libs/wip-client-1.0.0.tgz"}}')
+    run_surfaces([client_lib_surface("client", str(tgz)), lockfile_surface(str(stage), [str(tgz)])],
+                 Context(wip_root=REPO_ROOT, target_root=app))
+    assert (app / "package.json").read_bytes() == (stage / "package.json").read_bytes()
+    assert (app / "package-lock.json").read_bytes() == (stage / "package-lock.json").read_bytes()
+    assert (app / "libs/wip-client-2.0.0.tgz").exists()
+
+
+def test_lockfile_integrity_mismatch_refuses_whole_refresh(tmp_path):
+    # npm can satisfy a file: spec from a stale cache entry when a library's
+    # content changed without a version bump; the lockfile then records the
+    # wrong hash and `npm ci` fails with EINTEGRITY. The sync used to detect
+    # this only after the tarballs were swapped and package.json rewritten.
+    from wip_scaffold.surfaces import client_lib_surface, lockfile_surface
+
+    tgz = tmp_path / "wip-client-2.0.0.tgz"
+    _make_tgz(tgz, with_dist=True)
+    stage = tmp_path / "stage"
+    _stage_lockfile(stage, tgz, _sri(b"stale cached bytes"))
+    app = tmp_path / "app"
+    (app / "libs").mkdir(parents=True)
+    _make_tgz(app / "libs/wip-client-1.0.0.tgz", with_dist=True)
+    (app / "package.json").write_text('{"dependencies": {"@wip/client": "file:libs/wip-client-1.0.0.tgz"}}')
+    before = _tree(app)
+    with pytest.raises(RuntimeError, match="integrity does not match"):
+        run_surfaces([client_lib_surface("client", str(tgz)), lockfile_surface(str(stage), [str(tgz)])],
+                     Context(wip_root=REPO_ROOT, target_root=app))
+    assert _tree(app) == before
+
+
+def test_lockfile_unchanged_files_are_not_rewritten(tmp_path):
+    from wip_scaffold.surfaces import lockfile_surface
+
+    tgz = tmp_path / "wip-client-2.0.0.tgz"
+    _make_tgz(tgz, with_dist=True)
+    stage = tmp_path / "stage"
+    _stage_lockfile(stage, tgz, _sri(tgz.read_bytes()))
+    app = tmp_path / "app"
+    app.mkdir()
+    for f in ("package.json", "package-lock.json"):
+        (app / f).write_bytes((stage / f).read_bytes())
+    log = run_surfaces([lockfile_surface(str(stage), [str(tgz)])],
+                       Context(wip_root=REPO_ROOT, target_root=app))
+    assert log == []
+
+
+@pytest.mark.skipif(__import__("shutil").which("npm") is None, reason="npm not installed")
+def test_lockfile_surface_accepts_real_npm_output(tmp_path):
+    # Pins the shape the surface reads (packages[...].resolved == "file:libs/<tgz>",
+    # integrity = sha512 SRI of the file) against what npm actually writes for
+    # the wrapper's `npm install --package-lock-only ./libs/<tgz>`.
+    import subprocess
+
+    from wip_scaffold.surfaces import lockfile_surface
+
+    tgz = tmp_path / "src" / "wip-client-2.0.0.tgz"
+    tgz.parent.mkdir()
+    import io
+    import tarfile
+    with tarfile.open(tgz, "w:gz") as tf:
+        for name, data in (("package/package.json", b'{"name": "@wip/client", "version": "2.0.0"}'),
+                           ("package/dist/index.js", b"module.exports={}")):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    stage = tmp_path / "stage"
+    (stage / "libs").mkdir(parents=True)
+    (stage / "package.json").write_text('{"name": "probe", "version": "1.0.0", "private": true}')
+    (stage / "libs" / tgz.name).write_bytes(tgz.read_bytes())
+    subprocess.run(["npm", "install", "--package-lock-only", "--offline", f"./libs/{tgz.name}",
+                    "--no-audit", "--no-fund", "--loglevel=error"],
+                   cwd=stage, check=True, capture_output=True, timeout=120)
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "package.json").write_text('{"name": "probe", "version": "1.0.0", "private": true}')
+    run_surfaces([lockfile_surface(str(stage), [str(tgz)])],
+                 Context(wip_root=REPO_ROOT, target_root=app))
+    lock = _json.loads((app / "package-lock.json").read_text())
+    assert lock["packages"]["node_modules/@wip/client"]["integrity"] == _sri(tgz.read_bytes())
+
+
 def test_toolkit_wheel_copies(tmp_path):
     from wip_scaffold.surfaces import toolkit_surface
 

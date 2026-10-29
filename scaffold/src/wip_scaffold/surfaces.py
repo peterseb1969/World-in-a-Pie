@@ -3,9 +3,10 @@
 All file surfaces live here: content propagation (CLAUDE.md, settings,
 commands, playbooks, reference docs, hook, wake-rollover, session-role,
 app-meta), .mcp.json, distribution (client-lib tarballs, toolkit wheel,
-bootstrap templates, query preset), and .env. ACTIONS — anything with an
-external side effect (venv bootstrap, enable_kb, the namespace upsert,
-npm/wheel builds, the lockfile sync, git init) — stay in the bash
+bootstrap templates, query preset, the synced lockfile), and .env.
+ACTIONS — anything with an external side effect (venv bootstrap,
+enable_kb, the namespace upsert, npm/wheel builds, the npm run behind the
+lockfile sync, git init) — stay in the bash
 wrappers permanently; the boundary rule is in the design doc §3b: if it
 can't be expressed as "write these bytes under this policy", it's an
 action. Create-only surfaces (bootstrap, query preset, .env) are
@@ -404,6 +405,56 @@ def client_lib_surface(lib: str, tarball_path: str) -> Surface:
         policy=Policy.REGENERATE,
         rationale="stale versioned tarballs are wiped so the app's libs/*.tgz install glob resolves to exactly one file; same-name-different-content is fatal (lockfile pins content hashes)",
         wipe_glob=f"libs/wip-{lib}-*.tgz",
+        produce=produce,
+    )
+
+
+def lockfile_surface(stage_dir: str, tarball_paths: list[str]) -> Surface:
+    """The app's package.json + package-lock.json, re-pointed at the shipped
+    tarballs. The wrapper runs `npm install --package-lock-only` on a staged
+    copy of the two files (an npm ACTION, against a temp dir, never the app);
+    this surface verifies the result and writes it in the same apply phase as
+    the tarballs — so a refresh can never leave new tarballs beside a
+    package.json naming the deleted ones, nor the reverse.
+
+    The integrity check is why npm's result is not trusted blindly: npm can
+    satisfy a `file:` spec from a stale cache entry, which happens exactly
+    when a library's content changed without a version bump (the
+    immutable-tarball rule). The lockfile must record the hash of the bytes
+    actually shipped, or `npm ci` fails with EINTEGRITY in the app's build."""
+
+    def produce(ctx: Context) -> dict[str, bytes]:
+        import base64
+        import hashlib
+
+        stage = Path(stage_dir)
+        lock_bytes = (stage / "package-lock.json").read_bytes()
+        packages = json.loads(lock_bytes).get("packages", {})
+        for tb in map(Path, tarball_paths):
+            spec = f"file:libs/{tb.name}"
+            entries = [e for e in packages.values() if e.get("resolved") == spec]
+            if not entries:
+                continue  # the app does not depend on this library
+            want = "sha512-" + base64.b64encode(hashlib.sha512(tb.read_bytes()).digest()).decode()
+            if any(e.get("integrity") != want for e in entries):
+                raise RuntimeError(
+                    f"{tb.name}: the synced lockfile's integrity does not match the shipped "
+                    f"file. The library's content changed without a version bump (versioned "
+                    f"tarballs are immutable). Bump the version in the lib's package.json, "
+                    f"npm pack, commit the new tarball, then re-run this script."
+                )
+        out: dict[str, bytes] = {}
+        for rel, data in (("package.json", (stage / "package.json").read_bytes()),
+                          ("package-lock.json", lock_bytes)):
+            current = ctx.target_root / rel
+            if not current.is_file() or current.read_bytes() != data:
+                out[rel] = data
+        return out
+
+    return Surface(
+        name="lockfile",
+        policy=Policy.REGENERATE,
+        rationale="package.json and the lockfile name the vendored tarballs by filename and content hash; written with the tarballs or not at all, and only when the staged lockfile records the shipped bytes",
         produce=produce,
     )
 
