@@ -105,6 +105,11 @@
  *     documents, files), deletion_mode (retain | full). Anything else fails
  *     the bootstrap before the first write. Omitted keys get the platform
  *     defaults: open, [], UUID7 everywhere, retain.
+ *   - A prefixed id_config's prefix must be unique on the install: IDs share
+ *     one space across all namespaces and entity types, so a second user of
+ *     a prefix mints duplicates and its writes fail. The config is applied
+ *     to every namespace this app bootstraps — a dev and a deployed
+ *     namespace on one install must not share a literal prefix here.
  *   - The config is sent with the namespace upsert on every bootstrap run.
  *     A run only ever reaches a namespace with no documents (runBootstrap
  *     refuses 'ready' and 'resume_blocked'), so it never changes a

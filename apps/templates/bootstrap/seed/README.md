@@ -18,6 +18,14 @@ shipped changes nothing.
   `{"algorithm": "prefixed", "prefix": "DOC-", "pad": 6}` or another
   algorithm), `deletion_mode` (`retain` | `full`). Any other key fails the
   bootstrap before its first write. JSON has no comments; keep notes here.
+- **A prefix must be unique on the install.** The Registry's IDs share one
+  space across every namespace and entity type, so two namespaces (or two
+  entity types) with the same `prefixed` prefix mint the same IDs, and the
+  second one's writes fail with a duplicate-key error. Every namespace this
+  file is applied to gets the same `id_config`: an app whose dev namespace
+  and deployed namespace share an install must not put a literal prefix
+  here. Keep the default (UUID7) in that case, and give each entity type
+  its own prefix wherever you do use one.
 - **`authored_as`** is the namespace the seeds were written in (the dev
   namespace). Replace `TODO_APP_NAMESPACE`, as in the server template.
 - **One role keeps the flat seed dirs** (`server/seed/templates/…`). With
