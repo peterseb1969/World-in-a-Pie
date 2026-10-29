@@ -500,6 +500,11 @@ twice), a path the document-store does not serve.
 active after an overwrite merge) pass `older_versions: keep`. Apps re-vendor
 `wip-client-0.65.0.tgz` to get the typed option.
 
+### A restore keeps document-store responsive while it plans; identity synonyms re-qualify in batches
+
+- **Planning off the event loop.** A merge restore, dry run included, read and planned the whole archive synchronously on document-store's event loop, in two full passes. The single worker then answered nothing, `/livez` included, for as long as planning took: about 45 minutes on a 463,529-version archive before CASE-959. A fresh restore's planner did the same per entity type. These passes now run on a worker thread. The engine's progress events, whose sink is an `asyncio.Queue` and not thread-safe, are handed back to the loop from there.
+- **Batched re-qualification.** The identity-synonym re-qualification every restore runs (and `/maintenance/requalify-identity-synonyms`) made two single-item Registry requests per document: about 90 documents a second, roughly 40 minutes for 222k documents. It now sends one add request and one remove request per batch of 500. A bare synonym is still removed only after its qualified form was added. A failed remove is now reported as an error: before, it counted as re-qualified and left the bare synonym in place. A restore reports the step as `phase_requalify` with per-batch progress, instead of sitting silently in `phase_synonyms`.
+
 ### `wip-deploy install`: a wrong repo root, a registry URL and a missing `--hostname` stop with the cause
 
 One k8s install hit three silent defaults at once:

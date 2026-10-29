@@ -19,6 +19,7 @@ already has the qualified synonym and no bare one is ``unchanged``.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -93,10 +94,24 @@ async def _template_info(
     return info
 
 
+# Items per Registry request, as in the other restore steps.
+REQUALIFY_BATCH = 500
+
+
 async def requalify_identity_synonyms(
-    namespace: str, dry_run: bool = True,
+    namespace: str,
+    dry_run: bool = True,
+    progress: Callable[[int, int], None] | None = None,
 ) -> RequalifyReport:
-    """Re-key every document's bare identity-values synonym in a namespace."""
+    """Re-key every document's bare identity-values synonym in a namespace.
+
+    Applied, it works in batches of `REQUALIFY_BATCH`: the qualified
+    synonyms of a batch are added in one request, then the bare ones are
+    removed in one request, only for the documents whose add succeeded. A
+    document is therefore never without a resolvable synonym, and it counts
+    as requalified only when both its add and its remove succeeded.
+    `progress(done, total)` is called after each batch.
+    """
     from ..models.document import Document
 
     report = RequalifyReport(namespace=namespace, dry_run=dry_run)
@@ -114,6 +129,7 @@ async def requalify_identity_synonyms(
         [r["_id"] for r in rows], namespace,
     )
 
+    planned: list[RequalifyItem] = []
     for row in rows:
         document_id, template_id = row["_id"], row["template_id"]
         report.scanned += 1
@@ -144,22 +160,22 @@ async def requalify_identity_synonyms(
 
         for bare_key in bare:
             qualified = {SYSTEM_QUALIFIER_KEY: template_value, **bare_key}
-            item = RequalifyItem(document_id, template_value, "requalified", bare_key, qualified)
-            if not dry_run:
-                try:
-                    added = await registry.add_synonyms(
-                        document_id, namespace, "documents", [qualified],
-                    )
-                    if added[0].get("status") not in ("added", "already_exists"):
-                        raise RegistryError(added[0].get("error") or added[0].get("status"))
-                    await registry.remove_synonyms(document_id, namespace, "documents", [bare_key])
-                except RegistryError as e:
-                    item.status, item.detail = "error", str(e)
-            if item.status == "error":
-                report.errors += 1
-            else:
-                report.requalified += 1
-            report.items.append(item)
+            planned.append(
+                RequalifyItem(document_id, template_value, "requalified", bare_key, qualified)
+            )
+
+    if not dry_run:
+        for start in range(0, len(planned), REQUALIFY_BATCH):
+            await _apply_batch(registry, namespace, planned[start:start + REQUALIFY_BATCH])
+            if progress is not None:
+                progress(min(start + REQUALIFY_BATCH, len(planned)), len(planned))
+
+    for item in planned:
+        if item.status == "error":
+            report.errors += 1
+        else:
+            report.requalified += 1
+        report.items.append(item)
 
     logger.info(
         "Synonym requalification %s namespace %s: %d scanned, %d requalified, %d errors",
@@ -167,3 +183,53 @@ async def requalify_identity_synonyms(
         report.scanned, report.requalified, report.errors,
     )
     return report
+
+
+def _synonym_item(namespace: str, document_id: str, key: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "target_id": document_id,
+        "synonym_namespace": namespace,
+        "synonym_entity_type": "documents",
+        "synonym_composite_key": key,
+    }
+
+
+async def _apply_batch(registry: Any, namespace: str, batch: list[RequalifyItem]) -> None:
+    """Add the batch's qualified synonyms, then remove the bare ones for the
+    items whose add succeeded. A failure marks the item `error`; an item
+    whose add failed keeps its bare synonym."""
+    try:
+        added = await registry.add_synonyms_bulk(
+            [_synonym_item(namespace, i.document_id, i.qualified or {}) for i in batch]
+        )
+    except RegistryError as e:
+        for item in batch:
+            item.status, item.detail = "error", str(e)
+        return
+
+    to_remove: list[RequalifyItem] = []
+    for item, result in zip(batch, added, strict=True):
+        if result.get("status") in ("added", "already_exists"):
+            to_remove.append(item)
+        else:
+            item.status = "error"
+            item.detail = str(result.get("error") or result.get("status"))
+
+    try:
+        removed = await registry.remove_synonyms_bulk(
+            [_synonym_item(namespace, i.document_id, i.bare or {}) for i in to_remove]
+        )
+    except RegistryError as e:
+        for item in to_remove:
+            item.status, item.detail = "error", f"qualified synonym added, bare not removed: {e}"
+        return
+
+    for item, result in zip(to_remove, removed, strict=True):
+        # not_found: the bare synonym was already gone, which is the outcome
+        # the pass is after.
+        if result.get("status") not in ("removed", "not_found"):
+            item.status = "error"
+            item.detail = (
+                "qualified synonym added, bare not removed: "
+                f"{result.get('error') or result.get('status')}"
+            )

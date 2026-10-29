@@ -22,7 +22,7 @@ import socket
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from wip_archive.archive import ArchiveReader, ArchiveWriter
@@ -62,6 +62,8 @@ from .reporting_client import ReportingSyncClient
 from .synonym_migration import requalify_identity_synonyms
 
 logger = logging.getLogger("document_store.backup_engine")
+
+_T = TypeVar("_T")
 
 # ---------------------------------------------------------------------------
 # Collection map: (archive entity type) → (database env var, database default, collection name)
@@ -609,6 +611,8 @@ class DirectRestoreEngine:
         self._mongo = mongo_client
         self._storage = storage_client
         self._progress = progress
+        # The event loop the run is on, set by `_off_loop` before work leaves it.
+        self._loop: asyncio.AbstractEventLoop | None = None
         # Who and which job, for the provenance record each restore writes.
         self._job_id = job_id
         self._actor = actor
@@ -1117,7 +1121,17 @@ class DirectRestoreEngine:
             # for every template in the namespace. Re-key them, so a restore
             # always ends in the current form whatever the archive's age.
             for target in mapping.values():
-                requalified = await requalify_identity_synonyms(target, dry_run=False)
+
+                def _requalify_progress(done: int, total: int, target: str = target) -> None:
+                    self._emit(
+                        "phase_requalify",
+                        f"[{target}] re-qualified {done} of {total} identity synonym(s)",
+                        current=done, total=total,
+                    )
+
+                requalified = await requalify_identity_synonyms(
+                    target, dry_run=False, progress=_requalify_progress
+                )
                 if requalified.errors:
                     logger.warning(
                         "Restore into %s: %d identity-values synonym(s) could not be "
@@ -1898,7 +1912,8 @@ class DirectRestoreEngine:
                 ns_config = entry.namespace_config if entry else manifest.namespace_config
                 await self._report_namespace_config_drift(tgt, ns_config)
 
-                archive_entities, doc_groups = self._build_merge_plan_inputs(
+                archive_entities, doc_groups = await self._off_loop(
+                    self._build_merge_plan_inputs,
                     reader, src, skip_documents=skip_documents,
                     skip_files=skip_files,
                 )
@@ -2050,7 +2065,9 @@ class DirectRestoreEngine:
                         overwrite=on_clash != "skip",
                     )
                     await self._check_merge_wanted(
-                        tgt, streamed.referenced_ids(self._referenced_ids), arriving
+                        tgt,
+                        await self._off_loop(streamed.referenced_ids, self._referenced_ids),
+                        arriving,
                     )
                 else:
                     rows_to_write: list[dict[str, Any]] = []
@@ -3757,16 +3774,32 @@ class DirectRestoreEngine:
         total: int | None = None,
         details: dict[str, Any] | None = None,
     ) -> None:
-        self._progress(
-            ProgressEvent(
-                phase=phase,
-                message=message,
-                percent=percent,
-                current=current,
-                total=total,
-                details=details or {},
-            )
+        event = ProgressEvent(
+            phase=phase,
+            message=message,
+            percent=percent,
+            current=current,
+            total=total,
+            details=details or {},
         )
+        # The progress sink is an asyncio.Queue, which is not thread-safe. Work
+        # moved off the loop (`_off_loop`) emits from a worker thread; its
+        # events are handed to the loop instead of touching the queue there.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            if self._loop is not None:
+                self._loop.call_soon_threadsafe(self._progress, event)
+                return
+        self._progress(event)
+
+    async def _off_loop(self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+        """Run a synchronous, long pass (reading or planning a whole archive)
+        on a worker thread, so the service keeps answering requests and health
+        checks while it runs. The archive reader is only ever used by one
+        thread at a time: the caller awaits the pass before touching it again."""
+        self._loop = asyncio.get_running_loop()
+        return await asyncio.to_thread(fn, *args, **kwargs)
 
     @staticmethod
     def _pct(done: int, total: int) -> float:

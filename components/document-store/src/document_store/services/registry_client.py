@@ -265,6 +265,46 @@ class RegistryClient(RegistryClientBase):
             data = response.json()
             return cast(list[dict[str, Any]], data.get("results", []))
 
+    async def add_synonyms_bulk(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Add synonyms to MANY entries in one request.
+
+        Each item is {target_id, synonym_namespace, synonym_entity_type,
+        synonym_composite_key}. Returns the per-item results in input order.
+        The caller chunks (500 per request, like the other restore steps).
+        """
+        return await self._post_synonym_items("add", items)
+
+    async def remove_synonyms_bulk(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Remove synonyms from MANY entries in one request; the counterpart
+        of `add_synonyms_bulk`. A result is `removed`, or `not_found` when the
+        synonym was already gone."""
+        return await self._post_synonym_items("remove", items)
+
+    async def _post_synonym_items(
+        self, verb: str, items: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        if not items:
+            return []
+        async with self._make_client() as client:
+            response = await client.post(
+                f"{self.base_url}/api/registry/synonyms/{verb}",
+                headers=self._get_headers(),
+                json=items,
+            )
+            if response.status_code != 200:
+                raise RegistryError(
+                    f"Failed to {verb} synonyms: {response.status_code} - {response.text}"
+                )
+            results = cast(list[dict[str, Any]], response.json().get("results", []))
+        by_index = {r.get("index"): r for r in results}
+        return [
+            by_index.get(i, {
+                "index": i, "status": "error", "error_code": "registry_error",
+                "error": "no result returned",
+            })
+            for i in range(len(items))
+        ]
+
     async def remove_synonyms(
         self,
         entry_id: str,

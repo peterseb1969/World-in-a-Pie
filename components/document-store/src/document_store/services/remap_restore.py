@@ -25,6 +25,7 @@ they are the single most breakable thing in this module.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 from collections.abc import Awaitable, Callable, Iterator
@@ -537,7 +538,13 @@ async def plan_multi(
     for entity_type in REMAP_ENTITY_ORDER:
         staged: list[tuple[RemapSource, dict, list]] = []
         for s in sources:
-            groups, keys = planners[s.source]._stage(
+            # _stage, _rewrite_type and _finish are synchronous passes over
+            # every row of the type (all documents, for that type). On a
+            # worker thread the service keeps answering requests meanwhile;
+            # the awaits keep them strictly one at a time, so the shared plans
+            # and id map are never touched by two threads at once.
+            groups, keys = await asyncio.to_thread(
+                planners[s.source]._stage,
                 plans[s.source], entity_type, s.entities_by_type, s.target,
                 id_map=global_id_map,
             )
@@ -557,12 +564,15 @@ async def plan_multi(
 
         # Only now — with every source's mapping for this type fed — rewrite.
         for s, groups, new_ids in rewrites:
-            planners[s.source]._rewrite_type(
-                plans[s.source], entity_type, groups, new_ids, s.target
+            await asyncio.to_thread(
+                planners[s.source]._rewrite_type,
+                plans[s.source], entity_type, groups, new_ids, s.target,
             )
 
     for s in sources:
-        planners[s.source]._finish(plans[s.source], s.entities_by_type, s.target)
+        await asyncio.to_thread(
+            planners[s.source]._finish, plans[s.source], s.entities_by_type, s.target
+        )
     return plans
 
 
