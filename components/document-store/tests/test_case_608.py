@@ -21,8 +21,17 @@ from document_store.services.validation_service import (
 
 
 def _service_with_registry_spy():
+    """Spy on the bare-value door (value, namespace, target_templates) — the
+    one a plain or NS:VALUE string takes since CASE-975 resolves candidates."""
     svc = ValidationService()
-    spy = AsyncMock(return_value=None)  # resolution outcome irrelevant; routing is the subject
+    spy = AsyncMock(return_value=(None, []))  # outcome irrelevant; routing is the subject
+    svc._resolve_bare_document_reference = spy
+    return svc, spy
+
+
+def _service_with_hash_spy():
+    svc = ValidationService()
+    spy = AsyncMock(return_value=None)
     svc._resolve_via_registry = spy
     return svc, spy
 
@@ -39,35 +48,35 @@ async def _resolve(svc, value, caller_ns="appns"):
 async def test_bare_value_resolves_in_caller_namespace():
     svc, spy = _service_with_registry_spy()
     await _resolve(svc, "INV-001")
-    spy.assert_awaited_once_with("INV-001", "appns", "documents")
+    spy.assert_awaited_once_with("INV-001", "appns", [])
 
 
 @pytest.mark.asyncio
 async def test_qualified_value_resolves_in_named_namespace():
     svc, spy = _service_with_registry_spy()
     await _resolve(svc, "otherns:INV-001")
-    spy.assert_awaited_once_with("INV-001", "otherns", "documents")
+    spy.assert_awaited_once_with("INV-001", "otherns", [])
 
 
 @pytest.mark.asyncio
 async def test_first_colon_wins():
     svc, spy = _service_with_registry_spy()
     await _resolve(svc, "otherns:a:b")
-    spy.assert_awaited_once_with("a:b", "otherns", "documents")
+    spy.assert_awaited_once_with("a:b", "otherns", [])
 
 
 @pytest.mark.asyncio
 async def test_empty_prefix_falls_back_to_caller_namespace():
     svc, spy = _service_with_registry_spy()
     await _resolve(svc, ":INV-001")
-    spy.assert_awaited_once_with("INV-001", "appns", "documents")
+    spy.assert_awaited_once_with("INV-001", "appns", [])
 
 
 @pytest.mark.asyncio
 async def test_hash_form_takes_precedence_over_qualified_parse():
     """hash:<identity_hash> is an existing colon form — it must keep routing
     through the hash branch untouched (raw value, caller namespace)."""
-    svc, spy = _service_with_registry_spy()
+    svc, spy = _service_with_hash_spy()
     await _resolve(svc, "hash:abc123")
     spy.assert_awaited_once_with("hash:abc123", "appns", "documents")
 

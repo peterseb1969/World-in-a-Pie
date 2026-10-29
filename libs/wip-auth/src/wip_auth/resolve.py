@@ -333,6 +333,34 @@ class EntityNotFoundError(Exception):
         return not _UUID_PATTERN.match(identifier)
 
 
+class AmbiguousEntityError(EntityNotFoundError):
+    """A value resolves to several entities, and nothing narrows it to one.
+
+    A subclass of EntityNotFoundError so every caller that refuses an
+    unresolvable identifier refuses this one too — fail-closed — while the
+    message names the candidates instead of claiming nothing was found.
+    Raised instead of picking one: an arbitrary pick resolves to the wrong
+    entity some of the time.
+    """
+
+    def __init__(self, identifier: str, entity_type: str, candidates: list[dict[str, Any]], total: int):
+        Exception.__init__(self)
+        self.identifier = identifier
+        self.entity_type = entity_type
+        self.namespace = None
+        self.candidates = candidates
+        self.total = total
+        keys = ", ".join(
+            f"{c.get('entry_id')} via {c.get('matched_composite_key') or c.get('matched_via')}"
+            for c in candidates[:5]
+        )
+        self.args = (
+            f"{entity_type} identifier '{identifier}' is ambiguous: it resolves to "
+            f"{total} entities ({keys}{', …' if total > 5 else ''}); use a canonical ID "
+            "or a qualified value",
+        )
+
+
 async def resolve_entity_id(
     raw_id: str,
     entity_type: str,
@@ -375,15 +403,17 @@ async def resolve_entity_id(
     except EntityNotFoundError:
         if entity_type == "term" or _looks_like_uuid(raw_id):
             raise
-        # Miss-path fallback to /entries/lookup/by-id — the WRITE door's
-        # transport (registry_client.resolve_identifier): its search_values
-        # match covers value-form references whose synonym key shapes
-        # /resolve cannot hash-match (a document's value synonym is the bare
+        # Miss-path fallback to /entries/lookup/candidates — the WRITE door's
+        # transport (registry_client.resolve_identifier): its value match
+        # covers value-form references whose synonym key shapes /resolve
+        # cannot hash-match (a document's value synonym is the qualified
         # identity-values dict, so no {ns, type, value} key ever finds it).
         # Without this, the exact string stored in a reference field
-        # validates on write and 404s on read. Terms are excluded (their
-        # strict forms resolve via composite keys only), UUIDs are excluded
-        # (entry_id verification already failed — the entity is missing).
+        # validates on write and 404s on read. A value several entities carry
+        # raises AmbiguousEntityError rather than resolving to one of them.
+        # Terms are excluded (their strict forms resolve via composite keys
+        # only), UUIDs are excluded (entry_id verification already failed —
+        # the entity is missing).
         ns_prefix, value = split_qualified_value(raw_id)
         canonical_id_or_none = await _post_lookup_by_id(
             value, ns_prefix or namespace, entity_type,
@@ -456,44 +486,56 @@ async def _post_lookup_by_id(
     namespace: str,
     entity_type: str,
 ) -> str | None:
-    """POST one item to Registry /entries/lookup/by-id; entry_id or None.
+    """The one entity a value names, via Registry /entries/lookup/candidates;
+    None when there is none. Raises AmbiguousEntityError when there are
+    several — never an arbitrary one of them.
 
-    The endpoint matches entry_id exactly, then falls back to search_values
-    (where identity-values synonyms are flattened) — both filtered by
-    namespace and plural entity_type when given. Deliberately returns None
-    on any failure instead of raising: this is a miss-path fallback, and
-    the caller re-raises the original EntityNotFoundError so the error the
-    caller sees names the identifier as it was given.
+    The candidates match entry_id exactly, then the values of each entry's
+    active keys (where identity-values synonyms live), filtered by namespace
+    and plural entity_type. A Registry predating the route (404, during a
+    rollout) is asked by-id instead. Any other failure returns None: this is
+    a miss-path fallback, and the caller re-raises the original
+    EntityNotFoundError so the error names the identifier as given.
     """
     registry_url = _get_registry_url()
     api_key = _get_api_key()
-    item = {
-        "entry_id": value,
-        "namespace": namespace,
-        "entity_type": _ENTITY_TYPE_PLURAL.get(entity_type, f"{entity_type}s"),
-    }
+    plural = _ENTITY_TYPE_PLURAL.get(entity_type, f"{entity_type}s")
+    headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
     try:
         client = _get_resolve_client()
         response = await client.post(
-            f"{registry_url}/api/registry/entries/lookup/by-id",
-            headers={"X-API-Key": api_key, "Content-Type": "application/json"},
-            json=[item],
+            f"{registry_url}/api/registry/entries/lookup/candidates",
+            headers=headers,
+            json=[{"value": value, "namespace": namespace, "entity_type": plural}],
         )
+        if response.status_code == 404:
+            response = await client.post(
+                f"{registry_url}/api/registry/entries/lookup/by-id",
+                headers=headers,
+                json=[{"entry_id": value, "namespace": namespace, "entity_type": plural}],
+            )
     except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
-        logger.debug("Registry unreachable for by-id fallback: %s", e)
+        logger.debug("Registry unreachable for value fallback: %s", e)
         return None
 
     if response.status_code != 200:
         logger.warning(
-            "Registry by-id fallback failed for %s (%s): %s",
+            "Registry value fallback failed for %s (%s): %s",
             value, entity_type, response.status_code,
         )
         return None
 
     results = response.json().get("results", [])
-    if results and results[0].get("status") == "found":
-        return cast(str, results[0].get("entry_id"))
-    return None
+    if not results or results[0].get("status") != "found":
+        return None
+    hit = results[0]
+    if "candidates" not in hit:  # by-id answer from an older Registry
+        return cast(str, hit.get("entry_id"))
+    candidates = hit.get("candidates") or []
+    total = int(hit.get("total") or len(candidates))
+    if total > 1:
+        raise AmbiguousEntityError(value, entity_type, candidates, total)
+    return cast(str, candidates[0]["entry_id"]) if candidates else None
 
 
 class TermNamespaceRequiredError(EntityNotFoundError):
@@ -750,9 +792,14 @@ async def resolve_entity_ids(
             # does not reintroduce the per-item round-trip storm.
             if entity_type != "term" and not _looks_like_uuid(raw_id):
                 ns_prefix, value = split_qualified_value(raw_id)
-                fallback = await _post_lookup_by_id(
-                    value, ns_prefix or namespace, entity_type,
-                )
+                try:
+                    fallback = await _post_lookup_by_id(
+                        value, ns_prefix or namespace, entity_type,
+                    )
+                except AmbiguousEntityError:
+                    # Non-strict: an ambiguous value stays unresolved, like a
+                    # miss — the batch never picks one of its candidates.
+                    fallback = None
                 if fallback is not None:
                     _set_cached(f"{namespace}:{entity_type}:{raw_id}", fallback)
                     result[raw_id] = fallback

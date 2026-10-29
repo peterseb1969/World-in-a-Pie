@@ -726,6 +726,40 @@ A failed Registry call during a delete or revival does not fail the write:
 
 The pass repairs both.
 
+### A value that names several entities is refused, never resolved to one of them
+
+A bare value used to resolve through the Registry's `search_values` fallback
+with a single `find_one`, which returned whichever matching entry came first.
+`search_values` holds every value of an entry's active keys. So a value was
+ambiguous whenever several entries carried it:
+- the same identity spelling under two templates;
+- a template's value, which every one of its documents carries in its
+  auto-synonym.
+
+In those cases a reference resolved to an arbitrary entity.
+
+**Registry:** `POST /api/registry/entries/lookup/candidates` is new, bulk, and
+gated by read access. For each value it returns every entry the value
+resolves to, with `matched_via` and `matched_composite_key` (the qualifier),
+plus `total` and `truncated`. An exact entry ID is the only candidate.
+`/lookup/by-id` is unchanged.
+
+**Document reference fields:** a bare string reference resolves through the
+candidates. The field's `target_templates` narrow them. One survivor resolves.
+Several fail the write with the per-field code `ambiguous_reference`, which
+lists `{document_id, template_value, matched_composite_key}` per candidate.
+
+**Other callers:** `resolve_entity_id` (`wip_auth.resolve`) raises
+`AmbiguousEntityError`, a subclass of `EntityNotFoundError`, so callers that
+answer 404 still do, with a message naming the candidates. The non-strict
+batch path leaves an ambiguous value unresolved.
+`RegistryClientBase.resolve_identifier` raises `AmbiguousIdentifierError`, a
+`RegistryError`.
+
+**Action:** a write or lookup that relied on the arbitrary pick now fails. Use
+the canonical ID or a qualified value, or give the reference field
+`target_templates` that single out the intended document.
+
 ### Merge and fresh restores stream the documents
 
 Only a plain `restore` streamed the archive. A `merge` and a `fresh` restore

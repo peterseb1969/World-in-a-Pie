@@ -7,7 +7,7 @@ UUID-shaped strings — so a prefixed canonical id 404ed exactly when the
 caller supplied its own namespace, and the qualified '<ns>:<id>' string the
 platform itself stores in reference fields never dereferenced on read.
 These tests pin the three-part fix: dual-field /resolve payloads, the
-by-id miss fallback (the write door's transport), and qualified
+value-match miss fallback (the write door's transport), and qualified
 identifiers carrying their own namespace context through resolve_or_404.
 """
 
@@ -22,7 +22,7 @@ from wip_auth.resolve import (
 )
 
 RESOLVE_URL = "http://localhost:8001/api/registry/entries/resolve"
-BY_ID_URL = "http://localhost:8001/api/registry/entries/lookup/by-id"
+CANDIDATES_URL = "http://localhost:8001/api/registry/entries/lookup/candidates"
 CANONICAL = "0195c1a0-0000-7000-8000-000000000001"
 
 
@@ -39,6 +39,13 @@ def _found(entry_id=CANONICAL):
 
 def _not_found():
     return {"results": [{"status": "not_found"}]}
+
+
+def _candidates(*entry_ids):
+    return {"results": [{
+        "status": "found", "total": len(entry_ids),
+        "candidates": [{"entry_id": e} for e in entry_ids],
+    }]}
 
 
 class TestDualFieldPayload:
@@ -89,43 +96,69 @@ class TestDualFieldPayload:
         assert "composite_key" not in payload[0]
 
 
-class TestByIdMissFallback:
+class TestValueMissFallback:
     @pytest.mark.asyncio
-    async def test_resolve_miss_falls_back_to_by_id(self, httpx_mock):
-        """search_values matches (value-form document refs) live only on
-        the by-id endpoint — the write door's transport."""
+    async def test_resolve_miss_falls_back_to_the_value_match(self, httpx_mock):
+        """Value matches (value-form document refs) live only on the
+        candidates endpoint — the write door's transport."""
         httpx_mock.add_response(url=RESOLVE_URL, json=_not_found())
-        httpx_mock.add_response(url=BY_ID_URL, json=_found())
+        httpx_mock.add_response(url=CANDIDATES_URL, json=_candidates(CANONICAL))
         result = await resolve_entity_id("SAMP-1", "document", "ns1")
         assert result == CANONICAL
-        by_id_payload = json.loads(httpx_mock.get_requests()[1].content)
-        assert by_id_payload[0] == {
-            "entry_id": "SAMP-1", "namespace": "ns1", "entity_type": "documents",
+        payload = json.loads(httpx_mock.get_requests()[1].content)
+        assert payload[0] == {
+            "value": "SAMP-1", "namespace": "ns1", "entity_type": "documents",
         }
 
     @pytest.mark.asyncio
     async def test_qualified_miss_uses_prefix_namespace(self, httpx_mock):
         httpx_mock.add_response(url=RESOLVE_URL, json=_not_found())
-        httpx_mock.add_response(url=BY_ID_URL, json=_found())
+        httpx_mock.add_response(url=CANDIDATES_URL, json=_candidates(CANONICAL))
         result = await resolve_entity_id("ns1:SAMP-1", "document", "other-ns")
         assert result == CANONICAL
-        by_id_payload = json.loads(httpx_mock.get_requests()[1].content)
-        assert by_id_payload[0]["entry_id"] == "SAMP-1"
-        assert by_id_payload[0]["namespace"] == "ns1"
+        payload = json.loads(httpx_mock.get_requests()[1].content)
+        assert payload[0]["value"] == "SAMP-1"
+        assert payload[0]["namespace"] == "ns1"
 
     @pytest.mark.asyncio
     async def test_both_miss_raises_original_error(self, httpx_mock):
         httpx_mock.add_response(url=RESOLVE_URL, json=_not_found())
-        httpx_mock.add_response(url=BY_ID_URL, json=_not_found())
+        httpx_mock.add_response(url=CANDIDATES_URL, json=_not_found())
         with pytest.raises(EntityNotFoundError) as exc:
             await resolve_entity_id("NOPE", "document", "ns1")
         # The error names the identifier as given, not the fallback's view.
         assert "NOPE" in str(exc.value)
 
     @pytest.mark.asyncio
+    async def test_several_matches_are_ambiguous_never_picked(self, httpx_mock):
+        """CASE-975: a value several entities carry is refused — still an
+        EntityNotFoundError for every fail-closed caller, with the
+        candidates in its message."""
+        from wip_auth.resolve import AmbiguousEntityError
+
+        other = "0195c1a0-0000-7000-8000-000000000002"
+        httpx_mock.add_response(url=RESOLVE_URL, json=_not_found())
+        httpx_mock.add_response(url=CANDIDATES_URL, json=_candidates(CANONICAL, other))
+        with pytest.raises(AmbiguousEntityError) as exc:
+            await resolve_entity_id("Low Water", "document", "ns1")
+        assert isinstance(exc.value, EntityNotFoundError)
+        assert exc.value.total == 2
+        assert CANONICAL in str(exc.value) and other in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_an_older_registry_is_asked_by_id(self, httpx_mock):
+        """During a rollout the Registry may predate the candidates route."""
+        httpx_mock.add_response(url=RESOLVE_URL, json=_not_found())
+        httpx_mock.add_response(url=CANDIDATES_URL, status_code=404)
+        httpx_mock.add_response(
+            url="http://localhost:8001/api/registry/entries/lookup/by-id", json=_found(),
+        )
+        assert await resolve_entity_id("SAMP-1", "document", "ns1") == CANONICAL
+
+    @pytest.mark.asyncio
     async def test_terms_never_fall_back(self, httpx_mock):
         """A term miss is final: its strict forms resolve via composite
-        keys only, and by-id's raw string match would reintroduce the
+        keys only, and a raw value match would reintroduce the
         ambiguity the 422 guard exists to prevent."""
         httpx_mock.add_response(url=RESOLVE_URL, json=_not_found())
         with pytest.raises(EntityNotFoundError):
@@ -135,7 +168,7 @@ class TestByIdMissFallback:
     @pytest.mark.asyncio
     async def test_uuid_miss_never_falls_back(self, httpx_mock):
         """A UUID that fails entry_id verification is missing, full stop —
-        by-id's search_values could only match it as somebody's stored
+        a value match could only find it as somebody's stored
         value, which is not identity."""
         httpx_mock.add_response(url=RESOLVE_URL, json=_not_found())
         with pytest.raises(EntityNotFoundError):
@@ -169,7 +202,7 @@ class TestResolveOr404QualifiedContext:
         working; the fix only ADDS resolution."""
         from wip_auth.fastapi_helpers import resolve_or_404
         httpx_mock.add_response(url=RESOLVE_URL, json=_not_found())
-        httpx_mock.add_response(url=BY_ID_URL, json=_not_found())
+        httpx_mock.add_response(url=CANDIDATES_URL, json=_not_found())
         result = await resolve_or_404("ns1:whatever", "document", None)
         assert result == "ns1:whatever"
 
@@ -182,7 +215,7 @@ class TestResolveOr404QualifiedContext:
 
         from wip_auth.fastapi_helpers import resolve_or_404
         httpx_mock.add_response(url=RESOLVE_URL, json=_not_found())
-        httpx_mock.add_response(url=BY_ID_URL, json=_not_found())
+        httpx_mock.add_response(url=CANDIDATES_URL, json=_not_found())
         with pytest.raises(HTTPException) as exc:
             await resolve_or_404(
                 "ns1:whatever", "document", None, strict=True

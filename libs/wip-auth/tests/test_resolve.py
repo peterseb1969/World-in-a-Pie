@@ -218,7 +218,7 @@ class TestResolveEntityId:
 
     @pytest.mark.asyncio
     async def test_unknown_synonym_raises(self, httpx_mock):
-        """A non-term miss consults the by-id fallback (the write door's
+        """A non-term miss consults the value fallback (the write door's
         transport, CASE-816) before giving up — both endpoints answer
         not_found here, so the original error surfaces."""
         httpx_mock.add_response(
@@ -228,7 +228,7 @@ class TestResolveEntityId:
             },
         )
         httpx_mock.add_response(
-            url="http://localhost:8001/api/registry/entries/lookup/by-id",
+            url="http://localhost:8001/api/registry/entries/lookup/candidates",
             json={
                 "results": [{"status": "not_found"}]
             },

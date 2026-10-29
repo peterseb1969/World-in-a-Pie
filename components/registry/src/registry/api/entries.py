@@ -19,6 +19,7 @@ from ..models.api_models import (
     BrowseEntryItem,
     BulkDeleteResponse,
     BulkEntryLifecycleResponse,
+    BulkLookupCandidatesResponse,
     BulkResolveResponse,
     BulkUpdateResponse,
     DeleteItem,
@@ -32,6 +33,9 @@ from ..models.api_models import (
     LookupBulkResponse,
     LookupByIdItem,
     LookupByKeyItem,
+    LookupCandidate,
+    LookupCandidatesItem,
+    LookupCandidatesResponse,
     LookupResponse,
     ProvisionedId,
     ProvisionRequest,
@@ -1312,6 +1316,96 @@ async def lookup_by_ids(
     return LookupBulkResponse(
         results=results, total=len(items),
         found=found_count, not_found=not_found_count, errors=error_count,
+    )
+
+
+def _candidate(entry: RegistryEntry, value: str) -> LookupCandidate:
+    """The candidate for an entry that a value matched, naming the key that
+    carried the value: the primary key, or the first active synonym."""
+    if value in entry.primary_composite_key.values():
+        via, key = "primary_key", entry.primary_composite_key
+    else:
+        via, key = "synonym", None
+        for syn in entry.active_synonyms():
+            if value in syn.composite_key.values():
+                key = syn.composite_key
+                break
+    return LookupCandidate(
+        entry_id=entry.entry_id, namespace=entry.namespace,
+        entity_type=entry.entity_type, matched_via=via, matched_composite_key=key,
+    )
+
+
+@router.post(
+    "/lookup/candidates",
+    response_model=BulkLookupCandidatesResponse,
+    summary="List every entry a value resolves to (bulk)"
+)
+async def lookup_candidates(
+    items: list[LookupCandidatesItem] = Body(...),
+    identity: UserIdentity = Depends(require_api_key)
+) -> BulkLookupCandidatesResponse:
+    """Every active entry a value resolves to, each with the key that carried
+    the value — so a caller sees ambiguity instead of receiving one match
+    picked arbitrarily.
+
+    An exact entry ID is the only candidate. Otherwise the value is matched
+    against the values of each entry's primary key and active synonyms
+    (inactive synonyms belong to retired entities and resolve nothing), in
+    creation order. `total` counts every match in the namespaces the caller
+    may read; `truncated` says more exist than `limit` returned. A caller
+    that needs one entity qualifies the value (a composite-key lookup, a
+    canonical ID) or narrows the candidates itself.
+    """
+    results: list[LookupCandidatesResponse] = []
+    access = NamespaceAccess(identity)
+    for i, item in enumerate(items):
+        try:
+            invalid = invalid_entity_type_fields(item.entity_type)
+            if invalid:
+                results.append(LookupCandidatesResponse(index=i, status="error", **invalid))
+                continue
+
+            query: dict = {"status": "active"}
+            if item.entity_type:
+                query["entity_type"] = item.entity_type
+            if item.namespace:
+                if not await access.allows(item.namespace, "read"):
+                    results.append(LookupCandidatesResponse(index=i, status="not_found"))
+                    continue
+                query["namespace"] = item.namespace
+            elif not access.unrestricted:
+                query["namespace"] = {"$in": await resolve_accessible_namespaces(identity) or []}
+
+            exact = await RegistryEntry.find_one({**query, "entry_id": item.value})
+            if exact:
+                results.append(LookupCandidatesResponse(
+                    index=i, status="found", total=1,
+                    candidates=[LookupCandidate(
+                        entry_id=exact.entry_id, namespace=exact.namespace,
+                        entity_type=exact.entity_type, matched_via="entry_id",
+                    )],
+                ))
+                continue
+
+            by_value = {**query, "search_values": item.value}
+            total = await RegistryEntry.find(by_value).count()
+            entries = await RegistryEntry.find(by_value).sort("+created_at").limit(item.limit).to_list()
+            results.append(LookupCandidatesResponse(
+                index=i,
+                status="found" if entries else "not_found",
+                total=total,
+                truncated=total > len(entries),
+                candidates=[_candidate(e, item.value) for e in entries],
+            ))
+        except Exception as e:
+            results.append(LookupCandidatesResponse(index=i, status="error", **error_fields(e)))
+
+    return BulkLookupCandidatesResponse(
+        results=results, total=len(items),
+        found=sum(1 for r in results if r.status == "found"),
+        not_found=sum(1 for r in results if r.status == "not_found"),
+        errors=sum(1 for r in results if r.status == "error"),
     )
 
 

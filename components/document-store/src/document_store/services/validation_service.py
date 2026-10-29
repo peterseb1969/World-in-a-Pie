@@ -1692,7 +1692,9 @@ class ValidationService:
         # Build a cache key for this lookup
         cache_key = None
         if doc_ref_cache is not None and isinstance(value, str):
-            cache_key = f"doc:{value}"
+            # The field's target_templates narrow a bare value's candidates,
+            # so they are part of what the lookup means.
+            cache_key = f"doc:{value}|{','.join(sorted(target_templates))}"
             if cache_key in doc_ref_cache:
                 doc = doc_ref_cache[cache_key]
                 # Jump straight to template verification (doc may be None)
@@ -1734,9 +1736,25 @@ class ValidationService:
                 # qualified ref into an undeclared namespace surfaces as
                 # reference_violation, not not_found.
                 ref_ns, ref_value = split_qualified_value(value)
-                doc = await self._resolve_via_registry(
-                    ref_value, ref_ns or namespace, "documents"
+                doc, candidates = await self._resolve_bare_document_reference(
+                    ref_value, ref_ns or namespace, target_templates,
                 )
+                if candidates:
+                    # Several documents carry the value and the field's
+                    # target_templates do not narrow them to one: refused,
+                    # never resolved to an arbitrary one. Not cached — the
+                    # cache's None means "not found".
+                    result.add_error(
+                        code="ambiguous_reference",
+                        message=(
+                            f"Reference '{value}' in field '{field_path}' matches "
+                            "several documents; use a document_id or a "
+                            "qualified value"
+                        ),
+                        field=field_path,
+                        details={"value": str(value), "candidates": candidates},
+                    )
+                    return None
 
                 if not doc:
                     # CASE-435: the Registry didn't resolve this string reference.
@@ -1834,23 +1852,7 @@ class ValidationService:
                     # (the add_edge_type_endpoints widen stores endpoints
                     # value-form). Resolving here closes the gap regardless of the
                     # stored form, instead of forcing the widen to avoid synonyms.
-                    from .registry_client import RegistryError, get_registry_client
-                    registry = get_registry_client()
-                    allowed_ids: set[str] = set()
-                    for entry in target_templates:
-                        rid = None
-                        try:
-                            rid = await registry.resolve_identifier(
-                                namespace, "templates", entry
-                            )
-                        except RegistryError:
-                            rid = None
-                        if rid:
-                            allowed_ids.add(rid)
-                        elif self._is_uuid7(entry):
-                            # already a canonical id (or Registry briefly
-                            # unavailable) — honour it directly, never drop it.
-                            allowed_ids.add(entry)
+                    allowed_ids = await self._allowed_template_ids(target_templates, namespace)
                     if doc.template_id not in allowed_ids:
                         expected = doc_template.get("value") or doc.template_id
                         # Report the DECLARED endpoints (human-readable, the form
@@ -1921,6 +1923,89 @@ class ValidationService:
                 continue
 
         return None
+
+    async def _allowed_template_ids(
+        self, target_templates: list[str], namespace: str | None,
+    ) -> set[str]:
+        """The canonical template_ids a field's target_templates name.
+
+        Every entry resolves through the Registry, so value-form, UUID and
+        any synonym count identically (References-Must-Resolve). An entry
+        that does not resolve but is UUID-shaped is already canonical (or the
+        Registry is briefly unavailable): honoured directly, never dropped.
+        """
+        from .registry_client import RegistryError, get_registry_client
+
+        registry = get_registry_client()
+        allowed: set[str] = set()
+        for entry in target_templates:
+            try:
+                rid = await registry.resolve_identifier(namespace, "templates", entry)
+            except RegistryError:
+                rid = None
+            if rid:
+                allowed.add(rid)
+            elif self._is_uuid7(entry):
+                allowed.add(entry)
+        return allowed
+
+    async def _resolve_bare_document_reference(
+        self,
+        value: str,
+        namespace: str,
+        target_templates: list[str],
+    ) -> tuple[Any | None, list[dict[str, Any]]]:
+        """Resolve a bare string reference to the one document it names.
+
+        Returns (document, []) for a single match, (None, []) for none, and
+        (None, candidates) when several documents carry the value and the
+        field's target_templates leave more than one — or when the Registry
+        reports more matches than it listed, so narrowing cannot be sure.
+        A single candidate from another template is returned as the match;
+        the template check that follows reports it.
+        """
+        from ..models.document import Document, DocumentStatus
+        from .registry_client import RegistryError, get_registry_client
+
+        try:
+            entries, total = await get_registry_client().resolve_candidates(
+                namespace, "documents", value,
+            )
+        except RegistryError:
+            return None, []
+        if not entries:
+            return None, []
+
+        ids = [e["entry_id"] for e in entries]
+        rows = await Document.find({"document_id": {"$in": ids}}).to_list()
+        latest: dict[str, Any] = {}
+        for row in rows:
+            held = latest.get(row.document_id)
+            if held is None or (
+                (row.status == DocumentStatus.ACTIVE, row.version)
+                > (held.status == DocumentStatus.ACTIVE, held.version)
+            ):
+                latest[row.document_id] = row
+        docs = [latest[i] for i in ids if i in latest]
+        if total == 1 and len(docs) == 1:
+            return docs[0], []
+
+        survivors = docs
+        if target_templates:
+            allowed = await self._allowed_template_ids(target_templates, namespace)
+            survivors = [d for d in docs if d.template_id in allowed]
+        if len(survivors) == 1 and total == len(entries):
+            return survivors[0], []
+
+        by_id = {e["entry_id"]: e for e in entries}
+        return None, [
+            {
+                "document_id": d.document_id,
+                "template_value": d.template_value,
+                "matched_composite_key": by_id[d.document_id].get("matched_composite_key"),
+            }
+            for d in (survivors or docs)
+        ]
 
     async def _resolve_via_registry(
         self,

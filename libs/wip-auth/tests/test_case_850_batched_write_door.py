@@ -23,7 +23,7 @@ from wip_auth.resolve import (
 )
 
 RESOLVE_URL = "http://localhost:8001/api/registry/entries/resolve"
-BY_ID_URL = "http://localhost:8001/api/registry/entries/lookup/by-id"
+CANDIDATES_URL = "http://localhost:8001/api/registry/entries/lookup/candidates"
 
 U1 = "01903f5a-0000-7000-8000-000000000001"
 U2 = "01903f5a-0000-7000-8000-000000000002"
@@ -60,35 +60,54 @@ async def test_string_door_batches_and_dedupes(httpx_mock):
 
 
 @pytest.mark.asyncio
-async def test_miss_passes_through_and_tries_by_id_fallback(httpx_mock):
+async def test_miss_passes_through_and_tries_the_value_fallback(httpx_mock):
     """A per-item miss keeps the old pass-through semantics, after trying
-    the by-id fallback the single door has — batch must not be weaker."""
+    the value fallback the single door has — batch must not be weaker."""
     httpx_mock.add_response(url=RESOLVE_URL, json={
         "results": [
             {"status": "found", "entry_id": U1},
             {"status": "not_found"},
         ]
     })
-    httpx_mock.add_response(url=BY_ID_URL, json={"results": [{"status": "not_found"}]})
+    httpx_mock.add_response(url=CANDIDATES_URL, json={"results": [{"status": "not_found"}]})
 
     items = [SimpleNamespace(ref="GOOD"), SimpleNamespace(ref="MISSING")]
     await resolve_bulk_ids(items, "ref", "template", "wip", bypass_cache=True)
 
     assert items[0].ref == U1
     assert items[1].ref == "MISSING"  # untouched — downstream reports it
-    by_id_calls = [r for r in httpx_mock.get_requests() if str(r.url) == BY_ID_URL]
-    assert len(by_id_calls) == 1
+    fallback_calls = [r for r in httpx_mock.get_requests() if str(r.url) == CANDIDATES_URL]
+    assert len(fallback_calls) == 1
+
+
+def _candidates(*entry_ids: str) -> dict:
+    return {"results": [{
+        "status": "found", "total": len(entry_ids),
+        "candidates": [{"entry_id": e} for e in entry_ids],
+    }]}
 
 
 @pytest.mark.asyncio
-async def test_by_id_fallback_can_rescue_a_miss(httpx_mock):
+async def test_value_fallback_can_rescue_a_miss(httpx_mock):
     httpx_mock.add_response(url=RESOLVE_URL, json={"results": [{"status": "not_found"}]})
-    httpx_mock.add_response(url=BY_ID_URL, json=_found(U2))
+    httpx_mock.add_response(url=CANDIDATES_URL, json=_candidates(U2))
 
     result = await resolve_entity_ids(
         ["VALUE-FORM"], "document", "wip", bypass_cache=True, strict=False,
     )
     assert result == {"VALUE-FORM": U2}
+
+
+@pytest.mark.asyncio
+async def test_an_ambiguous_value_stays_unresolved_in_a_batch(httpx_mock):
+    """CASE-975: the non-strict batch never picks one of several candidates."""
+    httpx_mock.add_response(url=RESOLVE_URL, json={"results": [{"status": "not_found"}]})
+    httpx_mock.add_response(url=CANDIDATES_URL, json=_candidates(U1, U2))
+
+    result = await resolve_entity_ids(
+        ["Low Water"], "document", "wip", bypass_cache=True, strict=False,
+    )
+    assert result == {}
 
 
 @pytest.mark.asyncio
@@ -126,7 +145,7 @@ async def test_strict_batch_still_raises_on_miss(httpx_mock):
     httpx_mock.add_response(url=RESOLVE_URL, json={"results": [{"status": "not_found"}]})
 
     with pytest.raises(EntityNotFoundError):
-        # Terms have no by-id fallback (so no BY_ID mock is registered);
+        # Terms have no value fallback (so no CANDIDATES mock is registered);
         # the strict default raises as before.
         await resolve_entity_ids(["wip:T:missing"], "term", "wip", bypass_cache=True)
 

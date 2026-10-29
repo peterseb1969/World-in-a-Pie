@@ -649,6 +649,12 @@ only ever returns an entity of the namespace and type it asked for.
   revives it. A revived entity claims its synonyms again; one that another
   entity took in the meantime stays with that entity, and the revival returns
   a warning naming it.
+- A bare value resolves to one entity or not at all; it is never picked from
+  several. When several entities carry a value (the same title under two
+  templates, or a template's value, which all its documents carry), a
+  document reference field narrows them by its target_templates, and if
+  more than one remains the write fails with 'ambiguous_reference' listing
+  the candidates. Reference by document_id or a qualified value to avoid it.
 
 ## Ontology Relations
 Terms can be connected via typed relations:

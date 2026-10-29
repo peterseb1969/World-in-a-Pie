@@ -499,6 +499,50 @@ class LookupResponse(BaseModel):
     details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
 
 
+class LookupCandidatesItem(StrictModel):
+    """Request model for listing every entry a value resolves to."""
+
+    value: str = Field(..., description="An entry ID, or a value carried by an entry's keys")
+    namespace: str | None = Field(default=None, description="Namespace filter")
+    entity_type: str | None = Field(default=None, description="Entity type filter")
+    limit: int = Field(default=20, ge=1, le=100, description="Most candidates returned")
+
+
+class LookupCandidate(BaseModel):
+    """One entry a value resolves to, with the key that carried it."""
+
+    entry_id: str
+    namespace: str
+    entity_type: str
+    matched_via: str = Field(description="entry_id | primary_key | synonym")
+    matched_composite_key: dict[str, Any] | None = Field(
+        default=None, description="The key whose value matched — the qualifier",
+    )
+
+
+class LookupCandidatesResponse(BaseModel):
+    """Every entry one value resolves to — never an arbitrary pick."""
+
+    index: int
+    status: str  # found, not_found, error
+    total: int = 0
+    truncated: bool = False
+    candidates: list[LookupCandidate] = Field(default_factory=list)
+    error: str | None = None
+    error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
+    details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
+
+
+class BulkLookupCandidatesResponse(BaseModel):
+    """Wrapped response for bulk candidate lookups."""
+
+    results: list[LookupCandidatesResponse]
+    total: int
+    found: int
+    not_found: int
+    errors: int
+
+
 class LookupBulkResponse(BaseModel):
     """Response model for bulk lookups."""
 

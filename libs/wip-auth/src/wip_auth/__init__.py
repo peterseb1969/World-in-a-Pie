@@ -85,6 +85,7 @@ from .providers import (
 from .query_validation import RejectUnknownQueryParamsMiddleware
 from .ratelimit import setup_rate_limiting
 from .resolve import (
+    AmbiguousEntityError,
     EntityNotFoundError,
     WriteRequestMiddleware,
     clear_resolution_cache,
@@ -108,6 +109,8 @@ __all__ = [
     "DEFAULT_TTL_SECONDS",
     "APIKeyProvider",
     "APIKeyRecord",
+    # Synonym resolution
+    "AmbiguousEntityError",
     # Config
     "AuthConfig",
     # Middleware

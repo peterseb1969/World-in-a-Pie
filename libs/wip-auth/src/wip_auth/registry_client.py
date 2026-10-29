@@ -71,6 +71,30 @@ class RegistryError(Exception):
     """
 
 
+class AmbiguousIdentifierError(RegistryError):
+    """A value resolves to several entries, and nothing narrows it to one.
+
+    Raised instead of picking one of them: an arbitrary pick resolves to the
+    wrong entity some of the time, which callers cannot tell from the right
+    one. ``candidates`` holds the Registry's candidate list (entry_id,
+    namespace, entity_type, matched_composite_key — the qualifier) and
+    ``total`` the full count, which may exceed the list.
+    """
+
+    def __init__(self, value: str, candidates: list[dict[str, Any]], total: int):
+        self.value = value
+        self.candidates = candidates
+        self.total = total
+        keys = ", ".join(
+            f"{c.get('entry_id')} via {c.get('matched_composite_key') or c.get('matched_via')}"
+            for c in candidates[:5]
+        )
+        super().__init__(
+            f"'{value}' is ambiguous: it resolves to {total} entries ({keys}"
+            f"{', …' if total > 5 else ''}); use a canonical ID or a qualified value"
+        )
+
+
 # ── Pydantic response models ────────────────────────────────────────────────
 #
 # Typed Registry-endpoint responses. Replace the cast() calls CASE-337
@@ -364,39 +388,80 @@ class RegistryClientBase:
 
     # ── Universal public methods ────────────────────────────────────────
 
+    async def resolve_candidates(
+        self,
+        namespace: str | None,
+        entity_type: str | None,
+        value: str,
+        limit: int = 20,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Every entry a value resolves to, via
+        POST /api/registry/entries/lookup/candidates: ``(candidates, total)``.
+
+        An exact entry ID is the only candidate; otherwise the value is
+        matched against every active key's values, as by-id's search_values
+        fallback is (CASE-433: value-form references need it), but all
+        matches come back, each with the key that carried the value. A
+        Registry predating the route (404, during a rollout) is asked by-id
+        instead, which answers at most one entry. Any other failure answers
+        no candidates.
+        """
+        item: dict[str, Any] = {"value": value, "limit": limit}
+        if namespace:
+            item["namespace"] = namespace
+        if entity_type:
+            item["entity_type"] = entity_type
+        async with self._make_client() as client:
+            response = await client.post(
+                f"{self.base_url}/api/registry/entries/lookup/candidates",
+                headers=self._get_headers(),
+                json=[item],
+            )
+            if response.status_code == 404:
+                legacy = await self._lookup_by_id(client, namespace, entity_type, value)
+                return ([{"entry_id": legacy}] if legacy else []), (1 if legacy else 0)
+            if response.status_code != 200:
+                return [], 0
+            results = response.json().get("results", [])
+            if not results or results[0].get("status") != "found":
+                return [], 0
+            return list(results[0].get("candidates") or []), int(results[0].get("total") or 0)
+
+    async def _lookup_by_id(
+        self, client: httpx.AsyncClient, namespace: str | None,
+        entity_type: str | None, value: str,
+    ) -> str | None:
+        lookup_item: dict[str, Any] = {"entry_id": value}
+        if namespace:
+            lookup_item["namespace"] = namespace
+        if entity_type:
+            lookup_item["entity_type"] = entity_type
+        response = await client.post(
+            f"{self.base_url}/api/registry/entries/lookup/by-id",
+            headers=self._get_headers(),
+            json=[lookup_item],
+        )
+        if response.status_code != 200:
+            return None
+        results = response.json().get("results", [])
+        if results and results[0].get("status") == "found":
+            return cast("str | None", results[0].get("entry_id"))
+        return None
+
     async def resolve_identifier(
         self,
         namespace: str | None,
         entity_type: str | None,
         value: str,
     ) -> str | None:
-        """Resolve any identifier to a canonical entry_id via
-        POST /api/registry/entries/lookup/by-id.
-
-        by-id rather than /entries/resolve is deliberate (CASE-433): its
-        search_values fallback matches raw value strings without requiring
-        the caller to know the composite-key shape — value-form references
-        depend on that. /entries/resolve only matches entry_id or a full
-        hashed composite key.
-        """
-        lookup_item: dict[str, Any] = {"entry_id": value}
-        if namespace:
-            lookup_item["namespace"] = namespace
-        if entity_type:
-            lookup_item["entity_type"] = entity_type
-        async with self._make_client() as client:
-            response = await client.post(
-                f"{self.base_url}/api/registry/entries/lookup/by-id",
-                headers=self._get_headers(),
-                json=[lookup_item],
-            )
-            if response.status_code != 200:
-                return None
-            data = response.json()
-            results = data.get("results", [])
-            if results and results[0].get("status") == "found":
-                return cast("str | None", results[0].get("entry_id"))
-            return None
+        """Resolve any identifier to its canonical entry_id: the entry ID
+        itself, or the one entry whose keys carry the value. None when
+        nothing matches; AmbiguousIdentifierError when several entries do —
+        never an arbitrary one of them."""
+        candidates, total = await self.resolve_candidates(namespace, entity_type, value)
+        if total > 1:
+            raise AmbiguousIdentifierError(value, candidates, total)
+        return cast("str | None", candidates[0].get("entry_id")) if candidates else None
 
     async def lookup_entry_namespaces(
         self,
