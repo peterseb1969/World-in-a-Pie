@@ -505,28 +505,35 @@ export interface RehashIdentitiesRequest {
   template_values?: string[]
 }
 
-/** One document the rehash pass did not leave unchanged. */
+/**
+ * One document the rehash pass did not leave unchanged — or, on an apply, an
+ * unchanged document whose Registry re-key did not answer `unchanged`.
+ */
 export interface RehashIdentitiesItem {
   document_id: string
   template_id: string
   template_value: string | null
   /**
    * `changed`: the hash differs and the pass can apply it.
+   * `unchanged`: the stored hash is already right; listed only on an apply
+   * whose Registry re-key for it did not answer `unchanged` (an earlier
+   * apply's Registry leg had failed) — see `registry_status`.
    * `unresolved`: no stored resolution to recompute from; left as is.
    * `collision`: another document converges on the same identity; reported,
    * never applied.
    * `error`: the template version could not be read.
    */
-  status: 'changed' | 'unresolved' | 'collision' | 'error'
+  status: 'changed' | 'unchanged' | 'unresolved' | 'collision' | 'error'
   old_hash: string | null
   new_hash: string | null
   detail: string | null
   /** Version rows rewritten; 0 on a dry run. */
   versions_updated: number
   /**
-   * Outcome of the Registry re-key for this document; null on a dry run and
-   * for documents the pass did not apply. Read it per item: `applied` on the
-   * response counts rewritten documents whether or not their re-key succeeded.
+   * Outcome of the Registry re-key for this document: `rekeyed` or
+   * `unchanged` on success; `not_found`, `conflict`, `error`, `missing` or
+   * `error: <reason>` otherwise. Null on a dry run and for documents the pass
+   * did not re-key.
    */
   registry_status: string | null
 }
@@ -543,7 +550,8 @@ export interface RehashCollisionGroup {
  *
  * The call is synchronous: one request, one response, no job to poll, so
  * the duration grows with the namespace. Nothing is merged — documents that
- * would converge are reported as collisions and left untouched.
+ * would converge are reported as collisions and left untouched. An apply is
+ * safe to re-run: read `registry_failed`, not only `applied`.
  */
 export interface RehashIdentitiesResponse {
   namespace: string
@@ -554,9 +562,26 @@ export interface RehashIdentitiesResponse {
   unresolved: number
   collisions: number
   errors: number
-  /** Documents whose version rows were rewritten; 0 on a dry run. */
+  /**
+   * Documents migrated completely: version rows rewritten AND the Registry
+   * re-key succeeded. 0 on a dry run.
+   */
   applied: number
-  /** Every scanned document except the unchanged ones. */
+  /**
+   * Documents whose Registry re-key did not succeed, rewritten by this run or
+   * an earlier one. Re-run the apply once the cause is fixed: every apply
+   * re-sends the re-key for documents whose stored hash is already right.
+   */
+  registry_failed: number
+  /**
+   * Documents whose stored hash was already right but whose Registry claim
+   * was not, re-keyed by this run.
+   */
+  registry_repaired: number
+  /**
+   * Every scanned document except the unchanged ones; on an apply, also
+   * unchanged documents whose Registry re-key did not answer `unchanged`.
+   */
   items: RehashIdentitiesItem[]
   collision_groups: RehashCollisionGroup[]
   /** The pass does not update reporting; this says how to refresh it. */

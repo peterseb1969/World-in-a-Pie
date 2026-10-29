@@ -10,8 +10,17 @@ then re-sync reporting (replay) for the affected templates.
 Dry-run first: the report lists per-document outcomes, and in particular
 **collision groups** — documents that were forked under spelling-fed hashing
 and now converge on one identity. Converging two existing version chains is
-vocabulary curation, not migration (archive or merge one side first), so
-collisions are reported and never applied.
+vocabulary curation, not migration, so collisions are reported and never
+applied.
+
+The apply is safe to re-run after a partial failure. Mongo is written before
+the Registry, so a Registry leg that fails leaves a document whose stored hash
+is already the new one; a re-run would see it as unchanged in Mongo. Every
+apply therefore re-sends the Registry re-key for the documents Mongo already
+has right as well — the Registry answers ``unchanged`` for a claim that is
+already current and re-keys one a failed run left behind. ``applied`` counts
+only documents whose Registry leg succeeded; ``registry_failed`` counts the
+rest.
 """
 
 import logging
@@ -30,6 +39,11 @@ from .registry_client import RegistryError, get_registry_client
 from .template_store_client import TemplateStoreError, get_template_store_client
 
 logger = logging.getLogger(__name__)
+
+# Registry re-key requests are sent in bounded batches; a failed batch marks
+# only its own documents.
+REKEY_BATCH_SIZE = 500
+REKEY_OK = ("rekeyed", "unchanged")
 
 
 @dataclass
@@ -60,6 +74,8 @@ class RehashReport:
     collisions: int = 0
     errors: int = 0
     applied: int = 0
+    registry_failed: int = 0
+    registry_repaired: int = 0
     items: list[RehashItem] = field(default_factory=list)
     collision_groups: list[dict[str, Any]] = field(default_factory=list)
 
@@ -74,7 +90,14 @@ class RehashReport:
             "collisions": self.collisions,
             "errors": self.errors,
             "applied": self.applied,
-            "items": [vars(i) for i in self.items if i.status != "unchanged"],
+            "registry_failed": self.registry_failed,
+            "registry_repaired": self.registry_repaired,
+            # Unchanged documents are listed only when their Registry claim
+            # needed attention (re-keyed by this run, or still failing).
+            "items": [
+                vars(i) for i in self.items
+                if i.status != "unchanged" or i.registry_status not in (None, "unchanged")
+            ],
             "collision_groups": self.collision_groups,
             "reporting_note": (
                 "Reporting is not updated by this pass — replay the affected "
@@ -141,6 +164,10 @@ async def rehash_identities(
     # unchanged one is caught too.
     converge: dict[tuple[str, str], set[str]] = {}
     changed_items: list[RehashItem] = []
+    # Documents whose Mongo hash is already the recomputed one: on apply their
+    # Registry claim is re-sent, so a run that failed after writing Mongo
+    # converges.
+    current_items: list[RehashItem] = []
 
     async for grouped in collection.aggregate(pipeline):
         row = grouped["row"]
@@ -199,6 +226,7 @@ async def rehash_identities(
 
         if new_hash == row.get("identity_hash"):
             report.unchanged += 1
+            current_items.append(item)
             continue
 
         item.status = "changed"
@@ -220,8 +248,9 @@ async def rehash_identities(
         if item.document_id in collided_ids:
             item.status = "collision"
             item.detail = (
-                "another document converges on the same identity — curate "
-                "(archive or merge) before migrating these"
+                "another document converges on the same identity; the pass "
+                "never converges two version chains — curate the vocabulary "
+                "before migrating these"
             )
             report.collisions += 1
         else:
@@ -230,10 +259,8 @@ async def rehash_identities(
     if dry_run:
         return report
 
-    # Apply: Mongo rows first, then the Registry claims. A doc whose Registry
-    # re-key fails is reported per item; re-running the pass converges.
+    # Apply: Mongo rows first, then the Registry claims, in bounded batches.
     to_apply = [i for i in changed_items if i.status == "changed"]
-    registry = get_registry_client()
     for item in to_apply:
         result = await collection.update_many(
             {"document_id": item.document_id},
@@ -241,21 +268,34 @@ async def rehash_identities(
         )
         item.versions_updated = result.modified_count
 
-    if to_apply:
+    to_rekey = to_apply + current_items
+    registry = get_registry_client()
+    for start in range(0, len(to_rekey), REKEY_BATCH_SIZE):
+        batch = to_rekey[start:start + REKEY_BATCH_SIZE]
         try:
             rekey_results = await registry.rekey_identity([
                 {"entry_id": i.document_id, "identity_hash": i.new_hash}
-                for i in to_apply
+                for i in batch
             ])
-            by_id = {r.get("entry_id"): r for r in rekey_results}
-            for item in to_apply:
-                item.registry_status = (by_id.get(item.document_id) or {}).get(
-                    "status", "missing"
-                )
         except RegistryError as exc:
-            logger.error("Registry re-key failed: %s", exc)
-            for item in to_apply:
+            logger.error("Registry re-key failed for %d document(s): %s", len(batch), exc)
+            for item in batch:
                 item.registry_status = f"error: {exc}"
+            continue
+        by_id = {r.get("entry_id"): r for r in rekey_results}
+        for item in batch:
+            result_item = by_id.get(item.document_id) or {}
+            item.registry_status = result_item.get("status", "missing")
+            if item.registry_status not in REKEY_OK and result_item.get("error"):
+                item.detail = result_item["error"]
 
-    report.applied = len(to_apply)
+    for item in to_rekey:
+        if item.registry_status not in REKEY_OK:
+            report.registry_failed += 1
+        elif item.status == "unchanged" and item.registry_status == "rekeyed":
+            report.registry_repaired += 1
+    for item in current_items:
+        if item.registry_status != "unchanged":
+            report.items.append(item)
+    report.applied = sum(1 for i in to_apply if i.registry_status in REKEY_OK)
     return report

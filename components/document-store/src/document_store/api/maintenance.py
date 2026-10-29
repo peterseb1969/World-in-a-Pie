@@ -29,9 +29,12 @@ class RehashItemResponse(BaseModel):
     document_id: str
     template_id: str
     template_value: str | None = None
-    status: Literal["changed", "unresolved", "collision", "error"] = Field(
+    status: Literal["changed", "unchanged", "unresolved", "collision", "error"] = Field(
         description=(
             "changed: the hash differs and the pass can apply it; "
+            "unchanged: the stored hash is already right, listed only on an apply "
+            "whose Registry re-key for it did not answer unchanged (see "
+            "registry_status); "
             "unresolved: no stored resolution to recompute from, left as is; "
             "collision: another document converges on the same identity, "
             "reported and never applied; error: the template version was unreadable."
@@ -46,8 +49,10 @@ class RehashItemResponse(BaseModel):
     registry_status: str | None = Field(
         default=None,
         description=(
-            "Outcome of the Registry re-key for this document; null on a dry "
-            "run and for documents the pass did not apply."
+            "Outcome of the Registry re-key for this document: rekeyed or "
+            "unchanged on success; not_found, conflict, error, missing or "
+            "'error: <reason>' otherwise. Null on a dry run and for documents "
+            "the pass did not re-key."
         ),
     )
 
@@ -72,10 +77,34 @@ class RehashIdentitiesResponse(BaseModel):
     collisions: int
     errors: int
     applied: int = Field(
-        description="Documents whose version rows were rewritten; 0 on a dry run.",
+        description=(
+            "Documents migrated completely: version rows rewritten AND the "
+            "Registry re-key succeeded. 0 on a dry run."
+        ),
+    )
+    registry_failed: int = Field(
+        default=0,
+        description=(
+            "Documents whose Registry re-key did not succeed, whether their "
+            "rows were rewritten by this run or by an earlier one. Re-run the "
+            "apply once the cause is fixed: every apply re-sends the re-key "
+            "for documents whose stored hash is already right. 0 on a dry run."
+        ),
+    )
+    registry_repaired: int = Field(
+        default=0,
+        description=(
+            "Documents whose stored hash was already right but whose Registry "
+            "claim was not, re-keyed by this run (an earlier apply's Registry "
+            "leg had failed). 0 on a dry run."
+        ),
     )
     items: list[RehashItemResponse] = Field(
-        description="Every scanned document except the unchanged ones.",
+        description=(
+            "Every scanned document except the unchanged ones; on an apply, "
+            "also unchanged documents whose Registry re-key did not answer "
+            "unchanged."
+        ),
     )
     collision_groups: list[RehashCollisionGroup]
     reporting_note: str
@@ -94,8 +123,10 @@ async def rehash_identities_endpoint(
     resolutions, updates every version row, and re-keys the Registry's
     composite-key claims. Dry-run (the default) only reports — read it
     first: collision groups are formerly-forked documents now converging
-    on one identity, which need curation (archive or merge) and are never
-    applied. Reporting re-syncs via replay afterwards; the response says so.
+    on one identity, which need vocabulary curation and are never
+    applied. An apply is safe to re-run: it re-sends the Registry re-key for
+    documents whose stored hash is already right, so a run whose Registry leg
+    failed converges; read registry_failed, not only applied. Reporting re-syncs via replay afterwards; the response says so.
 
     Requires admin permission on the namespace.
     """

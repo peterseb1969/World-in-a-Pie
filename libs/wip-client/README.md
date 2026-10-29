@@ -79,7 +79,7 @@ GET requests retry automatically on 502/503/504 with exponential backoff (defaul
 import { createWipClient } from '@wip/client'
 
 const client = createWipClient({
-  baseUrl: '/wip',  // In browser: resolved to window.location.origin + '/wip'
+  baseUrl: `${import.meta.env.BASE_URL}wip`,  // In browser: the app's @wip/proxy mount
   auth: { type: 'api-key', key: 'dev_master_key_for_testing' },
 })
 
@@ -123,10 +123,11 @@ import { createWipClient, ApiKeyAuthProvider, OidcAuthProvider } from '@wip/clie
 
 const client = createWipClient({
   // Required: base URL of your WIP instance
-  // In browser behind Vite proxy: '/wip' (resolved to origin + '/wip')
+  // In browser behind the app's @wip/proxy mount: `${import.meta.env.BASE_URL}wip`
+  //   (a deployed app lives under /apps/<name>/; a bare '/wip' works only at '/')
   // In browser direct to Caddy: '' (resolved to window.location.origin)
   // For Node.js scripts: 'https://localhost:8443' or 'https://your-host:8443'
-  baseUrl: '/wip',
+  baseUrl: `${import.meta.env.BASE_URL}wip`,
 
   // Auth: API key, OIDC token callback, or custom AuthProvider
   auth: { type: 'api-key', key: 'your-key' },
@@ -176,7 +177,7 @@ for typing and subclassing; in normal use you reach them through the
 client properties above rather than constructing them directly. The
 sections below document each service's methods through those properties.
 
-All services route through the `baseUrl`. The Caddy reverse proxy routes `/api/def-store/*`, `/api/template-store/*`, etc. to the correct service port. The client always sends requests to `baseUrl + /api/<service>/...` — Caddy is required to route them correctly. In browser apps behind a Vite proxy, use `baseUrl: '/wip'` (resolved to `window.location.origin + '/wip'`). Use `baseUrl: ''` for direct Caddy access. In Node.js scripts, use `baseUrl: 'https://your-host:8443'`.
+All services route through the `baseUrl`. The Caddy reverse proxy routes `/api/def-store/*`, `/api/template-store/*`, etc. to the correct service port. The client always sends requests to `baseUrl + /api/<service>/...` — Caddy is required to route them correctly. In browser apps behind the `@wip/proxy` mount, use ``baseUrl: `${import.meta.env.BASE_URL}wip` `` — a deployed app lives under `/apps/<name>/`, so a bare `'/wip'` works only for an app served at `/`. Use `baseUrl: ''` for direct Caddy access. In Node.js scripts, use `baseUrl: 'https://your-host:8443'`.
 
 ---
 

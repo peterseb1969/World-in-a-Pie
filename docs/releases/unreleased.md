@@ -1147,6 +1147,37 @@ unchanged.
 **Action:** none for existing callers; this is additive. Apps that want the
 methods or hooks re-vendor `wip-client-0.65.0.tgz` and `wip-react-0.24.0.tgz`.
 
+### The identity-hash migration converges after a failed Registry leg; `applied` means fully migrated; `@wip/client` 0.66.0
+
+`POST /api/document-store/maintenance/rehash-identities` writes MongoDB first,
+then re-keys the Registry's claims. When the Registry leg failed, the
+documents' stored hash was already the new one, so every later run counted
+them unchanged and never asked the Registry again: their claims stayed on the
+old hash for good. `applied` had counted them as migrated anyway.
+
+- Every apply now re-sends the Registry re-key for documents whose stored hash
+  is already right. The Registry answers `unchanged` for a claim that is
+  current, and re-keys one an earlier run left behind. Re-running the apply
+  after a Registry outage now completes it.
+- `applied` counts only documents whose rows were rewritten **and** whose
+  Registry re-key succeeded. New counts: `registry_failed` (re-key did not
+  succeed, from this run or an earlier one) and `registry_repaired` (stored
+  hash already right, claim re-keyed by this run). Such documents are listed
+  in `items` with `status: "unchanged"` and their `registry_status`; the item
+  status enum gains `unchanged`.
+- The re-key is sent in batches of 500; a failed batch marks only its own
+  documents.
+- The collision `detail` no longer tells the caller to archive a document
+  (archive was removed).
+- `@wip/client` 0.66.0 types the new fields and status, and its README's
+  browser `baseUrl` example is `` `${import.meta.env.BASE_URL}wip` `` (a bare
+  `'/wip'` works only for an app served at `/`).
+
+**Action:** a caller that read `applied` as "rows rewritten" now gets "fully
+migrated"; read `registry_failed` too. If an earlier apply reported any
+`registry_status` starting with `error`, run the apply again. Apps using the
+typed client re-vendor `wip-client-0.66.0.tgz`.
+
 ### Platform-maintained term closure in reporting
 
 Each namespace schema gains a `term_closure` table: one row per

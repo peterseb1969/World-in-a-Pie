@@ -30,8 +30,10 @@ def test_rehash_response_is_typed():
     spec = app.openapi()["components"]["schemas"]
     item = spec["RehashItemResponse"]
     assert item["properties"]["status"]["enum"] == [
-        "changed", "unresolved", "collision", "error",
+        "changed", "unchanged", "unresolved", "collision", "error",
     ]
+    report = spec["RehashIdentitiesResponse"]["properties"]
+    assert {"registry_failed", "registry_repaired"} <= set(report)
     assert set(spec["RehashCollisionGroup"]["required"]) == {
         "template_id", "identity_hash", "document_ids",
     }
