@@ -874,7 +874,11 @@ cards instead of the depth documents, and scripts do its bookkeeping.
   the context holds now: `current_usage` when the harness sends it (Qwen
   Code), else the fill percentage times the window (Claude Code). Qwen
   Code's `total_input_tokens` is the sum over every request of the session
-  and would trip the 300k rule within a few dozen requests.
+  and would trip the 300k rule within a few dozen requests. The activity
+  part reads Qwen Code's prompt hook too: Qwen sends a slash command
+  expanded into the command's text with the typed command as the last line,
+  and fires the hook with an empty prompt on its own turns, which no longer
+  clears the activity.
 
 The profile is recorded as `PROFILE` in `.claude/.app-meta` (every app now
 records it; existing apps get `PROFILE="full"`). A refresh keeps the recorded

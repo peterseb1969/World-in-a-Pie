@@ -156,7 +156,18 @@ def handle_hook(payload: dict) -> None:
     cdir = claude_dir(payload)
     event = payload.get("hook_event_name")
     if event == "UserPromptSubmit":
-        activity = wip_activity(payload.get("prompt") or "")
+        prompt = payload.get("prompt") or ""
+        if not prompt.strip():
+            # Qwen Code also fires this hook with an empty prompt on its own
+            # turns; that says nothing about what the YAC is working on.
+            return
+        activity = wip_activity(prompt)
+        if not activity:
+            # Qwen Code sends a slash command expanded into the command's
+            # text, with the typed command appended as the last line.
+            last = prompt.rstrip().rsplit("\n", 1)[-1].strip()
+            if last.startswith("/"):
+                activity = wip_activity(last)
         if activity:
             write_activity(cdir, activity)
         else:

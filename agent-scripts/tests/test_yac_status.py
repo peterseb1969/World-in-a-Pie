@@ -321,3 +321,33 @@ def test_no_git_dir_is_fine(tmp_path):
     line(root)
     assert (root / ".claude-context-pct").exists()
     assert not (root / ".git").exists()
+
+
+# --- Qwen Code ---------------------------------------------------------------
+# Captured from Qwen Code 0.26.2: a slash command arrives expanded into the
+# command file's text, with the typed command as the last line, and the hook
+# also fires with an empty prompt on Qwen's own turns.
+
+QWEN_EXPANDED = ("Cross-agent case workflow (tier 3). Subcommands: `file`, `list`, `read`.\n\n"
+                 "**Pre-flight (do this first, every time):**\n\n1. Tier check\n\n"
+                 "/wip-case read 973 --brief")
+
+
+def test_qwen_expanded_command_is_read_from_its_last_line(tmp_path):
+    root = make_project(tmp_path)
+    prompt(root, QWEN_EXPANDED)
+    assert "reading CASE-973" in line(root)
+
+
+def test_qwen_empty_prompt_keeps_the_activity(tmp_path):
+    root = make_project(tmp_path)
+    prompt(root, QWEN_EXPANDED)
+    prompt(root, "")
+    assert "reading CASE-973" in line(root)
+
+
+def test_prose_ending_in_a_wip_word_is_not_a_command(tmp_path):
+    root = make_project(tmp_path)
+    prompt(root, "/wip-case read 973")
+    prompt(root, "the list page of\nwip-cooking is slow")
+    assert "CASE-973" not in line(root)
