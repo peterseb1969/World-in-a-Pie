@@ -16,7 +16,11 @@ import yaml
 from wip_deploy.config_gen import make_spec_context, resolve_all_env
 from wip_deploy.discovery import Discovery, discover
 from wip_deploy.renderers import render_dev_simple
-from wip_deploy.renderers.dev_simple import _render_dev_compose_yaml
+from wip_deploy.renderers.dev_simple import (
+    UVICORN_LAUNCHER_CONTAINER_PATH,
+    UVICORN_LAUNCHER_RENDER_PATH,
+    _render_dev_compose_yaml,
+)
 from wip_deploy.secrets import ensure_secrets
 from wip_deploy.secrets_backend import FileSecretBackend, ResolvedSecrets
 from wip_deploy.spec import (
@@ -541,8 +545,40 @@ class TestHotReload:
         doc = self._compose_doc(tmp_path, real_discovery)
         reg = doc["services"]["registry"]
         # entrypoint holds the binary, command holds args incl. --reload.
-        assert reg["entrypoint"] == ["uvicorn"]
+        assert reg["entrypoint"] == ["python"]
+        assert reg["command"][0] == UVICORN_LAUNCHER_CONTAINER_PATH
         assert "--reload" in reg["command"]
+
+    def test_uvicorn_runs_under_respawning_launcher(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Plain `uvicorn --reload` restarts its worker only on a file change:
+        a worker that died left the supervisor holding the socket, every
+        request hung, and the container never exited for its restart policy.
+        Every uvicorn service runs through the launcher, which is rendered
+        into the install dir and mounted read-only; the rest of the argv is
+        uvicorn's, unchanged."""
+        d = _dev_deployment()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_dev_simple(
+            d, real_discovery.components, real_discovery.apps, s, repo_root=REPO_ROOT,
+        )
+        launcher = tree.files[Path(UVICORN_LAUNCHER_RENDER_PATH)].content
+        assert "class RespawningReload" in launcher
+        doc = yaml.safe_load(tree.files[Path("docker-compose.yaml")].content)
+        mount = f"./{UVICORN_LAUNCHER_RENDER_PATH}:{UVICORN_LAUNCHER_CONTAINER_PATH}:ro"
+        uvicorn_services = {
+            name: svc for name, svc in doc["services"].items()
+            if svc.get("command", [None])[0] == UVICORN_LAUNCHER_CONTAINER_PATH
+        }
+        assert "document-store" in uvicorn_services
+        for name, svc in uvicorn_services.items():
+            assert svc["entrypoint"] == ["python"], name
+            assert mount in svc["volumes"], name
+        ds = uvicorn_services["document-store"]["command"]
+        assert ds[1:4] == ["document_store.main:app", "--host", "0.0.0.0"]
+        assert not any(mount in svc.get("volumes", []) for name, svc in doc["services"].items()
+                       if name not in uvicorn_services)
 
     def test_non_uvicorn_command_unchanged(
         self, tmp_path: Path, real_discovery: Discovery

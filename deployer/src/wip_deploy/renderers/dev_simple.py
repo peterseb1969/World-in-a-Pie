@@ -13,8 +13,9 @@ file set as the compose renderer but with three dev-friendly changes:
   2. Source volume mounts (`./components/<name>/src:/app/src:ro`) for
      every component with a build_context — edits to Python source show
      up inside the container without a rebuild.
-  3. `--reload` appended to uvicorn commands — Python services
-     hot-reload on source change.
+  3. uvicorn commands run through a dev launcher with `--reload` —
+     Python services hot-reload on source change, and a worker that dies
+     is respawned instead of leaving the container up and unresponsive.
 
 Node/Go apps don't benefit from (2) and (3) — they need rebuilds. MVP
 treats them the same: they get build contexts but no hot reload.
@@ -107,6 +108,19 @@ _AUTH_SERVICES: frozenset[str] = frozenset({
 # Services that additionally import from libs/wip-archive (the archive
 # format + remap library the backup/restore engine consumes in-process).
 _ARCHIVE_SERVICES: frozenset[str] = frozenset({"document-store"})
+
+# uvicorn services run under a dev launcher: uvicorn's own CLI and hot
+# reload, plus a respawn when the worker dies. Plain `--reload` restarts the
+# worker only on a file change, so a worker that is OOM-killed or crashes
+# leaves the supervisor holding the socket — every request hangs and the
+# container never exits for its restart policy to act. The launcher is
+# rendered into the install dir and mounted read-only, like the other
+# rendered support files.
+_UVICORN_LAUNCHER_SOURCE = (
+    Path(__file__).resolve().parent.parent / "dev_runtime" / "uvicorn_respawn.py"
+)
+UVICORN_LAUNCHER_RENDER_PATH = "config/dev/uvicorn_respawn.py"
+UVICORN_LAUNCHER_CONTAINER_PATH = "/etc/wip-dev/uvicorn_respawn.py"
 
 # Directories/files to skip when copying a component tree into the
 # render output. Caches and test fixtures aren't needed in the build
@@ -272,6 +286,8 @@ def render_dev_simple(
 
     caddy_cfg = generate_caddy_config(deployment, components, apps)
     tree.add("config/caddy/Caddyfile", render_caddyfile(caddy_cfg))
+
+    tree.add(UVICORN_LAUNCHER_RENDER_PATH, _UVICORN_LAUNCHER_SOURCE.read_text())
 
     # Config-file API keys (the spec's plus the canary) — same render + posture as the
     # compose target (0644 inside the 0700 install directory, mounted
@@ -537,18 +553,21 @@ def _dev_service_block(
     # No `env_file:` — see compose.py: secrets reach the container only
     # through the `${VAR}` entries its manifest declares.
 
-    # Dev: if the command is uvicorn-based, append --reload for hot reload AND
-    # force the reload watcher to poll (CASE-523). uvicorn --reload's watcher
+    # Dev: if the command is uvicorn-based, run it through the respawning
+    # launcher (see _UVICORN_LAUNCHER_SOURCE), append --reload for hot reload,
+    # AND force the reload watcher to poll (CASE-523). uvicorn --reload's watcher
     # (watchfiles) uses native inotify by default, which does NOT propagate across
     # the macOS podman virtiofs/9p bind mount — so --reload is a silent no-op there
     # (edits land on disk but the running process never reloads, manufacturing
     # "the fix isn't deployed" misdiagnoses). WATCHFILES_FORCE_POLLING is the
     # backend analogue of the apps' CHOKIDAR_USEPOLLING.
     cmd = _command_for(owner)
+    uses_launcher = bool(cmd and cmd[0] == "uvicorn")
     if cmd:
-        if cmd[0] == "uvicorn":
+        if uses_launcher:
             if "--reload" not in cmd:
                 cmd = [*cmd, "--reload"]
+            cmd = ["python", UVICORN_LAUNCHER_CONTAINER_PATH, *cmd[1:]]
             block.setdefault("environment", {})["WATCHFILES_FORCE_POLLING"] = "1"
         # See compose.py for the entrypoint/command split rationale:
         # compose's `command:` only overrides CMD, so full argv needs to
@@ -572,6 +591,10 @@ def _dev_service_block(
         )
     if mounts_auth_config_dir(owner):
         volumes.append(f"./{API_KEYS_RENDER_DIR}:{API_KEYS_CONTAINER_DIR}:ro")
+    if uses_launcher:
+        volumes.append(
+            f"./{UVICORN_LAUNCHER_RENDER_PATH}:{UVICORN_LAUNCHER_CONTAINER_PATH}:ro"
+        )
     if volumes:
         block["volumes"] = volumes
 
