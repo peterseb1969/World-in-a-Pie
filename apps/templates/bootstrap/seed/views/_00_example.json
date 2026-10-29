@@ -1,0 +1,4 @@
+{
+  "name": "v_example_by_status",
+  "sql": "SELECT status, count(*) AS n FROM doc_todo_app_thing GROUP BY status"
+}

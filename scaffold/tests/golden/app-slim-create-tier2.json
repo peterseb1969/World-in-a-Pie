@@ -66,6 +66,9 @@
     "libs/wip_toolkit-0.7.1-py3-none-any.whl",
     "templates/bootstrap/BootstrapGate.tsx.template",
     "templates/bootstrap/bootstrap.routes.ts.template",
-    "templates/bootstrap/bootstrap.server.ts.template"
+    "templates/bootstrap/bootstrap.server.ts.template",
+    "templates/bootstrap/seed/README.md",
+    "templates/bootstrap/seed/_namespaces.example.json",
+    "templates/bootstrap/seed/views/_00_example.json"
   ]
 }

@@ -66,6 +66,7 @@ curl -k -X POST https://localhost:8443/api/registry/api-keys \
   -H 'X-API-Key: <admin-key>' -H 'Content-Type: application/json' \
   -d '{"name": "__APP_SLUG__", "namespaces": ["__DEV_NAMESPACE__"], "grant_permission": "write"}'
 ```
+Run the **bootstrap** with the deploy key, not this one: no namespace-scoped key can create or update a namespace. If the app re-registers reporting views at startup (`server/seed/views/`), the runtime key needs `"grant_permission": "admin"` — view registration requires namespace admin, and `write` is not enough.
 
 **Multi-namespace key → pass `namespace` explicitly.** The deploy admin/proxy key spans all namespaces, so WIP cannot derive one for you — pass `namespace=__DEV_NAMESPACE__` on API calls that need scoping, or set `defaultNamespace` on `@wip/proxy` to scope reads. A single-namespace key (the least-privilege opt-in above) gets automatic derivation instead.
 
@@ -137,6 +138,10 @@ Every WIP-consuming app must follow the **offer-on-empty / use-on-exists** disci
 
 Read each template's header comment, fill in the TODO markers (namespace, app title), drop a `<NS_PREFIX>_BOOTSTRAP_RECORD` template into `server/seed/templates/` (value must match the server template's derived `BOOTSTRAP_RECORD_VALUE`), and you're done. The seed-file convention (`server/seed/terminologies/<VALUE>.json`, `server/seed/templates/<NN>_<VALUE>.json`) is documented in the server template's header, along with where the seeds are read from (`SEED_DIR`, default `<cwd>/server/seed` — ship it in the runtime image, and don't rely on the module's location if you bundle the server) and the role-keyed layout plus `server/seed/namespaces.json` for apps that own more than one namespace.
 
+**Two inert seed stubs** ship beside the templates in `templates/bootstrap/seed/` (the loader skips `_`-prefixed files; its `README.md` explains both):
+- `_namespaces.example.json` — the namespace's settings (`isolation_mode`, `allowed_external_refs`, `id_config`, `deletion_mode`) as `roles.<role>.config`. Rename it to `server/seed/namespaces.json` to apply them at bootstrap; a file declaring only `main` keeps the flat seed dirs. The bootstrap never runs on a namespace that holds documents, so the file sets up a namespace and never retunes a live one.
+- `views/_00_example.json` — a registered reporting view (`{name, sql}`) over the unqualified entity view `doc_<template_value>`. Drop the underscore to activate it; views are re-registered on every start and are not in WIP backups.
+
 ## Reference Documentation
 
 Read these before starting:
@@ -149,7 +154,7 @@ Read these before starting:
 - `docs/ui-guidance.md` — **Canonical** v1 visual anchor: brand palette tokens (primary/accent/success/danger), typography hierarchy (text-2xl page titles, NOT text-3xl), component shapes (cards, modals, tinted callouts), accessibility floor. `tailwind.config.js` ships pre-extended with these tokens — use the named classes (`bg-primary`, `text-text-muted`), not inline hex.
 - `docs/ontology-support.md` — Term relations, polyhierarchy, typed relations, traversal queries
 - `docs/wip-deployable-app-contract.md` — what your app must satisfy to ship under `wip-deploy install` (Dockerfile.dev, vite.config, `apps/<name>/wip-app.yaml` ports, WIP-independent healthcheck). Read before scaffolding.
-- `templates/bootstrap/*.template` — Bootstrap pattern starting points (see "Namespace Bootstrap on Launch" above)
+- `templates/bootstrap/*.template` and `templates/bootstrap/seed/` — Bootstrap pattern starting points and seed stubs (see "Namespace Bootstrap on Launch" above)
 
 ## Key Identity Concepts
 

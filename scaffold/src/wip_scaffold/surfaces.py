@@ -189,6 +189,15 @@ BOOTSTRAP_TEMPLATES = [
     "BootstrapGate.tsx.template",
 ]
 
+# Inert seed stubs (the loader skips `_`-prefixed files) copied verbatim:
+# JSON cannot carry the `//` banner, so seed/README.md says they are
+# genesis copies instead.
+BOOTSTRAP_SEED_STUBS = [
+    "seed/README.md",
+    "seed/_namespaces.example.json",
+    "seed/views/_00_example.json",
+]
+
 
 def bootstrap_surface() -> Surface:
     """Genesis copies of the bootstrap starting points, each stamped with a
@@ -230,6 +239,12 @@ def bootstrap_surface() -> Surface:
             src = src_dir / name
             if src.is_file():
                 out[f"templates/bootstrap/{name}"] = banner.encode() + src.read_bytes()
+            else:
+                ctx.notes.append(f"Warning: {name} not found in {src_dir}, skipping")
+        for name in BOOTSTRAP_SEED_STUBS:
+            src = src_dir / name
+            if src.is_file():
+                out[f"templates/bootstrap/{name}"] = src.read_bytes()
             else:
                 ctx.notes.append(f"Warning: {name} not found in {src_dir}, skipping")
         return out
