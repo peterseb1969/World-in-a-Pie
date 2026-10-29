@@ -165,7 +165,7 @@ async def search_by_term(
                 )
 
                 if not found_in_primary:
-                    for syn in entry.synonyms:
+                    for syn in entry.active_synonyms():
                         found_in_syn = any(
                             term_lower in str(v).lower()
                             for v in syn.composite_key.values()

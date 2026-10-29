@@ -18,11 +18,14 @@ from ..models.api_models import (
     BrowseEntriesResponse,
     BrowseEntryItem,
     BulkDeleteResponse,
+    BulkEntryLifecycleResponse,
     BulkResolveResponse,
     BulkUpdateResponse,
     DeleteItem,
     DeleteResponse,
     EntryDetailResponse,
+    EntryLifecycleItem,
+    EntryLifecycleResponse,
     ExportEntriesRequest,
     ExportEntriesResponse,
     ExportEntryItem,
@@ -58,6 +61,8 @@ from ..services.claims import (
     claim_entry_keys_pending,
     confirm_entry_keys,
     release_entry_keys,
+    retire_entry_synonyms,
+    revive_entry_synonyms,
 )
 from ..services.errors import error_fields, invalid_entity_type_fields
 from ..services.hash import HashService
@@ -271,7 +276,7 @@ async def unified_search(
 
             if not primary_match:
                 # Check synonym composite key values
-                for syn in entry.synonyms:
+                for syn in entry.active_synonyms():
                     for v in syn.composite_key.values():
                         if isinstance(v, str) and q_lower in v.lower():
                             matched_via = "synonym_key_value"
@@ -435,7 +440,7 @@ async def register_keys(
             existing_by_hash[
                 (entry.namespace, entry.entity_type, entry.primary_composite_key_hash)
             ] = entry
-            for syn in entry.synonyms:
+            for syn in entry.active_synonyms():
                 existing_by_hash[
                     (syn.namespace, syn.entity_type, syn.composite_key_hash)
                 ] = entry
@@ -1360,7 +1365,8 @@ async def lookup_by_keys(
                                     "$elemMatch": {
                                         "namespace": item.namespace,
                                         "entity_type": item.entity_type,
-                                        "composite_key_hash": key_hash
+                                        "composite_key_hash": key_hash,
+                                        "status": {"$ne": "inactive"},
                                     }
                                 }
                             }
@@ -1413,7 +1419,7 @@ async def lookup_by_keys(
                 matched_entity_type = item.entity_type
                 matched_composite_key = item.composite_key
                 if entry.primary_composite_key_hash != key_hash:
-                    for syn in entry.synonyms:
+                    for syn in entry.active_synonyms():
                         if syn.composite_key_hash == key_hash:
                             matched_namespace = syn.namespace
                             matched_entity_type = syn.entity_type
@@ -1587,6 +1593,109 @@ async def delete_entries(
 
 
 @router.post(
+    "/deactivate",
+    response_model=BulkEntryLifecycleResponse,
+    summary="Retire entries' synonyms when their entities are retired (bulk)"
+)
+async def deactivate_entries(
+    items: list[EntryLifecycleItem] = Body(...),
+    dry_run: bool = Query(False, description="Report what would be released, change nothing"),
+    identity: UserIdentity = Depends(require_privileged_key)
+) -> BulkEntryLifecycleResponse:
+    """Called by the owning service when it retires an entity (soft delete,
+    deprecation, deactivation).
+
+    The entity's synonyms are released: each becomes inactive, stays recorded
+    on the entry, and neither blocks another entity from claiming its key nor
+    resolves. The entry itself stays active — its canonical ID and primary key
+    keep resolving, because a retired entity is retired, not gone. The
+    auto-synonym (the entity's own {ns, type, …} address) stays claimed too,
+    so the entity remains addressable by value. Idempotent: an entry with
+    nothing left to release reports unchanged.
+    """
+    results: list[EntryLifecycleResponse] = []
+    for i, item in enumerate(items):
+        try:
+            entry = await RegistryEntry.find_one({"entry_id": item.entry_id})
+            if not entry:
+                results.append(EntryLifecycleResponse(
+                    index=i, status="not_found", registry_id=item.entry_id,
+                ))
+                continue
+            released = await retire_entry_synonyms(entry, item.updated_by, dry_run=dry_run)
+            results.append(EntryLifecycleResponse(
+                index=i,
+                status="deactivated" if released else "unchanged",
+                registry_id=entry.entry_id,
+                released=[s.composite_key for s in released],
+            ))
+        except Exception as e:
+            results.append(EntryLifecycleResponse(
+                index=i, status="error", registry_id=item.entry_id, **error_fields(e),
+            ))
+
+    return BulkEntryLifecycleResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status in ("deactivated", "unchanged")),
+        failed=sum(1 for r in results if r.status in ("not_found", "error")),
+        dry_run=dry_run,
+    )
+
+
+@router.post(
+    "/reactivate",
+    response_model=BulkEntryLifecycleResponse,
+    summary="Reclaim entries' synonyms when their entities are revived (bulk)"
+)
+async def reactivate_entries(
+    items: list[EntryLifecycleItem] = Body(...),
+    identity: UserIdentity = Depends(require_privileged_key)
+) -> BulkEntryLifecycleResponse:
+    """Called by the owning service when it revives a retired entity.
+
+    Each inactive synonym is claimed again where its key is free. A key
+    another entity took while this one was retired stays with that entity:
+    the synonym stays inactive, the entry is reactivated without it, and a
+    warning names the synonym and its holder. Idempotent.
+    """
+    results: list[EntryLifecycleResponse] = []
+    for i, item in enumerate(items):
+        try:
+            entry = await RegistryEntry.find_one({"entry_id": item.entry_id})
+            if not entry:
+                results.append(EntryLifecycleResponse(
+                    index=i, status="not_found", registry_id=item.entry_id,
+                ))
+                continue
+            reclaimed, taken = await revive_entry_synonyms(entry, item.updated_by)
+            results.append(EntryLifecycleResponse(
+                index=i,
+                status="reactivated" if reclaimed or taken else "unchanged",
+                registry_id=entry.entry_id,
+                reclaimed=[s.composite_key for s in reclaimed],
+                not_reclaimed=[
+                    {"composite_key": s.composite_key, "held_by": holder}
+                    for s, holder in taken
+                ],
+                warnings=[
+                    f"Synonym {s.composite_key} is now held by entry {holder}; "
+                    "reactivated without it"
+                    for s, holder in taken
+                ],
+            ))
+        except Exception as e:
+            results.append(EntryLifecycleResponse(
+                index=i, status="error", registry_id=item.entry_id, **error_fields(e),
+            ))
+
+    return BulkEntryLifecycleResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status in ("reactivated", "unchanged")),
+        failed=sum(1 for r in results if r.status in ("not_found", "error")),
+    )
+
+
+@router.post(
     "/resolve",
     response_model=BulkResolveResponse,
     summary="Resolve synonym composite keys to entry IDs (bulk)"
@@ -1647,7 +1756,10 @@ async def resolve_synonyms(
                 query = {
                     "$or": [
                         {"primary_composite_key_hash": key_hash},
-                        {"synonyms.composite_key_hash": key_hash},
+                        {"synonyms": {"$elemMatch": {
+                            "composite_key_hash": key_hash,
+                            "status": {"$ne": "inactive"},
+                        }}},
                     ],
                     "status": status_filter,
                 }

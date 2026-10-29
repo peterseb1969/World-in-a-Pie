@@ -52,6 +52,11 @@ def clear_registry_transport() -> None:
     _registry_transport = None
 
 
+# Entries per /entries/deactivate or /reactivate request: a bulk soft delete
+# can retire thousands of documents at once.
+_LIFECYCLE_BATCH = 500
+
+
 # ── Errors ──────────────────────────────────────────────────────────────────
 
 
@@ -477,6 +482,61 @@ class RegistryClientBase:
                 f"Registry refused to hard-delete entry {entry_id}: "
                 f"{results[0].get('error') or status}"
             )
+
+    async def deactivate_entries(
+        self,
+        entry_ids: list[str],
+        updated_by: str | None = None,
+        dry_run: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Tell the Registry these entities were retired: their synonyms are
+        released (inactive — they neither block another entity's claim nor
+        resolve), while the canonical ID, primary key and auto-synonym keep
+        resolving. Returns the per-item results (status deactivated /
+        unchanged / not_found / error, with the released keys). Raises
+        RegistryError on transport failure or a non-200 answer.
+        """
+        return await self._entry_lifecycle(
+            "deactivate", entry_ids, updated_by, {"dry_run": "true"} if dry_run else None,
+        )
+
+    async def reactivate_entries(
+        self,
+        entry_ids: list[str],
+        updated_by: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Tell the Registry these entities were revived: their released
+        synonyms are claimed again where free. A synonym another entity took
+        meanwhile stays with it — the item's `warnings` and `not_reclaimed`
+        name it. Returns the per-item results; raises RegistryError on
+        transport failure or a non-200 answer.
+        """
+        return await self._entry_lifecycle("reactivate", entry_ids, updated_by, None)
+
+    async def _entry_lifecycle(
+        self,
+        verb: str,
+        entry_ids: list[str],
+        updated_by: str | None,
+        params: dict[str, str] | None,
+    ) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        async with self._make_client() as client:
+            for start in range(0, len(entry_ids), _LIFECYCLE_BATCH):
+                batch = entry_ids[start:start + _LIFECYCLE_BATCH]
+                response = await client.post(
+                    f"{self.base_url}/api/registry/entries/{verb}",
+                    headers=self._get_headers(),
+                    params=params,
+                    json=[{"entry_id": eid, "updated_by": updated_by} for eid in batch],
+                )
+                if response.status_code != 200:
+                    raise RegistryError(
+                        f"Failed to {verb} {len(batch)} entries: "
+                        f"{response.status_code} - {response.text}"
+                    )
+                results.extend(response.json().get("results") or [])
+        return results
 
     async def merge_entries(
         self,

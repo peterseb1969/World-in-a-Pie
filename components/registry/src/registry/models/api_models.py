@@ -732,6 +732,54 @@ class DeleteResponse(BaseModel):
     details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
 
 
+# =============================================================================
+# Entry Lifecycle API Models (retire / revive an entity's synonyms)
+# =============================================================================
+
+class EntryLifecycleItem(StrictModel):
+    """Request model for deactivating or reactivating an entry."""
+
+    entry_id: str = Field(..., description="Canonical ID of the entry whose entity was retired or revived")
+    updated_by: str | None = None
+
+
+class EntryLifecycleResponse(BaseModel):
+    """Per-item result of a deactivate or reactivate."""
+
+    index: int
+    status: str  # deactivated, reactivated, unchanged, not_found, error
+    registry_id: str | None = None
+    released: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Composite keys of the synonyms released (deactivate)",
+    )
+    reclaimed: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Composite keys of the synonyms claimed again (reactivate)",
+    )
+    not_reclaimed: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Synonyms another entry took while this one was retired: "
+            "{composite_key, held_by}. The entry is reactivated without them."
+        ),
+    )
+    warnings: list[str] = Field(default_factory=list)
+    error: str | None = None
+    error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
+    details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
+
+
+class BulkEntryLifecycleResponse(BaseModel):
+    """Wrapped response for bulk deactivate / reactivate."""
+
+    results: list[EntryLifecycleResponse]
+    total: int
+    succeeded: int
+    failed: int
+    dry_run: bool = False
+
+
 class BulkUpdateResponse(BaseModel):
     """Wrapped response for bulk update operations."""
 

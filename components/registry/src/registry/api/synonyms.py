@@ -145,10 +145,12 @@ async def add_synonyms(
             synonym_hash = HashService.compute_composite_key_hash(item.synonym_composite_key)
 
             # Fast path: this entry already owns the hash (primary or embedded
-            # synonym) → idempotent already_exists, no claim churn.
-            if (
-                entry.primary_composite_key_hash == synonym_hash
-                or entry.find_synonym_by_hash(synonym_hash) is not None
+            # synonym) → idempotent already_exists, no claim churn. An inactive
+            # copy (released when the entity was retired) does not count: the
+            # add claims the key again below, or reports who holds it now.
+            recorded = entry.find_synonym_by_hash(synonym_hash)
+            if entry.primary_composite_key_hash == synonym_hash or (
+                recorded is not None and recorded.status != "inactive"
             ):
                 results.append(AddSynonymResponse(
                     index=i, status="already_exists",
@@ -201,6 +203,8 @@ async def add_synonyms(
                 created_by=item.created_by,
             )
 
+            if recorded is not None:
+                entry.synonyms.remove(recorded)  # the inactive copy it replaces
             entry.synonyms.append(synonym)
             entry.rebuild_search_values()
             entry.updated_at = datetime.now(UTC)
@@ -460,12 +464,15 @@ async def merge_entries(
                 preferred.synonyms.append(entry_id_synonym)
 
             # Transfer all deprecated synonyms (claim re-points to preferred).
+            # An inactive synonym holds no claim — the key may belong to
+            # another entry by now — so it moves as a record only.
             for syn in deprecated.synonyms:
                 if not any(s.composite_key_hash == syn.composite_key_hash for s in preferred.synonyms):
-                    await CompositeKeyClaim.transfer(
-                        syn.namespace, syn.entity_type, syn.composite_key_hash,
-                        preferred.entry_id,
-                    )
+                    if syn.status != "inactive":
+                        await CompositeKeyClaim.transfer(
+                            syn.namespace, syn.entity_type, syn.composite_key_hash,
+                            preferred.entry_id,
+                        )
                     preferred.synonyms.append(syn)
 
             deprecated.status = "inactive"

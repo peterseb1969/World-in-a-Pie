@@ -42,7 +42,9 @@ class SearchService:
             synonym_condition = {
                 "synonyms": {
                     "$elemMatch": {
-                        f"composite_key.{safe_field_name}": field_value
+                        f"composite_key.{safe_field_name}": field_value,
+                        # A retired entity's synonym does not resolve.
+                        "status": {"$ne": "inactive"},
                     }
                 }
             }
@@ -175,7 +177,7 @@ class SearchService:
         if SearchService._matches_criteria(entry.primary_composite_key, field_criteria):
             return "primary", entry.namespace, entry.entity_type, entry.primary_composite_key
 
-        for synonym in entry.synonyms:
+        for synonym in entry.active_synonyms():
             if SearchService._matches_criteria(synonym.composite_key, field_criteria):
                 return "synonym", synonym.namespace, synonym.entity_type, synonym.composite_key
 

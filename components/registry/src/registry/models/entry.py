@@ -51,6 +51,25 @@ class Synonym(BaseModel):
         default=None,
         description="User or system that created this synonym"
     )
+    status: str = Field(
+        default="active",
+        description=(
+            "active | inactive. An inactive synonym belongs to a retired "
+            "entity: it stays recorded on the entry but holds no claim, so it "
+            "neither blocks another entity from taking the key nor resolves. "
+            "Legacy synonyms carry no status and read as active."
+        ),
+    )
+
+
+# Registry entity types are plural; the auto-synonym's "type" part is singular.
+_SINGULAR_ENTITY_TYPE = {
+    "terminologies": "terminology",
+    "terms": "term",
+    "templates": "template",
+    "documents": "document",
+    "files": "file",
+}
 
 
 class RegistryEntry(Document):
@@ -194,13 +213,34 @@ class RegistryEntry(Document):
                 return syn
         return None
 
+    def active_synonyms(self) -> list[Synonym]:
+        """The synonyms that claim their key and resolve."""
+        return [s for s in self.synonyms if s.status != "inactive"]
+
+    def is_auto_synonym(self, syn: Synonym) -> bool:
+        """True for the synonym the owning service registers as the entity's
+        own address: {"ns": <the entry's namespace>, "type": <its singular
+        entity type>, …} — a term's {ns, type, terminology, value}, a
+        template's {ns, type, value}, a document's {ns, type, template,
+        identity_hash}. Every such synonym is minted through one helper
+        (wip_auth's RegistryClient._register_auto_synonym), so the shape is
+        the marker. Retirement keeps these claimed: they are how a retired
+        entity stays addressable by value (to reactivate or restore it), and
+        nothing else can rightfully claim them."""
+        key = syn.composite_key
+        return (
+            key.get("ns") == self.namespace
+            and key.get("type") == _SINGULAR_ENTITY_TYPE.get(self.entity_type)
+        )
+
     def rebuild_search_values(self):
-        """Rebuild the flat search_values array from all composite keys."""
+        """Rebuild the flat search_values array from the primary key and the
+        active synonyms — an inactive synonym's values must not resolve."""
         values = set()
         for v in self.primary_composite_key.values():
             if isinstance(v, str):
                 values.add(v)
-        for syn in self.synonyms:
+        for syn in self.active_synonyms():
             for v in syn.composite_key.values():
                 if isinstance(v, str):
                     values.add(v)

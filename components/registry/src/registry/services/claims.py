@@ -24,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 from pymongo.errors import DuplicateKeyError
 
 from ..models.composite_key_claim import CompositeKeyClaim
-from ..models.entry import RegistryEntry
+from ..models.entry import RegistryEntry, Synonym
 
 logger = logging.getLogger("registry.claims")
 
@@ -36,11 +36,12 @@ PENDING_GRACE_SECONDS = 60
 
 def _entry_key_pairs(entry: RegistryEntry) -> list[tuple[str, str, str, str]]:
     """(namespace, entity_type, hash, kind) for an entry's primary key plus
-    every embedded synonym — the pairs the unified domain tracks."""
+    every active embedded synonym — the pairs the unified domain tracks. An
+    inactive synonym (its entity is retired) holds no claim."""
     pairs = [
         (entry.namespace, entry.entity_type, entry.primary_composite_key_hash, "primary"),
     ]
-    for syn in entry.synonyms:
+    for syn in entry.active_synonyms():
         pairs.append((syn.namespace, syn.entity_type, syn.composite_key_hash, "synonym"))
     return [(ns, et, h, k) for ns, et, h, k in pairs if h]
 
@@ -159,6 +160,106 @@ async def release_entry_keys(entry: RegistryEntry) -> None:
             )
 
 
+def releasable_synonyms(entry: RegistryEntry) -> list[Synonym]:
+    """The synonyms retiring this entry releases: every active synonym except
+    the auto-synonym (the entity's own address). The primary key is not a
+    synonym and always stays claimed — that is what lets a re-post of the same
+    identity revive the retired entity instead of forking it."""
+    return [s for s in entry.active_synonyms() if not entry.is_auto_synonym(s)]
+
+
+async def retire_entry_synonyms(
+    entry: RegistryEntry, updated_by: str | None = None, *, dry_run: bool = False,
+) -> list[Synonym]:
+    """Retire an entry's synonyms: mark the releasable ones inactive and drop
+    their claims, so they neither block another entity from taking the key nor
+    resolve. They stay recorded on the entry for revival. Returns the synonyms
+    released (would be released, on a dry run). Idempotent.
+
+    The entry is written before the claims go: a crash in between leaves a
+    claim its owner no longer backs, which inline healing frees at the next
+    collision — never a released claim on a synonym still marked active.
+    """
+    released = releasable_synonyms(entry)
+    if dry_run or not released:
+        return released
+    for syn in released:
+        syn.status = "inactive"
+    entry.rebuild_search_values()
+    entry.updated_at = datetime.now(UTC)
+    entry.updated_by = updated_by
+    await entry.save()
+    for syn in released:
+        try:
+            await CompositeKeyClaim.release(
+                syn.namespace, syn.entity_type, syn.composite_key_hash,
+                owner_entry_id=entry.entry_id,
+            )
+        except Exception:
+            logger.exception(
+                "Release failed for retired synonym %s (%s/%s) of entry %s — "
+                "the claim is unbacked and heals at the next collision.",
+                syn.composite_key_hash, syn.namespace, syn.entity_type, entry.entry_id,
+            )
+    return released
+
+
+async def revive_entry_synonyms(
+    entry: RegistryEntry, updated_by: str | None = None,
+) -> tuple[list[Synonym], list[tuple[Synonym, str]]]:
+    """Revive an entry's inactive synonyms: re-claim each one whose key is
+    free. One another entity took while this one was retired stays inactive —
+    the entity is revived without it. Returns (reclaimed, [(synonym, holder
+    entry_id), …] for those left inactive). Idempotent.
+
+    Same two-phase order as a synonym add: claim pending, write the entry,
+    confirm.
+    """
+    reclaimed: list[Synonym] = []
+    taken: list[tuple[Synonym, str]] = []
+    for syn in entry.synonyms:
+        if syn.status != "inactive":
+            continue
+        for attempt in (1, 2):
+            try:
+                await CompositeKeyClaim.claim(
+                    syn.namespace, syn.entity_type, syn.composite_key_hash,
+                    entry.entry_id, "synonym", state="pending",
+                )
+                reclaimed.append(syn)
+                break
+            except DuplicateKeyError:
+                existing = await CompositeKeyClaim.find_existing(
+                    syn.namespace, syn.entity_type, syn.composite_key_hash,
+                )
+                if attempt == 1 and await resolve_stale_claim(existing):
+                    continue  # healed — retry once; index arbitrates races
+                taken.append((syn, existing.owner_entry_id if existing else "?"))
+                break
+    if not reclaimed:
+        return reclaimed, taken
+
+    for syn in reclaimed:
+        syn.status = "active"
+    entry.rebuild_search_values()
+    entry.updated_at = datetime.now(UTC)
+    entry.updated_by = updated_by
+    try:
+        await entry.save()
+    except Exception:
+        for syn in reclaimed:
+            await CompositeKeyClaim.release(
+                syn.namespace, syn.entity_type, syn.composite_key_hash,
+                owner_entry_id=entry.entry_id,
+            )
+        raise
+    for syn in reclaimed:
+        await CompositeKeyClaim.confirm(
+            syn.namespace, syn.entity_type, syn.composite_key_hash, entry.entry_id,
+        )
+    return reclaimed, taken
+
+
 async def reconcile_pending_claims(
     grace_seconds: int = PENDING_GRACE_SECONDS,
 ) -> dict[str, int]:
@@ -260,7 +361,7 @@ async def backfill_claims() -> dict[str, int]:
         survivors = []
         changed = False
         for syn in entry.synonyms:
-            if not syn.composite_key_hash:
+            if not syn.composite_key_hash or syn.status == "inactive":
                 survivors.append(syn)
                 continue
             try:
@@ -368,13 +469,14 @@ def _entry_doc_backs_claim(entry: dict, claim_doc: dict) -> bool:
         s.get("namespace") == claim_doc["namespace"]
         and s.get("entity_type") == claim_doc["entity_type"]
         and s.get("composite_key_hash") == claim_doc["composite_key_hash"]
+        and s.get("status") != "inactive"
         for s in entry.get("synonyms", [])
     )
 
 
 def _entry_backs_claim(entry: RegistryEntry, claim: CompositeKeyClaim) -> bool:
     """True if the entry still owns the claimed (namespace, entity_type, hash)
-    as either its primary key or one of its embedded synonyms."""
+    as either its primary key or one of its active embedded synonyms."""
     if (
         entry.namespace == claim.namespace
         and entry.entity_type == claim.entity_type
@@ -385,7 +487,7 @@ def _entry_backs_claim(entry: RegistryEntry, claim: CompositeKeyClaim) -> bool:
         s.namespace == claim.namespace
         and s.entity_type == claim.entity_type
         and s.composite_key_hash == claim.composite_key_hash
-        for s in entry.synonyms
+        for s in entry.active_synonyms()
     )
 
 
