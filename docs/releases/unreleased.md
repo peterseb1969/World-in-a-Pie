@@ -1655,6 +1655,32 @@ it.
 **Action:** none; a validation result may now report errors it missed
 before. Apps using the typed client re-vendor `wip-client-0.67.0.tgz`.
 
+### A merge rehashes documents whose identity it repoints
+
+A merge points an archived document's term and reference resolutions at
+this install's entities: a definition matched by content, or a referent
+outside the archive. When the field is an identity field, the document's
+identity changes (it hashes the canonical id the resolution names), but the
+merge kept the archived hash. The merged row, its Registry key and its
+uniqueness claim described an identity no write computes, so the next write
+of that identity created a second document. Planning on the stale hash could
+also miss the target's own copy of the same document and insert the
+archive's beside it.
+
+- A merge now recomputes the hash of every document whose rewrite changed a
+  resolution, before planning, from the archived template's identity
+  definition, and re-keys its Registry row. The claim it writes is the new
+  key's. Streamed merges read the archived chains once more for this, only
+  when the merge maps anything.
+- A merge that maps nothing writes rows exactly as archived.
+- The merge result gains `rehashed_documents` per target namespace. Plain
+  restore shares the same code.
+
+**Action:** none for new merges. Documents merged before this release
+keep their stale hash, and nothing repairs them automatically: re-posting
+one creates the duplicate described above, and a PATCH keeps the stored
+hash.
+
 ### Restores list the documents that reference what they could not find, and can leave such edges out
 
 A restore that could not find a referenced entity on this install said

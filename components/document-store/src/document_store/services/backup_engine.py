@@ -827,6 +827,68 @@ def _drop_unchanged_mappings(remapper: IDRemapper) -> None:
             remapper.external_documents.pop(old_id, None)
 
 
+class _IdentityRehash:
+    """Recompute the identity hash of document rows whose references a
+    restore rewrote, and re-key their Registry rows to the new hash.
+
+    A term- or reference-typed identity field hashes the canonical id its
+    stored resolution names, so repointing a resolution changes the
+    document's identity. Left as archived, the row and its Registry key would
+    describe an identity no write computes: the next write of the same
+    identity would create a second document, and a merge would not match the
+    target's copy of it.
+
+    The identity definition comes from the archived template the row was
+    written against, keyed by its archived (template_id, template_version).
+    A row on a template the archive does not carry keeps its hash, as a
+    fresh restore does.
+    """
+
+    def __init__(self, reader: Any, sources: list[str]):
+        # Every archived namespace's templates: a document may use a template
+        # of another namespace in the same archive.
+        self._templates: dict[tuple[str, int], dict[str, Any]] = {}
+        for src in sources:
+            for template in reader.read_entities("templates", namespace=src):
+                template_id = template.get("template_id")
+                if template_id:
+                    self._templates[(template_id, int(template.get("version") or 1))] = {
+                        "identity_fields": list(template.get("identity_fields") or []),
+                        "fields": list(template.get("fields") or []),
+                    }
+        self.new_hash: dict[str, str] = {}
+
+    def rehash(self, archived: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+        """``row`` is ``archived`` after the reference rewrite; recompute its
+        hash in place when the rewrite changed a resolution."""
+        if all(row.get(k) == archived.get(k) for k in ("references", "term_references")):
+            return row
+        template = self._templates.get(
+            (str(archived.get("template_id")), int(archived.get("template_version") or 1))
+        )
+        if template and rehash_document_row(
+            row, template["identity_fields"], template["fields"]
+        ):
+            self.new_hash[str(row.get("document_id"))] = row["identity_hash"]
+        return row
+
+    def rekey(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """A rehashed document's Registry row, keyed on its new hash."""
+        new_hash = (
+            self.new_hash.get(str(entry.get("entry_id")))
+            if entry.get("entity_type") == "documents" else None
+        )
+        key = entry.get("primary_composite_key")
+        if new_hash and isinstance(key, dict) and key.get("identity_hash") != new_hash:
+            key = {**key, "identity_hash": new_hash}
+            entry = {
+                **entry,
+                "primary_composite_key": key,
+                "primary_composite_key_hash": compute_composite_key_hash(key),
+            }
+        return entry
+
+
 class _PlainRestoreRewrite:
     """Repoint a plain restore's references to entities outside the archive.
 
@@ -842,23 +904,11 @@ class _PlainRestoreRewrite:
 
     def __init__(self, remapper: IDRemapper, reader: Any, sources: list[str]):
         self.remapper = remapper
-        # Identity fields and field definitions per template version, from
-        # every archived template: the documents of one namespace may use a
-        # template of another namespace in the same archive.
-        self._templates: dict[tuple[str, int], dict[str, Any]] = {}
-        for src in sources:
-            for template in reader.read_entities("templates", namespace=src):
-                template_id = template.get("template_id")
-                if template_id:
-                    self._templates[(template_id, int(template.get("version") or 1))] = {
-                        "identity_fields": list(template.get("identity_fields") or []),
-                        "fields": list(template.get("fields") or []),
-                    }
-        self._new_hash: dict[str, str] = {}
+        self._rehash = _IdentityRehash(reader, sources)
 
     @property
     def rehashed_documents(self) -> int:
-        return len(self._new_hash)
+        return len(self._rehash.new_hash)
 
     def rewrite(
         self, entity_type: str, entity: dict[str, Any], engine: DirectRestoreEngine
@@ -878,34 +928,18 @@ class _PlainRestoreRewrite:
 
     def _rewrite_document(self, entity: dict[str, Any]) -> dict[str, Any]:
         row = cast(dict[str, Any], self.remapper.remap_document(entity))
-        if row == entity:
-            return row
-        # The template is the archive's own (its id passes through) or one
-        # outside the archive, whose definition this restore does not hold;
-        # the latter keeps its hash, as a fresh restore does.
-        template = self._templates.get(
-            (str(row.get("template_id")), int(row.get("template_version") or 1))
-        )
-        if template and rehash_document_row(
-            row, template["identity_fields"], template["fields"]
-        ):
-            self._new_hash[str(row.get("document_id"))] = row["identity_hash"]
-        return row
+        return self._rehash.rehash(entity, row)
 
     def _rewrite_entry(
         self, entry: dict[str, Any], engine: DirectRestoreEngine
     ) -> dict[str, Any]:
-        result = engine._rewrite_registry_entry(entry, self.remapper)
-        new_hash = (
-            self._new_hash.get(str(entry.get("entry_id")))
-            if entry.get("entity_type") == "documents" else None
-        )
-        key = result.get("primary_composite_key")
-        if new_hash and isinstance(key, dict) and key.get("identity_hash") != new_hash:
-            key = {**key, "identity_hash": new_hash}
-            result["primary_composite_key"] = key
-            result["primary_composite_key_hash"] = compute_composite_key_hash(key)
-        return result
+        return self._rehash.rekey(engine._rewrite_registry_entry(entry, self.remapper))
+
+
+def _drain(chains: Iterator[Any]) -> None:
+    """Run a lazy pass for its side effects."""
+    for _ in chains:
+        pass
 
 
 def _describe_gap(gap: dict[str, Any]) -> str:
@@ -2711,6 +2745,11 @@ class DirectRestoreEngine:
                 # file mappings added after this point never reached a
                 # chain, and must not start to.
                 chain_transform: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None
+                # Documents whose rewritten references change their identity
+                # are rehashed before they are planned: the planner matches on
+                # (template_id, identity_hash), and a stale hash would miss
+                # the target's copy of the same document.
+                rehash = _IdentityRehash(reader, [s for s, _t in targets])
                 for entity_type in MERGE_ENTITY_ORDER:
                     if entity_type in DEFINITION_TYPES:
                         continue
@@ -2721,14 +2760,32 @@ class DirectRestoreEngine:
                         entity_type, raw_entities, remapper
                     )
                     rewritten += changed
-                    archive_entities[entity_type] = entities
                     if entity_type == "documents":
                         if doc_groups is not None:
-                            doc_groups = self._regroup_documents(doc_groups, remapper)
+                            entities = [
+                                rehash.rehash(archived, row)
+                                for archived, row in zip(raw_entities, entities, strict=True)
+                            ]
+                            doc_groups = self._regroup_documents(doc_groups, remapper, rehash)
                         else:
                             chain_transform = self._chain_transform(
-                                copy.deepcopy(remapper), src, tgt
+                                copy.deepcopy(remapper), src, tgt, rehash
                             )
+                            if remapper.total_mappings:
+                                # Compact heads carry no references: one pass
+                                # over the rewritten chains finds the new
+                                # hashes, which the heads then take.
+                                await self._off_loop(
+                                    _drain, transformed_chains(reader, src, chain_transform)
+                                )
+                                entities = [
+                                    {**head, "identity_hash": rehash.new_hash[str(head.get("document_id"))]}
+                                    if str(head.get("document_id")) in rehash.new_hash else head
+                                    for head in entities
+                                ]
+                    elif entity_type == "registry_entries":
+                        entities = [rehash.rekey(entry) for entry in entities]
+                    archive_entities[entity_type] = entities
                     plan = await planner.plan(entity_type, entities, tgt)
                     built[entity_type] = plan
                     # A document the target holds under another ID is still a
@@ -2756,6 +2813,7 @@ class DirectRestoreEngine:
                     # same-namespace merge source_namespace == tgt.
                     "source_namespace": src,
                     "referents": referents,
+                    "rehashed_documents": len(rehash.new_hash),
                     "definitions": definitions.summary(),
                     "incompatibilities": len(definitions.incompatibilities),
                     "target_wins": len(definitions.target_wins),
@@ -2997,15 +3055,15 @@ class DirectRestoreEngine:
         )
 
     def _chain_transform(
-        self, remapper: IDRemapper, source: str, target: str
+        self, remapper: IDRemapper, source: str, target: str, rehash: _IdentityRehash
     ) -> Callable[[list[dict[str, Any]]], list[dict[str, Any]]]:
         """What the in-memory path does to a document chain, as a function:
         the namespace rewrite of a redirected merge, then the reference
-        rewrite onto the target's definitions."""
+        rewrite onto the target's definitions and the rehash it implies."""
         def transform(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if source != target:
                 rows = [self._rewrite_namespace("documents", r, source, target) for r in rows]
-            return [remapper.remap_document(r) for r in rows]
+            return [rehash.rehash(r, remapper.remap_document(r)) for r in rows]
         return transform
 
     def _rewrite_namespace(
@@ -3170,15 +3228,17 @@ class DirectRestoreEngine:
         self,
         doc_groups: dict[str, list[dict[str, Any]]],
         remapper: IDRemapper,
+        rehash: _IdentityRehash,
     ) -> dict[str, list[dict[str, Any]]]:
-        """Apply the document rewrite to every version row, not just the head.
+        """Apply the document rewrite, and the rehash it implies, to every
+        version row, not just the head.
 
         Planning sees one head row per document, but an insert carries the
         whole chain — and every row in it references the same rewritten
         template and terms.
         """
         return {
-            doc_id: [remapper.remap_document(row) for row in rows]
+            doc_id: [rehash.rehash(row, remapper.remap_document(row)) for row in rows]
             for doc_id, rows in doc_groups.items()
         }
 
