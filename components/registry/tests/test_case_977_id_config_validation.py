@@ -173,3 +173,34 @@ async def test_import_refuses_a_manifest_with_bad_id_config(client: AsyncClient,
     with pytest.raises(ValueError, match="manifest id_config"):
         await svc.import_namespace(str(archive), mode="create", imported_by="tester")
     assert await Namespace.find_one({"prefix": "idc-import"}) is None
+
+
+@pytest.mark.asyncio
+async def test_a_bad_stored_value_does_not_fail_an_export(client: AsyncClient) -> None:
+    # Export builds the manifest's id_config the same way the listing does,
+    # so a value stored before validation must be served as the marker there
+    # too — otherwise exporting (backing up) that namespace fails outright.
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from registry.services.export_service import ExportService
+
+    await Namespace(prefix="legacy-export", id_config={"terms": "prefixed"}).insert()
+    ns = await Namespace.find_one({"prefix": "legacy-export"})
+
+    empty = MagicMock(status_code=200)
+    empty.json.return_value = {"items": [], "total": 0, "pages": 1}
+    http = MagicMock()
+    http.get = AsyncMock(return_value=empty)
+    http.__aenter__ = AsyncMock(return_value=http)
+    http.__aexit__ = AsyncMock(return_value=None)
+    svc = ExportService(
+        def_store_url="http://def", template_store_url="http://tpl",
+        document_store_url="http://doc", api_key="k",
+    )
+    with patch("httpx.AsyncClient", return_value=http):
+        zip_path, _stats = await svc.export_namespace(ns)
+
+    with zipfile.ZipFile(zip_path) as zf, zf.open("manifest.json") as m:
+        manifest = json.load(m)
+    assert "invalid" in manifest["id_config"]["terms"]
+    assert manifest["id_config"]["documents"]["algorithm"] == "uuid7"

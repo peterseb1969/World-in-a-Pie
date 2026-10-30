@@ -29,7 +29,7 @@ from ..models.api_models import (
 )
 from ..models.entry import RegistryEntry
 from ..models.id_algorithm import VALID_ENTITY_TYPES, validate_id_config_write
-from ..models.namespace import Namespace
+from ..models.namespace import Namespace, id_config_view
 from ..services.auth import require_admin_key, require_api_key
 from ..services.id_prefixes import (
     IdPrefixError,
@@ -41,24 +41,6 @@ from .grants import _resolve_permission
 
 router = APIRouter()
 logger = logging.getLogger("registry.namespaces")
-
-
-def id_config_view(ns: Namespace) -> dict[str, Any]:
-    """The namespace's id_config per entity type, defaults merged in.
-
-    A stored entry that cannot be read (written before namespace writes
-    were validated) is served as {"invalid": <reason>} rather than raised:
-    one bad namespace must not fail every namespace listing on the install.
-    Minting for that entity type still fails, with the same reason.
-    """
-    id_config: dict[str, Any] = {}
-    for entity_type in sorted(VALID_ENTITY_TYPES):
-        try:
-            id_config[entity_type] = ns.get_id_algorithm(entity_type).model_dump()
-        except ValueError as e:
-            logger.warning("namespace %s: unreadable id_config[%s]: %s", ns.prefix, entity_type, e)
-            id_config[entity_type] = {"invalid": str(e)}
-    return id_config
 
 
 @contextmanager

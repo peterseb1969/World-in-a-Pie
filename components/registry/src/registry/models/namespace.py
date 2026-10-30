@@ -5,6 +5,7 @@ organizing data. Each namespace has an ID algorithm configuration that
 defines how IDs are generated for each entity type.
 """
 
+import logging
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal
 
@@ -12,7 +13,7 @@ from beanie import Document
 from pydantic import Field
 from pymongo import IndexModel
 
-from .id_algorithm import DEFAULT_ID_CONFIG, IdAlgorithmConfig
+from .id_algorithm import DEFAULT_ID_CONFIG, VALID_ENTITY_TYPES, IdAlgorithmConfig
 
 # The unique index that makes a `prefixed` prefix name one ID sequence
 # install-wide (see services/id_prefixes.py).
@@ -123,3 +124,24 @@ class Namespace(Document):
                 partialFilterExpression={"id_prefixes": {"$type": "string"}},
             ),
         ]
+
+
+_view_logger = logging.getLogger("registry.namespaces")
+
+
+def id_config_view(ns: Namespace) -> dict[str, Any]:
+    """The namespace's id_config per entity type, defaults merged in.
+
+    A stored entry that cannot be read (written before namespace writes
+    were validated) is served as {"invalid": <reason>} rather than raised:
+    one bad namespace must not fail every namespace listing on the install.
+    Minting for that entity type still fails, with the same reason.
+    """
+    id_config: dict[str, Any] = {}
+    for entity_type in sorted(VALID_ENTITY_TYPES):
+        try:
+            id_config[entity_type] = ns.get_id_algorithm(entity_type).model_dump()
+        except ValueError as e:
+            _view_logger.warning("namespace %s: unreadable id_config[%s]: %s", ns.prefix, entity_type, e)
+            id_config[entity_type] = {"invalid": str(e)}
+    return id_config

@@ -16,8 +16,7 @@ from typing import Any
 import httpx
 
 from ..models.entry import RegistryEntry
-from ..models.id_algorithm import VALID_ENTITY_TYPES
-from ..models.namespace import Namespace
+from ..models.namespace import Namespace, id_config_view
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +65,10 @@ class ExportService:
 
         try:
             # Build id_config for manifest
-            id_config = {}
-            for entity_type in VALID_ENTITY_TYPES:
-                config = namespace.get_id_algorithm(entity_type)
-                id_config[entity_type] = config.model_dump()
+            # Same view as the namespace responses: an entry stored before
+            # id_config was validated is exported as an {"invalid": …} marker
+            # instead of failing the whole export.
+            id_config = id_config_view(namespace)
 
             # Export manifest
             manifest = {
