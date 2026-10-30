@@ -61,6 +61,10 @@ from wip_deploy.config_gen.mongodb import (
     mongodb_config_hash,
     render_mongodb_entrypoint,
 )
+from wip_deploy.config_gen.namespaces import (
+    RESERVATIONS_FILENAME,
+    namespace_reservations_json,
+)
 from wip_deploy.config_gen.nats import (
     NATS_COMPONENT,
     NATS_CONFIG_CONTAINER_PATH,
@@ -131,6 +135,7 @@ def render_k8s(
             ns,
             generate_api_keys_json(deployment, secrets),
             federated_groups_policy(deployment),
+            namespace_reservations_json(deployment, apps),
         ),
         mode=0o600,
     )
@@ -373,7 +378,9 @@ def _render_network_policies(ns: str) -> str:
 # ────────────────────────────────────────────────────────────────────
 
 
-def _render_api_keys_secret(ns: str, api_keys_json: str, federated_groups: str) -> str:
+def _render_api_keys_secret(
+    ns: str, api_keys_json: str, federated_groups: str, reservations: str
+) -> str:
     """The rendered WIP_AUTH_API_KEYS_FILE document as its own Secret,
     mounted as a directory so a running pod sees it change (wip-secrets
     carries flat name→value pairs, not files)."""
@@ -389,6 +396,7 @@ def _render_api_keys_secret(ns: str, api_keys_json: str, federated_groups: str) 
         "stringData": {
             "api-keys.json": api_keys_json,
             FEDERATED_GROUPS_FILENAME: federated_groups,
+            RESERVATIONS_FILENAME: reservations,
         },
     })
 

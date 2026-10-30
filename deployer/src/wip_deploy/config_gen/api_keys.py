@@ -86,10 +86,18 @@ def declares_api_keys_file(owner: Component | App) -> bool:
 
 def mounts_auth_config_dir(owner: Component | App) -> bool:
     """Does this manifest read a file from the auth config directory
-    (the declared API keys or the federated group policy)? The env
-    declarations are the opt-in, as for `declares_api_keys_file`."""
+    (the declared API keys, the federated group policy or the namespace
+    reservations)? The env declarations are the opt-in, as for
+    `declares_api_keys_file`."""
     names = {ev.name for ev in (*owner.spec.env.required, *owner.spec.env.optional)}
-    return bool(names & {"WIP_AUTH_API_KEYS_FILE", "WIP_AUTH_FEDERATED_GROUPS_FILE"})
+    return bool(
+        names
+        & {
+            "WIP_AUTH_API_KEYS_FILE",
+            "WIP_AUTH_FEDERATED_GROUPS_FILE",
+            "WIP_NAMESPACE_RESERVATIONS_FILE",
+        }
+    )
 
 
 def generate_api_keys_json(

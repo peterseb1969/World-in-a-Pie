@@ -30,6 +30,7 @@ from wip_deploy.config_gen.mongodb import (
 )
 from wip_deploy.config_gen.mongodb import password_secret as mongo_password_secret
 from wip_deploy.config_gen.mongodb import server_password_env as mongo_server_password_env
+from wip_deploy.config_gen.namespaces import namespace_env
 from wip_deploy.config_gen.nats import (
     NATS_COMPONENT,
     nats_clients,
@@ -410,6 +411,7 @@ def resolve_component_env(
     optional_vars = list(component.spec.env.optional)
     required_vars += _nats_env(component, deployment, components, apps)
     required_vars += _mongo_env(component, deployment, components, apps)
+    required_vars += namespace_env(component)
 
     return ResolvedEnv(
         required=_resolve(required_vars, skip_inactive=False),

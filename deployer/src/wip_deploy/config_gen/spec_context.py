@@ -85,6 +85,10 @@ class SpecContextSecurity:
     # WIP_AUTH_FEDERATED_GROUPS_FILE. Every install has the file (empty
     # without connectors), so a mapping change never alters a definition.
     federated_groups_file: str
+    # Container path of the rendered namespace reservations, injected as
+    # WIP_NAMESPACE_RESERVATIONS_FILE. Every install has the file (empty
+    # when no app declares a namespace).
+    namespace_reservations_file: str
 
 
 @dataclass(frozen=True)
@@ -119,11 +123,13 @@ def make_spec_context(
         API_KEYS_CONTAINER_PATH,
         FEDERATED_GROUPS_CONTAINER_PATH,
     )
+    from wip_deploy.config_gen.namespaces import RESERVATIONS_CONTAINER_PATH
 
     security = SpecContextSecurity(
         variant=deployment.spec.variant,
         api_keys_file=API_KEYS_CONTAINER_PATH,
         federated_groups_file=FEDERATED_GROUPS_CONTAINER_PATH,
+        namespace_reservations_file=RESERVATIONS_CONTAINER_PATH,
     )
     return SpecContext(network=net, auth=auth, features=features, security=security)
 

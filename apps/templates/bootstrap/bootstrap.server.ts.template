@@ -74,10 +74,14 @@
  *       },
  *       "external": ["shared-vocab"]
  *     }
- *   - Roles are bootstrapped in the order listed: list the namespaces
- *     others reference first. "main" is required; its configured name is
- *     NAMESPACE below. Other roles read theirs from `env` (falling back to
- *     authored_as, with a warning — set the env var on every deployment).
+ *   - The bootstrap runs in phases across roles: every role's namespace,
+ *     then every role's terminologies, then every role's templates. So a
+ *     template may reference any role's terminologies; one referencing
+ *     another role's TEMPLATES needs that role listed first. "main" is
+ *     required; its configured name is NAMESPACE below. Other roles read
+ *     theirs from `env` (falling back to authored_as, with a warning — set
+ *     the env var on every deployment; the app manifest's spec.namespaces
+ *     sets it when it declares the role with that `env`).
  *   - authored_as is the namespace the seeds were exported from:
  *     `/wip-export-model` (portable=true) writes cross-namespace refs as
  *     "<that name>:VALUE". At load time those refs are rewritten to the
@@ -91,44 +95,41 @@
  *   - Views (server/seed/views/) and the BOOTSTRAP_RECORD belong to "main".
  *   Without namespaces.json the app is single-namespace: flat seed dirs,
  *   one role "main". A namespaces.json that declares ONLY "main" keeps the
- *   flat dirs too — declare it just to give the namespace a "config".
+ *   flat dirs too.
  *
- * NAMESPACE CONFIG (optional "config" on any role in namespaces.json):
- *     "main": { "authored_as": "dev-myapp",
- *               "config": { "isolation_mode": "strict",
- *                           "allowed_external_refs": ["dev-myapp-ref"],
- *                           "id_config": { "documents": { "algorithm": "prefixed",
- *                                                         "prefix": "DOC-", "pad": 6 } },
- *                           "deletion_mode": "retain" } }
- *   - Keys: description, isolation_mode (open | strict), allowed_external_refs,
+ * NAMESPACE SETTINGS live in the app manifest, not in the seeds:
+ *   spec.namespaces in wip-app.yaml declares each namespace the app owns —
+ *     namespaces:
+ *       - role: main
+ *         name: myapp                   # the namespace on this install
+ *         env: WIP_NAMESPACE            # set to `name` in the container
+ *         settings:                     # only what differs from the defaults
+ *           isolation_mode: strict
+ *           allowed_external_refs: [myapp-ref]
+ *           id_config: { documents: { algorithm: prefixed, prefix: "DOC-", pad: 6 } }
+ *           deletion_mode: retain
+ *   - Keys: description, isolation_mode (open | strict),
+ *     allowed_external_refs (namespace names on the install),
  *     id_config (per entity type: terminologies, terms, templates,
- *     documents, files), deletion_mode (retain | full). Anything else fails
- *     the bootstrap before the first write. Omitted keys get the platform
- *     defaults: open, [], UUID7 everywhere, retain.
- *   - A prefixed id_config's prefix must be unique on the install: IDs share
- *     one space across all namespaces and entity types, so the Registry
- *     refuses (409) a second user of a prefix, and (422) an empty prefix or
- *     one ending in a digit, when the namespace is written. The config is applied
- *     to every namespace this app bootstraps — a dev and a deployed
- *     namespace on one install must not share a literal prefix here.
- *   - The config is sent with the namespace upsert on every bootstrap run.
- *     A run only ever reaches a namespace with no documents (runBootstrap
- *     refuses 'ready' and 'resume_blocked'), so it never changes a
- *     namespace in use. Changing a live namespace — its ID format, its
- *     isolation — is an operator action, not a seed edit.
- *   - allowed_external_refs names namespaces as the seeds do: an entry
- *     naming a role's authored_as is rewritten to that role's configured
- *     name, and an entry that is neither a role nor "external" fails the
- *     bootstrap. Open mode already permits "wip"; strict mode needs it
- *     listed. A role whose templates reference another role's namespace
- *     needs that namespace here — the platform refuses the reference
- *     otherwise.
- *   - deletion_mode "full" lets this namespace's entities be hard-deleted
- *     (and the namespace deleted outright). The bootstrap confirms the
- *     retain → full flip a pre-created namespace needs, so the seed is the
- *     confirmation: set it only where purging is the intended lifecycle.
- *   - Upserting a namespace needs an admin key (wip-admins): run the
- *     bootstrap with the deployment's key, not a namespace-scoped one.
+ *     documents, files), deletion_mode (retain | full). Omitted keys get
+ *     the platform defaults: "", open, [], UUID7 everywhere, retain.
+ *   - The install turns these into a namespace reservation the operator
+ *     approves. The bootstrap upserts each namespace with NO settings: the
+ *     reservation supplies them, and the app's own key (admin on its
+ *     namespaces) may create a namespace only as reserved — never other
+ *     settings, never another namespace. A namespace that already exists
+ *     is left as it is; changing a live namespace is an operator action.
+ *   - A prefixed id_config's prefix must be unique on the install: IDs
+ *     share one space across all namespaces and entity types. The deployer
+ *     refuses two reservations with one prefix; the Registry refuses (409)
+ *     a prefix another namespace holds, and (422) an empty prefix or one
+ *     ending in a digit, when the namespace is created.
+ *   - A role whose templates reference another role's namespace needs that
+ *     namespace in its allowed_external_refs. Open mode already permits
+ *     "wip"; strict mode needs it listed.
+ *   - namespaces.json keeps the roles (authored_as, env) and "external";
+ *     a role that still carries "config" fails the bootstrap before the
+ *     first write, so settings are never dropped silently.
  *
  *   If you RENAME any template value (e.g. adopting the namespace-prefixed
  *   bootstrap value), grep the WHOLE seed dir for the old literal — sibling
@@ -257,72 +258,10 @@ interface NamespaceRole {
   namespace: string
   /** Seed subdirectory under terminologies/ and templates/ ('' = flat). */
   dir: string
-  /** Namespace settings sent with the upsert (checked, refs rewritten). */
-  config: AnyObj
-}
-
-const NAMESPACE_CONFIG_KEYS = [
-  'description', 'isolation_mode', 'allowed_external_refs', 'id_config', 'deletion_mode',
-]
-
-const isPlainObject = (v: unknown): v is AnyObj =>
-  !!v && typeof v === 'object' && !Array.isArray(v)
-
-/**
- * Check a role's namespace config and rewrite its allowed_external_refs to
- * this deployment's names. Throws on anything the namespace upsert would
- * refuse or silently misread, so a bad config fails before the first write
- * instead of after an earlier role's namespace was already built.
- */
-function namespaceConfig(
-  file: string,
-  role: string,
-  config: unknown,
-  nsMap: Map<string, string>,
-): AnyObj {
-  if (config === undefined) return {}
-  const where = `${file}: role "${role}" config`
-  if (!isPlainObject(config)) throw new Error(`${where} must be an object`)
-  const unknown = Object.keys(config).filter((k) => !NAMESPACE_CONFIG_KEYS.includes(k))
-  if (unknown.length) {
-    throw new Error(
-      `${where} has unknown key(s) ${unknown.join(', ')} — allowed: ${NAMESPACE_CONFIG_KEYS.join(', ')}`,
-    )
-  }
-  const out: AnyObj = { ...config }
-  if ('description' in out && typeof out.description !== 'string') {
-    throw new Error(`${where}: description must be a string`)
-  }
-  if ('isolation_mode' in out && !['open', 'strict'].includes(out.isolation_mode)) {
-    throw new Error(`${where}: isolation_mode must be "open" or "strict"`)
-  }
-  if ('deletion_mode' in out && !['retain', 'full'].includes(out.deletion_mode)) {
-    throw new Error(`${where}: deletion_mode must be "retain" or "full"`)
-  }
-  if ('id_config' in out && !isPlainObject(out.id_config)) {
-    throw new Error(`${where}: id_config must be an object keyed by entity type`)
-  }
-  if ('allowed_external_refs' in out) {
-    const refs = out.allowed_external_refs
-    if (!Array.isArray(refs) || refs.some((r) => typeof r !== 'string')) {
-      throw new Error(`${where}: allowed_external_refs must be a list of namespace names`)
-    }
-    out.allowed_external_refs = refs.map((r: string) => {
-      const target = nsMap.get(r)
-      if (target === undefined) {
-        throw new Error(
-          `${where}: allowed_external_refs names '${r}', which is neither one of this ` +
-            `app's namespaces (by authored_as) nor listed as "external"`,
-        )
-      }
-      return target
-    })
-  }
-  return out
 }
 
 interface NamespacesFile {
-  roles: Record<string, { authored_as: string; env?: string; config?: AnyObj }>
+  roles: Record<string, { authored_as: string; env?: string; config?: unknown }>
   external?: string[]
 }
 
@@ -337,13 +276,25 @@ function loadRoles(): { roles: NamespaceRole[]; external: string[] } {
   if (!existsSync(file)) {
     return {
       roles: [
-        { role: 'main', authoredAs: DEFAULT_NAMESPACE, namespace: NAMESPACE, dir: '', config: {} },
+        { role: 'main', authoredAs: DEFAULT_NAMESPACE, namespace: NAMESPACE, dir: '' },
       ],
       external: [],
     }
   }
   const decl = JSON.parse(readFileSync(file, 'utf-8')) as NamespacesFile
   if (!decl.roles?.main) throw new Error(`${file}: a "main" role is required`)
+  // Namespace settings moved to the app manifest (spec.namespaces in
+  // wip-app.yaml), where the operator approves them and the install reserves
+  // the namespace. Ignoring a leftover config would silently create the
+  // namespace without it.
+  const withConfig = Object.keys(decl.roles).filter((r) => decl.roles[r].config !== undefined)
+  if (withConfig.length) {
+    throw new Error(
+      `${file}: role(s) ${withConfig.join(', ')} declare "config". Namespace settings ` +
+        `are declared in wip-app.yaml (spec.namespaces), not in the seeds — move them ` +
+        `there and remove "config" from namespaces.json`,
+    )
+  }
   // One role keeps the flat seed dirs: a single-namespace app declaring
   // "main" only to give it a config must not have to move its seeds.
   const flat = Object.keys(decl.roles).length === 1
@@ -362,14 +313,7 @@ function loadRoles(): { roles: NamespaceRole[]; external: string[] } {
     }
     return { role, authoredAs: r.authored_as, namespace, dir: flat ? '' : role }
   })
-  const nsMap = new Map<string, string>([['wip', 'wip']])
-  for (const ns of external) nsMap.set(ns, ns)
-  for (const r of named) nsMap.set(r.authoredAs, r.namespace)
-  const roles = named.map((r) => ({
-    ...r,
-    config: namespaceConfig(file, r.role, decl.roles[r.role].config, nsMap),
-  }))
-  return { roles, external }
+  return { roles: named, external }
 }
 
 interface SeedSet {
@@ -644,9 +588,15 @@ export async function runBootstrap(
     progress('seeds', `Loading seed data from ${SEED_DIR}...`)
     const seeds = loadSeeds()
 
-    for (const seed of seeds) {
-      await bootstrapNamespace(seed, progress, created)
-    }
+    // Phases across roles, never role by role: every namespace first, then
+    // every role's vocabularies, then every role's templates. A template is
+    // resolved against its references when it is created, so a role's
+    // templates may then reference any role's terminologies whatever order
+    // namespaces.json lists the roles in. Templates referencing another
+    // role's templates still need that role listed first.
+    for (const seed of seeds) await createNamespace(seed, progress)
+    for (const seed of seeds) await createTerminologies(seed, progress, created)
+    for (const seed of seeds) await createTemplates(seed, progress, created)
 
     // Wait for template cache to refresh (PoNIF #6 — see wip://ponifs).
     // Without this, the BOOTSTRAP_RECORD write below races the just-
@@ -703,23 +653,25 @@ interface CreatedLists {
   terminologies: string[]
 }
 
-async function bootstrapNamespace(
+async function createNamespace(
+  seed: SeedSet,
+  progress: (step: string, detail: string) => void,
+): Promise<void> {
+  const ns = seed.role.namespace
+  // Idempotent upsert via PUT, with no settings: the install's reservation
+  // of the namespace (spec.namespaces in wip-app.yaml) supplies them, and
+  // the app's own key may only create it as reserved. A namespace that
+  // already exists is left exactly as it is.
+  progress('namespace', `Creating ${ns} namespace...`)
+  await wipPut(`/api/registry/namespaces/${ns}`, {})
+}
+
+async function createTerminologies(
   seed: SeedSet,
   progress: (step: string, detail: string) => void,
   created: CreatedLists,
 ): Promise<void> {
   const ns = seed.role.namespace
-
-  // Create namespace (idempotent upsert via PUT) with the role's config.
-  // A pre-created namespace (the scaffold creates the dev one) is still
-  // 'retain', and the platform refuses the flip to 'full' unconfirmed —
-  // the seed declaring it is the confirmation.
-  progress('namespace', `Creating ${ns} namespace...`)
-  const body: AnyObj = { description: `${ns} app data (bootstrap created)`, ...seed.role.config }
-  if (body.deletion_mode === 'full') body.confirm_enable_deletion = true
-  await wipPut(`/api/registry/namespaces/${ns}`, body)
-
-  // Terminologies
   const terminologies = seed.terminologies
   if (terminologies.length) {
     progress('terminologies', `Creating ${terminologies.length} terminologies in ${ns}...`)
@@ -806,8 +758,15 @@ async function bootstrapNamespace(
       assertBulkSuccess(relsResult, 'ontology term-relations create')
     }
   }
+}
 
-  // Templates (sorted by filename prefix for dependency order)
+async function createTemplates(
+  seed: SeedSet,
+  progress: (step: string, detail: string) => void,
+  created: CreatedLists,
+): Promise<void> {
+  const ns = seed.role.namespace
+  // Sorted by filename prefix for dependency order within the role.
   progress('templates', `Creating ${seed.templates.length} templates in ${ns}...`)
   for (const data of seed.templates) {
     progress('templates', `Creating ${data.value}...`)

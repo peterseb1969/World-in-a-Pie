@@ -7,6 +7,33 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Namespace settings move from the seeds to the app manifest
+
+An app now declares the namespaces it owns, and their settings, under
+`spec.namespaces` in its `wip-app.yaml` (role, name, the env var that
+carries the name, settings). The deployer renders every enabled app's
+declarations as namespace reservations, which the Registry reads from
+`WIP_NAMESPACE_RESERVATIONS_FILE` beside the config-file API keys:
+
+- A key holding `admin` on a reserved namespace may create it through
+  `PUT /api/registry/namespaces/{prefix}`, without being a platform admin.
+  Any setting it sends must equal the reservation's (403 naming the field);
+  on an existing namespace it changes nothing.
+- A namespace create, by any caller, takes the settings it leaves out from
+  the reservation instead of the platform defaults.
+- The deployer refuses two apps reserving one namespace and two
+  reservations claiming one ID prefix.
+
+The bootstrap template upserts with no settings and runs its phases across
+roles (every namespace, then every role's terminologies, then every role's
+templates). A seed `server/seed/namespaces.json` role that still carries
+`config` fails the bootstrap before its first write.
+**Action:** an app with a `config` in `namespaces.json` moves those settings
+to `spec.namespaces` in its manifest and removes `config`, then refreshes
+its bootstrap template. An app manifest that sets `WIP_NAMESPACE` (or a
+role's env var) under `env` while also declaring it in `spec.namespaces` is
+refused; drop the `env` entry.
+
 ### Deleting a namespace that other namespaces reference needs `force`
 
 Namespace deletion's inbound-reference check looked at field names no

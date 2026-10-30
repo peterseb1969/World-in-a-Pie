@@ -130,10 +130,19 @@ without ugly GET → 404 → POST dances or silent schema drift. A bootstrap tha
 died mid-run (network blip, seed bug) is recovered by simply running it again.
 
 ### Namespace upsert: PUT /api/registry/namespaces/{prefix}
-PUT is an upsert — creates the namespace on missing using platform defaults
+PUT is an upsert — creates the namespace on missing; updates supplied fields
+when existing. Always 200 OK. Idempotent: re-running with the same body is a
+no-op. A create fills omitted fields from the namespace's reservation when the
+install reserves it for an app, else from platform defaults
 (isolation_mode='open', deletion_mode='retain', description='',
-allowed_external_refs=[]); updates supplied fields when existing. Always 200 OK.
-Idempotent: re-running with the same body is a no-op.
+allowed_external_refs=[]).
+
+Who may call it: a platform admin key, or a key holding `admin` on a namespace
+the install reserves for an app (the app manifest's spec.namespaces). The
+latter is how an app bootstraps without an admin key: upsert with NO settings
+and the namespace is created exactly as reserved. Any setting it sends must
+equal the reservation's (403 naming the field), and it never changes a
+namespace that already exists.
 
 Safety guards on `deletion_mode`:
 - The 'wip' default namespace cannot be flipped to `full` — 400.

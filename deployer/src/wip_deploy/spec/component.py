@@ -13,7 +13,7 @@ code paths.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -491,6 +491,45 @@ class ImageRef(WIPModel):
 # ────────────────────────────────────────────────────────────────────
 
 
+class NamespaceSettings(WIPModel):
+    """The settings an app's namespace is created with, as the operator
+    approves them. Unstated settings take the Registry's defaults. The
+    Registry validates `id_config` (the deployer does not copy its rules)."""
+
+    description: str | None = None
+    isolation_mode: Literal["open", "strict"] | None = None
+    allowed_external_refs: list[str] | None = None
+    id_config: dict[str, Any] | None = None
+    deletion_mode: Literal["retain", "full"] | None = None
+
+
+class AppNamespace(WIPModel):
+    """A namespace an app owns: reserved for it on the install.
+
+    The deployer renders every enabled app's namespaces as reservations the
+    Registry reads. With a reservation, the app's own key (admin on the
+    namespace) may create the namespace, and only with these settings, so
+    the app can trigger its bootstrap without a platform admin key.
+
+    `role` is the name the app's seeds use for the namespace (its bootstrap
+    keys seed directories by role, never by namespace name); `name` is the
+    namespace on this install; `env` names the env var the deployer sets to
+    `name` in the app's container.
+    """
+
+    role: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
+    name: str = Field(pattern=r"^[a-z][a-z0-9-]*$")
+    env: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]*$")
+    settings: NamespaceSettings = Field(default_factory=NamespaceSettings)
+
+    @field_validator("name")
+    @classmethod
+    def not_wip(cls, v: str) -> str:
+        if v == "wip":
+            raise ValueError("the 'wip' namespace belongs to the platform; an app cannot own it")
+        return v
+
+
 class ComponentMetadata(WIPModel):
     name: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9-]*$")
     category: Literal["core", "optional", "infrastructure"]
@@ -517,6 +556,31 @@ class ComponentSpec(WIPModel):
     # image's default CMD is wrong (e.g., mismatched port) or when the
     # service uses a non-uvicorn entry point (e.g., `python -m wip_mcp`).
     command: list[str] | None = None
+    # Apps only (see App): the namespaces the app owns on the install.
+    namespaces: list[AppNamespace] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def namespaces_well_formed(self) -> ComponentSpec:
+        if not self.namespaces:
+            return self
+        roles = [n.role for n in self.namespaces]
+        names = [n.name for n in self.namespaces]
+        envs = [n.env for n in self.namespaces if n.env]
+        for what, values in (("roles", roles), ("names", names), ("env vars", envs)):
+            if len(values) != len(set(values)):
+                raise ValueError(f"namespaces: duplicate {what}: {values}")
+        if "main" not in roles:
+            raise ValueError("namespaces: one namespace must have role 'main'")
+        # The declaration is the env var's single source; a second, hand-set
+        # value could name another namespace than the reserved one.
+        declared = {v.name for v in (*self.env.required, *self.env.optional)}
+        clash = sorted(declared & set(envs))
+        if clash:
+            raise ValueError(
+                f"namespaces: {', '.join(clash)} is set from the namespace "
+                "declaration; remove it from env"
+            )
+        return self
 
     @model_validator(mode="after")
     def unique_port_names(self) -> ComponentSpec:
@@ -557,3 +621,12 @@ class Component(WIPModel):
     @classmethod
     def _normalize_kind(cls, v: object) -> object:
         return v
+
+    @model_validator(mode="after")
+    def no_namespaces(self) -> Component:
+        if self.spec.namespaces:
+            raise ValueError(
+                f"component {self.metadata.name!r}: namespaces are declared by apps, "
+                "not platform components"
+            )
+        return self

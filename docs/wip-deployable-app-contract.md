@@ -224,7 +224,22 @@ One **non-guarantee** belongs in the same list, because apps have assumed its op
 - **Registered reporting views are not archived — apps own them.** WIP backup/restore carries MongoDB state only; registered SQL views (`POST /api/reporting-sync/namespace/{ns}/views`) live in PostgreSQL bookkeeping and come back **missing after every restore, by design**. An app that queries a registered view must tolerate its absence and re-register it idempotently (re-registering an existing name replaces the definition): at bootstrap, at startup, and again when a query fails on a missing relation. Registration validates the SQL against real reporting tables, which exist only after reporting-sync has synced the namespace — so a failure right after bootstrap or restore is a retry, not an error. The bootstrap scaffold ships this pattern as `server/seed/views/` + `ensureRegisteredViews()` / `ensureRegisteredViewsWithRetry()` in `bootstrap.server.ts.template`. Views registered by hand outside any app bootstrap are ephemeral: nothing recreates them after a restore.
   The scaffold seeds an inert example, `templates/bootstrap/seed/views/_00_example.json` (`_`-prefixed files are skipped): write its SQL against the unqualified entity view `doc_<template_value>`, because it runs in the namespace's own schema and the namespace name differs between dev and deployed installs. Registering needs namespace **admin** on the app's namespace, or a `wip-admins` / `wip-services` key; the deployment's key qualifies, a `write`-granted runtime key does not.
 
-The app also owns its **namespace settings**. The bootstrap creates the namespace with an admin-only upsert, so it runs with the deployment's key, and it sends each role's `config` from `server/seed/namespaces.json` (`isolation_mode`, `allowed_external_refs`, `id_config`, `deletion_mode`) with that upsert. The scaffold seeds an inert `templates/bootstrap/seed/_namespaces.example.json` at platform defaults. The bootstrap never runs on a namespace that holds documents, so the settings shape a fresh namespace and never retune a live one.
+The app also owns its **namespace settings**, and declares them in its manifest, not in its seeds:
+
+  ```yaml
+  spec:
+    namespaces:
+      - role: main            # the role the seeds use (server/seed/namespaces.json)
+        name: myapp           # the namespace on this install
+        env: WIP_NAMESPACE    # the deployer sets it to `name`; don't also set it under env
+        settings:             # only what differs from the defaults
+          isolation_mode: strict
+          id_config: {documents: {algorithm: prefixed, prefix: "DOC-", pad: 6}}
+  ```
+
+  `settings` takes `description`, `isolation_mode`, `allowed_external_refs` (namespace names on the install), `id_config` and `deletion_mode`. One namespace must have role `main`, and a namespace has one owning app on an install.
+
+  The deployer renders every enabled app's declarations as **namespace reservations** the Registry reads (it refuses two apps reserving one namespace, and two reservations claiming one ID prefix). With a reservation, a key holding `admin` on the namespace may create it through the namespace upsert, so your bootstrap does not need a platform admin key. It creates the namespace only as reserved: the bootstrap upserts with **no settings**, the reservation supplies them, and any setting it sends must equal the reservation's (403 naming the field otherwise). A namespace that already exists is never changed this way; changing a live namespace's settings is an operator action. `server/seed/namespaces.json` keeps the roles (`authored_as`, `env`) and `external`; a role that still carries `config` fails the bootstrap before its first write.
 
 You don't need to test these. They're stable. Just use them.
 

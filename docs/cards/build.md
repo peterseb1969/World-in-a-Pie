@@ -5,10 +5,10 @@ docs/WIP_DevGuardrails.md sha256:30130d07053d7ac5 reviewed:fe514f02
 libs/wip-client/README.md sha256:7f5f9fd97bb1fe1d reviewed:57d02741
 libs/wip-react/README.md sha256:9e71f0ba4a17d97a reviewed:a66e110f
 libs/wip-proxy/README.md sha256:35e6262638a97d55 reviewed:a66e110f
-docs/wip-deployable-app-contract.md sha256:afb09245c3260780 reviewed:57d02741
+docs/wip-deployable-app-contract.md sha256:68345c8a7180f5e6 reviewed:a7c74e27
 docs/playbooks/app-builder/build-app.md sha256:732acb6b731e64ca reviewed:fe514f02
 docs/playbooks/app-builder/bootstrap.md sha256:4bc80d0099e12f0b reviewed:ea985986
-scaffold/templates/claude-md/app.md sha256:2d778e237d5848ea reviewed:57d02741
+scaffold/templates/claude-md/app.md sha256:0bb5acc49a2e3f43 reviewed:a7c74e27
 -->
 # WIP build card — Phase 4: writing the app
 
@@ -82,7 +82,7 @@ router.use(express.json())   // body parsers AFTER the proxy
 - The bootstrap writes the namespace-prefixed record (e.g. `KB_BOOTSTRAP_RECORD`) **last**; the legacy literal `BOOTSTRAP_RECORD` is still accepted.
 - Build from `templates/bootstrap/*.template` (their header comments are the depth), then delete `templates/bootstrap/`.
 - Seeds: `server/seed/terminologies/<VALUE>.json`, `server/seed/templates/<NN>_<VALUE>.json` (include the record template). Read from `SEED_DIR`, default `<cwd>/server/seed`.
-- Run the bootstrap with the deploy key; scoped keys cannot create namespaces. A runtime key re-registering `server/seed/views/` needs namespace `admin`.
+- Namespace settings live in `wip-app.yaml` `spec.namespaces`, not seeds. Namespace `admin` creates a reserved namespace, re-registers views; `write` can't.
 - No restore UI in the app; restore is console-initiated.
 
 ## DevGuardrails essentials (Guides 1–7)

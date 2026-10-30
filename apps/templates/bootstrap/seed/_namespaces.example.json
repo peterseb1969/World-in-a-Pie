@@ -1,13 +1,7 @@
 {
   "roles": {
     "main": {
-      "authored_as": "TODO_APP_NAMESPACE",
-      "config": {
-        "isolation_mode": "open",
-        "allowed_external_refs": [],
-        "id_config": {},
-        "deletion_mode": "retain"
-      }
+      "authored_as": "TODO_APP_NAMESPACE"
     }
   },
   "external": []

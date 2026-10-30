@@ -59,6 +59,10 @@ from wip_deploy.config_gen.mongodb import (
     mongodb_config_hash,
     render_mongodb_entrypoint,
 )
+from wip_deploy.config_gen.namespaces import (
+    RESERVATIONS_RENDER_PATH,
+    namespace_reservations_json,
+)
 from wip_deploy.config_gen.nats import (
     NATS_COMPONENT,
     NATS_CONFIG_CONTAINER_PATH,
@@ -294,6 +298,7 @@ def render_dev_simple(
     # where the manifest declares the env).
     tree.add(API_KEYS_RENDER_PATH, generate_api_keys_json(deployment, secrets))
     tree.add(FEDERATED_GROUPS_RENDER_PATH, federated_groups_policy(deployment))
+    tree.add(RESERVATIONS_RENDER_PATH, namespace_reservations_json(deployment, apps))
 
     if dex_conf is not None:
         tree.add("config/dex/config.yaml", dex_conf)

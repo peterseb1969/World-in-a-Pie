@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import ValidationError
 from pymongo.errors import DuplicateKeyError
 
-from wip_auth import UserIdentity
+from wip_auth import UserIdentity, get_auth_config
 
 from ..models.api_models import (
     ExportResponse,
@@ -36,6 +36,12 @@ from ..services.id_prefixes import (
     claim_for_write,
     collision_error,
     is_prefix_collision,
+)
+from ..services.reservations import (
+    SETTING_DEFAULTS,
+    SETTING_FIELDS,
+    ReservationsUnavailable,
+    load_reservations,
 )
 from .grants import _resolve_permission
 
@@ -78,6 +84,89 @@ def namespace_to_response(ns: Namespace) -> NamespaceResponse:
         updated_at=ns.updated_at,
         updated_by=ns.updated_by,
     )
+
+
+def _reserved_settings(prefix: str) -> dict[str, Any] | None:
+    """The settings the install's reservation of `prefix` approves, with its
+    id_config validated as any namespace write's is; None when not reserved.
+
+    An unusable reservations file is a 503 and an invalid reservation a 409,
+    both naming the cause: the operator's declaration is wrong, and neither
+    refusing the app nor creating the namespace at other settings is a safe
+    guess.
+    """
+    try:
+        reservation = load_reservations().get(prefix)
+    except ReservationsUnavailable as e:
+        logger.critical("Namespace reservations unavailable: %s", e)
+        raise HTTPException(
+            status_code=503, detail=f"Namespace reservations are unavailable: {e}"
+        ) from e
+    if reservation is None:
+        return None
+    settings = reservation.effective_settings()
+    try:
+        settings["id_config"] = validate_id_config_write(settings["id_config"])
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"The reservation of namespace '{prefix}' (app '{reservation.app}') "
+                f"has an invalid id_config: {e.errors()}"
+            ),
+        ) from e
+    return settings
+
+
+async def _check_reserved_upsert(
+    identity: UserIdentity,
+    prefix: str,
+    ns: Namespace | None,
+    update_data: dict[str, Any],
+    reserved: dict[str, Any] | None,
+) -> None:
+    """Admit a caller outside the platform admin groups to the upsert, or 403.
+
+    Such a caller needs a reservation of the prefix and `admin` on it, and
+    may only send settings equal to the reservation's and, when the
+    namespace exists, to its live values. A reservation changed after the
+    namespace was created is never applied through this path.
+    """
+    if reserved is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Upserting namespace '{prefix}' requires a platform admin key; "
+                "an app's key may only upsert a namespace the install reserves for it"
+            ),
+        )
+    if await _resolve_permission(identity, prefix) != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail=f"Upserting reserved namespace '{prefix}' requires admin on it",
+        )
+    for field in SETTING_FIELDS:
+        value = update_data.get(field)
+        if value is None:
+            continue
+        if value != reserved[field]:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Namespace '{prefix}': {field} {value!r} differs from its "
+                    f"reservation ({reserved[field]!r}); omit it to use the "
+                    "reserved value"
+                ),
+            )
+        if ns is not None and value != getattr(ns, field):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Namespace '{prefix}': {field} is {getattr(ns, field)!r}, "
+                    f"its reservation says {value!r}; only a platform admin "
+                    "changes an existing namespace's settings"
+                ),
+            )
 
 
 @router.get(
@@ -234,19 +323,28 @@ async def create_namespace(
 async def upsert_namespace(
     prefix: str,
     request: NamespaceUpdate,
-    api_key: str = Depends(require_admin_key)
+    identity: UserIdentity = Depends(require_api_key),
 ) -> NamespaceResponse:
     """
     Upsert a namespace's configuration.
 
     If the namespace exists, update the fields supplied in the body
     (only fields explicitly provided are touched). If the namespace
-    does not exist, create it with the supplied fields and defaults
-    for anything omitted (`isolation_mode='open'`, `deletion_mode='retain'`,
-    `description=''`, `allowed_external_refs=[]`, `id_config={}`).
+    does not exist, create it with the supplied fields; anything omitted
+    comes from the namespace's reservation when the install reserves the
+    prefix for an app, else from the defaults (`isolation_mode='open'`,
+    `deletion_mode='retain'`, `description=''`, `allowed_external_refs=[]`,
+    `id_config={}`).
 
     This makes app bootstrap scripts idempotent — a single self-healing
     call replaces the `GET → 404 → POST` dance.
+
+    Callers: a platform admin key, or a key holding `admin` on a namespace
+    the install reserves for an app. The latter may create the namespace
+    and re-run the upsert, but every setting it sends must equal the
+    reservation's (403 naming the field otherwise) and, once the namespace
+    exists, its live value: an app's key never changes a namespace's
+    settings. Send no settings to create the namespace as reserved.
 
     Safety guards on `deletion_mode` mirror the narrow PATCH route:
     the `wip` default namespace cannot be flipped to `full`, and
@@ -264,6 +362,14 @@ async def upsert_namespace(
             raise RequestValidationError(
                 [{**err, "loc": ("body", "id_config", *err["loc"])} for err in e.errors()]
             ) from e
+
+    reserved = _reserved_settings(prefix)
+    if not identity.has_any_group(get_auth_config().admin_groups):
+        await _check_reserved_upsert(identity, prefix, ns, update_data, reserved)
+        if ns is not None:
+            # Every supplied setting equals the live value: nothing to write.
+            return namespace_to_response(ns)
+
     actor = request.updated_by
 
     new_deletion_mode = update_data.get("deletion_mode")
@@ -287,18 +393,22 @@ async def upsert_namespace(
             )
 
     if ns is None:
-        # Create path — use provided fields, defaults for the rest.
-        id_config = update_data.get("id_config") or {}
+        # Create path — provided fields, then the reservation's, then defaults.
+        settings = {
+            **(reserved or SETTING_DEFAULTS),
+            **{k: update_data[k] for k in SETTING_FIELDS if update_data.get(k) is not None},
+        }
+        id_config = settings["id_config"]
         with _id_prefix_errors(prefix):
             id_prefixes = await claim_for_write(prefix, id_config)
             ns = Namespace(
                 prefix=prefix,
-                description=update_data.get("description", "") or "",
-                isolation_mode=update_data.get("isolation_mode") or "open",
-                allowed_external_refs=update_data.get("allowed_external_refs") or [],
+                description=settings["description"],
+                isolation_mode=settings["isolation_mode"],
+                allowed_external_refs=settings["allowed_external_refs"],
                 id_config=id_config,
                 id_prefixes=id_prefixes or [],
-                deletion_mode=update_data.get("deletion_mode") or "retain",
+                deletion_mode=settings["deletion_mode"],
                 created_by=actor,
             )
             await ns.create()

@@ -268,6 +268,16 @@ def _validate_images_resolvable(
     return errors
 
 
+def _validate_namespace_reservations(
+    deployment: Deployment, apps: list[App]
+) -> list[ValidationError]:
+    """Enabled apps' namespace reservations agree: one owner per namespace,
+    one reservation per ID prefix (config_gen/namespaces.py)."""
+    from wip_deploy.config_gen.namespaces import reservation_conflicts
+
+    return [ValidationError(e) for e in reservation_conflicts(deployment, apps)]
+
+
 def validate_all(
     deployment: Deployment,
     components: list[Component],
@@ -287,4 +297,5 @@ def validate_all(
         _validate_oidc_client_ids_unique(components, apps, deployment)
     )
     report.errors.extend(_validate_images_resolvable(deployment, components, apps))
+    report.errors.extend(_validate_namespace_reservations(deployment, apps))
     return report

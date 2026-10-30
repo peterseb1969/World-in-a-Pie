@@ -93,6 +93,7 @@ class TestTreeShape:
             "config/mongodb/entrypoint.sh",
             "config/auth/api-keys.json",
             "config/auth/federated-groups.json",
+            "config/auth/namespace-reservations.json",
         }
 
     def test_api_key_only_omits_dex(

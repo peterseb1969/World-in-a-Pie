@@ -62,6 +62,10 @@ from wip_deploy.config_gen.mongodb import (
     mongodb_config_hash,
     render_mongodb_entrypoint,
 )
+from wip_deploy.config_gen.namespaces import (
+    RESERVATIONS_RENDER_PATH,
+    namespace_reservations_json,
+)
 from wip_deploy.config_gen.nats import (
     NATS_COMPONENT,
     NATS_CONFIG_CONTAINER_PATH,
@@ -169,6 +173,7 @@ def render_compose(
     # inside the 0700 install directory (see FileEntry).
     tree.add(API_KEYS_RENDER_PATH, generate_api_keys_json(deployment, secrets))
     tree.add(FEDERATED_GROUPS_RENDER_PATH, federated_groups_policy(deployment))
+    tree.add(RESERVATIONS_RENDER_PATH, namespace_reservations_json(deployment, apps))
 
     # wip-router Caddyfile — emitted whenever the router component is
     # active (it's infrastructure, so effectively always).
