@@ -6,6 +6,7 @@ defines how IDs are generated for each entity type.
 """
 
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal
 
@@ -17,6 +18,24 @@ from .id_algorithm import DEFAULT_ID_CONFIG, VALID_ENTITY_TYPES, IdAlgorithmConf
 
 # The platform namespace holding shared vocabularies; always open inbound.
 WIP_NAMESPACE = "wip"
+
+# A namespace prefix is one token wherever it is embedded: in a NATS event
+# subject a dot, wildcard or whitespace would shift or widen the token, in a
+# PostgreSQL schema name and a URL path it would need quoting. Lowercase
+# letters, digits, '-' and '_', starting with a letter or digit. Checked when
+# a namespace is created; namespaces created before the rule keep their name.
+PREFIX_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]*")
+
+
+def prefix_error(prefix: str) -> str | None:
+    """Why ``prefix`` cannot name a new namespace, or None when it can."""
+    if PREFIX_PATTERN.fullmatch(prefix):
+        return None
+    return (
+        f"Invalid namespace prefix {prefix!r}: use lowercase letters, digits, "
+        "'-' and '_', starting with a letter or digit"
+    )
+
 
 # The unique index that makes a `prefixed` prefix name one ID sequence
 # install-wide (see services/id_prefixes.py).

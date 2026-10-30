@@ -304,7 +304,9 @@ class NatsClientSpec(WIPModel):
       ``event-subscriber`` consumes the platform event stream through a
       durable named after the owner, ``replay-subscriber`` receives replayed
       events, ``nats-monitor`` reads stream and consumer listings (no
-      message contents). **Apps must use roles.**
+      message contents). **Apps must use roles**, and only a
+      ``privileged_key`` app may take ``event-subscriber`` or
+      ``replay-subscriber``: both see every namespace's events.
     - ``publish`` / ``publish_deny`` / ``subscribe`` — raw NATS permission
       subjects, data subjects and the ``$JS.API.*`` / ``$JS.ACK.*``
       JetStream API, where ``*`` and ``>`` only match whole tokens;
@@ -363,7 +365,8 @@ class MongoClientSpec(WIPModel):
       other databases) — platform components only.
     - ``roles`` — ``read-all`` grants ``read`` on every database a
       component declares. **Apps must use roles**: an app can never write
-      to MongoDB, so WIP data only changes through WIP's API.
+      to MongoDB, so WIP data only changes through WIP's API. ``read-all``
+      reads every namespace, so only a ``privileged_key`` app may take it.
     """
 
     roles: list[MongoRole] = Field(default_factory=list)

@@ -16,6 +16,10 @@ from pydantic import Field, model_validator
 from wip_deploy.spec._base import WIPModel
 from wip_deploy.spec.component import ComponentMetadata, ComponentSpec
 
+# NATS roles that see every namespace's messages (ingest-producer only
+# publishes, nats-monitor reads listings, not contents).
+_ALL_NAMESPACE_NATS_ROLES = ("event-subscriber", "replay-subscriber")
+
 
 class AppMetadata(WIPModel):
     display_name: str = Field(min_length=1)
@@ -49,6 +53,20 @@ class App(WIPModel):
                 f"app {self.metadata.name!r}: mongo_client must declare `roles` "
                 "(read-all), not databases — apps never write to MongoDB"
             )
+        # These roles read every namespace: NATS subjects carry no namespace
+        # to scope a subscription by, and MongoDB databases are per service.
+        # Only an app that holds the master key may have them.
+        if not self.spec.privileged_key:
+            unscoped = [
+                *(r for r in (nc.roles if nc else []) if r in _ALL_NAMESPACE_NATS_ROLES),
+                *(f"mongo {r}" for r in (mc.roles if mc else [])),
+            ]
+            if unscoped:
+                raise ValueError(
+                    f"app {self.metadata.name!r}: {', '.join(unscoped)} reads every "
+                    "namespace, so only a privileged_key app may declare it. An app "
+                    "reads its own data through the WIP API and reporting-sync"
+                )
         return self
 
     @model_validator(mode="after")

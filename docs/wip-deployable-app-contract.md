@@ -210,14 +210,14 @@ These are platform-side guarantees the contract assumes. They're invariants toda
   ```yaml
   spec:
     nats_client:
-      roles: [ingest-producer]   # and/or event-subscriber, replay-subscriber, nats-monitor
+      roles: [ingest-producer]   # and/or nats-monitor; event-subscriber, replay-subscriber need privileged_key
   ```
 
   The deployer generates the user's password and injects `NATS_URL`, `NATS_USER` and `NATS_PASSWORD`. Connect with them, and set the reply-inbox prefix `_INBOX_<NATS_USER>`: the server lets each user receive replies only on its own prefix, so JetStream publish acks and pulls need it. Raw NATS subject lists in an app manifest are rejected; they are for platform components.
 
   - **`ingest-producer`** may publish to `wip.ingest.{terminologies,terms,templates,documents}.<action>`. **Every message carries your WIP API key in its `X-API-Key` NATS header.** ingest-gateway writes the item with exactly that key, so your key's namespace grants apply. A message without the header is refused (a 401 result) and nothing is written. Use a key scoped to your namespace: the message, header included, stays in the ingest stream until the stream's size limits drop it. Reading the results stream is not part of the role, because it carries every producer's outcomes. To learn what happened to your items, ask ingest-gateway over HTTP with the same key: `GET /api/ingest-gateway/results/{correlation_id}`, or `POST /api/ingest-gateway/results/lookup` with `{"correlation_ids": [...]}` for several. You see only the outcomes of items submitted with your key; a 404 or `not_found` means not processed yet, never submitted under that key, or already dropped by the results stream's size limits, so poll soon after submitting. Wrap each message as `{"correlation_id": ..., "payload": ...}` so you know the ID to ask for.
-  - **`event-subscriber`** may run one durable consumer on `WIP_EVENTS`, **named after your app**, and use no other stream. It receives change events from **every** namespace, so treat it as an admin-level read.
-  - **`replay-subscriber`** receives replayed events with a plain subscription to `wip.replay.<session>.>`. Subscribe before starting the replay. There is no JetStream access to replay streams, so events published while you are disconnected are missed.
+  - **`event-subscriber`** may run one durable consumer on `WIP_EVENTS`, **named after your app**, and use no other stream. It receives change events from **every** namespace (event subjects carry no namespace to scope a subscription by), so only an app declaring `privileged_key: true` may declare it; the deployer refuses it for any other app. An app reads its own data through the WIP API and reporting-sync, which its key's namespace grants scope.
+  - **`replay-subscriber`** receives replayed events with a plain subscription to `wip.replay.<session>.>`. Subscribe before starting the replay. There is no JetStream access to replay streams, so events published while you are disconnected are missed. Like `event-subscriber` it sees every namespace, so it needs `privileged_key: true`.
   - **`nats-monitor`** reads JetStream listings for a status page: account info, the stream list (configs and state) and every stream's consumer list (names and pending counts). It cannot read message contents or change any stream or consumer. react-console uses it.
 
 One **non-guarantee** belongs in the same list, because apps have assumed its opposite:

@@ -194,6 +194,42 @@ used to succeed. Delete the referencing namespace first, or pass
 `force=true` once the dry run shows the breakage is intended.
 `@wip/client`'s `deleteNamespace` sends no `force`, so it gets the 400.
 
+### A new namespace's prefix must be lowercase letters, digits, `-` and `_`
+
+Nothing checked a namespace prefix's format. A prefix is embedded in NATS
+event subjects, PostgreSQL schema names and URL paths, where a dot, a NATS
+wildcard (`*`, `>`) or whitespace shifts or widens the token it becomes.
+
+- Creating a namespace (`POST /api/registry/namespaces`, the creating
+  `PUT /api/registry/namespaces/{prefix}`, namespace import, and so every
+  restore that creates one) refuses a prefix not matching
+  `[a-z0-9][a-z0-9_-]*` with 400.
+- An existing namespace keeps its name and stays readable and writable,
+  whatever its prefix.
+- App manifests' `spec.namespaces` and `spec.namespace_access` already
+  required `[a-z][a-z0-9-]*`.
+
+**Action:** a script that creates namespaces with uppercase letters or dots
+gets 400. Restoring an archive of such a namespace onto an install that does
+not have it fails the same way; use a fresh restore into a valid name.
+
+### Event subscriptions and MongoDB `read-all` are for privileged apps only
+
+`event-subscriber` and `replay-subscriber` receive every namespace's events,
+because event subjects carry no namespace to scope a subscription by.
+MongoDB `read-all` reads every service database. An app holding a key of its
+own, scoped to its namespaces, could read past that scope through them.
+
+- The deployer refuses an app manifest declaring any of the three unless it
+  declares `privileged_key: true`. React Console qualifies; no other shipped
+  app declares them.
+- Apps read their own data through the WIP API and reporting-sync, where
+  their key's namespace grants apply. `ingest-producer` and `nats-monitor`
+  are unchanged.
+
+**Action:** an app manifest outside this repo declaring one of these roles
+fails to deploy until it declares `privileged_key` or drops the role.
+
 ### Hard-deleting a document that other documents reference needs `force`
 
 In a namespace with `deletion_mode: "full"`, `hard_delete=true` removed a

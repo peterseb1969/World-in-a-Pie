@@ -29,7 +29,7 @@ from ..models.api_models import (
 )
 from ..models.entry import RegistryEntry
 from ..models.id_algorithm import VALID_ENTITY_TYPES, validate_id_config_write
-from ..models.namespace import WIP_NAMESPACE, Namespace, id_config_view
+from ..models.namespace import WIP_NAMESPACE, Namespace, id_config_view, prefix_error
 from ..services.auth import require_admin_key, require_api_key
 from ..services.id_prefixes import (
     IdPrefixError,
@@ -298,6 +298,8 @@ async def create_namespace(
             status_code=409,
             detail=f"Namespace already exists: {request.prefix}"
         )
+    if error := prefix_error(request.prefix):
+        raise HTTPException(status_code=400, detail=error)
 
     id_config = request.model_dump(exclude_unset=True).get("id_config") or {}
     with _id_prefix_errors(request.prefix):
@@ -407,6 +409,8 @@ async def upsert_namespace(
             )
 
     if ns is None:
+        if error := prefix_error(prefix):
+            raise HTTPException(status_code=400, detail=error)
         # Create path — provided fields, then the reservation's, then defaults.
         settings = {
             **(reserved or SETTING_DEFAULTS),

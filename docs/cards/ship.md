@@ -1,6 +1,6 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
-docs/wip-deployable-app-contract.md sha256:aa1802ff3acd6a11 reviewed:e93ded7b
-deployer/src/wip_deploy/spec/app.py sha256:adcaec9fb6dc6dca reviewed:e93ded7b
+docs/wip-deployable-app-contract.md sha256:134d526dee8b503f reviewed:a38b9c84
+deployer/src/wip_deploy/spec/app.py sha256:6a5abab38f41f5e9 reviewed:a38b9c84
 -->
 # WIP ship card — making the app deployable
 
@@ -31,7 +31,7 @@ Before features: healthy under `wip-deploy` on the first try, SPA at `/apps/<nam
 - [ ] Outside-service key: OPTIONAL var, `{from_secret: <name>, supplied_by: operator}`; operator places `~/.wip-deploy/<install>/secrets/<name>`.
 - [ ] `spec.routes`: `{path: /apps/<name>, auth_required: true}`; restrict users with `allowed_groups: [...]` on the route, not in-app `ALLOWED_GROUPS`.
 - [ ] `spec.healthcheck.endpoint: /apps/<name>/api/health`, answerable without WIP reachable; `liveness_endpoint` (k8s) if it checks a dependency.
-- [ ] NATS only via `spec.nats_client.roles` (`ingest-producer`, `event-subscriber`, `replay-subscriber`, `nats-monitor`); raw subjects are rejected.
+- [ ] NATS only via `spec.nats_client.roles`, raw subjects rejected. `event-subscriber`, `replay-subscriber`, Mongo `read-all`: `privileged_key` only.
 - [ ] Top-level `metadata.name`, `spec.image`, `app_metadata` (`display_name`, `route_prefix`, `ui_only`): copy the shape of an existing `apps/*/wip-app.yaml`.
 
 ## Verify

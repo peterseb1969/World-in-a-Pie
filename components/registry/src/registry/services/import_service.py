@@ -17,7 +17,7 @@ import httpx
 from pydantic import ValidationError
 
 from ..models.id_algorithm import validate_id_config_write
-from ..models.namespace import Namespace
+from ..models.namespace import Namespace, prefix_error
 from .id_prefixes import claim_for_write
 
 logger = logging.getLogger(__name__)
@@ -142,6 +142,8 @@ class ImportService:
                 await existing_ns.save()
                 namespace = existing_ns
             elif not existing_ns:
+                if error := prefix_error(prefix):
+                    raise ValueError(error)
                 id_prefixes = await claim_for_write(prefix, imported_id_config)
                 namespace = Namespace(
                     prefix=prefix,
