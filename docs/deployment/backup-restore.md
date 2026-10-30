@@ -245,6 +245,17 @@ at all — a database predating the namespace-keyed bookkeeping shape is named
 explicitly, with remediation. `include_counts=false` is the cheap structural
 form.
 
+It also covers what reporting derives besides document tables. Every view
+registered for the namespace must exist (`views`). With counts, the term
+tables are checked (`derived_tables`): active `terms` and `term_relations`
+rows against def-store's active totals, `term_names` rows for every term that
+has names, and `term_closure`'s reflexive rows against what its rebuild
+writes. Each failure is counted in `derived_issues` and named by an issue
+code (`terms_mismatch`, `term_relations_mismatch`, `term_names_missing`,
+`term_closure_stale`, `check_failed`). `ok` is true only when all of it
+passes, so a namespace whose terms are back but whose relations or closure
+are empty no longer reads as verified.
+
 Interpreting it: structural issues → tables missing/mis-shaped (was the
 restore's phase-1 skipped or the sync broken?); count mismatches → sync
 behind or blocked (check `get_sync_status`, re-run the batch sync);

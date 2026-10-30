@@ -3680,11 +3680,20 @@ class DirectRestoreEngine:
             f"actual={t.get('actual_rows')}"
             for t in (parity or {}).get("templates", [])
             if t.get("counts_match") is False
+        ] + [
+            f"{d.get('table')} {d.get('issue')} expected={d.get('expected_rows')} "
+            f"actual={d.get('actual_rows')}"
+            for d in (parity or {}).get("derived_tables", [])
+            if d.get("issue")
+        ] + [
+            f"view {v.get('view_name')} missing"
+            for v in (parity or {}).get("views", [])
+            if not v.get("present")
         ]
         self._emit(
             "warning",
             f"[{namespace}] reporting count parity incomplete ({reason}): "
-            f"{'; '.join(mismatches[:5]) or 'no per-template detail'} — "
+            f"{'; '.join(mismatches[:5]) or 'no per-item detail'} — "
             "restore data is complete in MongoDB; the batch sync may still be "
             "running: watch GET /api/reporting-sync/sync/batch/jobs or "
             f"GET /api/reporting-sync/parity?namespace={namespace}, or re-run "

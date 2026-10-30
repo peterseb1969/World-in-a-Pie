@@ -604,6 +604,29 @@ Both sides now count live documents: documents whose latest version is active
 (the `latest_only=true` count), against reporting rows that are not `deleted`.
 `all_versions` templates are still not compared.
 
+### Reporting parity covers term tables and registered views; batch sync restores term relations
+
+The parity check only looked at document tables. A namespace whose
+`term_relations` and `term_closure` were empty after a restore, while its
+terms were back, reported `ok: true`. Two changes:
+- **Parity checks everything reporting derives.** Every registered view must
+  exist (`views`). With counts, `derived_tables` compares active `terms` and
+  `term_relations` rows with def-store's active totals, checks that every
+  named term has `term_names` rows, and checks `term_closure`'s reflexive rows
+  against what its rebuild writes. Failures are counted in `derived_issues`
+  and named by an issue code. `ok` is true only when all of it passes, so the
+  count phase at the end of a restore now waits for, and warns about, these
+  tables too.
+- **The namespace batch sync (`POST /sync/batch`) syncs term relations.** Its
+  definitions companion synced terminologies and terms but not relations,
+  which is how a restore left `term_relations` and `term_closure` empty. It
+  now syncs relations after the terms, ending with a closure rebuild.
+
+**Action:** a script that treats parity `ok` as its pass condition may now
+see `false` on a namespace that passed before. Read `derived_tables` and
+`views`; a re-run of the namespace batch sync repairs the term tables, and
+re-registering repairs a missing view.
+
 ### `latest_only` + `status` filters on each document's latest version
 
 With `GET /api/document-store/documents?latest_only=true`, a `status` filter

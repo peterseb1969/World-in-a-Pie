@@ -844,6 +844,13 @@ async def reporting_parity(
     total. Also reports namespace-level state — schema presence, table
     count, and whether the bookkeeping tables are namespace-keyed at all.
 
+    Beyond document tables: every view registered for the namespace must
+    exist (``views``), and with counts the term tables are checked
+    (``derived_tables``) — active terms and term relations against
+    def-store's active totals, name rows for every named term, and the
+    closure's reflexive rows against what its rebuild writes. Failures
+    count in ``derived_issues``; ``ok`` holds only when every check passes.
+
     The one-request answer to "why does the reporting layer look empty":
     a stale/fossil schema shows structural issues, a dead sync worker or
     blocked doc-type sync shows count mismatches, and a pre-namespace-keying

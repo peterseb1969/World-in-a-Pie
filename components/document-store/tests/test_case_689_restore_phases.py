@@ -132,6 +132,24 @@ class TestCountParity:
         warnings = [ev for ev in events if ev.phase == "warning"]
         assert warnings and "T1" in warnings[-1].message
 
+    @pytest.mark.asyncio
+    async def test_derived_gaps_are_named_in_the_warning(self):
+        """Document tables can be complete while term tables or registered
+        views are not; the warning names those gaps rather than saying it
+        has no detail."""
+        gaps = dict(CLEAN, ok=False, derived_issues=2, derived_tables=[
+            {"table": "terms", "expected_rows": 5, "actual_rows": 5, "issue": None},
+            {"table": "term_relations", "expected_rows": 7, "actual_rows": 0,
+             "issue": "term_relations_mismatch"},
+        ], views=[{"view_name": "v_open", "present": False}])
+        events = []
+        eng = _engine(_reporting_stub(gaps), events)
+        await eng._reporting_phase_counts("ns1", skip_documents=False)
+        warning = [ev for ev in events if ev.phase == "warning"][-1].message
+        assert "term_relations term_relations_mismatch expected=7 actual=0" in warning
+        assert "view v_open missing" in warning
+        assert "expected=5" not in warning  # a passing table is not listed
+
     # CASE-967: a large namespace's catch-up takes minutes; a fixed 90 s wait
     # declared it incomplete while it was still running. The wait now follows
     # the reporting row count.

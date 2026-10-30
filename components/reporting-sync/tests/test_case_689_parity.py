@@ -8,6 +8,7 @@ reported as unusable (the silent-empty-reporting incident class), and a
 correctly built table verifies structurally green.
 """
 
+from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -76,16 +77,20 @@ TEMPLATE = {
 
 
 def _patch_http(templates: list[dict], doc_total: int = 0):
-    """Patch parity's two HTTP fetches — template-store and document-store."""
+    """Patch parity's HTTP fetches: template-store and document-store, then
+    def-store's term and relation totals (none here: no term data)."""
+    def stack(*targets: tuple[str, object]) -> ExitStack:
+        s = ExitStack()
+        for target, value in targets:
+            s.enter_context(
+                patch(f"reporting_sync.parity.{target}", new=AsyncMock(return_value=value))
+            )
+        return s
+
     return (
-        patch(
-            "reporting_sync.parity._fetch_namespace_templates",
-            new=AsyncMock(return_value=templates),
-        ),
-        patch(
-            "reporting_sync.parity._expected_document_total",
-            new=AsyncMock(return_value=doc_total),
-        ),
+        stack(("_fetch_namespace_templates", templates),
+              ("_expected_document_total", doc_total)),
+        stack(("_expected_active_terms", 0), ("_expected_active_relations", 0)),
     )
 
 

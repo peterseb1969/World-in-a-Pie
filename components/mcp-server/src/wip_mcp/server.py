@@ -4856,6 +4856,15 @@ async def check_reporting_parity(
     - bookkeeping_tables_ok false: the reporting database predates the
       namespace-keyed bookkeeping — doc-type sync cannot work until
       remediated (wipe the reporting volume or apply the named ALTER).
+    - derived_issues > 0: a term table or registered view is incomplete.
+      derived_tables (with include_counts) names the table and an issue:
+      terms_mismatch / term_relations_mismatch (active rows differ from
+      def-store — re-run the namespace batch sync), term_names_missing
+      (same remedy), term_closure_stale (the closure lags its terms and
+      relations — briefly normal right after a term write; otherwise re-run
+      the batch sync), check_failed (the check itself could not run; see
+      error). views lists each registered view with present=false when it
+      is gone — re-register it. ok is true only when all of these pass.
 
     Args:
         namespace: Namespace to verify.

@@ -702,10 +702,12 @@ class BatchSyncService:
     async def _sync_definitions(
         self, namespace: str | None, page_size: int
     ) -> None:
-        """Terminology + term sync, run as a background companion of
-        batch-all. Not a dependency of the document jobs: the document
-        upsert path transforms the document JSON against its template and
-        never reads the terminologies/terms tables."""
+        """Terminology, term and term-relation sync, run as a background
+        companion of batch-all. Not a dependency of the document jobs: the
+        document upsert path transforms the document JSON against its
+        template and never reads the definitions tables. Relations run after
+        terms, so the closure rebuild that ends the relation sync sees every
+        term."""
         logger.info("Batch syncing terminologies...")
         term_results = await self.batch_sync_terminologies(
             namespace=namespace, page_size=page_size
@@ -716,6 +718,11 @@ class BatchSyncService:
             namespace=namespace, page_size=page_size
         )
         logger.info(f"Terms: {terms_results}")
+        logger.info("Batch syncing term relations...")
+        relations_results = await self.batch_sync_term_relations(
+            namespace=namespace, page_size=page_size
+        )
+        logger.info(f"Term relations: {relations_results}")
 
     async def start_batch_sync_all(
         self,
