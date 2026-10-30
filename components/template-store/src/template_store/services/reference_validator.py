@@ -1,29 +1,29 @@
 """
 Reference Validator - checks a template's cross-namespace references.
 
-Two gates, decided by wip_auth.reference_policy: the template's namespace's
-isolation_mode (may it reference other namespaces?) and each target's
-inbound_references (may this writer reference it?).
+This is the outbound gate: the template's namespace's isolation_mode (may it
+reference other namespaces?), decided by wip_auth.reference_policy. The
+inbound gate (may this writer reference the target?) runs earlier, inside
+reference resolution (inbound_gate), so that a refused reference reads
+exactly like a missing one.
 """
 
 import logging
 import time
 from typing import Any
 
-from wip_auth import UserIdentity
-from wip_auth.identity import get_identity_string
-from wip_auth.reference_policy import PermissionUnavailableError, check_reference
+from wip_auth.reference_policy import outbound_allows
 
 from .registry_client import RegistryClient, RegistryError, get_registry_client
 
 logger = logging.getLogger(__name__)
 
 # Staleness window for cached namespace config (isolation_mode,
-# allowed_external_refs). Mirrors the template cache's 5 s TTL
-# (wip://conventions): namespace-config changes take effect within this
-# window without a service restart. The 404-negative expires on the same
-# clock, so a namespace created after being first probed becomes visible
-# too (CASE-607).
+# allowed_external_refs, inbound_references). Mirrors the template cache's
+# 5 s TTL (wip://conventions): namespace-config changes take effect within
+# this window without a service restart. The 404-negative expires on the
+# same clock, so a namespace created after being first probed becomes
+# visible too.
 NAMESPACE_CACHE_TTL_SECONDS = 5.0
 
 
@@ -33,20 +33,6 @@ class ReferenceValidationError(Exception):
     def __init__(self, message: str, violations: list[dict[str, Any]]):
         super().__init__(message)
         self.violations = violations
-
-
-class InboundReferenceRefused(Exception):
-    """A new reference points into a closed namespace the writer cannot read.
-
-    Reported to the writer as an unresolved reference: a closed namespace
-    does not confirm that its entities exist to someone who cannot read it.
-    """
-
-    def __init__(self, kinds: list[str]):
-        super().__init__(
-            "Referenced " + " and ".join(kinds) + " not found"
-        )
-        self.kinds = kinds
 
 
 class RegistryUnavailableError(Exception):
@@ -99,16 +85,13 @@ class ReferenceValidator:
         extends_template_namespace: str | None = None,
         terminology_namespaces: list[str] | None = None,
         template_ref_namespaces: list[str] | None = None,
-        identity: UserIdentity | None = None,
     ) -> None:
         """
-        Check a template's new cross-namespace references against both gates.
+        Check a template's new cross-namespace references against its
+        namespace's own isolation setting (the outbound gate).
 
-        The template's namespace's isolation_mode decides whether it may
-        reference another namespace (outbound); each target's
-        inbound_references decides whether this writer may reference it
-        (inbound). The rules live in wip_auth.reference_policy. Callers pass
-        only references the template's previous version did not hold.
+        Callers pass only references the template's previous version did not
+        hold, and only references the inbound gate already let through.
 
         Args:
             template_namespace: Namespace of the template being created/updated
@@ -116,15 +99,11 @@ class ReferenceValidator:
             terminology_namespaces: List of terminology namespaces referenced
             template_ref_namespaces: Namespaces of referenced templates
                 (template_ref / array_template_ref / target_templates)
-            identity: The writer; defaults to the request's identity
 
         Raises:
             ReferenceValidationError: A reference the namespace's own setting
                 forbids
-            InboundReferenceRefused: A reference into a closed namespace the
-                writer cannot read
-            RegistryUnavailableError: If the namespace's settings or the
-                writer's permission cannot be read
+            RegistryUnavailableError: If the namespace's settings cannot be read
         """
         ns_data = await self._get_namespace(template_namespace)
         targets: list[tuple[str, str]] = []
@@ -134,30 +113,18 @@ class ReferenceValidator:
         targets += [("template", ns) for ns in sorted(set(template_ref_namespaces or []))]
 
         violations = []
-        refused: list[str] = []
         for kind, target_ns in targets:
-            if target_ns == template_namespace:
+            if outbound_allows(template_namespace, ns_data, target_ns):
                 continue
-            try:
-                verdict = await check_reference(
-                    template_namespace, ns_data,
-                    target_ns, self._get_namespace,
-                    identity,
-                )
-            except PermissionUnavailableError as e:
-                raise RegistryUnavailableError(str(e)) from e
-            if verdict == "outbound":
-                label = "Parent template" if kind == "extends" else kind.capitalize()
-                violations.append({
-                    "type": kind,
-                    "namespace": target_ns,
-                    "message": (
-                        f"{label} namespace '{target_ns}' is not accessible from "
-                        f"'{template_namespace}' namespace"
-                    ),
-                })
-            elif verdict == "inbound":
-                refused.append(kind)
+            label = "Parent template" if kind == "extends" else kind.capitalize()
+            violations.append({
+                "type": kind,
+                "namespace": target_ns,
+                "message": (
+                    f"{label} namespace '{target_ns}' is not accessible from "
+                    f"'{template_namespace}' namespace"
+                ),
+            })
 
         if violations:
             raise ReferenceValidationError(
@@ -166,13 +133,6 @@ class ReferenceValidator:
                 f"{len(violations)} violation(s)",
                 violations=violations,
             )
-        if refused:
-            logger.warning(
-                "Inbound reference refused: %s writing a template in '%s' cannot read %s",
-                get_identity_string(), template_namespace,
-                sorted({ns for kind, ns in targets if kind in refused} - {template_namespace}),
-            )
-            raise InboundReferenceRefused(sorted(set(refused)))
 
 
 # Singleton instance

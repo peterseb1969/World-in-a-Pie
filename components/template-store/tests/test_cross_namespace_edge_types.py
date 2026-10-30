@@ -41,7 +41,11 @@ async def test_an_edge_type_targeting_a_closed_namespace_needs_read(client, auth
     refused = await _post_template(client, WRITER, edge)
     assert refused["status"] == "error", refused
     assert refused["error_code"] == "reference_violation"
-    assert "xns-closed" not in (refused.get("error") or "")
+    # Exactly what a qualified value that names nothing gets: the error
+    # echoes only the identifier the writer submitted.
+    missing = await _post_template(client, WRITER, {
+        **edge, "target_templates": ["xns-closed:XNS_ABSENT"]})
+    assert refused["error"] == missing["error"].replace("XNS_ABSENT", "XNS_TARGET")
 
     created = await _post_template(client, READER, edge)
     assert created["status"] == "created", created
@@ -62,7 +66,11 @@ async def test_widening_into_a_closed_namespace_needs_read(client, auth_headers)
 
     refused = await widen(WRITER)
     assert refused.status_code in (400, 404, 422), refused.text
-    assert "xns-closed" not in refused.text
+    missing = await client.post(
+        f"{API}/templates/{edge['id']}/endpoints", headers=WRITER, params={"namespace": "wip"},
+        json={"add_source_templates": [], "add_target_templates": ["xns-closed:XNS_ABSENT"]},
+    )
+    assert refused.text == missing.text.replace("XNS_ABSENT", "XNS_TARGET")
 
     widened = await widen(READER)
     assert widened.status_code == 200, widened.text

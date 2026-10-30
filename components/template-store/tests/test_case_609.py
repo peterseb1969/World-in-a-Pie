@@ -16,7 +16,6 @@ import time
 import pytest
 
 from template_store.services.reference_validator import (
-    InboundReferenceRefused,
     ReferenceValidationError,
     ReferenceValidator,
 )
@@ -37,15 +36,15 @@ def _validator(
 
 
 @pytest.mark.asyncio
-async def test_open_mode_reaches_a_closed_namespace_only_with_read():
+async def test_the_validator_is_the_outbound_gate_only():
+    """A closed target passes here: the inbound gate runs inside reference
+    resolution (inbound_gate), so a refusal reads exactly like a miss."""
     v = _validator("appns", "open")
     v._namespace_cache["otherns"] = (time.monotonic(), {"inbound_references": "closed"})
-    with pytest.raises(InboundReferenceRefused) as exc_info:
-        await v.validate_template_references(
-            template_namespace="appns",
-            template_ref_namespaces=["otherns"],
-        )
-    assert str(exc_info.value) == "Referenced template not found"
+    await v.validate_template_references(
+        template_namespace="appns",
+        template_ref_namespaces=["otherns"],
+    )
 
 
 @pytest.mark.asyncio

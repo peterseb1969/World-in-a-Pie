@@ -178,9 +178,18 @@ outbound: a document holding a reference its namespace's `strict` setting now
 forbids no longer becomes un-PATCHable.
 
 A refused inbound reference reports exactly like a reference whose target does
-not exist (`validation_failed` with a `reference_not_found` error on documents;
-`reference_violation` / `unresolved_reference` on templates). The namespace is
-named only in the service log (`Inbound reference refused: …`).
+not exist: the same error code, message and details, in the same place among
+the write's other errors (`validation_failed` with a `reference_not_found`
+error on documents; on templates `reference_violation` with
+`unresolved_reference`, or `parent_not_found` for a parent, and the same
+`invalid_reference` errors at activation). The namespace is named only in the
+service log (`Inbound reference refused: …`).
+
+When several of a template's references fail to resolve, the one reported is
+now the first in field order (edge-type endpoints: declaration order), not
+whichever a batch lookup met first. A template update naming a new parent by
+bare value now finds it in the template's own namespace only, as create
+always did.
 
 Term and file references on documents are now checked against both gates. They
 carried no namespace before, so the outbound rule never saw them.

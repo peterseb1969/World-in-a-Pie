@@ -41,10 +41,10 @@ from ..models.template import (
 from .def_store_client import DefStoreError, get_def_store_client
 from .document_store_client import get_document_store_client
 from .errors import TemplateError, error_fields
+from .inbound_gate import InboundGate, carried_ids
 from .inheritance_service import InheritanceError, InheritanceService
 from .nats_client import EventType, publish_template_event
 from .reference_validator import (
-    InboundReferenceRefused,
     ReferenceValidationError,
     RegistryUnavailableError,
     get_reference_validator,
@@ -476,9 +476,14 @@ class TemplateService:
             if existing:
                 raise TemplateError(f"Template with value '{request.value}' already exists in namespace '{namespace}'", "already_exists")
 
+        # A create has no previous version, so every reference it names is new
+        # and passes the inbound gate.
+        gate = InboundGate(namespace)
+
         # Validate extends if provided
         parent_namespace: str | None = None
         if request.extends:
+            submitted_extends = request.extends
             # CASE-432: resolve `extends` through the Registry first so a
             # registered synonym for the parent resolves identically to its
             # canonical ID (Vision §"References Must Resolve"), matching how
@@ -491,6 +496,11 @@ class TemplateService:
             # Find latest version of parent (template_id is stable across versions)
             parent_results = await Template.find({"template_id": request.extends}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             parent = parent_results[0] if parent_results else None
+            if parent and await gate.refuses(parent.namespace, parent.template_id):
+                # A parent the writer may not reference is not found, and
+                # what follows is exactly what a missing parent gets.
+                parent = None
+                request.extends = submitted_extends
             if not parent:
                 # Try by value within same namespace
                 parent_results = await Template.find({"namespace": namespace, "value": request.extends}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
@@ -514,7 +524,9 @@ class TemplateService:
         if not is_draft:
             try:
                 resolved_template_ids, resolved_terminology_ids = (
-                    await TemplateService._normalize_field_references(request.fields, namespace)
+                    await TemplateService._normalize_field_references(
+                        request.fields, namespace, gate=gate,
+                    )
                 )
                 # An edge type's declared endpoints resolve on the same write
                 # path as its field references: the submitted anchor is kept
@@ -522,7 +534,8 @@ class TemplateService:
                 # server-owned resolved half.
                 source_entries, target_entries = (
                     await TemplateService._resolve_endpoint_declarations(
-                        request.source_templates, request.target_templates, namespace
+                        request.source_templates, request.target_templates, namespace,
+                        gate=gate,
                     )
                 )
             except EntityNotFoundError as e:
@@ -1432,17 +1445,31 @@ class TemplateService:
         ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         new_version = max_version_template[0].version + 1 if max_version_template else 1
 
+        # References the original already held are carried; every other one
+        # passes the inbound gate.
+        gate = InboundGate(original.namespace, carried=carried_ids(original))
+
         # Validate extends if changing
         extends_value = request.extends if request.extends is not None else original.extends
         if extends_value and extends_value != original.extends:
+            submitted_extends = extends_value
             # CASE-432: resolve `extends` through the Registry first (synonym →
             # canonical), then fall through to the legacy lookups on a miss.
             with contextlib.suppress(EntityNotFoundError):
                 extends_value = await resolve_entity_id(extends_value, "template", original.namespace)
             parent_results = await Template.find({"template_id": extends_value}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             parent = parent_results[0] if parent_results else None
+            if parent and await gate.refuses(parent.namespace, parent.template_id):
+                # A parent the writer may not reference is not found, and
+                # what follows is exactly what a missing parent gets.
+                parent = None
+                extends_value = submitted_extends
             if not parent:
-                parent_results = await Template.find({"value": extends_value}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
+                # A bare value names a template in the template's own
+                # namespace, as on create.
+                parent_results = await Template.find(
+                    {"namespace": original.namespace, "value": extends_value}
+                ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 parent = parent_results[0] if parent_results else None
                 if parent:
                     extends_value = parent.template_id
@@ -1465,7 +1492,9 @@ class TemplateService:
         if request.fields is not None:
             try:
                 updated_template_ids, updated_terminology_ids = (
-                    await TemplateService._normalize_field_references(new_fields, original.namespace)
+                    await TemplateService._normalize_field_references(
+                        new_fields, original.namespace, gate=gate,
+                    )
                 )
             except EntityNotFoundError as e:
                 raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
@@ -1840,18 +1869,25 @@ class TemplateService:
         # Resolve the new endpoints to canonical IDs (existence-checked). This is a
         # write path — bypass the resolver cache so a stale entry can't pin a dead
         # ID into the endpoint list (CASE-56).
+        # An endpoint the edge type already declares is carried; a new one
+        # passes the inbound gate, and a refused one is not found.
         ns = template.namespace
+        gate = InboundGate(ns, carried=carried_ids(template))
         try:
-            resolved_source = (
-                await resolve_entity_ids(add_source, "template", ns, bypass_cache=True)
-                if add_source else {}
+            resolved = (
+                await gate.visible(await resolve_entity_ids(
+                    sorted({*add_source, *add_target}), "template", ns,
+                    bypass_cache=True, strict=False,
+                ))
+                if add_source or add_target else {}
             )
-            resolved_target = (
-                await resolve_entity_ids(add_target, "template", ns, bypass_cache=True)
-                if add_target else {}
-            )
+            for ref in add_source + add_target:
+                if ref not in resolved:
+                    raise EntityNotFoundError(ref, "template", ns)
         except EntityNotFoundError as e:
             raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
+        resolved_source = {ref: resolved[ref] for ref in add_source}
+        resolved_target = {ref: resolved[ref] for ref in add_target}
 
         # Widening adds references: the endpoints not already declared pass
         # the same two gates as any other template reference.
@@ -2824,6 +2860,10 @@ class TemplateService:
         - target_terminologies: must exist and be active
         - reference_type required for reference fields
 
+        A reference outside the set into a closed namespace the writer cannot
+        read, and not held by the template's previous version, is reported
+        exactly as a missing one (the inbound gate).
+
         Returns:
             Tuple of (errors, warnings) as ValidationError/ValidationWarning lists
         """
@@ -2840,7 +2880,24 @@ class TemplateService:
             | {(t.value, t.version) for t in activation_set}
         )
 
-        async def _pinned_version_exists(ref: str, version: int | None) -> bool:
+        async def _visible(tpl: Template | None, gate: InboundGate) -> Template | None:
+            if tpl is not None and await gate.refuses(tpl.namespace, tpl.template_id):
+                return None
+            return tpl
+
+        async def _terminology_exists(ref: str, gate: InboundGate) -> bool:
+            if not await def_store.terminology_exists(ref, namespace=namespace):
+                return False
+            terminology_id = None
+            with contextlib.suppress(EntityNotFoundError):
+                terminology_id = await resolve_entity_id(
+                    ref, "terminology", namespace, bypass_cache=True,
+                )
+            return not await gate.refuses_entry(terminology_id)
+
+        async def _pinned_version_exists(
+            ref: str, version: int | None, gate: InboundGate,
+        ) -> bool:
             """A pinned (ref, version) is satisfiable iff it is in the activation
             set at that version, or a stored template has that (template_id,
             version). ref may be a canonical id or a value. A None version can
@@ -2851,9 +2908,13 @@ class TemplateService:
                 return False
             if (ref, version) in set_pinned:
                 return True
-            if await Template.find_one({"template_id": ref, "version": version}):
+            if await _visible(
+                await Template.find_one({"template_id": ref, "version": version}), gate,
+            ):
                 return True
-            resolved = await TemplateService._find_template_by_ref(ref, namespace)
+            resolved = await _visible(
+                await TemplateService._find_template_by_ref(ref, namespace), gate,
+            )
             if resolved is None:
                 return False
             return await Template.find_one(
@@ -2867,6 +2928,10 @@ class TemplateService:
 
         for template in activation_set:
             prefix = f"[{template.value}] "
+            gate = InboundGate(
+                namespace,
+                carried=carried_ids(await TemplateService._previous_version(template)),
+            )
 
             # Check extends
             if template.extends:
@@ -2876,9 +2941,9 @@ class TemplateService:
                     template.extends in set_values
                 )
                 if not in_set:
-                    parent = await TemplateService._find_template_by_ref(
+                    parent = await _visible(await TemplateService._find_template_by_ref(
                         template.extends, namespace
-                    )
+                    ), gate)
                     if not parent:
                         errors.append(ValidationError(
                             field=f"{prefix}extends",
@@ -2899,7 +2964,7 @@ class TemplateService:
                         code="invalid_reference",
                         message="extends_version is required when 'extends' is set (CASE-493)"
                     ))
-                elif not await _pinned_version_exists(template.extends, template.extends_version):
+                elif not await _pinned_version_exists(template.extends, template.extends_version, gate):
                     errors.append(ValidationError(
                         field=f"{prefix}extends_version",
                         code="invalid_reference",
@@ -2911,9 +2976,7 @@ class TemplateService:
                 # Terminology refs
                 if field.terminology_ref:
                     try:
-                        exists = await def_store.terminology_exists(
-                            field.terminology_ref, namespace=namespace
-                        )
+                        exists = await _terminology_exists(field.terminology_ref, gate)
                         if not exists:
                             errors.append(ValidationError(
                                 field=f"{prefix}fields.{field.name}.terminology_ref",
@@ -2929,9 +2992,7 @@ class TemplateService:
 
                 if field.array_terminology_ref:
                     try:
-                        exists = await def_store.terminology_exists(
-                            field.array_terminology_ref, namespace=namespace
-                        )
+                        exists = await _terminology_exists(field.array_terminology_ref, gate)
                         if not exists:
                             errors.append(ValidationError(
                                 field=f"{prefix}fields.{field.name}.array_terminology_ref",
@@ -2949,9 +3010,9 @@ class TemplateService:
                 if field.template_ref:
                     in_set = field.template_ref in set_ids or field.template_ref in set_values
                     if not in_set:
-                        ref_tpl = await TemplateService._find_template_by_ref(
+                        ref_tpl = await _visible(await TemplateService._find_template_by_ref(
                             field.template_ref, namespace
-                        )
+                        ), gate)
                         if not ref_tpl:
                             errors.append(ValidationError(
                                 field=f"{prefix}fields.{field.name}.template_ref",
@@ -2965,7 +3026,7 @@ class TemplateService:
                                 message=f"Template '{field.template_ref}' is {ref_tpl.status}, not active"
                             ))
                     # CASE-493: the nested ref must pin an existing version.
-                    if not await _pinned_version_exists(field.template_ref, field.template_ref_version):
+                    if not await _pinned_version_exists(field.template_ref, field.template_ref_version, gate):
                         errors.append(ValidationError(
                             field=f"{prefix}fields.{field.name}.template_ref_version",
                             code="invalid_reference",
@@ -2975,9 +3036,9 @@ class TemplateService:
                 if field.array_template_ref:
                     in_set = field.array_template_ref in set_ids or field.array_template_ref in set_values
                     if not in_set:
-                        ref_tpl = await TemplateService._find_template_by_ref(
+                        ref_tpl = await _visible(await TemplateService._find_template_by_ref(
                             field.array_template_ref, namespace
-                        )
+                        ), gate)
                         if not ref_tpl:
                             errors.append(ValidationError(
                                 field=f"{prefix}fields.{field.name}.array_template_ref",
@@ -2991,7 +3052,7 @@ class TemplateService:
                                 message=f"Template '{field.array_template_ref}' is {ref_tpl.status}, not active"
                             ))
                     # CASE-493: the array-item ref must pin an existing version.
-                    if not await _pinned_version_exists(field.array_template_ref, field.array_template_ref_version):
+                    if not await _pinned_version_exists(field.array_template_ref, field.array_template_ref_version, gate):
                         errors.append(ValidationError(
                             field=f"{prefix}fields.{field.name}.array_template_ref_version",
                             code="invalid_reference",
@@ -3019,9 +3080,9 @@ class TemplateService:
                                 for tpl_val in field.target_templates:
                                     in_set = tpl_val in set_values or tpl_val in set_ids
                                     if not in_set:
-                                        ref_tpl = await TemplateService._find_template_by_ref(
+                                        ref_tpl = await _visible(await TemplateService._find_template_by_ref(
                                             tpl_val, namespace
-                                        )
+                                        ), gate)
                                         if not ref_tpl:
                                             errors.append(ValidationError(
                                                 field=f"{prefix}fields.{field.name}.target_templates",
@@ -3045,9 +3106,7 @@ class TemplateService:
                             else:
                                 for term_val in field.target_terminologies:
                                     try:
-                                        exists = await def_store.terminology_exists(
-                                            term_val, namespace=namespace
-                                        )
+                                        exists = await _terminology_exists(term_val, gate)
                                         if not exists:
                                             errors.append(ValidationError(
                                                 field=f"{prefix}fields.{field.name}.target_terminologies",
@@ -3148,11 +3207,14 @@ class TemplateService:
         activation_statuses = ["active", "reserved"]
         try:
             for t in activation_set:
+                previous = await TemplateService._previous_version(t)
+                gate = InboundGate(namespace, carried=carried_ids(previous))
                 act_template_ids, act_terminology_ids = (
                     await TemplateService._normalize_field_references(
                         t.fields, namespace,
                         known_templates=known_templates,
                         include_statuses=activation_statuses,
+                        gate=gate,
                     )
                 )
                 # Endpoint declarations resolve here too: a draft skipped
@@ -3164,24 +3226,25 @@ class TemplateService:
                             t.source_templates, t.target_templates, namespace,
                             known_templates=known_templates,
                             include_statuses=activation_statuses,
+                            gate=gate,
                         )
                     )
                 # Also resolve extends (known_templates checked first, then Registry)
                 if t.extends and t.extends in known_templates:
                     t.extends = known_templates[t.extends]
                 elif t.extends:
-                    t.extends = await resolve_entity_id(
+                    parent_id = await resolve_entity_id(
                         t.extends, "template", namespace,
                         include_statuses=activation_statuses,
                     )
+                    if await gate.refuses_entry(parent_id):
+                        raise EntityNotFoundError(t.extends, "template", namespace)
+                    t.extends = parent_id
                 # Isolation check — drafts skipped it at create; activation is
                 # where their coverage lands. Activation-set members are
                 # same-namespace by construction and pass trivially; external
                 # refs are checked. (Reserved-status externals are invisible
                 # to the namespace lookup and thus skipped — active-only route.)
-                previous = await Template.find(
-                    {"template_id": t.template_id, "version": {"$ne": t.version}},
-                ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 await TemplateService._check_reference_isolation(
                     namespace,
                     template_ids=[
@@ -3190,7 +3253,7 @@ class TemplateService:
                     ],
                     terminology_ids=act_terminology_ids,
                     extends_template_id=t.extends,
-                    previous=previous[0] if previous else None,
+                    previous=previous,
                 )
         except EntityNotFoundError as e:
             raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
@@ -3370,6 +3433,14 @@ class TemplateService:
         )
 
     @staticmethod
+    async def _previous_version(template: Template) -> Template | None:
+        """The latest other version of a template, whose references are carried."""
+        previous = await Template.find(
+            {"template_id": template.template_id, "version": {"$ne": template.version}},
+        ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
+        return previous[0] if previous else None
+
+    @staticmethod
     async def _find_template_by_ref(
         ref: str,
         namespace: str
@@ -3402,6 +3473,7 @@ class TemplateService:
         namespace: str,
         known_templates: dict[str, str] | None = None,
         include_statuses: list[str] | None = None,
+        gate: InboundGate | None = None,
     ) -> tuple[list[EndpointRef], list[EndpointRef]]:
         """Build an edge type's declared endpoints as two-half entries.
 
@@ -3418,7 +3490,9 @@ class TemplateService:
         EntityNotFoundError (surfaced as a per-item error by the caller) when
         a lookup does not resolve — declaring an edge type against a template
         the Registry does not know is a loud failure at the API door; only
-        the restore door is lenient (warning + null resolved half).
+        the restore door is lenient (warning + null resolved half). The
+        first unresolved lookup in declaration order is the one reported, and
+        a target the ``gate`` refuses is unresolved like a missing one.
         """
         src_lookups = endpoint_lookups(source_templates)
         tgt_lookups = endpoint_lookups(target_templates)
@@ -3426,18 +3500,23 @@ class TemplateService:
             ref for ref in (src_lookups + tgt_lookups)
             if not (known_templates and ref in known_templates)
         }
-        resolved: dict[str, str] = dict(known_templates or {})
+        resolved: dict[str, str] = {}
         if pending:
             # Same write-path discipline as field normalization: bypass the
             # resolver cache so a stale entry cannot be baked into durable
             # state.
-            resolved.update(
-                await resolve_entity_ids(
-                    list(pending), "template", namespace,
-                    include_statuses=include_statuses,
-                    bypass_cache=True,
-                )
+            resolved = await resolve_entity_ids(
+                sorted(pending), "template", namespace,
+                include_statuses=include_statuses,
+                bypass_cache=True,
+                strict=False,
             )
+            if gate is not None:
+                resolved = await gate.visible(resolved)
+        resolved.update(known_templates or {})
+        for ref in src_lookups + tgt_lookups:
+            if ref not in resolved:
+                raise EntityNotFoundError(ref, "template", namespace)
         return (
             [EndpointRef(lookup_value=ref, resolved=resolved.get(ref))
              for ref in src_lookups],
@@ -3451,6 +3530,7 @@ class TemplateService:
         namespace: str,
         known_templates: dict[str, str] | None = None,
         include_statuses: list[str] | None = None,
+        gate: InboundGate | None = None,
     ) -> tuple[list[str], list[str]]:
         """
         Normalize all reference fields to canonical IDs via batch Registry resolution.
@@ -3466,6 +3546,13 @@ class TemplateService:
                 (entries found here skip the Registry call)
             include_statuses: Status filter for resolution (e.g. ["active", "reserved"]
                 during activation). Default: active only.
+            gate: The write's inbound gate. A target it refuses is reported
+                exactly as a reference that does not resolve.
+
+        Raises:
+            EntityNotFoundError: for the first reference, in field order, that
+                does not resolve (or that the gate refuses). Nothing is applied
+                to the fields then.
 
         Returns:
             (template_ids, terminology_ids) — the canonical IDs applied to the
@@ -3503,22 +3590,45 @@ class TemplateService:
         # namespace delete+recreate), reading from it here would bake a
         # dead UUID into durable state. Bypass the cache on reads and let
         # it self-heal with the fresh Registry result on write.
+        #
+        # Non-strict: a miss is absent from the map rather than raised, so the
+        # reference reported below is the first in field order — not whichever
+        # the batch happened to meet first — and a refused target, dropped by
+        # the gate, is reported by exactly the same branch.
         if template_refs:
             resolved_templates = await resolve_entity_ids(
-                list(template_refs), "template", namespace,
+                sorted(template_refs), "template", namespace,
                 include_statuses=include_statuses,
                 bypass_cache=True,
+                strict=False,
             )
         if terminology_refs:
             resolved_terminologies = await resolve_entity_ids(
-                list(terminology_refs), "terminology", namespace,
+                sorted(terminology_refs), "terminology", namespace,
                 include_statuses=include_statuses,
                 bypass_cache=True,
+                strict=False,
             )
+        if gate is not None:
+            resolved_templates = await gate.visible(resolved_templates)
+            resolved_terminologies = await gate.visible(resolved_terminologies)
 
         # Merge known_templates into resolved map
         if known_templates:
             resolved_templates.update(known_templates)
+
+        for field in fields:
+            for ref in [
+                *(field.target_templates or []), field.template_ref, field.array_template_ref,
+            ]:
+                if ref and ref not in resolved_templates:
+                    raise EntityNotFoundError(ref, "template", namespace)
+            for ref in [
+                field.terminology_ref, field.array_terminology_ref,
+                *(field.target_terminologies or []),
+            ]:
+                if ref and ref not in resolved_terminologies:
+                    raise EntityNotFoundError(ref, "terminology", namespace)
 
         def _resolve_tpl(ref: str) -> str:
             return resolved_templates[ref]
@@ -3593,11 +3703,12 @@ class TemplateService:
         extends_template_id: str | None = None,
         previous: Any | None = None,
     ) -> None:
-        """Apply the cross-namespace reference gates to a template's references.
+        """Apply the outbound gate to a template's references.
 
         Fetches each referenced entity's owning namespace in one bulk Registry
-        lookup, then applies the outbound (isolation_mode) and inbound
-        (inbound_references) rules of wip_auth.reference_policy. Pass
+        lookup, then applies the template namespace's isolation_mode
+        (wip_auth.reference_policy). The inbound gate has already run inside
+        resolution, so a reference it refused never reaches this check. Pass
         extends_namespace when the caller already knows it (single create),
         or extends_template_id to have it looked up with the rest (update /
         activation). IDs the lookup can't see (inactive/reserved) are skipped —
@@ -3644,11 +3755,6 @@ class TemplateService:
             )
         except ReferenceValidationError as e:
             raise TemplateError(f"Cross-namespace reference violation: {e.violations}", "cross_namespace_reference") from e
-        except InboundReferenceRefused as e:
-            # The same error as a reference that does not resolve: a closed
-            # namespace does not confirm its entities to a writer who cannot
-            # read it.
-            raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
         except RegistryUnavailableError as e:
             # Isolation cannot be checked, so the write is refused rather
             # than let through unchecked.
