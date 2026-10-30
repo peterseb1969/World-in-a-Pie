@@ -628,6 +628,50 @@ def _convert_legacy_term_names(row: dict[str, Any]) -> None:
     row["names"] = names
 
 
+# Reporting verdicts, best first. A run's overall verdict is its worst
+# namespace's: one namespace that gave up makes the run "incomplete".
+_VERDICT_RANK = {"verified": 0, "not_checked": 1, "unavailable": 2, "incomplete": 3}
+
+
+def _parity_gaps(parity: dict[str, Any]) -> list[dict[str, Any]]:
+    """What a reporting parity result says is missing, one entry per gap:
+    ``kind`` (template, table, view), ``name``, ``issue``, and the expected
+    and actual counts where the check has them."""
+    gaps: list[dict[str, Any]] = []
+    for t in parity.get("templates", []):
+        if not t.get("table_present", True):
+            issue = "table_missing"
+        elif t.get("missing_columns"):
+            issue = "columns_missing"
+        elif t.get("counts_match") is False:
+            issue = "count_mismatch"
+        else:
+            continue
+        gaps.append({
+            "kind": "template", "name": t.get("template_value"), "issue": issue,
+            "expected": t.get("expected_documents"), "actual": t.get("actual_rows"),
+        })
+    for d in parity.get("derived_tables", []):
+        if d.get("issue"):
+            gaps.append({
+                "kind": "table", "name": d.get("table"), "issue": d.get("issue"),
+                "expected": d.get("expected_rows"), "actual": d.get("actual_rows"),
+            })
+    for v in parity.get("views", []):
+        if not v.get("present"):
+            gaps.append({
+                "kind": "view", "name": v.get("view_name"), "issue": "view_missing",
+                "expected": None, "actual": None,
+            })
+    return gaps
+
+
+def _describe_gap(gap: dict[str, Any]) -> str:
+    if gap["kind"] == "view":
+        return f"view {gap['name']} missing"
+    return f"{gap['name']} {gap['issue']} expected={gap['expected']} actual={gap['actual']}"
+
+
 class DirectRestoreEngine:
     """Restore a namespace from an archive via direct MongoDB bulk inserts.
 
@@ -667,6 +711,9 @@ class DirectRestoreEngine:
         # triggered (the count phase). Reported on the complete event so the
         # job's completion does not trigger a second, full re-sync of them.
         self._reporting_synced: list[str] = []
+        # Per-namespace reporting verdicts (verified / incomplete /
+        # unavailable / not_checked), put on the result at completion.
+        self._reporting_verdicts: dict[str, dict[str, Any]] = {}
         self._registry_url = registry_base_url or os.getenv(
             "REGISTRY_URL", "http://localhost:8001"
         )
@@ -910,6 +957,9 @@ class DirectRestoreEngine:
                 await self._restore_blobs(reader, targets[0][1])
 
         self.result["reporting_synced"] = list(self._reporting_synced)
+        self._finish_reporting_verification(
+            [tgt for _, tgt in targets], "reporting was not verified for this namespace"
+        )
         self._emit("complete", "Restore complete", percent=100, details=self.result)
 
     # Documents are the only thing a merge resolves by policy. Definitions
@@ -1195,6 +1245,13 @@ class DirectRestoreEngine:
                     source=src, target=target, mode="remap",
                 )
 
+        # A fresh restore does not wait on the reporting layer: its sync is
+        # triggered when the job completes. Say so rather than imply a check.
+        self._finish_reporting_verification(
+            list(mapping.values()),
+            "a fresh restore does not wait for reporting; its sync starts when "
+            "the job completes — check GET /api/reporting-sync/parity",
+        )
         self._emit("complete", "Remap restore complete", percent=100,
                    details=self.result)
 
@@ -2416,6 +2473,9 @@ class DirectRestoreEngine:
                 await self._restore_blobs(reader, targets[0][1], only=inserted_file_ids)
 
         self.result["reporting_synced"] = list(self._reporting_synced)
+        self._finish_reporting_verification(
+            [tgt for _, tgt in targets], "reporting was not verified for this namespace"
+        )
         self._emit("complete", "Merge complete", percent=100, details=self.result)
 
     def _build_merge_plan_inputs(
@@ -3705,7 +3765,44 @@ class DirectRestoreEngine:
             f"[{namespace}] reporting-sync unreachable during {what} — "
             "reporting verification skipped for this restore",
         )
+        self._set_reporting_verdict(
+            namespace, "unavailable", f"reporting-sync unreachable during {what}"
+        )
         self._reporting = None
+
+    def _set_reporting_verdict(
+        self,
+        namespace: str,
+        status: str,
+        reason: str | None = None,
+        gaps: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Record one namespace's reporting verdict. The first verdict
+        stands: reporting-sync going away mid-restore must not overwrite a
+        namespace that was already verified."""
+        self._reporting_verdicts.setdefault(
+            namespace, {"status": status, "reason": reason, "gaps": gaps or []}
+        )
+
+    def _finish_reporting_verification(
+        self, namespaces: list[str], unchecked_reason: str
+    ) -> None:
+        """Put the reporting verdict on the result: one per namespace the
+        run wrote, and the worst of them as the overall status, so a script
+        can tell "verified" from "gave up" without reading warnings."""
+        for namespace in dict.fromkeys(namespaces):
+            self._set_reporting_verdict(namespace, "not_checked", unchecked_reason)
+        verdicts = {
+            ns: v for ns, v in self._reporting_verdicts.items() if ns in namespaces
+        }
+        overall = max(
+            (v["status"] for v in verdicts.values()),
+            key=_VERDICT_RANK.__getitem__,
+            default="not_checked",
+        )
+        self.result["reporting_verification"] = {
+            "status": overall, "namespaces": verdicts,
+        }
 
     async def _check_reporting_precondition(
         self, namespace: str, drop_stale: bool, *, dry_run: bool = False
@@ -3828,7 +3925,15 @@ class DirectRestoreEngine:
         reporting row count from the parity check itself: while it keeps
         changing the sync is alive, however long the namespace takes.
         """
-        if not self._reporting or skip_documents:
+        if skip_documents:
+            self._set_reporting_verdict(
+                namespace, "not_checked", "documents were skipped"
+            )
+            return
+        if not self._reporting:
+            self._set_reporting_verdict(
+                namespace, "unavailable", "reporting-sync not reachable"
+            )
             return
         self._emit(
             "phase_reporting_parity",
@@ -3846,6 +3951,7 @@ class DirectRestoreEngine:
                 self._reporting_unavailable(namespace, "count parity")
                 return
             if parity.get("ok"):
+                self._set_reporting_verdict(namespace, "verified")
                 self._emit(
                     "phase_reporting_parity",
                     f"[{namespace}] reporting parity verified "
@@ -3869,21 +3975,9 @@ class DirectRestoreEngine:
                 reason = f"still catching up after {self._REPORTING_COUNTS_MAX_S}s"
                 break
             await asyncio.sleep(self._REPORTING_POLL_INTERVAL_S)
-        mismatches = [
-            f"{t.get('template_value')} expected={t.get('expected_documents')} "
-            f"actual={t.get('actual_rows')}"
-            for t in (parity or {}).get("templates", [])
-            if t.get("counts_match") is False
-        ] + [
-            f"{d.get('table')} {d.get('issue')} expected={d.get('expected_rows')} "
-            f"actual={d.get('actual_rows')}"
-            for d in (parity or {}).get("derived_tables", [])
-            if d.get("issue")
-        ] + [
-            f"view {v.get('view_name')} missing"
-            for v in (parity or {}).get("views", [])
-            if not v.get("present")
-        ]
+        gaps = _parity_gaps(parity or {})
+        self._set_reporting_verdict(namespace, "incomplete", reason, gaps)
+        mismatches = [_describe_gap(g) for g in gaps]
         self._emit(
             "warning",
             f"[{namespace}] reporting count parity incomplete ({reason}): "

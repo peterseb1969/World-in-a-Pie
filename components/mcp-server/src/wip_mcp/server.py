@@ -4749,6 +4749,12 @@ async def get_backup_job(job_id: str) -> str:
 
     Returns a BackupJobSnapshot with status, phase, percent, message, and
     archive_size (when complete). Poll this to track progress.
+
+    A completed restore or merge is not proof that reporting caught up:
+    read result.reporting_verification.status — verified, incomplete (the
+    per-namespace entries list the gaps), unavailable (reporting-sync not
+    reachable) or not_checked (documents skipped, or a fresh restore, which
+    does not wait for reporting).
     """
     try:
         data = await get_client().get_backup_job(job_id)

@@ -667,8 +667,17 @@ once at error level. `GET /api/reporting-sync/parity/status` (admin or
 service key) shows the last pass and the recent repairs. To turn it off, set
 `PARITY_CHECK_INTERVAL_SECONDS=0` in reporting-sync's environment.
 
+**A restore's job says whether reporting was verified.** A restore that gave
+up waiting for reporting used to end `complete` like a verified one, the
+difference only in a free-text warning. A completed restore or merge now
+carries `result.reporting_verification` on its job snapshot: per namespace
+written, `verified`, `incomplete` (with the gaps), `unavailable` or
+`not_checked`, and the worst of them as `status`. A fresh restore
+(`namespace_map`) reports `not_checked`: it does not wait for reporting.
+
 **Action:** a script that treats parity `ok` as its pass condition may now
-see `false` on a namespace that passed before. Read `derived_tables` and
+see `false` on a namespace that passed before. A script that waits for a
+restore can now check `result.reporting_verification.status == "verified"`. Read `derived_tables` and
 `views`; a re-run of the namespace batch sync repairs the term tables, and
 re-registering repairs a missing view.
 

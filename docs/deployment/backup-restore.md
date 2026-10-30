@@ -85,6 +85,39 @@ If reporting-sync is not deployed (core preset), the phases degrade to a
 logged warning — a restore never fails because the optional reporting layer
 is absent.
 
+**The verdict is on the job.** A completed restore or merge carries
+`result.reporting_verification` on its job snapshot, so a script can tell a
+verified restore from one that gave up without reading `warnings`:
+
+```json
+"reporting_verification": {
+  "status": "incomplete",
+  "namespaces": {
+    "kb": {
+      "status": "incomplete",
+      "reason": "no reporting rows written for 60s",
+      "gaps": [
+        {"kind": "table", "name": "term_relations",
+         "issue": "term_relations_mismatch", "expected": 7, "actual": 0}
+      ]
+    }
+  }
+}
+```
+
+Each namespace the run wrote gets one of:
+- `verified`: count parity held.
+- `incomplete`: the wait gave up. `gaps` lists each gap: `kind` (`template`,
+  `table`, `view`), `name`, `issue` and, where the check has them, the
+  expected and actual counts.
+- `unavailable`: reporting-sync could not be reached.
+- `not_checked`: the run did not verify reporting. This is the case when
+  documents were skipped, and for a fresh restore (`namespace_map`), which
+  does not wait for reporting: its sync starts when the job completes.
+
+`status` at the top is the worst of the namespaces' verdicts. The standing
+check (below) repairs most gaps afterwards; confirm with the parity check.
+
 Whatever the mode, the restore also rebuilds the Registry's **composite-key
 claims** for the entries it wrote. Claims are derived state (one row per
 namespace + entity type + composite-key hash, naming the entry that owns it),
